@@ -1,0 +1,196 @@
+campaign overview
+snapshot: report-snapshot:2e61d231b0d76ff45bb0bb6140895ce0
+meta (7):
+  meta.campaign = Query planner config sweep
+  meta.behavior = Research query planner
+  meta.kind = choice
+  meta.design_shape = factorial
+  meta.run_date = 2026-10-23
+  meta.provenance = Synthetic example data from docs/eval-report-kit/references/r2-config-sweep.json
+  meta.volume_per_month = 4000000
+n_candidates = 18
+cases: none
+repeats: none
+arms (18):
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.off.r0 = Atlas-M · reasoning off · no retry (A)
+    settings (3):
+      settings.atlas-m.off.r0.model = Atlas-M
+      settings.atlas-m.off.r0.reasoning = off
+      settings.atlas-m.off.r0.retry = 0
+    scoreboard (3):
+      scoreboard.atlas-m.off.r0.cases = 1200
+      scoreboard.atlas-m.off.r0.lost = 0
+      scoreboard.atlas-m.off.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.off.r1 = Atlas-M · reasoning off · 1 retry (B)
+    settings (3):
+      settings.atlas-m.off.r1.model = Atlas-M
+      settings.atlas-m.off.r1.reasoning = off
+      settings.atlas-m.off.r1.retry = 1
+    scoreboard (3):
+      scoreboard.atlas-m.off.r1.cases = 1200
+      scoreboard.atlas-m.off.r1.lost = 0
+      scoreboard.atlas-m.off.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.low.r0 = Atlas-M · reasoning low · no retry (C)
+    settings (3):
+      settings.atlas-m.low.r0.model = Atlas-M
+      settings.atlas-m.low.r0.reasoning = low
+      settings.atlas-m.low.r0.retry = 0
+    scoreboard (3):
+      scoreboard.atlas-m.low.r0.cases = 1200
+      scoreboard.atlas-m.low.r0.lost = 0
+      scoreboard.atlas-m.low.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.low.r1 = Atlas-M · reasoning low · 1 retry (D)
+    settings (3):
+      settings.atlas-m.low.r1.model = Atlas-M
+      settings.atlas-m.low.r1.reasoning = low
+      settings.atlas-m.low.r1.retry = 1
+    scoreboard (3):
+      scoreboard.atlas-m.low.r1.cases = 1200
+      scoreboard.atlas-m.low.r1.lost = 0
+      scoreboard.atlas-m.low.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.high.r0 = Atlas-M · reasoning high · no retry (E)
+    settings (3):
+      settings.atlas-m.high.r0.model = Atlas-M
+      settings.atlas-m.high.r0.reasoning = high
+      settings.atlas-m.high.r0.retry = 0
+    scoreboard (3):
+      scoreboard.atlas-m.high.r0.cases = 1200
+      scoreboard.atlas-m.high.r0.lost = 0
+      scoreboard.atlas-m.high.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.high.r1 = Atlas-M · reasoning high · 1 retry (F)
+    settings (3):
+      settings.atlas-m.high.r1.model = Atlas-M
+      settings.atlas-m.high.r1.reasoning = high
+      settings.atlas-m.high.r1.retry = 1
+    scoreboard (3):
+      scoreboard.atlas-m.high.r1.cases = 1200
+      scoreboard.atlas-m.high.r1.lost = 0
+      scoreboard.atlas-m.high.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.off.r0 = Brisk-S · reasoning off · no retry (G)
+    settings (3):
+      settings.brisk-s.off.r0.model = Brisk-S
+      settings.brisk-s.off.r0.reasoning = off
+      settings.brisk-s.off.r0.retry = 0
+    scoreboard (3):
+      scoreboard.brisk-s.off.r0.cases = 1200
+      scoreboard.brisk-s.off.r0.lost = 0
+      scoreboard.brisk-s.off.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.off.r1 = Brisk-S · reasoning off · 1 retry (H)
+    settings (3):
+      settings.brisk-s.off.r1.model = Brisk-S
+      settings.brisk-s.off.r1.reasoning = off
+      settings.brisk-s.off.r1.retry = 1
+    scoreboard (3):
+      scoreboard.brisk-s.off.r1.cases = 1200
+      scoreboard.brisk-s.off.r1.lost = 0
+      scoreboard.brisk-s.off.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.low.r0 = Brisk-S · reasoning low · no retry (I)
+    settings (3):
+      settings.brisk-s.low.r0.model = Brisk-S
+      settings.brisk-s.low.r0.reasoning = low
+      settings.brisk-s.low.r0.retry = 0
+    scoreboard (3):
+      scoreboard.brisk-s.low.r0.cases = 1200
+      scoreboard.brisk-s.low.r0.lost = 0
+      scoreboard.brisk-s.low.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.low.r1 = Brisk-S · reasoning low · 1 retry (J)
+    settings (3):
+      settings.brisk-s.low.r1.model = Brisk-S
+      settings.brisk-s.low.r1.reasoning = low
+      settings.brisk-s.low.r1.retry = 1
+    scoreboard (3):
+      scoreboard.brisk-s.low.r1.cases = 1200
+      scoreboard.brisk-s.low.r1.lost = 0
+      scoreboard.brisk-s.low.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.high.r0 = Brisk-S · reasoning high · no retry (K)
+    settings (3):
+      settings.brisk-s.high.r0.model = Brisk-S
+      settings.brisk-s.high.r0.reasoning = high
+      settings.brisk-s.high.r0.retry = 0
+    scoreboard (3):
+      scoreboard.brisk-s.high.r0.cases = 1200
+      scoreboard.brisk-s.high.r0.lost = 0
+      scoreboard.brisk-s.high.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.high.r1 = Brisk-S · reasoning high · 1 retry (L)
+    settings (3):
+      settings.brisk-s.high.r1.model = Brisk-S
+      settings.brisk-s.high.r1.reasoning = high
+      settings.brisk-s.high.r1.retry = 1
+    scoreboard (3):
+      scoreboard.brisk-s.high.r1.cases = 1200
+      scoreboard.brisk-s.high.r1.lost = 0
+      scoreboard.brisk-s.high.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.off.r0 = Nano-XS · reasoning off · no retry (M)
+    settings (3):
+      settings.nano-xs.off.r0.model = Nano-XS
+      settings.nano-xs.off.r0.reasoning = off
+      settings.nano-xs.off.r0.retry = 0
+    scoreboard (3):
+      scoreboard.nano-xs.off.r0.cases = 1200
+      scoreboard.nano-xs.off.r0.lost = 0
+      scoreboard.nano-xs.off.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.off.r1 = Nano-XS · reasoning off · 1 retry (N)
+    settings (3):
+      settings.nano-xs.off.r1.model = Nano-XS
+      settings.nano-xs.off.r1.reasoning = off
+      settings.nano-xs.off.r1.retry = 1
+    scoreboard (3):
+      scoreboard.nano-xs.off.r1.cases = 1200
+      scoreboard.nano-xs.off.r1.lost = 0
+      scoreboard.nano-xs.off.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.low.r0 = Nano-XS · reasoning low · no retry (O)
+    settings (3):
+      settings.nano-xs.low.r0.model = Nano-XS
+      settings.nano-xs.low.r0.reasoning = low
+      settings.nano-xs.low.r0.retry = 0
+    scoreboard (3):
+      scoreboard.nano-xs.low.r0.cases = 1200
+      scoreboard.nano-xs.low.r0.lost = 0
+      scoreboard.nano-xs.low.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.low.r1 = Nano-XS · reasoning low · 1 retry (Q)
+    settings (3):
+      settings.nano-xs.low.r1.model = Nano-XS
+      settings.nano-xs.low.r1.reasoning = low
+      settings.nano-xs.low.r1.retry = 1
+    scoreboard (3):
+      scoreboard.nano-xs.low.r1.cases = 1200
+      scoreboard.nano-xs.low.r1.lost = 0
+      scoreboard.nano-xs.low.r1.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.high.r0 = Nano-XS · reasoning high · no retry (R)
+    settings (3):
+      settings.nano-xs.high.r0.model = Nano-XS
+      settings.nano-xs.high.r0.reasoning = high
+      settings.nano-xs.high.r0.retry = 0
+    scoreboard (3):
+      scoreboard.nano-xs.high.r0.cases = 1200
+      scoreboard.nano-xs.high.r0.lost = 0
+      scoreboard.nano-xs.high.r0.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.high.r1 = Nano-XS · reasoning high · 1 retry (S)
+    settings (3):
+      settings.nano-xs.high.r1.model = Nano-XS
+      settings.nano-xs.high.r1.reasoning = high
+      settings.nano-xs.high.r1.retry = 1
+    scoreboard (3):
+      scoreboard.nano-xs.high.r1.cases = 1200
+      scoreboard.nano-xs.high.r1.lost = 0
+      scoreboard.nano-xs.high.r1.failed = 0
+aspects: []
+meas

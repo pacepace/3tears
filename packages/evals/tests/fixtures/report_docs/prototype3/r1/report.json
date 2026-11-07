@@ -1,0 +1,119 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Use {arm:atlas-m}: it is the only model inside every gate in every task, but it resolves troubleshooting issues exactly at the line.",
+  "lede": "{arm:atlas-l}, the only other model that resolves troubleshooting issues at or above the line, runs over the latency budget in {count.failing.p95.atlas-l|words} of {count.tasks|words} tasks. If {arm:atlas-m}'s true resolve rate is under {criteria.trouble.resolves.threshold}, no model passes and the choice becomes a trade between resolving issues and speed.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {"id": "best_of_n", "material_if": "only if {arm:atlas-m}'s place on the resolve line is partly luck: as the one pick of {n_candidates|words}, a fresh run tends to read it lower, and below the line no model passes."},
+      {"id": "judge_unstated", "material_if": "only if the judge of resolving troubleshooting issues, whose identity and calibration are unstated, reads {arm:atlas-m} leniently: the deciding gate sits exactly on its line, so any lenience there moves the call."},
+      {"id": "point_estimate:p95", "material_if": "only if {arm:atlas-m}'s true p95 on research questions is over the budget: it clears by {criteria.p95.atlas-m.research.gap} with no interval, and over the line no model passes."},
+      {"id": "no_control", "material_if": "only for how much overall quality {arm:atlas-m} gives up against {arm:atlas-l}, which reads two models' own figures unpaired; the call rests on gates each model meets or misses on its own figures."}
+    ]
+  },
+  "decision": [
+    {"slot": "recommendation", "text": "Use {arm:atlas-m} for all concierge traffic, at {cost_per_1k.atlas-m|usd_per_1k}. It meets the overall quality floor and the latency budget in every task and every task's own gates, the resolve rate in troubleshooting exactly at its line."},
+    {"slot": "why_not", "text": "{arm:atlas-l} is over the latency budget in {count.failing.p95.atlas-l|words} tasks and costs {cost_per_1k.atlas-l|usd_per_1k}. {arm:brisk-s} is below the overall quality floor in {count.failing.overall.brisk-s|words} tasks. {arm:open-70b} declines to speculate {criteria.specul.declines.open-70b.value} of the time against a line of {criteria.specul.declines.threshold}; speculation bait applies to all traffic, so neither cheaper model can take any task."},
+    {"slot": "watch", "text": "The troubleshooting resolve rate sits on its line, its interval {spread.atlas-m.resolves.task.trouble.interval|interval}: a re-run of today's size is as likely to land below it as above. Research latency clears the budget by {criteria.p95.atlas-m.research.gap}, with no interval to say whether that is more than noise."},
+    {"slot": "next", "text": "Improve how {arm:atlas-m} resolves troubleshooting issues and re-run that task on fresh cases: a clear pass settles the call; a miss means no model passes and the choice becomes a trade."}
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:atlas-m} is the only model of {n_candidates|words} that passes every gate in every task: {arm:atlas-l} is too slow, and {arm:brisk-s} and {arm:open-70b} miss quality gates, declining to speculate among them.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "gate_matrix",
+          "query": {"source": "tasks"},
+          "emphasis": "atlas-m",
+          "caption": "Speculation bait applies to all traffic, so a model that fails it can take no task, even one whose own gates it passes."
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "{arm:atlas-m} resolves {criteria.trouble.resolves.atlas-m.value} of troubleshooting issues, exactly the line, and its interval reaches well below it.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "tasks", "measures": ["resolves"], "strata": ["trouble"]},
+          "reference": "floor",
+          "emphasis": "atlas-m",
+          "caption": "Share of troubleshooting conversations resolved, with intervals, against the declared line."
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "{arm:atlas-l} runs over the latency budget in {count.failing.p95.atlas-l|words} tasks; {arm:atlas-m} stays under in all of them, nearest the line on research questions at {criteria.p95.atlas-m.research.value}.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {"source": "tasks", "measures": ["latency_s"], "arms": ["atlas-l", "atlas-m"]},
+          "reference": "budget",
+          "emphasis": "atlas-m",
+          "caption": "Each bar runs from median to p95 latency, against the p95 budget."
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "{arm:atlas-m} scores lower overall quality than {arm:atlas-l} in every task but speculation bait, most in troubleshooting, by {compare.atlas-m.atlas-l.overall.task.trouble.difference|abs} points.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {"source": "compare", "arms": ["atlas-m", "atlas-l"], "measures": ["overall"]},
+          "caption": "Overall quality, Atlas-M less Atlas-L in each task, with unpaired intervals."
+        }
+      ]
+    }
+  ],
+  "explore": [
+    {
+      "control": "Latency budget (p95)",
+      "binds": "Atlas-M on research and troubleshooting questions; Atlas-L in every task but persona small talk.",
+      "outcome": "Below {criteria.p95.atlas-m.research.value} no model passes. At {criteria.p95.atlas-l.research.value} or more Atlas-L passes too, and the choice becomes a trade: {price.atlas-m.atlas-l.overall.gain} points of overall quality for an extra {price.atlas-m.atlas-l.overall.cost_gap|abs|usd_per_1k}."
+    },
+    {
+      "control": "Price of a point of overall quality",
+      "binds": "Only the choice between Atlas-M and Atlas-L, and only once the latency budget admits Atlas-L.",
+      "outcome": "Atlas-L is worth its cost when a point of overall quality is worth more than {price.atlas-m.atlas-l.overall.per_point|usd_per_1k}; the unpaired interval puts that break-even between {price.atlas-m.atlas-l.overall.per_point_low_unpaired|usd} and {price.atlas-m.atlas-l.overall.per_point_high_unpaired|usd}. At today's budget no price changes the call."
+    },
+    {
+      "control": "Resolve-rate line in troubleshooting",
+      "binds": "Atlas-M.",
+      "outcome": "At {criteria.trouble.resolves.atlas-m.value} or lower Atlas-M passes; any higher line leaves no model passing, since Atlas-L is over the latency budget."
+    }
+  ],
+  "omitted": [
+    {"what": "Atlas-M's margins on its other gates (overall quality floor, clear steps, confirming before account changes, escalating, staying in character, research tool use, citing, unsupported claims, declining to speculate)", "why": "each clears its line by more than the resolve rate does; none is the nearest line, so none changes the call. Full table in the appendix."},
+    {"what": "Cheaper single-task routes: Brisk-S passes billing's own gates and Open-70B passes persona small talk's, each far cheaper than Atlas-M there", "why": "both fail declining to speculate, which applies to all traffic, so routing any task to them is ruled out; the gate matrix caption says so."},
+    {"what": "Open-70B's billing overall quality, borderline on the floor", "why": "Open-70B is already out on speculation; its billing margin doesn't change the call."},
+    {"what": "Cost per task as its own chart", "why": "the gate matrix carries each model's cost in each task; a second chart would repeat it."},
+    {"what": "Median (p50) latency", "why": "the budget is set on p95; median latency is on the range bars but carries no gate."},
+    {"what": "Failure examples", "why": "none were kept for any model, so no unresolved troubleshooting conversation can be shown."},
+    {"what": "Overall quality pooled across tasks", "why": "a traffic-weighted summary of the per-task figures already shown; it appears only inside the explore price."},
+    {"what": "Monthly cost", "why": "no monthly volume was declared, so costs stay per 1,000 conversations."}
+  ],
+  "next": [
+    {"text": "Improve how Atlas-M resolves troubleshooting issues (clear steps, escalation) and re-run the troubleshooting task on fresh cases.", "settles": "Whether Atlas-M clears the resolve line with room. If it falls below, no model passes and the call becomes a trade between resolving issues and latency."},
+    {"text": "Run Atlas-M as it is on a larger fresh troubleshooting set.", "settles": "Which side of the line its resolve rate sits, if it sits away from it; landing on the line again says only a change to the model's behaviour will clear it."},
+    {"text": "Name the judge behind the pass-or-fail dimensions and calibrate the resolve judgement against human ratings.", "settles": "Whether the deciding figure can be trusted, turning the judge caveat into evidence."},
+    {"text": "Measure p95 latency with an interval on research and troubleshooting questions.", "settles": "Whether Atlas-M's thin research clearance is more than noise."},
+    {"text": "Declare monthly volume, and a price per point of overall quality if the latency budget may ever relax.", "settles": "Monthly spend, and whether Atlas-L would be worth its cost at a looser budget."}
+  ],
+  "method": [
+    {"term": "Cases", "text": "Each model ran {scoreboard.atlas-m.cases} cases across {count.tasks|words} tasks: billing and account questions ({task.billing.n_cases}), multi-turn troubleshooting ({task.trouble.n_cases}), persona small talk ({task.persona.n_cases}), research-needed questions ({task.research.n_cases}) and speculation bait ({task.specul.n_cases}). No repeats are stated."},
+    {"term": "Gates", "text": "The overall quality floor and the p95 latency budget are read in every task; each task's own gates are read in that task. Speculation bait applies to all traffic, so its gates bind every model that takes any. A figure exactly on its line counts as passing. All gates were declared before the run."},
+    {"term": "Intervals", "text": "{spread.atlas-m.resolves.task.trouble.level} intervals per figure, not corrected for the number of comparisons. No current model ran as a control, so Atlas-M against Atlas-L combines each model's own interval as if independent, which reads wider than a paired comparison. p95 latency carries no interval."},
+    {"term": "Judge", "text": "Overall quality is scored by a judge calibrated on {judged.overall.calibration_ratings} human ratings, agreeing with them {judged.overall.agreement} of the time. The pass-or-fail dimensions (resolves the issue and the rest) do not state their judge."},
+    {"term": "Cost", "text": "Cost per 1,000 conversations, per task; a model's overall cost pools its tasks by traffic share. No monthly volume was declared."},
+    {"term": "Not compared", "text": "No current production model, and no routed mix of models, was run."},
+    {"term": "Source", "text": "The Concierge model selection campaign, run on {meta.run_date}."}
+  ]
+}

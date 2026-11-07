@@ -1,0 +1,30 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [resolves]
+  arms: []
+  strata: [trouble]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: atlas-m
+title: 
+level: 95% uncorrected
+unit: 
+domain: 
+criteria.trouble.resolves.threshold = 90%
+columns: [Row, Value, 95% uncorrected interval]
+rows (5):
+  - cells: [A · Atlas-L, 91%, 86.8% to 95.2%]
+  - cells: [B · Atlas-M, 90%, 85.6% to 94.4%]
+  - cells: [C · Brisk-S, 74%, 67.6% to 80.4%]
+  - cells: [D · Open-70B, 82%, 76.4% to 87.6%]
+  - cells: [floor 90%, 90%, ]
+total: 5
+offset: 0
+truncated: False
+notes: []
+==========

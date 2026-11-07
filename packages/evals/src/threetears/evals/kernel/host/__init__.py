@@ -78,10 +78,6 @@ from threetears.evals.kernel.host.profile import (
     ToolActionReader,
     VariantLeverReader,
 )
-from threetears.evals.kernel.host.style import (
-    StyleProfile,
-    ToneRegister,
-)
 from threetears.evals.kernel.host.sweepables import (
     CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
@@ -114,13 +110,11 @@ from threetears.evals.kernel.host.world import (
 from threetears.evals.kernel.host.world_conformance import (
     CheckName,
     ConformanceResult,
-    ObligationRow,
     Outcome,
     Qualification,
     WorldConformanceError,
     WorldConformanceReport,
     check_world_conformance,
-    obligation_rows,
     obligations,
 )
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, schema_violations
@@ -165,7 +159,6 @@ __all__ = [
     "MeasureRegistrationError",
     "MeasureRegistry",
     "MemberActsOn",
-    "ObligationRow",
     "Ordinal",
     "Outcome",
     "ProductionDepartureReader",
@@ -179,13 +172,11 @@ __all__ = [
     "SeedRefusalKind",
     "SeedRefused",
     "SeedWrite",
-    "StyleProfile",
     "Sweepable",
     "SweepableReader",
     "SweepableRegistry",
     "SweepableRole",
     "TemplateChecks",
-    "ToneRegister",
     "ToolActionReader",
     "TriggerKind",
     "Triggered",
@@ -203,7 +194,6 @@ __all__ = [
     "check_world_conformance",
     "default_cell_timeout",
     "freeze",
-    "obligation_rows",
     "obligations",
     "schema_violations",
     "served_models_by_score",

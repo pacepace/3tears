@@ -5,6 +5,7 @@ frontier."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 
@@ -19,10 +20,13 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import FamilyComparison
+from threetears.evals.analysis.stats import difference_interval
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals import Answer, Eval
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
+from threetears.evals.analysis.report.campaign.scorecard import aspect_shows
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     ChartBlock,
@@ -40,9 +44,7 @@ from packages.evals.tests.campaign_support import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    SUMMARY,
     campaign_fixture,
-    choice_memo,
     first_screen_markdown,
     kind_fixture,
     kind_page_of,
@@ -60,6 +62,15 @@ def _scorecard(page: CampaignReport) -> str:
     return markdown[start:] if end == -1 else markdown[start:end]
 
 
+def _methods(page: CampaignReport) -> str:
+    """The page's own Methods section in Markdown (after the aspects' folds), where how its intervals were read is
+    said: its heading up to the next one."""
+    markdown = campaign_report_markdown(page)
+    start = markdown.index("\n## Methods\n")
+    end = markdown.find("\n## ", start + 1)
+    return markdown[start:] if end == -1 else markdown[start:end]
+
+
 def _table(page: CampaignReport, name: str) -> TableBlock:
     return next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == name)
 
@@ -73,10 +84,26 @@ def _by_arm(table: TableBlock, row: Mapping[str, TableCell]) -> dict[str, TableC
     }
 
 
-async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_has_no_row_to_settle_against_one() -> None:
-    page = await page_of("billing", "tone", margins={"billing": None})
+def _unasked(label: str) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """A bundle change asking ``label`` no question, so every reading on it is a lead."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != label:
+            return bundle
+        scope = bundle.reading_scope.model_copy(update={"questions_declared": False})
+        return bundle.model_copy(update={"reading_scope": scope})
+
+    return change
+
+
+async def test_an_aspect_with_no_margin_is_said_to_leave_a_drop_undecided_and_has_no_row_to_settle() -> None:
+    page = await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing"))
     said = _scorecard(page)
-    assert "No margin was declared on billing, so no arm is ever shown worse there." in said
+    # What the aspect lacks changes how its row reads, so one line says what a drop there reads as.
+    assert (
+        "On billing, the evidence cannot tell a drop of any size from no change: a drop is read against a margin, "
+        "and the aspect declares none." in said
+    )
     (billing,) = page.readings.on_aspect("billing")
     assert billing.reading == "unclear" and "no margin was declared" in billing.reason
     # Its row would be a row of dashes under "To settle": it has no margin to show it within, and its floor is broken.
@@ -118,7 +145,7 @@ async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_b
     settle = _table(page, "to_settle")
     assert settle.title == "To settle"
     assert [(cells["shows"].text, cells["decided_by"].text) for cells in settle.rows] == [
-        ("no worse than the 70-point margin", "pass rate")
+        ("no worse than the 70-point margin", "Pass rate")
     ]
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
@@ -135,8 +162,9 @@ async def test_a_row_no_worse_than_the_margin_reads_so_beside_its_held_floor_and
     assert readings == {"steady": "no worse than the margin", "tone": "shown better"}
     # The headline row and the floor read one interval, so neither contradicts the other, and nothing is to settle.
     assert not any(isinstance(block, TableBlock) and block.name == "to_settle" for block in page.blocks)
-    said = _scorecard(page)
-    # How the intervals were read is one paragraph: the level, the error rate, then the rows no worse.
+    said = _methods(page)
+    # How the intervals were read is one paragraph, in the page's methods (P5): the level, the error rate, then the
+    # rows no worse.
     # The one corrected row is tone's, read in v2's family of two at 97.5%, so it is not called a floor's level; the
     # error-rate sentence is said whatever the rows read.
     assert (
@@ -168,7 +196,7 @@ async def test_a_page_whose_every_row_is_no_worse_still_states_the_error_rate_an
         return readings.model_copy(update={"readings": rows + [rows[0].model_copy(update={"arm": "v3"})]})
 
     page = await page_of("steady", "tone", readings=all_within)
-    said = _scorecard(page)
+    said = _methods(page)
     assert "interval is read at" not in said and "corrected together" not in said
     assert (
         "For any one arm, the chance of being wrongly shown better on some aspect is at most 2.5%, and likewise for "
@@ -210,16 +238,17 @@ async def test_a_floor_held_beside_a_row_left_unclear_is_marked_on_its_cell_and_
     assert "same count" not in note.text
 
 
-async def test_with_no_question_every_reading_is_a_lead() -> None:
+async def test_with_no_question_the_page_says_once_it_is_an_exploratory_comparison() -> None:
     page = await page_of("billing", "tone", question="")
-    # Asking nothing is the whole report's caveat: said once, in the question's place on the first screen.
-    lead = "No question was declared, so every reading is a lead."
-    assert lead in first_screen_markdown(page)
-    assert lead not in _scorecard(page) and campaign_report_markdown(page).count(lead) == 1
+    # Asking nothing makes every reading a lead: the page says what it is once, in the question's place on the first
+    # screen, and no reading says "a lead" again.
+    line = "Exploratory comparison."
+    assert line in first_screen_markdown(page).splitlines() and "a lead" not in first_screen_markdown(page)
+    assert line not in _scorecard(page) and campaign_report_markdown(page).count(line) == 1
 
 
 async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:
-    page = await kind_page_of("tone", "billing", memo=choice_memo())
+    page = await kind_page_of("tone", "billing")
     assert page.readings.kind == "choice"
     table = _table(page, "pairs")
     assert table.details
@@ -227,23 +256,22 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
         ("tone", "alpha"),
         ("billing", "no separation"),
     ]
-    # The matrix marks the arm ahead in its own cell, and no other.
+    # The matrix marks the arm ahead in its own cell, and no other; each aspect's rate carries the count it is computed
+    # over, first (presentation build, chunk 1: a first-screen rate carries its count).
     matrix = _table(page, "scorecard")
     marks = {row["aspect"].text: {arm: cell.flag for arm, cell in _by_arm(matrix, row).items()} for row in matrix.rows}
     assert marks == {
-        "tone": {"alpha": "ahead of beta", "beta": None},
-        "billing": {"alpha": None, "beta": None},
+        "tone": {"alpha": "57 of 60 trials, 20 cases; ahead of beta", "beta": "18 of 60 trials, 20 cases"},
+        "billing": {"alpha": "30 of 60 trials, 20 cases", "beta": "27 of 60 trials, 20 cases"},
         # Two aspects: each arm's pass rate across them closes the matrix, marking nothing.
         aggregate.EQUAL_WEIGHT_ROW: {"alpha": None, "beta": None},
     }
     said = _scorecard(page)
     assert CHOICE_NOTE in said
-    # The writer's summary and recommendation, then the scorecard; no control-based table.
+    # The scorecard after the first screen; no control-based table.
     markdown = campaign_report_markdown(page)
-    assert markdown.index(SUMMARY) < markdown.index("**Recommended:** beta (high confidence)")
-    assert markdown.index("**Recommended:** beta (high confidence)") < markdown.index("## Scorecard")
     assert "<summary>By aspect, pair by pair</summary>" in said and "▸" not in said
-    assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+    assert "alpha ahead of beta." in markdown and "the evidence cannot tell alpha and beta apart." in markdown
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -346,7 +374,7 @@ async def test_a_change_whose_control_alone_ran_says_its_margin_and_floors_wait_
     read = campaign_readings(campaign, {"billing": billing.bundle}, arms=[control])
     assert read.kind == "measurement"
     report = build_code_only_report(billing.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
-    page = build_campaign_report(campaign, read, {"billing": report}, None)
+    page = build_campaign_report(campaign, read, {"billing": report})
     said = f"Only the control, {CONTROL_LABEL}, has run, so the margin on billing and 1 floor are read once a candidate runs."
     assert said in _scorecard(page)
 
@@ -407,7 +435,7 @@ def test_the_scorecard_is_one_matrix_of_aspects_by_the_kind_s_columns_with_its_r
         assert [column.header for column in matrix.columns] == columns
     else:
         assert matrix.title == "solo by aspect"
-        assert [column.header for column in matrix.columns][:2] == ["Aspect", "pass rate (%)"]
+        assert [column.header for column in matrix.columns][:2] == ["Aspect", "Pass rate (%)"]
     # The long form is folded, under the matrix, in the same section.
     folded = [
         block
@@ -441,7 +469,8 @@ def test_a_change_s_cell_is_its_change_its_interval_against_the_margin_and_its_r
     assert billing["v2"].text == "-60 (shown worse)"
     assert (billing["v2"].low, billing["v2"].high) == v2.drop_interval
     assert billing["v2"].margin == 10 and billing["v2"].zero_line
-    assert billing["production"].text == "90"
+    # The control's rate carries the count it is computed over (presentation build, chunk 1).
+    assert billing["production"].text == "90 (18 of 20 cases)"
     assert matrix.rows[0]["cases"].text == "20"
 
 
@@ -451,12 +480,18 @@ def test_a_cell_is_marked_with_its_floor_s_status_only_where_the_floor_reads_oth
     matrix = _table(s1_change().page(), "scorecard")
     flags = {row["aspect"].text: {arm: cell.flag for arm, cell in _by_arm(matrix, row).items()} for row in matrix.rows}
     assert flags["tone"] == {
-        "production": None,
+        # The control's cell carries its count, never a floor's status.
+        "production": "10 of 20 cases",
         "v2": "shown better; floor unclear",
         "v3": "unclear",
         "v4": "unclear; floor broken",
     }
-    assert flags["billing"] == {"production": None, "v2": "shown worse", "v3": "unclear", "v4": "unclear"}
+    assert flags["billing"] == {
+        "production": "18 of 20 cases",
+        "v2": "shown worse",
+        "v3": "unclear",
+        "v4": "unclear",
+    }
 
 
 def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
@@ -464,10 +499,11 @@ def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
     on billing and tone it can move either way."""
     matrix = _table(s1_change().page(), "scorecard")
     controls = {row["aspect"].text: _by_arm(matrix, row)["production"].text for row in matrix.rows}
+    # Each with the count it is computed over, then its mark (presentation build, chunk 1).
     assert controls == {
-        "billing": "90",
-        "tone": "50",
-        "refunds": "0 (cannot show a drop)",
+        "billing": "90 (18 of 20 cases)",
+        "tone": "50 (10 of 20 cases)",
+        "refunds": "0 (0 of 20 cases; cannot show a drop)",
         # Its pass rate across the aspects reads no margin, so it is marked neither way.
         aggregate.EQUAL_WEIGHT_ROW: "46.7",
     }
@@ -478,7 +514,7 @@ async def test_a_control_passing_every_trial_cannot_show_a_gain() -> None:
     matrix = _table(page, "scorecard")
     (row,) = matrix.rows
     # At 100% against a 20-point margin a drop can still show, so only the gain is marked.
-    assert _by_arm(matrix, row)[CONTROL_LABEL].text == "100 (cannot show a gain)"
+    assert _by_arm(matrix, row)[CONTROL_LABEL].text == "100 (60 of 60 trials, 20 cases; cannot show a gain)"
 
 
 def _uneven_control(shares: list[float], passed: int, trials: int) -> Shape:
@@ -513,10 +549,10 @@ def test_cannot_show_a_drop_is_decided_on_the_per_case_shares_a_drop_is_read_on(
     not marked. With every share nought, none can."""
     uneven = _uneven_control([1.0] + [0.0] * 9, passed=1, trials=19)
     (row,) = _table(uneven.page(), "scorecard").rows
-    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5.3"
+    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5.3 (1 of 19 trials, 10 cases)"
     nothing = _uneven_control([0.0] * 10, passed=0, trials=19)
     matrix = _table(nothing.page(), "scorecard")
-    assert _by_arm(matrix, matrix.rows[0])["production"].text == "0 (cannot show a drop)"
+    assert _by_arm(matrix, matrix.rows[0])["production"].text == "0 (0 of 19 trials, 10 cases; cannot show a drop)"
 
 
 def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_count() -> None:
@@ -542,7 +578,7 @@ def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_
         update={"multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families})}
     )
     reports = {**shape.reports, "billing": shape.reports["billing"].model_copy(update={"bundle": changed})}
-    page = build_campaign_report(shape.campaign, shape.readings, reports, None)
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
     rows = {(row["aspect"].text, row["arm"].text, row["shows"].text): row for row in _table(page, "to_settle").rows}
     floor = rows[("billing", "v4", "the 10-point floor holds")]
     assert (floor["decided_by"].value, floor["none"].value, floor["observed"].value) == (None, None, None)
@@ -552,8 +588,34 @@ def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_
 async def test_the_level_line_counts_only_the_readings_corrected_together() -> None:
     """With no margin on billing, v2's drops are read on tone alone while its gains are read on both: the line says
     each family's own size."""
-    said = _scorecard(await page_of("billing", "tone", margins={"billing": None}))
+    said = _methods(await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing")))
     assert "Each arm's gains on 2 aspects, and its drops on 1, are each corrected together." in said
+
+
+async def test_an_asked_aspect_with_no_margin_reads_its_drop_against_zero_and_never_says_it_cannot_be_worse() -> None:
+    """A superiority question (asked with no margin): billing's drop joins the drops' family against zero, so both
+    families hold both aspects, no line says billing is never shown worse, and its row reads in the superiority
+    question's words."""
+    page = await page_of("billing", "tone", margins={"billing": None})
+    assert "On billing, the evidence cannot tell a drop of any size from no change" not in _scorecard(page)
+    assert "Each arm's 2 readings are corrected together." in _methods(page)
+    (billing,) = page.readings.on_aspect("billing")
+    assert billing.confirmatory and billing.margin is None and billing.drop_p is not None
+    # The fold's heading says what the row read, in the superiority question's words.
+    assert (
+        aspect_shows(page.readings, "billing")
+        == {
+            "better": "v2 shown better",
+            "worse": "v2 shown worse",
+            "unclear": "the evidence cannot tell v2 and production apart",
+        }[billing.reading]
+    )
+    # A superiority row that read no interval, or too few cases, separated nothing either way: it stays unclear.
+    unread = billing.model_copy(update={"reading": "unclear", "gain_interval": None})
+    few = billing.model_copy(update={"reading": "unclear", "control_cases": 2, "arm_cases": 2})
+    for row in (unread, few):
+        rows = [row if other.aspect == "billing" else other for other in page.readings.readings]
+        assert aspect_shows(page.readings.model_copy(update={"readings": rows}), "billing") == "v2 unclear"
 
 
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:
@@ -578,13 +640,13 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
         rows[("billing", "v4", "no worse than the 10-point margin")],
         rows[("billing", "v4", "the 10-point floor holds")],
     )
-    assert (row["decided_by"].text, row["observed"].text) == ("pass rate", "31 cases, $0.22")
+    assert (row["decided_by"].text, row["observed"].text) == ("Pass rate", "31 cases, $0.22")
     assert (floor["decided_by"].text, floor["observed"].text) == ("`reply.cites_policy`", "41 cases, $0.29")
     v3 = [key for key in rows if key[:2] == ("billing", "v3")]
     assert v3 == [("billing", "v3", "no worse than the 10-point margin, and the 10-point floor holds")]
     merged = rows[v3[0]]
     assert (merged["decided_by"].text, merged["none"].text, merged["observed"].text) == (
-        "pass rate",
+        "Pass rate",
         "75 cases, $0.53",
         "233 cases, $1.6",
     )
@@ -603,7 +665,7 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
 @pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])
 def test_the_level_lines_are_counted_off_the_page_s_own_arms_and_aspects(build: Callable[[], Shape]) -> None:
     shape = build()
-    said = _scorecard(shape.page())
+    said = _methods(shape.page())
     arms = len({row.arm for row in shape.readings.readings})
     if arms == 1:
         # S4: one candidate on one aspect is a family of one, read as a floor reads.
@@ -651,32 +713,71 @@ def _lines(page: CampaignReport) -> list[str]:
     ]
 
 
+def _on(lines: list[str], prefix: str) -> list[str]:
+    return [line for line in lines if line.startswith(prefix)]
+
+
+#: How tone's v2 row and its pass-rate contrast read the same per-case values: the row shown better on its bounded
+#: interval corrected across v2's aspects, the contrast on the same method at its family's stricter level.
+_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads cannot tell apart"
+
+
 def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_in_one_line() -> None:
-    """A19: tone's v2 row is shown better; were its fold's pass-rate contrast, over the very same per-case values, not
-    separated, the scorecard says both and how each interval was read. S1 as built has no such disagreement."""
-    shape = s1_change()
-    assert _lines(shape.page()) == []
-    reports = _with_trial_contrast(shape, "tone", "v2", lambda c: c.model_copy(update={"verdict": "not_separated"}))
-    page = build_campaign_report(shape.campaign, shape.readings, reports, None)
-    (line,) = _lines(page)
+    """A19: tone's v2 row is shown better, and its fold's pass-rate contrast, over the very same per-case values, is not
+    separated: both read the bounded interval, the contrast at its family's stricter level, which reaches zero. The
+    scorecard says both and how each interval was read, once for the pass rate and once for the check that decides it."""
+    page = s1_change().page()
+    lines = _lines(page)
+    (line,) = _on(lines, _TONE_PASS_RATE)
     assert line.startswith(
-        "On tone, v2's row reads shown better and its contrast on the pass rate reads not separated, over the same "
-        "per-case values. The row reads a bounded interval at 98.33%, corrected across v2's aspects; the contrast a t "
-        "interval at "
+        f"{_TONE_PASS_RATE}, over the same per-case values. The row reads a bounded interval at 98.33%, corrected "
+        "across v2's aspects; the contrast a bounded interval at "
     )
     assert line.endswith(", corrected within the aspect's family.")
     assert line in _scorecard(page)
+    (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on `reply.total == case.total`")
+    assert len(lines) == 2, "no other row and contrast part"
+    assert check in _scorecard(page)
 
 
 def test_a_contrast_showing_a_drop_the_row_does_not_say_the_row_counts_one_only_past_its_margin() -> None:
     shape = s1_change()
+    assert _on(_lines(shape.page()), "On refunds") == []
     reports = _with_trial_contrast(shape, "refunds", "v2", lambda c: c.model_copy(update={"verdict": "regressed"}))
-    (line,) = _lines(build_campaign_report(shape.campaign, shape.readings, reports, None))
+    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")
     assert line.startswith(
         "On refunds, v2's row reads no worse than the margin and its contrast on the pass rate reads regressed"
     )
     assert "a bounded interval at 95%, on its own;" in line
     assert line.endswith("The row counts a drop only past the 10-point margin.")
+
+
+def test_a_shape_64_rate_contrast_drawn_on_its_t_interval_is_named_a_t_interval() -> None:
+    """A stored shape-64 contrast on a rate was drawn on the t interval of the test its p came from (``basis`` ``t``)
+    and records no ``interval_basis``, which 65 added. Read as stored, the reconciliation names the interval it was
+    drawn on, a t interval, never the bounded one a rate is drawn on now. The interval is the one 64 drew, the t
+    interval at the family's level over the stored per-case values; the verdict is forced to differ from the row, as
+    the test above forces it, since every 64 verdict on this shape agrees with its row."""
+    shape = s1_change()
+    level = next(
+        family.interval_level
+        for family in shape.bundles["refunds"].multiple_comparisons.families
+        if any(comparison.reading == "trial" for comparison in family.comparisons)
+    )
+    assert level is not None
+
+    def at_64(comparison: FamilyComparison) -> FamilyComparison:
+        assert comparison.case_values is not None and comparison.basis == "t"
+        control, contrast = comparison.case_values
+        interval = difference_interval(
+            list(control), list(contrast), paired=comparison.test == "paired", confidence=level, value_range=(0.0, 1.0)
+        )
+        assert interval is not None and interval != comparison.bounded_interval
+        return comparison.model_copy(update={"interval": interval, "interval_basis": None, "verdict": "regressed"})
+
+    reports = _with_trial_contrast(shape, "refunds", "v2", at_64)
+    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")
+    assert "; the contrast a t interval at " in line and "the contrast a bounded interval" not in line
 
 
 def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -> None:
@@ -688,8 +789,9 @@ def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -
         )
 
     shape = s1_change()
+    assert len(_on(_lines(shape.page()), _TONE_PASS_RATE)) == 1
     reports = _with_trial_contrast(shape, "tone", "v2", elsewhere)
-    assert _lines(build_campaign_report(shape.campaign, shape.readings, reports, None)) == []
+    assert _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), _TONE_PASS_RATE) == []
 
 
 # =============================================================================
@@ -790,3 +892,43 @@ def test_every_line_the_scorecard_writes_keeps_the_style_rules(name: str) -> Non
     measures = {reading.name for reading in shape.readings.measures}
     names = [*labels, *(f"▸ {label}" for label in labels), *measures]
     assert lint_page(_scorecard(shape.page()), names=names) == []
+
+
+#: Cases a one-arm eval measures, each answered at a fraction of a cent.
+_PRICED = [{"n": index} for index in range(12)]
+
+
+async def _priced(case: Mapping[str, int]) -> Answer:
+    """Answers right, at a cost under a cent that grows with the case."""
+    return Answer("right", model="m-1", cost_usd=(20 + case["n"]) * 1e-6)
+
+
+def _right(case: Mapping[str, int], answer: str) -> bool:
+    """Whether the answer is right."""
+    return answer == "right"
+
+
+async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_bare_figure() -> None:
+    """A measurement's spend under a cent a reply carries its form (the money ruling, Q4 of 2026-11-07): drawn per
+    1,000 replies with the count in its header, never a mark on the figure, its interval's ends in the same form, in
+    the matrix and in the fold alike, never ``0.0003`` or ``0``."""
+    result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")
+    matrix = _table(result.page, "scorecard")
+    spend = next(
+        column.key for column in matrix.columns if column.header == "Measuring spend, all roles, per 1,000 replies"
+    )
+    (row,) = matrix.rows
+    cell = row[spend]
+    assert cell.unit == MONEY and not cell.per_thousand and cell.decimals is not None
+    assert cell.text == f"${cell.value:.{cell.decimals}f}" and "/1000" not in cell.text
+    measures = _table(result.page, "measures")
+    (folded,) = [
+        line for line in measures.rows if line["measure"].text == "Measuring spend, all roles, per 1,000 replies"
+    ]
+    assert folded["value"].text == cell.text
+    assert re.fullmatch(r"\[\$\d+\.\d+, \$\d+\.\d+\]", str(folded["interval"].value))
+    # Only the money measures carry money's form; every other figure keeps the number rule.
+    assert {key for key, other in row.items() if other.unit == MONEY} == {
+        spend,
+        "measure:production_replicating_cost",
+    }

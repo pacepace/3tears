@@ -40,13 +40,15 @@ _REMOVAL = (
 
 
 def _registry_version() -> tuple[int, int, int]:
-    """the registry package's own version, as its pyproject declares it.
+    """the registry package's own version, as its pyproject declares it, read past any PEP 440 local label.
+
+    ``0.80.0+analyst.1`` reads ``(0, 80, 0)``: a labelled build carries its public version's code.
 
     :return: ``(major, minor, patch)``
     :rtype: tuple[int, int, int]
     """
     declared = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
-    major, minor, patch = (int(part) for part in declared.split(".")[:3])
+    major, minor, patch = (int(part) for part in declared.split("+", 1)[0].split(".")[:3])
     return major, minor, patch
 
 

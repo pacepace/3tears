@@ -1,0 +1,32 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [Panel, Row, Value]
+rows (8):
+  - cells: [Single lookup, J · Brisk-S · reasoning low · 1 retry, 98.4%]
+  - cells: [Single lookup, floor 97%, 97.0%]
+  - cells: [Multi-hop (2 to 3 calls), J · Brisk-S · reasoning low · 1 retry, 95.6%]
+  - cells: [Multi-hop (2 to 3 calls), floor 97%, 97.0%]
+  - cells: [Date and unit math, J · Brisk-S · reasoning low · 1 retry, 97.0%]
+  - cells: [Date and unit math, floor 97%, 97.0%]
+  - cells: [Ambiguous entity, J · Brisk-S · reasoning low · 1 retry, 96.4%]
+  - cells: [Ambiguous entity, floor 97%, 97.0%]
+total: 8
+offset: 0
+truncated: False
+notes: []

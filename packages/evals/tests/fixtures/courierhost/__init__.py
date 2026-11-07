@@ -341,7 +341,12 @@ FEEDS: dict[str, str] = {"planner-lite": "feed-v2", "planner-pro": "feed-v3"}
 COURIER_TEMPLATE_ID = "plan-delivery-round"
 
 #: The one planner configuration the courier deploys, and so the one subject a launch may name.
-COURIER_SUBJECT = SubjectSnapshot(subject_id="depot-north-planner", subject_label="North depot planner", state={})
+COURIER_SUBJECT = SubjectSnapshot(
+    subject_id="depot-north-planner",
+    subject_label="North depot planner",
+    state={},
+    captured_at="2026-08-01T00:00:00+00:00",
+)
 
 
 def courier_template() -> EvalTemplate:

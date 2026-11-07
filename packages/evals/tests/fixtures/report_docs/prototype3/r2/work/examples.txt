@@ -1,0 +1,27 @@
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (3):
+  - cells: [TQ-0418 · Multi-hop (2 to 3 calls) · Brisk-S · reasoning low · 1 retry · missing call, Input: Who chaired the committee that approved the 2019 grid budget?; Expected: search(committee, grid budget 2019) → lookup(chair), Collapsed two hops into one query; returned the budget author, not the chair., search(grid budget 2019 chair)]
+  - cells: [TQ-0772 · Date and unit math · Brisk-S · reasoning low · 1 retry · wrong args, Input: Filings in the 90 days before the March 3 hearing; Expected: date_from=2026-12-03, date_to=2027-03-03, Off-by-one on the window start. The most common wrong-args pattern (9 of 17)., date_from=2026-12-04, date_to=2027-03-03]
+  - cells: [TQ-1103 · Ambiguous entity · Brisk-S · reasoning low · 1 retry · wrong tool, Input: Latest on Mercury's pricing; Expected: ask_clarify(company or planet?), Picked the company without asking. Scored wrong because the gold answer requires clarification., search(Mercury pricing)]
+total: 3
+offset: 0
+truncated: False
+notes: []

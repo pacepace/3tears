@@ -16,10 +16,11 @@ dimension on a pass/fail scale is a share like any other.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from threetears.evals.analysis.quantities import MONEY, PERCENT, display_scale, is_money
-from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.analysis.report.cost_unit import money_ruler
+from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, classifier_label_of, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 
@@ -27,9 +28,6 @@ from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 #: measured", and this arm was measured — every result failed, which its rates count. Never a number: a refused
 #: call's round trip and its empty spend are what read as a fast, free arm.
 NO_SUCCESSFUL_RESULTS = "no successful results"
-
-#: What marks the control's row: it is the reference every other row is read against, never the pick.
-REFERENCE_MARK = "(control: the reference)"
 
 #: The row order, stated on a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`, so no reader
 #: takes the top row for a recommendation.
@@ -47,10 +45,17 @@ SURFACE_ORDER_NO_CONTROL = (
 #: The cost per reply below which, on every arm, a report states cost per 1,000 replies instead.
 REPLY_COST_FLOOR = 0.01
 
-#: The words a heading adds when a per-reply cost is stated per 1,000 replies, and the label a column's header or a
-#: reading's name carries for it. Replies, as the scoreboard counts them: one trial is one reply.
+#: The words a heading adds when a per-reply cost is stated per 1,000 replies, after the measure's name and a comma
+#: (``Production cost, per 1,000 replies``), as a column's header or a reading's name carries it on every page.
+#: Replies, as the scoreboard counts them: one trial is one reply.
 PER_THOUSAND_REPLIES = "per 1,000 replies"
+
+#: The retired bracket form of :data:`PER_THOUSAND_REPLIES`, which no page prints: kept only so prose that writes it
+#: with its digits is read as the package's unit phrase (:mod:`~threetears.evals.analysis.report.figure_keys`).
 PER_THOUSAND_LABEL = "($/1,000 replies)"
+
+#: The words a cost stated per 1,000,000 replies carries, as a measure in ``usd_per_1m`` declares it.
+PER_MILLION_REPLIES = "per 1,000,000 replies"
 
 
 def surface_order_sentence(*, has_control_row: bool) -> str:
@@ -78,14 +83,18 @@ class MeasureRuler(NamedTuple):
     factor: float
     unit: str
     per: str = ""
+    money: MoneyForm | None = None
 
     def scaled(self, heading: str) -> str:
         """``heading`` with the scale a reader needs to read its figures, where the figures do not carry it.
 
-        A cost stated per 1,000 replies says so beside its name, since ``$0.0459`` alone reads as a cost per reply;
-        every other ruler's figures carry their own unit, so the heading stands alone.
+        A cost stated per 1,000 replies (or per 1,000,000, where it is under a cent per 1,000) says so after its
+        name (``Production cost, per 1,000 replies``), as every page spells it, since ``$0.0459`` alone reads as a cost
+        per reply; every other ruler's figures carry their own unit, so the heading stands alone.
         """
-        return f"{heading} {PER_THOUSAND_LABEL}" if self.per else heading
+        if not self.per:
+            return heading
+        return f"{heading}, {self.per}"
 
     def labelled(self, heading: str) -> str:
         """``heading`` with its unit, for a row whose figures are stated as bare numbers beside it.
@@ -155,11 +164,12 @@ def _is_share(name: str, facts: MeasureFacts, described: MetricDescriptor | None
 
 
 def _money_ruler(amounts: Iterable[float | None]) -> MeasureRuler:
-    """Money's ruler over the per-reply amounts it will state: per 1,000 replies when every one is under the floor."""
-    stated = [amount for amount in amounts if amount is not None]
-    if stated and all(abs(amount) < REPLY_COST_FLOOR for amount in stated):
-        return MeasureRuler(1000.0, MONEY, PER_THOUSAND_REPLIES)
-    return MeasureRuler(1.0, MONEY)
+    """Money's ruler over the per-reply amounts it will state, by the one owner of money's scale
+    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per reply, or per 1,000 (1,000,000)
+    replies where some amount is under a cent per reply (per 1,000), its form chosen from every amount."""
+    ruler = money_ruler(amounts, per=1, start=1)
+    per = {1000: PER_THOUSAND_REPLIES, 1_000_000: PER_MILLION_REPLIES}.get(ruler.counted, "")
+    return MeasureRuler(ruler.scale, MONEY, per, ruler.form)
 
 
 def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
@@ -167,7 +177,8 @@ def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
 
     :param costs: Each arm's cost per reply; None for an arm whose cost was not measured.
     :ptype costs: Iterable[float | None]
-    :return: Money per reply, or per 1,000 replies when every measured cost is under :data:`REPLY_COST_FLOOR`.
+    :return: Money per reply, or per 1,000 (1,000,000) replies where some measured cost is under a cent per reply (per
+        1,000), as the one owner of money's scale states it.
     :rtype: MeasureRuler
     """
     return _money_ruler(costs)
@@ -215,29 +226,11 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
     return Rulers(measure_rulers(surface, catalog), dimensions)
 
 
-def analysis_rulers(analysis: EvalAnalysis, aspect: str) -> Rulers:
-    """Every ruler one aspect's readings in a stored analysis are stated on, over the surface and catalog frozen there.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :param aspect: The label of the aspect whose readings are stated.
-    :ptype aspect: str
-    :return: The rulers, chosen as :func:`report_rulers` chooses them over the bundle the aspect was written over.
-    :rtype: Rulers
-    :raises KeyError: The analysis holds no aspect with that label.
-    """
-    held = analysis.aspect(aspect)
-    frozen: Mapping[str, Any] = held.bundle
-    entries = frozen.get("measure_catalog") or {}
-    catalog = {name: MetricDescriptor.model_validate(entry) for name, entry in entries.items()}
-    return report_rulers(held.decision_surface, catalog)
-
-
 __all__ = [
     "NO_SUCCESSFUL_RESULTS",
+    "PER_MILLION_REPLIES",
     "PER_THOUSAND_LABEL",
     "PER_THOUSAND_REPLIES",
-    "REFERENCE_MARK",
     "REPLY_COST_FLOOR",
     "SHARE",
     "SURFACE_ORDER",
@@ -245,7 +238,6 @@ __all__ = [
     "UNITLESS",
     "MeasureRuler",
     "Rulers",
-    "analysis_rulers",
     "measure_rulers",
     "reply_cost_ruler",
     "report_rulers",

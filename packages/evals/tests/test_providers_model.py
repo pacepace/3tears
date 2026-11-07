@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -1124,3 +1126,60 @@ async def test_record_starts_a_stale_recording_afresh_and_adds_to_one_written_th
     assert [json.loads(line)["result"]["content"] for line in lines] == ["new", "newer"]
     replay = RecordedCompletions.replay(path, settings=ClientRequestSettings(max_tokens=8192))
     assert (await replay.generate(system="", user="x")).content == "new"
+
+
+def test_importing_the_model_module_reads_no_clock() -> None:
+    script = (
+        "import time\n"
+        "def refuse(*a, **k):\n"
+        "    raise AssertionError('the clock was read at import')\n"
+        "time.time = refuse\n"
+        "import threetears.evals.providers.model\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+
+
+async def test_the_run_start_is_read_on_first_use_and_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "triage.jsonl"
+    monkeypatch.delenv("RECORD", raising=False)
+    await model("vendor/m", Scripted(chat("old")), recording=path).text("x")
+    os.utime(path, (time.time() - 3600, time.time() - 3600))
+    monkeypatch.setenv("RECORD", "1")
+    await model("vendor/m", Scripted(chat("first")), recording=path).text("x")
+    stamp = path.stat().st_mtime
+    # a later call within the same run keeps what was written since the first check
+    await model("vendor/m", Scripted(chat("second")), recording=path).text("x")
+    assert path.stat().st_mtime >= stamp
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+#: A fresh process recording one file twice under ``RECORD=1``: the first model creates it, the second is built ten
+#: seconds later, as a second eval deriving the same model is, and the count of lines the file kept is printed.
+_RECORDS_A_NEW_FILE_TWICE: Final = """
+import asyncio, os, sys, time
+from pathlib import Path
+os.environ["RECORD"] = "1"
+from packages.evals.tests.test_providers_model import Scripted, chat, model
+path = Path(sys.argv[1])
+async def record() -> None:
+    await model("vendor/m", Scripted(chat("first")), recording=path).text("x")
+    clock = time.time
+    time.time = lambda: clock() + 10
+    await model("vendor/m", Scripted(chat("second")), recording=path).text("x")
+asyncio.run(record())
+print(len(path.read_text(encoding="utf-8").splitlines()))
+"""
+
+
+def test_a_file_this_run_created_is_never_read_as_an_earlier_run_s(tmp_path: Path) -> None:
+    # A fresh process, so the run's start is unread when the first model is built, and the file does not exist yet.
+    done = subprocess.run(
+        [sys.executable, "-c", _RECORDS_A_NEW_FILE_TWICE, str(tmp_path / "new.jsonl")],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "2", "the second model kept the first's line: the file is this run's"

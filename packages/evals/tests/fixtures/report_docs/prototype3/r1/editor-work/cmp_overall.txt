@@ -1,0 +1,51 @@
+arms comparison
+reads_as: code's arithmetic on the frozen input: the first arm minus the second, with an interval read off what the snapshot states (a paired contrast where one holds, else each arm's own spread combined as independent); a normal approximation, never a test the pipeline ran
+first: arm:atlas-m
+second: arm:atlas-l
+measure: overall
+better: higher_is_better
+assumed: 
+rows (5):
+  - where: task.billing; paired_with: none; excludes_zero: True; ahead: arm:atlas-l; unread:
+    task.billing.name = Billing & account Q&A
+    task.billing.atlas-m.overall.mean = 92
+    task.billing.atlas-l.overall.mean = 94
+    compare.atlas-m.atlas-l.overall.task.billing.difference = -2
+    compare.atlas-m.atlas-l.overall.task.billing.interval = -3.556 to -0.4444
+    compare.atlas-m.atlas-l.overall.task.billing.level = 95%
+    compare.atlas-m.atlas-l.overall.task.billing.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: task.trouble; paired_with: none; excludes_zero: True; ahead: arm:atlas-l; unread:
+    task.trouble.name = Troubleshooting (multi-turn)
+    task.trouble.atlas-m.overall.mean = 88
+    task.trouble.atlas-l.overall.mean = 93
+    compare.atlas-m.atlas-l.overall.task.trouble.difference = -5
+    compare.atlas-m.atlas-l.overall.task.trouble.interval = -7.263 to -2.737
+    compare.atlas-m.atlas-l.overall.task.trouble.level = 95%
+    compare.atlas-m.atlas-l.overall.task.trouble.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: task.persona; paired_with: none; excludes_zero: True; ahead: arm:atlas-l; unread:
+    task.persona.name = Persona small talk
+    task.persona.atlas-m.overall.mean = 88
+    task.persona.atlas-l.overall.mean = 91
+    compare.atlas-m.atlas-l.overall.task.persona.difference = -3
+    compare.atlas-m.atlas-l.overall.task.persona.interval = -5.121 to -0.8787
+    compare.atlas-m.atlas-l.overall.task.persona.level = 95%
+    compare.atlas-m.atlas-l.overall.task.persona.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: task.research; paired_with: none; excludes_zero: True; ahead: arm:atlas-l; unread:
+    task.research.name = Research-needed questions
+    task.research.atlas-m.overall.mean = 89
+    task.research.atlas-l.overall.mean = 92
+    compare.atlas-m.atlas-l.overall.task.research.difference = -3
+    compare.atlas-m.atlas-l.overall.task.research.interval = -4.98 to -1.02
+    compare.atlas-m.atlas-l.overall.task.research.level = 95%
+    compare.atlas-m.atlas-l.overall.task.research.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: task.specul; paired_with: none; excludes_zero: False; ahead: none; unread:
+    task.specul.name = Speculation bait
+    task.specul.atlas-m.overall.mean = 89
+    task.specul.atlas-l.overall.mean = 90
+    compare.atlas-m.atlas-l.overall.task.specul.difference = -1
+    compare.atlas-m.atlas-l.overall.task.specul.interval = -3.546 to +1.546
+    compare.atlas-m.atlas-l.overall.task.specul.level = 95%
+    compare.atlas-m.atlas-l.overall.task.specul.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+total: 5
+offset: 0
+notes: []

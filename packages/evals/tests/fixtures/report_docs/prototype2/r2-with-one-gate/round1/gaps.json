@@ -1,0 +1,22 @@
+[
+  {
+    "need": "dot_interval (and bars) over measures to draw each pass rate's binomial interval, which spread.<arm>.pass_rate.overall.se already holds",
+    "why": "the borderline pick's clearance is the story; a dot without its interval reads as certain",
+    "workaround": "dot_interval drawn without intervals, the caption says so, and the re-run odds from settle_cases carry the uncertainty in the claim sentence"
+  },
+  {
+    "need": "a block source over settle_cases rows (distance, wrong_side, cases_needed per arm against a criterion)",
+    "why": "how often a fresh run reads each survivor on the wrong side of the gate is the evidence for the borderline, and no block can show it as a table",
+    "workaround": "the wrong-side figures for the two Brisk-S survivors are cited in prose through settle keys"
+  },
+  {
+    "need": "a block source over levers_effects (one setting's effect per place, with interval)",
+    "why": "what retry buys at every model and reasoning level is a support claim; only arm-level bars can show it, without the paired effect or its interval",
+    "workaround": "bars of Brisk-S's six configurations with the gate line; the retry effect at low reasoning is cited in prose through a lever key"
+  },
+  {
+    "need": "task case counts (n_cases) and a share-of-misses figure that works without a control",
+    "why": "to say how much of the low-reasoning pick's misses sit in multi-hop questions; strata loss_share needs a control and the tasks carry no n",
+    "workaround": "per-task pass rates only, stated as descriptive; the share is not written"
+  }
+]

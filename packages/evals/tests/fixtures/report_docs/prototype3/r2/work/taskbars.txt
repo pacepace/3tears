@@ -1,0 +1,32 @@
+rendered block
+block_kind: bars
+query:
+  source: tasks
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r0, brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Group, Row, Value, Note]
+rows (8):
+  - cells: [Single lookup, Brisk-S · reasoning low · no retry, 97.4%, 97.4%]
+  - cells: [Single lookup, Brisk-S · reasoning low · 1 retry, 98.4%, 98.4%]
+  - cells: [Multi-hop (2 to 3 calls), Brisk-S · reasoning low · no retry, 92.8%, 92.8%]
+  - cells: [Multi-hop (2 to 3 calls), Brisk-S · reasoning low · 1 retry, 95.6%, 95.6%]
+  - cells: [Date and unit math, Brisk-S · reasoning low · no retry, 95.1%, 95.1%]
+  - cells: [Date and unit math, Brisk-S · reasoning low · 1 retry, 97.0%, 97.0%]
+  - cells: [Ambiguous entity, Brisk-S · reasoning low · no retry, 94.1%, 94.1%]
+  - cells: [Ambiguous entity, Brisk-S · reasoning low · 1 retry, 96.4%, 96.4%]
+total: 8
+offset: 0
+truncated: False
+notes: []

@@ -319,7 +319,12 @@ async def test_the_hook_sees_the_call_and_its_outcome_and_wraps_the_action() -> 
     assert bad_call.action is None, "an action argument that is no string is shown as none"
     assert bad.refusal == Refusal(kind="validation_failed", status=422)
     assert refused == {"ending": "refused", "refusal": {"kind": "conflict", "status": 409}}
-    assert unknown == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
+    assert unknown == {
+        "ending": "refused",
+        "refusal": {"kind": "validation_failed", "status": 422},
+        "recovery": {"parameters": ["action"], "valid_values": ["help", "note_take"], "see": {"action": "help"}},
+    }
+    assert bad.recovery is not None and bad.recovery.as_data() == unknown["recovery"]
 
 
 async def test_a_defect_is_thrown_into_the_hook_and_still_propagates() -> None:

@@ -1,0 +1,220 @@
+### c1 / 1
+rendered block
+block_kind: gate_scatter
+query:
+  source: measures
+  aspect: 
+  measures: [pass_rate, latency_ms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Point, Latency (p95), Pass rate]
+rows (20):
+  - cells: [Atlas-M · reasoning off · no retry, 900 ms, 94.0%]
+  - cells: [Atlas-M · reasoning off · 1 retry, 1019 ms, 96.4%]
+  - cells: [Atlas-M · reasoning low · no retry, 1395 ms, 96.6%]
+  - cells: [Atlas-M · reasoning low · 1 retry, 1500 ms, 97.9%]
+  - cells: [Atlas-M · reasoning high · no retry, 2430 ms, 97.7%]
+  - cells: [Atlas-M · reasoning high · 1 retry, 2551 ms, 98.6%]
+  - cells: [Brisk-S · reasoning off · no retry, 300 ms, 91.1%]
+  - cells: [Brisk-S · reasoning off · 1 retry, 359 ms, 94.6%]
+  - cells: [Brisk-S · reasoning low · no retry, 465 ms, 95.3%]
+  - cells: [Brisk-S · reasoning low · 1 retry, 513 ms, 97.1%]
+  - cells: [Brisk-S · reasoning high · no retry, 810 ms, 96.6%]
+  - cells: [Brisk-S · reasoning high · 1 retry, 870 ms, 98.0%]
+  - cells: [Nano-XS · reasoning off · no retry, 140 ms, 81.0%]
+  - cells: [Nano-XS · reasoning off · 1 retry, 198 ms, 88.5%]
+  - cells: [Nano-XS · reasoning low · no retry, 217 ms, 87.9%]
+  - cells: [Nano-XS · reasoning low · 1 retry, 275 ms, 92.7%]
+  - cells: [Nano-XS · reasoning high · no retry, 378 ms, 91.3%]
+  - cells: [Nano-XS · reasoning high · 1 retry, 450 ms, 94.8%]
+  - cells: [budget 600 ms, 600 ms, ]
+  - cells: [floor 97%, , 97.0%]
+total: 20
+offset: 0
+truncated: False
+notes: [The Latency (p95) axis is on a log scale: its values span more than ten times.]
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.low.r1, atlas-m.high.r0, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: brisk-s.low.r1
+title: 
+level: 95% computed
+unit: pct
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [Row, Value, 95% computed interval]
+rows (6):
+  - cells: [J · Brisk-S · reasoning low · 1 retry, 97.1%, 96.2% to 98.1%]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, 98.0%, 97.2% to 98.8%]
+  - cells: [D · Atlas-M · reasoning low · 1 retry, 97.9%, 97.1% to 98.7%]
+  - cells: [E · Atlas-M · reasoning high · no retry, 97.7%, 96.9% to 98.6%]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, 98.6%, 98.0% to 99.3%]
+  - cells: [floor 97%, 97.0%, ]
+total: 6
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]
+### c2 / 2
+rendered block
+block_kind: table
+query:
+  source: settle
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Arm, Against, Today's figure, Line, Distance toward passing, Settles, Sizes count, Needed, one-sided, Needed, two-sided, Today, Trials needed, one-sided, Trials needed, two-sided, Repeats of a case, Trials today, A fresh run reads the other side, Level]
+rows (1):
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Pass rate, 97.1%, 97.0%, +0.1, clears, cases, 38350, 54451, 1200, —, —, —, —, 38.6%, 95% one-sided]
+total: 1
+offset: 0
+truncated: False
+notes: [Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.]
+### c3 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_ms]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.low.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: budget
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: ms
+domain: 
+criteria.p95.threshold = 600 ms
+columns: [Group, Row, From, To]
+rows (5):
+  - cells: [Latency, J · Brisk-S · reasoning low · 1 retry, 209 ms, 513 ms]
+  - cells: [Latency, L · Brisk-S · reasoning high · 1 retry, 364 ms, 870 ms]
+  - cells: [Latency, D · Atlas-M · reasoning low · 1 retry, 628 ms, 1500 ms]
+  - cells: [Latency, F · Atlas-M · reasoning high · 1 retry, 1094 ms, 2551 ms]
+  - cells: [, budget 600 ms, 600 ms, ]
+total: 5
+offset: 0
+truncated: False
+notes: []
+### c4 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: levers
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r0, brisk-s.low.r1, brisk-s.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, 95% unpaired interval, Note]
+rows (2):
+  - cells: [reasoning, Brisk-S · reasoning low · 1 retry → high, +0.83, -0.4053 to +2.065, +0.8 pts]
+  - cells: [retry, Brisk-S · reasoning low · no retry → 1.0, +1.87, +0.3429 to +3.397, +1.9 pts]
+total: 2
+offset: 0
+truncated: False
+notes: [Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is how that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test.]
+### c5 / 1
+rendered block
+block_kind: bars
+query:
+  source: tasks
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r0, brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Group, Row, Value, Note]
+rows (8):
+  - cells: [Single lookup, Brisk-S · reasoning low · no retry, 97.4%, 97.4%]
+  - cells: [Single lookup, Brisk-S · reasoning low · 1 retry, 98.4%, 98.4%]
+  - cells: [Multi-hop (2 to 3 calls), Brisk-S · reasoning low · no retry, 92.8%, 92.8%]
+  - cells: [Multi-hop (2 to 3 calls), Brisk-S · reasoning low · 1 retry, 95.6%, 95.6%]
+  - cells: [Date and unit math, Brisk-S · reasoning low · no retry, 95.1%, 95.1%]
+  - cells: [Date and unit math, Brisk-S · reasoning low · 1 retry, 97.0%, 97.0%]
+  - cells: [Ambiguous entity, Brisk-S · reasoning low · no retry, 94.1%, 94.1%]
+  - cells: [Ambiguous entity, Brisk-S · reasoning low · 1 retry, 96.4%, 96.4%]
+total: 8
+offset: 0
+truncated: False
+notes: []
+### c5 / 2
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (3):
+  - cells: [TQ-0418 · Multi-hop (2 to 3 calls) · Brisk-S · reasoning low · 1 retry · missing call, Input: Who chaired the committee that approved the 2019 grid budget?; Expected: search(committee, grid budget 2019) → lookup(chair), Collapsed two hops into one query; returned the budget author, not the chair., search(grid budget 2019 chair)]
+  - cells: [TQ-0772 · Date and unit math · Brisk-S · reasoning low · 1 retry · wrong args, Input: Filings in the 90 days before the March 3 hearing; Expected: date_from=2026-12-03, date_to=2027-03-03, Off-by-one on the window start. The most common wrong-args pattern (9 of 17)., date_from=2026-12-04, date_to=2027-03-03]
+  - cells: [TQ-1103 · Ambiguous entity · Brisk-S · reasoning low · 1 retry · wrong tool, Input: Latest on Mercury's pricing; Expected: ask_clarify(company or planet?), Picked the company without asking. Scored wrong because the gold answer requires clarification., search(Mercury pricing)]
+total: 3
+offset: 0
+truncated: False
+notes: []

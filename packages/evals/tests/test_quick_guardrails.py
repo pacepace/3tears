@@ -2,7 +2,7 @@
 
 A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
 never stated; it joins no contrast; an arm that breached one is named above the contrasts as breached (a warning: code
-picks no arm), and the analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+picks no arm). A judged dimension is guarded on the :class:`~threetears.evals.Judge`
 (``guard={"dimension": margin}``), its margin declared on the campaign.
 
 Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
@@ -15,24 +15,18 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
 
 from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
     DisclosureBlock,
     TableBlock,
-    generate_analysis,
     get_campaign,
-    inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
@@ -42,9 +36,17 @@ from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
@@ -121,7 +123,7 @@ class TestAScorerGuardrail:
         ]
         assert leaky[0]["delta"] == pytest.approx(-40.0) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
-        assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
+        assert slip["decision"].startswith("undecided: slip may be worse than current by more than the margin")
         # On the row's ruler, points for a pass/fail, as the margin column states it.
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
@@ -153,8 +155,9 @@ class TestAScorerGuardrail:
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == "leaky breached the guardrail No leak score."
-        assert undecided == "slip is not known to be safe on the guardrail No leak score."
+        # The verdict line's own words for what each guardrail means for the decision.
+        assert breach == "leaky breaches the No leak score guardrail."
+        assert undecided == "slip may do worse than current on the No leak score guardrail."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
@@ -166,10 +169,10 @@ class TestAScorerGuardrail:
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
-            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
+            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breaches")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text == "leaky breached the guardrail No leak score."
+        assert blocks[named[0]].text == "leaky breaches the No leak score guardrail."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 
@@ -214,74 +217,6 @@ class TestAScorerGuardrail:
         assert check.interval_basis == "t" and check.interval is not None and check.interval[0] > -0.2
         assert check.decision == "undecided" and check.undecided_reason is not None
         assert "grader(..., range=) beside the guard" in check.undecided_reason
-
-
-class TestABreachedArmIsNeverRecommended:
-    async def test_the_analysis_writer_cannot_adopt_it_whatever_it_gained(self) -> None:
-        comparison = await _compare()
-        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
-        # A campaign with no question declared adopts nothing at all; read it as one that declared its question, so
-        # the adoption reaches the guardrail it breached.
-        declared = bundle.reading_scope.model_copy(update={"questions_declared": True})
-        bundle = bundle.model_copy(update={"reading_scope": declared})
-        adopting = _adopting_writer()
-        with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
-            await generate_analysis(
-                campaign_bundle(bundle),
-                prompt=EVAL_ANALYSIS_GEN_DEFAULT,
-                model="offline-writer",
-                client=adopting,
-                prompt_id="eval_analysis_gen",
-                bundle_assembled_at=datetime.now(UTC).isoformat(),
-                profile=comparison.host.profile,
-            )
-        assert adopting.drafts >= 1
-
-
-def _adopting_writer() -> Any:
-    """A scripted writer whose every draft adopts the arm that improved on the control, which breached the guardrail."""
-    writer = SimpleNamespace(drafts=0)
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
-        writer.drafts += 1
-        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        (aspect,) = view["aspects"]
-        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
-        arm, control = tested["cell"], tested["control"]
-        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
-        cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
-        finding = {
-            "title": "Correct score by arm",
-            "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
-            "evidence": [{"cell": cell, "measure_id": tested["name"], "reading": "measure"} for cell in cite],
-            "trials": [],
-            "confidence": "low",
-            "axes": [],
-            "caveats": [],
-            "invalidates": [],
-            "durable": "",
-        }
-        recommendation = {
-            "arm": label,
-            "reasons": ["Ship the arm that answers more cases correctly."],
-            "confidence": "medium",
-            "rests_on": [0],
-            "floors_overridden": [],
-            "behind_on": [],
-            "bars_missed": [],
-        }
-        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
-        memo = {
-            "findings": [finding],
-            "recommendation": [recommendation],
-            "aspect_summaries": [summary],
-            "summary": "The arm that answers more cases correctly is the one to ship.",
-            "next": [],
-        }
-        return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
-
-    writer.generate = generate
-    return writer
 
 
 class TestARefusedGuardrail:

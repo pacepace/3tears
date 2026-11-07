@@ -1,0 +1,47 @@
+[
+  {
+    "need": "Treat declared bars as gates when the campaign question names them as the condition (options_dominance, decision_sensitivity)",
+    "why": "The question asks which arm answers within the cost and latency bars, but code reads bars as warnings: options_dominance passes alpha through gates it misses on both bars with its whole interval, and sweeping either bar moves no option",
+    "workaround": "Read each bar status from readings_list, apply both bars as the condition in the report, and state on the page why the call departs from options_dominance"
+  },
+  {
+    "need": "A gate_scatter (or equivalent) that draws two declared bars as its two lines",
+    "why": "Cost and turn time are the two declared lines; one chart with both lines would show alpha outside both and beta and gamma inside, but gate_scatter refuses because no gate reads cost_usd (bars are not gates)",
+    "workaround": "Two bars blocks, one per measure, each with its budget line"
+  },
+  {
+    "need": "A block over pair readings (arm against arm) in a campaign with no control",
+    "why": "The deciding comparison is the corrected pair reading beta against gamma, but the readings source holds only readings against a control, and forest needs one, so no block draws the pair difference and its interval",
+    "workaround": "dot_interval of each arm answer rate at 95%, with the corrected pair difference and interval cited in the claim sentence"
+  },
+  {
+    "need": "price_tradeoff per_point in points for a 0-to-1 measure",
+    "why": "The gain on reply.total == case.total is held as a proportion (+0.2), and per_point divides the cost gap by it, so $1.50 is the price of 100 points per 1,000 replies, not of one point; the prices block prints the same figure as per point",
+    "workaround": "Leave price per point out of the report; state the cost gap per 1,000 replies and the answer-rate gap separately"
+  },
+  {
+    "need": "Failure examples with the reply, the expected total and an excerpt",
+    "why": "examples_list returns nine failed trials with excerpt, input and expected all none, so the page cannot show what a wrong total looks like or whether the arms fail the same way",
+    "workaround": "State only that every failure is a wrong total (cites policy passes everywhere); no examples block"
+  },
+  {
+    "need": "A per-case outcome read across arms in a no-control snapshot",
+    "why": "measure_breakdown refuses without a control and the snapshot has no strata or tasks, so I cannot see whether gamma fails the cases beta fails (nested difficulty) or different ones, which bears on whether a paired re-run would separate them",
+    "workaround": "Note from the nine frozen examples that each arm failing trials sit on different case ids, and leave the pattern as a next step"
+  },
+  {
+    "need": "confound_check, and a paired settle for two arms on the same cases",
+    "why": "Thirteen apparatus and world settings were not recorded (ingest backlog trades thoroughness for speed, so it could move both turn time and answer rate); settle_cases sizes beta against gamma as independent arms and counts trials, though the arms ran the same cases",
+    "workaround": "Carry the apparatus caveats as open with material_if clauses; cite the independent settle size as an upper bound in trials per arm"
+  },
+  {
+    "need": "Goal-state check rates printable as a percent",
+    "why": "measure.goal_state:reply.total == case.total.<arm>.mean is held on the plain 0-to-1 scale and refuses the pct filter, and the dot_interval block prints 0.65 with no unit, so the page reads rates as bare fractions beside pair changes in points",
+    "workaround": "Cite pass_rate.<arm> in prose (pass is the total check here), and caption the block as a share of trials"
+  },
+  {
+    "need": "A scoreboard table in wide form with reader column names and cost per 1,000 replies",
+    "why": "The scoreboard table renders one row per arm and field, labels like reply cost usd, and per-reply cost as a fraction of a cent, which breaks the no-field-names and per-1,000 rules on the page",
+    "workaround": "Use it as c3 evidence for trials run and passed only, and cite cost in prose through usd_per_1k keys"
+  }
+]

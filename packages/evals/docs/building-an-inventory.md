@@ -447,8 +447,8 @@ key, for one arm or a comparison alike ([below](#the-quick-path-eval)).
 - **Turn production mistakes into cases.** Every misclassification a user reports is a case you were
   missing, usually a lookalike or a context case. Add it with its reason, then its contrast partner.
 - **Start a new case set rather than editing cases.** A stored case never changes, and a classifier's cases
-  cannot be retired in place (the `archived` flag on a test case applies only to the analysis writer's frozen
-  cases). When a ruling changes, write the set anew under a new template. That way a case id always means one
+  cannot be retired in place (the `archived` flag on a test case applies only to the report writer's frozen
+  cases, `writer_case_archive`). When a ruling changes, write the set anew under a new template. That way a case id always means one
   input and one label, and results from before and after the ruling are never read as the same measurement.
   With an `Eval`, changing a case's expected label already makes its runs a different template.
 - **Re-check context twins when production changes.** If the classifier's input changes (a longer history, a

@@ -4,6 +4,8 @@ Two prompts read 30 invoices (clean, multi-currency, noisy OCR); the first is th
 ``python -m threetears.evals examples/3-invoices/extract.py`` replays ``recordings/invoices.jsonl`` offline, and
 ``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again; the block at the end is that run as your own script.
 As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0105 (the recording's own cost_usd fields, summed).
+``python -m threetears.evals.harness examples/3-invoices/extract.py --write-report MODEL`` also has the report writer
+write the analysis, live on ``ANTHROPIC_API_KEY``, at most ``--budget-usd`` ($3) a report, to analysis.html.
 
 Two levers at once? Name the arms as k=v pairs ("prompt=v2, effort=high") and each pair is a factor of the design;
 ``await result.against("prompt=v1, effort=high")`` reads the same runs against another control, with no run repeated.
@@ -43,6 +45,8 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 invoices = Eval(
     "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
     runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
+    # What the comparison answers; the first grader (currency) is its measure, which the verdict and the page lead on.
+    question="Does v2 read the currency an invoice charges in right more often than v1?",
     # A field each; a case's null total means none may be stated. A difference under 5 points on total is too small
     # to act on, so v2 can read "equivalent" there.
     grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],

@@ -1,6 +1,6 @@
 """Resolve the model's references against the decision surface — the one place a number is filled.
 
-The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
+A model names WHERE a number lives — a cell and a measure (or a judged dimension) —
 and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
 Every code-filled number on an analysis goes through :func:`resolve_reading`: its evidence rows, and the
 interval rows the report draws under a finding. One
@@ -8,13 +8,12 @@ resolver rather than one per consumer, because two lookups of "the value of this
 cell" are two answers to one question, and the input that separates them is the one nobody wrote a
 fixture for.
 
-A reference that names nothing the surface holds is an :class:`UnresolvableReference`, which the
-generator's repair round feeds back — the message names what the cell DOES hold, so the model can
-pick a real reading instead of guessing again.
+A reference that names nothing the surface holds is an :class:`UnresolvableReference`, whose
+message names what the cell DOES hold, so the model told of it can pick a real reading instead of guessing again.
 
 **The writer names a cell by a short alias** (``c1``, ``c2``, …) that :func:`cell_aliases` mints and
 :func:`cell_of_alias` reads back — one mapping for evidence rows, decisions and prose alike.
-The generator translates every alias to the cell's full ``cell_ref`` before resolving or storing
+Every alias is translated to the cell's full ``cell_ref`` before resolving or storing
 anything, so everything below this seam, and every stored analysis, carries the full identity.
 
 **The point estimate is the cell's MEAN**, over its non-faulted observations — the population every
@@ -40,7 +39,7 @@ module makes; it reads the one the width was computed at.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -187,34 +186,6 @@ def campaign_cell_aliases(aspects: Sequence[tuple[str, Iterable[CellFacts]]]) ->
         for ref in cell_aliases(cells).values():
             addresses[f"{CELL_ALIAS_PREFIX}{len(addresses) + 1}"] = CellAddress(label, ref)
     return addresses
-
-
-def in_writer_terms(text: str, aliases: Mapping[str, CellAddress]) -> str:
-    """Name every cell in a refusal the way the writer names it — by alias, never by its full ``cell_ref``.
-
-    Everything below the alias seam speaks full refs, so a refusal raised there (a measure a real cell
-    does not carry, a statistic it lacks) quotes the digest pair. That text is sent back on the repair
-    round, and a writer shown the handle it was never taught to use can copy it — which is refused. So
-    the generator passes a refusal through here where it hands it to the writer — the repair round and
-    the provenance of the analysis that round produced — and nowhere else: the tally and the attempt
-    record keep the full refs, since an alias is meaningful only against the bundle it was minted from.
-
-    A ref that is a cell in several aspects is named by each of its aliases (``c2 or c5``): the text does not say
-    which aspect it meant, and naming one would point the writer at the wrong cell half the time.
-
-    :param text: The refusal as the resolver worded it.
-    :ptype text: str
-    :param aliases: The campaign's aliases (:func:`campaign_cell_aliases`).
-    :ptype aliases: Mapping[str, CellAddress]
-    :return: The text with each full ``cell_ref`` replaced by its alias, or aliases.
-    :rtype: str
-    """
-    named: dict[str, list[str]] = {}
-    for alias, address in aliases.items():
-        named.setdefault(address.cell_ref, []).append(alias)
-    for ref, said in named.items():
-        text = text.replace(ref, " or ".join(said))
-    return text
 
 
 def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
@@ -462,36 +433,6 @@ def _dispersion(
     return text
 
 
-def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = "") -> str:
-    """A reading's spread in words, its standard error and interval restated by ``factor`` onto its measure's ruler.
-
-    The evidence table states a reading's value on the one ruler the report states its measure on, so its spread
-    beside it is restated with it: a value in s beside an interval in ms is the two-ruler defect within one row.
-
-    :param reading: The resolved reading.
-    :ptype reading: ResolvedReading
-    :param factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
-    :ptype factor: float
-    :param unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
-    :ptype unit: str
-    :return: :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated
-        figures.
-    :rtype: str
-    """
-    if factor == 1.0 or reading.ci_low is None or reading.ci_high is None:
-        return reading.dispersion
-    if (label := classifier_label_of(reading.measure_id)) is not None and label[0] == "f1":
-        return reading.dispersion
-    return _dispersion(
-        None if reading.sem is None else reading.sem * factor,
-        reading.ci_low * factor,
-        reading.ci_high * factor,
-        reading.n,
-        reading.n_cases,
-        unit,
-    )
-
-
 __all__ = [
     "CELL_ALIAS_PREFIX",
     "CellAddress",
@@ -501,8 +442,6 @@ __all__ = [
     "cell_aliases",
     "cell_index",
     "cell_of_alias",
-    "in_writer_terms",
     "require_cell",
     "resolve_reading",
-    "restated_dispersion",
 ]

@@ -1,0 +1,167 @@
+### c1 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: judged
+  aspect: clarity
+  measures: [answer.correct]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Row, Value]
+rows (2):
+  - cells: [A · solo, 60%]
+  - cells: [floor 90%, 90%]
+total: 2
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: judged
+  aspect: accuracy
+  measures: [answer.correct]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Row, Value]
+rows (2):
+  - cells: [A · solo, 95%]
+  - cells: [floor 90%, 90%]
+total: 2
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: table
+query:
+  source: judged
+  aspect: clarity
+  measures: [answer.clear]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: score
+domain: 
+reference: none
+columns: [Arm, answer clear]
+rows (1):
+  - cells: [A · solo, 3.6]
+total: 1
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 2
+rendered block
+block_kind: table
+query:
+  source: judged
+  aspect: accuracy
+  measures: [answer.clear]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: score
+domain: 
+reference: none
+columns: [Arm, answer clear]
+rows (1):
+  - cells: [A · solo, 4.2]
+total: 1
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: clarity
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Reason]
+rows (3):
+  - cells: [T65 · tc-12 · solo · judged · repeat 1, No judge reason recorded.]
+  - cells: [T67 · tc-13 · solo · judged · repeat 1, No judge reason recorded.]
+  - cells: [T69 · tc-14 · solo · judged · repeat 1, No judge reason recorded.]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 2
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: accuracy
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Reason]
+rows (2):
+  - cells: [T39 · tc-19 · solo · judged · repeat 1, No judge reason recorded.]
+  - cells: [T40 · tc-19 · solo · judged · repeat 2, No judge reason recorded.]
+total: 2
+offset: 0
+truncated: False
+notes: []
+

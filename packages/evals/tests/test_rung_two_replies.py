@@ -36,8 +36,9 @@ RUNG = EXAMPLES / "2-replies"
 
 #: What the honest first run prints about its judge: no labels, and the step that calibrates it.
 UNCALIBRATED = (
-    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the "
-    "to_label.csv the report writes, without looking at the judge's verdict"
+    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each "
+    "dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's "
+    "verdict"
 )
 
 #: The columns of a ``to_label.csv`` row that are the same whichever run wrote it. The ids are each run's own, and a
@@ -88,8 +89,8 @@ def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another
         ("safe", "pass"),
     ]
     assert judge.labels == Path("labels.csv")
-    writer_family, judge_family = module.writer.model_name.split("/")[0], judge.model.split("/")[0]
-    assert (writer_family, judge_family) == ("deepseek", "google")
+    drafter_family, judge_family = module.drafter.model_name.split("/")[0], judge.model.split("/")[0]
+    assert (drafter_family, judge_family) == ("deepseek", "google")
 
 
 def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
@@ -116,7 +117,7 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     printed = capsys.readouterr().out
     assert "40 result(s): 40 scored, 0 excluded" in printed
     for dimension in ("grounded", "answers", "safe"):
-        assert f"answer.{dimension} (judged pass/fail): mean 1 (n=40" in printed
+        assert f"answer {dimension} (judged), scored pass/fail: 100%, 40 of 40 trials" in printed
     assert UNCALIBRATED in printed.splitlines()
     # The judge is another family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed

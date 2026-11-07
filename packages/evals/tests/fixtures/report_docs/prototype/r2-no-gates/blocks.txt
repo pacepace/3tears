@@ -1,0 +1,231 @@
+### c1 / 1
+rendered block
+block_kind: scatter_frontier
+query:
+  source: configs
+  aspect: 
+  measures: [cost_per_1k, pass_rate]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Point, Cost per 1k calls, Pass rate]
+rows (18):
+  - cells: [atlas-m.off.r0, $1, 94%]
+  - cells: [atlas-m.off.r1, $1.06, 96.4%]
+  - cells: [atlas-m.low.r0, $1.6, 96.6%]
+  - cells: [atlas-m.low.r1, $1.655, 97.9%]
+  - cells: [atlas-m.high.r0, $3.4, 97.7%]
+  - cells: [atlas-m.high.r1, $3.477, 98.6%]
+  - cells: [brisk-s.off.r0, $0.18, 91.1%]
+  - cells: [brisk-s.off.r1, $0.196, 94.6%]
+  - cells: [brisk-s.low.r0, $0.288, 95.3%]
+  - cells: [brisk-s.low.r1, $0.302, 97.1%]
+  - cells: [brisk-s.high.r0, $0.612, 96.6%]
+  - cells: [brisk-s.high.r1, $0.633, 98%]
+  - cells: [nano-xs.off.r0, $0.03, 81%]
+  - cells: [nano-xs.off.r1, $0.036, 88.5%]
+  - cells: [nano-xs.low.r0, $0.048, 87.9%]
+  - cells: [nano-xs.low.r1, $0.054, 92.7%]
+  - cells: [nano-xs.high.r0, $0.102, 91.3%]
+  - cells: [nano-xs.high.r1, $0.111, 94.8%]
+total: 18
+offset: 0
+truncated: False
+notes: [The horizontal axis is logarithmic: each step is a multiple.]
+
+### c1 / 2
+rendered block
+block_kind: table
+query:
+  source: configs
+  aspect: 
+  measures: [pass_rate, cost_per_1k]
+  arms: [nano-xs.off.r0, nano-xs.off.r1, nano-xs.low.r1, nano-xs.high.r1, brisk-s.low.r1, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Arm, Measure, Value]
+rows (14):
+  - cells: [M · Nano-XS · reasoning off · no retry, Pass rate, 81%]
+  - cells: [N · Nano-XS · reasoning off · 1 retry, Pass rate, 88.5%]
+  - cells: [Q · Nano-XS · reasoning low · 1 retry, Pass rate, 92.7%]
+  - cells: [S · Nano-XS · reasoning high · 1 retry, Pass rate, 94.8%]
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Pass rate, 97.1%]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, Pass rate, 98%]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, Pass rate, 98.6%]
+  - cells: [M · Nano-XS · reasoning off · no retry, Cost per 1k calls, $0.03]
+  - cells: [N · Nano-XS · reasoning off · 1 retry, Cost per 1k calls, $0.036]
+  - cells: [Q · Nano-XS · reasoning low · 1 retry, Cost per 1k calls, $0.054]
+  - cells: [S · Nano-XS · reasoning high · 1 retry, Cost per 1k calls, $0.111]
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Cost per 1k calls, $0.302]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, Cost per 1k calls, $0.633]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, Cost per 1k calls, $3.477]
+total: 14
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: lattice
+query:
+  source: configs
+  aspect: 
+  measures: [pass_rate]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [, Off · no retry, Off · 1 retry, Low · no retry, Low · 1 retry, High · no retry, High · 1 retry]
+rows (3):
+  - cells: [Atlas-M, 94% · $1 per 1,000 replies · 900 ms · Not gated here, 96.4% · $1.06 per 1,000 replies · 1019 ms · Not gated here, 96.6% · $1.6 per 1,000 replies · 1395 ms · Not gated here, 97.9% · $1.655 per 1,000 replies · 1500 ms · Not gated here, 97.7% · $3.4 per 1,000 replies · 2430 ms · Not gated here, 98.6% · $3.477 per 1,000 replies · 2551 ms · Not gated here]
+  - cells: [Brisk-S, 91.1% · $0.18 per 1,000 replies · 300 ms · Not gated here, 94.6% · $0.196 per 1,000 replies · 359 ms · Not gated here, 95.3% · $0.288 per 1,000 replies · 465 ms · Not gated here, 97.1% · $0.302 per 1,000 replies · 513 ms · Not gated here, 96.6% · $0.612 per 1,000 replies · 810 ms · Not gated here, 98% · $0.633 per 1,000 replies · 870 ms · Not gated here]
+  - cells: [Nano-XS, 81% · $0.03 per 1,000 replies · 140 ms · Not gated here, 88.5% · $0.036 per 1,000 replies · 198 ms · Not gated here, 87.9% · $0.048 per 1,000 replies · 217 ms · Not gated here, 92.7% · $0.054 per 1,000 replies · 275 ms · Not gated here, 91.3% · $0.102 per 1,000 replies · 378 ms · Not gated here, 94.8% · $0.111 per 1,000 replies · 450 ms · Not gated here]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: table
+query:
+  source: configs
+  aspect: 
+  measures: [pass_rate, cost_per_1k]
+  arms: [atlas-m.off.r0, brisk-s.off.r1, atlas-m.off.r1, atlas-m.low.r0, brisk-s.low.r1, atlas-m.low.r1, atlas-m.high.r0, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Arm, Measure, Value]
+rows (18):
+  - cells: [A · Atlas-M · reasoning off · no retry, Pass rate, 94%]
+  - cells: [H · Brisk-S · reasoning off · 1 retry, Pass rate, 94.6%]
+  - cells: [B · Atlas-M · reasoning off · 1 retry, Pass rate, 96.4%]
+  - cells: [C · Atlas-M · reasoning low · no retry, Pass rate, 96.6%]
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Pass rate, 97.1%]
+  - cells: [D · Atlas-M · reasoning low · 1 retry, Pass rate, 97.9%]
+  - cells: [E · Atlas-M · reasoning high · no retry, Pass rate, 97.7%]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, Pass rate, 98%]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, Pass rate, 98.6%]
+  - cells: [A · Atlas-M · reasoning off · no retry, Cost per 1k calls, $1]
+  - cells: [H · Brisk-S · reasoning off · 1 retry, Cost per 1k calls, $0.196]
+  - cells: [B · Atlas-M · reasoning off · 1 retry, Cost per 1k calls, $1.06]
+  - cells: [C · Atlas-M · reasoning low · no retry, Cost per 1k calls, $1.6]
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Cost per 1k calls, $0.302]
+  - cells: [D · Atlas-M · reasoning low · 1 retry, Cost per 1k calls, $1.655]
+  - cells: [E · Atlas-M · reasoning high · no retry, Cost per 1k calls, $3.4]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, Cost per 1k calls, $0.633]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, Cost per 1k calls, $3.477]
+total: 18
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_ms]
+  arms: [nano-xs.high.r1, brisk-s.low.r1, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: ms
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (4):
+  - cells: [Latency, S · Nano-XS · reasoning high · 1 retry, 170 ms, 450 ms]
+  - cells: [Latency, J · Brisk-S · reasoning low · 1 retry, 209 ms, 513 ms]
+  - cells: [Latency, L · Brisk-S · reasoning high · 1 retry, 364 ms, 870 ms]
+  - cells: [Latency, F · Atlas-M · reasoning high · 1 retry, 1094 ms, 2551 ms]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 1
+rendered block
+block_kind: heatmap
+query:
+  source: tasks
+  aspect: 
+  measures: [pass_rate]
+  arms: [nano-xs.high.r1, brisk-s.low.r1, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [, Nano-XS · reasoning high · 1 retry, Brisk-S · reasoning low · 1 retry, Brisk-S · reasoning high · 1 retry, Atlas-M · reasoning high · 1 retry]
+rows (4):
+  - cells: [Single lookup, 95.8%, 98.4%, 98.5%, 99.2%]
+  - cells: [Multi-hop (2 to 3 calls), 93.5%, 95.6%, 97.3%, 97.9%]
+  - cells: [Date and unit math, 94.7%, 97%, 97.9%, 98.6%]
+  - cells: [Ambiguous entity, 94.2%, 96.4%, 97.6%, 98.3%]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c6 / 1
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (3):
+  - cells: [TQ-0418 · Multi-hop (2 to 3 calls) · Brisk-S · reasoning low · 1 retry · missing call, Input: Who chaired the committee that approved the 2019 grid budget?; Expected: search(committee, grid budget 2019) → lookup(chair), Collapsed two hops into one query; returned the budget author, not the chair., search(grid budget 2019 chair)]
+  - cells: [TQ-0772 · Date and unit math · Brisk-S · reasoning low · 1 retry · wrong args, Input: Filings in the 90 days before the March 3 hearing; Expected: date_from=2026-12-03, date_to=2027-03-03, Off-by-one on the window start. The most common wrong-args pattern (9 of 17)., date_from=2026-12-04, date_to=2027-03-03]
+  - cells: [TQ-1103 · Ambiguous entity · Brisk-S · reasoning low · 1 retry · wrong tool, Input: Latest on Mercury's pricing; Expected: ask_clarify(company or planet?), Picked the company without asking. Scored wrong because the gold answer requires clarification., search(Mercury pricing)]
+total: 3
+offset: 0
+truncated: False
+notes: []

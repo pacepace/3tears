@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals import Eval, Example, Judge, Log, Model, Result, World, grader
+from threetears.evals.analysis import campaign_report_markdown, get_campaign
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED
@@ -27,6 +28,7 @@ from threetears.evals.quick.one_call import CallableArm, callable_host, run_arms
 from threetears.evals.quick.result import LABEL_COLUMNS, TO_LABEL
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import StopReason
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.recorded_model_support import CALL_COST_USD, record_model
 
 #: Tickets, each with its expected label, how urgent it is, and the kind of case it is.
@@ -372,11 +374,16 @@ async def test_a_log_is_graded_as_logged_and_a_repeat_never_logged_is_excluded_n
 async def test_a_single_arm_prints_first_how_many_cases_passed_and_which_it_missed() -> None:
     result = await Eval(TICKETS, crash_first, ["label", "urgent"]).run(store=":memory:")
 
+    # The aspect page's verdict line, as the campaign page leads with its first sentence: the count, then the misses.
     first = result.render().splitlines()[0]
-    assert first == f"{result.name}: 2/4 cases passed; 2 misses: crash, both"
+    assert (
+        first == f"{result.name}: crash_first passed 6 of 12 trials on 4 cases. Cases that failed a trial: crash, both."
+    )
 
 
-async def test_a_single_arm_s_first_line_counts_the_cases_excluded_by_cause(tmp_path: Path) -> None:
+async def test_a_single_arm_s_first_line_says_what_its_page_says_of_the_trials_lost_and_its_lines_say_the_cause(
+    tmp_path: Path,
+) -> None:
     log = Log(tmp_path / "outputs.jsonl")
     log(TICKETS[0], {"label": "billing"})
     log(TICKETS[0], {"label": "billing"})
@@ -385,7 +392,13 @@ async def test_a_single_arm_s_first_line_counts_the_cases_excluded_by_cause(tmp_
 
     (cause, *_) = next(repeat for repeat in result.results() if repeat.case == "crash").errors
     assert cause.startswith(f"apparatus: NotLogged: {NOT_LOGGED}: case crash ")
-    assert result.render().splitlines()[0] == f"{result.name}: 1/1 cases passed; 0 misses; 1 excluded: {cause}"
+    # Half its trials were lost, so its page's verdict line is the setup gate's, and so is the print's first line;
+    # the cause each lost trial records is the arm's excluded line, below it.
+    rendered = result.render()
+    (verdict,) = [block.text for block in result.report.blocks if getattr(block, "source", None) == "verdict"]
+    assert rendered.splitlines()[0] == f"{result.name}: {verdict}"
+    assert verdict.startswith("The test setup failed: it measured the setup instead of the models.")
+    assert [line for line in rendered.splitlines() if line.strip().startswith("excluded: ") and NOT_LOGGED in line]
 
 
 # --- spend from Model -----------------------------------------------------------------------------------------------
@@ -466,8 +479,9 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate about 20 outputs in the "
-        "to_label.csv the report writes, without looking at the judge's verdict"
+        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
+        "to_label.csv the report writes, which holds 4 per dimension, without looking at the judge's verdict; the "
+        "calibrated tier's floor is 20 per dimension, so it needs 16 more judged answers per dimension"
     ]
     written = first.write(tmp_path / "report")
     assert written["to_label"].name == TO_LABEL
@@ -490,7 +504,9 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
     # Each label pairs once with the judge's score of the byte-identical answer in the replayed run.
     assert (calibration.dimension, calibration.labels) == ("answer.billing", 4)
     assert calibration.kappa == pytest.approx(1.0)
-    assert again.calibration_lines()[0].startswith(f"judge against {labels}: answer.billing: 4 label(s), kappa 1.00")
+    assert again.calibration_lines()[0].startswith(
+        f"judge against {labels.name}: answer.billing: 4 label(s), kappa 1.00"
+    )
 
 
 def test_a_judge_takes_a_client_that_names_its_model_and_guards_only_its_own_dimensions() -> None:
@@ -538,3 +554,72 @@ async def test_a_host_of_your_own_holds_the_runs_and_a_store_beside_it_is_refuse
         await ev.run(host=host, store=":memory:")
     with pytest.raises(ValueError, match="declares no measure named short_label"):
         await ev.run(host=as_host([Eval(TICKETS, keywords, ["label"])], store=":memory:"), scope="other")
+
+
+# --- the question ---------------------------------------------------------------------------------------------------
+
+
+def test_a_blank_question_is_refused_where_the_eval_is_written() -> None:
+    with pytest.raises(ValueError, match="question is filed on its campaign, and this one is blank"):
+        Eval(TICKETS, {"keywords": keywords, "crash_first": crash_first}, ["label"], question="  ")
+
+
+async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campaign_asks_it() -> None:
+    """The question is filed on the campaign whole: the result carries it, the page quotes it in place of the line
+    saying none was asked, the aspect reads it as asked (never "names no axis"), and a question with no margin files
+    none: it is a superiority question, its pass rate read against zero. The same eval with none keeps that line."""
+    question = "Does crash_first label tickets right more often than keywords?"
+    arms = {"keywords": keywords, "crash_first": crash_first}
+    asked = await Eval(TICKETS, arms, ["label", short_label], k=1, question=question).run(store=":memory:")
+    unasked = await Eval(TICKETS, arms, ["label", short_label], k=1).run(store=":memory:")
+
+    assert asked.question == question and unasked.question is None
+    asked_page = campaign_report_markdown(asked.page).splitlines()
+    assert asked_page[1] == f'"{question}"'
+    assert "Exploratory comparison." not in asked_page
+    assert "Exploratory comparison." in campaign_report_markdown(unasked.page).splitlines()
+    (bundle,) = [fold.report.bundle for fold in asked.page.aspects]
+    assert bundle.question_declared and bundle.reading_scope.disclosure is None
+    (row,) = asked.page.readings.readings
+    assert row.margin is None and row.confirmatory
+    assert [
+        aspect.margin
+        for aspect in off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id).aspects
+    ] == [None]
+    # The graders' order is filed on the aspect's design, so the page can lead on the first, as the printed line does.
+    assert asked.grader_readings == ("accuracy", "short_label")
+    campaign = off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id)
+    assert [aspect.design.measure_order for aspect in campaign.aspects if aspect.design] == [
+        ["accuracy", "short_label"]
+    ]
+
+
+#: The one line a page says where criteria on the eval's aspect were set once its results existed: what was set late,
+#: on the aspect the quick path labelled ``classify``, which keeps its label beside a campaign name cut at its cap.
+_SET_LATE = (
+    "The aspect and control on classify were set after the results there existed, so they were not fixed in advance."
+)
+
+
+async def test_a_question_declared_over_finished_runs_reads_as_asked_with_the_late_disclosure_once() -> None:
+    """Owner, 2026-11-06: a question may sharpen once its runs are read, never refused. Declared over finished runs
+    (an exploratory run read again asking it), it reads as asked, not as a lead, and the first screen says once that
+    its criteria were set after the results existed; declared before its runs, as ``Eval(question=)`` is, it says
+    nothing of the kind."""
+    question = "Does crash_first label tickets right more often than keywords?"
+    arms = {"keywords": keywords, "crash_first": crash_first}
+    explored = await Eval(TICKETS, arms, ["label"], k=1).run(store=":memory:")
+    sharpened = await explored.against("keywords", question=question)
+    first = campaign_report_markdown(sharpened.page).split("\n## ", 1)[0]
+    assert first.splitlines()[1] == f'"{question}"' and sharpened.question == question
+    assert first.count(_SET_LATE) == 1
+    assert "a lead" not in first and "Exploratory comparison." not in first
+    (bundle,) = [fold.report.bundle for fold in sharpened.page.aspects]
+    assert bundle.question_declared
+    assert "aspect" in [late.criterion for late in bundle.reading_scope.late_criteria]
+    assert all(row.confirmatory for row in sharpened.page.readings.readings)
+
+    asked = await Eval(TICKETS, arms, ["label"], k=1, question=question).run(store=":memory:")
+    assert _SET_LATE not in campaign_report_markdown(asked.page)
+    (timely,) = [fold.report.bundle for fold in asked.page.aspects]
+    assert timely.reading_scope.late_criteria == []

@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -38,6 +38,16 @@ from threetears.evals.run import (
     update_template,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Every stamp reads a frozen clock, not the wall's, that steps on with each read: a template edited after its run
+    is stamped after it."""
+    with frozen_clock(step_seconds=0.001):
+        yield
+
 
 SCOPE = "eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
@@ -147,8 +157,8 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
     assert summary.role_spend("judge").cost_usd == pytest.approx(4 * JUDGE_COST_USD)
 
     rendered = summary.render()
-    assert "  answer.helpful (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
-    assert "  answer.honest (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
+    assert "  answer helpful (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
+    assert "  answer honest (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
     assert "  judge spend: $0.00120 over 4 call(s)" in rendered  # 4 x $0.0003
 
     (run,) = off_loop(list_runs, host, SCOPE)
@@ -264,7 +274,7 @@ async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() 
     (dimension,) = summary.judged
     assert (dimension.name, dimension.n, dimension.mean, dimension.cannot_tell) == ("answer.helpful", 0, None, 1)
     assert summary.n_excluded == 0
-    assert "answer.helpful (judged): no result carries a score, the judge could not tell on 1" in summary.render()
+    assert "answer helpful (judged): no result carries a score, the judge could not tell on 1" in summary.render()
 
 
 async def test_a_run_the_judge_could_not_tell_on_anywhere_still_completes() -> None:
@@ -308,7 +318,7 @@ async def test_a_rubric_of_engine_dimensions_keeps_their_names_and_scales() -> N
     summary = await _summary(CASES[:1], answer, [_judge(client, rubric=dims)])
     (dimension,) = summary.judged
     assert (dimension.name, dimension.scale, dimension.mean) == ("faq.correct", "pass_fail", 1.0)
-    assert "faq.correct (judged pass/fail): mean 1" in summary.render()
+    assert "faq correct (judged), scored pass/fail: mean 1" in summary.render()
 
 
 async def test_a_judged_eval_and_an_unjudged_one_over_the_same_cases_are_two_templates() -> None:

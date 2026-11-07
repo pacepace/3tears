@@ -1,0 +1,28 @@
+rendered block
+block_kind: heatmap
+query:
+  source: tasks
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1, brisk-s.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [, Brisk-S · reasoning low · 1 retry, Brisk-S · reasoning high · 1 retry]
+rows (4):
+  - cells: [Single lookup, 98.4%, 98.5%]
+  - cells: [Multi-hop (2 to 3 calls), 95.6%, 97.3%]
+  - cells: [Date and unit math, 97.0%, 97.9%]
+  - cells: [Ambiguous entity, 96.4%, 97.6%]
+total: 4
+offset: 0
+truncated: False
+notes: []

@@ -1,0 +1,32 @@
+[
+  {
+    "need": "settle_cases sizing for an estimate that sits exactly on its line: cases needed to clear the line at an assumed true rate (for example a point or two above it), and how often a run of today's size reads on the wrong side",
+    "why": "Atlas-M's troubleshooting resolve rate equals its 90% gate; settle_cases refuses, so Watch and next steps cannot name the run that would settle the deciding gate",
+    "workaround": "say in words that a same-size re-run is as likely to land below the line as above and that more cases settle it only if the true rate sits away from the line; recommend a change plus a fresh run"
+  },
+  {
+    "need": "a caveat id for a recommended option's borderline gate (an interval crossing a gate the pick clears only on its point estimate), like point_estimate:p95 for figures with no interval",
+    "why": "principles make the borderline gate an open caveat in confidence, but caveats_list holds no id for trouble.resolves on Atlas-M, so it cannot be carried with its own material_if",
+    "workaround": "carry it in Watch and fold it into best_of_n's material_if"
+  },
+  {
+    "need": "an interval on p95 latency per task (bootstrap or order-statistic), so a thin latency clearance can be sized",
+    "why": "Atlas-M clears the 3 s budget on research questions by 0.16 s with no interval; the point_estimate caveat stays open and nothing sizes the run that would settle it",
+    "workaround": "Watch names the clearance by its gap key; next step asks for latency measured with an interval"
+  },
+  {
+    "need": "failure examples for the borderline slice (Atlas-M's unresolved troubleshooting conversations)",
+    "why": "the snapshot froze no examples for any arm (kept_from empty), so the page cannot show what an unresolved conversation looks like or point the fix",
+    "workaround": "omit the examples block; name the missing examples in omitted and the next step"
+  },
+  {
+    "need": "a gate_matrix cell state for a model that passes a task's own gates but is barred from all traffic by a gate that applies to all traffic (speculation bait)",
+    "why": "the matrix shows Brisk-S as Passes in billing and Open-70B as Passes in persona while naming Atlas-M the cheapest passing option there, without saying why; a reader infers a cheaper routed mix exists",
+    "workaround": "the caption says speculation bait applies to all traffic, so a model that fails it can take no task"
+  },
+  {
+    "need": "a bars block of each arm's pooled overall cost per 1,000 conversations (cost_per_1k.<arm>), the figure the recommendation cites",
+    "why": "bars over scoreboard is refused (names no scoreboard figure) and bars over measures selects nothing, since cost is held per task; only the per-task log-scale bars render",
+    "workaround": "no cost chart; the gate matrix carries per-task cost and the recommendation and why_not cite the pooled cost keys in prose"
+  }
+]

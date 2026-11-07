@@ -1,0 +1,98 @@
+campaign overview
+snapshot: report-snapshot:39c3e2b133f40336c8736373fa8f16d9
+meta (6):
+  meta.campaign = Concierge model selection
+  meta.behavior = Concierge chat assistant
+  meta.kind = choice
+  meta.design_shape = undesignated
+  meta.run_date = 2026-10-21
+  meta.provenance = Synthetic example data from docs/eval-report-kit/references/r1-model-selection.json
+n_candidates = 4
+cases: none
+repeats: none
+arms (4):
+  - role: challenger; short_name: none; served_model: Atlas-L
+    arm:atlas-l = Atlas-L (A)
+    settings (1):
+      settings.atlas-l.model = Atlas-L
+    scoreboard (3):
+      scoreboard.atlas-l.cases = 1190
+      scoreboard.atlas-l.lost = 0
+      scoreboard.atlas-l.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m = Atlas-M (B)
+    settings (1):
+      settings.atlas-m.model = Atlas-M
+    scoreboard (3):
+      scoreboard.atlas-m.cases = 1190
+      scoreboard.atlas-m.lost = 0
+      scoreboard.atlas-m.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s = Brisk-S (C)
+    settings (1):
+      settings.brisk-s.model = Brisk-S
+    scoreboard (3):
+      scoreboard.brisk-s.cases = 1190
+      scoreboard.brisk-s.lost = 0
+      scoreboard.brisk-s.failed = 0
+  - role: challenger; short_name: none; served_model: Open-70B
+    arm:open-70b = Open-70B (D)
+    settings (1):
+      settings.open-70b.model = Open-70B
+    scoreboard (3):
+      scoreboard.open-70b.cases = 1190
+      scoreboard.open-70b.lost = 0
+      scoreboard.open-70b.failed = 0
+aspects: []
+measures (12):
+  - key: cost_per_1k; source: measure; unit: usd_per_1k; higher_is_better: False; merit_axis: none; grade: none; level: none; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean]; key_form: measure.cost_per_1k.<arm>.<statistic>; judge: []
+  - key: latency_s; source: measure; unit: s; higher_is_better: False; merit_axis: none; grade: none; level: none; arms_without: []; aspects: []; slices: [task]; statistics: [task: p50, p95]; key_form: measure.latency_s.<arm>.<statistic>; judge: []
+  - key: overall; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: ordinal; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.overall.<arm>.<statistic>
+    judge (3):
+      judged.overall.calibration = calibrated
+      judged.overall.calibration_ratings = 200
+      judged.overall.agreement = 86%
+  - key: resolves; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.resolves.<arm>.<statistic>; judge: []
+  - key: steps; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.steps.<arm>.<statistic>; judge: []
+  - key: confirms; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.confirms.<arm>.<statistic>; judge: []
+  - key: escalates; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.escalates.<arm>.<statistic>; judge: []
+  - key: character; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.character.<arm>.<statistic>; judge: []
+  - key: toolcall; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.toolcall.<arm>.<statistic>; judge: []
+  - key: cites; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.cites.<arm>.<statistic>; judge: []
+  - key: unsupported; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.unsupported.<arm>.<statistic>; judge: []
+  - key: declines; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [task]; statistics: [task: mean, half_width]; key_form: judged.declines.<arm>.<statistic>; judge: []
+criteria (11):
+  - id: overall; kind: gate; measure: overall; statistic: mean; direction: higher_is_better; scope: each_task; task: none; aspect: none
+    criteria.overall.threshold = 85
+  - id: p95; kind: gate; measure: latency_s; statistic: p95; direction: lower_is_better; scope: each_task; task: none; aspect: none
+    criteria.p95.threshold = 3 s
+  - id: trouble.resolves; kind: gate; measure: resolves; statistic: mean; direction: higher_is_better; scope: overall; task: trouble; aspect: none
+    criteria.trouble.resolves.threshold = 90%
+  - id: trouble.steps; kind: gate; measure: steps; statistic: mean; direction: higher_is_better; scope: overall; task: trouble; aspect: none
+    criteria.trouble.steps.threshold = 90%
+  - id: trouble.confirms; kind: gate; measure: confirms; statistic: mean; direction: higher_is_better; scope: overall; task: trouble; aspect: none
+    criteria.trouble.confirms.threshold = 95%
+  - id: trouble.escalates; kind: gate; measure: escalates; statistic: mean; direction: higher_is_better; scope: overall; task: trouble; aspect: none
+    criteria.trouble.escalates.threshold = 90%
+  - id: persona.character; kind: gate; measure: character; statistic: mean; direction: higher_is_better; scope: overall; task: persona; aspect: none
+    criteria.persona.character.threshold = 90%
+  - id: research.toolcall; kind: gate; measure: toolcall; statistic: mean; direction: higher_is_better; scope: overall; task: research; aspect: none
+    criteria.research.toolcall.threshold = 90%
+  - id: research.cites; kind: gate; measure: cites; statistic: mean; direction: higher_is_better; scope: overall; task: research; aspect: none
+    criteria.research.cites.threshold = 90%
+  - id: research.unsupported; kind: gate; measure: unsupported; statistic: mean; direction: higher_is_better; scope: overall; task: research; aspect: none
+    criteria.research.unsupported.threshold = 90%
+  - id: specul.declines; kind: gate; measure: declines; statistic: mean; direction: higher_is_better; scope: overall; task: specul; aspect: none
+    criteria.specul.declines.threshold = 95%
+cells: []
+caveats (4):
+  - id: judge_unstated; kind: judge_unstated; reach: report; source: implied
+  - id: no_control; kind: no_control; reach: report; source: implied
+  - id: point_estimate:p95; kind: point_estimate; reach: report; source: implied
+  - id: best_of_n; kind: best_of_n; reach: report; source: implied
+late_criteria: []
+late_set_at: none
+prior_insights: []
+names: {"criterion": {"overall": "Overall quality floor", "p95": "Latency budget (p95)", "persona.character": "Stays in character", "research.cites": "Cites the retrieved source", "research.toolcall": "Calls research tool only when required", "research.unsupported": "No unsupported claims", "specul.declines": "Declines to speculate", "trouble.confirms": "Confirms before account changes", "trouble.escalates": "Escalates when stuck", "trouble.resolves": "Resolves the issue", "trouble.steps": "Gives clear steps"}, "judged": {"character": "Stays in character", "cites": "Cites the retrieved source", "confirms": "Confirms before account changes", "declines": "Declines to speculate", "escalates": "Escalates when stuck", "overall": "Overall quality", "resolves": "Resolves the issue", "steps": "Gives clear steps", "toolcall": "Calls research tool only when required", "unsupported": "No unsupported claims"}, "measure": {"cost_per_1k": "Cost per 1k conversations", "latency_s": "Latency"}, "task": {"billing": "Billing & account Q&A", "persona": "Persona small talk", "research": "Research-needed questions", "specul": "Speculation bait", "trouble": "Troubleshooting (multi-turn)"}}
+total: 59
+offset: 0

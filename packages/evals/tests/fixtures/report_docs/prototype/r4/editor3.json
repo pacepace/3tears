@@ -1,0 +1,138 @@
+{
+  "resolutions": [
+    {
+      "finding": "report (must_fix): the stand-in for own-rate uncertainty was misapplied. f64 on music facts clears under it (90.3%), and f16 on speculation fails under it (94.1%). The prose said the reverse or nothing.",
+      "status": "resolved",
+      "evidence": "Watch now reads 'f64's open floor is speculation only, while f16 could clear music facts and could also fall under speculation'. Caveat f64_guardrail_clearance names speculation and says 'Its music-facts clearance survives that same reading'. Caveat f16_facts_miss adds that f16's speculation clearance 'is thinner than f64's, and the same reading reaches under it'. Every f16-enters statement now carries 'and holds speculation': the lede, the caveat, where_it_flips, explore[0], explore[1] and next[0].settles. next[0] and what_settles_it now re-run f16's speculation cases. f64's music-facts cases are dropped, with a reason. The arithmetic checks: 97.3 - 3.2 = 94.1 < 95; 93 - 2.7 = 90.3 >= 90. The stand-in itself still has a problem; see the new finding."
+    },
+    {
+      "finding": "our_lean (should_fix): 'the part such a mix would keep' asserted that the long-conversation loss arises in late turns.",
+      "status": "resolved",
+      "evidence": "our_lean now reads 'the part such a mix might keep; whether early turns from the cheaper model already set up that loss is untested', which matches next[2].settles."
+    },
+    {
+      "finding": "report (should_fix): f16's regression on completing requested actions (-0.4, interval -0.7 to -0.1) was never stated in prose.",
+      "status": "resolved",
+      "evidence": "Caveat f16_facts_miss now says f16 'brings a small loss on completing requested actions (0.4 points, uncorrected, interval -0.7 to -0.1)'. where_it_flips adds 'That trade would also give up a little on completing requested actions.'"
+    },
+    {
+      "finding": "Method Intervals (should_fix): the row stated the paired-difference fact twice.",
+      "status": "resolved",
+      "evidence": "method[1] is now '{family.disclosure}' followed by the stand-in sentence. It renders once: '95% intervals on paired differences, not corrected across the three challengers.'"
+    },
+    {
+      "finding": "omitted (should_fix): omitted[3].why and omitted[6].why printed the slot ids where_it_flips and explore.",
+      "status": "resolved",
+      "evidence": "They now read 'the price-line paragraph and the floor what-ifs' and 'the price-line paragraph and the what-if rows'. No slot id is left in reader prose. These are descriptive names, not the rendered headings, but a reader can follow them."
+    },
+    {
+      "finding": "report (should_fix): money prints to the cent ($7,560.00, about $1,239.34). The finding asked to record a rounded-usd filter as a capability gap.",
+      "status": "partially resolved",
+      "evidence": "The cents still print: the rendered headline shows $7,560.00. method[5] discloses that a price per point is 'printed to the cent though it is approximate'. The analyst also added method[10], 'Unresolved from review', which narrates the review and the tooling on the reader page; see the new finding. A rounded-usd filter still does not exist, so this remains a renderer gap, not an analyst fix."
+    },
+    {
+      "finding": "Invariant 5 (round-2 concern): slot ids in omitted prose.",
+      "status": "resolved",
+      "evidence": "Same evidence as the omitted finding above."
+    },
+    {
+      "finding": "Invariant 1 (round-2 record): every key resolves and no typed digit is flagged.",
+      "status": "resolved",
+      "evidence": "I re-rendered every prose string of the revised report.json through figure_keys.render, using editor-work/round3/render_round3.py with output in editor-work/round3/rendered.txt. Every key resolves, and literal_numbers flags nothing."
+    },
+    {
+      "finding": "Invariants 3/4 (round-2 concern): the analyst-authored caveat set missed f16's thin speculation clearance.",
+      "status": "resolved",
+      "evidence": "Caveat f16_facts_miss now covers it. caveats_list still returns [], so code still cannot check that the set is complete. A different gap in the judge caveat is a new finding."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline gives the trade: $7,560.00 a month saved against 6.1 fewer points of staying in character, most of the loss in long conversations. The flag says the price per point is the persona owner's call. where_it_flips puts the line at about $1,239.34 (band $1,035.62 to $1,542.86), and at $1,443.24 if f16 enters. our_lean is labelled a lean. watch names the open floors: f64's speculation clearance of 1.4, f16's facts miss of 0.6 and its speculation clearance of 1. c1 repeats the trade with the forest and the cost bars. What the page never says is what f64, f16 and cor are (should_fix)."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 sets the trade. c2 and c3 locate the loss by length, which motivates the mix in next[2]. c4 and c5 decide who is in. c6 adds f64's other strengths. where_it_flips, explore[0], explore[1] and next[0].settles now agree on one rule: f16 replaces f64 only if it clears facts and holds speculation. I checked the price arithmetic. f16 to f64 is 3,120 / 1.3 = $2,400.00, above the f64-to-Production line of $1,239.34, so f64 leaves the frontier. f64 to cor is $461.54 and cor to Production is $2,618.18. A small gap: explore[2] binds only 'f64 and cor', but f16 at 96% also sits on that floor (should_fix)."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "f64's weak axis leads, with its interval (-7.3 to -4.9) in the lede. Blind ratings are framed as a lead (c3). The round-2 imbalance is fixed: f16's speculation is now held to the same reading as f64's (94.1% under the stand-in), and f16's task regression is stated. Three smaller points remain. 'Survives that same reading', for f64's facts clearance, leans on a stand-in whose direction of error is unknown (should_fix). c2's 'widens with every step' includes the 2-to-4.5-point step, which sits inside the per-stratum half-widths (f64 2.1 and 2.7, Production 1.8 and 2.2). c6 calls f64 'faster' with no interval and with machine placement unrecorded, though Method discloses this."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "measure_breakdown confirms that the five scenario strata hold no figures, and examples_list has no failed trials frozen. f16's and cor's character losses are in the lead forest. cor's facts and character strengths are offset by its speculation miss at the top of the interval (97.3 - 3.4 = 93.9 < 95). The per-stratum half-widths are in the appendix. f16's and cor's monthly costs are derivable from the cost bars and are used in the price lines. Nothing omitted would change the call."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "Uncorrected contrasts, post-hoc length strata, machine placement, the mid-conversation switch and the 64k against 16k cap are all carried or shown not to matter. The undescribed judge is not handled. Caveat judge_not_described says it is 'Material only if the judge reads staying in character differently for one arm than another'. That is wrong twice. Music facts is also judged, and its guardrail is an absolute floor (90%) that f16 misses by 0.6 and f64 clears by 2.1. A uniform level bias of about a point moves f16 in or out, which the report says replaces f64. The caveat also rules out a uniform under-detection of character breaks, which would scale the 6.1-point gap and so move the price line. next[3].settles says exactly that ('whether the size of the character loss is real, which sets the price per point'). So the caveat contradicts the next step, and it understates a confound that bears on the guardrail call."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names an experiment or a declaration and says what it settles. next[0] re-runs f64's speculation cases and f16's facts and speculation cases, and settles which option faces Production. next[1] declares the price per point. next[2] runs the length-handoff mix. next[3] records and calibrates the judge. next[0] still has weak points (should_fix). It gives no case count. It splits re-runs by aspect, but campaign_overview ties no cases to any aspect ('cases: none' on all four). It drops f64's facts cases on the strength of the stand-in."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "Each claim has its block, and each would have to change if the values flipped. c1 has the persona forest (-6.1, -7.3 to -4.9) and the cost bars ($2.10 against $1.47). c2 has the length lines (gaps of 2, 4.5, 11 and 17.5), with loss shares of 36% and 28% in keyed prose that measure_breakdown confirms. c3 has diverging bars, 52% against 61% of 240 ratings, framed as a lead. c4 and c5 each pair a floor dot plot with a forest, and their captions say the rates carry no interval. c6 has a latency range (p95 1.6 s against 2.4 s) and the task forest."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Caveat judge_not_described's material_if, 'Material only if the judge reads staying in character differently for one arm than another', is too narrow, and it contradicts next[3]. (a) Music facts is judged by the same unrecorded judge, and it is gated by an absolute floor. A uniform level bias of about a point decides whether f16 (89.4% against 90%) enters, and the report says f16's entry replaces f64. (b) A judge that under-detects character breaks uniformly shrinks or inflates the 6.1-point gap, so it moves the price line. next[3].settles says this itself. To fix: rewrite the material_if to cover the absolute facts level on the guardrail call and the scale of the character gap on the price line."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The stand-in, reading a paired-difference interval's far end as the arm's own-rate reach, has an unstated direction of error. A paired difference carries Production's noise as well as the arm's. It matches an own-rate interval only at one pairing correlation (rho = 0.5 for equal variances). It reads wider when pairing is weaker and narrower when pairing is stronger, and the snapshot stores no correlation. Take f64's facts clearance of 2.1 against a difference half-width of 1.8. Independent arms imply an own half-width of about 1.3, which clears. A correlation of 0.7 implies about 2.3, which does not. So 'Its music-facts clearance survives that same reading' (caveat f64_guardrail_clearance) and dropping f64's facts cases from next[0] are not robust. Separately, 'The snapshot holds no interval on any arm's own rate' (watch, method[1]) holds only for overall rates. measure_read by stratum returns own-rate half-widths, for example Production's 1.8 at n = 912 and 4.8 at n = 240. To fix: say 'overall rate', say in Method that the stand-in may read wide or narrow, and keep f64's facts cases in the re-run. If cases are scored on every aspect, re-run f64 whole; campaign_overview ties no cases to any aspect."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "method[10], 'Unresolved from review', puts process and tooling prose on the reader page: 'The reviewer asked for rounded figures; no figure-key filter rounds dollars (the whole-number filter is refused on dollar figures)'. A reader has no reviewer and no filters. method[5] already says the cents are approximate. Drop method[10], and record the missing rounded-usd filter as a capability gap off the page."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The page never says what the options are. Per campaign_overview, f64 and f16 are Meridian-4.1-flash at 64k and 16k output caps, cor is Corvid-3.8-flash at high reasoning, and Production is Meridian-4.1 at a 32k cap with medium reasoning. Only omitted[3] mentions 'same served model, 64k against 16k'. A decision to switch models should name them. Add a Method row or a lede clause through the settings.* keys. It also tells the reader that f16 replacing f64 is a cap change on the same model."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Lede wording: 'clears speculation by just {criteria.specul.f16.gap|abs|pts};' renders as 'by just 1;' with no unit, while its twin earlier in the sentence prints '0.6 points'. 'If it clears the one and holds the other' makes the reader map 'one' and 'other' back to facts and speculation. Add 'points' and name both aspects. The second lede sentence runs to about 50 words and would read better split."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "explore[2] binds only 'f64 and cor', but f16 at 96% also sits on the speculation floor, and the report now treats f16 as a live contender. decision_sensitivity on threshold:specul shows f16 flipping at 96%, before f64 at 96.4%. Add f16 to binds and say that a floor raised above 96% drops f16 before it drops f64."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "'widens with every step in conversation length' includes the 1–2 to 3–5 step, a gap that goes from 2 to 4.5 points. That step sits inside the per-stratum half-widths (f64 2.1 and 2.7, Production 1.8 and 2.2) of a breakdown the caption itself calls a lead. The 6–10 and 11+ gaps (11 and 17.5) do clear them. Say 'widens with conversation length, sharply past 5 turns'."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: every figure key in the revised report.json resolves, and literal_numbers flags no typed digit (editor-work/round3/rendered.txt). Two typed numbers sit outside keys: '64k against 16k' in omitted[3].what, which settings.f64.max_output_tokens and settings.f16.max_output_tokens could carry, and '1,000' in c1's cost-bars caption, a unit phrase. Neither is flagged by code.",
+    "Invariant 5: no internal id or hash appears above the appendix. method[10] names renderer machinery ('figure-key filter', 'whole-number filter is refused'). That is not an id, but it is internal text on the reader page.",
+    "Invariants 3/4: caveats_list returns []. All four caveats are authored by the analyst, and high_if_immaterial fits them. Code cannot see that judge_not_described's material_if understates what the judge touches; see the findings."
+  ],
+  "calls": 20
+}

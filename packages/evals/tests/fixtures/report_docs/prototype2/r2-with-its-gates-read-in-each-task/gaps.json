@@ -1,0 +1,52 @@
+[
+  {
+    "need": "Read a per-task latency gate from the arm's pooled p95 where that alone decides it: a pooled p95 over the budget proves at least one task's p95 is over it too",
+    "why": "The p95 budget is declared in each task but latency was recorded only over all tasks, so options_dominance, gate_matrix and decision_sensitivity read every place as no_figure and every arm fails alike; the two arms that clear pass rate everywhere actually fail latency for certain, which no tool says",
+    "workaround": "State the deduction in words in the recommendation and lede; cite the pooled p95 keys; flag the missing per-task figures"
+  },
+  {
+    "need": "An interval (or a count to read one from) on each arm's pass rate within each task",
+    "why": "The pass-rate gate is read in each task, but task figures state only a mean, so settle_cases and arms_compare refuse every per-task row; whether Brisk-S high retry's thin multi-hop clearance, or Brisk-S low retry's misses, are real cannot be read",
+    "workaround": "Name the per-task clearances as point estimates in Watch, with no figure for how many cases would settle them; a next step asks for per-task counts"
+  },
+  {
+    "need": "levers_effects on a percentile measure (latency p50 and p95)",
+    "why": "Refused: latency holds p50 and p95 but no mean, so what a retry or a reasoning level costs in tail latency has no effect figure or interval",
+    "workaround": "Show p50 and p95 side by side in range bars and the Brisk-S table; describe the retry's latency cost in words without a typed figure"
+  },
+  {
+    "need": "Price a step between two options the gates remove (Brisk-S low retry to Brisk-S high retry), as a labelled what-if on both ends",
+    "why": "price_tradeoff prices only survivors, and here none survive, so the cost of the one move that buys the pass line has no price key",
+    "workaround": "Cite each option's cost_per_month key side by side; no per-point price is stated"
+  },
+  {
+    "need": "weakest.<field> on a snapshot whose only lines are per-task criteria",
+    "why": "weakest.value is refused as reading no figure against a criterion, yet options_dominance returns per-task criteria gaps for every arm",
+    "workaround": "Name the nearest line in Watch with criteria.pass_rate.<arm>.<task>.gap keys"
+  },
+  {
+    "need": "decision_sensitivity on the declared latency budget, or a hypothetical latency line, read where the figure exists",
+    "why": "Both sweeps return no_call over the whole range because every per-task p95 is no_figure; the hypothetical sweep's note also says the snapshot declares no gate on latency_ms, though the p95 criterion is one",
+    "workaround": "Write where_it_flips and explore in words from the pooled p95 and per-task pass-rate keys, saying each flip is conditional on per-task latency"
+  },
+  {
+    "need": "Block column labels that name the statistic and scope: the configs table heads p95 latency only 'Latency' and pass rate over all tasks only 'Pass rate'; bars repeat each value in a Note column",
+    "why": "Where the gate is read per task and at p95, an unlabelled overall pass rate and an unlabelled latency column invite reading the Brisk-S low retry row as passing",
+    "workaround": "Captions say which statistic and scope each column is"
+  },
+  {
+    "need": "confound_check and a render_report page renderer",
+    "why": "Not available yet: the shared-apparatus question for latency (were configurations timed on one machine?) cannot be checked, and the page cannot be seen whole",
+    "workaround": "Latency comparability stated as unknown in Method; each block read through block_render"
+  },
+  {
+    "need": "A block that draws two configurations' difference with its interval (arms_compare or compare.* figures as a source)",
+    "why": "The cost claim rests on Brisk-S high retry and Atlas-M high retry being not separated on pass rate, but no block source holds that interval: measures and tasks dot plots show point estimates only",
+    "workaround": "State the interval in the claim sentence by its compare key; show the two arms' per-task points beside their cost; a Method line says differences are stated in text"
+  },
+  {
+    "need": "settle_cases or spread under a stated assumption about per-task case counts (for example cases drawn by traffic share, which the pooled rates match)",
+    "why": "Brisk-S high retry's multi-hop clearance can only be called fragile in words; with an assumed count the tools could state its standard error and the odds a re-run reads it under the line, labelled as assumed",
+    "workaround": "Watch says, labelled as an inference, that the clearance is a fraction of one standard error if cases follow the shares; no figure is typed"
+  }
+]

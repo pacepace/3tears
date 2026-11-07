@@ -1,8 +1,9 @@
 """The HTML report caps the line length of every prose block, and leaves tables and figures the page's width (#683).
 
-The page is bounded at 1040px for its tables and charts; at a 16px body that is well over a hundred characters a
-line, which prose once ran at. Read from the stylesheet the page actually serves, rule by rule,
-so a cap set on the wrong selector, or in a unit that does not follow the type, fails here.
+The page is bounded by the kit's wide measure (``.page`` at ``--wide``, 68rem) for its tables and charts; at the
+kit's 15px body that is well over a hundred characters a line, which prose once ran at. Read from the stylesheet the
+page actually serves, rule by rule, so a cap set on the wrong selector, or in a unit that does not follow the type,
+fails here.
 """
 
 from __future__ import annotations
@@ -60,11 +61,14 @@ def test_every_prose_block_carries_a_readable_line_length_cap(page: str) -> None
 def test_tables_and_figures_keep_the_pages_width(page: str) -> None:
     rules = _rules(page)
 
-    for selector in ("table", ".table-wrap", "figure", "th, td", "th", "td", "svg.viz"):
+    for selector in ("table", ".tbl", "figure", ".fig", "th, td", "th", "td", ".chart"):
         assert "max-width" not in rules.get(selector, {}), f"{selector} is narrowed like prose"
-    assert rules["body"]["max-width"] == "1040px", "the page itself is bounded"
+    assert rules[".page"]["max-width"] == "var(--wide)", "the page itself is bounded"
+    (root,) = [declared for selector, declared in rules.items() if selector.endswith(":root")]
+    assert root["--wide"] == "68rem", "at the kit's wide measure"
+    assert '<div class="page">' in page
 
 
 def test_the_stylesheet_reader_sees_a_cap_that_is_missing(page: str) -> None:
-    page = page.replace("max-width: 75ch;", "")
+    page = page.replace("max-width: 78ch;", "")
     assert "max-width" not in _rules(page).get("p", {})

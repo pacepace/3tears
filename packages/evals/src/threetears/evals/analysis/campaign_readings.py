@@ -18,7 +18,11 @@ The sections below are a change's; a choice's pairs are read by the same step-do
 
 **One family per candidate across its aspects, two directions.** Each candidate's rows, one per aspect, are tested
 as one family at the campaign's α, separately for gains and for drops: a gain is the change tested against zero, a
-drop the change tested against the aspect's margin. Each direction's claims are one-sided, read off a two-sided
+drop the change tested against the aspect's margin. **The question's type decides the margin**: a question asked with
+no margin is a superiority question, its drop tested against zero as its gain is, so its row reads shown better, shown
+worse or neither (the page says the evidence cannot tell them apart); a question with a margin is a non-inferiority
+question, its drop tested against the margin its author declared; an aspect asked nothing (every reading a lead) with
+no margin tests no drop. Each direction's claims are one-sided, read off a two-sided
 interval, so each errs at most α/2 and the gains and drops together at most α, per candidate. **There is no error
 control across candidates**: with several candidates, one of them is shown better or worse by chance more often than
 α. Floors are read intersection-union, each at its nominal level with no correction, since a warning that fires less
@@ -52,12 +56,13 @@ arms (named and derived, :func:`~threetears.evals.analysis.campaigns.campaign_ar
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
@@ -70,7 +75,6 @@ from threetears.evals.analysis.report.decision import (
     FloorReadings,
     RateReading,
     SampleProjection,
-    aspect_pass_rate,
     case_cost_usd,
     evaluate_floor,
     floor_readings,
@@ -112,11 +116,14 @@ __all__ = [
     "campaign_readings",
 ]
 
+#: The fields of the readings that hold an arm's label, which :meth:`CampaignReadings.relabelled` prints by a name.
+_LABEL_FIELDS = frozenset({"arm_label", "control_label", "first_label", "second_label", "ahead_label"})
+
 #: What one aspect × candidate row shows against the control. ``better``: the gain is shown, its Holm-adjusted p
 #: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise. ``within_margin``: neither,
 #: and the drop is shown to stay within the margin, at the nominal level as a floor reads (the page says "no worse
-#: than the margin"). ``unclear``: none of these. Neither ``worse`` nor ``within_margin`` is read on an aspect with no
-#: margin.
+#: than the margin"). ``unclear``: none of these. ``within_margin`` is never read on an aspect with no margin, and
+#: ``worse`` there only where a question asks the aspect, its drop then tested against zero (a superiority question).
 ShownReading = Literal["better", "worse", "within_margin", "unclear"]
 
 
@@ -134,7 +141,8 @@ class AspectReading(EvalDocumentModel):
     **The reading is decided per direction.** The gain and the drop are two Holm families per candidate, so each
     direction has its own p values and its own interval, read at the level that direction's step read it at: ``better`` is the
     gain shown (its interval wholly above zero), ``worse`` the drop past the margin shown (its interval wholly below
-    minus the margin). A row that is neither reads ``within_margin`` where its interval at the nominal level, the
+    minus the margin, or wholly below zero on an asked aspect with no margin: a superiority question). A row that is
+    neither reads ``within_margin`` where its interval at the nominal level, the
     floor's own and uncorrected, lies wholly above minus the margin (``within_interval``): the candidate is shown no
     worse than the control by more than the margin. ``unclear`` is none of these, and a page showing one shows the
     intervals, so a reader sees how far each side is from settling.
@@ -172,7 +180,8 @@ class AspectReading(EvalDocumentModel):
     drop_interval: tuple[float, float] | None = Field(
         description=(
             "The change's interval in points, low then high, at `drop_confidence`: what `worse` is read on, against "
-            "the margin. None when the arms' cases cannot bound it, or the aspect declares no margin."
+            "the margin, or against zero on an asked aspect with no margin. None when the arms' cases cannot bound "
+            "it, or the aspect declares no margin and is asked no question."
         )
     )
     drop_confidence: float | None = Field(
@@ -204,8 +213,8 @@ class AspectReading(EvalDocumentModel):
     )
     drop_p: float | None = Field(
         description=(
-            "The drop's p past the margin, unadjusted, on its family's grid as `gain_p` is. None when untested, "
-            "which an aspect with no margin always is."
+            "The drop's p past the margin (past zero on an asked aspect with no margin), unadjusted, on its family's "
+            "grid as `gain_p` is. None when untested, which an aspect with no margin asked no question always is."
         )
     )
     drop_p_holm: float | None = Field(
@@ -219,8 +228,8 @@ class AspectReading(EvalDocumentModel):
     )
     margin: float | None = Field(
         description=(
-            "The aspect's margin in points, the drop tested against. None = none declared: the row is never `worse` "
-            "and never `within_margin`."
+            "The aspect's margin in points, the drop tested against. None = none declared: the row is never "
+            "`within_margin`, and `worse` only where a question asks the aspect, its drop tested against zero."
         )
     )
     control_cases: int = Field(ge=0, description="The usable cases the control's rate was read over.")
@@ -272,6 +281,20 @@ class AspectReading(EvalDocumentModel):
             "and the between-case share of its variance that extra repeats cannot lower. None with no interval."
         ),
     )
+
+    @field_validator("precision")
+    @classmethod
+    def _control_side_first(cls, precision: Precision | None, info: ValidationInfo) -> Precision | None:
+        """Each arm's own half-width in the order the comparison read its sides: the control's, then the candidate's.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so it is put back on every read, where the planner's message and the page read
+        the sides in it.
+        """
+        arm = info.data.get("arm")
+        if precision is None or arm not in precision.half_widths:
+            return precision
+        return _in_side_order(precision, sorted(precision.half_widths, key=lambda key: key == arm))
 
 
 class PairReading(EvalDocumentModel):
@@ -348,6 +371,22 @@ class PairReading(EvalDocumentModel):
             "limiting it, and the between-case share of its variance. None with no interval."
         ),
     )
+
+    @field_validator("precision")
+    @classmethod
+    def _sides_in_key_order(cls, precision: Precision | None) -> Precision | None:
+        """Each arm's own half-width in the order the pair's comparison read its sides: by variant key.
+
+        Put back on every read, as a candidate's reading puts its sides back: a store keeps no mapping's key order.
+        """
+        return None if precision is None else _in_side_order(precision, sorted(precision.half_widths))
+
+
+def _in_side_order(precision: Precision, sides: Sequence[str]) -> Precision:
+    """``precision`` with each side's own half-width in ``sides``' order; the same object when it already is."""
+    if list(precision.half_widths) == list(sides):
+        return precision
+    return precision.model_copy(update={"half_widths": {side: precision.half_widths[side] for side in sides}})
 
 
 class BarStatus(EvalDocumentModel):
@@ -630,6 +669,39 @@ class CampaignReadings(EvalDocumentModel):
         labels.update({status.arm: status.arm_label for status in self.bars})
         return labels
 
+    def relabelled(self, names: Mapping[str, str]) -> CampaignReadings:
+        """The readings as a page prints them, each arm ``names`` names by that name: in every label field and in every
+        reason sentence that names it, the label as read replaced, bounded, by the name. For print only: what was read,
+        and the readings a bundle freezes and fingerprints, keep the labels they were read under.
+
+        :param names: The name each arm is printed by, by variant key (:func:`~threetears.evals.analysis.report.words.
+            printed_arm_labels`); an arm it does not name keeps its label.
+        :ptype names: Mapping[str, str]
+        :return: The readings, relabelled; these very readings where no name differs from its label.
+        :rtype: CampaignReadings
+        """
+        held = self.arm_labels()
+        moved = {held[key]: name for key, name in names.items() if key in held and held[key] and held[key] != name}
+        if not moved:
+            return self
+        found = re.compile("|".join(rf"(?<!\w){re.escape(old)}(?!\w)" for old in sorted(moved, key=len, reverse=True)))
+
+        def walked(node: object) -> object:
+            if isinstance(node, dict):
+                return {
+                    key: moved.get(value, value)
+                    if key in _LABEL_FIELDS and isinstance(value, str)
+                    else found.sub(lambda match: moved[match.group(0)], value)
+                    if key == "reason" and isinstance(value, str)
+                    else walked(value)
+                    for key, value in node.items()
+                }
+            if isinstance(node, list):
+                return [walked(item) for item in node]
+            return node
+
+        return CampaignReadings.model_validate(walked(self.model_dump(mode="json")))
+
     def on_aspect(self, aspect: str) -> list[AspectReading]:
         """The rows read on one aspect, in candidate order.
 
@@ -650,6 +722,31 @@ _CASE_FLOOR = SMALL_N_BAND_FLOOR
 
 #: The share range the pass rate's per-case values lie in.
 _RATE_RANGE = (0.0, 1.0)
+
+
+class _Floors:
+    """One read's floor readings, each arm pair on each bundle read once at the nominal level.
+
+    A campaign's readings read one pair's floor readings for its row, its pass rate
+    (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`, the overall rate among them) and its change
+    across aspects; each reading bisects bounded intervals afresh, so each pair is read here once and every one of
+    those takes it from here. Keyed by the bundle's identity, which the memo holds, so a key is never reused.
+    """
+
+    def __init__(self) -> None:
+        self._read: dict[tuple[int, str, str], tuple[AnalysisContextBundle, FloorReadings]] = {}
+
+    def readings(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> FloorReadings:
+        """:func:`~threetears.evals.analysis.report.decision.floor_readings` at its defaults, read once."""
+        key = (id(bundle), control, candidate)
+        if key not in self._read:
+            self._read[key] = (bundle, floor_readings(bundle, control, candidate))
+        return self._read[key][1]
+
+    def pass_rate(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> RateReading | None:
+        """:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate` at its defaults: the overall rate of
+        :meth:`readings`, the one carrying no measure."""
+        return next((rate for rate in self.readings(bundle, control, candidate).rates if rate.measure is None), None)
 
 
 @dataclass
@@ -695,6 +792,30 @@ class _Row:
         if rate.interval is None or fewest is None or fewest < _CASE_FLOOR:
             return False
         return rate.interval[0] > 0 and rate.drop_bounds()[1] < 0
+
+    @property
+    def against_zero(self) -> bool:
+        """Whether the drop is tested against zero: a question asks the aspect and declares no margin, so it asks
+        whether the candidate does better (a superiority question), and a drop shown is shown worse."""
+        return self.margin is None and self.confirmatory
+
+    def drop_tested(self) -> bool:
+        """Whether the row's drop is tested at all: against the margin, or against zero under a superiority
+        question; an aspect asked nothing with no margin tests none."""
+        return self.rate.interval is not None and (self.margin is not None or self.against_zero)
+
+    def drop_shown(self, confidence: float) -> bool:
+        """Whether the drop is shown at ``confidence``: past the margin by the floor's own reading
+        (:meth:`drop_verdict`); with no margin under a question, by the rules a gain is read by, mirrored: every arm
+        at the case floor, the interval wholly below zero, and still a drop with every lost trial given its best
+        outcome for the candidate."""
+        if self.margin is not None:
+            return self.drop_verdict(confidence)[0] == "broken"
+        rate = self.at(confidence)
+        fewest = self.fewest()
+        if not self.against_zero or rate.interval is None or fewest is None or fewest < _CASE_FLOOR:
+            return False
+        return rate.interval[1] < 0 and rate.drop_bounds()[0] > 0
 
     def drop_verdict(self, confidence: float) -> tuple[FloorOutcome, str]:
         """The drop against the margin at ``confidence``, and the reason: the floor's own reading
@@ -894,7 +1015,7 @@ def _reason(
     if reading == "better":
         return f"{arm}'s gain over {control} is shown: its whole interval is above zero"
     if reading == "worse":
-        return drop_reason
+        return drop_reason or f"{arm}'s drop below {control} is shown: its whole interval is below zero"
     if reading == "within_margin":
         nominal, corrected = row.at(INTERVAL_LEVEL), row.at(gain_level)
         if corrected.interval is not None and corrected.interval[0] > 0:
@@ -916,6 +1037,19 @@ def _reason(
         return f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases"
     if rate.interval[0] > 0:
         return f"{arm}'s gain clears zero, but the lost trials could still take it back"
+    if row.against_zero:
+        # A superiority question: each direction against zero, at the level its family read it at.
+        at_nominal = row.at(INTERVAL_LEVEL).interval or rate.interval
+        if _high(row.at(drop_level)) < 0:
+            return f"{arm}'s drop clears zero, but the lost trials could still take it back"
+        for side, cleared, level in (("drop", at_nominal[1] < 0, drop_level), ("gain", at_nominal[0] > 0, gain_level)):
+            if cleared:
+                return (
+                    f"{arm}'s {side} clears zero at {_percent(INTERVAL_LEVEL)}, not at the {_percent(level)} its "
+                    f"{side}s are read at, corrected across {arm}'s aspects"
+                )
+        # Frozen with an analysis's readings (its frame), so its words stay as stored: a page states it as a reason.
+        return f"its interval reaches zero, so {arm} and {control} are not separated"
     if row.margin is None:
         if rate.interval[1] < 0:
             return f"{arm}'s drop is shown on its interval, but no margin was declared, so it is never shown worse"
@@ -942,8 +1076,8 @@ def campaign_readings(
     (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
     at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
-    candidates. An aspect with no margin
-    is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
+    candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
+    question: shown better, shown worse or unclear); one asked nothing is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
     the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
     with a margin carries the cases that would show the candidate within it
     (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the nominal level, as a floor's are).
@@ -981,6 +1115,7 @@ def campaign_readings(
     labels = [aspect.label for aspect in campaign.aspects]
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
+    memo = _Floors()
     if kind != "change" or control is None:
         return _aggregated(
             CampaignReadings(
@@ -992,11 +1127,12 @@ def campaign_readings(
                 readings=[],
                 floors=[],
                 kind=kind,
-                pairs=_pair_readings(campaign, checked, every, alpha) if kind == "choice" else [],
+                pairs=_pair_readings(campaign, checked, every, alpha, memo) if kind == "choice" else [],
                 bars=bars,
                 measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
             ),
             checked,
+            memo,
         )
     candidates = _candidates(campaign, every)
     rows: list[_Row] = []
@@ -1009,7 +1145,7 @@ def campaign_readings(
         for arm in candidates:
             if arm.variant_key == control_key:
                 continue
-            rate = aspect_pass_rate(bundle, control_key, arm.variant_key)
+            rate = memo.pass_rate(bundle, control_key, arm.variant_key)
             if rate is None:
                 continue
             rows.append(
@@ -1019,7 +1155,7 @@ def campaign_readings(
                     control_key=control_key,
                     control_label=control.label,
                     arm=arm,
-                    base=floor_readings(bundle, control_key, arm.variant_key),
+                    base=memo.readings(bundle, control_key, arm.variant_key),
                     rate=rate,
                     confirmatory=bundle.question_declared,
                     per_case_usd=per_case,
@@ -1034,10 +1170,10 @@ def campaign_readings(
         return row.rate.interval is not None
 
     def drop_kept(row: _Row) -> bool:
-        return row.rate.interval is not None and row.margin is not None
+        return row.drop_tested()
 
     gains = _decided(rows, gain_kept, lambda index, level: rows[index].gain_shown(level), alpha)
-    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0] == "broken", alpha)
+    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_shown(level), alpha)
     gain_holm = _holm(rows, gain_kept, gains, alpha)
     drop_holm = _holm(rows, drop_kept, drops, alpha)
     readings: list[AspectReading] = []
@@ -1060,7 +1196,7 @@ def campaign_readings(
         drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else ""
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
-        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) else None
+        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
         fewest = row.fewest()
         projection = (
             project_rate(within_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)
@@ -1126,6 +1262,7 @@ def campaign_readings(
             bars=bars,
         ),
         checked,
+        memo,
     )
 
 
@@ -1181,7 +1318,11 @@ class _Pair:
 
 
 def _pair_readings(
-    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm], alpha: float
+    campaign: EvalCampaign,
+    bundles: Mapping[str, AnalysisContextBundle],
+    arms: Sequence[CampaignArm],
+    alpha: float,
+    memo: _Floors,
 ) -> list[PairReading]:
     """Every pair of a choice's arms on every aspect both ran on: the difference, its interval and which arm is shown
     ahead, by one step-down over every pair × aspect (a pair has no direction, so one family, not two)."""
@@ -1194,7 +1335,7 @@ def _pair_readings(
             for second in present[index + 1 :]:
                 flipped = first.variant_key > second.variant_key
                 low, high = (second, first) if flipped else (first, second)
-                rate = aspect_pass_rate(bundle, low.variant_key, high.variant_key)
+                rate = memo.pass_rate(bundle, low.variant_key, high.variant_key)
                 if rate is None:
                     continue
                 pairs.append(
@@ -1203,7 +1344,7 @@ def _pair_readings(
                         first=first,
                         second=second,
                         flipped=flipped,
-                        base=floor_readings(bundle, low.variant_key, high.variant_key),
+                        base=memo.readings(bundle, low.variant_key, high.variant_key),
                         rate=rate,
                         confirmatory=bundle.question_declared,
                         rigs=_shared_rigs(bundle, low.variant_key, high.variant_key),
@@ -1472,9 +1613,12 @@ _CHANGE_BOUNDS = (-100.0, 100.0)
 _COST_BOUNDS = (0.0, math.inf)
 
 
-def _aggregated(readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]) -> CampaignReadings:
-    """The readings with every arm's figures across aspects read off them and the bundles."""
-    return readings.model_copy(update={"aggregate": campaign_aggregate(readings, bundles)})
+def _aggregated(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
+) -> CampaignReadings:
+    """The readings with every arm's figures across aspects read off them and the bundles, each pair's floor readings
+    taken from ``memo``, where the readings left them."""
+    return readings.model_copy(update={"aggregate": _aggregate(readings, bundles, memo)})
 
 
 def campaign_aggregate(
@@ -1497,6 +1641,13 @@ def campaign_aggregate(
     :return: The figures; None for a measurement, and where fewer than two arms were compared on any aspect.
     :rtype: CampaignAggregate | None
     """
+    return _aggregate(readings, bundles, _Floors())
+
+
+def _aggregate(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
+) -> CampaignAggregate | None:
+    """:func:`campaign_aggregate`, each pair's floor readings read through ``memo``."""
     if readings.kind == "change" and readings.control is not None:
         keys = [readings.control, *dict.fromkeys(row.arm for row in readings.readings)]
     elif readings.kind == "choice":
@@ -1521,7 +1672,7 @@ def campaign_aggregate(
                     {label: _pass_rate_on(bundle, key) for label, bundle in held.items()}, weights, _RATE_BOUNDS
                 ),
                 change=_figure(
-                    {label: _change_on(readings, bundle, label, key) for label, bundle in held.items()},
+                    {label: _change_on(readings, bundle, label, key, memo) for label, bundle in held.items()},
                     weights,
                     _CHANGE_BOUNDS,
                 )
@@ -1568,14 +1719,14 @@ def _pass_rate_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float
 
 
 def _change_on(
-    readings: CampaignReadings, bundle: AnalysisContextBundle, label: str, key: str
+    readings: CampaignReadings, bundle: AnalysisContextBundle, label: str, key: str, memo: _Floors
 ) -> tuple[float, float] | None:
     """A candidate's change against the control on an aspect in points, the row's own, and its standard error over
     the per-case shares the row reads; None where it has no row there or too few cases to read one."""
     row = next((row for row in readings.on_aspect(label) if row.arm == key), None)
     if row is None or readings.control is None:
         return None
-    rate = aspect_pass_rate(bundle, readings.control, key)
+    rate = memo.pass_rate(bundle, readings.control, key)
     if rate is None or rate.samples is None:
         return None
     error = _difference_error(*rate.samples, paired=rate.paired)

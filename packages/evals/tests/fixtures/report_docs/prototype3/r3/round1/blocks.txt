@@ -1,0 +1,211 @@
+### c1 / 1
+rendered block
+block_kind: gate_matrix
+query:
+  source: configs
+  aspect: 
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.few
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Gate, Atlas-M · Zero-shot, Atlas-M · Few-shot (12 ex.), Atlas-M · Rubric + reasoning, Brisk-S · Zero-shot, Brisk-S · Few-shot (12 ex.), Brisk-S · Rubric + reasoning, Nano-XS · Zero-shot, Nano-XS · Few-shot (12 ex.), Nano-XS · Rubric + reasoning]
+rows (3):
+  - cells: [Overall accuracy (at least 90%), Fails: Overall accuracy 89.8% < 90%, Passes, Passes, Fails: Overall accuracy 86.0% < 90%, Passes, Passes, Fails: Overall accuracy 78.2% < 90%, Passes, Fails: Overall accuracy 83.9% < 90%]
+  - cells: [Cell floor (at least 80% in every cell), Passes, Passes, Passes, Fails: Cell floor 77.9% < 80% in Complex × News, Passes, Passes, Fails: Cell floor 77.8% < 80% in Medium × Science; Cell floor 73.5% < 80% in Medium × News; Cell floor 76.1% < 80% in Complex × Science; Cell floor 77.6% < 80% in Complex × Conversational; Cell floor 65.1% < 80% in Complex × News, Fails: Cell floor 76.7% < 80% in Complex × News, Fails: Cell floor 79.5% < 80% in Medium × News; Cell floor 70.9% < 80% in Complex × News]
+  - cells: [Latency budget (p95) (p95 at most 250 ms), Fails: p95 420 ms > 250 ms, Fails: p95 483 ms > 250 ms, Fails: p95 1302 ms > 250 ms, Passes, Passes, Fails: p95 496 ms > 250 ms, Passes, Passes, Passes]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: heatmap
+query:
+  source: cells
+  aspect: 
+  measures: [accuracy]
+  arms: [brisk-s.few, nano-xs.few]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 95% uncorrected
+unit: 
+domain: 
+criteria.cell_floor.threshold = 80%
+columns: [Panel, , Science, Conversational, News]
+rows (6):
+  - cells: [Brisk-S · Few-shot (12 ex.), Simple, 95.1% (94.3% to 95.9%; n = 3120), 97.1% (96.8% to 97.4%; n = 14880), 94.0% (93.3% to 94.7%; n = 4410)]
+  - cells: [Brisk-S · Few-shot (12 ex.), Medium, 89.9% (89.0% to 90.8%; n = 4260), 91.6% (91.0% to 92.2%; n = 7350), 87.5% (86.6% to 88.4%; n = 5190)]
+  - cells: [Brisk-S · Few-shot (12 ex.), Complex, 88.5% (87.4% to 89.6%; n = 3440), 89.4% (88.0% to 90.8%; n = 1960), 82.9% (81.7% to 84.1%; n = 3600)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Simple, 96.2% (95.5% to 96.9%; n = 3120), 98.2% (98.0% to 98.4%; n = 14880), 94.5% (93.8% to 95.2%; n = 4410)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Medium, 89.4% (88.5% to 90.3%; n = 4260), 91.9% (91.3% to 92.5%; n = 7350), 86.0% (85.1% to 86.9%; n = 5190)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Complex, 88.2% (87.1% to 89.3%; n = 3440), 89.8% (88.5% to 91.1%; n = 1960), 76.7% (75.3% to 78.1%; n = 3600)]
+total: 6
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 2
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [accuracy]
+  arms: [brisk-s.few, nano-xs.few]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (9):
+  - cells: [Simple × Science, -1.1, -2.163 to -0.03699, -1.1 pts]
+  - cells: [Simple × Conversational, -1.1, -1.461 to -0.7394, -1.1 pts]
+  - cells: [Simple × News, -0.5, -1.49 to +0.4899, -0.5 pts]
+  - cells: [Medium × Science, +0.5, -0.7728 to +1.773, +0.5 pts]
+  - cells: [Medium × Conversational, -0.3, -1.149 to +0.5485, -0.3 pts]
+  - cells: [Medium × News, +1.5, +0.2272 to +2.773, +1.5 pts]
+  - cells: [Complex × Science, +0.3, -1.256 to +1.856, +0.3 pts]
+  - cells: [Complex × Conversational, -0.4, -2.31 to +1.51, -0.4 pts]
+  - cells: [Complex × News, +6.2, +4.356 to +8.044, +6.2 pts]
+total: 9
+offset: 0
+truncated: False
+notes: [Each row is Brisk-S · Few-shot (12 ex.) less Nano-XS · Few-shot (12 ex.) on Accuracy, overall and in each place both hold it., The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+
+### c3 / 1
+rendered block
+block_kind: gate_scatter
+query:
+  source: measures
+  aspect: 
+  measures: [balanced_accuracy, latency_ms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.few
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Point, Latency (p95), Balanced accuracy]
+rows (11):
+  - cells: [Atlas-M · Zero-shot, 420 ms, 89.8%]
+  - cells: [Atlas-M · Few-shot (12 ex.), 483 ms, 92.1%]
+  - cells: [Atlas-M · Rubric + reasoning, 1302 ms, 93.2%]
+  - cells: [Brisk-S · Zero-shot, 160 ms, 86.0%]
+  - cells: [Brisk-S · Few-shot (12 ex.), 184 ms, 90.7%]
+  - cells: [Brisk-S · Rubric + reasoning, 496 ms, 91.5%]
+  - cells: [Nano-XS · Zero-shot, 70 ms, 78.2%]
+  - cells: [Nano-XS · Few-shot (12 ex.), 80 ms, 90.1%]
+  - cells: [Nano-XS · Rubric + reasoning, 217 ms, 83.9%]
+  - cells: [budget 250 ms, 250 ms, ]
+  - cells: [floor 90%, , 90.0%]
+total: 11
+offset: 0
+truncated: False
+notes: [The Latency (p95) axis is on a log scale: its values span more than ten times.]
+
+### c4 / 1
+rendered block
+block_kind: table
+query:
+  source: settle
+  aspect: 
+  measures: []
+  arms: [brisk-s.few]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Arm, Against, Today's figure, Line, Distance toward passing, Settles, Sizes count, Needed, one-sided, Needed, two-sided, Today, Trials needed, one-sided, Trials needed, two-sided, Repeats of a case, Trials today, A fresh run reads the other side, Level]
+rows (11):
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Overall accuracy, 90.7%, 90%, —, —, —, —, —, —, —, —, —, —, —, —]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Simple × Science, 95.1%, 80%, +15.1, clears, cases, 7.0, 9.0, 3120, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Simple × Conversational, 97.1%, 80%, +17.1, clears, cases, 4.0, 5.0, 14880, —, —, —, —, 0%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Simple × News, 94%, 80%, +14.0, clears, cases, 8.0, 12.0, 4410, —, —, —, —, 0%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Medium × Science, 89.9%, 80%, +9.9, clears, cases, 25.0, 36.0, 4260, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Medium × Conversational, 91.6%, 80%, +11.6, clears, cases, 14.0, 20.0, 7350, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Medium × News, 87.5%, 80%, +7.5, clears, cases, 53.0, 75.0, 5190, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Complex × Science, 88.5%, 80%, +8.5, clears, cases, 41.0, 58.0, 3440, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Complex × Conversational, 89.4%, 80%, +9.4, clears, cases, 31.0, 44.0, 1960, —, —, —, —, < 0.000001%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Cell floor · Complex × News, 82.9%, 80%, +2.9, clears, cases, 435.0, 617.0, 3600, —, —, —, —, 0.0001087%, 95% one-sided]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), Latency budget (p95), 184 ms, 250 ms, —, —, —, —, —, —, —, —, —, —, —, —]
+total: 11
+offset: 0
+truncated: False
+notes: [Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.]
+
+### c5 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: levers
+  aspect: 
+  measures: [balanced_accuracy]
+  arms: [nano-xs.zero, nano-xs.few, nano-xs.rubric, brisk-s.zero, brisk-s.few, brisk-s.rubric]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, Note]
+rows (15):
+  - cells: [model, Brisk-S · Zero-shot → Nano-XS, -7.8, -7.8 pts]
+  - cells: [model, Brisk-S · Few-shot (12 ex.) → Nano-XS, -0.6, -0.6 pts]
+  - cells: [model, Brisk-S · Rubric + reasoning → Nano-XS, -7.6, -7.6 pts]
+  - cells: [prompt, Brisk-S · Zero-shot → Few-shot (12 ex.), +4.7, +4.7 pts]
+  - cells: [prompt, Brisk-S · Zero-shot → Rubric + reasoning, +5.5, +5.5 pts]
+  - cells: [prompt, Brisk-S · Few-shot (12 ex.) → Rubric + reasoning, +0.8, +0.8 pts]
+  - cells: [prompt, Nano-XS · Zero-shot → Few-shot (12 ex.), +11.9, +11.9 pts]
+  - cells: [prompt, Nano-XS · Zero-shot → Rubric + reasoning, +5.7, +5.7 pts]
+  - cells: [prompt, Nano-XS · Few-shot (12 ex.) → Rubric + reasoning, -6.2, -6.2 pts]
+  - cells: [model effect, across prompt, at Brisk-S · Few-shot (12 ex.) less at Brisk-S · Zero-shot, +7.2, +7.2 pts]
+  - cells: [model effect, across prompt, at Brisk-S · Rubric + reasoning less at Brisk-S · Zero-shot, +0.2, +0.2 pts]
+  - cells: [model effect, across prompt, at Brisk-S · Rubric + reasoning less at Brisk-S · Few-shot (12 ex.), -7.0, -7.0 pts]
+  - cells: [prompt effect, across model, at Nano-XS · Zero-shot less at Brisk-S · Zero-shot, +7.2, +7.2 pts]
+  - cells: [prompt effect, across model, at Nano-XS · Zero-shot less at Brisk-S · Zero-shot, +0.2, +0.2 pts]
+  - cells: [prompt effect, across model, at Nano-XS · Few-shot (12 ex.) less at Brisk-S · Few-shot (12 ex.), -7.0, -7.0 pts]
+total: 15
+offset: 0
+truncated: False
+notes: [Each effect is one setting moved between two arms that differ in it alone, on Balanced accuracy; each interaction is how that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test.]
+

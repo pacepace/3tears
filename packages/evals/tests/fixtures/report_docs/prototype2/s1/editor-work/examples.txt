@@ -1,0 +1,16 @@
+example listing
+examples (5):
+  - trial: T26; case: tc-06; stratum: none; aspect: billing; repeat: 1; outcome: check; reason: Pass rate of reply.total == case.total; excerpt: none; input: none; expected: none; result_id: run-billing-v2-06-1
+    arm:v2 = v2 (A)
+  - trial: T71; case: tc-17; stratum: none; aspect: billing; repeat: 1; outcome: check; reason: Pass rate of reply.total == case.total; excerpt: none; input: none; expected: none; result_id: run-billing-v3-17-1
+    arm:v3 = v3 (B)
+  - trial: T80; case: tc-19; stratum: none; aspect: billing; repeat: 1; outcome: check; reason: Pass rate of reply.total == case.total; excerpt: none; input: none; expected: none; result_id: run-billing-v4-19-1
+    arm:v4 = v4 (C)
+  - trial: T124; case: tc-08; stratum: none; aspect: tone; repeat: 2; outcome: check; reason: Pass rate of reply.total == case.total; excerpt: none; input: none; expected: none; result_id: run-tone-v3-08-2
+    arm:v3 = v3 (B)
+  - trial: T125; case: tc-08; stratum: none; aspect: tone; repeat: 1; outcome: check; reason: Pass rate of reply.cites_policy; excerpt: none; input: none; expected: none; result_id: run-tone-v4-08-1
+    arm:v4 = v4 (C)
+pool: the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason
+total: 32
+offset: 0
+next: action='examples_list', snapshot_id='report-snapshot:cbe4fd230e040e604b34df5704aa5b38', limit=5, offset=5

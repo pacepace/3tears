@@ -1,0 +1,130 @@
+dominance
+survivors (1):
+  - arm: arm:brisk-s.few; gate_status: pass; borders: []; standing: not_behind; behind: []; why: []; dominated_by: []; dominated_with_axes: []
+    figures (12):
+      cost_per_1k.brisk-s.few = $0.0400
+      criteria.overall.brisk-s.few.gap = 0.7
+      criteria.cell_floor.brisk-s.few.simple.science.gap = 15.1
+      criteria.cell_floor.brisk-s.few.simple.conv.gap = 17.1
+      criteria.cell_floor.brisk-s.few.simple.news.gap = 14
+      criteria.cell_floor.brisk-s.few.medium.science.gap = 9.9
+      criteria.cell_floor.brisk-s.few.medium.conv.gap = 11.6
+      criteria.cell_floor.brisk-s.few.medium.news.gap = 7.5
+      criteria.cell_floor.brisk-s.few.complex.science.gap = 8.5
+      criteria.cell_floor.brisk-s.few.complex.conv.gap = 9.4
+      criteria.cell_floor.brisk-s.few.complex.news.gap = 2.9
+      criteria.p95.brisk-s.few.gap = 66 ms
+out (8):
+  - arm: arm:atlas-m.zero; breached: []
+    gates (2):
+      - criterion: overall; place: none; status: fail
+        figures (3):
+          criteria.overall.threshold = 90%
+          criteria.overall.atlas-m.zero.value = 89.8%
+          criteria.overall.atlas-m.zero.gap = -0.2
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 250 ms
+          criteria.p95.atlas-m.zero.value = 420 ms
+          criteria.p95.atlas-m.zero.gap = -170 ms
+  - arm: arm:atlas-m.few; breached: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 250 ms
+          criteria.p95.atlas-m.few.value = 483 ms
+          criteria.p95.atlas-m.few.gap = -233 ms
+  - arm: arm:atlas-m.rubric; breached: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 250 ms
+          criteria.p95.atlas-m.rubric.value = 1302 ms
+          criteria.p95.atlas-m.rubric.gap = -1052 ms
+  - arm: arm:brisk-s.zero; breached: []
+    gates (2):
+      - criterion: overall; place: none; status: fail
+        figures (3):
+          criteria.overall.threshold = 90%
+          criteria.overall.brisk-s.zero.value = 86%
+          criteria.overall.brisk-s.zero.gap = -4
+      - criterion: cell_floor; place: complex.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.brisk-s.zero.complex.news.value = 77.9%
+          criteria.cell_floor.brisk-s.zero.complex.news.gap = -2.1
+  - arm: arm:brisk-s.rubric; breached: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 250 ms
+          criteria.p95.brisk-s.rubric.value = 496 ms
+          criteria.p95.brisk-s.rubric.gap = -246 ms
+  - arm: arm:nano-xs.zero; breached: []
+    gates (6):
+      - criterion: overall; place: none; status: fail
+        figures (3):
+          criteria.overall.threshold = 90%
+          criteria.overall.nano-xs.zero.value = 78.2%
+          criteria.overall.nano-xs.zero.gap = -11.8
+      - criterion: cell_floor; place: medium.science; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.zero.medium.science.value = 77.8%
+          criteria.cell_floor.nano-xs.zero.medium.science.gap = -2.2
+      - criterion: cell_floor; place: medium.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.zero.medium.news.value = 73.5%
+          criteria.cell_floor.nano-xs.zero.medium.news.gap = -6.5
+      - criterion: cell_floor; place: complex.science; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.zero.complex.science.value = 76.1%
+          criteria.cell_floor.nano-xs.zero.complex.science.gap = -3.9
+      - criterion: cell_floor; place: complex.conv; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.zero.complex.conv.value = 77.6%
+          criteria.cell_floor.nano-xs.zero.complex.conv.gap = -2.4
+      - criterion: cell_floor; place: complex.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.zero.complex.news.value = 65.1%
+          criteria.cell_floor.nano-xs.zero.complex.news.gap = -14.9
+  - arm: arm:nano-xs.few; breached: []
+    gates (1):
+      - criterion: cell_floor; place: complex.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.few.complex.news.value = 76.7%
+          criteria.cell_floor.nano-xs.few.complex.news.gap = -3.3
+  - arm: arm:nano-xs.rubric; breached: []
+    gates (3):
+      - criterion: overall; place: none; status: fail
+        figures (3):
+          criteria.overall.threshold = 90%
+          criteria.overall.nano-xs.rubric.value = 83.9%
+          criteria.overall.nano-xs.rubric.gap = -6.1
+      - criterion: cell_floor; place: medium.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.rubric.medium.news.value = 79.5%
+          criteria.cell_floor.nano-xs.rubric.medium.news.gap = -0.5
+      - criterion: cell_floor; place: complex.news; status: fail
+        figures (3):
+          criteria.cell_floor.threshold = 80%
+          criteria.cell_floor.nano-xs.rubric.complex.news.value = 70.9%
+          criteria.cell_floor.nano-xs.rubric.complex.news.gap = -9.1
+weighs: [gates, cost]
+dominant: [arm:brisk-s.few]
+axes: []
+dominant_with_axes: [arm:brisk-s.few]
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [decide]
+  dominant: [arm:brisk-s.few]
+  ranking_rule: []
+  withheld: 
+total: 9
+offset: 0

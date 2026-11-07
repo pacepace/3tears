@@ -1,0 +1,46 @@
+measure figures
+measure: cost_per_1m
+by: arm
+level: none
+held: [mean]
+not_shown: []
+slices: []
+rows (9):
+  - aspect: none; slice: none
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (1):
+      measure.cost_per_1m.atlas-m.zero.mean = $180 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (1):
+      measure.cost_per_1m.atlas-m.few.mean = $260 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (1):
+      measure.cost_per_1m.atlas-m.rubric.mean = $610 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (1):
+      measure.cost_per_1m.brisk-s.zero.mean = $28 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (1):
+      measure.cost_per_1m.brisk-s.few.mean = $40 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (1):
+      measure.cost_per_1m.brisk-s.rubric.mean = $95 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (1):
+      measure.cost_per_1m.nano-xs.zero.mean = $1.3 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (1):
+      measure.cost_per_1m.nano-xs.few.mean = $1.9 per 1,000,000 turns
+  - aspect: none; slice: none
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (1):
+      measure.cost_per_1m.nano-xs.rubric.mean = $4.6 per 1,000,000 turns
+total: 9
+offset: 0

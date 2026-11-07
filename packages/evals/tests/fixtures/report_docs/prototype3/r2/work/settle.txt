@@ -1,0 +1,25 @@
+rendered block
+block_kind: table
+query:
+  source: settle
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Arm, Against, Today's figure, Line, Distance toward passing, Settles, Sizes count, Needed, one-sided, Needed, two-sided, Today, Trials needed, one-sided, Trials needed, two-sided, Repeats of a case, Trials today, A fresh run reads the other side, Level]
+rows (1):
+  - cells: [J · Brisk-S · reasoning low · 1 retry, Pass rate, 97.1%, 97.0%, +0.1, clears, cases, 38350, 54451, 1200, —, —, —, —, 38.6%, 95% one-sided]
+total: 1
+offset: 0
+truncated: False
+notes: [Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.]

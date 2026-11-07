@@ -26,6 +26,7 @@ from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
+from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.ladder_support import (
     EXAMPLES,
     count_calls,
@@ -38,11 +39,22 @@ from packages.evals.tests.ladder_support import (
 )
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.page_contract_support import what_runs
 
 RUNG = EXAMPLES / "3-invoices"
 EXTRACT = RUNG / "extract.py"
 RECORDING = RUNG / "recordings" / "invoices.jsonl"
+#: The question the rung declares, word for word.
+QUESTION = "Does v2 read the currency an invoice charges in right more often than v1?"
 CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+#: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
+#: prints them.
+_LEAD = (
+    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+)
 
 
 def test_the_cases_are_thirty_invoices_in_three_strata_with_hard_negatives() -> None:
@@ -83,16 +95,18 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     result = await module.invoices.run(store=":memory:")
     # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
     lines = report_markdown(result.report).splitlines()
-    assert lines[0] == "# invoices: does v2 do better than v1?"
-    assert lines[1].startswith("v1 (control) vs v2 · ")
-    # Never "no difference": a contrast not separated claims none.
-    assert lines[3] == (
-        "**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**"
-    )
+    # The heading is the campaign's name, its arms the line under the question; the declared question is quoted under
+    # it, and the result reads as asked, never as exploratory.
+    assert lines[0] == "# invoices"
+    assert lines[1] == f'"{QUESTION}"'
+    assert lines[3].startswith("v1 (control) vs v2 · ")
+    # Never "no difference", never "not separated": the campaign's lead sentence, then what the guardrail means.
+    assert lines[5] == f"**{_LEAD} v2 may do worse than v1 on the No invented total score guardrail.**"
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
-    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost, so
-    # the report-wide line on provider routing sits between the result and the scoreboard (owner, 2026-10-25).
-    assert lines[5] == COST_ROUTING_CAVEAT
+    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost,
+    # and its provider routing is said in the methods, not between the result and the scoreboard (owner reading,
+    # 2026-11-06): the scoreboard follows the result.
+    assert lines[7] == "**Scoreboard**" and COST_ROUTING_CAVEAT in report_markdown(result.report)
     assert lines[9] == (
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
@@ -100,6 +114,9 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
 
     assert len(served.calls) == recorded_spend(RECORDING)[0] == 180, "30 invoices x 2 prompts x k=3"
     assert isinstance(result, Result) and result.control == "v1" and list(result.arms) == ["v1", "v2"]
+    # The question round-trips to the result and to its campaign, the graders' order with it.
+    assert result.question == module.invoices.question == QUESTION
+    assert result.grader_readings == ("accuracy", "number", "due", "total", "no_invented_total")
     for summary in result.arms.values():
         assert summary.status == "completed" and (summary.n_results, summary.n_excluded) == (90, 0)
     assert result.fields == ("currency", "number", "due", "total")
@@ -112,14 +129,15 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     (guarded,) = result.guardrails()
     assert (guarded["interval"], guarded["margin"]) == ("[-13.4, 13.4] pts", "2 pts")
     assert guarded["decision"] == (
-        "undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared "
-        "margin, so the arm is shown neither within it nor beyond it)"
+        "undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the "
+        "declared margin, so the arm is shown neither within it nor beyond it)"
     )
     # In a comparison each arm's guardrail line says what the comparison decided, never that it takes one.
     printed = str(result)
     assert "decided only against a control" not in printed
     assert "the guardrail the other arms are decided against" in printed
-    assert "no_invented_total: mean 0.9888 (n=89, min 0, max 1); guardrail undecided against v1" in printed
+    # Named as the page names the guardrail, never by its key.
+    assert "No invented total score: 98.9%, 88 of 89 trials; guardrail undecided against v1" in printed
     assert {row["arm"] for row in result.contrasts("total")} == {"v2"}
     # Every reading is read again per kind of invoice.
     assert {stratum for row in result.strata("v2") for stratum in row["strata"]} == {
@@ -127,29 +145,51 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "multi-currency",
         "noisy-OCR",
     }
-    # The closing comment's claim: the same runs read against another control, with no run repeated.
+    # The closing comment's claim: the same runs read against another control, with no run repeated, asking the same
+    # question.
     assert result.exit_code() == (4 if result.gate().failed else 0)
     again = await result.against("v2")
     assert again.control == "v2" and again.run_ids == result.run_ids
+    assert again.question == QUESTION and again.grader_readings == result.grader_readings
 
 
-async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
+async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardrail_v2_is_not_shown_safe_on_beside_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("extract.py"), "extract", monkeypatch)
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
-    # A guardrail warns as loudly as a broken floor, under the title and the question, and picks no arm.
+    first_screen = lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
+    # The page quotes the declared question and leads on its measure, the first grader (the classifier's accuracy), as
+    # the printed line does, decided rather than a lead; the guardrail warns as loudly as a broken floor, beside the
+    # lead and never in its place, and picks no arm.
     assert lines[0] == "# invoices"
-    warning = "v2 is not yet shown safe on the no invented total guardrail on classify."
-    assert f"**{warning}**" in lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
-    html = campaign_report_html(result.page)
-    assert f'<p class="warning"><strong>{warning}' in html and 'role="alert"' not in html[: html.index("</header>")]
+    assert lines[1] == f'"{QUESTION}"'
+    assert "Exploratory comparison." not in lines
+    bold = [line for line in first_screen if line.startswith("**")]
+    # The guardrail says what it means for the decision, then what leaves it undecided: of the 30 cases that could
+    # fail it, one noisy invoice each, too few to settle it.
+    warning = (
+        "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
+        "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
+    )
+    assert bold == [f"**{_LEAD}**", f"**{warning}**"]
+    html = unlinked(campaign_report_html(result.page))
+    assert (
+        f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
+        and 'role="alert"' not in html[: html.index("</header>")]
+    )
     assert "not adopted" not in "\n".join(lines)
-    # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
-    assert "No margin was declared on classify, so no arm is ever shown worse there." in lines
-    assert "To show no worse than the margin" not in "\n".join(lines)
+    # The question asks whether v2 does better and writes no margin (a superiority question): the pass rate is read
+    # against zero both ways, so no line says it is never shown worse, no margin is filed, and the row reads not
+    # separated, its interval reaching below zero.
+    assert not [line for line in lines if line.startswith("On classify, the evidence cannot tell a drop")]
+    assert module.invoices.margin is None and result.margin is None
+    assert (
+        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |"
+    ) in lines
+    assert "no worse than the margin" not in "\n".join(lines)
 
 
 def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
@@ -162,7 +202,7 @@ def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     out = capsys.readouterr().out
     assert out.startswith("invoices: ") and "v1 (control): 90 result(s)" in out
     html = (copy / "report" / "report.html").read_text(encoding="utf-8")
-    assert "<script" not in html
+    assert what_runs(html) == [], "the page runs the kit's script and nothing else"
     (written,) = (copy / "report").glob("bundle-*.json")
     bundle = AnalysisContextBundle.from_json(written.read_text(encoding="utf-8"))
     assert bundle.fingerprint() in html
@@ -176,11 +216,12 @@ def test_run_from_the_command_line_it_says_why_it_exits_4_in_one_line(
     offline_copy("3-invoices", tmp_path, monkeypatch)
     assert main(["extract.py"]) == 4
     out = capsys.readouterr().out.splitlines()
-    # The last line names what failed the gate in the page's words: the guardrail, the arm and its Decision cell.
+    # The last line opens with the result as the page leads with it, then names what failed the gate in the page's
+    # words: the guardrail, the arm and its Decision cell.
     assert out[-1] == (
-        "exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not "
-        "known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither "
-        "within it nor beyond it)"
+        f"exit 4: {_LEAD} The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse "
+        "than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is "
+        "shown neither within it nor beyond it)."
     )
 
 

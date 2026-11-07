@@ -11,19 +11,29 @@ storage round-trip never stalls the loop a transport serves calls on.
 
 from __future__ import annotations
 
+import uuid
 from functools import partial
-from collections.abc import Mapping
-from typing import Annotated, Any, Literal
+from collections.abc import Callable, Mapping, Sequence
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import Field, ValidationError
+from datetime import datetime
+
+from pydantic import AwareDatetime, Field, ValidationError
+from pydantic.fields import FieldInfo
 
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
+from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
+from threetears.evals.actions.report_writing import campaign_report_writer
+from threetears.evals.kernel.analyst_gap import GapDigest
+from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
+from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
     SweepArguments,
@@ -46,7 +56,6 @@ from threetears.evals.ops import (
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
-    FrozenReporterCase,
     FrontierResult,
     HistoryResult,
     InsightDeleted,
@@ -66,8 +75,6 @@ from threetears.evals.ops import (
     JudgeProfileListing,
     JudgeProfileRecording,
     JudgeProfilesRecord,
-    ReporterCaseFreeze,
-    ReporterCaseListing,
     ResultDetail,
     ResultListing,
     ResultPart,
@@ -110,15 +117,12 @@ from threetears.evals.ops import (
     judge_temperature_estimate,
     launch_estimate,
     report_read,
-    reporter_case_archive,
     judge_case_author,
     judge_cases_freeze,
     judge_configs_list,
     judge_template_create,
     judge_profiles_list,
     judge_profiles_record,
-    reporter_case_freeze,
-    reporter_cases_list,
     result_get,
     result_rate,
     result_rate_person,
@@ -151,8 +155,29 @@ from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
+from threetears.evals.ops.report_writer.writer_bank import (
+    MintedWriterCase,
+    WriterCaseMint,
+    WriterCaseState,
+    WriterSplit,
+    WriterTemplateCreate,
+    writer_case_archive,
+    writer_case_mint,
+    writer_template_create,
+)
+from threetears.evals.ops.report_writer.writer_pairwise import writer_pairwise
+from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.ops.runs import PERSON_DESCRIPTION
-from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
+    RUN_LABELS_MAX,
+    EvalTrace,
+    JudgedArtifact,
+    JudgeEvidence,
+    SecondJudge,
+    eval_trace_doc_id,
+)
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
     JudgeCaseFreezeReport,
@@ -173,8 +198,6 @@ RunId = Annotated[str, Field(min_length=1, description="A run's id, as runs_list
 TemplateId = Annotated[str, LaunchArguments.model_fields["template_id"]]
 SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
 ResultId = Annotated[str, Field(min_length=1, description="A result's id, as results_list names it.")]
-CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
-AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
 InsightId = Annotated[str, Field(min_length=1, description="An insight's id, as insights_list names it.")]
 JobId = Annotated[
     str, Field(min_length=1, description="A job's id, exactly as the action that started it returned it.")
@@ -187,31 +210,53 @@ Confirm = Annotated[str, Field(description="Must echo the id of what is destroye
 ArchiveReason = Annotated[
     str | None,
     Field(
-        description="Why the record is archived (an analysis shown false or superseded, a reporter case that can no "
-        "longer measure anything); cleared on restore."
+        description="Why the record is archived (an analysis shown false or superseded, a writer case "
+        "that can no longer measure anything); cleared on restore."
     ),
 ]
-ReporterCaseId = Annotated[
+WriterCaseId = Annotated[
     str,
-    Field(min_length=1, description="A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it."),
+    Field(min_length=1, description="A writer case's id, the test_case_id writer_case_mint returned."),
 ]
-Name = Annotated[str, Field(min_length=1, description="The campaign's name, as an operator reads it.")]
+Name = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description=(
+            f"The campaign's name, as an operator reads it in a list: at most {CAMPAIGN_NAME_CHARS} characters. Put the "
+            "detail (the arms, the round, the case count) in question or description, never in the name."
+        ),
+        # Stated in the schema for a client's form; the operation enforces it, with its remedy.
+        json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
+    ),
+]
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[
     list[str],
     Field(description="Runs, by id, as runs_list names them; every one in the caller's scope."),
 ]
-GeneratorModel = Annotated[
+WriterModel = Annotated[
     str | None,
     Field(
-        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        description="The report writer's model; omitted for the host's. A model outside the host's allowed "
         "writers is refused before anything is spent."
     ),
 ]
 Format = Annotated[
     Literal["markdown", "json", "html"],
-    Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
+    Field(
+        description="The report's form: markdown, json (the schema's form), html (one page; its one "
+        "script is the kit's, which draws its charts)."
+    ),
+]
+Static = Annotated[
+    bool,
+    Field(
+        description="With html, the static page, for a host whose policy lets a page neither run nor load anything: "
+        "no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json "
+        "are the same either way."
+    ),
 ]
 Trials = Annotated[
     Literal["table", "all"],
@@ -280,8 +325,9 @@ ExportRunIds = Annotated[
     list[str] | None,
     Field(
         description="Export only these runs, archived ones included since they are named; omitted exports all. "
-        "One named run past one page's ceiling is paged by its cases (follow page.next_after_run_id and "
-        "page.next_after_case_id, naming the run again); two or more named runs past it are refused."
+        "Named runs past one page's ceiling are paged as the scope is, the pages holding the named runs alone: "
+        "follow page.next_after_run_id (and page.next_after_case_id inside a run past the ceiling, so one named run "
+        "past it is paged by its cases), naming the runs again (page.named_run_ids)."
     ),
 ]
 ExportAfterRunId = Annotated[
@@ -309,14 +355,9 @@ ConditionFilter = Annotated[
         "fail) or infra_exclude (a harness fault, in no aggregate)."
     ),
 ]
-#: The rows one ``results_list`` page holds unless the caller asks for fewer, and the most it may ask for: a
-#: page is read into an agent's context, and a run of a few hundred cases at k=3 is a thousand rows.
+#: The rows one ``results_list`` page holds unless the caller asks for fewer (the most it may ask for is ``Limit``'s):
+#: a page is read into an agent's context, and a run of a few hundred cases at k=3 is a thousand rows.
 _RESULTS_PAGE_DEFAULT = 50
-_RESULTS_PAGE_MAX = 200
-Offset = Annotated[int, Field(ge=0, description="Skip this many rows; the previous page's next_offset.")]
-Limit = Annotated[
-    int, Field(ge=1, le=_RESULTS_PAGE_MAX, description=f"The most rows to return, up to {_RESULTS_PAGE_MAX}.")
-]
 CaseCount = Annotated[
     int | None,
     Field(ge=1, description="A case count to price each planned arm at in place of its plan's, for a what-if grid."),
@@ -477,7 +518,12 @@ class CampaignUpdateParams(EvalBaseModel):
 
     campaign_id: CampaignId
     name: Annotated[
-        str | None, Field(min_length=1, description=CampaignCreateParams.model_fields["name"].description)
+        str | None,
+        Field(
+            min_length=1,
+            description=CampaignCreateParams.model_fields["name"].description,
+            json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
+        ),
     ] = None
     description: Annotated[
         str | None, Field(description=CampaignCreateParams.model_fields["description"].description)
@@ -486,6 +532,7 @@ class CampaignUpdateParams(EvalBaseModel):
     aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
     floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
     short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["short_names"]] = None
+    arm_short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["arm_short_names"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -523,7 +570,7 @@ class CampaignRecordParams(EvalBaseModel):
             )
         ),
     ] = []
-    # The analysis whose memo the call was made over; omitted for a call on code's readings alone. One name, one
+    # The analysis whose report the call was made over; omitted for a call on code's readings alone. One name, one
     # meaning across the tool: described as every other action's analysis_id is.
     analysis_id: Annotated[
         str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
@@ -563,7 +610,7 @@ class AnalysisGenerateParams(EvalBaseModel):
     """``analysis_generate`` and ``analysis_estimate``."""
 
     campaign_id: CampaignId
-    model: GeneratorModel = None
+    model: WriterModel = None
 
 
 class ReportReadParams(EvalBaseModel):
@@ -572,6 +619,35 @@ class ReportReadParams(EvalBaseModel):
     campaign_id: CampaignId
     format: Format = "markdown"
     trials: Trials = "table"
+    static: Static = False
+    report_doc_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "A stored report document of the campaign, any version (analyses_list names each analysis's "
+            "report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, "
+            "the campaign's report."
+        ),
+    )
+    include_sessions: bool = Field(
+        default=False,
+        description=(
+            "With json, add the full transcripts of the report document the page draws, as report_doc.sessions: "
+            "every session that wrote it, by name. Refused with markdown or html, which never hold a transcript."
+        ),
+    )
+
+
+class AnalystGapsListParams(EvalBaseModel):
+    """``analyst_gaps_list``."""
+
+    since: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each "
+            "by its own time; omit for every gap."
+        ),
+    )
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -619,27 +695,98 @@ class JudgeProfilesListParams(EvalBaseModel):
     )
 
 
-class ReporterCaseFreezeParams(ReporterCaseFreeze):
-    """``reporter_case_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.ReporterCaseFreeze`.
-
-    Derived rather than restated, as :class:`RunLaunchParams` is, so a field the operation gains is a parameter
-    the action offers.
-    """
+class WriterTemplateCreateParams(WriterTemplateCreate):
+    """``writer_template_create`` — the operation's own arguments, declared once on
+    :class:`~threetears.evals.ops.report_writer.writer_bank.WriterTemplateCreate`."""
 
 
-class ReporterCasesListParams(EvalBaseModel):
-    """``reporter_cases_list``."""
+def _described(parameter: Any) -> str | None:
+    """The description an annotated parameter type declares."""
+    return next((meta.description for meta in get_args(parameter)[1:] if isinstance(meta, FieldInfo)), None)
+
+
+_MINT = WriterCaseMint.model_fields
+_SPLIT = WriterSplit.model_fields
+
+
+class WriterCaseMintParams(EvalBaseModel):
+    """``writer_case_mint`` — the mint's arguments, flat: a tool's parameters hold no nested model, so the split's
+    three fields are parameters of their own, each described as :class:`WriterSplit` describes it."""
 
     template_id: TemplateId
-    include_archived: IncludeArchived = False
+    # Nullable here, so each takes its shared parameter's description: one name, one meaning on a tool.
+    campaign_id: str | None = Field(default=None, min_length=1, description=_described(CampaignId))
+    analysis_id: str | None = Field(default=None, min_length=1, description=_described(AnalysisId))
+    snapshot_id: str | None = Field(default=None, min_length=1, description=_MINT["snapshot_id"].description)
+    withhold: list[str] = Field(default_factory=list, description=_MINT["withhold"].description)
+    skill: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", description=_MINT["skill"].description)
+    group: str | None = Field(default=None, min_length=1, description=_MINT["group"].description)
+    stratum: str | None = Field(default=None, min_length=1, description=_MINT["stratum"].description)
+    dev_set: str = Field(default=_SPLIT["dev"].default, min_length=1, description=_SPLIT["dev"].description)
+    held_out_set: str = Field(
+        default=_SPLIT["held_out"].default, min_length=1, description=_SPLIT["held_out"].description
+    )
+    held_out_fraction: float = Field(
+        default=_SPLIT["held_out_fraction"].default, gt=0, lt=1, description=_SPLIT["held_out_fraction"].description
+    )
+
+    def mint(self) -> WriterCaseMint:
+        """The operation's arguments, refused as the operation refuses them (one source; two set names).
+
+        :return: The mint.
+        :rtype: WriterCaseMint
+        :raises ValidationFailedError: No source or several are named, or one name is given for both sets.
+        """
+        try:
+            return WriterCaseMint(
+                template_id=self.template_id,
+                campaign_id=self.campaign_id,
+                analysis_id=self.analysis_id,
+                snapshot_id=self.snapshot_id,
+                withhold=self.withhold,
+                skill=self.skill,
+                group=self.group,
+                stratum=self.stratum,
+                split=WriterSplit(
+                    dev=self.dev_set, held_out=self.held_out_set, held_out_fraction=self.held_out_fraction
+                ),
+            )
+        except ValidationError as invalid:
+            raise ValidationFailedError(
+                "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in invalid.errors()),
+                remedy="name exactly one of campaign_id, analysis_id and snapshot_id, and two different set names",
+            ) from invalid
 
 
-class ReporterCaseArchiveParams(EvalBaseModel):
-    """``reporter_case_archive``."""
+class WriterCaseArchiveParams(EvalBaseModel):
+    """``writer_case_archive``."""
 
-    reporter_case_id: ReporterCaseId
+    writer_case_id: WriterCaseId
     archived: Archived = True
     archive_reason: ArchiveReason = None
+
+
+class WriterPromotionParams(EvalBaseModel):
+    """``writer_promotion``."""
+
+    campaign_id: CampaignId
+    candidate: str = Field(
+        min_length=1, description="The candidate arm, by its label or its variant key; never the control."
+    )
+    pairwise_job: JobId | None = Field(
+        default=None,
+        description="The completed writer_pairwise job over this candidate, whose report is the primary reading; "
+        "without one the read never promotes.",
+    )
+
+
+class WriterPairwiseParams(EvalBaseModel):
+    """``writer_pairwise``."""
+
+    campaign_id: CampaignId
+    candidate: str = Field(
+        min_length=1, description="The candidate arm, by its label or its variant key; never the control."
+    )
 
 
 class ScopePivotParams(EvalBaseModel):
@@ -1142,7 +1289,9 @@ async def _analyses_undescribable(
 
 
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
-    return await analysis_generate(host, params.campaign_id, caller.scope_id, model=params.model)
+    return await analysis_generate(
+        host, params.campaign_id, caller.scope_id, writer=campaign_report_writer(caller), model=params.model
+    )
 
 
 async def _analysis_estimate(
@@ -1172,7 +1321,15 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         caller.scope_id,
         format=params.format,
         trials=params.trials,
+        static=params.static,
+        report_doc_id=params.report_doc_id,
+        include_sessions=params.include_sessions,
     )
+
+
+async def _analyst_gaps_list(host: OpsHost, caller: Caller, params: AnalystGapsListParams) -> GapDigest:
+    since: datetime | None = params.since
+    return await analyst_gaps_list(host, caller.scope_id, since=since)
 
 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
@@ -1242,41 +1399,36 @@ async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfi
     )
 
 
-async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
+async def _writer_template_create(host: OpsHost, caller: Caller, params: WriterTemplateCreateParams) -> TemplateLine:
+    create = WriterTemplateCreate.model_validate(params.model_dump())
+    return await run_blocking(host.eval_host.blocking_executor, writer_template_create, host, create, caller.scope_id)
+
+
+async def _writer_case_mint(host: OpsHost, caller: Caller, params: WriterCaseMintParams) -> MintedWriterCase:
+    return await writer_case_mint(host, params.mint(), caller.scope_id, created_by=caller.identity)
+
+
+async def _writer_case_archive(host: OpsHost, caller: Caller, params: WriterCaseArchiveParams) -> WriterCaseState:
+    stored = await writer_case_archive(
+        host, params.writer_case_id, caller.scope_id, archived=params.archived, reason=params.archive_reason
+    )
+    return WriterCaseState.of(stored)
+
+
+async def _writer_promotion(host: OpsHost, caller: Caller, params: WriterPromotionParams) -> WriterPromotion:
     eval_host = host.eval_host
-    freeze = ReporterCaseFreeze.model_validate(params.model_dump())
-    # The caller relays each label's verdict, its own or a reader's it names; the host attests which.
+    pairwise = None if params.pairwise_job is None else await job_poll(host, params.pairwise_job, caller.scope_id)
     return await run_blocking(
         eval_host.blocking_executor,
-        partial(reporter_case_freeze, collected_by=caller.identity),
+        partial(writer_promotion, candidate=params.candidate, pairwise_job=pairwise),
         eval_host,
-        freeze,
+        params.campaign_id,
         caller.scope_id,
     )
 
 
-async def _reporter_cases_list(host: OpsHost, caller: Caller, params: ReporterCasesListParams) -> ReporterCaseListing:
-    eval_host = host.eval_host
-    return await run_blocking(
-        eval_host.blocking_executor,
-        partial(reporter_cases_list, include_archived=params.include_archived),
-        eval_host,
-        params.template_id,
-        caller.scope_id,
-    )
-
-
-async def _reporter_case_archive(
-    host: OpsHost, caller: Caller, params: ReporterCaseArchiveParams
-) -> FrozenReporterCase:
-    eval_host = host.eval_host
-    return await run_blocking(
-        eval_host.blocking_executor,
-        partial(reporter_case_archive, archived=params.archived, reason=params.archive_reason),
-        eval_host,
-        params.reporter_case_id,
-        caller.scope_id,
-    )
+async def _writer_pairwise(host: OpsHost, caller: Caller, params: WriterPairwiseParams) -> JobsStarted:
+    return await writer_pairwise(host, params.campaign_id, caller.scope_id, candidate=params.candidate)
 
 
 async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
@@ -1591,6 +1743,132 @@ async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"run_id": await stage.finished_run(), "second_judge_model": stage.sample.second_judge_model}
 
 
+async def _writer_pairwise_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    """A campaign of two arms over the sample's finished run, the control the run and the candidate a copy of it under
+    another model, each result's page stored as a document that speaks for itself: a pairwise pass over it asks the
+    judge about every case's two pages, whatever the host's kind renders. Arranged in the stage host's own store.
+
+    The pass refuses a judge the host places in a writer's family, and a sample's judge may share its candidate's, so
+    where the host places them together the pair is scored by the sample's second judge (:func:`_pair_judge`)."""
+    run_id = await stage.finished_run()
+    eval_host = stage.host.eval_host
+    family, second = stage.host.model_family, stage.sample.second_judge_model
+    campaign_id = await run_blocking(
+        eval_host.blocking_executor,
+        partial(_paired_campaign, family=family, second_judge=second),
+        eval_host,
+        run_id,
+        stage.caller.scope_id,
+        stage.caller.identity,
+    )
+    return {"campaign_id": campaign_id, "candidate": "candidate"}
+
+
+def _pair_judge(own: str, second: str, writers: Sequence[str], family: Callable[[str], str | None] | None) -> str:
+    """The judge the kit's pair is scored by: the run's own, unless the host places it in a writer's family, then the
+    sample's second judge, as the pass's family check reads them
+    (:func:`~threetears.evals.ops.report_writer.writer_launch.judge_family_check`).
+
+    :raises ValidationFailedError: The host places both judges in a writer's family, so no pair the kit builds passes.
+    """
+    if family is None:
+        return own
+    for judge in (own, second):
+        placed = family(judge)
+        if placed is None or all(family(writer) != placed for writer in writers):
+            return judge
+    raise ValidationFailedError(
+        f"the sample's judge {own!r} and its second judge {second!r} are both of a candidate model's family, so the "
+        "pairwise pass refuses every pair the kit builds",
+        remedy="name a second judge of another family than the sample's candidate models (second_judge_model)",
+    )
+
+
+def _paired_campaign(
+    eval_host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    created_by: str,
+    *,
+    family: Callable[[str], str | None] | None,
+    second_judge: str,
+) -> str:
+    """Store the candidate arm beside the finished run, and the campaign naming both; its id. Blocking.
+
+    Where the pair is scored by the second judge, the control is a copy of the run under that judge too, so both arms
+    name one scoring judge."""
+    storage = eval_host.storage
+    run = storage.load_eval_run(run_id, scope_id)
+    assert run is not None and run.judge_model is not None  # the stage's run finished judged, so its record is stored
+    writers = [run.candidate_model, f"{run.candidate_model} (paired)"]
+    judge = _pair_judge(run.judge_model, second_judge, writers, family)
+    control = (
+        run if judge == run.judge_model else run.model_copy(update={"id": str(uuid.uuid7()), "judge_model": judge})
+    )
+    # Another model and no recorded lever map: the copy's key is derived as a reader derives it, so it is its own arm.
+    candidate = run.model_copy(
+        update={
+            "id": str(uuid.uuid7()),
+            "candidate_model": writers[1],
+            "judge_model": judge,
+            "variant_levers": None,
+            "identity_version": None,
+        }
+    )
+    identity = resolve_variant_identity(run=candidate, profile=eval_host.profile)
+    if control is not run:
+        storage.save_eval_run(control)
+    storage.save_eval_run(candidate)
+    for result in storage.query_eval_results(scope_id, run_id=run_id):
+        mine = (
+            result if control is run else result.model_copy(update={"id": str(uuid.uuid7()), "eval_run_id": control.id})
+        )
+        paired = result.model_copy(
+            update={
+                "id": str(uuid.uuid7()),
+                "eval_run_id": candidate.id,
+                "model": candidate.candidate_model,
+                "variant_key": identity.variant_key,
+                "identity_version": identity.identity_version,
+            }
+        )
+        for arm, stored in (("control", mine), ("candidate", paired)):
+            page = JudgeEvidence(
+                case_material=f"The facts of case {stored.test_case_id}.",
+                artifact=f"The {arm} arm's page on case {stored.test_case_id}.",
+            )
+            trace = EvalTrace(
+                id=eval_trace_doc_id(stored.id),
+                scope_id=scope_id,
+                result_id=stored.id,
+                eval_run_id=stored.eval_run_id,
+                judge_evidence=page,
+                judged_artifact=JudgedArtifact.DOCUMENT,
+            )
+            storage.save_eval_result(stored, trace)
+    models = [control.candidate_model, candidate.candidate_model]
+    design = {
+        "axes": [{"axis_id": "model", "values": [{"content": model, "display": model} for model in models]}],
+        "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+    }
+    campaign = campaign_create(
+        eval_host,
+        CampaignDefinition(
+            name="jobs conformance pairs",
+            subject_id=control.subject_snapshot.subject_id,
+            behavior="conformance",
+            arms=[
+                {"label": "control", "role": "control", "from_run_ids": [control.id]},
+                {"label": "candidate", "role": "candidate", "from_run_ids": [candidate.id]},
+            ],
+            aspects=[{"label": "pairs", "run_ids": [control.id, candidate.id], "design": design}],
+        ),
+        scope_id,
+        created_by=created_by,
+    )
+    return campaign.id
+
+
 async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"run_id": await stage.finished_run(), "selection": "all", "repeats": 2}
 
@@ -1602,8 +1880,8 @@ def _cancelled_before_its_cells(storage: EvalStorage, run_id: str, scope_id: str
     after the last of them leaves nothing to resume — so the sample's finished run is written as that cancel leaves a
     run instead: its rows gone, and its record ``cancelled`` with nothing persisted. Only the host's store is touched.
     """
-    for row in storage.query_eval_results_by_run(run_id, scope_id):
-        storage.delete_eval_result(row.id, scope_id)
+    for result_id in storage.query_eval_result_ids_by_run(run_id, scope_id):
+        storage.delete_eval_result(result_id, scope_id)
     run, etag = storage.load_eval_run_with_etag(run_id, scope_id)
     assert run is not None  # the stage's run finished, so its record is stored
     cancelled = run.model_copy(
@@ -1643,7 +1921,7 @@ def engine_actions() -> tuple[Action, ...]:
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
-    reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
+    writer_template_id, writer_case_id = "tmpl-writer", "0193a1b2-writer-case"
     return (
         Action(
             name="templates_list",
@@ -2006,13 +2284,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
                 "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
-                "no runs), floors and short_names (what a page prints for each aspect). A declaration it writes is validated and gated as campaign_create's is, and "
+                "no runs), floors, short_names (what a page prints for each aspect) and arm_short_names (for each named arm). A declaration it writes is validated and gated as campaign_create's is, and "
                 "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
                 "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
                 "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
                 "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
                 "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
-                "control, which may be named once while none is; name, description and short_names stay editable, and an "
+                "control, which may be named once while none is; name, description, short_names and arm_short_names stay editable, and an "
                 "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
                 "and leave through campaign_runs_add and campaign_runs_remove."
             ),
@@ -2063,7 +2341,7 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
                 "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
-                "It is read against the readings of the page it will appear on, never the memo's words: with "
+                "It is read against the readings of the page it will appear on, never the report's words: with "
                 "analysis_id, that analysis's (it must be the one the campaign's page reports), else the evidence as "
                 "it stands. An arm with a broken floor is recorded only when floors_overridden names each such "
                 "floor's key, and an arm that missed an absolute bar only when bars_overridden names each such bar; "
@@ -2076,7 +2354,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="analysis_generate",
-            summary="Generate a campaign's analysis with a paid model call, as a job to poll.",
+            summary="Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll.",
             workflow=ANALYSE,
             permission="spend",
             params=AnalysisGenerateParams,
@@ -2086,17 +2364,22 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
-                "Refused before any spend when the campaign has no evidence or a generation of it is already "
-                "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
-                "so one over the cap is refused with nothing spent; the one repair round-trip a refused output buys "
-                "when its prompt exists, against what is left. analysis_estimate prices it first without spending. "
-                "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
-                "is the generation attempt, written however it ends."
+                "The report writer writes the analysis: the campaign's evidence is frozen as a snapshot, the analyst "
+                "drafts a report document on it with the evals_analyst tool, the report editor reviews it, and the "
+                "analyst revises, up to two revisions. Every turn runs on the host's analyst model and is admitted "
+                "against the host's report budget, which no caller can raise; the job is bounded by the host's time "
+                "limit. Refused before any spend when the host set no report budget, its analyst model cannot be "
+                "priced, or a generation of the campaign is already running; refused before anything is sent when "
+                "the campaign has no evidence. A stored report is linked by an analysis (basis doc) with an insight "
+                "per durable claim; an ending that stores nothing ends the job failed with why. The spend is "
+                "ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record is the "
+                "generation attempt, written however it ends. analysis_estimate states the budget first, without "
+                "spending."
             ),
         ),
         Action(
             name="analysis_estimate",
-            summary="Price a campaign's analysis generation against the host's out-of-run cap, without spending.",
+            summary="State the report budget a campaign's analysis generation would be held to, without spending.",
             workflow=ANALYSE,
             permission="read",
             params=AnalysisGenerateParams,
@@ -2105,8 +2388,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "The generation's own assembly and pricing rule, so would_start is analysis_generate's answer. "
-                "Makes no model call."
+                "The generation's own checks in its call, so would_start is analysis_generate's start: cap_usd is the "
+                "host's report budget in dollars (none for a token and turn budget; bound says it in words), the bound "
+                "on every turn, and max_calls the most turns the writer can send. It reads no run: the campaign's "
+                "evidence is checked when the job freezes it (unchecked). Makes no model call."
             ),
         ),
         Action(
@@ -2207,6 +2492,12 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_model,
             example={"campaign_id": campaign_id},
+            detail=(
+                "Each analysis says what wrote it (basis): doc, for one the report writer wrote, with its report "
+                "document's id (report_read reads it, any version by report_doc_id); or memo or plan, for one a retired "
+                "writer wrote (the memo writer or the report planner), which report_read renders code-only with one "
+                "line to regenerate it. needs_regeneration says when an analysis no longer reads, and why."
+            ),
         ),
         Action(
             name="insights_list",
@@ -2266,7 +2557,39 @@ def engine_actions() -> tuple[Action, ...]:
                 "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
                 "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
-                "read it when you need the records, or read one trial with result_get."
+                "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
+                "the analysis: doc (the report writer, which analysis_generate runs), whose page is the one its stored "
+                "report document draws and whose document is doc (report-doc/1 JSON, figures by key); or memo or plan "
+                "(an older analysis a retired writer wrote), read code-only. A retired writer's analysis, or a "
+                "document this version no longer reads, is never refused: the page is the code-only page with one line "
+                "to regenerate it, which needs_regeneration repeats. report_doc_id reads "
+                "one stored report "
+                "document, any version; include_sessions=true with format json adds its transcripts "
+                "(report_doc.sessions), for an audit. static=true makes the html page one a host can serve "
+                "under a policy that runs and loads nothing: no script, no link, every chart its table."
+            ),
+        ),
+        Action(
+            name="analyst_gaps_list",
+            summary="List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalystGapsListParams,
+            result=GapDigest,
+            handler=_analyst_gaps_list,
+            render=GapDigest.render,
+            example={"since": "2026-10-28T00:00:00Z"},
+            detail=(
+                "Every capability_gap call an analyst or editor made (missing: a capability no tool gave; suspect: a "
+                "result that looked wrong, with the keys and calls that reproduce it), and code's notices from report "
+                "writes (unresolved_key: a figure key that sent a draft back; editor_score: a rubric item scored 0 or "
+                "1). Gaps group by kind and need, the need compared with its case, spacing, punctuation, the ids the "
+                "engine mints and the figure keys it names set aside, and no model reads them. Groups rank suspect "
+                "first, then those a must_fix finding is about (a gap touching a claim it names), then the rest; "
+                "within each, the larger count, then the later last seen. Each group carries a title and a body to "
+                "file as an issue, with its evidence and never the caller's identity, every @ kept from mentioning "
+                "anyone; the needs are what a model wrote, so read them before filing on a public tracker. At most "
+                "1,000 gaps a digest: a window holding more is refused, naming a later since. Stores and posts nothing."
             ),
         ),
         Action(
@@ -2288,53 +2611,103 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
-            name="reporter_case_freeze",
-            summary="Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template.",
+            name="writer_template_create",
+            summary="Write a report writer template, its scoring rubric seeded from the editor rubric this build ships.",
             workflow=ANALYSE,
             permission="write",
-            params=ReporterCaseFreezeParams,
-            result=FrozenReporterCase,
-            handler=_reporter_case_freeze,
+            params=WriterTemplateCreateParams,
+            result=TemplateLine,
+            handler=_writer_template_create,
             render=render.render_model,
             example={
-                "template_id": reporter_template_id,
-                "campaign_id": campaign_id,
-                "recorded_analysis_id": analysis_id,
-                "labels": [{"dimension": "reporter.groundedness", "direction": "high", "quote": "every number checks"}],
+                "template_name": "report writer",
+                "intent": "Measure whether a change to the report writer writes better reports.",
             },
             detail=(
-                "A reporter run measures the analysis writer, and its cases are never generated: each is one "
-                "campaign's bundle, frozen with its fingerprint, and a reporter template launches nothing until one "
-                "is frozen. With recorded_analysis_id the case also pins that analysis's memo, which the as-recorded "
-                "candidate replays and labels are written about; without it only a generating candidate can run "
-                "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
-                "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
-                "case. Each label is a reader's verdict in its dimension's form: a direction on an ordinal "
-                "dimension, pass or fail on a pass_fail one, and a mismatch is refused. A memo_excerpt quotes the "
-                "passage it is about and must be in the recorded memo. Its reader is named in the label or, omitted, "
-                "you; the host must vouch that you relay each reader's verdict, or the freeze is refused and nothing "
-                "is written. Who gave or relayed a verdict is not part of the case's identity: re-freezing the same "
-                "verdicts returns the stored case. One quoting other memo passages is refused unless supersedes names "
-                "the live case. limits states what the frozen evidence cannot "
-                "support. Then run_launch the template; reporter_cases_list reads its bank, reporter_case_archive "
-                "retires a case. Calls no model."
+                "A report writer campaign measures the analyst that writes a campaign's report: its skill, its "
+                "reasoning effort, its revisions or its model. The template is the writer kind, a name and an intent, "
+                "and its scoring rubric: the seven items of the editor rubric this build ships, copied in now, so "
+                "every campaign on the template is scored on what that rubric stated when it was written. Mint cases "
+                "into it with writer_case_mint, then run_launch it over the held-out set to decide a change. Refused "
+                "on a host that does not launch the report writer kind, and for a name the scope already holds. "
+                "Calls no model."
             ),
         ),
         Action(
-            name="reporter_cases_list",
-            summary="List a reporter template's cases: which each campaign and memo launches, superseded or retired.",
+            name="writer_case_mint",
+            summary="Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set.",
+            workflow=ANALYSE,
+            permission="write",
+            params=WriterCaseMintParams,
+            result=MintedWriterCase,
+            handler=_writer_case_mint,
+            render=render.render_model,
+            idempotent=True,
+            example={"template_id": writer_template_id, "campaign_id": campaign_id, "withhold": ["kairo-round2.md"]},
+            detail=(
+                "A writer case is one report snapshot, frozen from a campaign or a stored analysis now, or named by a "
+                "snapshot already frozen, with the exemplar notes its analyst is never given. Name exactly one source. "
+                "Each withheld note must be a note of the skill this build ships, checked before anything is frozen. "
+                "The case joins one side of the split: a group already placed keeps its side, and a new group's side "
+                "is read from the digest of its name against held_out_fraction, so related campaigns named in one "
+                "group never sit on both sides. The case is listed in its side's set as that set's next version. One "
+                "source is one case: minting it again returns the stored case, and a mint that differs (the evidence "
+                "moved, or other notes withheld) is refused; retire the old case with writer_case_archive and mint "
+                "again. Calls no model."
+            ),
+        ),
+        Action(
+            name="writer_promotion",
+            summary="Read whether a report writer campaign's candidate arm should replace its control.",
             workflow=ANALYSE,
             permission="read",
-            params=ReporterCasesListParams,
-            result=ReporterCaseListing,
-            handler=_reporter_cases_list,
+            params=WriterPromotionParams,
+            result=WriterPromotion,
+            handler=_writer_promotion,
             render=render.render_model,
-            example={"template_id": reporter_template_id},
+            example={
+                "campaign_id": campaign_id,
+                "candidate": "edited skill",
+                "pairwise_job": "action:0193a1b2-pairwise",
+            },
             detail=(
-                "Each case with whether a launch runs it and what superseded it. A case this build cannot read is "
-                "listed rather than refused, since this is where it is found; while one is listed, which case is "
-                "live cannot be decided. A pair holding more than one live case is named, since every launch of the "
-                "template refuses until one freeze supersedes them all."
+                "Reads one primary reading, the pairwise pass's preference (report_writer.preferred, from the "
+                "completed writer_pairwise job named as pairwise_job), and gates the candidate's other corrected "
+                "verdicts on regression only. Promote when the primary reads improved, no other reading regressed "
+                "and every guardrail is held. Keep when the primary or any other reading regressed, too few cases "
+                "included, or a guardrail is breached. Undecided otherwise, naming the primary's reason (not "
+                "separated, too few cases, void, not read), and undecided never promotes. The primary is void when "
+                "the judge's order consistency is below 0.7. It reports the reading over the pairs whose pages were "
+                "both finished beside the primary, and for a primary that does not separate, the held-out cases that "
+                "would settle it. It also names the levers the candidate changed, the held-out "
+                "cases read, both arms' costs and the skill this build ships with its ledger entry. Refused for arms "
+                "scored by different judges or rubrics, a campaign run over anything but held-out writer cases, and "
+                "a pairwise job that is not a completed pass over this campaign's candidate, control and judge. "
+                "Records nothing: a person records the call with campaign_record."
+            ),
+        ),
+        Action(
+            name="writer_pairwise",
+            summary="Ask the scoring judge which page is better, candidate or control, for each case, as a job.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=WriterPairwiseParams,
+            result=JobsStarted,
+            handler=_writer_pairwise,
+            long_running=True,
+            happy_path=_writer_pairwise_path,
+            example={"campaign_id": campaign_id, "candidate": "edited skill"},
+            detail=(
+                "Pairs the candidate's results with the control's by case and repeat, and shows the scoring judge each "
+                "pair's two stored pages, nothing re-rendered, once with each first. A side that stored no page loses "
+                "its pair, and both missing is a tie. Each case's share of the preference the candidate won is read "
+                "against the control's on report_writer.preferred, by the bounded test every rate contrast reads, "
+                "over every pair and over the pairs whose pages were both finished. Order consistency, the lean to "
+                "the first page and the can't-tell count say how far the judge can be trusted on it. Every call is "
+                "priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under "
+                "purpose judge. Refused in the call, with nothing spent, for arms scored by different judges or "
+                "rubrics, a judge of a writer's family, or a cap that cannot cover the calls. job_poll returns the "
+                "report once the job completes; writer_promotion reads it as its primary reading."
             ),
         ),
         Action(
@@ -2619,8 +2992,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "so the result says beside it how many observations were left out and why; JSON carries both. "
                 f"A scope whose runs hold more than {EXPORT_PAGE_RESULTS} results is exported in pages of whole runs, "
                 "oldest first, and a run past it in pages of its cases: page names what a page holds, and its text "
-                "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). One named "
-                "run past the ceiling is paged by its cases; two or more named runs past it are refused."
+                "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). Named runs "
+                "past the ceiling page as the scope does, the pages holding the named runs alone and the next call "
+                "naming them again; one named run past the ceiling is paged by its cases."
             ),
         ),
         Action(
@@ -2732,22 +3106,24 @@ def engine_actions() -> tuple[Action, ...]:
             example={"analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
         ),
         Action(
-            name="reporter_case_archive",
-            summary="Retire a reporter case (or restore it): no launch runs it again, nothing destroyed.",
+            name="writer_case_archive",
+            summary="Retire a writer case (or restore it): no launch runs it again, nothing destroyed.",
             workflow=CURATE,
             permission="write",
-            params=ReporterCaseArchiveParams,
-            result=FrozenReporterCase,
-            handler=_reporter_case_archive,
+            params=WriterCaseArchiveParams,
+            result=WriterCaseState,
+            handler=_writer_case_archive,
             render=render.render_model,
+            idempotent=True,
             example={
-                "reporter_case_id": reporter_case_id,
+                "writer_case_id": writer_case_id,
                 "archived": True,
-                "archive_reason": "its bundle no longer re-assembles",
+                "archive_reason": "its campaign was re-run",
             },
             detail=(
-                "For a case that can no longer measure anything. It stays readable for every run measured against "
-                "it. A restore is refused when it would give its campaign and memo a second live case."
+                "For a case whose campaign's evidence moved: retire it, then writer_case_mint the campaign again, and "
+                "the new case joins its set's next version without the retired one. It stays readable for every run "
+                "measured against it. A restore is refused when its source already has another live case."
             ),
         ),
         Action(
@@ -2800,7 +3176,11 @@ def engine_actions() -> tuple[Action, ...]:
 
 
 def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
-    """The engine's catalogue, with the host's own actions after the engine's.
+    """The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
+
+    The analyst's actions (:func:`~threetears.evals.actions.analyst.analyst_actions`) mount only on the analyst's
+    tools (:func:`~threetears.evals.actions.analyst.analyst_tools`), never on :func:`standard_tools` or
+    :func:`read_only_tools`, so the ``evals`` tool an MCP client sees is the engine's alone.
 
     :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
         rendered like the engine's.
@@ -2809,7 +3189,7 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
     :rtype: ActionCatalogue
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
-    return ActionCatalogue(engine_actions()).extended(host_actions)
+    return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)
 
 
 __all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "engine_actions", "eval_catalogue"]

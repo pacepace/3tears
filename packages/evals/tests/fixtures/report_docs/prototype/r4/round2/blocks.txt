@@ -1,0 +1,275 @@
+### c1 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [persona]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, -6.1, -7.3 to -4.9, -6.1 pts worse]
+  - cells: [B · f16, -7.4, -8.6 to -6.2, -7.4 pts worse]
+  - cells: [C · cor, -2.2, -3.4 to -1, -2.2 pts worse]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c1 / 2
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [cost_per_1k]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: usd_per_1k
+domain: 
+reference: none
+columns: [Row, Value, Note]
+rows (4):
+  - cells: [Production, $2.1, $2.1]
+  - cells: [f64, $1.47, $1.47]
+  - cells: [f16, $1.21, $1.21]
+  - cells: [cor, $1.62, $1.62]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: lines
+query:
+  source: strata
+  aspect: 
+  measures: [persona]
+  arms: [prod, f64]
+  strata: [depth:1-2, depth:3-5, depth:6-10, depth:11+]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [, P · Production, A · f64]
+rows (4):
+  - cells: [1–2, 93.5%, 91.5%]
+  - cells: [3–5, 92%, 87.5%]
+  - cells: [6–10, 90%, 79%]
+  - cells: [11+, 87.5%, 70%]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: human_pref
+  aspect: 
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Row, Value, Note]
+rows (2):
+  - cells: [Conversations of 1–5 turns, 52%, 52%]
+  - cells: [Conversations of 6+ turns, 61%, 61%]
+total: 2
+offset: 0
+truncated: False
+notes: [The share of 240 blind ratings preferring Production over f64; 50% is no preference.]
+
+### c4 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: judged
+  aspect: 
+  measures: [facts]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: percent
+domain: 
+criteria.facts.threshold = 90%
+columns: [Row, Value]
+rows (5):
+  - cells: [P · Production, 93%]
+  - cells: [A · f64, 92.1%]
+  - cells: [B · f16, 89.4%]
+  - cells: [C · cor, 94%]
+  - cells: [floor 90%, 90%]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 2
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [facts]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, -0.9, -2.7 to +0.9, -0.9 pts not separated]
+  - cells: [B · f16, -3.6, -5.4 to -1.8, -3.6 pts worse]
+  - cells: [C · cor, +1, -0.8 to +2.8, +1 pts not separated]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [specul]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, -0.9, -2.8 to +1, -0.9 pts not separated]
+  - cells: [B · f16, -1.3, -3.2 to +0.6, -1.3 pts not separated]
+  - cells: [C · cor, -5.3, -7.2 to -3.4, -5.3 pts worse]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 2
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [specul]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: pct
+domain: 
+criteria.specul.threshold = 95%
+columns: [Row, Value]
+rows (5):
+  - cells: [P · Production, 97.3%]
+  - cells: [A · f64, 96.4%]
+  - cells: [B · f16, 96%]
+  - cells: [C · cor, 92%]
+  - cells: [floor 95%, 95%]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c6 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_s]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: s
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (4):
+  - cells: [Latency, P · Production, 1.1 s, 2.4 s]
+  - cells: [Latency, A · f64, 0.7 s, 1.6 s]
+  - cells: [Latency, B · f16, 0.6 s, 1.3 s]
+  - cells: [Latency, C · cor, 1.3 s, 2.9 s]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c6 / 2
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [task]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, +0.2, -0.1 to +0.5, +0.2 pts not separated]
+  - cells: [B · f16, -0.4, -0.7 to -0.1, -0.4 pts worse]
+  - cells: [C · cor, -1, -1.3 to -0.7, -1 pts worse]
+total: 3
+offset: 0
+truncated: False
+notes: []

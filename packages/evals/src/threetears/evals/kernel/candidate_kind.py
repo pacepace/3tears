@@ -8,12 +8,12 @@ The seam is two operations, and everything else in the runner is subject-agnosti
 This module is the engine half of that seam: the protocol, the object a kind hands
 back, and the two failures the dispatch site has to tell apart. **It is not where a
 kind lives.** A kind is implemented by whoever owns its subject — a host's in its own
-adapter, the reporter kind in analysis — and reaches the runner as a factory, so this
+adapter, the judge kind in run, the report writer kind in ops — and reaches the runner as a factory, so this
 module imports nothing host-side and travels with the engine.
 
 **Which engine package it travels in is a separate question, and the answer is the kernel,
 by elimination.** The extraction is four packages, and a kind is implemented on both sides of
-the run/analysis line: a host's kinds in its adapter, and the reporter kind in analysis. A
+the run/analysis line: a host's kinds in its adapter, and the engine's own above run (the report writer kind). A
 Protocol living in run would give analysis an edge into run, which the package matrix forbids;
 the kernel is the one package every implementer may import beside the schema (a judgement call, recorded here).
 The cost is that the lingua franca UIs and
@@ -120,10 +120,8 @@ __all__ = [
     "CandidatePreparationFailed",
     "CandidateTelemetry",
     "CellPending",
-    "CellReservation",
     "CellSink",
     "CellSpanWindow",
-    "CostCapReached",
     "UnknownCandidateKind",
     "VariantConfig",
 ]
@@ -440,54 +438,6 @@ class CellSpanWindow(Protocol):
 CellPending = Literal["apparatus", "candidate", "background_work", "simulator", "judge"]
 
 
-class CostCapReached(Exception):
-    """Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
-
-    The run's cost cap used to refuse a cell's next paid call from inside the cell, raised as this from
-    :meth:`CellSink.reserve`. It is now read between cells, against what the recorded cells landed
-    (:func:`~threetears.evals.run.runner.execute_run`); a cell already running finishes whole, and a cell that
-    loops is bounded by the cell timeout. The name stays so a host that imported it keeps importing, and so a
-    host that catches it keeps compiling; nothing the engine runs raises it, and nothing it runs catches it.
-    """
-
-    def __init__(self, detail: str = "the run's cost cap has no room for another paid call") -> None:
-        """Say what the cap refused.
-
-        :param detail: What was refused, for a log line; the cell's record names the cap's own numbers.
-        :ptype detail: str
-        """
-        super().__init__(detail)
-        self.detail = detail
-
-
-class CellReservation(Protocol):
-    """The handle of one paid call a cell is making, which lands the call's cost on its source when it returns.
-
-    Minted by :meth:`CellSink.reserve` before the call is made. It holds nothing against the run: no ceiling is
-    asked inside a cell. It is closed exactly once: :meth:`settle` when the call returned, :meth:`release`
-    when it did not.
-    """
-
-    def settle(self, cost_usd: float | None) -> None:
-        """Land what the call actually cost on the reservation's source, as :meth:`CellSink.add_spend` would add it.
-
-        :param cost_usd: What the call cost, its every attempt included; ``None`` when the provider priced none,
-            which leaves the source unpriced for the rest of the cell.
-        :ptype cost_usd: float | None
-        :raises ValueError: The reservation was already closed, or ``cost_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def release(self) -> None:
-        """Close the reservation, counting nothing — for a call that raised, or was never made.
-
-        A call that raised may still have been billed; a kind that learns what it cost adds it through
-        :meth:`CellSink.add_spend`. Releasing an already-closed reservation does nothing, so a ``finally``
-        may release unconditionally after a settle.
-        """
-        ...  # pragma: no cover — protocol
-
-
 class CellSink(Protocol):
     """One cell's record of where it stands, as the kind driving that cell reports into it.
 
@@ -501,8 +451,7 @@ class CellSink(Protocol):
     total per source (:data:`CellPending`: the candidate, its background work, the simulator, the judge, the
     rig), each only ever added to (:meth:`add_spend`). It asks no ceiling: the run's cost cap and its
     metered-call ceiling are read BETWEEN cells, against what the recorded cells landed, and stop new cells from
-    starting while the running ones finish. :meth:`reserve` and :meth:`cost_cap_reached` remain for the hosts
-    that call them, and refuse and report nothing.
+    starting while the running ones finish.
 
     A kind is handed one per cell, like ``span_window``, and uses it for that cell alone.
     """
@@ -546,8 +495,7 @@ class CellSink(Protocol):
 
         Each call ADDS: report each paid call's cost once, as it lands. A source's total only ever grows,
         so a kind reporting its candidate's spend and the engine reporting the simulator's or the judge's
-        never overwrite one another. A call made through :meth:`reserve` is counted by settling its
-        reservation instead — adding it here too would count it twice.
+        never overwrite one another.
 
         Not the cell's record: what the cell stores is what :meth:`CandidateKind.invoke` returns, or at a
         deadline what :meth:`report_progress` reads.
@@ -558,32 +506,6 @@ class CellSink(Protocol):
             unpriced for the rest of the cell.
         :ptype cost_usd: float | None
         :raises ValueError: ``cost_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation:
-        """Open the handle for one paid call, to settle once the call returns or release if it does not.
-
-        Never refuses the call: the cost cap is read between cells, so nothing inside a cell is turned away
-        by it. The ceiling is the most the call can cost
-        (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`) and is only checked to be
-        a usable amount.
-
-        :param source: Whose call it is; its cost lands on that source's total when the reservation settles.
-        :ptype source: CellPending
-        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
-        :ptype ceiling_usd: float | None
-        :return: The reservation, to settle once the call returns or release if it does not.
-        :rtype: CellReservation
-        :raises ValueError: ``ceiling_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def cost_cap_reached(self) -> bool:
-        """Deprecated: always ``False``, because the cost cap is read between cells and never inside one.
-
-        :return: ``False``.
-        :rtype: bool
         """
         ...  # pragma: no cover — protocol
 
@@ -626,7 +548,7 @@ class CandidateKind(Protocol):
 
     **What a paid call owes the run's cost cap.** Nothing inside the cell: the cap is read between cells against
     the spend of the cells already recorded, and a cell already running finishes whole. A kind reports its
-    spend as it lands (:meth:`CellSink.add_spend`, or settling a :meth:`CellSink.reserve` handle) and returns
+    spend as it lands (:meth:`CellSink.add_spend`) and returns
     it on its output, which is what the cap counts once the cell's result is recorded.
     """
 
@@ -722,7 +644,7 @@ class CandidateKind(Protocol):
         :ptype test_case: EvalTestCase
         :param sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
             billed so far, and keeping each paid call in the cell's spend as it is made
-            (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
+            (:meth:`CellSink.add_spend`). The cell's, like
             ``span_window``, not the kind's.
         :ptype sink: CellSink
         :return: The candidate's output, its judge-free facts and its telemetry.

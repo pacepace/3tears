@@ -1,9 +1,11 @@
-"""One decision, one memo: a campaign of aspects is read, written and decided as one, through the service.
+"""One decision, one analysis: a campaign of aspects is read, analysed and decided as one, through the service.
 
 The owner's ruling (seven memos for one decision is the worst evals pain) as an acceptance test, end to end over real
 runs. Seven campaigns stored before aspects existed — v15 documents, one template each — are adopted whole into one
-campaign (``aspects_from``): one generation writes one memo over all seven, the campaign's page lays out one row per
-aspect, the writer's one recommendation and the person's call recorded through ``campaign_record``. A stored v15
+campaign (``aspects_from``): one analysis is stored over all seven, the campaign's page lays out one row per aspect,
+and the person's call is recorded through ``campaign_record``. The analysis is a memo, as the retired memo writer
+stored one, held as JSON (:func:`_stored_memo`): every door reads it as code's page standing in for it, over the same aspects, so
+the page, the listing and the call read what code read, never the memo's words. A stored v15
 campaign read alone is a campaign of one aspect, whose fold is the aspect's own page. And a campaign of two aspects
 that regresses on one (breaking its floor) and improves on the other shows both on its first screen, the broken floor
 first; recording a call over it is refused until the call names the broken floor it overrides, and the same for a
@@ -27,18 +29,22 @@ import pytest
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     CampaignReport,
+    assemble_campaign_bundle,
     campaign_report,
     campaign_report_markdown,
     create_campaign,
     get_campaign,
-    list_analyses,
-    prepare_analysis_generation,
-    run_analysis_generation,
 )
-from threetears.evals.analysis.campaign_bundle import writer_view
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.doc_analysis import aspect_analysis
+from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.service import analysis_report
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
+from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
+from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
@@ -48,7 +54,7 @@ from threetears.evals.run.curation import set_analysis_archived
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.fixtured_client import FixturedClient
 
 #: The v15 campaign as v0.70 stored it, the shape every adopted campaign below is written in.
 _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
@@ -206,6 +212,12 @@ def _stored_v15(
     return str(document["id"])
 
 
+#: The line a memo analysis reads with through every door.
+_RETIRED = (
+    "written by a retired report writer (the memo writer); regenerate with analysis_generate to read a report over it"
+)
+
+
 def _memo(arm: str, labels: Sequence[str]) -> dict[str, Any]:
     """The writer's one memo: keep production, resting on no finding, with a summary of every aspect."""
     return {
@@ -266,18 +278,54 @@ async def _seven() -> tuple[Store, EvalCampaign]:
 
 
 async def _generated(held: Store, campaign: EvalCampaign) -> str:
-    """Generate the campaign's one memo with the writer's canned draft, and return the analysis's id."""
-
-    async def prompt() -> str:
-        return PROMPT
-
-    prepared = await prepare_analysis_generation(
-        held.host, campaign.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
-    )
-    control = next(arm.label for arm in prepared.bundle.arms if arm.role == "control")
-    held.clients[-1].completion.content = json.dumps(_memo(control, [aspect.label for aspect in campaign.aspects]))
-    analysis, _ = await run_analysis_generation(held.host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
+    """Store the campaign's one memo over its bundle assembled now, as the memo writer stored one keeping the control,
+    and return the analysis's id. Nothing writes it: the memo writer is retired, and a memo analysis is what a host
+    still holds from before the report writer."""
+    bundle = off_loop(assemble_campaign_bundle, held.host, campaign.id, SCOPE)
+    control = next(arm.label for arm in bundle.arms if arm.role == "control")
+    analysis = _stored_memo(bundle, _memo(control, [aspect.label for aspect in campaign.aspects]))
+    off_loop(held.host.storage.save_analysis, analysis)
     return analysis.id
+
+
+def _stored_memo(bundle: CampaignBundle, memo: dict[str, Any]) -> EvalAnalysis:
+    """``memo`` (no findings) over ``bundle`` as the retired memo writer stored it, its memo held as JSON: the
+    recommended arm's key resolved by code, every aspect's bundle and the campaign's frame frozen beside it."""
+    surfaces = bundle.surfaces()
+    recommended = memo["recommendation"]
+    arm = bundle.arm(recommended[0]["arm"]) if recommended else None
+    first = bundle.aspects[0]
+    written = utc_now_iso()
+    return EvalAnalysis(
+        recommended_variant_key=arm.variant_key if arm is not None else None,
+        campaign_id=bundle.campaign_id,
+        subject_id=bundle.subject_id,
+        subject_kind=bundle.subject_kind,
+        behavior=bundle.behavior,
+        observation_refs=bundle.run_ids,
+        model_versions={key: value for aspect in bundle.aspects for key, value in aspect.model_versions.items()},
+        scope_id=bundle.scope_id,
+        generation=GenerationProvenance(
+            prompt_id="eval_analysis_gen",
+            prompt_version="memo-writer",
+            generator_model="memo-writer-model",
+            bundle_fingerprint=bundle.fingerprint(),
+            generated_at=written,
+            bundle_assembled_at=written,
+            token_cost=0.0,
+            repair_attempts=0,
+            repaired_refusal=None,
+            user_message_digest="sha256:memo",
+            cell_model_version=first.cell_model_version,
+            bundle_schema_version=first.schema_version,
+            host_declarations_digest=first.host_declarations_digest,
+        ),
+        design_snapshot=bundle.declaration,
+        document=memo,
+        judged_tier_rule=JUDGED_TIER_RULE,
+        aspects=[aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
+        campaign_bundle=bundle.frame(),
+    )
 
 
 def _table(page: CampaignReport, name: str) -> TableBlock:
@@ -290,35 +338,28 @@ def _first_screen(page: CampaignReport) -> str:
     return campaign_report_markdown(page).split("\n## ", 1)[0]
 
 
-async def test_seven_stored_campaigns_adopted_into_one_are_one_memo_one_table_and_one_call() -> None:
+async def test_seven_stored_campaigns_adopted_into_one_are_one_analysis_one_table_and_one_call() -> None:
     held, one = await _seven()
     assert [aspect.label for aspect in one.aspects] == list(LABELS)
     # Each adopted aspect keeps when its own campaign asked the question, so each reads as asked before its runs.
     assert {aspect.label: aspect.asked_at for aspect in one.aspects} == ASKED_AT
     analysis_id = await _generated(held, one)
 
-    (analysis,) = off_loop(list_analyses, held.host.storage, one.id, SCOPE)
+    (analysis,) = off_loop(held.host.storage.list_analyses_by_campaign, one.id, SCOPE)
     assert analysis.id == analysis_id and [aspect.label for aspect in analysis.aspects] == list(LABELS)
     page = off_loop(campaign_report, held.host, one.id, SCOPE)
-    assert (page.basis, page.analysis_id, page.finding_count) == ("analysis", analysis_id, 0)
+    # The memo is a retired writer's: code's page stands in for it, saying so, and lays out every aspect as one.
+    assert (page.basis, page.analysis_id, page.unread_analysis_id) == ("code_only", None, analysis_id)
+    assert page.needs_regeneration is not None and page.needs_regeneration.startswith(_RETIRED)
     assert [fold.aspect for fold in page.aspects] == list(LABELS)
     assert [row["aspect"].text for row in _table(page, "aspects").rows] == list(LABELS)
-    assert page.recommendation is not None and page.recommendation.arm == "control"
     assert {row.aspect for row in page.readings.readings} == set(LABELS)
     assert all(row.confirmatory for row in page.readings.readings), "every aspect was asked before its runs"
-    # Each aspect's summary is laid out in its fold, in the writer's words.
-    for fold in page.aspects:
-        said = [block.body for block in fold.summary if isinstance(block, TextBlock)]
-        assert said == [
-            "The candidate moved the pass rate here.",
-            "Not sure: eight cases leave it open.",
-            "Nothing here argues for switching.",
-        ], fold.aspect
     first = _first_screen(page)
-    assert "**Recommended:** control" in first
-    # Code's readings follow the recommendation, in the page's Scorecard.
+    assert f"This campaign's analysis {analysis_id} was {_RETIRED}." in first
+    # Code's readings follow, in the page's Scorecard.
     markdown = campaign_report_markdown(page)
-    assert markdown.index("**Recommended:**") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
+    assert markdown.index(f"# {page.title}") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
 
     recorded = off_loop(
         campaign_record,
@@ -446,10 +487,10 @@ async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_th
     assert readings == {"billing": "worse", "tone": "better"}
     first = _first_screen(page)
     floor = first.index("**Adopting candidate overrides the 10-point floor it breaks on billing.**")
-    assert first.index("# support queue") < floor
+    assert first.index(f"# {page.title}") < floor
     assert "**Adopting candidate overrides the bar it misses on tone.**" in first
     markdown = campaign_report_markdown(page)
-    assert markdown.index("# support queue") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
+    assert markdown.index(f"# {page.title}") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
 
 
 def _record(held: Store, two: EvalCampaign, **call: Any) -> Any:
@@ -517,7 +558,7 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
-    assert page.analysis_id == analysis_id
+    assert page.unread_analysis_id == analysis_id
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     assert verdict.startswith("billing: ") and "shown worse; tone: " in verdict and verdict.endswith("shown better")
     bar, floor = _warnings(page)
@@ -552,7 +593,10 @@ def _timing(page: CampaignReport) -> list[str]:
 
 #: What :func:`_build_two` says once when its aspects are asked after their readings, its margins and control set
 #: before.
-_SET_LATE = "Criteria on every aspect were set after the results there existed, so they were not fixed in advance."
+_SET_LATE = (
+    "The aspect, bar and floor on every aspect were set after the results there existed, so they were not fixed in "
+    "advance."
+)
 
 
 def _criteria(page: CampaignReport) -> list[tuple[str, str, str]]:
@@ -576,22 +620,6 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert rows(held, two) == rows(timely_store, timely) and len(rows(held, two)) == 2
     assert all(confirmatory for *_, confirmatory in rows(held, two))
 
-    async def prompt() -> str:
-        return PROMPT
-
-    prepared = await prepare_analysis_generation(
-        held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
-    )
-    view = writer_view(prepared.bundle)
-    # Handed once, for the whole report, each criterion naming the aspects it was set late on, never in an aspect's
-    # part. Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not
-    # named.
-    assert view["disclosures"]["late_criteria"] == [
-        {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099", "aspects": ["billing", "tone"]},
-        {"criterion": "floor", "name": "billing/rate_drop/*", "set_at": "1 Jan 2099", "aspects": ["billing"]},
-        {"criterion": "bar", "name": COST_BAR.measure_id, "set_at": "1 Jan 2099", "aspects": ["tone"]},
-    ]
-    assert not [part for part in view["aspects"] if "late_criteria" in part]
     analysis_id = await _generated(held, two)
 
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
@@ -649,11 +677,20 @@ def _undated(text: str, *ids: str) -> str:
     return _FINGERPRINT.sub("<fingerprint>", _WHEN.sub("<when>", text))
 
 
+def _late_criteria(node: Any) -> list[Any]:
+    """Every late criterion anywhere in a report input's JSON."""
+    if isinstance(node, dict):
+        return [*node.get("late_criteria", []), *(late for value in node.values() for late in _late_criteria(value))]
+    if isinstance(node, list):
+        return [late for item in node for late in _late_criteria(item)]
+    return []
+
+
 async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declared_before_them() -> None:
     """#919: past runs that are still valid count as evidence. A campaign declared before its runs, and one created
     after them adopting its aspects (``aspects_from``), every criterion set before its readings were visible, read the
-    same runs identically: the writer's input, the page and its confidence wording differ by nothing but ids and
-    dates, and neither names a late criterion, the question's timing or when the runs began."""
+    same runs identically: the report writer's input, the page and its confidence wording differ by nothing but ids
+    and dates, and neither names a late criterion, the question's timing or when the runs began."""
     held, declared = await _build_two()
     host = held.host
     adopting = off_loop(
@@ -671,50 +708,40 @@ async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declare
     assert adopting.created_at > first_result, "created after the readings were visible"
     assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
 
-    async def prompt() -> str:
-        return PROMPT
-
     async def told(campaign: EvalCampaign) -> tuple[str, str]:
-        prepared = await prepare_analysis_generation(
-            host, campaign.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
-        )
-        view = json.dumps(writer_view(prepared.bundle), sort_keys=True)
+        bundle = off_loop(assemble_campaign_bundle, host, campaign.id, SCOPE)
+        view = json.dumps(report_input(bundle).model_dump(mode="json"), sort_keys=True)
         page = campaign_report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
         return _undated(view, campaign.id), _undated(page, campaign.id)
 
     (declared_view, declared_page), (adopted_view, adopted_page) = await told(declared), await told(adopting)
-    assert adopted_view == declared_view, "the writer is told the same thing"
+    assert adopted_view == declared_view, "the report writer is told the same thing"
     assert adopted_page == declared_page, "the page says the same thing, its confidence wording included"
-    assert "late_criteria" not in adopted_view and "after its readings" not in adopted_page
+    assert not _late_criteria(json.loads(adopted_view)) and "after its readings" not in adopted_page
     assert "began" not in adopted_page and "after the runs" not in adopted_page
 
 
-async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:
-    """A reader matching a call to the recommendation compares keys, never labels: the page's JSON carries the
-    key the analysis stored beside its memo, which is the key a call on that arm records."""
+async def test_a_call_on_the_recommended_arm_records_the_key_the_analysis_recorded() -> None:
+    """A reader matching a call to the recommendation compares keys, never labels: the key the analysis stored beside
+    its memo is the key a call on that arm records."""
     held, two = await _build_two(floor=False, bar=False)
     analysis_id = await _generated(held, two)
-    (analysis,) = off_loop(list_analyses, held.host.storage, two.id, SCOPE)
+    (analysis,) = off_loop(held.host.storage.list_analyses_by_campaign, two.id, SCOPE)
     assert analysis.id == analysis_id and analysis.recommended_variant_key is not None
-    page = off_loop(campaign_report, held.host, two.id, SCOPE)
-    assert page.json_document()["recommendation"] == {
-        "arm": "production",
-        "variant_key": analysis.recommended_variant_key,
-        "confidence": "medium",
-    }
     recorded = _record(held, two, arm="production", analysis_id=analysis_id)
     assert recorded.call.variant_key == analysis.recommended_variant_key
 
 
 async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campaign_as_it_stands() -> None:
     """The floor is withdrawn from the stored campaign after the analysis was written: the analysis's line still names
-    it, worded over the floors frozen with it, as the analysis's page still opens on it."""
+    it, worded over the floors frozen with it, as the analysis's page, read by its id, still opens on it."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert line.id == analysis_id
-    (floor,) = [text for text in _warnings(off_loop(campaign_report, held.host, two.id, SCOPE)) if "floor" in text]
+    by_id = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
+    (floor,) = [text for text in _warnings(by_id) if "floor" in text]
     assert floor == "Adopting candidate overrides the 10-point floor it breaks on billing."
     assert floor in line.verdict
 
@@ -757,8 +784,8 @@ async def test_an_analysis_of_one_aspect_is_listed_by_its_page_s_broken_floor_th
 async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_without_against_the_evidence_now() -> None:
     """The memo was written while billing's floor stood; the floor is then withdrawn from the stored campaign. A call
     over the analysis is read against the readings frozen with it, which still break the floor; a call on code's
-    readings alone is read against the evidence now, which breaks none — and the page, the analysis's, says the floor
-    broken there is not overridden."""
+    readings alone is read against the evidence now, which breaks none — and the analysis's page, read by its id over
+    what was frozen with it, says the floor broken there is not overridden."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
@@ -772,8 +799,8 @@ async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_with
     recorded = _record(held, two, arm=candidate.arm, bars_overridden=[missed])
 
     assert recorded.call.analysis_id is None
-    page = off_loop(campaign_report, held.host, two.id, SCOPE)
-    assert page.analysis_id == analysis_id
+    page = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
+    assert page.unread_analysis_id == analysis_id
     assert (
         "The call does not name the broken floor as overridden: no pass rate drops by more than 10 points on billing."
         in _first_screen(page)

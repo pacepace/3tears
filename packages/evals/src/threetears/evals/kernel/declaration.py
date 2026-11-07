@@ -57,6 +57,7 @@ from threetears.evals.kernel.metrics import (
     is_code_graded,
     is_latency_measure,
     list_metrics,
+    reads_as_rate,
     rule_rates,
 )
 from threetears.evals.schema.models import (
@@ -67,6 +68,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     RubricScale,
     declared_name,
+    rubric_dim_scale,
     utc_now_iso,
 )
 
@@ -682,12 +684,33 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "is refused when the design is declared."
         ),
     )
+    measure_order: list[str] = Field(
+        default_factory=list,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda order: not order,
+        description=(
+            "The measures this aspect's graders read, by key, in the order the host listed its graders: where a "
+            "guardrail warns, the campaign page's lead reads the first of them a contrast tested that is no cost. "
+            "Empty = no order stated, and the lead reads the classifier's accuracy where the aspect has one, else the "
+            "pass rate. It changes no reading."
+        ),
+    )
 
     @field_validator("merit_axes")
     @classmethod
     def _each_axis_once(cls, axes: list[MeritAxis] | None) -> list[MeritAxis] | None:
         """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
         return None if axes is None else _each_merit_axis_once(axes)
+
+    @field_validator("measure_order")
+    @classmethod
+    def _each_measure_once(cls, order: list[str]) -> list[str]:
+        """Refuse a blank measure, or one named twice: the list is an order, and a repeat says nothing."""
+        if any(not measure.strip() for measure in order):
+            raise ValueError("measure_order names a blank measure; name each measure by its key")
+        if duplicates := sorted({measure for measure in order if order.count(measure) > 1}):
+            raise ValueError(f"measure_order names {', '.join(duplicates)} more than once; name each measure once")
+        return order
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> AspectDesign:
@@ -790,6 +813,17 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
             "without one is dated by the build accepting it, the only predicate it can have been read under."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        # Presentation only: written only when declared, so an arm naming none is stored as it was before the field.
+        exclude_if=lambda name: name is None,
+        description=(
+            f"What a page prints for this arm in tight places (a chart's labels, a table cell, a sentence), at most "
+            f"{DECLARED_NAME_CHARS} characters; the label is printed once beside it. It is no other arm's label or "
+            "short name. None = the page computes one from what differs from the control. No part of any identity, "
+            "key or fingerprint, so naming an arm changes no reading."
+        ),
+    )
     named_at: str | None = Field(
         default=None,
         description=(
@@ -833,6 +867,18 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         return value
 
     @model_validator(mode="after")
+    def _a_short_name_is_short(self) -> CampaignArm:
+        """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
+
+        :return: The validated arm.
+        :rtype: CampaignArm
+        :raises ValueError: The short name is blank or too long.
+        """
+        if self.short_name is not None:
+            declared_name(self.short_name, what=f"arm {self.label!r}")
+        return self
+
+    @model_validator(mode="after")
     def _the_pre_image_is_the_arm_s_own(self) -> CampaignArm:
         """The lever map, under this build's predicate, digests to the arm's key.
 
@@ -869,26 +915,47 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
     return _resolve_control_key(arm.variant_key, arm.levers, arm.identity_version)
 
 
+#: The fields of an arm that say only how a page prints it: the one list every reader that must not see them reads. A
+#: campaign bundle's fingerprint leaves them out of its arms and its declaration's arms, and an aspect bundle's leaves
+#: them out of its declared control, so naming an arm stales no analysis and moves no reporter case.
+ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
+
+
 #: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
 #: A bundle carries them under the same names and leaves them out of its fingerprint, and a campaign bundle's
 #: fingerprint leaves them out of its declaration's aspects.
 ASPECT_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 
 
-def printed_aspect_name(label: str, short_name: str | None) -> str:
+#: The labels the quick path gives the one aspect of a campaign it declares, by what its eval grades
+#: (``quick/contract.py``, ``quick/one_call.py``): the engine's words for the work, which name nothing a reader asked.
+ENGINE_ASPECT_LABELS: frozenset[str] = frozenset({"classify", "score"})
+
+
+def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | None = None) -> str:
     """What a page prints for an aspect: its declared short name, else its whole label, never a shortening of it.
 
     The one statement of the rule: the campaign's uniqueness check and every page part
-    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it.
+    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it. A label the engine gave
+    (:data:`ENGINE_ASPECT_LABELS`) with no short name gives way to the campaign's name where the caller has it, so no
+    page heads a section, a fold or a title with the engine's word for the work. A name cut at its cap or written as a
+    question is no name for an aspect, so the label stands beside one.
 
     :param label: The aspect's label.
     :ptype label: str
     :param short_name: Its declared short name, or None.
     :ptype short_name: str | None
+    :param campaign: The campaign's name, which an engine-given label gives way to; None keeps the label.
+    :ptype campaign: str | None
     :return: The name a page prints.
     :rtype: str
     """
-    return short_name if short_name is not None else label
+    if short_name is not None:
+        return short_name
+    # Only a whole name that names the campaign: never one cut at the cap (``…``) or one that asks a question.
+    if campaign and label in ENGINE_ASPECT_LABELS and not campaign.rstrip().endswith(("…", "?")):
+        return campaign
+    return label
 
 
 class Aspect(EvalDocumentModel, CoreShapeModel):
@@ -933,9 +1000,10 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         allow_inf_nan=False,
         description=(
             "How far, in points of a 0-100 pass rate, a candidate may fall below the control here before it is "
-            "shown worse. None = no margin declared, which only an aspect upgraded from a campaign stored without "
-            "one holds: its readings are shown better or unclear, never shown worse, and the page says no margin "
-            "was declared."
+            "shown worse: the author's own, which a non-inferiority question declares. None = no margin declared: "
+            "under a question a superiority one, its drop read against zero (shown better, shown worse or not "
+            "separated); asked nothing, its readings are shown better or unclear, never shown worse, and the page "
+            "says no margin was declared."
         ),
     )
     design: AspectDesign | None = Field(
@@ -1262,7 +1330,7 @@ def resolve_bar_name(
         :class:`UnreadableBarName`.
     :rtype: BarName | UnreadableBarName
     """
-    # A check's published measure name reads as the check itself: the bundle and a memo cite a check
+    # A check's published measure name reads as the check itself: the bundle and a report cite a check
     # as `goal_state:<check>`, and a bar declared by that name holds the same check to the threshold.
     if (check := goal_check_of(name)) is not None:
         name = check
@@ -1285,7 +1353,7 @@ def resolve_bar_name(
         return BarName(
             name,
             "judged",
-            describe_rubric_dim(name, scale="ordinal" if name in RESERVED_DIM_IDS else rubric_dimensions[name]),
+            describe_rubric_dim(name, scale=rubric_dim_scale(name, rubric_dimensions)),
         )
     if name in goal_state_checks:
         # The check's RATE, which is what a bar on it reads — not the check's boolean observation.
@@ -1395,13 +1463,43 @@ def _refuse_unreadable_guardrail_margins(design: AspectDesign, template: EvalTem
             )
 
 
+def _refuse_unread_measure_order(design: AspectDesign, template: EvalTemplate | None, profile: HostProfile) -> None:
+    """Refuse a ``measure_order`` entry naming no measure the aspect's results can carry: the host's measures and the
+    engine's, the template's judged dimensions and its goal-state checks. A page's lead reads the first entry a
+    contrast tested, so an entry naming nothing would pass the lead to the next, or to the pass rate, without a word.
+
+    :raises DesignRefused: An entry names no such measure, naming it and every name the aspect declares.
+    """
+    if not design.measure_order:
+        return
+    rubric = [dim.name for dim in template.rubric] if template is not None else []
+    checks = list(template.goal_state_checks) if template is not None else []
+    known = {*rubric, *checks}
+    if stray := [
+        name
+        for name in design.measure_order
+        if name not in known and profile.measures.get(name) is None and name not in METRIC_DESCRIPTORS
+    ]:
+        declared = sorted({*profile.measures.names, *rubric, *checks})
+        raise DesignRefused(
+            f"measure_order names {', '.join(map(repr, stray))}, which no grader of this aspect reads, so the page's "
+            "lead could not read it",
+            remedy=(
+                f"list measures this aspect declares, or an engine measure such as accuracy: {', '.join(declared)}"
+                if declared
+                else "list the engine's measures, such as accuracy; this host and template declare none of their own"
+            ),
+        )
+
+
 def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> list[str]:
     """Every name a ``RateDrop.reading`` may carry on a campaign of ``template``: what the page reads as a pass rate.
 
     A goal-state check of the template, by its verbatim text; a judged dimension of the template on the pass/fail
     scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and each check
     measure the host's catalogue describes (:func:`~threetears.evals.kernel.metrics.rule_rates`: a boolean with a
-    better end, either end, or a pass/fail scorer or grader), by its key. Exactly the rates
+    better end, either end, or a pass/fail scorer or grader), by its key. Each is a rate by the one predicate a family
+    contrast's interval reads too (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). Exactly the rates
     :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
 
     :param template: The campaign's template; None when it names none that could be read.
@@ -1413,7 +1511,11 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     """
     checks = sorted(template.goal_state_checks) if template is not None else []
     dims = (
-        sorted(dim.name for dim in template.rubric if dim.scale == "pass_fail" and dim.axis == "capability")
+        sorted(
+            dim.name
+            for dim in template.rubric
+            if reads_as_rate("judged", dim.name, value_range=SCALES[dim.scale].value_range) and dim.axis == "capability"
+        )
         if template is not None
         else []
     )
@@ -1538,6 +1640,8 @@ def refuse_an_undeclarable_design(
         priority asks about latency in a design that does not declare ``measure_latency``, naming each and
         the setting to turn on; or a floor's ``RateDrop`` names a reading :func:`decision_readings` does
         not offer.
+    :raises DesignRefused: A ``measure_order`` entry names no measure the host, the engine or the template declares,
+        naming it and every name the aspect declares.
     """
     _refuse_unreadable_floor_readings(floors, template, profile)
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
@@ -1572,6 +1676,7 @@ def refuse_an_undeclarable_design(
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
     _refuse_unreadable_guardrail_margins(design, template)
+    _refuse_unread_measure_order(design, template, profile)
     resolved = {
         override.measure_id: resolve_bar_name(
             override.measure_id, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures

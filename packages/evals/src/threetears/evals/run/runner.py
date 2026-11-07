@@ -16,8 +16,9 @@ recording, usage capture, the cell summary, storage — reads a
 :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput`. The protocol is
 :mod:`threetears.evals.kernel.candidate_kind`; every implementation belongs to whoever owns its
 subject, and reaches the runner as a :class:`KindFactory` on :attr:`RunnerOptions.candidate_kinds`
-with its collaborators already bound. A host's kinds live in its own adapter; the one this
-package ships is the reporter kind, :mod:`threetears.evals.analysis.reporter_kind`.
+with its collaborators already bound. A host's kinds live in its own adapter; the ones this
+package ships are the judge kind (:mod:`threetears.evals.run.judge_kind`) and the report writer's
+(:mod:`threetears.evals.ops.report_writer.writer_kind`).
 
 The host reaches this loop only through the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
 it is handed — its storage, trace sink, cell timeout, failure describer, blocking-I/O executor and
@@ -95,7 +96,14 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    MetricDescriptor,
+    describe_measure,
+    measure_value_misfit,
+    undeclarable_host_measures,
+)
 from threetears.evals.kernel.result_condition import ExclusionCause, trial_exclusion
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -151,6 +159,7 @@ from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedErro
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
+    from threetears.evals.kernel.host.measures import MeasureRegistry
     from threetears.evals.run.budget import CapBreach
 
 log = get_logger(__name__)
@@ -669,43 +678,6 @@ def _refuse_an_unusable_amount(amount: float | None, *, what: str) -> None:
         raise ValueError(f"{what} is a finite amount of US dollars, 0 or more; got {amount!r}")
 
 
-@dataclass(eq=False)
-class _HeldCall:
-    """One reservation on a cell's sink — :class:`~threetears.evals.kernel.candidate_kind.CellReservation`.
-
-    It holds nothing against the run: the cost cap is read between cells and refuses no call, so a reservation
-    is only the handle that lands a call's cost on its source's total once it settles.
-
-    :ivar sink: The cell's sink.
-    :ivar source: Whose call it is; its cost lands on that source's total when it settles.
-    :ivar closed: Whether it was settled or released.
-    """
-
-    sink: _CellSink
-    source: CellPending
-    closed: bool = False
-
-    def settle(self, cost_usd: float | None) -> None:
-        """Land what the call cost on its source's total.
-
-        :param cost_usd: What the call cost; ``None`` when nothing priced it.
-        :ptype cost_usd: float | None
-        :raises ValueError: The reservation was already closed, or ``cost_usd`` is not a usable amount.
-        """
-        if self.closed:
-            raise ValueError(f"this {self.source} call's reservation was already closed; settle a reservation once")
-        _refuse_an_unusable_amount(cost_usd, what=f"a {self.source} call's cost")
-        self.closed = True
-        self.sink.close_reservation(self, cost_usd, settled=True)
-
-    def release(self) -> None:
-        """Close the reservation, counting nothing; a no-op once closed."""
-        if self.closed:
-            return
-        self.closed = True
-        self.sink.close_reservation(self, None, settled=False)
-
-
 @dataclass
 class _CellSink:
     """The engine's record of one cell as it runs — everything a deadline's record is built from.
@@ -819,38 +791,6 @@ class _CellSink:
         _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
-
-    def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldCall:
-        """Open the handle that lands one paid call's cost, never refusing the call — see
-        :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`.
-
-        The cost cap is read between cells, against what has landed, so nothing here can turn a call away: a
-        refusal inside a cell contaminates whichever cell happened to ask once the cap was spent.
-
-        :param source: Whose call it is.
-        :ptype source: CellPending
-        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded; checked and
-            otherwise unused.
-        :ptype ceiling_usd: float | None
-        :return: The reservation.
-        :rtype: _HeldCall
-        :raises ValueError: ``ceiling_usd`` is negative or not finite.
-        """
-        _refuse_an_unusable_amount(ceiling_usd, what="a call's ceiling")
-        return _HeldCall(sink=self, source=source)
-
-    def cost_cap_reached(self) -> bool:
-        """Always ``False``: the cost cap is read between cells, never inside one.
-
-        :return: ``False``.
-        :rtype: bool
-        """
-        return False
-
-    def close_reservation(self, held: _HeldCall, cost_usd: float | None, *, settled: bool) -> None:
-        """Close one reservation, counting what its call cost when it settled."""
-        if settled:
-            self.add_spend(held.source, cost_usd)
 
     def begin_judging(self, phase: _JudgePhase) -> None:
         """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.
@@ -1564,6 +1504,7 @@ async def _run_one_result(
     # every cell would do it, and judging the cell first would spend on a record that cannot be built.
     refuse_inner_agent_usage(telemetry.usage)
     refuse_engine_derived_host_measures(candidate.host_measures)
+    refuse_misfit_host_measures(candidate.host_measures, host.profile.measures)
 
     # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
     # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
@@ -1680,6 +1621,7 @@ async def _run_one_result(
         variant=variant,
         judge_model=judge_model,
         output=candidate,
+        measures=host.profile.measures,
         goal_checks=template.goal_state_checks,
         judged_artifact=judged_artifact,
         rate_table=options.external_rates,
@@ -2002,6 +1944,49 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
         )
 
 
+def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str], measures: MeasureRegistry) -> None:
+    """Refuse a kind's ``host_measures`` whose value contradicts the data type its measure declares.
+
+    Each name resolves as the analysis resolves it (:func:`~threetears.evals.kernel.metrics.describe_measure`), so the
+    descriptor held here is the one the bundle would read the value under, and the type rule is the bundle's own
+    (:func:`~threetears.evals.kernel.metrics.measure_value_misfit`). Nothing is coerced: a ``1.0`` under a boolean
+    measure is refused, never read as ``True``. Refused rather than dropped, for
+    :func:`refuse_engine_derived_host_measures`'s reason: a kind's measures are its own code, so every cell would carry
+    the misfit, and a stored misfit is dropped from every statistic of its measure. Called by the runner before its
+    judge phase pays for anything, by a witnessed cell's recording before its judge does, and again by
+    :func:`assemble_completed_cell`, which every completed cell passes through. A name no registry
+    describes (neither a data type nor a family) declares nothing and passes; the analysis names a number under one as
+    an undescribed measurement and leaves text alone, as an identifier. A described measure declaring no data type is
+    read as numeric, so text or a ``bool`` under one is refused: no bundle reports such a measure, but the run's
+    summary states it as a mean and range of numbers, which a ``bool`` or text would misstate.
+
+    :param host_measures: What the kind measured, by name.
+    :ptype host_measures: Mapping[str, bool | float | str]
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :raises ValueError: A value's type contradicts its measure's declared data type; the message names each such
+        measure, its declared type and the type recorded.
+    """
+    misfits = [
+        f"{name!r} ({misfit})"
+        for name, value in sorted(host_measures.items())
+        if name.strip()
+        and _described(descriptor := describe_measure(name, measures))
+        and (misfit := measure_value_misfit(descriptor, value)) is not None
+    ]
+    if misfits:
+        raise ValueError(
+            f"a candidate kind landed {', '.join(misfits)} on host_measures; a measure's value is typed by its "
+            "declared data type and is never coerced: a bool for a boolean measure, a number for a numeric one, a "
+            "string for a categorical or text one"
+        )
+
+
+def _described(descriptor: MetricDescriptor) -> bool:
+    """Whether a descriptor describes anything: a data type or a family, which an unclassified name has neither of."""
+    return descriptor.data_type is not None or descriptor.family is not None
+
+
 def _unjudged_record() -> _JudgeRecord:
     """The record of a cell nothing judged: every score absent, nothing failed.
 
@@ -2036,6 +2021,7 @@ def assemble_completed_cell(
     variant: DerivedVariantIdentity,
     judge_model: str | None,
     output: CandidateOutput,
+    measures: MeasureRegistry,
     goal_checks: Sequence[str],
     judged_artifact: JudgedArtifact,
     rate_table: ExternalRateTable | None,
@@ -2079,6 +2065,8 @@ def assemble_completed_cell(
     :ptype judge_model: str | None
     :param output: What the candidate produced.
     :ptype output: CandidateOutput
+    :param measures: The host's measure registry, which types each of the output's ``host_measures``.
+    :ptype measures: MeasureRegistry
     :param goal_checks: The template's goal checks the cell is held to (:func:`hold_to_goal_checks`), so the
         stored result carries a failed, not-evaluated outcome for each one a failed candidate's kind
         never graded; empty for a cell no template set.
@@ -2108,12 +2096,13 @@ def assemble_completed_cell(
     :ptype end_state: dict[str, Any] | None
     :return: The cell.
     :rtype: CellOutcome
-    :raises ValueError: The output lands a measure the engine derives, or a clean cell left one of
-        ``goal_checks`` ungraded.
+    :raises ValueError: The output lands a measure the engine derives or a value its measure's declared data type
+        does not fit, or a clean cell left one of ``goal_checks`` ungraded.
     """
     if judged is None:
         judged = _unjudged_record()
     refuse_engine_derived_host_measures(output.host_measures)
+    refuse_misfit_host_measures(output.host_measures, measures)
     # Held HERE, the one point every completed cell passes through, so what is STORED counts a failed
     # candidate against every check its template declares: a per-check rate counts a candidate failure
     # only over the checks a result carries, so a cell that failed before its kind graded anything would
@@ -3235,8 +3224,8 @@ async def judge_dims(
     dimension and returned as an outcome carrying the exception's type as its error, so one
     dimension's crash does not discard the scores its siblings paid for. **Except a host's
     completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
-    that is the host's code, which every call would meet, so it is raised — the call's hold on the cap
-    released, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+    that is the host's code, which every call would meet, so it is raised — what its calls were billed counted in
+    the cell's spend, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
 
     :param template: The run's template, whose ``rubric`` names the per-dim calls.
     :ptype template: EvalTemplate
@@ -3252,9 +3241,9 @@ async def judge_dims(
         completion order — so a caller whose deadline cancels this phase still holds the
         calls already paid for, which the return value cannot give it.
     :ptype settled: list[tuple[str, JudgeOutcome]] | None
-    :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: a
-        call is reserved at its ceiling (:meth:`JudgeService.price_ceiling`) before it is sent and settled
-        to what it cost when it returns. Nothing is refused here; the run's cost cap is read between cells.
+    :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: what a
+        call cost is added (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`) when it returns.
+        Nothing is refused here; the run's cost cap is read between cells.
         ``None`` for calls no run's cap bounds (a re-judge, whose calls are priced out of run).
     :ptype sink: CellSink | None
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
@@ -3270,7 +3259,6 @@ async def judge_dims(
             try:
                 if sink is not None:
                     await refresh_prices(judge_service.client_for(request))
-                held = sink.reserve("judge", judge_service.price_ceiling(request)) if sink is not None else None
             except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
                 # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
                 contain(
@@ -3288,11 +3276,8 @@ async def judge_dims(
                     # the run rather than this dim. What its calls were billed is settled into the cell's spend
                     # and handed to the caller's record as this dim's outcome, so the run's spend still sums it.
                     billed = defect_usage(defect)
-                    if held is not None:
-                        if billed is None:
-                            held.release()
-                        else:
-                            held.settle(billed.cost_usd)
+                    if sink is not None and billed is not None:
+                        sink.add_spend("judge", billed.cost_usd)
                     if settled is not None:
                         settled.append(
                             (
@@ -3314,15 +3299,11 @@ async def judge_dims(
                         level="error",
                     )
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
-                except BaseException:
-                    # A cancel — the cell's deadline, or its run's — leaves no open reservation once it unwinds.
-                    if held is not None:
-                        held.release()
-                    raise
-                if held is not None:
+                if sink is not None:
                     # What the cell's judge spend is summed from: the outcome's usage, every attempt in it. A call that
-                    # returned nothing at all reported no usage, and counts nothing, as the judge fold reads it.
-                    held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
+                    # returned nothing at all reported no usage, and counts nothing, as the judge fold reads it. A
+                    # cancel — the cell's deadline, or its run's — unwinds past this and counts nothing.
+                    sink.add_spend("judge", outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         if settled is not None:
             settled.append((dim_id, outcome))
         return outcome

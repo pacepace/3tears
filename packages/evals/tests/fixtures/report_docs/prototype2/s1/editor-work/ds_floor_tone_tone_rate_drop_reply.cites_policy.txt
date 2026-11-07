@@ -1,0 +1,27 @@
+sensitivity
+parameter: floor:tone/tone/rate_drop/reply.cites_policy
+hypothetical: False
+swept: every floor from zero up, without end, on floor tone/rate_drop/reply.cites_policy
+aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.margin = 15
+boundary_belongs_to: below
+declared_call:
+  modes: [tradeoff]
+  dominant: []
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (1):
+  - low: none; high: none; modes: [tradeoff]; dominant: []; picks: []
+holds: True
+picks_hold: True
+flips (4):
+  - arm: arm:v2; where: held_above; call_changes: False; picks_change: False
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.held_above = 19
+  - arm: arm:v3; where: held_above; call_changes: False; picks_change: False
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.held_above = 19
+  - arm: arm:v4; where: broken_at; call_changes: False; picks_change: False
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.broken_at = 23.9
+  - arm: arm:v4; where: held_above; call_changes: False; picks_change: False
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.held_above = 78.5
+total: 4
+offset: 0
+notes: [flips outside the range swept are not listed]

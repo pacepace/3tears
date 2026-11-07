@@ -55,32 +55,12 @@ def _sign_flip_p(n: int) -> float:
     return min(1.0, 2.0 ** (1 - n))
 
 
-def _min_pairs_for_sign_flip(alpha: float) -> int:
-    """Smallest ``n`` whose exact paired sign-flip test can reach ``alpha``.
-
-    Under the null of exchangeable signs there are ``2 ** n`` equally likely sign
-    assignments, so the smallest attainable two-sided p is ``2 ** (1 - n)``. This
-    returns the first ``n`` for which that lands at or below ``alpha`` — computed
-    rather than written down, so it tracks the threshold instead of drifting from
-    it.
-    """
-    n = 2
-    while _sign_flip_p(n) > alpha:
-        n += 1
-    return n
-
-
-#: The fewest pairs at which the exact sign-flip p of a perfectly consistent move reaches alpha.
-#: Kept for callers that cite it; since #597 no verdict reads it. The sign-flip test asks whether a move is
-#: symmetric about zero, not whether the mean moved, so a move with no spread is decided by the bounded test on
-#: a declared range instead (:func:`separation_test`), and with no range is never called separated.
-MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
-
 #: The paired test the change classifier discloses, so a regression flag names the
 #: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
     "paired two-sided t-test on shared per-case values (where every difference is one amount, the bounded test by "
-    f"betting on the measure's declared range, and not separated with no range), α={SIGNIFICANCE_ALPHA}"
+    "betting on the measure's declared range; with no range the evidence cannot tell the arms apart), "
+    f"α={SIGNIFICANCE_ALPHA}"
 )
 
 # The test that runs when the two samples cannot be paired — no shared frozen
@@ -112,6 +92,11 @@ EQUIVALENCE_NEEDS_RANGE = (
 
 #: Why a move with no spread on a reading with no declared range is read ``not_separated``: no test of the mean can
 #: call it. Names the remedy, as :data:`EQUIVALENCE_NEEDS_RANGE` does.
+#:
+#: **Stored, so never reworded.** A bundle stores this text (a comparison's ``not_separated_reason``, a guardrail
+#: check's ``undecided_reason``) and its fingerprint and evidence digest read it: a new word here moves every stored
+#: campaign carrying it, and a host regenerates its reports for a wording change. A page rewords it at render time
+#: (:func:`~threetears.evals.analysis.report.words.reason_words`).
 UNIFORM_MOVE_NEEDS_RANGE = (
     "declare value_range on this measure for a uniform move to be tested: every case moved by the same amount, and "
     "with no declared range no test of a mean can call that separated (the exact sign-flip test asks whether the "
@@ -1278,10 +1263,11 @@ def difference_interval(
 def interval_permits_separation(interval: tuple[float, float] | None) -> bool:
     """Whether a separation may stand beside this interval on the difference: it excludes zero, or there is none.
 
-    A family's verdict is read off a Holm-adjusted p and its interval is Bonferroni's at ``1 − α/m``; Holm's
-    later steps reject some comparisons whose Bonferroni interval still reaches zero. A separation is never
-    shown beside an interval that includes no change (#597), so a caller requires this as well as the p. Where
-    no interval exists (no t: every case moved by one amount) nothing is shown to contradict the p.
+    A family's verdict is read off a Holm-adjusted p, and its interval is drawn at ``1 − α/m``: a rate's by the bounded
+    test, another reading's by the t test. Holm's later steps reject some comparisons whose interval still reaches
+    zero, and a rate's bounded interval can reach zero where its t test's p clears. A separation is never shown beside
+    an interval that includes no change (#597), so a caller requires this as well as the p. Where no interval exists
+    nothing is shown to contradict the p; a caller that requires an interval, as a rate's contrast does, says so.
 
     :param interval: The interval on the difference the verdict is shown beside, or None.
     :ptype interval: tuple[float, float] | None
@@ -1316,7 +1302,18 @@ def exact_decimal(value: float | Fraction) -> Fraction:
     :return: The exact rational.
     :rtype: Fraction
     """
-    return value if isinstance(value, Fraction) else Fraction(repr(float(value)))
+    return value if isinstance(value, Fraction) else _decimal_of(float(value))
+
+
+@lru_cache(maxsize=4096)
+def _decimal_of(value: float) -> Fraction:
+    """The shortest decimal that round-trips ``value``, as an exact rational, parsed once per value.
+
+    A read converts the same few per-case shares and scores many thousands of times over, and parsing the decimal is
+    the cost. A :class:`~fractions.Fraction` is immutable, so one parse serves every caller; equal floats share a
+    key and a value (``-0.0`` and ``0.0`` parse to the same zero).
+    """
+    return Fraction(repr(value))
 
 
 def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -> float | None:
@@ -1462,7 +1459,7 @@ _BOUND_STEPS = 32
 
 
 def bounded_mean_lower_bound(
-    values: Sequence[float | Fraction], value_range: tuple[float, float], *, alpha: float
+    values: Sequence[float | Fraction], value_range: tuple[float, float], *, alpha: float, planned_n: int | None = None
 ) -> float:
     """A one-sided ``1 − alpha`` lower confidence bound on the mean of values inside ``value_range``.
 
@@ -1477,12 +1474,16 @@ def bounded_mean_lower_bound(
     :ptype value_range: tuple[float, float]
     :param alpha: The one-sided error rate.
     :ptype alpha: float
+    :param planned_n: The cases the bet was fixed for before its first value (:func:`bounded_mean_p`); None for a
+        bet over these values alone.
+    :ptype planned_n: int | None
     :return: The bound, in ``[low, high]``.
     :rtype: float
-    :raises ValueError: The range is empty, or a value lies outside it (:func:`bounded_mean_p`).
+    :raises ValueError: The range is empty, a value lies outside it, or there are more values than ``planned_n``
+        (:func:`bounded_mean_p`).
     """
-    scaled = _scaled_to_unit(values, value_range)
-    stakes = _plug_in_stakes(scaled, alpha)
+    scaled = _scaled_to_unit(values, value_range, planned_n=planned_n)
+    stakes = _plug_in_stakes(scaled, alpha, len(scaled) if planned_n is None else planned_n)
     if _betting_p_staked(scaled, stakes, 0.0) >= alpha:
         return float(value_range[0])
     # Bisected on the rescaled null, where the betting runs, and mapped back once.
@@ -1498,12 +1499,18 @@ def bounded_mean_lower_bound(
 
 
 def _bounded_mean_interval(
-    values: Sequence[float | Fraction], value_range: tuple[float, float], *, alpha: float
+    values: Sequence[float | Fraction],
+    value_range: tuple[float, float],
+    *,
+    alpha: float,
+    planned_n: int | None = None,
 ) -> tuple[float, float]:
     """Lower and upper one-sided ``1 − alpha`` bounds on a bounded mean (:func:`bounded_mean_lower_bound`)."""
     low, high = value_range
-    lower = bounded_mean_lower_bound(values, value_range, alpha=alpha)
-    upper = -bounded_mean_lower_bound([-exact_decimal(v) for v in values], (-high, -low), alpha=alpha)
+    lower = bounded_mean_lower_bound(values, value_range, alpha=alpha, planned_n=planned_n)
+    upper = -bounded_mean_lower_bound(
+        [-exact_decimal(v) for v in values], (-high, -low), alpha=alpha, planned_n=planned_n
+    )
     return lower, upper
 
 
@@ -1540,6 +1547,7 @@ def bounded_difference_interval(
     paired: bool,
     value_range: tuple[float, float],
     confidence: float = INTERVAL_LEVEL,
+    planned_n: int | None = None,
 ) -> tuple[float, float] | None:
     """The interval on ``mean(b) − mean(a)`` from the bounded test by betting, valid at every n on a declared range.
 
@@ -1551,6 +1559,12 @@ def bounded_difference_interval(
     width. Unpaired, each arm's mean is bounded on the range at half that rate (Bonferroni), and the difference's
     bound is the gap between them: wider, and valid with no assumption about how the two arms relate.
 
+    **A prefix of a bet fixed for N cases** (``planned_n``, paired only): the pairs are bet on in the order given,
+    which the caller fixed before the first was seen (:func:`bet_order` over the planned cases), and every stake is
+    tuned to N. The interval over the first k ≤ N pairs is then the k-th of one confidence sequence: it covers at every
+    k at once, so a reading stopped at any k, on any rule, keeps its level (Ville's inequality). At k = N it is the
+    interval with no ``planned_n`` over the same pairs listed in case order, number for number.
+
     :param sample_a: The control's per-case values, in a fixed case order.
     :ptype sample_a: Sequence[float | Fraction]
     :param sample_b: The arm's, aligned with ``sample_a`` when ``paired``.
@@ -1561,9 +1575,14 @@ def bounded_difference_interval(
     :ptype value_range: tuple[float, float]
     :param confidence: The two-sided coverage.
     :ptype confidence: float
+    :param planned_n: The cases the bet was fixed for before the first pair, the pairs given in the order bet on;
+        None for a bet over these pairs alone, in :func:`bet_order` of their count.
+    :ptype planned_n: int | None
     :return: ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
     :rtype: tuple[float, float] | None
+    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given.
     """
+    _check_planned(planned_n, paired=paired, given=len(sample_b))
     if len(sample_a) < 2 or len(sample_b) < 2:
         return None
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
@@ -1574,7 +1593,7 @@ def bounded_difference_interval(
     tail = (1.0 - confidence) / 2.0
     if paired:
         width = float(high - low)
-        return _bounded_mean_interval([y - x for x, y in zip(a, b)], (-width, width), alpha=tail)
+        return _bounded_mean_interval([y - x for x, y in zip(a, b)], (-width, width), alpha=tail, planned_n=planned_n)
     bounds = (float(low), float(high))
     low_a, high_a = _bounded_mean_interval(a, bounds, alpha=tail / 2.0)
     low_b, high_b = _bounded_mean_interval(b, bounds, alpha=tail / 2.0)
@@ -1822,6 +1841,7 @@ def bounded_mean_p(
     value_range: tuple[float, float],
     *,
     alpha: float = SIGNIFICANCE_ALPHA,
+    planned_n: int | None = None,
 ) -> float:
     """The one-sided p for H0 ``E[X] ≤ null_mean`` against ``E[X] > null_mean``, for any ``X`` inside ``value_range``.
 
@@ -1836,12 +1856,20 @@ def bounded_mean_p(
     cases as having no spread, when a regression that broke one case in ten leaves ten agreeing cases one time
     in three.
 
-    **The values are bet on in a pseudo-random order fixed by their count alone** (:func:`_bet_order`), never
+    **The values are bet on in a pseudo-random order fixed by their count alone** (:func:`bet_order`), never
     the order they are passed in. The guarantee needs the order independent of the values, and the order cases
     arrive in is not: a caller lists its hard cases together, and case ids sort by that listing. Bet in that
     order, a run of agreeing cases ahead of the drops lifts the capital to its maximum before the drops are
     seen: twelve leaks listed last of fifty read an interval on the difference of ``[-0.107, -0.095]`` around a
     true ``-0.24``. A fixed shuffle keeps the test reproducible and makes any listing order an equally valid one.
+
+    **A bet fixed for N cases before the first** (``planned_n``): the values are bet on in the order given, which the
+    caller fixed before any was seen (:func:`bet_order` of N over the planned cases, read in that order), and each
+    stake is tuned to N in place of the count given. The p over the first k ≤ N values is then the capital of one
+    supermartingale read at k, so a reading stopped at any k, on any rule declared or not, keeps its α: Ville's
+    inequality bounds the chance it EVER reaches ``1/α``. Two bets on one prefix (one tuned to k, the next to k + 1,
+    each reshuffled) are two tests, and stopping at the first that separates is optional stopping; one bet is not.
+    At k = N the p is the one with no ``planned_n`` over the same values listed in case order.
 
     :param values: The observations, each inside ``value_range``.
     :ptype values: Sequence[float | Fraction]
@@ -1851,20 +1879,45 @@ def bounded_mean_p(
     :ptype value_range: tuple[float, float]
     :param alpha: The level the stake is tuned for.
     :ptype alpha: float
+    :param planned_n: The cases the bet was fixed for before its first value, the values given in the order bet on;
+        None for a bet over these values alone, in :func:`bet_order` of their count.
+    :ptype planned_n: int | None
     :return: The p, in ``[0, 1]``.
     :rtype: float
-    :raises ValueError: The range is empty, or a value lies outside it.
+    :raises ValueError: The range is empty, a value lies outside it, or there are more values than ``planned_n``.
     """
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
-    scaled = _scaled_to_unit(values, value_range)
-    return _betting_p(scaled, float((exact_decimal(null_mean) - low) / (high - low)), alpha)
+    scaled = _scaled_to_unit(values, value_range, planned_n=planned_n)
+    horizon = len(scaled) if planned_n is None else planned_n
+    return _betting_p(scaled, float((exact_decimal(null_mean) - low) / (high - low)), alpha, horizon)
 
 
-def _scaled_to_unit(values: Sequence[float | Fraction], value_range: tuple[float, float]) -> list[float]:
-    """Values checked exactly against their declared range, then rescaled to ``[0, 1]`` for the betting.
+def _check_planned(planned_n: int | None, *, paired: bool, given: int) -> None:
+    """Refuse a ``planned_n`` no bet can be read under: on an unpaired reading, whose cut between the two means moves
+    with each case read, or below the cases already given.
 
-    :raises ValueError: The range is empty, or a value lies outside it.
+    :raises ValueError: Either.
     """
+    if planned_n is None:
+        return
+    if not paired:
+        raise ValueError(
+            "a bet fixed for planned_n cases is read paired: an unpaired reading's cut moves with each case"
+        )
+    if planned_n < given:
+        raise ValueError(f"a bet fixed for {planned_n} cases holds at most {planned_n} of them, not {given}")
+
+
+def _scaled_to_unit(
+    values: Sequence[float | Fraction], value_range: tuple[float, float], *, planned_n: int | None = None
+) -> list[float]:
+    """Values checked exactly against their declared range, then rescaled to ``[0, 1]`` in the order bet on: their
+    :func:`bet_order` with no ``planned_n``, and the order given with one (the caller's, fixed before the first).
+
+    :raises ValueError: The range is empty, a value lies outside it, or there are more values than ``planned_n``.
+    """
+    if planned_n is not None and len(values) > planned_n:
+        raise ValueError(f"a bet fixed for {planned_n} cases holds at most {planned_n} values, not {len(values)}")
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
     if high <= low:
         raise ValueError(f"value_range {value_range} is empty")
@@ -1874,26 +1927,37 @@ def _scaled_to_unit(values: Sequence[float | Fraction], value_range: tuple[float
     # Checked exactly above; the betting itself is float arithmetic, clamped so a rounding cannot leave the range.
     low_f, width = float(low), float(high - low)
     scaled = [min(1.0, max(0.0, (float(v) - low_f) / width)) for v in exact]
-    return [scaled[i] for i in _bet_order(len(scaled))]
+    return scaled if planned_n is not None else [scaled[i] for i in bet_order(len(scaled))]
 
 
 @lru_cache(maxsize=256)
-def _bet_order(n: int) -> tuple[int, ...]:
-    """The order :func:`bounded_mean_p` bets on ``n`` values in: a shuffle seeded by ``n`` alone, so it is
-    reproducible and independent of the values and of the order they were listed in."""
+def bet_order(n: int) -> tuple[int, ...]:
+    """The order the bounded test bets on ``n`` cases in: a shuffle of ``range(n)`` seeded by ``n`` alone, so it is
+    reproducible and independent of the values and of the order they were listed in.
+
+    Position ``i`` of the order names the case at index ``order[i]`` of the cases in their fixed order (a pass's sorted
+    case ids). A reader that stops early judges the planned cases in this order, so each reading is a prefix of one
+    bet (:func:`bounded_mean_p`'s ``planned_n``), whatever order the cases were launched or finished in.
+
+    :param n: The cases planned.
+    :ptype n: int
+    :return: The order, a permutation of ``range(n)``.
+    :rtype: tuple[int, ...]
+    """
     order = list(range(n))
     random.Random(f"bounded-mean-bet-order-{n}").shuffle(order)
     return tuple(order)
 
 
-def _betting_p(scaled: Sequence[float], m: float, alpha: float) -> float:
+def _betting_p(scaled: Sequence[float], m: float, alpha: float, horizon: int) -> float:
     """:func:`bounded_mean_p` on values already rescaled to ``[0, 1]``, against the rescaled null mean ``m``."""
-    return _betting_p_staked(scaled, _plug_in_stakes(scaled, alpha), m)
+    return _betting_p_staked(scaled, _plug_in_stakes(scaled, alpha, horizon), m)
 
 
-def _plug_in_stakes(scaled: Sequence[float], alpha: float) -> list[float]:
-    """Each value's predictable plug-in stake before its cap, ``sqrt(2 ln(1/α) / (n σ̂²))``: it does not depend on the null."""
-    n = len(scaled)
+def _plug_in_stakes(scaled: Sequence[float], alpha: float, horizon: int) -> list[float]:
+    """Each value's predictable plug-in stake before its cap, ``sqrt(2 ln(1/α) / (N σ̂²))``, with N the cases the bet
+    was fixed for (``horizon``): it does not depend on the null, nor on how many values have been read."""
+    n = horizon
     stakes = []
     total = squares = 0.0
     for t, z in enumerate(scaled):
@@ -1911,10 +1975,14 @@ def _betting_p_staked(scaled: Sequence[float], stakes: Sequence[float], m: float
     if m >= 1.0:
         return 1.0
     cap = _BET_CAP / m
+    log1p = math.log1p
     log_capital = best = 0.0
+    # min() and max() spelled as comparisons, which pick the same float, without a builtin call per value: the
+    # bisection runs this loop over every value 33 times a bound.
     for z, stake in zip(scaled, stakes):
-        log_capital += math.log1p(min(stake, cap) * (z - m))
-        best = max(best, log_capital)
+        log_capital += log1p((cap if cap < stake else stake) * (z - m))
+        if log_capital > best:
+            best = log_capital
     return min(1.0, math.exp(-best))
 
 
@@ -1983,6 +2051,7 @@ def bounded_separation_p(
     paired: bool,
     value_range: tuple[float, float],
     alpha: float = SIGNIFICANCE_ALPHA,
+    planned_n: int | None = None,
 ) -> float | None:
     """The two-sided p of the bounded test by betting that ``mean(b) ≠ mean(a)``, valid at every n on a declared range.
 
@@ -1994,6 +2063,10 @@ def bounded_separation_p(
     twice the smaller direction's. Valid for every distribution on the range, which a t-test on coarse values is
     not, and the test that reads a move with no spread, where no t exists (:func:`separation_test`).
 
+    **A prefix of a bet fixed for N cases** (``planned_n``, paired only): the pairs are bet on in the order given and
+    each stake is tuned to N (:func:`bounded_mean_p`), so the p over the first k ≤ N pairs holds α at any stop, and at
+    k = N it is the p with no ``planned_n`` over the same pairs listed in case order.
+
     :param sample_a: One side's per-case values, in a fixed case order.
     :ptype sample_a: Sequence[float | Fraction]
     :param sample_b: The other's, aligned with ``sample_a`` when ``paired``.
@@ -2004,10 +2077,15 @@ def bounded_separation_p(
     :ptype value_range: tuple[float, float]
     :param alpha: The two-sided level the stakes are tuned for; the p is valid whatever it is.
     :ptype alpha: float
+    :param planned_n: The cases the bet was fixed for before the first pair, the pairs given in the order bet on;
+        None for a bet over these pairs alone, in :func:`bet_order` of their count.
+    :ptype planned_n: int | None
     :return: The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a
         value outside the declared range.
     :rtype: float | None
+    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given.
     """
+    _check_planned(planned_n, paired=paired, given=len(sample_b))
     a = [exact_decimal(v) for v in sample_a]
     b = [exact_decimal(v) for v in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
@@ -2018,8 +2096,8 @@ def bounded_separation_p(
     if paired:
         width = float(high - low)
         diffs = [y - x for x, y in zip(a, b)]
-        upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=alpha / 2.0)
-        downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=alpha / 2.0)
+        upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
+        downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
         return min(1.0, 2.0 * min(upward, downward))
     cut = (sum(a, Fraction(0)) / len(a) + sum(b, Fraction(0)) / len(b)) / 2
     negated = (-float(high), -float(low))
@@ -2748,6 +2826,61 @@ def bounded_cases_to_clear(
     return high
 
 
+#: Bisection steps for :func:`smallest_separable_move`: the move is found to ``width · 2^-40``.
+_MOVE_STEPS = 40
+
+
+def smallest_separable_move(
+    cases: int,
+    *,
+    value_range: tuple[float, float],
+    alpha: float = SIGNIFICANCE_ALPHA,
+    confidence: float = INTERVAL_LEVEL,
+) -> float | None:
+    """The smallest move ``mean(b) − mean(a)``, held by every one of ``cases`` pairs, that the paired bounded test
+    separates: its resolution at that many cases, the least any reading of them can show.
+
+    Separated is what a contrast reads it as: the p of :func:`bounded_separation_p` under ``alpha`` and the interval
+    of :func:`bounded_difference_interval` at ``confidence`` clear of zero. A move that is not the same on every case
+    has spread, and the test needs more than this to separate it, so the figure is a floor of what the cases can
+    show, never a promise that a move above it separates. It is the gate's own test that is inverted, not a normal
+    approximation: the betting test's price for holding α on coarse values at every n is a wider floor than a binomial
+    test's. Found by bisection on the move, across which the test's verdict changes once: checked on a grid of
+    1/10,000 of the range at every count from 2 to 25, and held by a test on a grid of 1/500.
+
+    :param cases: The pairs read.
+    :ptype cases: int
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param alpha: The two-sided level the p is read against.
+    :ptype alpha: float
+    :param confidence: The interval's two-sided coverage.
+    :ptype confidence: float
+    :return: The move, in the reading's units, above 0 and at most the range's width; None when even the whole width,
+        held on every case, would not separate at this count.
+    :rtype: float | None
+    """
+    low, high = float(value_range[0]), float(value_range[1])
+    width = high - low
+
+    def separates(move: float) -> bool:
+        a, b = [low] * cases, [low + move] * cases
+        p = bounded_separation_p(a, b, paired=True, value_range=value_range, alpha=alpha)
+        interval = bounded_difference_interval(a, b, paired=True, value_range=value_range, confidence=confidence)
+        return p is not None and p < alpha and interval is not None and interval[0] > 0.0
+
+    if not separates(width):
+        return None
+    kept, separated = 0.0, width
+    for _ in range(_MOVE_STEPS):
+        middle = (kept + separated) / 2.0
+        if separates(middle):
+            separated = middle
+        else:
+            kept = middle
+    return separated
+
+
 class VarianceComponents(NamedTuple):
     """How one reading varies across cases and across repeats of one case, estimated from earlier runs.
 
@@ -2855,7 +2988,6 @@ __all__ = [
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
     "MIN_PAIRS_FOR_CORRELATION",
-    "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "PROJECTION_CASE_CAP",
     "UNPAIRED_PROJECTION_CAP",
     "UNPAIRED_PROJECTION_RESOLUTION",
@@ -2886,6 +3018,7 @@ __all__ = [
     "difference_interval",
     "equivalence_untested_reason",
     "exact_decimal",
+    "bet_order",
     "bounded_cases_to_clear",
     "bounded_difference_interval",
     "bounded_mean_interval",
@@ -2913,6 +3046,7 @@ __all__ = [
     "proportion_interval",
     "separation_p",
     "separation_test",
+    "smallest_separable_move",
     "SeparationTest",
     "bounded_separation_p",
     "UNIFORM_MOVE_NEEDS_RANGE",

@@ -25,7 +25,7 @@ from threetears.evals.kernel.numbers import format_number, format_signed
 _DURATION_LADDER: tuple[tuple[str, str, float], ...] = (("ms", "s", 1000.0),)
 
 #: Units written against the number with no space (``42%``), where every other unit takes one (``42 ms``).
-#: Public so a figure stated in prose (:mod:`threetears.evals.analysis.prose_refs`) spaces its unit the same way.
+#: Public so a figure stated in prose spaces its unit the same way.
 UNSPACED_UNITS: tuple[str, ...] = ("%", "°")
 
 #: The unit a share on 0–1 (a pass rate, an accuracy, a precision) is stated in, and the unit a CHANGE in one is
@@ -42,6 +42,18 @@ _ONE_DECIMAL_UNITS: frozenset[str] = frozenset({PERCENT, POINTS})
 #: Money's unit as a measure declares it. A figure in it is written with the currency sign on the number
 #: (``$0.0031``), as the scoreboard writes its cost: one money format on every surface of a page.
 MONEY = "usd"
+
+#: The package's own units, each with the names a sentence spells it by: its symbol, its abbreviations and its words.
+#: A closed vocabulary, the package's and never read from an input, so that prose writing a unit right after a figure
+#: that already prints it (``513 ms milliseconds``, ``3 s seconds``, ``45%%``) can be refused
+#: (:func:`threetears.evals.analysis.report_doc_prose.unit_faults`). Matched in any case.
+UNIT_NAMES: dict[str, tuple[str, ...]] = {
+    "ms": ("ms", "msec", "msecs", "millisecond", "milliseconds"),
+    "s": ("s", "sec", "secs", "second", "seconds"),
+    PERCENT: (PERCENT, "pct", "percent", "per cent"),
+    POINTS: (POINTS, "pt", "pp", "point", "points", "percentage point", "percentage points"),
+    MONEY: (MONEY, "$", "dollar", "dollars"),
+}
 
 
 def display_scale(values: Sequence[float], unit: str | None, *, share: bool = False) -> tuple[float, str]:
@@ -155,6 +167,7 @@ __all__ = [
     "MONEY",
     "PERCENT",
     "POINTS",
+    "UNIT_NAMES",
     "UNSPACED_UNITS",
     "delta_unit",
     "display_scale",

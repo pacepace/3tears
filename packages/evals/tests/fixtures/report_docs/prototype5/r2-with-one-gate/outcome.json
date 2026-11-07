@@ -1,0 +1,269 @@
+{
+  "ending": "stored_with_findings",
+  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline names the pick, Brisk-S · reasoning low · 1 retry, and the reason: it is the cheapest of the five configurations that reach the 97% gate. It also states the main risk, a 0.1-point clearance. The lede adds the 38.6% chance that a fresh run reads it below the gate, and names the fallback, Brisk-S · reasoning high · 1 retry, at $1,324 more a month. Claim pick agrees with options_dominance, which finds the pick the only undominated passing option."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "No block contradicts its own sentence. Two figures on the page don't line up, though. Watch and Next say settling the pick takes 111,255 cases, but claim settle's table prints only 38,350 (one-sided) and 54,451 (two-sided), and nothing tells the reader that 111,255 is the two-sided, four-in-five size. Claim price's caption says neither step's gain carries an interval, while claim multihop prints an unpaired interval of -0.4 to +2.1 on that same pick-to-fallback gain."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The pick's thin margin is shown clearly in the headline, claim thin and claim settle. But the confidence reads High over a caveat its own figures make material: the pick's interval of 96.2–98.1% crosses the gate, and a fresh run reads it below 38.6% of the time. Claim multihop says multi-hop is where high reasoning 'gains most' (+1.7), but the task rows have no interval and the overall gain's interval crosses zero."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted bears on the call. Calls per task, effects outside Brisk-S and retry-by-model differences don't touch the gate or cost order among passing options, and per-task figures stay in the appendix."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The unknown provider routing, the lack of a control, best-of-eighteen selection and the unstated volume unit are each carried into the confidence or Method, and two of them become next steps: the gate declaration and recording the routing and volume."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names a run or a declaration and what it settles: the fresh read of the pick's pass rate, the owner deciding how the gate is read, the planning fix, and recording the routing and volume. One weakness: the planning-fix rerun reuses the same 1,200 cases."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Claim multihop's own figure, the pick's 95.6% on multi-hop, is not in its block, which draws only differences. Claim price's block leaves out the gains it divides by (+0.8 and +0.7 points). Claim retry's $0.014 cost is not drawn, and one of its bounds prints as '+0.03535'. Claims pick, thin and settle are well matched to their blocks."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The confidence reads 'High, if the caveats below aren't material' over a caveat that the page itself shows is plausibly material. The pick's computed interval, 96.2–98.1%, crosses the gate, and a fresh run reads it below 38.6% of the time. The best-of-eighteen caveat pushes the same way. Fix it one of two ways. Option one: scope the High to what holds, namely that the pick is the cheapest configuration passing on point estimates as declared, and only the Brisk-S fallback is close. Then say plainly that the High does not cover whether the pick truly clears 97%, and that the fresh read in Next settles it. Option two: make the form low.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "settle",
+          "severity": "should_fix",
+          "finding": "Watch and Next cite 111,255 cases to settle the pick 'four times in five', but claim settle's table prints only 38,350 (one-sided, half of runs) and 54,451 (two-sided). 111,255 is the two-sided, four-in-five size (settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80). Add that column, or the 80% sizes, to the settle table and say which one the decision uses, so the reader can find Watch's figure in the evidence.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "price",
+          "severity": "should_fix",
+          "finding": "The block gives prices per point but not the gains they divide by: +0.8 points from the pick to the high-reasoning fallback, and +0.7 from there to Atlas-M · reasoning high · 1 retry. Its caption also says neither gain carries an interval, yet claim multihop prints -0.4 to +2.1 for the first gain. Add the gains and the monthly cost gaps ($1,324 and $11,376) to the table. Then say the first gain's unpaired interval crosses zero, so $1,595.18 a month per point has no upper bound that the data support.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "multihop",
+          "severity": "should_fix",
+          "finding": "The claim rests on the pick's 95.6% on multi-hop, which the block doesn't draw: it shows only the fallback-minus-pick differences. Add the pick's own task rates, or a column for them. Also soften 'gains most' (+1.7). The task rows carry no interval, and the overall +0.8 has an interval of -0.4 to +2.1, so the task ordering is descriptive, not established.",
+          "id": "f1.4",
+          "since": 1
+        },
+        {
+          "claim": "retry",
+          "severity": "should_fix",
+          "finding": "The lower bound on the high-reasoning retry effect prints as '+0.03535'. Round it like the others (+0.04, or +0.0). The claim's $0.014 extra cost per 1,000 calls is not in the block; either add the two arms' costs or drop the figure from the sentence.",
+          "id": "f1.5",
+          "since": 1
+        },
+        {
+          "claim": "pick",
+          "severity": "should_fix",
+          "finding": "Claim pick and the decision's 'Why not the others' rank models by cost: the cheapest passing Atlas-M is 5.5 times the pick's cost. No provider is named for any arm. The routing caveat covers this up top, but the claim itself should say the costs are as routed in this run, with the provider not recorded, so the cross-model ratio is not read as a property of the models.",
+          "id": "f1.6",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The third next step reruns the tuned pick 'on the same 1,200 cases' after teaching it on those cases' failures. A pass there wouldn't show it clears the gate with room on new traffic. Name fresh or held-out cases, sized against the settle figures.",
+          "id": "f1.7",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 11,
+      "passes": true,
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5",
+        "f1.6",
+        "f1.7"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline names the pick, Brisk-S at low reasoning with one retry, and says why: it is the cheapest of five configurations that reach the 97% gate, at $0.302 per 1,000 calls as routed in this run. It also names the main risk: it clears by 0.1 points, and a fresh run would read it below the gate 38.6% of the time. The decision block names the fallback, Brisk-S at high reasoning with one retry, and the switch rule. Claim pick shows the frontier with the gate line."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim matches its block row by row. In claim thin, the pick's interval, 96.2–98.1%, crosses 97%, and the fallback's, 97.2–98.8%, does not. In claim settle, 38.6% against 0.9%. In claim multihop, 95.6% is the pick's lowest task rate. In claim retry, +1.9 with interval +0.3 to +3.4. The explore rows agree with the gate table: the pick holds for gates from 95.3% to 97.1%, then the fallback up to 98.0%. options_dominance names the pick as the only undominated survivor."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's thin clearance is in the headline, the lede and Watch, and claim thin puts it first among the supporting claims. The confidence is now scoped to the cost order on point estimates and says the gate question is open. The price claim says neither gain is told apart from zero."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted bears on the pick-or-fallback call. That covers calls per task, effects outside Brisk-S, retry by model and per-task figures for other configurations. The decision to keep the confidence high is stated and argued in the open."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Four confounds are each carried into the story with what would make them matter: the point-estimate gate, best of eighteen, no control and unknown provider routing. Each also reaches a next step: the fresh read, the gate declaration and recording the provider. One gap remains: claim price compares costs across models without the routing note (see finding)."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names a run or a declaration and what it settles. The fresh read uses 111,255 cases, the two-sided four-in-five size, and it checks out. The owner declares how the gate is read. Held-out tuning uses at least 1,660 fresh cases, the fallback's two-sided four-in-five size, which also checks out. Recording the provider and the volume unit is the fourth."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Claim settle's deciding figure, 111,255, is not in its block, and neither is the fallback's 1,660 that Next uses: the table prints only the half-the-time sizes. Claim price states the second gain, +0.7 with interval -0.4 to +1.7, and both monthly cost gaps ($1,324 and $11,376). Its blocks draw only the first gain and the per-point prices."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "price",
+          "severity": "must_fix",
+          "finding": "Claim price compares costs across models without saying who served them. The step from Brisk-S at high reasoning with one retry to Atlas-M at high reasoning with one retry is priced at $11,376 more a month, $17,236.36 per point, and the explore row repeats that price. No provider is recorded for either arm (cost_served_by). Claim pick now carries the routing note, but this claim does not, so a reader can take the Atlas-M premium as a property of the model. Add 'as routed in this run, with no provider recorded' to the second step, in the sentence and in the explore row.",
+          "id": "f2.1",
+          "since": 2
+        },
+        {
+          "claim": "settle",
+          "severity": "should_fix",
+          "finding": "The sentence now explains that 111,255 is the two-sided, four-in-five size, but the block still prints only the half-the-time sizes, 38,350 and 54,451. So the figure Watch and Next rest on can't be found in the evidence. The fallback's 1,660, which the third next step uses, is also missing. Add a column 'Needed, two-sided, four in five' (settle.criteria.pass_rate.<arm>.overall.cases_needed_two_sided_80): 111,255 for the pick, 1,660 for the fallback.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "price",
+          "severity": "should_fix",
+          "finding": "The sentence states the second gain, +0.7 points with interval -0.4 to +1.7, and the monthly cost gaps of $1,324 and $11,376. The blocks draw only the first gain and the two per-point prices. Fix it one of two ways. Option one: add gain, interval and monthly gap columns to the step table, which also makes the per-point prices traceable. Option two: add a second diverging-bars row for the step to Atlas-M at high reasoning with one retry.",
+          "id": "f1.3",
+          "since": 1
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.4",
+        "f1.5",
+        "f1.6",
+        "f1.7"
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": true,
+      "blocking": [
+        "f2.1",
+        "f1.2",
+        "f1.3"
+      ]
+    },
+    {
+      "round": 3,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline names the pick (Brisk-S, low reasoning, one retry) and its reason: it is the cheapest configuration to reach the 97% gate. It also gives the main risk: it clears by only 0.1 points. The lede adds the cost ratio (2.1 times for the next passing option), the 38.6% chance a fresh run reads it below the gate, and the fallback with its monthly premium ($1,324). Claim pick shows the frontier with the gate line, and the decision block names Watch and the switch rule. Options dominance agrees: the pick is the only undominated survivor."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim follows from the one before. Pick shows the cheapest passer. Thin shows its interval (96.2–98.1%) crosses the line while the fallback's (97.2–98.8%) does not. Settle gives the odds (38.6% against 0.9%). Price and price_atlas show what headroom costs and that neither gain is told apart from zero. I read each sentence against its table row by row and found none its block contradicts. The figures match the snapshot: $1,595.18 and $17,236.36 a month per point, $1,324 and $11,376 monthly gaps, $1,208 a month for the pick."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's weak point, its 0.1-point clearance, is in the headline, the flag, the first caveat, Watch and claim thin. The confidence is scoped: the high covers the cost order on declared point estimates and says outright that it does not cover whether the pick truly clears the gate. Gains with intervals crossing zero are labelled as such in claims price and price_atlas. The multi-hop ordering is called descriptive."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the call. Nano-XS never reaches the gate, so how the retry helps it more doesn't matter here. Calls per task barely differ between the pick and its fallback. Per-task figures for other configurations are in the appendix. The one omission I would reverse is the four-in-five column in the settle table. That is an evidence problem, not a decision problem, and it is raised under item 7."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "All four open caveats are carried, each with what would make it matter and which way it pushes: the point-estimate gate, best of eighteen, no control (gaps read unpaired), and unknown provider routing. Routing is now named wherever costs are compared across models: claim pick, the decision block, claim price and the price row in explore. Next steps include recording the provider and the volume unit."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it settles. A fresh read of 111,255 cases settles whether the pick holds at the gate. An owner's declaration of how the gate is read settles pick versus fallback with no new run. A planning fix read on at least 1,660 held-out cases settles whether the cheapest model can clear with room. Recording the providers settles whether the cross-model cost order holds."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Claims thin, price, price_atlas, retry, latency and multihop each show their own figures, and the second gain now has its own block. But claim settle states 111,255 and 1,660, the sizes Watch and Next rest on, and its table prints only the half-the-time sizes (38,350 and 54,451 for the pick). The figure a reader is asked to act on is not in its evidence, and the table invites taking 54,451 as the size of the run."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "settle",
+          "severity": "should_fix",
+          "finding": "The settle table still prints only the half-the-time sizes: 38,350 one-sided and 54,451 two-sided for the pick, 572 and 812 for the fallback. The 111,255 that Watch and the first next step use, and the 1,660 that the third next step uses, appear only in prose. The caption admits this, but the figures a reader is told to plan a run on are still missing from the evidence. Next to them, 54,451 reads as the run size. Add a column 'Needed, two-sided, four in five' from settle.criteria.pass_rate.<arm>.overall.cases_needed_two_sided_80: 111,255 for the pick, 1,660 for the fallback. Then drop or relabel the half-the-time columns so the run size is plain.",
+          "id": "f1.2",
+          "since": 1
+        }
+      ],
+      "resolved": [
+        "f2.1",
+        "f1.3"
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false,
+      "blocking": [
+        "f1.2"
+      ]
+    }
+  ]
+}

@@ -67,7 +67,8 @@ from threetears.evals.schema.values import (
 from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import EvalResult, EvalRun
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 #: Who owns a sweepable input: a ``lever`` a campaign sweeps, ``apparatus`` (the measuring rig, which should
 #: not move), or a ``label`` that identifies rather than varies.
@@ -79,7 +80,12 @@ SweepableRole = Literal["lever", "apparatus", "label"]
 Comparability = Literal["same", "differs", "unknown"]
 
 #: Reader signature. A reader is host code the engine calls and never inspects.
-SweepableReader = Callable[["EvalRun", "Sequence[EvalResult]"], Any]
+#:
+#: **Provisional:** a run's results reach a reader as views (:class:`~threetears.evals.kernel.result_reading.ResultView`):
+#: a stored result, or its compact reading, which carries only the attributes the engine's readers are measured to
+#: read (no judge prose, no world events, no kind payload). A reader reads what the view declares, and one that reads
+#: outside it fails loudly on a reading (an ``AttributeError``), never quietly.
+SweepableReader = Callable[["EvalRun", "Sequence[ResultView]"], Any]
 
 #: Whether one bare name is a member of an open family, asked with no run in hand. Host code the
 #: engine calls and never inspects, for the same reason :data:`SweepableReader` is: the member
@@ -91,12 +97,12 @@ FamilyMemberTest = Callable[[str], bool]
 #: compared on, or ``None`` when the run does not carry enough of the surface to say. Host code
 #: the engine calls and never inspects, because only the host knows how a member name maps onto
 #: the surface it was written into.
-ResidualReader = Callable[["EvalRun", "Sequence[EvalResult]", frozenset[str]], Any]
+ResidualReader = Callable[["EvalRun", "Sequence[ResultView]", frozenset[str]], Any]
 
 #: Whether one run held an input away from the subject's production configuration: ``True`` it did,
 #: ``False`` it held production's setting, ``None`` the run cannot say. Host code the engine calls and
 #: never inspects, because only the host knows what its subject runs at in production.
-ProductionDepartureReader = Callable[["EvalRun", "Sequence[EvalResult]"], bool | None]
+ProductionDepartureReader = Callable[["EvalRun", "Sequence[ResultView]"], bool | None]
 
 #: The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every
 #: observation (``ScoreRecord.model``) as well as the core lever below, which is why it is the
@@ -975,7 +981,7 @@ class SweepableRegistry(HostAttributed):
             and (declared.open_family is None or declared.read_residual is not None)
         }
 
-    def read_residual(self, surface: str, run: EvalRun, results: Sequence[EvalResult], removed: frozenset[str]) -> Any:
+    def read_residual(self, surface: str, run: EvalRun, results: Sequence[ResultView], removed: frozenset[str]) -> Any:
         """Read ``surface`` off one run with the ``removed`` member names taken out.
 
         :param surface: A name in :attr:`resolution_surfaces` whose claimant declares a residual reader.
@@ -983,7 +989,7 @@ class SweepableRegistry(HostAttributed):
         :param run: The run to read.
         :ptype run: EvalRun
         :param results: That run's results.
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :param removed: Member names of the family that resolves into ``surface``; for a fixed lever, the lever's
             own name.
         :ptype removed: frozenset[str]
@@ -1184,7 +1190,7 @@ class SweepableRegistry(HostAttributed):
             pairs.extend((member, measure) for member, measure in (declared.member_acts_on or {}).items())
         return tuple(pairs)
 
-    def read_all(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> dict[str, Any]:
+    def read_all(self, run: EvalRun, results: Sequence[ResultView] = ()) -> dict[str, Any]:
         """Read every declared input off one run.
 
         :param run: The run to read.
@@ -1192,7 +1198,7 @@ class SweepableRegistry(HostAttributed):
         :param results: That run's results, for the result-level inputs. Omitting them reads those
             as empty, which is correct for a caller that has no results loaded and wrong to
             interpret as "the run used none".
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :return: ``{name: value}`` for every declared input, JSON-safe. Set-valued inputs come out
             sorted so element order is never read as a difference. A host that declared nothing
             beyond an empty core gets ``{}`` — a well-formed empty answer, not an exception.
@@ -1209,7 +1215,7 @@ class SweepableRegistry(HostAttributed):
         """
         return self._resolve(run, results)[0]
 
-    def resolve_levers(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> ResolvedLevers:
+    def resolve_levers(self, run: EvalRun, results: Sequence[ResultView] = ()) -> ResolvedLevers:
         """Read the LEVERS one run carried — fixed declarations plus this run's family members.
 
         The lever half of :meth:`read_all`, and the one call every reporting lens makes to learn
@@ -1230,7 +1236,7 @@ class SweepableRegistry(HostAttributed):
         :param run: The run to read.
         :ptype run: EvalRun
         :param results: That run's results, for the result-level inputs.
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :return: The resolution. Two runs of one host can carry DIFFERENT lever sets — that is what
             "open" means — so a caller comparing them unions the names rather than indexing one
             by the other's.
@@ -1239,7 +1245,7 @@ class SweepableRegistry(HostAttributed):
         """
         return self._resolve(run, results)[1]
 
-    def _resolve(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> tuple[dict[str, Any], ResolvedLevers]:
+    def _resolve(self, run: EvalRun, results: Sequence[ResultView] = ()) -> tuple[dict[str, Any], ResolvedLevers]:
         """Read every declaration ONCE, expanding families, and separate the levers out.
 
         One pass rather than two, because :meth:`read_all` and :meth:`resolve_levers` calling the
@@ -1250,7 +1256,7 @@ class SweepableRegistry(HostAttributed):
         :param run: The run to read.
         :ptype run: EvalRun
         :param results: That run's results.
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :return: ``(every value by name, the lever resolution)``.
         :rtype: tuple[dict[str, Any], ResolvedLevers]
         :raises RegistrationError: A family resolved a member name an apparatus or label claims.
@@ -1284,7 +1290,7 @@ class SweepableRegistry(HostAttributed):
             members_by_family=members_by_family,
         )
 
-    def production_footing(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> ProductionFooting:
+    def production_footing(self, run: EvalRun, results: Sequence[ResultView] = ()) -> ProductionFooting:
         """Which inputs ``run`` held away from the subject's production configuration (#571).
 
         The disclosure a production-replicating cost is presented with, built from the declarations
@@ -1303,7 +1309,7 @@ class SweepableRegistry(HostAttributed):
             payload-carried lever as unset, which is "held" — so a caller holding one loads the run.
         :ptype run: EvalRun
         :param results: That run's results, for the result-level inputs.
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :return: The footing. ``moved_nothing`` only when every input read was checked.
         :rtype: ProductionFooting
         :raises ValueError: ``run`` is a listing's copy whose host payload was elided.
@@ -1348,7 +1354,7 @@ class SweepableRegistry(HostAttributed):
             moved[member] = _footing_level(resolution.values.get(member))
         return ProductionFooting(moved=moved, unchecked=unchecked, held=sorted(held))
 
-    def read_role_pins(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> dict[str, Any]:
+    def read_role_pins(self, run: EvalRun, results: Sequence[ResultView] = ()) -> dict[str, Any]:
         """Read the pinned-role inputs off one run, through the declarations above.
 
         A comparison surface that wants to say "these runs were judged differently" reads the
@@ -1361,7 +1367,7 @@ class SweepableRegistry(HostAttributed):
         :param results: That run's results. ``judge_model`` and ``judge_config_ids`` are observed
             ACROSS results, so omitting them reads each as ``[]`` — which means "nobody
             supplied results", never "no model judged" or "the run used no judge config".
-        :ptype results: Sequence[EvalResult]
+        :ptype results: Sequence[ResultView]
         :return: ``{name: value}`` for every pinned role, JSON-safe; ``{}`` when this host pins none.
         :rtype: dict[str, Any]
         """
@@ -1471,13 +1477,13 @@ def _is_blank(value: Any) -> bool:
     return isinstance(value, Collection) and len(value) == 0
 
 
-def _max_cost_usd(run: EvalRun, _results: Sequence[EvalResult]) -> float | str | None:
+def _max_cost_usd(run: EvalRun, _results: Sequence[ResultView]) -> float | str | None:
     """The spend ceiling in force for a run: the number, :data:`UNCAPPED_SPEND`, or blank.
 
     :param run: The run.
     :ptype run: EvalRun
     :param _results: Unused: the ceiling is declared on the run.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: :data:`UNCAPPED_SPEND` when the run records it ran uncapped, whatever number it also carries,
         since none bound it; else ``max_cost_usd``, which is ``None`` only for a run whose writer
         recorded no ceiling and no origin — the one blank this dimension cannot decide. An origin a newer
@@ -1492,7 +1498,7 @@ def _max_cost_usd(run: EvalRun, _results: Sequence[EvalResult]) -> float | str |
     return run.max_cost_usd
 
 
-def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | str:
+def _judge_config_ids(_run: EvalRun, results: Sequence[ResultView]) -> list[str] | str:
     """Every judge-config id OBSERVED across a run's results, sorted — a built-in prompt's ``builtin:`` id among them.
 
     A built-in prompt's identity is a level like a config's: two built-in wordings are two judges, so a run judged
@@ -1511,7 +1517,7 @@ def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str]
         caller either holds no results or was handed none, and neither says anything about
         what judged the run. Results of which none was SCORED are the other: nothing judged
         them, so nothing says which configuration would have.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: Sorted config ids when any result carried one; :data:`NO_JUDGE_CONFIGS` when results were
         scored and none carried a config; ``[]`` when no results were supplied, or none was scored.
         The second blank is what lets a kind that fills no ``judge`` seat omit this dimension: a
@@ -1526,7 +1532,7 @@ def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str]
     return NO_JUDGE_CONFIGS if any(served_models_by_score(result) for result in results) else []
 
 
-def served_models_by_score(result: EvalResult) -> list[str | None]:
+def served_models_by_score(result: ResultView) -> list[str | None]:
     """Who scored each of one result's stored scores, as the provider named it — ``None`` where it did not.
 
     Every stored score counts: the rubric dims and both dual-score axes. The comparison reader
@@ -1534,7 +1540,7 @@ def served_models_by_score(result: EvalResult) -> list[str | None]:
     result has.
 
     :param result: The result to read.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: One entry per stored score, in rubric-then-axes order; empty when nothing was scored.
     :rtype: list[str | None]
     """
@@ -1542,7 +1548,7 @@ def served_models_by_score(result: EvalResult) -> list[str | None]:
     return [score.served_model for score in (*result.rubric_scores, *axes)]
 
 
-def _judge_served_models(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | None:
+def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[str] | None:
     """The models that actually scored a run's results, as the provider named them, sorted.
 
     Read off each stored score's ``served_model`` — what the provider's response said answered —
@@ -1561,7 +1567,7 @@ def _judge_served_models(_run: EvalRun, results: Sequence[EvalResult]) -> list[s
     :param _run: Unused — see above.
     :ptype _run: EvalRun
     :param results: The run's results. An empty sequence is an absence: the caller holds none.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The sorted distinct served models when every stored score names one. ``None`` when ANY
         score names none — the response did not say which model answered — because a
         run whose scorer is partly unobserved cannot be said to match another on the observed part.
@@ -1585,7 +1591,7 @@ def _judge_served_models(_run: EvalRun, results: Sequence[EvalResult]) -> list[s
     return sorted(served)
 
 
-def _temperatures_by_score(result: EvalResult) -> list[str | None]:
+def _temperatures_by_score(result: ResultView) -> list[str | None]:
     """The temperature each of one result's stored scores was sent at, as a level — ``None`` where it recorded none.
 
     Over the same scores :func:`served_models_by_score` reads (the rubric dims, then both dual-score axes),
@@ -1593,7 +1599,7 @@ def _temperatures_by_score(result: EvalResult) -> list[str | None]:
     sort and compare as one kind of value.
 
     :param result: The result to read.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: One entry per stored score, in rubric-then-axes order; empty when nothing was scored.
     :rtype: list[str | None]
     """
@@ -1604,7 +1610,7 @@ def _temperatures_by_score(result: EvalResult) -> list[str | None]:
     ]
 
 
-def _judge_temperatures(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | None:
+def _judge_temperatures(_run: EvalRun, results: Sequence[ResultView]) -> list[str] | None:
     """The temperatures a run's scores were actually sent at, sorted (#633).
 
     Read off each stored score's ``judge_temperature`` — what the judge client reported sending — and never
@@ -1615,7 +1621,7 @@ def _judge_temperatures(_run: EvalRun, results: Sequence[EvalResult]) -> list[st
     :param _run: Unused — the run records the request, not what was sent.
     :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The sorted distinct levels when every stored score recorded one; ``None`` when ANY recorded none — a
         score made outside a judge phase — for the reason
         :func:`_judge_served_models` returns ``None`` on a partial record; ``[]`` when nothing was scored. Both
@@ -1641,7 +1647,7 @@ def _distinct_settings_levels(settings: Sequence[Any]) -> list[dict[str, Any]]:
     return [levels[form] for form in sorted(levels)]
 
 
-def _judge_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[dict[str, Any]] | None:
+def _judge_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> list[dict[str, Any]] | None:
     """The request settings a run's judge calls were actually SENT with, each distinct value once, in canonical order.
 
     Read off each stored score's ``judge_sent_settings`` — what the judge client reported its request carried — and
@@ -1654,7 +1660,7 @@ def _judge_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[d
     :param _run: Unused — the run records what it asked, not what was sent.
     :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The distinct levels when every stored score reported what it was sent with; ``None`` when ANY score is
         unverified (its client did not report it), for the reason :func:`_judge_served_models` returns ``None`` on a
         partial record; ``[]`` when nothing was scored. Both blanks read as undecidable, never as agreement.
@@ -1670,7 +1676,7 @@ def _judge_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[d
     return _distinct_settings_levels(sent)
 
 
-def _simulator_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[dict[str, Any]] | None:
+def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> list[dict[str, Any]] | None:
     """The request settings a run's simulated-user calls were actually SENT with, each distinct value once.
 
     Read off the ``simulator`` role's usage rows (``RoleUsage.sent_settings``, which already folds every call a row
@@ -1679,12 +1685,12 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> li
     :param _run: Unused — the run records what it asked, not what was sent.
     :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The distinct levels when every simulator row reported what its calls were sent with; ``None`` when ANY row
         is unverified; ``[]`` when no simulator call was made. Both blanks read as undecidable, never as agreement.
     :rtype: list[dict[str, Any]] | None
     """
-    sent = []
+    sent: list[ClientRequestSettings] = []
     for result in results:
         for row in result.usage:
             if row.role != "simulator":
@@ -1695,7 +1701,7 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> li
     return _distinct_settings_levels(sent)
 
 
-def _judge_dim_divergence(run: EvalRun, _results: Sequence[EvalResult]) -> list[str] | str | None:
+def _judge_dim_divergence(run: EvalRun, _results: Sequence[ResultView]) -> list[str] | str | None:
     """Which dims were scored by something other than the run's judge pin.
 
     Isolates the axis ``judge_model`` cannot express. Reading the whole ``effective_judges`` map
@@ -1705,7 +1711,7 @@ def _judge_dim_divergence(run: EvalRun, _results: Sequence[EvalResult]) -> list[
     :param run: The run to read.
     :ptype run: EvalRun
     :param _results: Unused — divergence is declared on the run.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: Sorted ``"dim=model"`` entries for each dim that departed from the pin;
         :data:`NO_JUDGE_DIM_DIVERGENCE` when attribution was recorded and none did; ``None`` when
         the run recorded no attribution, or carries only a reconstruction — an inference must not
@@ -1762,7 +1768,7 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
 #: belongs in the READER, which knows which of the two cases it is in, not in the flag, which
 #: cannot: :func:`_judge_config_ids` returns an explicit sentinel for the observed state and
 #: reserves the falsy empty for the genuine absence.
-def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+def _candidate_model_departs(run: EvalRun, _results: Sequence[ResultView]) -> bool | None:
     """Whether the run's candidate model was set away from the one the subject runs on.
 
     A witnessed run recorded traffic nothing set, so its model is production's. A launched run records
@@ -1774,7 +1780,7 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bo
     :param run: The run.
     :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: ``True`` moved, ``False`` held, ``None`` cannot say.
     :rtype: bool | None
     """

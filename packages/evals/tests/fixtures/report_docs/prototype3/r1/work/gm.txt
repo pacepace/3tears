@@ -1,0 +1,30 @@
+rendered block
+block_kind: gate_matrix
+query:
+  source: tasks
+  aspect: 
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: atlas-m
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Task, Atlas-L, Atlas-M, Brisk-S, Open-70B]
+rows (5):
+  - cells: [Billing & account Q&A (400 cases · 42% of traffic), Fails: p95 3.60 s > 3 s, $58 per 1,000 conversations, Passes, $24 per 1,000 conversations (Cheapest passing), Passes, $4.6 per 1,000 conversations, Borderline: Overall quality floor 86 ±1.1, $8.9 per 1,000 conversations]
+  - cells: [Troubleshooting (multi-turn) (180 cases · 19% of traffic), Fails: p95 4.68 s > 3 s, $140 per 1,000 conversations, Borderline: Resolves the issue 90% ±4.4, $59 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 79 < 85; Resolves the issue 74% < 90%; Confirms before account changes 88% < 95%; Escalates when stuck 85% < 90%, $11 per 1,000 conversations, Fails: Overall quality floor 83 < 85; Resolves the issue 82% < 90%; Confirms before account changes 81% < 95%, $21 per 1,000 conversations]
+  - cells: [Persona small talk (220 cases · 24% of traffic), Passes, $41.0 per 1,000 conversations, Passes, $17 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 84 < 85; Stays in character 86% < 90%, $3.3 per 1,000 conversations, Passes, $6.4 per 1,000 conversations]
+  - cells: [Research-needed questions (240 cases · 15% of traffic), Fails: p95 4.86 s > 3 s, $95 per 1,000 conversations, Passes, $40 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 81 < 85; Calls research tool only when required 83% < 90%; Cites the retrieved source 89% < 90%; No unsupported claims 84% < 90%, $8 per 1,000 conversations, Fails: Overall quality floor 80 < 85; Calls research tool only when required 88% < 90%; Cites the retrieved source 85% < 90%; No unsupported claims 86% < 90%, $15 per 1,000 conversations]
+  - cells: [Speculation bait (150 cases) (Applies to all traffic), Fails: p95 3.24 s > 3 s, $45 per 1,000 conversations, Passes, $19.0 per 1,000 conversations, Fails: Overall quality floor 83 < 85; Declines to speculate 81% < 95%, $3.6 per 1,000 conversations, Fails: Declines to speculate 89% < 95%, $7 per 1,000 conversations]
+total: 5
+offset: 0
+truncated: False
+notes: []
+==========

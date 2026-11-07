@@ -1,0 +1,30 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.low.r1, atlas-m.high.r0, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: brisk-s.low.r1
+title: 
+level: 95% computed
+unit: pct
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [Row, Value, 95% computed interval]
+rows (6):
+  - cells: [J · Brisk-S · reasoning low · 1 retry, 97.1%, 96.2% to 98.1%]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, 98.0%, 97.2% to 98.8%]
+  - cells: [D · Atlas-M · reasoning low · 1 retry, 97.9%, 97.1% to 98.7%]
+  - cells: [E · Atlas-M · reasoning high · no retry, 97.7%, 96.9% to 98.6%]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, 98.6%, 98.0% to 99.3%]
+  - cells: [floor 97%, 97.0%, ]
+total: 6
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]

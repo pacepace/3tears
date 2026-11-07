@@ -131,6 +131,14 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
         (0.06, "$0.0600"),
         (0.00016, "$0.000160"),
         (1.2345678e-05, "$0.0000123"),
+        (999.99, "$999.99"),
+        (1000, "$1,000.00"),
+        (7560.0, "$7,560.00"),
+        (1234567.89, "$1,234,567.89"),
+        (-1234.5, "-$1,234.50"),
+        (-0.0123, "-$0.0123"),
+        (1e-9, "$0.00000000100"),
+        (None, "unpriced"),
     ],
 )
 def test_spend_reads_as_dollars_and_cents_from_ten_cents_up_and_three_significant_figures_below(

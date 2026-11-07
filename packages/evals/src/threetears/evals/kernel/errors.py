@@ -18,6 +18,7 @@ owning the table.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -109,9 +110,28 @@ class ConflictError(EvalServiceError):
 
 
 class ValidationFailedError(EvalServiceError):
-    """Validation failed (status 422)."""
+    """Validation failed (status 422).
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None, *, remedy: str):
+    Where the raiser knows which parameters were at fault and what they accept, it says so as data, beside the
+    message and remedy, so a caller builds the corrected call without parsing either: a surface carries them as its
+    refusal's recovery (:class:`~threetears.evals.actions.Recovery`).
+
+    :ivar parameters: The parameters at fault, by name (a field of one written ``parameter.field``); empty when the
+        raiser cannot pin one.
+    :ivar valid_values: Every value the one parameter at fault accepts here, when the raiser can list them.
+    :ivar valid_values_from: The action that lists them, when they are data the raiser does not hold.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        *,
+        remedy: str,
+        parameters: Sequence[str] = (),
+        valid_values: Sequence[str] | None = None,
+        valid_values_from: str | None = None,
+    ):
         """Build a 422.
 
         :param message: What was wrong with the request.
@@ -120,8 +140,34 @@ class ValidationFailedError(EvalServiceError):
         :ptype details: dict[str, Any] | None
         :param remedy: What the caller sends instead, or does first — required, as on every refusal.
         :ptype remedy: str
+        :param parameters: The parameters at fault; none where the raiser cannot pin one.
+        :ptype parameters: Sequence[str]
+        :param valid_values: Every value the one parameter at fault accepts here; None where they cannot be listed.
+        :ptype valid_values: Sequence[str] | None
+        :param valid_values_from: The action that lists the valid values; None where none does, or they are given.
+        :ptype valid_values_from: str | None
         """
         super().__init__(message=message, status_code=422, details=details or {}, remedy=remedy)
+        self.parameters = tuple(parameters)
+        self.valid_values = None if valid_values is None else tuple(valid_values)
+        self.valid_values_from = valid_values_from
+
+    @classmethod
+    def refusing(cls, refused: RefusedInput) -> ValidationFailedError:
+        """The service's refusal of what a lower layer refused: its fault, remedy, parameters and valid values.
+
+        :param refused: The lower layer's refusal.
+        :ptype refused: RefusedInput
+        :return: The 422 carrying all of it.
+        :rtype: ValidationFailedError
+        """
+        return cls(
+            refused.fault,
+            remedy=refused.remedy,
+            parameters=refused.parameters,
+            valid_values=refused.valid_values,
+            valid_values_from=refused.valid_values_from,
+        )
 
 
 #: What a caller does about a store that did not answer: the same for every storage refusal.
@@ -228,15 +274,32 @@ class RefusedInput(ValueError):
 
     :ivar fault: What was wrong with what the caller asked.
     :ivar remedy: What the caller asks instead, or does first.
+    :ivar parameters: The parameters at fault, where the raiser knows them (:class:`ValidationFailedError`).
+    :ivar valid_values: Every value the one parameter at fault accepts, where the raiser can list them.
+    :ivar valid_values_from: The action that lists them, where they are data the raiser does not hold.
     """
 
-    def __init__(self, fault: str, *, remedy: str) -> None:
-        """Hold the fault and the remedy apart.
+    def __init__(
+        self,
+        fault: str,
+        *,
+        remedy: str,
+        parameters: Sequence[str] = (),
+        valid_values: Sequence[str] | None = None,
+        valid_values_from: str | None = None,
+    ) -> None:
+        """Hold the fault and the remedy apart, and what the raiser knows of the parameters at fault.
 
         :param fault: What was wrong.
         :ptype fault: str
         :param remedy: What the caller does instead.
         :ptype remedy: str
+        :param parameters: The parameters at fault, by the name the caller set them by; none where it cannot say.
+        :ptype parameters: Sequence[str]
+        :param valid_values: Every value the one parameter at fault accepts; None where they cannot be listed.
+        :ptype valid_values: Sequence[str] | None
+        :param valid_values_from: The action that lists them; None where none does, or they are given.
+        :ptype valid_values_from: str | None
         :raises ValueError: ``remedy`` is blank.
         """
         if not remedy.strip():
@@ -244,6 +307,9 @@ class RefusedInput(ValueError):
         super().__init__(f"{fault}; {remedy}")
         self.fault = fault
         self.remedy = remedy
+        self.parameters = tuple(parameters)
+        self.valid_values = None if valid_values is None else tuple(valid_values)
+        self.valid_values_from = valid_values_from
 
 
 class JobFenced(Exception):

@@ -48,7 +48,8 @@ from threetears.evals.kernel import (
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.run import get_result, get_result_trace, get_run, list_results
+from threetears.evals.kernel.run_pages import iter_keyed_results
+from threetears.evals.run import get_result, get_result_trace, get_run
 
 #: Which part of a stored result :func:`result_get` returns. ``record`` is the result with what its kind
 #: stored about the cell (output, call ledger, end state); ``judge`` is what the judge was sent; ``spans`` is
@@ -201,6 +202,9 @@ def results_list(
     read of a finished run and the repeats of one case sit together. A run still going is still adding
     results, and a page read while it runs can shift.
 
+    The run is read a page at a time and never whole: unfiltered, only the page's results are read; filtered by
+    ``condition``, every result is read, a page at a time, to count the matches, and only the page's rows are kept.
+
     The run is read first, so a run that is not in the scope is refused as not found rather than listed
     as empty — an empty page would say the run produced nothing.
 
@@ -226,21 +230,38 @@ def results_list(
         raise ValidationFailedError(f"offset is {offset}", remedy="pass an offset of 0 or more")
     if limit is not None and limit < 1:
         raise ValidationFailedError(f"limit is {limit}", remedy="pass a limit of at least 1, or omit it for every row")
-    run = get_run(host.storage, run_id, scope_id)
-    results = sorted(
-        list_results(host.storage, run.id, scope_id),
-        key=lambda result: (result.test_case_id, result.k_iteration, result.id),
+    storage = host.storage
+    run = get_run(storage, run_id, scope_id)
+    # The order is read off the run's keys, which carry the case, the repeat and the id, so the run is read a page at
+    # a time (`iter_keyed_results`) and only the page's light rows are kept.
+    keys = sorted(
+        storage.query_eval_result_keys_by_run(run.id, scope_id),
+        key=lambda key: (key.test_case_id, key.k_iteration, key.id),
     )
-    matching = [result for result in results if condition is None or classify_result(result) is condition]
-    end = len(matching) if limit is None else offset + limit
+    if condition is None:
+        # Every result matches, so only the page's are read.
+        total = len(keys)
+        end = total if limit is None else offset + limit
+        lines = [_line(result) for result in iter_keyed_results(storage, scope_id, keys[offset:end])]
+    else:
+        # Which results match is their condition, so every one is read to count them, and the page's are kept.
+        total = 0
+        lines = []
+        for result in iter_keyed_results(storage, scope_id, keys):
+            if classify_result(result) is not condition:
+                continue
+            if total >= offset and (limit is None or total < offset + limit):
+                lines.append(_line(result))
+            total += 1
+        end = total if limit is None else offset + limit
     return ResultListing(
         run_id=run.id,
         condition_filter=condition,
-        total=len(matching),
+        total=total,
         offset=offset,
         limit=limit,
-        next_offset=end if end < len(matching) else None,
-        results=[_line(result) for result in matching[offset:end]],
+        next_offset=end if end < total else None,
+        results=lines,
     )
 
 

@@ -5,7 +5,11 @@ above them defined, and each page says so at its top. A reader runs them in ``py
 ``async def main()``, which puts every block on a running event loop. That is where a synchronous store call is
 refused (``StoreCalledOnEventLoop``), so a block that makes one bare raises for the reader exactly as it raises
 here. The ladder runs nothing of its own: each of its blocks is a verbatim excerpt of an example, which the rung's
-own test runs, so the page is held to the files it quotes.
+own test runs, so the page is held to the files it quotes. What the ladder and the examples' README show a rung
+printing is held to a replay: each rung's file is run through the door from a copy with no key, and every line of
+each ``text`` block under its heading is found in what it printed or in the ``report.md`` it wrote, ``...`` standing
+for what the page leaves out. ``reading-reports.md``'s aspect first screen is held to the page the invoices rung
+lays out alone (``Result.report``), line for line, but for the render's date.
 
 Each block is compiled as a reader's REPL compiles it (``PyCF_ALLOW_TOP_LEVEL_AWAIT``) and awaited on the test's own
 loop. A block the page presents as a fragment, or one that needs more than the page builds, is named below with
@@ -19,6 +23,7 @@ Mutations that turn this file red: any doc block calling ``create_campaign``, ``
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
 import sys
@@ -29,6 +34,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from packages.evals.tests.rung_support import rung_copy
+from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.quick.files import main
 
 #: The guides directory.
 DOCS = Path(__file__).resolve().parents[1] / "docs"
@@ -84,8 +93,91 @@ def _quotes(block: str, source: str) -> bool:
     return any(lines[start : start + len(quoted)] == quoted for start in range(len(lines) - len(quoted) + 1))
 
 
+#: A fenced text block on a page: what the page shows a run printing.
+_TEXT = re.compile(r"```text\n(.*?)```", re.S)
+
+#: The rungs whose output the ladder shows from a replay: each rung's heading, its directory and the file the door runs.
+REPLAYED = {
+    "Rung 1": ("1-triage", "triage.py"),
+    "Rung 2": ("2-replies", "replies.py"),
+    "Rung 3": ("3-invoices", "extract.py"),
+    "Rung 4": ("4-booking", "agent.py"),
+    "Rung 5": ("5-writer", "writer.py"),
+}
+
+
+#: The pages that show a rung's output, and the heading each puts a rung under.
+SHOWN_ON = {DOCS / "ladder.md": "\n## ", EXAMPLES / "README.md": "\n### "}
+
+
+def shown_lines(rung: str) -> list[str]:
+    """Every line of every ``text`` block under a heading for ``rung`` on :data:`SHOWN_ON`, each ``...`` line left out."""
+    lines: list[str] = []
+    for page, heading in SHOWN_ON.items():
+        sections = page.read_text(encoding="utf-8").split(heading)
+        for section in (section for section in sections if section.startswith(f"{rung}:")):
+            lines += [line for block in _TEXT.findall(section) for line in block.splitlines() if line.strip() != "..."]
+    return lines
+
+
+def _shown_in(line: str, printed: list[str]) -> bool:
+    """Whether a printed line is ``line``, each ``...`` in it standing for anything."""
+    pattern = re.compile(".*".join(re.escape(piece) for piece in line.split("...")))
+    return any(pattern.fullmatch(said) for said in printed)
+
+
+@pytest.mark.parametrize("rung", REPLAYED)
+def test_what_the_ladder_shows_a_rung_printing_is_what_its_replay_prints(
+    rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each line a page shows under a rung is in the door's print of its replay, or in the report it wrote."""
+    directory, program = REPLAYED[rung]
+    shown = shown_lines(rung)
+    assert shown, f"no page shows what {rung} printed"
+    # Run as the ladder runs it, from the directory above ``examples/``, so every path prints as the page shows it.
+    rung_copy(directory, tmp_path / "examples", monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    main([f"examples/{directory}/{program}"])
+    said = capsys.readouterr()
+    printed = [*said.out.splitlines(), *said.err.splitlines()]
+    for report in sorted((tmp_path / ".evals" / "reports").glob("*/report.md")):
+        printed += report.read_text(encoding="utf-8").splitlines()
+    missing = [line for line in shown if not _shown_in(line, printed)]
+    assert not missing, f"the docs show {rung} printing lines its replay does not print:\n" + "\n".join(missing)
+
+
+#: A page's date, which a replay renders as its own day.
+_DATE = re.compile(r"\b\d{1,2} [A-Z][a-z]{2} \d{4}\b")
+
+
+def _markdown_under(page: Path, heading: str) -> str:
+    """The first ``markdown`` block under ``heading`` on ``page``, before the next heading."""
+    section = page.read_text(encoding="utf-8").split(f"\n{heading}\n", 1)[1]
+    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    found = re.search(r"```markdown\n(.*?)```", section, re.S)
+    assert found is not None, f"no markdown block under {heading!r} on {page.name}"
+    return found.group(1)
+
+
+async def test_what_reading_reports_shows_an_aspect_page_opening_on_is_the_invoices_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The aspect first screen ``reading-reports.md`` shows is the invoices rung's own page, laid out alone."""
+    shown = _markdown_under(DOCS / "reading-reports.md", "### An aspect's first screen")
+    copy = rung_copy("3-invoices", tmp_path, monkeypatch)
+    spec = importlib.util.spec_from_file_location(f"doc_blocks_invoices_{id(tmp_path)}", copy / "extract.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = await module.invoices.run()
+    # The block is the page's opening, line for line: the title through the scoreboard.
+    expected = _DATE.sub("<date>", shown).splitlines()
+    printed = _DATE.sub("<date>", report_markdown(result.report)).splitlines()[: len(expected)]
+    assert printed == expected, "reading-reports.md's aspect first screen is not what the invoices page opens on"
+
+
 def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:
-    """``ladder.md`` walks the four examples by quoting them, so an edited example cannot leave the page behind."""
+    """``ladder.md`` walks the five examples by quoting them, so an edited example cannot leave the page behind."""
     sources = {path: path.read_text(encoding="utf-8") for path in sorted(EXAMPLES.glob("*/*.py"))}
     blocks = page_blocks("ladder.md")
     assert len(blocks) >= 4, "the ladder quotes at least one block per rung"
@@ -93,7 +185,7 @@ def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:
         holding = [path.relative_to(EXAMPLES).as_posix() for path, text in sources.items() if _quotes(block, text)]
         assert holding, f"this ladder block is in no example, line for line:\n{block}"
     quoted = {path.parent.name for path, text in sources.items() for block in blocks if _quotes(block, text)}
-    assert quoted == {"1-triage", "2-replies", "3-invoices", "4-booking"}, f"rungs quoted: {sorted(quoted)}"
+    assert quoted == {"1-triage", "2-replies", "3-invoices", "4-booking", "5-writer"}, f"rungs quoted: {sorted(quoted)}"
 
 
 async def test_evaluating_agents_runs_top_to_bottom(capsys: pytest.CaptureFixture[str]) -> None:

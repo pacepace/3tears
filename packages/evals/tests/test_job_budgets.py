@@ -28,7 +28,6 @@ from threetears.evals.ops import (
     LaunchArguments,
     SweepArguments,
     SweepArm,
-    analysis_generate,
     job_cancel,
     job_poll,
     run_launch,
@@ -40,7 +39,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 import packages.evals.tests.fixtures.toyhost.launch as toyhost_launch
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
-from packages.evals.tests.ops_support import RUN_MODELS, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.ops_support import RUN_MODELS, TOYHOST_SCOPE, TOYHOST_SUBJECT, generate, ops_fixture, settled
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -215,7 +214,7 @@ async def test_a_generation_whose_budget_runs_out_reads_timed_out() -> None:
     assert fixture.host.generation is not None
     host = dataclasses.replace(fixture.host, generation=dataclasses.replace(fixture.host.generation, budget_s=0.1))
 
-    (job,) = (await analysis_generate(host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     status = await settled(host, job.job_id)
 
     assert (status.state, status.status) == ("stopped", "timed_out")

@@ -1,0 +1,27 @@
+settle
+reads_as: code's arithmetic on the frozen input: the cases a design needs, sized on today's estimate and its spread (a normal approximation), and how often today's design would read the other way if the truth equals today's estimate; it plans a run, it tests nothing
+sided: two-sided at the snapshot's level, each arm running cases_needed: an interval on the difference, centred on today's, excludes zero; half such designs do at cases_needed if the truth equals today's difference, four in five at cases_needed_80. Read as independent arms: a paired design over the same cases needs fewer. Each size counts what count_of says the counts count: trials, not cases, on a repeated design
+hypothetical: False
+arms: [arm:v4, arm:production]
+rows (1):
+  - where: overall; name: none; against: arm:production; line: none; settles: none; cases_needed_two_sided: none; cases_needed_two_sided_80: none; unsettled:
+    estimate (2):
+      measure.goal_state:reply.total == case.total.v4.mean = 0.95
+      measure.goal_state:reply.total == case.total.production.mean = 0.9
+    settle.v4.production.goal_state:reply.total == case.total.overall.difference = +0.05
+    settle.v4.production.goal_state:reply.total == case.total.overall.cases_needed = 253
+    settle.v4.production.goal_state:reply.total == case.total.overall.cases_needed_80 = 516
+    settle.v4.production.goal_state:reply.total == case.total.overall.wrong_side = 29.1%
+    settle.v4.production.goal_state:reply.total == case.total.overall.level = 95% two-sided
+    counts (2):
+      spread.v4.goal_state:reply.total == case.total.overall.n = 20
+      spread.production.goal_state:reply.total == case.total.overall.n = 20
+    count_of (2):
+      spread.v4.goal_state:reply.total == case.total.overall.counts = cases
+      spread.production.goal_state:reply.total == case.total.overall.counts = cases
+    basis (2):
+      spread.v4.goal_state:reply.total == case.total.overall.basis = its stated interval
+      spread.production.goal_state:reply.total == case.total.overall.basis = its stated interval
+total: 1
+offset: 0
+notes: []

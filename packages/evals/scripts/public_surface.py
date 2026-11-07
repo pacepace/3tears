@@ -31,6 +31,7 @@ import textwrap
 import tomllib
 import types
 import typing
+import warnings
 from collections.abc import Callable, Iterable, Iterator
 from functools import cache
 from pathlib import Path
@@ -425,11 +426,15 @@ def walked_modules() -> tuple[str, ...]:
 
 def public_names() -> Iterator[tuple[str, str, Any]]:
     """(root, name, object) for every name in every walked module's ``__all__`` (:func:`walked_modules`): the
-    package, then the roots in ``PUBLIC_ROOTS`` order, names sorted as the reference lists them."""
+    package, then the roots in ``PUBLIC_ROOTS`` order, names sorted as the reference lists them. A retired name a
+    root still serves for one minor is read without its ``DeprecationWarning``: the walk records it, never uses it."""
     for root in walked_modules():
         module = importlib.import_module(root)
         for name in sorted(module.__all__, key=lambda n: (n.casefold(), n)):
-            yield root, name, getattr(module, name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                value = getattr(module, name)
+            yield root, name, value
 
 
 #: A public name's stability tier. ``host-contract`` is a name a host binds to (:data:`HOST_CONTRACT`): it moves
@@ -536,7 +541,13 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
 #: courier host (``tests/fixtures/courierhost/``), the least a product writes to be a host. A name a topic guide
 #: alone imports, a field type a contract name's signature reaches, and a name a later section of the host guide
-#: mentions for an optional feature are not: promoting one later is free, and demoting one is a break.
+#: mentions for an optional feature are not: promoting one later is free, and demoting one withdraws a promise, so
+#: ``MIGRATIONS.toml`` records it.
+#:
+#: A name stays declared while something outside the package imports it (another package's ``src``, an example host,
+#: an example, a shipped page's code block, Discodon) or a shipped page teaches it, or a declared signature reaches it,
+#: or it is a port a host implements by shape, a version constant or a one-minor shim. Otherwise it is
+#: ``provisional``.
 HOST_CONTRACT: frozenset[str] = frozenset(
     {
         # The host: the one value every entrypoint takes, and the services it is built from.
@@ -656,13 +667,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # cites when it explains a generation's total wall time.
         "threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
-        # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
-        # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
-        # itself against, the read tier's row budget, the reporter kind's contract, the judge-wording sentence a
-        # release note carries, the error a store raises on an event loop, and the renderer of started jobs.
+        # wrapper, the strict reply projection and the schema it refuses, the reader of a boot seed directory, a
+        # measure's per-entry marker, the narrow store ports a function types itself against, the read tier's row
+        # budget, the judge-wording sentence a release note carries, the error a store raises on an event loop, and the renderer of started jobs.
         # `tests/test_guide_names_are_declared.py` holds the rule: a name the guide teaches is never provisional.
         "threetears.evals.kernel.CappedCompletion",
-        "threetears.evals.kernel.CostCapReached",
         "threetears.evals.kernel.strict_response_format",
         "threetears.evals.kernel.UnportableSchema",
         "threetears.evals.kernel.host.MemberActsOn",
@@ -674,7 +683,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.CassetteStore",
         "threetears.evals.kernel.JobStore",
         "threetears.evals.analysis.READ_TIER_ROW_BUDGET",
-        "threetears.evals.analysis.REPORTER_KIND_CONTRACT",
         "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE",
         "threetears.evals.schema.StoreCalledOnEventLoop",
         "threetears.evals.actions.render_jobs_started",
@@ -718,13 +726,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # value a host passes for its judge client: a host cannot call the recorder without naming one.
         "threetears.evals.schema.ClientRequestSettings",
         "threetears.evals.run.JUDGE_REQUEST_SETTINGS",
-        # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge,
-        # and the analysis generator's, which it builds from its own answer budget, effort and headroom: what each role
-        # is asked for, so a host's client sends what the run records as asked.
+        # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge:
+        # what each role is asked for, so a host's client sends what the run records as asked.
         "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
-        "threetears.evals.analysis.analysis_gen_request_settings_for",
-        # The case floor below which no rate or difference is estimated, which a host's seed gate holds its templates to.
-        "threetears.evals.analysis.MIN_CASES",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -751,9 +755,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.PUBLIC_ROOTS",
         "threetears.evals.ROOT_EXTRAS",
         "threetears.evals.RootExtra",
-        # And each public name's tier in the installed build, which a host's test gates its imports by.
+        # And a public name's tier in the installed build, which a host's test gates its imports by.
         "threetears.evals.surface_tier",
-        "threetears.evals.declared_names",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",
@@ -764,27 +767,16 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.CASSETTE_SCHEMA_VERSION",
         "threetears.evals.kernel.IDENTITY_VERSION",
         "threetears.evals.analysis.CELL_MODEL_VERSION",
-        # The closed vocabularies a host writes and passes: each open stored vocabulary's values this build knows.
+        # The closed vocabularies a host writes and passes, where a declared signature takes one: each open stored
+        # vocabulary's values this build knows.
         "threetears.evals.schema.KnownUsageRole",
         "threetears.evals.schema.KnownSimulatorPurpose",
-        "threetears.evals.schema.KnownCostCapOrigin",
-        "threetears.evals.schema.KnownMeteredCallOrigin",
-        "threetears.evals.schema.KnownCellTimeoutOrigin",
-        "threetears.evals.schema.KnownModelRoleOrigin",
-        "threetears.evals.schema.KnownRoleModelOrigin",
-        "threetears.evals.schema.KnownReasoningEffort",
         "threetears.evals.schema.KnownOutOfRunPurpose",
         "threetears.evals.schema.KnownRefusalKind",
-        # The same vocabularies' values as tuples, which a host reads instead of `get_args` on the open stored type.
+        # The same vocabularies' values as tuples, which a host reads instead of `get_args` on the open stored type: those
+        # a shipped page names.
         "threetears.evals.schema.USAGE_ROLES",
-        "threetears.evals.schema.SIMULATOR_PURPOSES",
         "threetears.evals.schema.COST_CAP_ORIGINS",
-        "threetears.evals.schema.METERED_CALL_ORIGINS",
-        "threetears.evals.schema.CELL_TIMEOUT_ORIGINS",
-        "threetears.evals.schema.MODEL_ROLE_ORIGINS",
-        "threetears.evals.schema.ROLE_MODEL_ORIGINS",
-        "threetears.evals.schema.REASONING_EFFORTS",
-        "threetears.evals.schema.OUT_OF_RUN_PURPOSES",
         "threetears.evals.schema.REFUSAL_KINDS",
         # The quick path at the package root, what it returns, and the host bridge a host adopting it builds.
         "threetears.evals.Eval",
@@ -797,6 +789,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.Model",
         "threetears.evals.Answer",
         "threetears.evals.quick.as_host",
+        # Rung 5 evaluates the report writer (examples/5-writer/writer.py): the eval, its arm and the skill an arm
+        # starts from, the three names the rung imports from the harness.
+        "threetears.evals.harness.AnalystSkill",
+        "threetears.evals.harness.Writer",
+        "threetears.evals.harness.WriterEval",
         # Rung 4 serves its runs with one call over as_host(...) (examples/4-booking/serve.py).
         "threetears.evals.transports.fastmcp.mount_fastmcp",
         # A judge's rubric dimension, which states a scale other than pass/fail.
@@ -815,14 +812,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.get_result_trace",
         # Analysing a campaign and rendering its report, as the examples do.
         "threetears.evals.analysis.inspect_campaign_bundle",
-        "threetears.evals.analysis.generate_analysis",
-        "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT",
         # The frozen bundle an analysis is written from, reloaded from its file (`from_json`) to write over it again.
         "threetears.evals.analysis.AnalysisContextBundle",
-        "threetears.evals.analysis.report_markdown",
         "threetears.evals.analysis.report_html",
         "threetears.evals.analysis.format_number",
-        "threetears.evals.analysis.format_signed",
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
         # The negotiation every completion client shares, the adapter's and a host's own: what a client of its own
@@ -846,10 +839,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.testing.check_refusal_negotiation",
         "threetears.evals.testing.NegotiationConformanceFailure",
         "threetears.evals.testing.RouterTransport",
-        # What a host's own Anthropic client builds its request's `thinking` from, and the budget floor it holds a
-        # budget to; and the settings a refusal can name, which a host's own reader of its provider's refusals returns.
+        # What a host's own Anthropic client builds its request's `thinking` from; and the settings a refusal can name,
+        # which a host's own reader of its provider's refusals returns.
         "threetears.evals.negotiation.anthropic_thinking",
-        "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET",
         "threetears.evals.negotiation.RefusedSetting",
         # The shipped completion client: a host that brings no client of its own binds to these. `Model` is the
         # client (also exported from the package root), `Clients` the role factory, `describe_failure` its
@@ -885,8 +877,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 #: ``docs/reference.md`` documents and ``docs/surface.md`` maps by rung, and it is held under :data:`DECLARED_CEILING`.
 #:
 #: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
-#: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it), the quick path's whole
-#: root, and what Discodon's production code imports, the one production host. The toy host
+#: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it) or a shipped page
+#: teaches (``tests/test_guide_names_are_declared.py``), the quick path's whole root, and what Discodon's production
+#: code imports, the one production host. A name only its tests import is provisional: Discodon accepts that such a
+#: name may move (``tests/test_host_imports_are_declared.py`` lists each). The toy host
 #: (``tests/fixtures/toyhost/``) exercises the whole contract and reaches past it, so a name it alone imports is listed
 #: here by choice, not held here: ``tests/test_api_tiers.py`` holds its imports to the public roots only. A name a
 #: declared signature reaches but nobody imports is ``provisional``: still exported, so the surface stays closed
@@ -910,9 +904,7 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
         "threetears.evals.analysis.Verdict",
-        # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
-        # identifier passes on its way to a reader, and the glossary of every term of art a page links.
-        "threetears.evals.analysis.GLOSSARY",
+        # How a report speaks: the prose lint every rendered sentence is held to.
         "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
@@ -951,7 +943,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.label_key_of",
         # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
         # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
-        "threetears.evals.analysis.GATE_TOKENS",
         "threetears.evals.analysis.GateResult",
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
@@ -979,7 +970,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.Interval",
         "threetears.evals.kernel.host.Ordinal",
         "threetears.evals.kernel.host.RolePins",
-        "threetears.evals.kernel.host.StyleProfile",
         "threetears.evals.kernel.host.Triggered",
         "threetears.evals.kernel.host.WorldConformanceError",
         "threetears.evals.kernel.host.check_world_conformance",
@@ -1023,14 +1013,7 @@ STABLE: frozenset[str] = frozenset(
         # Literal `Model`'s signature reaches) are provisional: no host imports them.
         "threetears.evals.providers.Completion",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
-        "threetears.evals.analysis.AsRecordedReporterKind",
-        "threetears.evals.analysis.REPORTER_KIND",
-        "threetears.evals.analysis.ReporterKind",
-        "threetears.evals.analysis.ReporterOverlays",
         "threetears.evals.analysis.dollars_text",
-        "threetears.evals.analysis.refuse_undeliverable_reporter_template",
-        "threetears.evals.analysis.reporter_cell_timeout_s",
-        "threetears.evals.analysis.reporter_kind_contract",
         # A production host's further bindings in `threetears.evals.gen`: what Discodon's production code imports.
         "threetears.evals.gen.generate_variations",
         "threetears.evals.gen.plan_draft",
@@ -1078,21 +1061,14 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.JobStatus",
         "threetears.evals.ops.JobsStarted",
         "threetears.evals.ops.LaunchArguments",
-        "threetears.evals.ops.REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
-        "threetears.evals.ops.ReporterAdmitted",
-        "threetears.evals.ops.ReporterModelResolver",
-        "threetears.evals.ops.ReporterModelRole",
         "threetears.evals.ops.RunLine",
         "threetears.evals.ops.RunListing",
         "threetears.evals.ops.TemplateListing",
-        "threetears.evals.ops.admit_reporter_launch",
         "threetears.evals.ops.campaign_create",
         "threetears.evals.ops.campaigns_list",
         "threetears.evals.ops.history_launch_pricer",
         "threetears.evals.ops.job_cancel",
         "threetears.evals.ops.job_poll",
-        "threetears.evals.ops.plan_reporter_arm",
-        "threetears.evals.ops.price_largest_reporter_call",
         "threetears.evals.ops.report_read",
         "threetears.evals.ops.run_get",
         "threetears.evals.ops.run_launch",
@@ -1149,37 +1125,18 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
         # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
-        # `tests/test_host_imports_are_declared.py`): nothing a host imports is provisional.
+        # `tests/test_host_imports_are_declared.py`): nothing a host's PRODUCTION code imports is provisional; the names only
+        # its tests import are provisional by its own word (`PROVISIONAL_FOR_HOST_TESTS` in that test).
         "threetears.evals.actions.ConformanceSample",
         "threetears.evals.actions.Refusal",
-        "threetears.evals.analysis.ABSENT",
-        "threetears.evals.analysis.AS_RECORDED_MODEL",
-        "threetears.evals.analysis.ReporterLabel",
-        "threetears.evals.analysis.first_request",
-        "threetears.evals.analysis.freeze_reporter_case",
-        "threetears.evals.analysis.prompt_content_version",
-        "threetears.evals.analysis.serialize_report",
         "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
         "threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT",
-        "threetears.evals.kernel.ACCURACY_MEASURE",
-        "threetears.evals.kernel.ENGINE_FAMILIES",
-        "threetears.evals.kernel.FIND_CAMPAIGN",
-        "threetears.evals.kernel.FIND_RUN",
-        "threetears.evals.kernel.INCOMPLETE_STOP_REASONS",
         "threetears.evals.kernel.METRIC_DESCRIPTORS",
-        "threetears.evals.kernel.MeasureSummary",
-        "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY",
         "threetears.evals.kernel.WorldSessionError",
-        "threetears.evals.kernel.classifier_label_measure",
-        "threetears.evals.kernel.count_substituted",
-        "threetears.evals.kernel.count_substituted_deliveries",
         "threetears.evals.kernel.host.BarRegistrationError",
-        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
         "threetears.evals.kernel.host.MeasureRegistrationError",
         "threetears.evals.kernel.host.WorldConformanceReport",
-        "threetears.evals.kernel.judge_case_of",
         "threetears.evals.kernel.production_replicating_cost",
-        "threetears.evals.kernel.resolve_variant_identity",
         "threetears.evals.ops.CaseSetLine",
         "threetears.evals.ops.CaseSetMint",
         "threetears.evals.ops.JobHandle",
@@ -1188,38 +1145,45 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.case_set_mint",
         "threetears.evals.ops.case_sets_list",
         "threetears.evals.ops.judge_case_author",
-        "threetears.evals.ops.reporter_case_archive",
-        "threetears.evals.ops.run_job_id",
         "threetears.evals.run.LaunchGroup",
-        "threetears.evals.run.callers_missing_the_constructor",
         "threetears.evals.run.launch_as_group",
         "threetears.evals.run.mint_case_set",
-        "threetears.evals.run.rejudge_result",
-        "threetears.evals.run.resolve_constructor",
         "threetears.evals.schema.CORE_RESET_DOC_TYPES",
         "threetears.evals.schema.CaseSetRef",
         "threetears.evals.schema.utc_now_iso",
         "threetears.evals.testing.JobsConformanceCase",
         "threetears.evals.transports.fastmcp.CatalogueTool",
-        # Promoted for Discodon's 2026-10-22 rescan (its tests and fixtures bind to them on purpose): the campaign
-        # bundle its reporter and analysis lanes build, the aspect its campaign fixtures construct, the unseated level
-        # and the launch quote its tests assert, the reader conformance suite it runs, and the failure owner its
-        # ProviderFailure describers type against (#849).
-        "threetears.evals.analysis.CampaignBundle",
-        "threetears.evals.analysis.assemble_campaign_bundle",
+        # Promoted for Discodon's 2026-10-22 rescan: the aspect its campaign fixtures construct, the launch quote its
+        # tests assert, and the failure owner its ProviderFailure describers type against (#849).
         "threetears.evals.kernel.Aspect",
-        "threetears.evals.kernel.host.UNSEATED_LEVEL",
         "threetears.evals.run.quote_launch",
         "threetears.evals.schema.FailureOwner",
-        "threetears.evals.testing.READER_CONFORMANCE_CASES",
-        "threetears.evals.testing.ReaderConformanceCase",
-        "threetears.evals.testing.ReaderSample",
+        # Promoted for Discodon's W4 adoption (2026-10-29): the report writer's port, which a host names to write
+        # reports at all (its pricer and published rates, its report budget and writer limits, the analyst's tool, the
+        # turn client it hands the writer and the turn types that client speaks), and the run disclosure its
+        # `LaunchHost.run_disclosure` returns. `AnalysisGeneration` was stable and the types its fields take were not.
+        "threetears.evals.actions.analyst_tools",
+        "threetears.evals.ops.AnalystLimits",
+        "threetears.evals.ops.EditorLimits",
+        "threetears.evals.ops.ReportBudget",
+        "threetears.evals.ops.SessionLimits",
+        "threetears.evals.ops.WriterLimits",
+        "threetears.evals.providers.AnthropicPublishedRates",
+        "threetears.evals.providers.Pricer",
+        "threetears.evals.schema.RunDisclosure",
+        "threetears.evals.schema.ThinkingBinding",
+        "threetears.evals.schema.ToolResultClearing",
+        "threetears.evals.schema.ToolTurnClient",
+        "threetears.evals.schema.TurnCeiling",
+        "threetears.evals.schema.TurnMessage",
+        "threetears.evals.schema.TurnReply",
+        "threetears.evals.schema.TurnToolSpec",
     }
 )
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 540  # Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 488  # the names only Discodon's tests import demoted (R5, 514 -> 488, 2026-11-06: the 24 discodon-tests-only names of the hold-back ledger and CampaignBundle and testing.ReaderSample, which only their signatures reached, go provisional; Discodon confirmed on 2026-11-06 that a provisional name its tests import may move). Before: the shims removed (R4, 535 -> 514, 2026-11-06: KnownReasoningEffort goes provisional, since only the removed analysis_gen_request_settings_for's signature reached it; the twenty declared names the retired generations and the in-cell cost cap left leave the package; five are host-contract names live in v0.90.0 and v0.91.x, removed with no released deprecation as an exception the owner approved on 2026-11-03, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every import before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:
@@ -1731,7 +1695,7 @@ def all_findings(
         *tier_findings(installed),
         *record_findings(installed, newest),
         *snapshot_findings(installed, recorded, newest, released_names(newest)),
-        *(f for release in migrations.releases if release.since for f in history_findings(release)),
+        *history_of(migrations),
         *labelling_findings(migrations, tag, shipped=tag is not None and package_at(tag)),
     ]
 
@@ -1881,13 +1845,24 @@ def section_findings(
     return findings
 
 
-def history_findings(release: Release) -> list[Finding]:
+def history_findings(release: Release, *, newest: bool | None = None) -> list[Finding]:
     """Where a section disagrees with the two releases it sits between (:func:`section_findings`), both read from
     git: ``since``, and the version's own tag, or the working tree before that tag exists. A checkout without the
     tags cannot check it and says so rather than passing.
+
+    Only the newest section (the first, the release being prepared) is measured against the working tree. An older
+    section whose tag does not exist yet is a release cut on another branch and not yet tagged (develop's, say,
+    while a feature branch above it records its own work in a newer section): what this tree holds is not that
+    release's surface, so the section yields nothing until its tag exists, and where it is the first section it is
+    measured as the newest.
+
+    :param release: The section.
+    :param newest: Whether it is the first section; ``None`` reads that from ``MIGRATIONS.toml``.
     """
     assert release.since is not None
     tag = f"v{release.version}"
+    if newest is None:
+        newest = load_migrations().releases[0].version == release.version
     if not tag_exists(release.since):
         return [
             Finding(
@@ -1897,8 +1872,21 @@ def history_findings(release: Release) -> list[Finding]:
             )
         ]
     after_ref = tag if tag_exists(tag) else None
+    if after_ref is None and not newest:
+        return []
     after_label = tag if after_ref else "the working tree"
     return section_findings(release, exports_at(release.since), exports_at(after_ref), after_label)
+
+
+def history_of(migrations: Migrations) -> list[Finding]:
+    """Every section with a ``since`` held to its own two releases (:func:`history_findings`), the first as the
+    newest."""
+    return [
+        finding
+        for at, release in enumerate(migrations.releases)
+        if release.since
+        for finding in history_findings(release, newest=at == 0)
+    ]
 
 
 # --- labelling: a tagged release has its own section -------------------------------------------------------------
@@ -1931,12 +1919,13 @@ def newest_release_tag(every: Iterable[str], version: str) -> str | None:
 
     :param every: Every tag in the checkout, on any ref.
     :ptype every: Iterable[str]
-    :param version: The version the tree prepares, as ``pyproject.toml`` states it.
+    :param version: The version the tree prepares, as ``pyproject.toml`` states it. A PEP 440 local label
+        (``0.80.0+analyst.1``, a line pinned between releases) is read as its public part, the release it builds on.
     :ptype version: str
     :return: The newest such tag, or ``None`` when there is none.
     :rtype: str | None
     """
-    prepared = _version_key(f"v{version}")
+    prepared = _version_key(f"v{version.split('+', 1)[0]}")
     finals = {
         tag: key for tag in every if (key := _version_key(tag)) is not None and (prepared is None or key <= prepared)
     }

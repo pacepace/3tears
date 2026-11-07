@@ -85,7 +85,7 @@ _FAILED_BECAUSE: dict[FailureOwner, str] = {
 #: classifier asks for two words, reasoning buys it nothing, so it sends
 #: ``reasoning: {enabled: false}``. A judge's reply is short too (the JSON contract in
 #: ``judge_service`` asks for one paragraph and one score), but the work behind the
-#: score is not. ``reporter.groundedness`` checks every claim in a memo against its
+#: score is not. A groundedness dimension checks every claim in a report against its
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
 #: change the instrument, not just its cost. That holds for a pass/fail dimension as for a
 #: 1-5 one: a two-word answer can stand on as much checking as a number. Disabling is also

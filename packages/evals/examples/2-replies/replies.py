@@ -13,13 +13,13 @@ from pathlib import Path
 from threetears.evals import Eval, Example, Judge, Model
 
 POLICY = Path(__file__).with_name("policy.md").read_text(encoding="utf-8")  # beside this file, from anywhere
-writer = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")
+drafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")
 judge_model = Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge.jsonl")
 
 
 async def reply(case: dict) -> str:
     """Draft a reply to a customer's email that follows the support policy."""
-    return await writer.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
+    return await drafter.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
 
 
 def policy_and_email(case: dict) -> str:
@@ -29,7 +29,7 @@ def policy_and_email(case: dict) -> str:
 late = {"email": "My annual plan renewed two months ago. Please refund the whole year."}
 locked = {"email": "My account is locked. Can you check my password for me?"}
 judge = Judge(
-    judge_model,  # another family; Judge(writer, ...) would print the self-judging warning under the scores
+    judge_model,  # another family; Judge(drafter, ...) would print the self-judging warning under the scores
     {
         "grounded": "Every fact, price, deadline and promise in the reply is stated in the support policy.",
         "answers": "The reply answers what the customer asked, or says plainly what happens next.",

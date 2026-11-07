@@ -1,0 +1,150 @@
+{
+  "schema": "report-doc/1",
+  "snapshot_id": "report-snapshot:39c3e2b133f40336c8736373fa8f16d9",
+  "story": "decision",
+  "headline": "Use {arm:atlas-m} for all traffic: it is the only model that passes every gate in every task.",
+  "lede": "The cheaper {arm:brisk-s} and {arm:open-70b} pass some tasks, but both fail the speculation gate, which covers all traffic, so no task can be routed to them. The call would change if {arm:atlas-m}'s troubleshooting resolve rate, {criteria.trouble.resolves.atlas-m.value} against a {criteria.trouble.resolves.threshold} gate, proves to be below the line: then no model passes everything.",
+  "flag": "No production model was named as a control, so every model is read against the declared gates, not against what runs today.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "judge_unstated",
+        "material_if": "Only if the judge scores the Atlas models more kindly than the cheaper models on troubleshooting, research or speculation. Every gate but latency is judged and the campaign names no judge or calibration, so each gate is an absolute judged rate; the cheaper models miss their gates by more than their intervals, so only a bias that differs by model would reverse the call."
+      },
+      {
+        "id": "resolves_borderline",
+        "material_if": "If {arm:atlas-m}'s true troubleshooting resolve rate is below the gate, no model passes every gate and the decision becomes which gate to relax."
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Put {arm:atlas-m} on all traffic. It clears every gate in every task, at {cost_per_1k.atlas-m} per thousand conversations across the traffic mix."
+    },
+    {
+      "slot": "why_not",
+      "text": "{arm:brisk-s} ({cost_per_1k.brisk-s}) and {arm:open-70b} ({cost_per_1k.open-70b}) fail troubleshooting, research and the speculation gate; because speculation bait can arrive in any task, they cannot take even the billing or persona traffic they pass. {arm:atlas-l} passes every quality gate but misses the latency budget in four of five tasks, at {cost_per_1k.atlas-l}."
+    },
+    {
+      "slot": "watch",
+      "text": "Troubleshooting resolution is {arm:atlas-m}'s weakest margin: {criteria.trouble.resolves.atlas-m.value}, exactly the gate, plus or minus {task.trouble.atlas-m.resolves.half_width|abs|pts} points."
+    },
+    {
+      "slot": "watch",
+      "text": "Latency headroom is thin on research questions, where {arm:atlas-m}'s p95 is {criteria.p95.atlas-m.research.value} against a {criteria.p95.threshold} budget, with no interval and no stated test conditions. The same unknown conditions decide {arm:atlas-l}'s exclusion."
+    },
+    {
+      "slot": "next",
+      "text": "Lift {arm:atlas-m}'s troubleshooting resolution with a prompt, tool or escalation fix and re-run that task. With the estimate on the line, more cases alone cannot clear it."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:atlas-m} is the only model that passes every gate in every task.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "gate_matrix",
+          "query": {"source": "tasks"},
+          "caption": "Each model in each task against every gate declared for it, with cost per thousand conversations. The speculation gate covers all traffic."
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "{arm:brisk-s} declines speculation bait only {criteria.specul.declines.brisk-s.value} of the time, and {arm:open-70b} misses the gate by more than its interval too, so neither can take any task, not even billing, the largest task, which {arm:brisk-s} passes.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "tasks", "measures": ["declines"], "strata": ["specul"]},
+          "reference": "floor",
+          "caption": "Share of speculation bait each model declines, with its interval and the declared floor."
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "{arm:atlas-l} is ruled out by latency alone: its p95 runs past the budget in four of five tasks, up to {criteria.p95.atlas-l.research.value} on research questions.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {"source": "tasks", "measures": ["latency_s"]},
+          "reference": "budget",
+          "caption": "Latency per model and task, from median to p95, against the declared p95 budget."
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "{arm:atlas-m} resolves troubleshooting issues at {criteria.trouble.resolves.atlas-m.value}, exactly the gate, with an interval reaching both sides of it.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "tasks", "measures": ["resolves"], "strata": ["trouble"]},
+          "reference": "floor",
+          "emphasis": "atlas-m",
+          "caption": "Share of troubleshooting conversations resolved, with intervals and the declared floor."
+        }
+      ]
+    }
+  ],
+  "explore": [
+    {
+      "control": "Troubleshooting resolve gate",
+      "binds": "{arm:atlas-m}, the only model that passes everything",
+      "outcome": "Set above {criteria.trouble.resolves.atlas-m.value}, no model passes every gate. Lowering it admits no one else, because every other model fails another gate."
+    },
+    {
+      "control": "Latency budget (p95)",
+      "binds": "{arm:atlas-m} on research questions, and {arm:atlas-l} in four tasks",
+      "outcome": "Below {criteria.p95.atlas-m.research.value}, nothing passes. Above {criteria.p95.atlas-l.research.value}, {arm:atlas-l} passes too, and the choice becomes its higher quality scores against {arm:atlas-m}'s lower cost, a trade no declared rule ranks; code's check still names {arm:atlas-m} because only cost is weighed."
+    },
+    {
+      "control": "Speculation gate",
+      "binds": "{arm:brisk-s} and {arm:open-70b}",
+      "outcome": "Lowering it never changes the single-model call, since both still fail troubleshooting and research. It decides only whether any task could be routed to them, and a routed mix was not run."
+    }
+  ],
+  "omitted": [
+    {"what": "Overall quality scores per task for every model, including {arm:atlas-l}'s lead on each task", "why": "Where they bind they appear in the gate matrix; {arm:atlas-l}'s higher scores do not change the call because latency rules it out."},
+    {"what": "The gates {arm:atlas-m} clears with room: clear steps, confirms before account changes, escalates, stays in character, the three research gates, and declines to speculate", "why": "None binds; each is in the gate matrix and the appendix."},
+    {"what": "{arm:open-70b}'s borderline overall quality in billing", "why": "It is ruled out by troubleshooting, research and speculation regardless."},
+    {"what": "A chart of cost per task", "why": "The gate matrix carries each cell's cost, the all-traffic figures are in the decision, and the spread is too wide for linear bars."},
+    {"what": "A routed mix, such as billing to {arm:brisk-s}", "why": "Never run, and blocked by the speculation gate; no figure prices it, so it appears only as a next step."},
+    {"what": "Failure examples", "why": "The snapshot froze none."},
+    {"what": "Median latency as its own finding", "why": "The budget is on p95; the median shows only as the start of each latency bar."}
+  ],
+  "next": [
+    {
+      "text": "Improve troubleshooting resolution on {arm:atlas-m} with a prompt, tool or escalation-flow change, and re-run the troubleshooting task.",
+      "settles": "Whether the weakest gate clears with room. With the estimate exactly on the line, a larger sample only narrows the interval around the line; a change to the model's handling is what can move it."
+    },
+    {
+      "text": "Have people rate a sample of troubleshooting resolutions and speculation replies, and compare with the judge.",
+      "settles": "Whether the judged gates can be read as absolute rates; it closes the judge caveat or reopens the call."
+    },
+    {
+      "text": "Declare how and where latency was measured, and re-measure p95 on dedicated capacity if it was shared.",
+      "settles": "Whether {arm:atlas-l}'s exclusion and {arm:atlas-m}'s thin research headroom are real or an artifact of the test setup."
+    },
+    {
+      "text": "If the cost gap matters, fix {arm:brisk-s}'s speculation handling, re-run speculation bait, then run billing routed to {arm:brisk-s} as its own measured arm.",
+      "settles": "Whether a cheaper routed setup becomes allowable at all; only its own measurement could price it."
+    }
+  ],
+  "method": [
+    {"term": "Cases", "text": "Each model ran the same {scoreboard.atlas-m.cases|int} cases across five tasks: billing and account questions, multi-turn troubleshooting, persona small talk, research-needed questions and speculation bait. Repeats per case are not stated."},
+    {"term": "Pass", "text": "A model passes a task when every gate declared for that task holds on its point estimate. Borderline means the estimate passes while its interval crosses the line. Speculation bait's gate applies to all traffic, so a model that fails it cannot take any task."},
+    {"term": "Intervals", "text": "Intervals are as the pipeline states them per task, at the level each block prints; no correction across gates is stated. Latency p95 carries no interval."},
+    {"term": "Judge", "text": "Every gate except latency is a judged score. The campaign names no judge model and no calibration against human ratings."},
+    {"term": "Cost basis", "text": "Cost per thousand conversations, by task; the all-traffic figure weights tasks by their share of traffic. The campaign names this cost per conversation, while the gate matrix labels it per reply. No monthly volume is stated, so no monthly cost is given."},
+    {"term": "Not compared", "text": "No control or production model was named. No routed mix was run. Latency test conditions are not stated."},
+    {"term": "Source", "text": "{meta.campaign}, run {meta.run_date}."}
+  ]
+}

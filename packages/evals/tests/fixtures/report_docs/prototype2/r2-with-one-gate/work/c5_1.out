@@ -1,0 +1,31 @@
+rendered block
+block_kind: bars
+query:
+  source: configs
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.off.r0, brisk-s.off.r1, brisk-s.low.r0, brisk-s.low.r1, brisk-s.high.r0, brisk-s.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [Row, Value, Note]
+rows (7):
+  - cells: [Off · no retry, 91.1%, 91.1%]
+  - cells: [Off · 1 retry, 94.6%, 94.6%]
+  - cells: [Low · no retry, 95.3%, 95.3%]
+  - cells: [Low · 1 retry, 97.1%, 97.1%]
+  - cells: [High · no retry, 96.6%, 96.6%]
+  - cells: [High · 1 retry, 98.0%, 98.0%]
+  - cells: [floor 97%, 97.0%, ]
+total: 7
+offset: 0
+truncated: False
+notes: []

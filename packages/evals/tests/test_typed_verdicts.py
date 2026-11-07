@@ -93,7 +93,12 @@ class TestTheReportCarriesTypedVerdicts:
         comparison = await _compare({"current": 0, "worse": 30, "same": 0})
         table = next(b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "comparisons")
         typed = comparison.verdicts(kind="contrast")
-        assert [row["verdict"] for row in table.values()] == [verdict.words for verdict in typed]
+        # Each cell is its verdict's words; an undecided one's cell is the short form, since the row names both arms.
+        assert [(verdict.arm, verdict.words) for verdict in typed] == [
+            ("same", "the evidence cannot tell same and current apart"),
+            ("worse", "worse worse than current"),
+        ]
+        assert [row["verdict"] for row in table.values()] == ["cannot tell apart", "worse worse than current"]
         by_arm = {verdict.arm: verdict for verdict in typed}
         assert (by_arm["worse"].outcome, by_arm["worse"].reason) == ("regressed", "separated")
         assert by_arm["same"].outcome in ("not_separated", "untested")

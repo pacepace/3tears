@@ -2,7 +2,7 @@
 
 Ten comparisons at α=0.05 find a chance "difference" more often than not, so the bundle tests each
 contrast against the control on every reading a live question asks about, Holm-corrects inside the
-question's family, and reads each verdict off the adjusted p. The writer is shown the adjusted p only.
+question's family, and reads each verdict off the adjusted p.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -10,7 +10,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   for every rank (plain Bonferroni); removing the out-of-range refusal.
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
-- ``build_campaign_user_message``: sending a raw p.
 - ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
   shift over twelve cases reads untested.
@@ -19,7 +18,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
 
 import random
 from collections.abc import Sequence
@@ -28,13 +26,11 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
     AnalysisContextBundle,
     ComparisonFamily,
+    FamilyComparison,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.stats import (
     UNIFORM_MOVE_NEEDS_RANGE,
     bounded_separation_p,
@@ -182,6 +178,18 @@ def _family(bundle: AnalysisContextBundle) -> ComparisonFamily:
     return family
 
 
+def _judged(family: ComparisonFamily) -> list[FamilyComparison]:
+    """The family's judged comparisons: under a question the aspect's pass rate is a member too (owner, 2026-11-06:
+    every asked question's family holds its pass rate, margin or none), so a judged reading is picked out by kind."""
+    return [comparison for comparison in family.comparisons if comparison.reading == "judged"]
+
+
+def _pass_rate(family: ComparisonFamily) -> FamilyComparison:
+    """The question's pass rate in its family: one contrast on the trial reading."""
+    (comparison,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    return comparison
+
+
 # --- the arithmetic ----------------------------------------------------------------------------------
 
 
@@ -222,43 +230,33 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
     def test_the_borderline_reading_separates_on_raw_p_and_not_on_adjusted(self) -> None:
         family = _family(_bundle([BORDERLINE, *[NOISE] * 9]))
 
-        assert family.family_size == 10
-        assert len(family.comparisons) == 10 and family.n_untested == 0
+        # Ten judged readings and the question's pass rate (the contrast fails seven cases' trials the control
+        # passes, p ≈ 0.0024), which ranks first, so the borderline reading's step is the tenth of eleven.
+        assert family.family_size == 11
+        assert len(family.comparisons) == 11 and family.n_untested == 0
         borderline = next(c for c in family.comparisons if c.name == "extraction.d0")
         assert borderline.test == "paired" and borderline.p_raw is not None and borderline.p_adjusted is not None
         assert borderline.p_raw < 0.05, "the raw p alone would have called this a separation"
         assert borderline.p_adjusted >= 0.05
         assert borderline.p_adjusted == pytest.approx(min(1.0, 10 * borderline.p_raw))
         assert borderline.verdict == "not_separated"
-        assert "10 comparisons" in family.disclosure and "Holm" in family.disclosure
+        passed = _pass_rate(family)
+        assert passed.p_raw is not None and passed.p_adjusted == pytest.approx(min(1.0, 11 * passed.p_raw))
+        assert "11 comparisons" in family.disclosure and "Holm" in family.disclosure
 
     def test_the_same_reading_alone_is_a_separation_so_the_family_made_the_difference(self) -> None:
-        family = _family(_bundle([BORDERLINE]))
+        # Alone means a family of one: asked nothing, the pass rate never joins (it would move every reading's p).
+        family = _family(_bundle([BORDERLINE], questions=False))
 
         (alone,) = family.comparisons
         assert family.family_size == 1
         assert alone.p_adjusted == pytest.approx(alone.p_raw)
         assert alone.verdict == "improved"
-
-    def test_the_writer_is_shown_the_adjusted_p_and_never_the_raw_one(self) -> None:
-        bundle = _bundle([BORDERLINE, *[NOISE] * 9])
-        borderline = next(c for c in _family(bundle).comparisons if c.name == "extraction.d0")
-        assert borderline.p_raw is not None and borderline.p_adjusted is not None
-
-        message = _writer_message(bundle)
-
-        assert "p_raw" not in message
-        # The writer's view keeps four significant figures of every figure it shows.
-        assert repr(float(f"{borderline.p_raw:.4g}")) not in message, "the raw figure must not reach the writer"
-        assert repr(float(f"{borderline.p_adjusted:.4g}")) in message
-        assert bundle.multiple_comparisons.families[0].comparisons[0].p_raw is not None, (
-            "the raw p stays on the bundle for audit; only the writer's view drops it"
-        )
-
-    def test_the_prompt_tells_the_writer_to_quote_only_the_adjusted_p(self) -> None:
-        assert "`contrasts`" in EVAL_ANALYSIS_GEN_DEFAULT
-        assert "quote only its `p_adjusted`" in EVAL_ANALYSIS_GEN_DEFAULT
-        assert "`family_size`" in EVAL_ANALYSIS_GEN_DEFAULT
+        # Asked, the question's pass rate is the family's second member, and that alone takes the separation away.
+        asked = _family(_bundle([BORDERLINE]))
+        (judged,) = _judged(asked)
+        assert asked.family_size == 2 and judged.p_raw == pytest.approx(alone.p_raw)
+        assert judged.p_adjusted == pytest.approx(2 * judged.p_raw) and judged.verdict == "not_separated"
 
 
 class TestVerdicts:
@@ -271,9 +269,14 @@ class TestVerdicts:
 
     def test_a_clear_decline_is_a_regression(self) -> None:
         family = _family(_bundle([tuple(-d for d in CLEAR)]))
-        (decline,) = family.comparisons
+        (decline,) = _judged(family)
         assert decline.delta is not None and decline.delta < 0
         assert decline.verdict == "regressed"
+        # Every declined case drops below the bar, so the question's pass rate, its family's other member, regresses
+        # with it.
+        passed = _pass_rate(family)
+        assert family.family_size == 2 and passed.verdict == "regressed"
+        assert passed.delta == pytest.approx(-11 / 12)
 
     def test_a_uniform_shift_over_few_cases_is_tested_on_the_scale_and_not_separated(self) -> None:
         """Five cases each up one point on the 1-5 scale: the bounded test on the scale reads it, and cannot show it.
@@ -282,47 +285,52 @@ class TestVerdicts:
         symmetry, not the mean (#597).
         """
         gap = _family(_bundle([(1,) * 5], cases=5))
-        (moved,) = gap.comparisons
+        (moved,) = _judged(gap)
         assert (moved.verdict, moved.test, moved.basis, moved.hedges_g) == ("not_separated", "paired", "bounded", None)
         assert moved.p_raw == bounded_separation_p([3.0] * 5, [4.0] * 5, paired=True, value_range=(1.0, 5.0))
         assert moved.interval is not None and moved.interval[0] <= 0.0 <= moved.interval[1]
-        assert gap.family_size == 1 and gap.n_untested == 0
+        # The question's pass rate is the family's other member: every trial passes on both arms, so it moved nothing.
+        assert gap.family_size == 2 and gap.n_untested == 0
+        assert (_pass_rate(gap).verdict, _pass_rate(gap).p_raw) == ("not_separated", 1.0)
 
     def test_an_untested_comparison_says_which_refusal_it_hit(self) -> None:
         # One case: too few on a side for any test.
         thin = _family(_bundle([(1,)], cases=1))
-        (single,) = thin.comparisons
+        (single,) = _judged(thin)
         assert single.verdict == "untested"
         assert single.untested_reason is not None and "fewer than two" in single.untested_reason
+        assert _pass_rate(thin).verdict == "untested" and thin.family_size == 0
 
     @pytest.mark.parametrize("cases", [30, 40])
     def test_a_constant_shift_is_separated_by_the_bounded_test_with_its_interval(self, cases: int) -> None:
         """Every shared case moved by +1 on the 1-5 scale: the bounded test separates it once the cases can show
         it, and states its interval, so a separation is never shown with none beside it (#597)."""
         family = _family(_bundle([(1,) * cases], cases=cases))
-        (moved,) = family.comparisons
+        (moved,) = _judged(family)
         expected = bounded_separation_p([3.0] * cases, [4.0] * cases, paired=True, value_range=(1.0, 5.0))
         assert (moved.test, moved.basis, moved.p_raw) == ("paired", "bounded", expected)
         assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True, value_range=(1.0, 5.0))
-        assert moved.verdict == "improved" and family.family_size == 1
+        # The question's pass rate is the second member (every trial passes on both arms): the step is 1 − α/2.
+        assert moved.verdict == "improved" and family.family_size == 2
+        assert moved.p_adjusted == pytest.approx(2 * expected)
         assert moved.hedges_g is None, "no spread, so no finite effect size"
         assert moved.interval is not None and moved.interval[0] > 0.0, "the bounded test's own interval"
 
     def test_the_counterexample_null_cannot_read_twenty_uniform_cases_below_their_chance(self) -> None:
         """Twenty cases each up one point arise one time in 87 from a mean that did not move (+1 four times in five,
         −4 the fifth). The contrast's p is at least that, where the sign flip stated 2^-19 and separated it."""
-        (moved,) = _family(_bundle([(1,) * 20], cases=20)).comparisons
+        (moved,) = _judged(_family(_bundle([(1,) * 20], cases=20)))
         assert moved.p_raw is not None and moved.p_raw >= 0.8**20 > 2.0**-19
 
     def test_identical_values_are_tested_and_not_separated(self) -> None:
-        (same,) = _family(_bundle([(0,) * 12])).comparisons
+        (same,) = _judged(_family(_bundle([(0,) * 12])))
         assert (same.verdict, same.test, same.p_raw, same.hedges_g) == ("not_separated", "paired", 1.0, None)
 
     @pytest.mark.parametrize(("n_control", "n_contrast"), [(4, 4), (3, 5), (3, 4)])
     def test_two_constant_sides_unpaired_are_read_by_the_bounded_test(self, n_control: int, n_contrast: int) -> None:
-        (comparison,) = _family(
-            _bundle([(1,) * max(n_control, n_contrast)], cases=n_control, unpaired=n_contrast)
-        ).comparisons
+        (comparison,) = _judged(
+            _family(_bundle([(1,) * max(n_control, n_contrast)], cases=n_control, unpaired=n_contrast))
+        )
         assert (comparison.test, comparison.basis) == ("unpaired", "bounded")
         assert comparison.p_raw == bounded_separation_p(
             [3.0] * n_control, [4.0] * n_contrast, paired=False, value_range=(1.0, 5.0)
@@ -332,10 +340,12 @@ class TestVerdicts:
 
     def test_comparisons_are_against_the_control_only(self) -> None:
         family = _family(_bundle([CLEAR]))
-        (comparison,) = family.comparisons
-        assert comparison.control.variant_key == fixture_variant_key(CONTROL)
-        assert comparison.contrast.variant_key == fixture_variant_key(CONTRAST)
-        assert comparison.control.n_cases == comparison.contrast.n_cases == 12
+        # The judged reading and the question's pass rate, each against the control.
+        assert [c.reading for c in family.comparisons] == ["judged", "trial"]
+        for comparison in family.comparisons:
+            assert comparison.control.variant_key == fixture_variant_key(CONTROL)
+            assert comparison.contrast.variant_key == fixture_variant_key(CONTRAST)
+            assert comparison.control.n_cases == comparison.contrast.n_cases == 12
 
 
 class TestWhatAFamilyCovers:
@@ -365,7 +375,7 @@ class TestWhatAFamilyCovers:
         late = _bundle([CLEAR, *[NOISE] * 9], asked_after_runs=True)
 
         family = _family(late)
-        assert (family.aspect, family.family_size) == ("b", 10)
+        assert (family.aspect, family.family_size) == ("b", 11), "ten judged readings and the question's pass rate"
         assert late.multiple_comparisons == timely.multiple_comparisons
         assert late.question_declared and timely.question_declared
         (aspect,) = [said for said in late.reading_scope.late_criteria if said.criterion == "aspect"]
@@ -390,17 +400,6 @@ class TestWhatAFamilyCovers:
         assert bundle.multiple_comparisons.withheld is not None
         assert "No control resolved" in bundle.multiple_comparisons.withheld
 
-    def test_the_writer_is_not_licensed_to_separate_arms_without_a_family(self) -> None:
-        """The prompt once let a no-family campaign separate arms on a dimension's own sem, with no correction."""
-        assert "in a campaign with no family, where it clears that dimension's own noise floor" not in (
-            EVAL_ANALYSIS_GEN_DEFAULT
-        )
-        assert (
-            "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
-            "separated" in (EVAL_ANALYSIS_GEN_DEFAULT)
-        )
-        assert "with no question asked, on every merit-axis reading as one family" in (EVAL_ANALYSIS_GEN_DEFAULT)
-
     def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:
         """Two rigs: each contrast cell meets the control cell of its rig, never the other's."""
         family = _family(_bundle([CLEAR], rigs=("pool-a", "pool-b")))
@@ -408,11 +407,11 @@ class TestWhatAFamilyCovers:
         rigs = {c.control.apparatus_class_id for c in family.comparisons}
         assert len(rigs) == 2, "the fixture puts the cells on two rigs"
         assert all(c.control.apparatus_class_id == c.contrast.apparatus_class_id for c in family.comparisons)
-        assert family.family_size == 1 * 1 * 2, "one contrast arm x one reading x two rigs"
+        assert family.family_size == 1 * 2 * 2, "one contrast arm x two readings (judged, the pass rate) x two rigs"
 
     def test_the_bundle_test_and_the_stats_test_are_one_computation(self) -> None:
         family = _family(_bundle([BORDERLINE]))
-        (comparison,) = family.comparisons
+        (comparison,) = _judged(family)
         expected = composite_significance([3.0] * 12, [3.0 + d for d in BORDERLINE], paired=True)
         assert comparison.p_raw == pytest.approx(expected.p_value)
 
@@ -426,7 +425,8 @@ class TestWhatAFamilyCovers:
         assert [c.name for c in measured] == ["accuracy"]
         (accuracy,) = measured
         assert (accuracy.control.mean, accuracy.contrast.mean) == (0.5, pytest.approx(11 / 12))
-        assert family.family_size == 1
+        # The classifier's verdict is the trial's pass/fail here, so the question's pass rate reads the same shares.
+        assert family.family_size == 2 and _pass_rate(family).p_raw == pytest.approx(accuracy.p_raw)
 
         cost = _family(_bundle([], matched=(control, contrast), merit_axes=["cost"]))
         assert not [c for c in cost.comparisons if c.name == "accuracy"], "it sits on quality, not on every axis"
@@ -483,7 +483,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
-    assert " not separated (" in row["verdict"] and "declare value_range" in row["verdict"]
+    assert row["verdict"].startswith("cannot tell apart (") and "declare value_range" in row["verdict"]
 
 
 @pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])
@@ -499,8 +499,8 @@ def test_a_separated_comparison_carries_the_materiality_of_its_delta(threshold: 
     assert comparison.materiality == expected
 
 
-def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
-    """Both surfaces that list a comparison's verdict: the report's contrast table and the analysis writer's bundle."""
+def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None:
+    """Both places that hold a comparison's verdict: the report's contrast table and the bundle's comparison."""
     from threetears.evals.analysis.report.build import build_code_only_report
 
     profile = _accuracy_threshold(0.05)
@@ -516,7 +516,8 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
-    assert '"materiality":"immaterial"' in _writer_message(bundle).replace(" ", "")
+    (comparison,) = [c for c in _family(bundle).comparisons if c.name == "field_accuracy"]
+    assert comparison.materiality == "immaterial"
 
 
 def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> None:
@@ -542,18 +543,19 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
 
 
 def test_a_contrast_carries_its_interval_and_effect_size_at_the_family_level() -> None:
-    """Two readings, so each interval is at 1 − α/2 = 97.5%, from the same paired test as the p."""
+    """Two judged readings and the question's pass rate, so each interval is at 1 − α/3 ≈ 98.33%, from the same paired
+    test as the p."""
     from threetears.evals.analysis.stats import difference_interval
 
     family = _family(_bundle([CLEAR, NOISE]))
-    assert family.interval_level == pytest.approx(0.975)
+    assert family.interval_level == pytest.approx(1 - 0.05 / 3)
     clear = next(c for c in family.comparisons if c.name == "extraction.d0")
     assert clear.interval == pytest.approx(
-        difference_interval([3.0] * 12, [3.0 + d for d in CLEAR], paired=True, confidence=0.975)
+        difference_interval([3.0] * 12, [3.0 + d for d in CLEAR], paired=True, confidence=1 - 0.05 / 3)
     )
     assert clear.interval is not None and clear.interval[0] > 0, "a separation this clear excludes zero"
     assert clear.hedges_g == composite_significance([3.0] * 12, [3.0 + d for d in CLEAR], paired=True).hedges_g
-    assert "97.5%" in family.disclosure
+    assert "98.33%" in family.disclosure
 
 
 #: Two arms within a point of each other on each of 24 cases: shown inside a 25-point margin. The test reads
@@ -578,9 +580,6 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
         assert comparison.equivalence_p_adjusted < 0.05
         assert (
             comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
-        )
-        assert "equivalence_p_raw" not in _writer_message(
-            _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
         )
     else:
         assert comparison.equivalence_p_raw is None and comparison.equivalence_p_adjusted is None
@@ -696,7 +695,7 @@ class TestWhatPairingBought:
         assert comparison.pairing_correlation.r == pytest.approx(1.0)
 
     def test_an_unpaired_comparison_carries_none(self) -> None:
-        (comparison,) = _family(_bundle([CLEAR], cases=6, unpaired=6)).comparisons
+        (comparison,) = _judged(_family(_bundle([CLEAR], cases=6, unpaired=6)))
         assert comparison.test == "unpaired"
         assert comparison.pairing_correlation is None
 
@@ -710,7 +709,7 @@ class TestWhatPairingBought:
 
     def test_a_side_with_no_spread_carries_none(self) -> None:
         """Every control case scores 3, so the control does not vary and correlates with nothing."""
-        (comparison,) = _family(_bundle([CLEAR])).comparisons
+        (comparison,) = _judged(_family(_bundle([CLEAR])))
         assert comparison.test == "paired"
         assert comparison.pairing_correlation is None
 
@@ -740,8 +739,3 @@ class TestPairingCorrelation:
     def test_samples_of_different_lengths_are_refused(self) -> None:
         with pytest.raises(ValueError, match="case by case"):
             pairing_correlation([1.0, 2.0, 3.0], [1.0, 2.0])
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

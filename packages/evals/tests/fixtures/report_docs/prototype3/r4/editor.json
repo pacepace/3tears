@@ -1,0 +1,96 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline names the trade both ways: 30% cheaper, $7,560 a month, 6.1 points less in character. The flag says the choice belongs to the product owner because no price or margin was declared. The decision block gives the per-point price with its band ($1,239, $1,036 to $1,543), which way each side of the band goes, a labelled lean (keep Production until f64's guardrails are confirmed), and the main risk: Watch says f64 clears declining to speculate by only 1.4 points. c1 then shows both axes. A reader can say what is unresolved, why, and what to do next."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 1,
+      "reason": "c1 to c5 build in order: the trade, its price, where the loss sits, why f64 is the only option, and how thin its clearance is. Two places contradict each other. (a) Explore's second row says a margin narrower than the far end of f64's interval (7.3) 'leaves the trade open'. But next[0] and the what_settles_it slot both say a declared margin settles the decision at once, and a margin under the near end (4.9) shows f64 worse than the margin, which settles it for Production. (b) our_lean gives c3's depth pattern as its reason ('its loss lands on the long conversations a persona is for'), while c3's own caption calls that pattern 'a lead, not a confirmed finding'. Also, 70% of replies sit at depths 1 to 5 (shares 38% and 32%), where f64 loses 2.0 and 4.5 points."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The weak axes of both options are visible. Production's is the $7,560 a month, and f64's are the character loss and guardrail clearances of 2.1 and 1.4 points, which a re-run would read on the wrong side 8.9% and 9.7% of the time (c5). The headline goes too far in one place: 'with the loss deepest in long conversations' is stated as fact. It rests on c3's unpaired intervals, which treat each reply as independent. About 8 replies come from each conversation (2,400 replies over 300 cases), and the 11+ band has only 240 replies per arm, drawn from the conversations that run long. The true interval at 11+ (printed -24.65 to -10.35) may therefore be several times wider. Method admits these intervals are approximate, and the caption calls the pattern a lead, but the headline does not."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked each omitted item against the snapshot, and none changes the decision. f16 priced as if it passed comes to $1,443 a point ($1,242 to $1,723) but is out by the declared rule; settling its 0.6-point miss would take 10,113 to 20,661 cases, so a re-run cannot practically rescue it. The output-cap lever is -1.3 points (-7 to +4.4), not separated. The scenario changes are held as points only, with no counts; banter (-9) and taking a correction (-11.5) are the largest drops, as the omitted row says. f16's and cor's task regressions involve arms that are not options. One useful fact is missing but not decision-changing: cor's loss barely grows with depth (-1.0 at 1-2, -4.5 at 11+, against f64's -17.5), which would strengthen the case for the cor next step."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "Method's 'Not compared' row names the confound: f64 differs from Production in both model and output cap (64k against 32k), and Production's medium reasoning setting has no counterpart on the flash arms. It notes that levers_effects isolates only the output cap. But the confound stops at Method. The fifth next step says failure examples will show 'what a prompt or model fix to f64 must target', yet no step tests whether giving flash Production's reasoning setting or output cap recovers character. That is the cheapest way to separate the model from its settings, and it bears directly on the hybrid and fix next steps."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five steps name a declaration or a run and say what it settles. They are: the owner declares a price or margin; f64 is re-run at 1,295 and 1,390 cases; a depth-routed mix is run beside both arms; cor is given a speculation guard; and failure examples are kept for depth 11+, banter and taking a correction. Each 'settles' clause is specific, and the re-run sizes are read from the snapshot."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's forest and c4's dot-intervals fit their claims, and the counterfactual holds for both. If f64's persona interval crossed zero, or its guardrail dots fell below the lines, the claims would have to change. Three blocks are weaker. (1) The c5 settle table has 18 columns, six of them all dashes. It prints case counts as '447.0', '634.0' and '300.0', and its 'Needed, two-sided' column (634 and 681) is not the size next[1] cites (1,295 and 1,390, the four-in-five sizes). A reader who checks the table against the next step sees two different re-run sizes. (2) c3's intervals print to four significant figures ('-4.416 to +0.4158'), while every other block prints one decimal. (3) c2 is a bar chart of a single row, and its Note column repeats the value. The price band would read more clearly as a sentence, or as a band marked with the two flip points from Explore."
+    }
+  ],
+  "total": 10,
+  "passes": false,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "Explore row 2 ('any narrower margin leaves the trade open') contradicts next[0] and the what_settles_it slot, which say a declared margin settles the decision. With f64's paired interval at -7.3 to -4.9, a margin wider than 7.3 makes f64 acceptable. A margin under 4.9 shows f64 worse than the margin, so keep Production. Only a margin between 4.9 and 7.3 leaves the call undecided. Rewrite the outcome with all three bands, using contrast.f64.persona.interval."
+    },
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The headline states 'with the loss deepest in long conversations' as fact, but c3 calls the pattern a lead from unpaired intervals that treat each reply as independent. Replies cluster within conversations (2,400 replies over 300 cases), and the 11+ band holds 240 replies per arm. Either hedge it in the headline, or drop it from the headline and keep it in c3 as the lead it is."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "our_lean rests on c3's unconfirmed pattern ('its loss lands on the long conversations a persona is for'). It also asserts what a persona is for, which nothing measured, while 70% of replies are at depths 1 to 5, where the loss is 2.0 to 4.5 points. Ground the lean in the guardrail risk (c5: 8.9% and 9.7% wrong-side), which the data supports, and cite the depth pattern only as a lead."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "The settle table shows 'Needed, two-sided' as 634 and 681 cases, but next[1] asks for 1,295 and 1,390, the four-in-five two-sided sizes. Those are not in the table, so the page shows two re-run sizes for the same thing. Show the column next[1] cites, and drop the six all-dash trial columns. Case counts should print as whole numbers, not '447.0' or '300.0'."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The interval ends print at four significant figures ('-4.416 to +0.4158', '-24.65 to -10.35'), while every other block prints one decimal. This false precision is worse on intervals the caption already calls approximate."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The model-and-settings confound (output cap 64k against 32k; Production's medium reasoning setting with no counterpart on flash) appears only in Method. Next[4] says failure examples will show what a 'prompt or model fix to f64' must target. A run of flash with Production's reasoning setting and output cap would show how much of the 6.1 points is the model rather than its settings, and should be listed as a next step."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "A one-row bar chart, with a Note column that repeats the value, is not the clearest evidence for a single price. Show the band ($1,036 to $1,543) with the two flip points Explore names, or state it in the claim and drop the block."
+    },
+    {
+      "claim": "next",
+      "severity": "should_fix",
+      "finding": "The cor next step would be stronger with the depth figure it rests on. cor's character loss stays nearly flat with depth (-4.5 points at 11+, against f64's -17.5), which makes cor the more plausible middle option for long conversations. The page omits this."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: c1's caption ('across the three candidates') and c4's text ('Of the three candidates') type the candidate count instead of citing {n_candidates}.",
+    "Invariant 1: omitted row 3 types the output-cap settings ('f64 at 64k against f16 at 16k') instead of citing settings.f64.max_output_tokens and settings.f16.max_output_tokens.",
+    "All 40 figure keys cited read on the snapshot (figure_keys_check: 40 reads, 0 unstated, 0 refused). All four caveats are shown with material_if clauses, and the confidence form high_if_immaterial is not a plain high."
+  ],
+  "calls": 23
+}

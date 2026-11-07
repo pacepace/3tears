@@ -19,10 +19,7 @@ from threetears.evals.analysis import errors
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report import words
-from threetears.evals.analysis.report.words import cell_arm_labels
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import (
@@ -36,7 +33,6 @@ from threetears.evals.kernel.surface import (
 
 AXIS = "extractor_model"
 RIG = "r" * 64
-RIG_2 = "s" * 64
 
 
 def _level(model: str) -> SweepableValue:
@@ -48,10 +44,6 @@ def _key(model: str) -> str:
 
 
 BASELINE, CHALLENGER = _key("model-a"), _key("model-b")
-INDEX = [
-    VariantIndexEntry(variant_key=BASELINE, levers={AXIS: _level("model-a")}),
-    VariantIndexEntry(variant_key=CHALLENGER, levers={AXIS: _level("model-b")}),
-]
 
 
 def _summary(name: str, mean: float, *, scope: str = "end_to_end") -> MeasureSummary:
@@ -141,29 +133,6 @@ class TestAnEmptyCellNamesTheCellsThatExist:
 
         assert "the cells are" not in str(raised.value)
         assert "Its measures are: extract_ms, parse_ms" in str(raised.value)
-
-
-class TestEveryCellIsNamedByItsArm:
-    """The report's cell labeller is public, so the memo's render names an arm as every table does."""
-
-    def test_the_labeller_is_part_of_the_published_contract(self) -> None:
-        assert "cell_arm_labels" in words.__all__
-
-    def test_each_cell_is_named_by_its_levels(self) -> None:
-        labels = cell_arm_labels(_surface(), INDEX)
-
-        assert labels == {
-            cell_ref(BASELINE, RIG): f"{AXIS}=model-a",
-            cell_ref(CHALLENGER, RIG): f"{AXIS}=model-b",
-        }
-
-    def test_an_arm_under_two_test_setups_carries_its_setup_in_every_label(self) -> None:
-        cells = [_cell(BASELINE), _cell(BASELINE, rig=RIG_2), _cell(CHALLENGER)]
-        labels = cell_arm_labels(_surface(cells), INDEX)
-
-        assert labels[cell_ref(BASELINE, RIG)].endswith(" (test setup rrrrrrrrrrrr)")
-        assert labels[cell_ref(BASELINE, RIG_2)].endswith(" (test setup ssssssssssss)")
-        assert labels[cell_ref(CHALLENGER, RIG)] == f"{AXIS}=model-b"
 
 
 # --- surface.py ------------------------------------------------------------------------------------

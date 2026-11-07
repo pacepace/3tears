@@ -100,31 +100,45 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
     # The classifier is the first field, read per label; the other field and the code grader are pass rates.
-    assert "category: mean 0.9 (n=90" in printed and "per label:" in printed
-    # Each label's precision and recall count answers over cases, since k=3 answers each case three times.
+    # Each measure is printed as the page names it: the classifier's label match as the Accuracy the page reads.
+    assert "Accuracy: 90%, 81 of 90 trials" in printed and "per label:" in printed
+    # Each label's precision and recall count trials over cases, since k=3 answers each case three times, in percent
+    # with their intervals as the page writes a rate.
     assert (
-        "    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases" in printed
+        "    account: precision 100% (17 of 17 trials over 7 cases, [56.9%, 100%]), recall 81% (17 of 21 trials over 7"
+        " cases" in printed
     )
-    assert "urgent: mean 0.8333 (n=90" in printed
-    assert "escalates: mean 0.9889 (n=90" in printed
-    assert "top misses (5 of 20):" in printed
-    assert "total spend: $0.00192, the results' cost" in printed
+    assert "Urgent score: 83.3%, 75 of 90 trials" in printed
+    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
+    assert "top misses (5 of 20 failed trials):" in printed
+    assert "total spend: $0.0019, the results' cost" in printed
     assert "stored in .evals/evals.sqlite, scope 'emails'" in printed
     assert (triage_dir / ".evals" / "reports" / "emails" / "report.html").is_file()
     page = (triage_dir / ".evals" / "reports" / "emails" / "report.md").read_text(encoding="utf-8")
-    # One arm's verdict is how its cases came out: once, first in its aspect's fold, under the arm.
+    # One arm's verdict is its pass rate as a count, then the cases it missed: once, first in its aspect's fold,
+    # under the arm.
     lines = page.splitlines()
-    (verdict,) = [index for index, line in enumerate(lines) if line.startswith("**emails: ")]
-    assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", lines[verdict])
+    (verdict,) = [index for index, line in enumerate(lines) if line.startswith("**triage passed ") and "Cases" in line]
+    assert re.fullmatch(
+        r"\*\*triage passed \d+ of \d+ trials on \d+ cases\. Cases that failed a trial: .+\*\*", lines[verdict]
+    )
+    # The campaign's lead is its first sentence, word for word.
+    assert f"{lines[verdict].split('. Cases', 1)[0]}.**" in lines[:verdict]
     arm = lines[verdict - 2]
     assert " · " in arm
     # The Scorecard names the one arm as the eval does, never `control`: one arm is measured, so its matrix has no
     # Arm column and its title names the arm, and every folded row under it names the arm.
-    above = lines[: lines.index("## classify")]
+    # The aspect the engine labelled `classify` is called by the campaign's name, and its fold, named as the page
+    # is, heads as its evidence.
+    above = lines[: lines.index("## Evidence")]
     assert "**triage by aspect**" in above and not any("control" in line for line in above)
-    matrix, *rows = [line for line in above if line.startswith("| classify |")]
-    assert matrix.startswith("| classify | 77.8 | 0.9 | 1 | 0.9048 | 0.8182 |")
-    assert rows and all(line.startswith("| classify | triage |") for line in rows)
+    matrix, *rows = [line for line in above if line.startswith("| emails |")]
+    # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
+    # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8).
+    assert matrix.startswith(
+        "| emails | 77.8 (70 of 90 trials, 30 cases) | 90 (81 of 90 trials, 30 cases) | 100 (17 of 17 trials, 7 cases) |"
+    )
+    assert rows and all(line.startswith("| emails | triage |") for line in rows)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.
     measured = {line.split(" | ")[2] for line in rows}
     assert lint_page(page, names={arm.split(" · ")[0], *measured}) == []
@@ -139,27 +153,25 @@ def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misse
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "needs_human: mean 0.8111 (n=90" in printed
-    assert "total spend: $0.00199, the results' cost" in printed
+    assert "Needs human score: 81.1%, 73 of 90 trials" in printed
+    assert "total spend: $0.0020, the results' cost" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "triage" / "report.html").is_file()
 
 
 def test_the_console_and_the_page_count_one_number_of_cases_passed(
     triage_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A case passes when every check the file declares passes (``category``, ``urgent`` and ``needs_human`` alike),
-    on the console's first line as on the page's verdict, read off one run."""
+    """A trial passes when every check the file declares passes (``category``, ``urgent`` and ``needs_human``
+    alike), on the console's first line as on the page's verdict, read off one run."""
     assert main(["triage.toml"]) == 0
 
-    console = re.match(r"triage: (\d+/\d+) cases passed; (\d+) misses", capsys.readouterr().out)
+    counted = r"triage passed (\d+) of (\d+) trials on (\d+) cases"
+    console = re.match(rf"triage: {counted}", capsys.readouterr().out)
     reports = triage_dir / ".evals" / "reports" / "triage"
-    markdown = re.search(r"\*\*triage: (\d+/\d+) cases passed; (\d+) misses", (reports / "report.md").read_text())
-    page = re.search(
-        r'class="verdict"[^>]*><strong>triage: (\d+/\d+) cases passed; (\d+) misses',
-        (reports / "report.html").read_text(),
-    )
+    markdown = re.search(rf"\*\*{counted}", (reports / "report.md").read_text())
+    page = re.search(rf'class="verdict"[^>]*><strong>{counted}', (reports / "report.html").read_text())
     assert console is not None and markdown is not None and page is not None
-    assert console.groups() == markdown.groups() == page.groups() == ("16/30", "14")
+    assert console.groups() == markdown.groups() == page.groups() == ("62", "90", "30")
 
 
 def test_the_console_lists_the_misses_in_the_page_s_order(triage_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -169,8 +181,8 @@ def test_the_console_lists_the_misses_in_the_page_s_order(triage_dir: Path, caps
 
     printed = capsys.readouterr().out
     page = (triage_dir / ".evals" / "reports" / "triage" / "report.md").read_text(encoding="utf-8")
-    named = r"triage: \d+/\d+ cases passed; \d+ misses: (.+)"
-    console_cases = re.match(named, printed)
+    named = r"triage passed \d+ of \d+ trials on \d+ cases\. Cases that failed a trial: (.+)"
+    console_cases = re.match(rf"triage: {named}", printed)
     page_cases = re.search(rf"\*\*{named}\*\*", page)
     assert console_cases is not None and page_cases is not None
     assert console_cases.group(1).split("\n")[0] == page_cases.group(1)
@@ -191,7 +203,7 @@ def test_the_program_runs_from_another_directory_through_the_module_entry(
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "escalates: mean 0.9889 (n=90" in printed
+    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "emails" / "report.html").is_file()
     assert not (triage_dir / ".evals").exists()
 

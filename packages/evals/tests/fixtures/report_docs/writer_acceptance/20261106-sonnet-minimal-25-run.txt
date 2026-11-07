@@ -1,0 +1,62 @@
+START 2026-11-06T21:45:19Z
+P2 acceptance
+
+Does the gate read the minimal skill (SKILL.md and editor.md alone, every other module, the index and every note left blank) as writing worse reports than the shipped skill?
+
+| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |
+|---|---|---|---|---|---|---|
+| shipped | control | 4e14e276b568 | none | 07e15b95eed5 | 25 | completed |
+| minimal | candidate | d14ce43b811a | charts.md, exemplars/INDEX.md, exemplars/kairo-round2.md, exemplars/r1-model-selection.md, exemplars/r2-config-sweep.md, exemplars/r3-classifier.md, exemplars/r4-tradeoff.md, principles.md, statistics.md, stories.md, writing.md | 07e15b95eed5 | 25 | completed |
+
+Both arms write on claude-sonnet-5-5; the scoring judge is google/gemini-3.8-flash.
+
+| Part | Cap | Spent |
+|---|---|---|
+| shipped | $41.60 | $10.85 |
+| minimal | $41.60 | $10.72 |
+| pairwise pass (48 calls) | $20.80 | $0.37 |
+
+| Reading | Role | Reads | Difference | Interval | Level |
+|---|---|---|---|---|---|
+| Preferred by the judge, side by side | primary | not separated | 0.12 | -0.2777 to 0.5649 | 0.95 |
+| Preferred by the judge, side by side, both pages finished | reported | not separated | 0 | -0.9567 to 0.9963 | 0.95 |
+| report_writer.actionable_next_steps (judged) | gated | not separated | 0 | -1.039 to 1.039 | 0.9958 |
+| report_writer.coherent_story (judged) | gated | not separated | 0.08696 | -0.5458 to 0.7197 | 0.9958 |
+| report_writer.confounds_handled (judged) | gated | not separated | 0 | -1.039 to 1.039 | 0.9958 |
+| report_writer.evidence_fits_claims (judged) | gated | not separated | -0.2174 | -0.9681 to 0.5334 | 0.9958 |
+| report_writer.first_screen (judged) | gated | not separated | 0 | -1.039 to 1.039 | 0.9958 |
+| report_writer.honest_emphasis (judged) | gated | not separated | 0.08696 | -0.191 to 0.3649 | 0.9958 |
+| report_writer.sound_elision (judged) | gated | not separated | 0.1304 | -0.1746 to 0.4355 | 0.9958 |
+| Production cost | gated | not separated | -0.007556 | -0.07406 to 0.05894 | 0.9958 |
+| Bounces | gated | not separated | 0.5833 | -0.41 to 1.577 | 0.9958 |
+| Report finished | gated | not separated | 0.125 | -0.3517 to 0.5272 | 0.9958 |
+| Must-fix findings open | gated | not separated | -0.1739 | -0.6922 to 0.3444 | 0.9958 |
+| the pass rate | gated | not separated | 0.125 | -0.3517 to 0.5272 | 0.9958 |
+
+| Order check | Figure |
+|---|---|
+| Cases scored in both orders | 24 |
+| Of those, both orders picked the same side | 20 |
+| Order consistency, the primary void below 0.7 | 0.8333 |
+| Cases scored in one order only, counted apart | 0 |
+| Answers the judge could not tell | 0 |
+| Calls that failed | 0 |
+| Held-out cases like these that would settle the primary | 388 |
+
+Undecided: the primary reading does not separate minimal from shipped, and only an improved primary reading promotes.
+
+| Pass criterion | Reads | Holds |
+|---|---|---|
+| both arms ran every case | shipped completed, 25 of 25; minimal completed, 25 of 25 | yes |
+| the read answers keep | undecided | no |
+| the primary reading reads regressed | not separated | no |
+| it separated, its interval below 0 | not separated, -0.278 to 0.565 at 0.95 | no |
+| the judge's order consistency stands at 0.7 or more | 0.83 (20 of 24 cases) | yes |
+| bounces do not separate | not separated | yes |
+
+FAIL: not held: the read answers keep; the primary reading reads regressed; it separated, its interval below 0. About 388 held-out cases like these would settle the primary; this run stops here.
+shipped: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-minimal-25/recordings/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2, 0 replayed
+minimal: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-minimal-25/recordings/minimal-d14ce43b811a-claude-sonnet-5-5-medium-r2, 0 replayed
+11 case(s) name example results stored only where they were frozen
+exit 4
+END 2026-11-06T22:27:44Z

@@ -1,9 +1,8 @@
 """Calls the engine makes outside any run: priced before they are made, and ledgered once they are.
 
-Five engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
+Four engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
 writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
-(:func:`~threetears.evals.gen.propose_draft`), an analysis generation
-(:func:`~threetears.evals.analysis.run_analysis_generation`), a judge repeat
+(:func:`~threetears.evals.gen.propose_draft`), a judge repeat
 (:func:`~threetears.evals.run.judge_repeat_work`) and a second judge
 (:func:`~threetears.evals.run.second_judge_work`). A run's own calls are bounded by its cost
 cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or

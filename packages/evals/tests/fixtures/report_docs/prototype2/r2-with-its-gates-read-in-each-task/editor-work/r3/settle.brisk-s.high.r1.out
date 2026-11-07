@@ -1,0 +1,3 @@
+refused: settle_cases: nothing named can be settled: reads brisk-s.high.r1's spread on 'pass_rate' in task.single, and the figure has none: it states no interval, half-width or standard error, and no count to read a rate's spread from
+remedy: settle a mean that states its spread and count (measure_read lists each arm's statistics), or name another criterion or measure
+recovery: {"parameters":["measure_key","criterion_id"],"accepted":["snapshot_id","arm_ids","measure_key","criterion_id","hypothetical_line","limit","offset"],"see":{"action":"help","topic":"settle_cases"}}

@@ -145,6 +145,28 @@ class TestVerify:
         assert "docker-bake.hcl image-tag :v0.0.99" in err
         assert "sidecar" not in err
 
+    def test_a_local_label_is_named_against_a_plain_release(self, workspace: Path) -> None:
+        """
+        a member and a smoke assertion at ``0.1.0+line.1`` are not ``0.1.0``, so ``verify`` names both.
+
+        :param workspace: the workspace
+        :ptype workspace: Path
+        :return: nothing
+        :rtype: None
+        """
+        for path in ("packages/extra/pyproject.toml", "packages/core/tests/test_smoke.py"):
+            text = (workspace / path).read_text()
+            (workspace / path).write_text(
+                text.replace('version = "0.1.0"', 'version = "0.1.0+line.1"').replace(
+                    'core_version == "0.1.0"', 'core_version == "0.1.0+line.1"'
+                )
+            )
+        commit_all(workspace, "label")
+        status, _, err = release(workspace, "verify", "0.1.0")
+        assert status == 1
+        assert "packages/extra/pyproject.toml: version <version '0.1.0+line.1' is not X.Y.Z>" in err
+        assert 'packages/core/tests/test_smoke.py: core_version == "0.1.0+line.1" (expected 0.1.0)' in err
+
 
 class TestBumpAndSync:
     """a bump moves every target; ``sync`` heals drift at the declared version."""

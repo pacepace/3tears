@@ -1,0 +1,84 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and the cost claim give the action (keep September), the reason (both candidates cost 27–28% more, $2.43 and $2.41 against $1.89 per thousand replies, and neither holds character better) and the risks: September's own 65.8% off-lane rate and the contradicted prior. Both candidates are within the 15-point margin, so the call turns on cost alone. The lede and the 'What you could change' table say this, though only indirectly."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims follow from each other. Cost decides. The character claim shows neither candidate is better. The judged claim adds that 1017 is separated on holds-character (-4.7, -8.2 to -1.3) even though its pass rate is not. The off-lane claim locates about half the loss, and examples show its form. options_dominance agrees: September dominates both, and qwen3.8-flash is also dominated by 1017. decision_sensitivity confirms the call holds at every margin."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The recommended control's weak spot is visible: 65.8% holds-character off-lane, in Watch. Qwen3.8-flash's drop is called clearly worse but within the margin, and 1017's pass-rate change is called not separated. Both match their intervals. One overstatement: the page says cost 'cannot' be reversed, yet 1017's cost gap carries a stated confound. That is covered under confounds below."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the call. The judge's ordinal scores point the same way. The tool check and the reliability counts are not separated or near zero. Measuring spend is test cost. The small strata stay in the appendix. Latency was read under concurrency. One coverage fact is missing, and it matters for the deciding measure: cost readings exist for only 864, 828 and 879 trials. Even if every missing trial cost zero, qwen3.8-flash would still cost more than the control, so it does not flip the call."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "The reasoning-ratio confound is attached only to the judged claim. The snapshot also lists it on 1017's production-cost contrast (+$0.49 per thousand, +$0.17 to +$0.81). Cost is the finding the page calls measured and immune to the caveats. The direction probably favours the call: 1017 reasons less than the control (55% against 76%), so matching budgets would likely raise its cost. The page never says this. The model confound is carried in general terms only."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment or a declaration and what it settles: reconciling qwen3.8-flash's cost with the prior, re-running 1017 at a matched reasoning budget, testing the brush-off directive on all three models, calibrating the judge on off-lane replies, and declaring the check, control and margin in advance."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "The cost claim is about gaps, but its block shows levels at 95%. The corrected paired gaps sit only in the appendix: +$0.62 for qwen3.8-flash, about 33%, against the 28% the page cites. The off-lane bars have no intervals and the caption refers to bold rows. The example cards show only candidate failures, though the control fails the same way, for example September T42 and T64. That is the basis of the shared-prompt next step."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "cost",
+          "severity": "should_fix",
+          "finding": "The snapshot attaches the reasoning-ratio confound to 1017's production-cost contrast (+$0.49 per thousand replies, +$0.17 to +$0.81). Neither the cost claim nor the 1017 'why not' line carries it, and the lede and confidence line say cost is measured and cannot be reversed. Attach the confound to 1017's cost and say its likely direction. 1017 spends 55% of its output reasoning against the control's 76%, so a matched budget would likely raise its cost, not lower it. Point to the matched-budget next step."
+        },
+        {
+          "claim": "cost",
+          "severity": "should_fix",
+          "finding": "The block shows each arm's cost level, but the claim is that each gap is clear of zero. Show the corrected paired gaps instead: +$0.62 (+$0.38 to +$0.85) for qwen3.8-flash and +$0.49 (+$0.17 to +$0.81) for 1017. Reconcile the 27–28% in the headline, which comes from unpaired means, with the paired gap of about 33% for qwen3.8-flash. Also state cost coverage. Cost was read on 864 of 897 trials for September, 828 of 897 (285 of 299 cases) for qwen3.8-flash and 879 of 897 for 1017. Add that even if every missing reading cost zero, the order would not change."
+        },
+        {
+          "claim": "character",
+          "severity": "should_fix",
+          "finding": "The caption writes 'Two of qwen3.8-flash (A)'s trials' in words. Print the count from its key, the lost count, 2 (or usable 895 of 897). The caveat line also repeats 'A run fell short of its usable measurements' twice. Say plainly that two qwen3.8-flash runs each lost one trial to the harness."
+        },
+        {
+          "claim": "examples",
+          "severity": "should_fix",
+          "finding": "All four cards are candidate failures. Yet September fails off-lane in the same way: T42 offers a landlord-email opener after a brush-off, and T64 answers 'Cold'. That shared failure is the basis of the third next step. Swap in one control card. Also note that T15 is not the brush-off-then-answer pattern: the judge faulted a behind-the-scenes spoken line. Say 'three of four' rather than letting the card imply the pattern."
+        },
+        {
+          "claim": "offlane",
+          "severity": "should_fix",
+          "finding": "The claim gives 53% for 1017 only. Qwen3.8-flash's off-lane share is 48%; state both. The caption says 'bold rows are separated at 95%', but the block shows no intervals or bold marking. Either add the stratum intervals or drop that sentence."
+        }
+      ],
+      "total": 12,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

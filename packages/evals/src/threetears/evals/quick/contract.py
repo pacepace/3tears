@@ -53,7 +53,15 @@ from threetears.evals.quick.one_call import (
     refuse_an_unusable_cap,
     run_arms,
 )
-from threetears.evals.quick.result import CREATED_BY, Result, calibrate, coordinates, declare, judged_rows
+from threetears.evals.quick.result import (
+    CREATED_BY,
+    Result,
+    calibrate,
+    coordinates,
+    declare,
+    judged_rows,
+    refuse_an_unusable_margin,
+)
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
@@ -195,6 +203,8 @@ class Eval:
     :ivar max_cost_usd: The most the whole eval may spend, in US dollars, shared equally between its arms; ``None``
         runs uncapped, which every summary states.
     :ivar measure_latency: Declare latency under test: the cases run one at a time, the arms one after another.
+    :ivar question: The one sentence the eval answers, filed as its campaign's question; ``None`` asks none.
+    :ivar margin: The question's margin in the measure's units, a non-inferiority question's; ``None`` declares none.
     """
 
     def __init__(
@@ -207,6 +217,8 @@ class Eval:
         name: str | None = None,
         max_cost_usd: float | None = None,
         measure_latency: bool = False,
+        question: str | None = None,
+        margin: float | None = None,
     ) -> None:
         """Declare the eval; nothing runs until :meth:`run`.
 
@@ -227,10 +239,26 @@ class Eval:
         :ptype max_cost_usd: float | None
         :param measure_latency: Declare latency under test.
         :ptype measure_latency: bool
-        :raises ValueError: No cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
+        :param question: The one sentence a comparison answers (``"Does v2 read the currency right more often than
+            v1?"``), as a writer eval's ``question`` is: filed as the campaign's question, so its page quotes it and
+            reads its readings as asked rather than as leads. The question's measure is the first grader: the printed
+            first line and the page's lead read it. Alone it asks whether a candidate does better (a superiority
+            question): the pass rate reads shown better, shown worse or not separated, against zero, and no margin is
+            filed. ``None`` asks none, and every reading is a lead.
+        :ptype question: str | None
+        :param margin: How far a candidate's pass rate may fall below the control's before it is shown worse, in the
+            measure's units as ``grader(margin=)``'s are (``0.05`` is 5 points): the author's own, which makes the
+            question a non-inferiority one, its pass rate reading no worse than the margin, shown worse or neither.
+            Needs ``question``; ``None`` declares none, and the package never assumes one.
+        :ptype margin: float | None
+        :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
+            question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
             known form, or an expression grader with no world with state to read.
         """
+        if question is not None and not question.strip():
+            raise ValueError("an eval's question is filed on its campaign, and this one is blank")
+        refuse_an_unusable_margin(margin, question)
         self.cases = load_cases(cases)
         source = Path(cases) if isinstance(cases, str | os.PathLike) else None
         if isinstance(runner, Mapping):
@@ -271,6 +299,8 @@ class Eval:
         self.k = k
         self.max_cost_usd = max_cost_usd
         self.measure_latency = measure_latency
+        self.question = question
+        self.margin = margin
 
     def __repr__(self) -> str:
         """The eval, by name, cases and arms."""
@@ -456,6 +486,9 @@ class Eval:
                 ],
                 measure_latency=self.measure_latency,
                 declared_at=declared_at,
+                question=self.question,
+                margin=self.margin,
+                measure_order=self.plan.readings,
             )
             return replace(
                 result,

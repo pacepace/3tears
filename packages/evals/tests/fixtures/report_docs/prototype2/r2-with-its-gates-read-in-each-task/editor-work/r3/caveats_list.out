@@ -1,0 +1,10 @@
+caveat listing
+caveats (2):
+  - id: no_control; kind: no_control; reach: report; source: implied; matters_if: it matters for any claim that one arm beats another: with no control nothing is read paired, so two arms compare only by their own figures and intervals; immaterial: False; checked: none; touches_arms: []; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 18
+  - id: best_of_n; kind: best_of_n; reach: report; source: implied; matters_if: it matters where the pick leads the next option, or clears a line, by little: the best of many candidates reads high by chance, the more so the more there are, so a re-run on fresh cases tends to read it lower; immaterial: False; checked: none; touches_arms: [atlas-m.off.r0, atlas-m.off.r1, atlas-m.low.r0, atlas-m.low.r1, atlas-m.high.r0, atlas-m.high.r1, brisk-s.off.r0, brisk-s.off.r1, brisk-s.low.r0, brisk-s.low.r1, brisk-s.high.r0, brisk-s.high.r1, nano-xs.off.r0, nano-xs.off.r1, nano-xs.low.r0, nano-xs.low.r1, nano-xs.high.r0, nano-xs.high.r1]; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 18
+total: 2
+offset: 0

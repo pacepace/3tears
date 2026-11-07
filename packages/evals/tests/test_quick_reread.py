@@ -20,6 +20,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -183,3 +184,18 @@ async def test_runs_stored_before_declarations_were_recorded_read_on_the_reader(
         bundle = off_loop(_bundle, host, comparison)
     assert bundle.launch_declarations == []
     assert bundle.measure_catalog["correct"].materiality_threshold == 0.3
+
+
+async def test_a_reading_host_declaring_otherwise_is_read_on_a_copy_of_its_profile_without_a_warning(
+    tmp_path: Path,
+) -> None:
+    """A reading host declaring otherwise is read on a copy of its profile, and building the copy warns of nothing."""
+    path = tmp_path / "evals.sqlite"
+    comparison = await _compare(path)
+    with SqliteDocumentStore(path) as store:
+        host = callable_host([correct, no_leak], arms=True, margins={"correct": 0.3}, store=store)
+        with warnings.catch_warnings(record=True) as assembled:
+            warnings.simplefilter("always")
+            bundle = off_loop(_bundle, host, comparison)
+    assert bundle.launch_declarations, "the bundle was read on a copy of the reader's profile"
+    assert [w for w in assembled if issubclass(w.category, DeprecationWarning)] == [], "assembling warns of nothing"

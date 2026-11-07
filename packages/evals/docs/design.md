@@ -13,8 +13,9 @@ against one private host; the campaigns they summarise are not published.
 ### Purpose and design
 
 **Every eval declares its purpose before it runs: to decide, to learn, or to watch.**
-A decision is one campaign asking one question of its arms, before the runs, measured on each aspect it rests on,
-each with the margin a candidate may fall below the control by there. A campaign that asks no question is passive,
+A decision is one campaign asking one question of its arms, before the runs, measured on each aspect it rests on:
+asked alone it asks whether a candidate does better, and where its author writes the margin a candidate may fall below
+the control by on an aspect, whether it is no worse by more than that. A campaign that asks no question is passive,
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
@@ -28,7 +29,7 @@ reader judges. Data age is no signal: a run whose measurement context is unchang
 and arms measured minutes, hours or days apart are one experiment while nothing that decides their result changed.
 Each aspect keeps the time it was asked, so adopting it into a later campaign never re-dates it.
 
-**Code reports, the writer recommends, a person decides.**
+**Code reports, the analyst recommends, a person decides.**
 Code reads each aspect against the control: shown better, shown worse, no worse than the margin or unclear, on an
 interval. A model may
 write the recommendation over that evidence; neither decides. A floor (a typed clause, never words a parser reads)
@@ -58,10 +59,10 @@ recorded as witnessed rather than left to chance. See [the world model](evaluati
 
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
-generation finds a phrasing it does not parse. The verdict and every count on a report are code's, a recommendation
-names the findings it rests on, and code reads no word of a finding's title: a title stating a null its evidence did not
-establish is the prompt's rule to prevent
-([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
+generation finds a phrasing it does not parse. The verdict and every count on a report are code's, every number in
+its prose is a figure key code resolves, and code judges no sentence: whether a claim overstates its evidence is the
+editor's to catch
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.
 
@@ -69,9 +70,11 @@ measures obedience.
 Write criteria from failures seen in real transcripts, test each behaviour in both directions, and prefer
 pass/fail where a behaviour allows it: a binary criterion is easier for people to label and to agree on.
 The engine asks one criterion per call, takes the judge's reasoning before its score, and treats "can't
-tell" as an answer that excludes the trial from that criterion. Pairwise judging is not adopted for now
-([open problems](open-problems.md#pairwise-judging-declined-for-now)). Several judges per criterion is not
-adopted either: the error reduction claimed for it rests on a single study, and it would multiply judge
+tell" as an answer that excludes the trial from that criterion. Pairwise judging is adopted for the report writer
+alone, whose loop drives every page toward the rubric
+([open problems](open-problems.md#pairwise-judging-adopted-for-the-report-writer-only-2026-11-03)); every other judged
+score is single-trial. Several judges per criterion is not
+adopted: the error reduction claimed for it rests on a single study, and it would multiply judge
 spend and change how a trial's identity is computed.
 
 **What the subject must never do is held, never traded.**
@@ -91,13 +94,16 @@ Five cases run three times are five pieces of evidence, not fifteen: repeats of 
 comparisons run on per-case means, every interval is computed over cases, and a reading of one case repeated
 has no interval.
 
-**A verdict comes from a corrected test, and "not separated" never means "no difference".**
+**A verdict comes from a corrected test, and "the evidence cannot tell them apart" never means "no difference".**
 Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
 `untested`, read off a Holm-adjusted p within one family: the aspect's, where it is asked a question (whenever that was asked: a question set after
 the runs is disclosed, not demoted), or else one exploratory family over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
 `equivalent` takes an equivalence test (TOST) against the measure's declared margin, corrected in the same
 family; the run-history read follows the same rule. Twenty uncorrected tests find a chance "winner" more often
-than not. False-discovery control across campaigns and sequential testing stay out. The methods are named in
+than not. False-discovery control across campaigns stays out. One reading may be read sequentially: the report
+writer's pairwise preference, a bet fixed for its planned cases before the first, whose every prefix holds its level,
+so a declared rule may stop it early
+([the stopping rule](judges-and-calibration.md#the-stopping-rule)). The methods are named in
 [reading reports](reading-reports.md#methods).
 
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
@@ -119,20 +125,42 @@ Spend is recorded per role: the candidate's calls and the work they start are wh
 judging, simulation and spend outside any run are measurement ([cost and budgets](cost-and-budgets.md)). A
 total over several roles says which.
 
+**The engine counts; the host prices.**
+The engine cannot know what a host pays: a negotiated rate, its own key on a router, a subscription, a local model.
+So it reports what each call used (tokens, the model asked for and the model that answered) and asks the host's
+pricer for the money: the rates it is billed before a call, from which the engine computes the call's bound, and the
+price of the usage after it. The pricer the package ships, published first-party rates and then a router's
+catalogue, is a default for standalone and development use, which a host replaces. A report still shows cost against
+quality, in the host's prices, and says so where a call went unpriced: unknown cost is `None`, never `$0`.
+
 ### Reports
 
-**Code states the facts, the model interprets, and an eval grades the interpretation.**
-The writer cites figures as references that code resolves against the frozen bundle, and confidence is a
-closed tier, so no field can hold a model's probability. No check reads the prose itself, so a figure typed
-into a sentence still passes: this rule is kept for references, not for every number. The schema
-checks structure and nothing else ([what the schema checks](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
-Whether the prose is accurate and useful is measured by evaluating the analysis writer as a subject. "We
-could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
+**Code computes and verifies; the analyst chooses the story; an editor reviews it.**
+A report is written by an analyst model that investigates the campaign through tools over a frozen snapshot, and it
+decides what the story is, what leads and what is left out. Code never chooses structure, emphasis or framing, and no
+code path branches on what kind of eval it is: an eval nobody anticipated is shown with the same tools, and a table
+and prose are always available. What code does hold is mechanical: every number is a figure key it resolves, every
+block draws, every caveat that bears on the call is shown, the confidence form fits the caveats left open, and no
+internal id reaches the reader above the appendix
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)). Whether the story is
+sound is judged, not checked: an editor in a fresh context reviews the page before it is stored, and acceptance campaigns
+are re-run whenever the skill changes. The writer (the analyst and its editor) is also a subject of its own eval,
+read pairwise against a control arm ([writer campaigns](serving.md#writer-campaigns-evaluating-the-report-writer)).
+"We could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
+
+**Confidence rests on the method and the variance, never on the result alone.**
+A report's confidence is one of three closed forms, so no field holds a probability a model made up: high; high if
+the caveats below aren't material, each open caveat with what would make it matter; or low. Its basis is the method
+and the variance of the evidence: the design, criteria set after the results, the judge's standing, confounds, how
+well the evidence separates the arms. A striking result on weak evidence is still low; a pick nothing separates is the
+usual low. A lead's risk of reading the wrong way is stated beside the lead, and does not lower the form by itself.
 
 **The first screen carries the result and every fact that changes how it reads; the rest is one step down.**
-A broken floor, then the title, the declared question quoted whole, the arms and the design, the verdict and the
-scoreboard come first; contrasts follow as one table, and cases, trials, what was not tested, the methods and the
-glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
+On the analyst's page: the headline and lede, a flag for what a reader must know first, the confidence with its open
+caveats, the decision and the options table, with every arm's cost and its price source; the claims follow, and the full
+results, what was left out and why, and the method sit in the appendix. On the code-only page: a broken floor, then
+the title, the declared question quoted whole, the arms and the design, the verdict and the scoreboard; contrasts
+follow as one table, and cases, trials, what was not tested, the methods and the glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
 interval beside it, and the only picture besides the outcome bar is each interval drawn in the row that states it
 ([the page](reading-reports.md#the-report-one-page-result-first)).
 
@@ -169,7 +197,7 @@ would govern users that do not exist.
 
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
-label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. The statistics
+label. The report writer has a kind (`report_writer`), and a judge's self-agreement is measured by repeating its scores. The statistics
 are tested against seeded data with a known truth at the sample sizes the engine sees (2–15 cases, 1–5 repeats):
 the `test_simulated_*` and `test_sim_*` files in `tests/`, on the generators and reference answers in
 `tests/simulation_support.py`. They check interval coverage, false-positive rates, power, family-wise error and
@@ -183,8 +211,17 @@ of it (its launch's history pricer included) and an offer of one, a second judge
 past `EXPORT_PAGE_RESULTS` pass over the run once for its results' keys, then read its results by id a page at a
 time (`threetears.evals.kernel.run_pages`, `RUN_RESULTS_PAGE`): one page of results and one small key per result. The
 pass is over the scope's result rows the store filters by run, made once a walk rather than once a page, plus one
-read by key a page. `tests/test_run_reads_paged.py` records every read each makes; nothing yet
-measures the run loop's own peak, and some readers still read a run whole (the CHANGELOG lists them).
+read by key a page. Every other reader of a whole run (a comparison of two runs, a run written lost, a result
+listing, a delete, a calibration, the judge passes) walks it the same way in the store's order,
+so its figures are the whole read's, and one that keeps every result keeps it without its verbatim fields
+(`world_events`, `kind_payload`). `tests/test_run_reads_paged.py` and `tests/test_whole_run_reads_paged.py` record
+every read each makes; nothing yet measures the run loop's own peak. A launch's planning block walks each earlier
+run of its template the same way, keeping of each result only its per-case values (`tests/test_power_preflight.py`
+measures its peak). A campaign's bundle, a regression watch's judged tiers, the read tier's aggregates (`pivot`, `history`, `frontier`,
+`comparison_sets`, and the spend lenses' grouped figures) and an export's reads (but for a run too large for one page, read by id a page at a time) still read many runs' results
+in one read each, without their verbatim fields, which none of them reads (`tests/test_bundle_read_leaves_out_verbatim_fields.py` measures the
+bundle's peak); each is refused past its measured read budget (`threetears.evals.analysis.reads`) by its runs'
+matrices before any is read.
 
 ## Rationale
 
@@ -350,9 +387,9 @@ every guardrail is undecided.
 ### One question over aspects, and floors that warn
 
 **Problem.** A campaign held one template, so a decision that rested on several behaviours (a model change judged
-on routing, on replies and on cost) was several campaigns, each with its own question, rule and memo, and nothing
-read them together. Each campaign's decision rule settled `keep` or `switch` by itself and wrote the verdict line:
-a memo headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not separated (#845),
+on routing, on replies and on cost) was several campaigns, each with its own question, rule and analysis, and
+nothing read them together. Each campaign's decision rule settled `keep` or `switch` by itself and wrote the verdict
+line: an analysis headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not separated (#845),
 and at the few cases a campaign runs most rules read `unsettled` anyway.
 
 **Choice.** A campaign asks one question of its arms and measures it on aspects (campaign → aspect → run →
@@ -368,14 +405,14 @@ no recommendation), several with no control a **choice** (every pair read both w
 margin or a relative floor
 needs a control, so a campaign naming none is refused one and held to absolute bars. Each candidate's aspects are one
 Holm family, gains and drops apart, read on the same bounded interval a floor reads, so a one-aspect campaign's floor
-and reading cannot disagree; there is no correction across candidates, and the page says so. One memo is written
-over the whole campaign, its one recommendation answering every warning its arm raises with a why, and a person's
+and reading cannot disagree; there is no correction across candidates, and the page says so. One report is written
+over the whole campaign, its call weighed against every warning its arms raise, and a person's
 call (`campaign_record`) is recorded against code's readings, refused while it leaves a broken floor or missed bar of
 its arm unnamed.
 
 **Rejected.** A separate decision object beside the campaign (a second thing to keep in step with the first); a
 floor that blocks adoption (it would decide on evidence that at a few cases is mostly unclear, and hide the
-tradeoff the reader is there to weigh); one memo per aspect (the writer could not weigh one aspect against
+tradeoff the reader is there to weigh); one report per aspect (the writer could not weigh one aspect against
 another); one Holm family over every candidate (a candidate's evidence would weaken as unrelated arms joined);
 a call that may skip a warning (the override would leave no record of what it overrode).
 
@@ -399,7 +436,7 @@ Six steps, each fixing the last:
 6. A provider rationing a call (a 429 that is not a spent quota) was charged to the candidate, so the model
    the provider throttled first read as the worse one. One field now says whose failure a call was
    (`ProviderFailure.owner`: `account`, `provider` or `candidate`): a call the provider declined is excluded and
-   the run goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the
+   the run goes on, on every path the package runs (a quick run, a launched run, the judge kind), and only the
    account's refusal stops a run. Declined means a 429 that is not a spent quota, or the provider overloaded (529)
    or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. The package's client
    sends a declined call again before it is excluded (at most three attempts, waiting the provider's `retry-after`
@@ -442,50 +479,43 @@ production path, and a decision logged where nothing ingested it.
   but its coverage check was deleted, because rubric dimensions and goal checks mint measure names no
   registry enumerates, so the check called every honest name "uncovered".
 
-### The analysis: from gated prose to an evaluated document
+### The report: from gated prose to an analyst
 
-**Prose gates did not converge.** A deterministic gate checking the numbers in the
-[analysis](concepts.md#analysis)'s sentences grew to 4,099 lines in 33 days and was deleted, because every real
-generation found a claim shape it could not parse. The writer's prompt grew 12× in 23 days, mostly defence
-against past incidents, and a test asserting prompt text passed while the writer did what the text forbade.
+**Two writers came before the analyst, and both are retired** (2026-07 to 2026-10). The memo writer read one
+closed bundle in one call and wrote a summary, findings and a recommendation. A deterministic gate on the numbers in
+its sentences grew to 4,099 lines in 33 days and was deleted, because every real memo found a claim shape it could
+not parse; its prompt grew 12× in 23 days, mostly defence against past incidents. One of its headlines read a
+contrast that did not separate as "does not change"; another kept a model over a judge cut off on ten of twelve
+trials. So the census, the verdict and every count moved to code: that is still the code-only page's shape. The report
+planner that followed chose a page from a fixed vocabulary, after code classified the campaign into a shape and fixed
+its first chart, and each campaign nobody had anticipated needed a new shape, chart or rule, each a branch on what
+kind of eval it was.
 
-**Code renders the numbers.** The writer is asked to cite every figure as a reference,
-`{{c1|<measure>|<reading>|<stat>}}`, and code substitutes the value from the decision surface
-(`analysis/prose_refs.py`). A reference that does not resolve is refused, with one repair round naming
-what exists; the words around it are never read, so a figure typed into a sentence passes unchecked. The grammar
-is appended from the parser's constants, because a copy in a stored prompt went stale.
+**Code renders the numbers.** The analyst cites every figure by a key, and code substitutes the value from the
+frozen evidence. A key that does not resolve is refused, naming what exists. This one rule survived every writer,
+and in the report document it is complete: a digit typed outside a key is refused too.
 
-**Typed shape, freeform content** (2026-09-25). A strict schema derived from the stored analysis was
-refused by some providers as a grammar too large. The authored document (`kernel/authored.py`) types
-only its parts (findings, decisions, question answers, next steps), their order, links by position and
-the readings code fills, under a measured slot budget; everything said is prose. The evidence tier is read
-off the readings a finding names, never chosen by the writer.
+**An analyst with tools, over evidence that holds still** (2026-10-26). A report is now written as an expert writes
+one: the analyst investigates (where a call flips, where a loss sits, which options dominate, what the failures look
+like), outlines, drafts and checks its own page. The old rule that the writer reads a closed bundle and fetches
+nothing existed so that two writers could be compared on the same evidence; a frozen, content-addressed snapshot
+keeps that guarantee while allowing tools, because every tool is a function of the snapshot alone. Code verifies
+only what is mechanical (keys, blocks, caveat coverage, the confidence form, no internal ids, the appendix), and
+sends a failing draft back with remedies rather than repairing it. Judgment is reviewed, not checked: an editor in a
+fresh context reads the page as a reader would, scores a fixed rubric, and code adds the scores and decides the pass.
+"Bad judgment is fixed by improved prompts and/or oversight and calibration, not by code" (owner, 2026-10-24). The
+guidance lives in a skill of principles, story forms, chart and statistics notes and worked reasoning notes, rewritten
+from lookups into judgment, and the reasoning notes carry the most: a finished page shows what good looks like, a
+note shows how it was reached.
 
-**The writer is graded by its own eval.** The reporter is a candidate kind (`analysis/reporter_kind.py`):
-a case is a frozen campaign bundle, and the judge reads what the writer read and the memo as written. Code
-checks the structure of model output and never its prose; a judge never grades a fact code can check.
-
-**The first screen is code's, not the memo's** (2026-10). A headline said halving a token budget "does not change"
-latency, cost or delivery, over a contrast that did not separate at five cases; another memo headlined "keep the
-current model — adopted" over a run whose judge had been cut off at its output cap on ten of the challenger's twelve
-trials, while the word "truncated" appeared nowhere a reader would look. Most of what a reader needs is countable, so
-the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
-— is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
-pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
-first screen, the summary across the aspects, below every warning code raised; see below.) The null rule moved onto
-finding titles, where a phrase list once refused a title saying arms are alike over no established null. Code reads
-no prose now (owner, 2026-10-24: "Bad judgment is fixed by improved prompts and/or oversight and calibration, not by
-code"): the rule is the prompt's, and a host's reporter eval can measure it on the rubric dimensions it declares.
-
-**The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
-holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
-choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
-reference rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
-code's readings by aspect. The verdict, the readings and every number stay code's.
+**The writer is graded by its own eval.** The `report_writer` kind makes the writer a subject: a case is a frozen
+campaign, and its arms differ in the skill, the effort, the revisions or the model. Each candidate's report is judged
+against the control's on the same case, in both orders, on one ordinal criterion. The editor's thresholds stay
+starting points until stored reports scored against people's labels set them.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
-*Evidence:* analysis writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.
+*Evidence:* the memo writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.
 
 ## Prior art
 
@@ -500,7 +530,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Miller, "Adding Error Bars to Evals"](https://arxiv.org/abs/2411.00640) (2024) | Report the standard error, clustered when questions come in related groups (about 3× the naive value on one benchmark). Resample each question K times; compare models on paired differences; size an eval by power analysis. | Adapted | Repeats are averaged within a case; arms are tested paired on shared cases (Welch when they share fewer than two). Standard errors are Miller's cluster-robust form over cases on `n_cases − 1` df, and a rate's Wilson interval uses the effective sample size. A launch estimate sizes the eval by power: the smallest difference its paired test finds at 80%, from earlier runs' variance. |
 | [Anthropic, "A statistical approach to model evaluations"](https://www.anthropic.com/research/statistical-approach-to-model-evals) (2024-11) | The Miller paper's five recommendations for practitioners: a standard error with every score, clustered standard errors, resampling within questions, paired differences, power analysis. | Adapted | As in the Miller row, with t rather than the normal at small n. |
 | [Bowyer, Aitchison & Ivanova](https://arxiv.org/abs/2503.01747) (ICML 2025); [Brown, Cai & DasGupta](https://doi.org/10.1214/ss/1009213286) (2001) | Central-limit intervals undercover below a few hundred datapoints; use exact or Bayesian methods, and Wilson or Jeffreys intervals for proportions. | Adapted | Every 0/1 measure takes a Wilson interval, so 3 of 3 keeps a width. Means use t, clipped to the measure's scale. A gap with zero spread is read by the bounded test on the measure's declared range on every surface, and with no range is `not_separated`: the exact sign-flip test it once read tests symmetry, not the mean. |
-| [Holm](https://www.jstor.org/stable/4615733) (1979); [Benjamini & Hochberg](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) (1995) | Control error across a family of tests: the family-wise rate (Holm) or the false discovery rate (BH). | Adapted | Holm runs within each aspect's family where the campaign asks that aspect a question, whenever it was asked, or within one exploratory family otherwise, and a separation needs the adjusted p below α and its interval clear of zero. Across a campaign's aspects, Holm runs again per candidate, gains and drops apart, and over every pair × aspect for a choice; there is no correction across candidates. Only measures on a merit axis join a family (judge latency and judge-inclusive cost stay out), and each contrast's interval is Bonferroni-widened to 1 − α/m. There is no FDR across campaigns and no sequential testing. The run-history lens tests each adjacent pair of runs uncorrected. |
+| [Holm](https://www.jstor.org/stable/4615733) (1979); [Benjamini & Hochberg](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) (1995) | Control error across a family of tests: the family-wise rate (Holm) or the false discovery rate (BH). | Adapted | Holm runs within each aspect's family where the campaign asks that aspect a question, whenever it was asked, or within one exploratory family otherwise, and a separation needs the adjusted p below α and its interval clear of zero. Across a campaign's aspects, Holm runs again per candidate, gains and drops apart, and over every pair × aspect for a choice; there is no correction across candidates. Only measures on a merit axis join a family (judge latency and judge-inclusive cost stay out), and each contrast's interval is Bonferroni-widened to 1 − α/m. There is no FDR across campaigns. The one sequential reading is the report writer's pairwise preference, its bet fixed for N cases before the first so every prefix keeps α; the fixed-n readings beside it are read once, on every case the arms ran. The run-history lens tests each adjacent pair of runs uncorrected. |
 | [Lakens, equivalence testing (TOST)](https://doi.org/10.1177/1948550617697177) (2017) | Claim "no difference" only when the interval sits inside a declared equivalence margin. | Adapted | A comparison that misses significance reads `not_separated`, which claims no null. A campaign comparison reads `equivalent` only when a paired TOST against the measure's declared margin (`materiality_threshold`) passes after Holm correction; judged dimensions and unpaired tests run no equivalence test. The run-history read applies the same rule per step. The same threshold is the margin a bar's verdict allows. The history read covers engine-core measures, which declare no threshold and on which a host cannot declare one, so no history step reads `equivalent` yet. |
 | [Waudby-Smith & Ramdas, estimating means of bounded random variables by betting](https://doi.org/10.1093/jrsssb/qkad009) (JRSS-B 2024) | A test of a mean that holds its error rate for any distribution on a known range, at any sample size. | Adopted | Each one-sided test of the TOST on a measure with a declared range (the predictable plug-in bet, its stake capped at 0.9 of the most it could stake without ruin). A t-test on coarse scores claimed `equivalent` at up to fifteen times its rate where a regression broke a few cases outright. |
 | [Gelman & Stern](https://doi.org/10.1198/000313006X152649) (2006) | Test a difference directly. "A moved and B did not" is not evidence that A and B differ. | Adopted | Each contrast is tested against the control itself, and a scope divergence tests the whole's movement minus the part's; neither is inferred from two separate verdicts. |
@@ -521,7 +551,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Panickssery, Bowman & Feng](https://arxiv.org/abs/2404.13076) (2024) | LLM evaluators recognise and favour their own generations. | Adopted (disclosure) | When the default judge is one of the candidate models, a configured alternate judge substitutes. Without one, every surface that lists judges says so. |
 | [Husain, "Using LLM-as-a-Judge for Evaluation"](https://hamel.dev/blog/posts/llm-judge/) (2024) | Use binary pass/fail with a written critique. Validate the judge on a train/dev/test split of expert labels, and report true-positive and true-negative rates. | Adapted | `pass_fail` ships beside the 1–5 scale and every dimension states its scale; prefer it for new criteria. Agreement with people is Cohen's κ, not TPR/TNR, and labels are not split. |
 | [Husain & Shankar, evals FAQ](https://hamel.dev/blog/posts/evals-faq/) | Do error analysis first: open coding, then axial coding into a failure taxonomy, then about 100 traces to saturation. Generic metrics create false confidence. | Not built | No error-analysis workflow ships. The rubric proposer drafts criteria, and reviewing them against observed failures is left to the author. |
-| [Yan, "Evaluating the Effectiveness of LLM-Evaluators"](https://eugeneyan.com/writing/llm-evaluators/) (2024) | Use binary outputs where possible and pairwise comparison for subjective qualities. Measure agreement with κ, τ or ρ. | Adapted | κ is adopted. Pairwise judging is declined for now ([open problem](open-problems.md#pairwise-judging-declined-for-now)). |
+| [Yan, "Evaluating the Effectiveness of LLM-Evaluators"](https://eugeneyan.com/writing/llm-evaluators/) (2024) | Use binary outputs where possible and pairwise comparison for subjective qualities. Measure agreement with κ, τ or ρ. | Adapted | κ is adopted. Pairwise judging is adopted for the report writer only ([open problem](open-problems.md#pairwise-judging-adopted-for-the-report-writer-only-2026-11-03)). |
 | [Shankar et al., "Who Validates the Validators?"](https://arxiv.org/abs/2404.12272) (2024) | Criteria drift: grading outputs changes the criteria you grade them by. | Adapted | Judge configs are versioned and pinned to each run, and a changed prompt counts as a different judge. Re-scoring stored evidence measures self-agreement, and re-scoring it under a changed judge measures the drift (`judge_drift_check`, [step 9](judges-and-calibration.md#step-9-a-second-judge-for-agreement-between-judges-and-for-drift)). It runs when asked, not on every config change. |
 | [Dev et al., Judge Reliability Harness](https://arxiv.org/abs/2603.05399) (2026) | No judge is uniformly reliable across benchmarks. | Adopted | Reliability is measured per dimension, scale, served model, judge config, temperature and the request settings the judge was sent with, and never pooled. The claim, sometimes attributed to this paper, that ordinal scoring is more fragile than binary is not in its abstract. |
 | [Norman et al., "Reliability without Validity"](https://arxiv.org/abs/2606.19544) (2026); [Cohen, weighted κ](https://doi.org/10.1037/h0026256) (1968) | Exact-match agreement overstates reliability, so use a chance-corrected statistic. High test–retest reliability can coexist with severe bias. | Adopted | Both judge measurements use κ, quadratic-weighted on 1–5. The self-agreement tier is named as precision, never accuracy ([evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). |
@@ -566,7 +596,7 @@ Most of what follows is established practice; what the engine adds is narrower
 | [Mitchell et al., Model Cards](https://arxiv.org/abs/1810.03993) (2019) | Use fixed sections that end in caveats, and report results disaggregated by subgroup. | Adapted | A caveat attaches to the finding it qualifies, not to a closing section. [Strata](reading-reports.md#results-by-kind-of-case-strata) give the disaggregation. |
 | [HELM, Liang et al.](https://arxiv.org/abs/2211.09110) (2022) | Never report a single number: measure many metrics, expose trade-offs, and name what is not covered. | Adopted | Reports give a frontier and bars, never an unqualified winner, and disclosures name what was not measured. |
 | [van der Bles et al.](https://doi.org/10.1098/rsos.181870) (2019) | Keep direct uncertainty (the range) apart from indirect uncertainty (the quality of the evidence). | Adopted | Intervals and [evidence tiers](concepts.md#evidence-tier) render as separate axes. |
-| [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. Confidence is a closed tier, so no field can carry a probability a model made up; nothing calibrates one. |
+| [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. A report's confidence is one of three closed forms, conditional on its open caveats, so no field can carry a probability a model made up; nothing calibrates one. |
 | [Frans et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC10623599/) (2023) | Quantile dot plots were read more accurately than error bars, with no clear effect on decision quality. | Not adopted | An interval is drawn as a small glyph in the table row that states its figure, so rows compare at a glance, with every value also written as text. Quantile dot plots are not built. |
 | [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Intervals are computed over cases, never repeats; each column's header states its level (`Interval (99%)`), and intervals are clipped to the measure's scale. |
 | [GRADE](https://book.gradepro.org/guideline/overview-of-the-grade-approach) | Rate certainty high, moderate, low or very low, downgrading for bias, imprecision and inconsistency. | Adapted | Evidence tiers are GRADE-like, but they grade the judge (`calibrated`, `separation`, `incidental`, `undetermined`), and code assigns them. |
@@ -588,8 +618,9 @@ The principle behind each is in [principles](#principles).
 - **The denominator is part of the number:** a run short of its promised trials says so on every surface.
 - **Evidence tiers instead of "calibrate first":** every judged reading carries the tier its judge's measured
   agreement reached, so judged scores stay usable while their standing stays visible.
-- **Code renders every number in a written analysis, and an eval grades its prose**
-  ([reading reports](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
+- **A model writes the report, and code renders every number in it:** an analyst investigates frozen evidence
+  with tools, code verifies the draft mechanically, and an editor reviews it before it is stored
+  ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 - **"Best" is never unqualified:** a quality–cost–latency frontier plus bars (satisficing thresholds); the
   cheapest contestant above the bar is named only when a test shows it cheaper than each other one, otherwise
   the set the data cannot order (`cost_decision`, `tied_with`).

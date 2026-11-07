@@ -1,0 +1,118 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline gives the trade: Atlas-M at $31.37 against Atlas-L's $75.05 per 1k, trailing most in troubleshooting, with the cheap models below Atlas-M and Open-70B's persona exception. the_trade and our_lean give the lean (Atlas-M, labelled as a lean) and why (not separated from Atlas-L on any judged behaviour, far cheaper). They also give the condition it holds on (accepting the troubleshooting and research gaps). what_settles_it names the missing floors and price per point. c1 adds where Atlas-L's lead is clear. A reader can say what to lean toward, why, and the main risk."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "Round 1's contradictions are gone. c2 now carries the breadth of the cheap models' losses with no 'harm' framing. Brisk-S is below Atlas-M's interval on 7 of 9 behaviours, widest on declines (81% against 98%). Open-70B is below on 5 of 9, widest on confirms (81% against 98%). c3 carries the persona exception the headline names, and the routed-mix next step and the watch slot follow from it. One wording slip remains: omitted[1] says Open-70B is not separated on 'the troubleshooting behaviours', but confirms is scored in troubleshooting and is c2's headline gap for Open-70B."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Atlas-M's weak axis is now named in c1 (88 against 93 in troubleshooting) and in our_lean's condition. But the_trade and c1 restrict Atlas-L's lead to troubleshooting and research ('clearly so only'), using interval overlap. Overlap of two own 95% intervals is a conservative test. The snapshot's half-widths (1.1 billing, 1.5 persona) put the billing gap (94 against 92) at z about 2.5 and the persona gap (91 against 88) at z about 2.8 on a two-sample reading, assuming independence. So Atlas-M's deficit likely spans four of five tasks, billing included, the largest task (400 of 1190 cases). Only speculation bait (90 against 89, z about 0.8) is plausibly level. The unpaired_intervals caveat gestures at this, but its wording has the direction backward: it calls the research gap one that 'barely clears' (90.6 against 90.4), yet clearing is the robust case. The overlapping gaps are the ones understated."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "Most omissions hold: the dominance call is handled in the flag, latency decides nothing (worst p95 4.86 s against a 9 s bar), the cost order is the same in every task, and price_tradeoff returns no_gain_figure for every arm. The per-task-cost omission does not hold. Its reason is that 'the model-level costs carry the trade'. Yet where_it_flips says the Atlas-M against Atlas-L call turns on whether the troubleshooting and research gaps are worth the cost gap, and the page says quality exists per task only. The figures that call needs are Atlas-L $140 against Atlas-M $59 for 93 against 88 in troubleshooting, and $95 against $40 for 92 against 89 in research. They sit only in the scatter's table. Also never named: a routed option with Atlas-L on troubleshooting (and research) and Atlas-M elsewhere. That is the direct answer to the lean's stated weakness, and it could change a reader's decision."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "The four caveats (judge_not_stated, unpaired_intervals, no_traffic_mix, overall_scale_not_stated) each carry a material_if that names the claims it touches, and the form is high_if_immaterial. Method and the watch slot carry scoring each behaviour in one task only: confirms holds figures for troubleshooting only, declines for speculation bait only (measure_read confirms). Next steps 2 and 5 turn the judge and the confirms-on-billing gaps into experiments. The traffic-mix caveat is partly discharged by fact: the cost order L > M > O > B holds in all five tasks."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five name a declaration (floors, then a price per point plus a traffic mix plus a volume) or an experiment (judge calibration, a measured persona-routed mix that scores declines inside the small-talk traffic, confirms on billing), and each says what it settles. The routed-mix step now targets persona, where Open-70B holds level (90 against 88 overall, 97% against 95% character, $6.40 against $17.00), not billing. Missing: a routed or measured option for the Atlas-L troubleshooting seam (see item 4)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "c1's log-cost scatter, one panel per task, plus the overall dot_interval is the right pair for a per-task cost/quality trade. The snapshot holds overall half-widths, so the intervals resolve. c2's two dot_interval blocks show exactly the separations the prose counts, and c3's persona-only block shows the overlap it claims. The counterfactual holds: if Open-70B's persona overall interval fell below Atlas-M's 86.5, c3 would have to change. c4's range_bars still do not draw the 9 s bar. The caption admits this and c4 is a detail claim, so it costs nothing here."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "decision.the_trade",
+      "severity": "should_fix",
+      "finding": "'Leads on overall quality, clearly so only in troubleshooting and research questions' (also c1 and explore[0]) understates the recommended option's weak axis. Overlap of each model's own 95% interval is a conservative test. With the snapshot's own half-widths and independence assumed, Atlas-L's lead over Atlas-M is z about 2.5 in billing (94 against 92) and z about 2.8 in persona (91 against 88), against 4.3 in troubleshooting and 3.0 in research. Only speculation bait (z about 0.8) looks level. Say that the billing and persona gaps may be real on a difference test, and scope our_lean's condition to them. Also fix unpaired_intervals' material_if: the gaps it may understate are the overlapping and touching ones (billing, persona), not the barely-clearing research gap (90.6 against 90.4), which is the robust case."
+    },
+    {
+      "claim": "decision.where_it_flips",
+      "severity": "should_fix",
+      "finding": "'No price per point can be computed, because quality is stated per task only' is true only at model level. Per task, cost and quality sit side by side. In troubleshooting Atlas-L is $140 against $59 for 93 against 88, and in research $95 against $40 for 92 against 89. These are exactly the gaps this slot says the call turns on. Cite them through their task keys, so the reader can price the two gaps against the per-task cost gap. Then drop or rewrite the omitted entry 'per-task cost figures beyond persona small talk', whose reason ('the model-level costs carry the trade') contradicts this slot."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Atlas-L's clear lead is concentrated in troubleshooting and research, the two costliest tasks, so the obvious routed option is Atlas-L there and Atlas-M elsewhere. explore, omitted and next never name it, though they name the persona routing for Open-70B. price_tradeoff does not price hybrids, but it points to a routed-mix pick on gate_matrix and to modeled descriptions from measure_breakdown. Name the seam, labelled modeled, not measured, or add it to the routed-mix next step."
+    },
+    {
+      "claim": "omitted",
+      "severity": "should_fix",
+      "finding": "'Open-70B on the troubleshooting behaviours' is listed as not separated from Atlas-M. But confirms is scored in troubleshooting, and it is c2's widest Open-70B gap (81%, 75.3% to 86.7%, against 98%). Write 'the other troubleshooting behaviours'. Note too that Open-70B's resolves gap (82% against 90%, overlapping by 2 points) is z about 2.2 on a two-sample reading. It does not rescue Open-70B, so the omission stands, but 'not separated' there leans on the conservative overlap test."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "Carried from round 1: the latency block still does not draw the 9 s bar the sentence measures against. The caption now says so, and with a worst p95 of 4.86 s nothing turns on it. Draw the reference if the block kind allows one (the query carries reference: none)."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 3: caveats_list and campaign_overview still hold no caveats. The four confidence caveats are the page's own, so the store must accept caveat ids the snapshot does not hold, or code cannot match them.",
+    "Invariant 5: the caveat ids (judge_not_stated, unpaired_intervals, no_traffic_mix, overall_scale_not_stated) are internal-looking. Confirm that the page renders only each one's material_if text above the appendix.",
+    "Invariant 1 (unit wording): the figure_keys.cost page and price_tradeoff's note describe cost_per_1k as 'per 1,000 replies'. The snapshot's measure name and the page say 'per 1k conversations', and troubleshooting is multi-turn, so a reply and a conversation are not the same unit. The prose writes 'per thousand conversations' after the key. That is consistent with the measure's name, but the key grammar disagrees, and if the key ever prints its own unit the sentence would double it."
+  ],
+  "resolutions": [
+    {
+      "finding": "c2: 'cheap models lose most on the two behaviours where a wrong reply does harm' overstates the data, and no declaration marks those two as harm behaviours.",
+      "status": "resolved",
+      "evidence": "The harm framing is gone from the headline and c2. c2 now says each cheap model's widest gap: Brisk-S on declines (81% against 98%), Open-70B on confirms (81% against 98%). Method says 'No behaviour was declared a guardrail; the page names declining to speculate and confirming account changes because each is a cheap model's widest gap.' Both match the block values."
+    },
+    {
+      "finding": "c3: the cheap models are separated on far more behaviours than c3 named; make c2 and c3 tell one story.",
+      "status": "resolved",
+      "evidence": "c2 now covers the breadth ('Brisk-S sits below Atlas-M's interval on most judged behaviours'; Open-70B 'on declining to speculate, on every research behaviour and widest on confirming'), with a second dot_interval block over the other seven behaviours. I checked: Brisk-S is separated on 7 of 9 and Open-70B on 5 of 9. The omitted entry names exactly the non-separated ones (Brisk-S steps and cites). c3 is now the persona claim."
+    },
+    {
+      "finding": "c1: 'Atlas-L scores highest in every task' rests on means with no interval; hedge it and name Atlas-M's largest gap (5 points in troubleshooting).",
+      "status": "resolved",
+      "evidence": "c1 now says Atlas-L 'clears the next model's interval only in troubleshooting and research questions' and names Atlas-M's widest gap via task.trouble keys (88 against 93). The snapshot does hold overall half-widths (measure_read overall by task, half_width: 1.1 billing, 1.6 troubleshooting), so round 1's 'no interval' premise was wrong, and the dot_interval block resolves. A new and narrower honest-emphasis issue in the opposite direction is raised above."
+    },
+    {
+      "finding": "report: persona small talk is missing from the story; the routed-mix example and next step point at billing.",
+      "status": "resolved",
+      "evidence": "The headline names it ('Open-70B holds level in persona small talk'). c3 carries it with a persona-only block: overall 90 against 88 and 91, character 97% against 95%, cost $6.40 against $17.00. next[3] routes persona to Open-70B and scores declines inside that traffic, and the watch slot names the speculation risk in small talk."
+    },
+    {
+      "finding": "report: the model-level costs ($31.37, $75.05) are blends over an unstated task mix; say so in Method.",
+      "status": "resolved",
+      "evidence": "Method/Cost now says: 'The model-level cost is the input's own figure over the test cases; the input does not say how it weights the tasks, and it is not a production forecast.' I checked: $31.37 matches neither the case-weighted mean of Atlas-M's per-task costs (about $30.6) nor the simple mean (about $31.8), so the wording is correct."
+    },
+    {
+      "finding": "decision.watch: 'where account changes are most common' asserts a traffic fact the snapshot lacks.",
+      "status": "resolved",
+      "evidence": "The watch slot now reads 'billing & account questions, where account changes are expected'. That states an expectation, not a measured frequency. next[4] turns it into an experiment."
+    },
+    {
+      "finding": "c4: the latency block does not draw the 9 s bar the claim is measured against.",
+      "status": "partially resolved",
+      "evidence": "The caption now says 'The declared bar is stated in the sentence; this block cannot draw it', and c4 is weighted detail, with every p95 at most 4.86 s against 9 s. The block still shows no reference (query reference: none). Carried as a should_fix."
+    }
+  ],
+  "calls": 19
+}

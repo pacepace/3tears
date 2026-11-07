@@ -1,0 +1,696 @@
+{
+ "n": 1200,
+ "optimal_calls": 1.38,
+ "models": [
+  {
+   "id": "atlas-m",
+   "name": "Atlas-M"
+  },
+  {
+   "id": "brisk-s",
+   "name": "Brisk-S"
+  },
+  {
+   "id": "nano-xs",
+   "name": "Nano-XS"
+  }
+ ],
+ "budgets": [
+  {
+   "id": "off",
+   "name": "Off"
+  },
+  {
+   "id": "low",
+   "name": "Low"
+  },
+  {
+   "id": "high",
+   "name": "High"
+  }
+ ],
+ "task_types": [
+  {
+   "id": "single",
+   "name": "Single lookup",
+   "share": 0.4
+  },
+  {
+   "id": "multihop",
+   "name": "Multi-hop (2 to 3 calls)",
+   "share": 0.25
+  },
+  {
+   "id": "datemath",
+   "name": "Date and unit math",
+   "share": 0.2
+  },
+  {
+   "id": "disamb",
+   "name": "Ambiguous entity",
+   "share": 0.15
+  }
+ ],
+ "criteria": {
+  "pass_rate": 97.0,
+  "p95": 600
+ },
+ "configs": [
+  {
+   "id": "atlas-m.off.r0",
+   "model": "atlas-m",
+   "budget": "off",
+   "retry": 0,
+   "pass_rate": 94.0,
+   "calls": 1.539,
+   "cost": 1.0,
+   "p50": 405.0,
+   "p95": 900.0,
+   "outcomes": {
+    "pass_clean": 81.97,
+    "pass_extra": 12.03,
+    "pass_retry": 0.0,
+    "wrong_args": 2.52,
+    "missing_call": 1.02,
+    "wrong_tool": 0.6,
+    "malformed": 1.56,
+    "timeout": 0.3
+   },
+   "by_type": {
+    "single": 97.2,
+    "multihop": 90.2,
+    "datemath": 93.7,
+    "disamb": 92.2
+   },
+   "excess_dist": [
+    87.2,
+    9.2,
+    2.6,
+    1.0
+   ]
+  },
+  {
+   "id": "atlas-m.off.r1",
+   "model": "atlas-m",
+   "budget": "off",
+   "retry": 1,
+   "pass_rate": 96.37,
+   "calls": 1.599,
+   "cost": 1.06,
+   "p50": 405.0,
+   "p95": 1019.0,
+   "outcomes": {
+    "pass_clean": 81.97,
+    "pass_extra": 12.03,
+    "pass_retry": 2.37,
+    "wrong_args": 1.76,
+    "missing_call": 0.77,
+    "wrong_tool": 0.48,
+    "malformed": 0.47,
+    "timeout": 0.15
+   },
+   "by_type": {
+    "single": 98.3,
+    "multihop": 94.1,
+    "datemath": 96.2,
+    "disamb": 95.3
+   },
+   "excess_dist": [
+    87.2,
+    9.2,
+    2.6,
+    1.0
+   ]
+  },
+  {
+   "id": "atlas-m.low.r0",
+   "model": "atlas-m",
+   "budget": "low",
+   "retry": 0,
+   "pass_rate": 96.57,
+   "calls": 1.469,
+   "cost": 1.6,
+   "p50": 628.0,
+   "p95": 1395.0,
+   "outcomes": {
+    "pass_clean": 89.62,
+    "pass_extra": 6.95,
+    "pass_retry": 0.0,
+    "wrong_args": 1.44,
+    "missing_call": 0.58,
+    "wrong_tool": 0.34,
+    "malformed": 0.89,
+    "timeout": 0.17
+   },
+   "by_type": {
+    "single": 98.6,
+    "multihop": 94.1,
+    "datemath": 96.4,
+    "disamb": 95.4
+   },
+   "excess_dist": [
+    92.8,
+    5.2,
+    1.4,
+    0.6
+   ]
+  },
+  {
+   "id": "atlas-m.low.r1",
+   "model": "atlas-m",
+   "budget": "low",
+   "retry": 1,
+   "pass_rate": 97.93,
+   "calls": 1.504,
+   "cost": 1.655,
+   "p50": 628.0,
+   "p95": 1500.0,
+   "outcomes": {
+    "pass_clean": 89.62,
+    "pass_extra": 6.95,
+    "pass_retry": 1.36,
+    "wrong_args": 1.01,
+    "missing_call": 0.44,
+    "wrong_tool": 0.27,
+    "malformed": 0.27,
+    "timeout": 0.09
+   },
+   "by_type": {
+    "single": 99.2,
+    "multihop": 96.4,
+    "datemath": 97.8,
+    "disamb": 97.2
+   },
+   "excess_dist": [
+    92.8,
+    5.2,
+    1.4,
+    0.6
+   ]
+  },
+  {
+   "id": "atlas-m.high.r0",
+   "model": "atlas-m",
+   "budget": "high",
+   "retry": 0,
+   "pass_rate": 97.74,
+   "calls": 1.43,
+   "cost": 3.4,
+   "p50": 1094.0,
+   "p95": 2430.0,
+   "outcomes": {
+    "pass_clean": 93.83,
+    "pass_extra": 3.91,
+    "pass_retry": 0.0,
+    "wrong_args": 0.95,
+    "missing_call": 0.38,
+    "wrong_tool": 0.23,
+    "malformed": 0.59,
+    "timeout": 0.11
+   },
+   "by_type": {
+    "single": 98.7,
+    "multihop": 96.6,
+    "datemath": 97.7,
+    "disamb": 97.2
+   },
+   "excess_dist": [
+    96.0,
+    2.9,
+    0.8,
+    0.3
+   ]
+  },
+  {
+   "id": "atlas-m.high.r1",
+   "model": "atlas-m",
+   "budget": "high",
+   "retry": 1,
+   "pass_rate": 98.63,
+   "calls": 1.452,
+   "cost": 3.477,
+   "p50": 1094.0,
+   "p95": 2551.0,
+   "outcomes": {
+    "pass_clean": 93.83,
+    "pass_extra": 3.91,
+    "pass_retry": 0.89,
+    "wrong_args": 0.66,
+    "missing_call": 0.29,
+    "wrong_tool": 0.18,
+    "malformed": 0.18,
+    "timeout": 0.06
+   },
+   "by_type": {
+    "single": 99.2,
+    "multihop": 97.9,
+    "datemath": 98.6,
+    "disamb": 98.3
+   },
+   "excess_dist": [
+    96.0,
+    2.9,
+    0.8,
+    0.3
+   ]
+  },
+  {
+   "id": "brisk-s.off.r0",
+   "model": "brisk-s",
+   "budget": "off",
+   "retry": 0,
+   "pass_rate": 91.1,
+   "calls": 1.579,
+   "cost": 0.18,
+   "p50": 135.0,
+   "p95": 300.0,
+   "outcomes": {
+    "pass_clean": 76.52,
+    "pass_extra": 14.58,
+    "pass_retry": 0.0,
+    "wrong_args": 3.74,
+    "missing_call": 1.51,
+    "wrong_tool": 0.89,
+    "malformed": 2.31,
+    "timeout": 0.44
+   },
+   "by_type": {
+    "single": 94.3,
+    "multihop": 87.3,
+    "datemath": 90.8,
+    "disamb": 89.3
+   },
+   "excess_dist": [
+    84.0,
+    11.5,
+    3.2,
+    1.3
+   ]
+  },
+  {
+   "id": "brisk-s.off.r1",
+   "model": "brisk-s",
+   "budget": "off",
+   "retry": 1,
+   "pass_rate": 94.62,
+   "calls": 1.668,
+   "cost": 0.196,
+   "p50": 135.0,
+   "p95": 359.0,
+   "outcomes": {
+    "pass_clean": 76.52,
+    "pass_extra": 14.58,
+    "pass_retry": 3.52,
+    "wrong_args": 2.62,
+    "missing_call": 1.13,
+    "wrong_tool": 0.71,
+    "malformed": 0.69,
+    "timeout": 0.22
+   },
+   "by_type": {
+    "single": 96.6,
+    "multihop": 92.3,
+    "datemath": 94.4,
+    "disamb": 93.5
+   },
+   "excess_dist": [
+    84.0,
+    11.5,
+    3.2,
+    1.3
+   ]
+  },
+  {
+   "id": "brisk-s.low.r0",
+   "model": "brisk-s",
+   "budget": "low",
+   "retry": 0,
+   "pass_rate": 95.27,
+   "calls": 1.492,
+   "cost": 0.288,
+   "p50": 209.0,
+   "p95": 465.0,
+   "outcomes": {
+    "pass_clean": 86.7,
+    "pass_extra": 8.57,
+    "pass_retry": 0.0,
+    "wrong_args": 1.99,
+    "missing_call": 0.8,
+    "wrong_tool": 0.47,
+    "malformed": 1.23,
+    "timeout": 0.24
+   },
+   "by_type": {
+    "single": 97.4,
+    "multihop": 92.8,
+    "datemath": 95.1,
+    "disamb": 94.1
+   },
+   "excess_dist": [
+    91.0,
+    6.5,
+    1.8,
+    0.7
+   ]
+  },
+  {
+   "id": "brisk-s.low.r1",
+   "model": "brisk-s",
+   "budget": "low",
+   "retry": 1,
+   "pass_rate": 97.14,
+   "calls": 1.539,
+   "cost": 0.302,
+   "p50": 209.0,
+   "p95": 513.0,
+   "outcomes": {
+    "pass_clean": 86.7,
+    "pass_extra": 8.57,
+    "pass_retry": 1.87,
+    "wrong_args": 1.39,
+    "missing_call": 0.6,
+    "wrong_tool": 0.38,
+    "malformed": 0.37,
+    "timeout": 0.12
+   },
+   "by_type": {
+    "single": 98.4,
+    "multihop": 95.6,
+    "datemath": 97.0,
+    "disamb": 96.4
+   },
+   "excess_dist": [
+    91.0,
+    6.5,
+    1.8,
+    0.7
+   ]
+  },
+  {
+   "id": "brisk-s.high.r0",
+   "model": "brisk-s",
+   "budget": "high",
+   "retry": 0,
+   "pass_rate": 96.64,
+   "calls": 1.442,
+   "cost": 0.612,
+   "p50": 364.0,
+   "p95": 810.0,
+   "outcomes": {
+    "pass_clean": 91.81,
+    "pass_extra": 4.83,
+    "pass_retry": 0.0,
+    "wrong_args": 1.41,
+    "missing_call": 0.57,
+    "wrong_tool": 0.34,
+    "malformed": 0.87,
+    "timeout": 0.17
+   },
+   "by_type": {
+    "single": 97.6,
+    "multihop": 95.5,
+    "datemath": 96.6,
+    "disamb": 96.1
+   },
+   "excess_dist": [
+    95.0,
+    3.6,
+    1.0,
+    0.4
+   ]
+  },
+  {
+   "id": "brisk-s.high.r1",
+   "model": "brisk-s",
+   "budget": "high",
+   "retry": 1,
+   "pass_rate": 97.97,
+   "calls": 1.476,
+   "cost": 0.633,
+   "p50": 364.0,
+   "p95": 870.0,
+   "outcomes": {
+    "pass_clean": 91.81,
+    "pass_extra": 4.83,
+    "pass_retry": 1.33,
+    "wrong_args": 0.99,
+    "missing_call": 0.43,
+    "wrong_tool": 0.27,
+    "malformed": 0.26,
+    "timeout": 0.08
+   },
+   "by_type": {
+    "single": 98.5,
+    "multihop": 97.3,
+    "datemath": 97.9,
+    "disamb": 97.6
+   },
+   "excess_dist": [
+    95.0,
+    3.6,
+    1.0,
+    0.4
+   ]
+  },
+  {
+   "id": "nano-xs.off.r0",
+   "model": "nano-xs",
+   "budget": "off",
+   "retry": 0,
+   "pass_rate": 81.04,
+   "calls": 1.698,
+   "cost": 0.03,
+   "p50": 63.0,
+   "p95": 140.0,
+   "outcomes": {
+    "pass_clean": 60.29,
+    "pass_extra": 20.75,
+    "pass_retry": 0.0,
+    "wrong_args": 7.96,
+    "missing_call": 3.22,
+    "wrong_tool": 1.9,
+    "malformed": 4.93,
+    "timeout": 0.95
+   },
+   "by_type": {
+    "single": 86.8,
+    "multihop": 74.2,
+    "datemath": 80.5,
+    "disamb": 77.8
+   },
+   "excess_dist": [
+    74.4,
+    18.4,
+    5.1,
+    2.0
+   ]
+  },
+  {
+   "id": "nano-xs.off.r1",
+   "model": "nano-xs",
+   "budget": "off",
+   "retry": 1,
+   "pass_rate": 88.54,
+   "calls": 1.888,
+   "cost": 0.036,
+   "p50": 63.0,
+   "p95": 198.0,
+   "outcomes": {
+    "pass_clean": 60.29,
+    "pass_extra": 20.75,
+    "pass_retry": 7.5,
+    "wrong_args": 5.57,
+    "missing_call": 2.42,
+    "wrong_tool": 1.52,
+    "malformed": 1.48,
+    "timeout": 0.47
+   },
+   "by_type": {
+    "single": 92.0,
+    "multihop": 84.4,
+    "datemath": 88.2,
+    "disamb": 86.6
+   },
+   "excess_dist": [
+    74.4,
+    18.4,
+    5.1,
+    2.0
+   ]
+  },
+  {
+   "id": "nano-xs.low.r0",
+   "model": "nano-xs",
+   "budget": "low",
+   "retry": 0,
+   "pass_rate": 87.92,
+   "calls": 1.559,
+   "cost": 0.048,
+   "p50": 98.0,
+   "p95": 217.0,
+   "outcomes": {
+    "pass_clean": 75.26,
+    "pass_extra": 12.66,
+    "pass_retry": 0.0,
+    "wrong_args": 5.07,
+    "missing_call": 2.05,
+    "wrong_tool": 1.21,
+    "malformed": 3.14,
+    "timeout": 0.6
+   },
+   "by_type": {
+    "single": 91.7,
+    "multihop": 83.5,
+    "datemath": 87.6,
+    "disamb": 85.8
+   },
+   "excess_dist": [
+    85.6,
+    10.4,
+    2.9,
+    1.2
+   ]
+  },
+  {
+   "id": "nano-xs.low.r1",
+   "model": "nano-xs",
+   "budget": "low",
+   "retry": 1,
+   "pass_rate": 92.7,
+   "calls": 1.68,
+   "cost": 0.054,
+   "p50": 98.0,
+   "p95": 275.0,
+   "outcomes": {
+    "pass_clean": 75.26,
+    "pass_extra": 12.66,
+    "pass_retry": 4.78,
+    "wrong_args": 3.55,
+    "missing_call": 1.54,
+    "wrong_tool": 0.97,
+    "malformed": 0.94,
+    "timeout": 0.3
+   },
+   "by_type": {
+    "single": 95.0,
+    "multihop": 90.0,
+    "datemath": 92.5,
+    "disamb": 91.4
+   },
+   "excess_dist": [
+    85.6,
+    10.4,
+    2.9,
+    1.2
+   ]
+  },
+  {
+   "id": "nano-xs.high.r0",
+   "model": "nano-xs",
+   "budget": "high",
+   "retry": 0,
+   "pass_rate": 91.31,
+   "calls": 1.479,
+   "cost": 0.102,
+   "p50": 170.0,
+   "p95": 378.0,
+   "outcomes": {
+    "pass_clean": 84.01,
+    "pass_extra": 7.3,
+    "pass_retry": 0.0,
+    "wrong_args": 3.65,
+    "missing_call": 1.48,
+    "wrong_tool": 0.87,
+    "malformed": 2.26,
+    "timeout": 0.43
+   },
+   "by_type": {
+    "single": 93.0,
+    "multihop": 89.3,
+    "datemath": 91.1,
+    "disamb": 90.3
+   },
+   "excess_dist": [
+    92.0,
+    5.8,
+    1.6,
+    0.6
+   ]
+  },
+  {
+   "id": "nano-xs.high.r1",
+   "model": "nano-xs",
+   "budget": "high",
+   "retry": 1,
+   "pass_rate": 94.75,
+   "calls": 1.566,
+   "cost": 0.111,
+   "p50": 170.0,
+   "p95": 450.0,
+   "outcomes": {
+    "pass_clean": 84.01,
+    "pass_extra": 7.3,
+    "pass_retry": 3.44,
+    "wrong_args": 2.55,
+    "missing_call": 1.11,
+    "wrong_tool": 0.7,
+    "malformed": 0.68,
+    "timeout": 0.22
+   },
+   "by_type": {
+    "single": 95.8,
+    "multihop": 93.5,
+    "datemath": 94.7,
+    "disamb": 94.2
+   },
+   "excess_dist": [
+    92.0,
+    5.8,
+    1.6,
+    0.6
+   ]
+  }
+ ],
+ "examples": [
+  {
+   "id": "TQ-0418",
+   "type": "multihop",
+   "config": "brisk-s.low.r1",
+   "outcome": "missing_call",
+   "q": "Who chaired the committee that approved the 2019 grid budget?",
+   "expected": "search(committee, grid budget 2019) \u2192 lookup(chair)",
+   "got": "search(grid budget 2019 chair)",
+   "note": "Collapsed two hops into one query; returned the budget author, not the chair."
+  },
+  {
+   "id": "TQ-0772",
+   "type": "datemath",
+   "config": "brisk-s.low.r1",
+   "outcome": "wrong_args",
+   "q": "Filings in the 90 days before the March 3 hearing",
+   "expected": "date_from=2026-12-03, date_to=2027-03-03",
+   "got": "date_from=2026-12-04, date_to=2027-03-03",
+   "note": "Off-by-one on the window start. The most common wrong-args pattern (9 of 17)."
+  },
+  {
+   "id": "TQ-1103",
+   "type": "disamb",
+   "config": "brisk-s.low.r1",
+   "outcome": "wrong_tool",
+   "q": "Latest on Mercury's pricing",
+   "expected": "ask_clarify(company or planet?)",
+   "got": "search(Mercury pricing)",
+   "note": "Picked the company without asking. Scored wrong because the gold answer requires clarification."
+  },
+  {
+   "id": "TQ-0051",
+   "type": "single",
+   "config": "nano-xs.low.r1",
+   "outcome": "malformed",
+   "q": "Population of Bozeman",
+   "expected": "{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"}",
+   "got": "{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"",
+   "note": "Truncated JSON. Retry recovers 70% of these."
+  }
+ ]
+}

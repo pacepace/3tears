@@ -1,0 +1,85 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline names the action (ship Brisk-S few-shot), the reason (the only one of nine configurations through all three gates) and the cost ($1,200 a month). The decision block's watch slot gives the main risks: overall balanced accuracy 0.7 points above the line, p95 66 ms under budget with no spread, and complex news 2.9 points above the floor. c1's gate matrix confirms the call cell by cell, and options_dominance agrees (one survivor)."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (one survivor) leads to c2 (its thinnest margin), then c3 and c4 (the near-miss alternative and what it would save), and the next steps follow from those. Nothing contradicts the headline. c5's misstatement is a detail claim that sits off the decision path; it is scored under item 7."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The pick's weak axes are all visible. The alternative is framed more strongly than the data allows. The lede says Nano-XS few-shot 'misses only the complex-news floor, so a fix that lifts that one cell would change the answer', and the decision 'next' slot says 'a pass there would replace the pick'. But Nano-XS clears the overall line by only 0.1 points (90.1%). settle_cases puts that clearance inside noise: a fresh run of today's size reads it on the wrong side 23.1% of the time, and settling it two-sided at 80% needs about 700,000 turns against today's 48,210. The page never says this. c5 also overstates few-shot as 'the lever that moves accuracy most' (see item 7)."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Each omitted item checks out and none would change the call. Traffic-weighted accuracy and macro F1 rank all nine configurations exactly as balanced accuracy does. The macro F1 note (pick at 89.6%, under 90) is disclosed. The Atlas-M zero-shot near miss (89.8%) also fails p95 at 420 ms. The other seven configurations are already out on the gate matrix. Nano-XS's 0.1-point overall margin is printed in c2's block, so it is not hidden; it is under-weighted, which item 3 covers."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All four snapshot caveats are shown with material_if clauses: no_control, best_of_n, point_estimate:overall and point_estimate:p95. Each is carried into a next step: re-run on fresh turns, and measure p95 under production serving with its spread. The settle figure in the overall caveat (13,512 turns needed, 48,210 run) checks out, and wrong_side for the pick is about 0. Method flags the unresolved definition of 'correct' (whether complexity and domain must both match)."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 1,
+      "reason": "Each of the four steps names an experiment and what it settles. The lead step overclaims, though. 'Aim Nano-XS's few-shot examples at complex news and re-test that cell' cannot settle 'whether [it] clears every gate'. A prompt change moves every cell and the overall figure, and Nano-XS's overall clearance (0.1 points) is itself unsettled at today's size. The step also has no guard against tuning the examples on the same complex-news turns it is then scored on. The cascade, p95 and fresh-run steps are sound."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's gate matrix, c3's heatmap with intervals and c4's cost bars fit their claims. c5's claim is false against its own table and the lever figures. The text says few-shot is 'the lever that moves accuracy most'. But on Brisk-S, rubric + reasoning gains more over zero-shot (+5.5, interval +5.1 to +5.9) than few-shot does (+4.7); on Atlas-M, rubric gains +3.4 against few-shot's +2.3; and the model lever moves accuracy -11.6 (Atlas-M to Nano-XS, zero-shot). c5's own caption concedes rubric loses only on Nano-XS. c6 prints the domain panel under Simple/Medium/Complex column headers and relies on the caption to say they are Science/Conversational/News. It also shows the pick's confusion, while the cascade step it informs depends on Nano-XS reading complexity and domain."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "Nano-XS few-shot's overall clearance is 0.1 points (90.1% against 90%) and unsettled: wrong_side 23.1%, and about 700,000 turns needed for a two-sided settle at 80% against 48,210 run. The lede ('a fix that lifts that one cell would change the answer'), the decision 'next' slot ('a pass there would replace the pick') and next[0]'s settles clause all treat complex news as its only obstacle. Say that its overall pass is inside noise, and make the follow-up a full re-run on every gate (sized for the overall line) on turns the examples were not tuned on."
+    },
+    {
+      "claim": "c5",
+      "severity": "must_fix",
+      "finding": "'Few-shot examples are the lever that moves accuracy most' is false. Rubric + reasoning gains more than few-shot on Brisk-S (+5.5 against +4.7) and Atlas-M (+3.4 against +2.3), and the model lever (-11.6, Atlas-M to Nano-XS zero-shot) is as large as few-shot's biggest effect. Restate it as: few-shot's gain depends strongly on the model, +11.9 on Nano-XS against +4.7 on Brisk-S (that interaction's interval excludes zero); and on Nano-XS alone it beats rubric (-6.2 for rubric against few-shot)."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "next[0] (tune Nano-XS's examples on complex news, then re-test) gives no held-out guard. Re-testing on the same turns the examples were aimed at would read the cell high by construction. Name fresh turns for the re-test."
+    },
+    {
+      "claim": "c6",
+      "severity": "should_fix",
+      "finding": "The domain panel sits under Simple/Medium/Complex column headers, and only the caption says they mean Science/Conversational/News. A reader scanning the block will misread it. Separately, the cascade step depends on Nano-XS flagging complex and news turns, which this block (the pick's confusion only) does not show."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The gate matrix labels the first gate 'Overall accuracy (at least 90%)', but it reads balanced accuracy, while the prose says 'overall balanced accuracy'. Traffic-weighted accuracy, which the page omits, is a different figure (the pick reads 92.2% on it). Label the gate as balanced accuracy so the two aren't confused."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The point_estimate:overall caveat says 'the binomial spread code sized it on', which is pipeline jargon for a reader. Say 'the spread expected from 48,210 turns' instead."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: omitted[2] types a count, 'the seven other configurations', with no figure key. It should derive from n_candidates.",
+    "Invariant 5 (borderline): Method's Source line prints a repo file path (docs/eval-report-kit/references/r3-classifier.json) through meta.provenance. It is in Method, not above the appendix, so it passes if Method counts as appendix-level."
+  ],
+  "calls": 22
+}

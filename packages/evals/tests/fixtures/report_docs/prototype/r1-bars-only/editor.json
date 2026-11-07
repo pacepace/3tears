@@ -1,0 +1,91 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "Headline, decision block and c1 together give the trade (Atlas-M at $31.37 against Atlas-L's $75.05 per 1k, a few points of overall quality given up), the lean (our_lean: Atlas-M, labelled as a lean), why (not separated from Atlas-L on any judged behaviour, far cheaper), the main risk for the cheap models (declines/confirms) and what is unresolved (no floor, no price per point). The headline states the trade, not the lean, which suits a tradeoff story."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 1,
+      "reason": "c2 says the cheap models 'lose most' on declining and confirming, but c3 says Brisk-S 'trails most' on resolves at 74%, below its own declines rate (81%) and well below its confirms rate (88%). Against Atlas-M, Brisk-S's gaps are declines 17, resolves 16, toolcall 12, and confirms only 10, tied with unsupported and escalates. Open-70B's declines gap (9) ties its cites gap (9). The headline's 'two cheaper models give up far more' also goes unaddressed where the data contradicts it: in persona small talk Open-70B scores 90 overall against Atlas-M's 88 and Atlas-L's 91."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Atlas-M's weak axis shows only as 'a few points'. Its largest gap, 5 points in troubleshooting (88 against 93), falls in the costliest task and is never named. Overall quality carries no interval in the snapshot (measure_read overall by task returns means only), yet c1 and the_trade state as fact that Atlas-L 'scores highest on overall quality in every task', on 1-point leads in persona (91 against Open-70B's 90) and speculation bait (90 against Atlas-M's 89). The guardrail claims in c2 are properly bounded by the intervals."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "Most omitted items hold up: the dominance call is handled in the flag, latency decides nothing, the cost order is the same in every task, and per-point pricing is unavailable (price_tradeoff gives no_gain_figure for every arm). But the routed-mix omission says the cheap model's overall quality is closest on billing. That holds for Brisk-S (89 against 92), but Open-70B's closest task is persona, where it beats Atlas-M on overall (90 against 88) and on stays-in-character (97% against 95%) at $6.4 against $17. Persona is the obvious routing candidate, and the page never states it. That fact could move a reader toward a routed option."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "The unstated judge, unpaired intervals, the missing traffic mix and the undefined overall scale each carry a material_if clause that says which claims they touch. Each behaviour being scored in one task only is carried into method, into the watch slot (confirms has no billing figure; measure_read confirms by task confirms trouble only) and into next steps 2 and 4. The cheap models' guardrail gaps hold even on unpaired intervals: every cheap-model interval on declines and confirms sits below Atlas-M's."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five name a declaration (floors, price per point plus mix plus volume) or an experiment (judge calibration, scoring confirms on billing, a measured routed mix), and each says what it settles. Weak spot: step 5 routes a cheap model onto billing, the task the watch slot calls the one where account changes are most common and where confirms is unmeasured. It does say to score confirmation inside the routed traffic."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "c1's log-cost scatter, one panel per task, is the right form for a cost/quality trade. c2's and c3's dot_interval blocks show exactly the overlap and separation the prose relies on, and the counterfactual holds: if Brisk-S's declines interval reached 95.8%, c2 would have to change. c4's range_bars give p50 to p95 but do not draw the 9 s bar the claim is measured against. A reader has to set 4.86 s against a number that appears only in the sentence. Drawing the reference would be clearer."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "'The cheap models lose most on the two behaviours where a wrong reply does harm' (also in the headline) overstates the data. Brisk-S's resolves gap against Atlas-M (16 points, 74% against 90%) roughly equals its declines gap (17) and exceeds its confirms gap (10). Open-70B's declines gap (9) ties its cites gap (9). Each cheap model's single worst behaviour is one of the two, but not both. Also, no declaration marks these two as the harm behaviours; 'no unsupported claims' (Brisk-S 84%, Open-70B 86% against Atlas-M 94%, both separated) is just as plausibly harmful. Restate it as each cheap model's worst behaviour, or say the 'harm' framing is the page's own."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "c3 says only that Brisk-S trails most on resolves. Its own block shows the cheap models separated from Atlas-M on far more: Brisk-S on resolves, escalates, character, toolcall and unsupported; Open-70B on cites. That breadth strengthens the case against the cheap models, and it conflicts with c2's 'lose most on the two behaviours'. Make c2 and c3 tell one story."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "'Atlas-L scores highest on overall quality in every task' rests on point means with no interval. The snapshot holds none for overall, and the leads are 1 point in persona (over Open-70B) and in speculation bait (over Atlas-M). Hedge it, or tie it to the overall_scale_not_stated caveat. Also name Atlas-M's largest gap (5 points in troubleshooting) instead of only 'a few points'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Persona small talk is missing from the story. Open-70B scores 90 overall there against Atlas-M's 88 and stays in character 97% against 95%, at $6.4 against $17 per 1k. This contradicts the headline's 'give up far more' for one cheap model on one task. The routed-mix omission and next step 5 point at billing instead, though billing is where the watch slot says account changes are most common. Address persona in prose, or reconsider the routed-mix example."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The headline's model-level costs ($31.37 and $75.05) are blends over the test set's own task mix: they match neither the simple nor the case-weighted mean of the per-task costs. Meanwhile the page says no traffic mix was declared and that quality has no model-level figure. Say once in Method what mix the model-level cost reflects, or the reader may take it for a production cost."
+    },
+    {
+      "claim": "decision.watch",
+      "severity": "should_fix",
+      "finding": "'Where account changes are most common' asserts a traffic fact the snapshot does not hold: no traffic mix was declared and no task records account-change frequency. Phrase it as an expectation, or drop it."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The latency block does not draw the 9 s bar the claim is measured against; the caption admits it. Draw the reference, or the block shows ranges without the comparison the sentence makes."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 3: the snapshot's caveats_list is empty, and campaign_overview shows caveats: []. The four confidence caveats (judge_not_stated, unpaired_intervals, no_traffic_mix, overall_scale_not_stated) are the page's own, not the snapshot's. Code cannot match them to snapshot caveats, so check that the store accepts caveat ids the snapshot does not hold.",
+    "Invariant 5: the caveat ids (for example judge_not_stated) are internal-looking ids. Confirm the renderer shows each caveat's material_if text above the appendix, never its id.",
+    "Invariant 1 (minor): cost_per_1k's key grammar speaks of 'per 1,000 replies', while the page and the measure's own name say 'per 1k conversations'. The snapshot names it per conversation, so this is consistent with the data, but the unit wording differs between the key grammar and the page."
+  ],
+  "calls": 18
+}

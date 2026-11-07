@@ -27,6 +27,7 @@ import pytest
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import DisclosureBlock, Report, report_html, report_markdown
 from threetears.evals.analysis.report.model import FIRST_SCREEN
+from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.g2_support import JUDGE, g2_report
 
 #: Words that would make a judge's calibration state read as something that broke.
@@ -57,28 +58,34 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
     first = "\n".join(_header_lines(report_html(g2))) if door == "html" else _first_screen_md(report_markdown(g2))
     assert "truncated" in first
     assert "10240 tokens" in first and "max_tokens=" not in first
-    assert "No verdict: the test setup failed, not the models." in first
+    assert "The test setup failed: it measured the setup instead of the models." in first
     assert "v4-flash lost 10 of 12 trials, most because the judge's reply was truncated" in first
 
 
-#: The first screen's opening lines, golden: the name and what it compares as the title, then each arm named once
+#: The first screen's opening lines, golden: the heading is the campaign's name (re-pinned from the arms-and-measure
+#: title: a page heads with its name and never stacks names), then each arm named once
 #: with the control marked, the date and the design.
-TITLE = "Kairo queue discipline: does v4-flash do better than v4.1-flash?"
+TITLE = "Kairo queue discipline"
 ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
 SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
+
+#: The first screen's report-wide caveat on an unlabelled judge: what it makes the scores, and what changes it.
+JUDGE_CAVEAT = "Judged scores on Kairo queue discipline are directional until people's labels calibrate the judge."
 
 
 def test_html_opens_on_the_question_then_the_arms(g2: Report) -> None:
     lines = _header_lines(report_html(g2))
     assert lines[:2] == [TITLE, ARMS]
-    assert lines[2].startswith("No verdict: the test setup failed")
+    assert lines[2].startswith("The test setup failed: it measured the setup instead of the models.")
 
 
 def test_markdown_opens_on_the_question_then_the_arms_then_the_verdict(g2: Report) -> None:
     lines = report_markdown(g2).splitlines()
-    assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**No verdict: ")
-    # The page prints a cost, so the report-wide line on provider routing follows the verdict (owner, 2026-10-25).
-    assert lines[5:10] == [COST_ROUTING_CAVEAT, "", "**Scoreboard**", "", SCOREBOARD_HEADER]
+    assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**The test setup failed: ")
+    # Its judge has no human labels, so the report-wide caveat on judged scores follows the verdict, in normal weight
+    # (P2); the cost's provider routing is said in the methods, never on the first screen (owner reading, 2026-11-06).
+    assert lines[5:10] == [JUDGE_CAVEAT, "", "**Scoreboard**", "", SCOREBOARD_HEADER]
+    assert COST_ROUTING_CAVEAT not in _first_screen_md(report_markdown(g2))
 
 
 @pytest.mark.parametrize("door", ["html", "markdown"])
@@ -91,8 +98,8 @@ def test_no_arm_is_a_winner_and_no_change_is_a_percent(g2: Report, door: str) ->
 
 def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> None:
     page = report_html(g2)
-    assert page.count("<svg") == 1
-    assert page.count('data-chart="outcome_bar"') == 1
+    assert page.count('data-kind="') == 1
+    assert page.count('data-figure="outcome_bar"') == 1
     markdown = report_markdown(g2)
     assert markdown.count("**Outcomes**") == 1
     # The case floor is a caveat under the scoreboard, in normal weight, after the result: what is withheld under
@@ -122,7 +129,7 @@ def test_the_scoreboard_is_a_bare_table_of_counts(g2: Report) -> None:
 @pytest.mark.parametrize("door", ["html", "markdown"])
 def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, door: str) -> None:
     # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
-    page = report_html(g2) if door == "html" else report_markdown(g2)
+    page = unlinked(report_html(g2)) if door == "html" else report_markdown(g2)
     assert (
         "No contrast can resolve: a side has 1 usable case; a difference is tested only from 5 independent cases."
         in page

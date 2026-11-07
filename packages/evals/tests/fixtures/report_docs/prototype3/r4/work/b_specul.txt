@@ -1,0 +1,29 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [specul]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 95% computed
+unit: pct
+domain: 
+criteria.specul.threshold = 95%
+columns: [Row, Value, 95% computed interval]
+rows (5):
+  - cells: [P · Production, 97.3%, 95.5% to 99.1%]
+  - cells: [A · f64, 96.4%, 94.3% to 98.5%]
+  - cells: [B · f16, 96.0%, 93.8% to 98.2%]
+  - cells: [C · cor, 92.0%, 88.9% to 95.1%]
+  - cells: [floor 95%, 95.0%, ]
+total: 5
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]

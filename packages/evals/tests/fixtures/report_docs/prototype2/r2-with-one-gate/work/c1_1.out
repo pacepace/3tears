@@ -1,0 +1,27 @@
+rendered block
+block_kind: lattice
+query:
+  source: configs
+  aspect: 
+  measures: [pass_rate]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [, Off · no retry, Off · 1 retry, Low · no retry, Low · 1 retry, High · no retry, High · 1 retry]
+rows (3):
+  - cells: [Atlas-M, 94.0% · $1.000 per 1,000 calls · 900 ms · Fails, 96.4% · $1.060 per 1,000 calls · 1019 ms · Fails, 96.6% · $1.600 per 1,000 calls · 1395 ms · Fails, 97.9% · $1.655 per 1,000 calls · 1500 ms · Passes, 97.7% · $3.400 per 1,000 calls · 2430 ms · Passes, 98.6% · $3.477 per 1,000 calls · 2551 ms · Passes]
+  - cells: [Brisk-S, 91.1% · $0.180 per 1,000 calls · 300 ms · Fails, 94.6% · $0.196 per 1,000 calls · 359 ms · Fails, 95.3% · $0.288 per 1,000 calls · 465 ms · Fails, 97.1% · $0.302 per 1,000 calls · 513 ms · Passes, 96.6% · $0.612 per 1,000 calls · 810 ms · Fails, 98.0% · $0.633 per 1,000 calls · 870 ms · Passes]
+  - cells: [Nano-XS, 81.0% · $0.030 per 1,000 calls · 140 ms · Fails, 88.5% · $0.036 per 1,000 calls · 198 ms · Fails, 87.9% · $0.048 per 1,000 calls · 217 ms · Fails, 92.7% · $0.054 per 1,000 calls · 275 ms · Fails, 91.3% · $0.102 per 1,000 calls · 378 ms · Fails, 94.8% · $0.111 per 1,000 calls · 450 ms · Fails]
+total: 3
+offset: 0
+truncated: False
+notes: []

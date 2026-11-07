@@ -22,7 +22,7 @@ one the runs disagree on; accepting one on a core measure.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pytest
@@ -33,6 +33,15 @@ from threetears.evals.analysis import report_markdown
 from threetears.evals.kernel import RUN_MARGIN_MEASURES, ValidationFailedError, run_margin_refusal
 from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other. Each expects the answer
 #: ``right``, which a classifier's field grader reads.
@@ -141,17 +150,18 @@ class TestHowManyCasesEquivalenceTakes:
     ) -> None:
         """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
         assert (await self._verdict(first - 1, margin, expected=expected)).startswith(
-            "cheaper and current not separated"
+            "the evidence cannot tell cheaper and current apart"
         )
         assert (await self._verdict(first, margin, expected=expected)).startswith("cheaper and current equivalent")
 
 
 class TestAPassFailInterval:
     async def test_stays_inside_the_differences_a_pass_rate_allows(self) -> None:
-        """Half of six cases flip to right: the t interval on the delta runs to 1.075, past any pass-rate difference.
+        """Half of six cases flip to right: a t interval on the delta runs to 1.075, past any pass-rate difference.
 
         No margin is declared, so only the scorer's ``bool`` annotation says the values are 0 or 1 (the
-        cassettes example printed ``[-0.0748, 1.075]`` before it did).
+        cassettes example printed ``[-0.0748, 1.075]`` before it did). A pass rate is drawn on the bounded interval
+        on that range, which never leaves the differences a share allows.
         """
         six = CASES[:6]
 
@@ -165,20 +175,21 @@ class TestAPassFailInterval:
         row = _row(comparison, "correct")
         # A pass rate is a share, so its change reads in points on the percent ruler.
         assert row["delta"] == pytest.approx(50.0)
-        assert row["interval"] == "[-7.5, 100] pts at 95%", (
-            "the t interval's lower end; its upper clipped where a pass-rate difference ends"
+        assert row["interval"] == "[-27.9, 100] pts at 95%", (
+            "the bounded interval on the 0-1 range, its upper end where a pass-rate difference ends"
         )
 
 
 class TestNoMargin:
     async def test_no_contrast_reads_equivalent_and_the_report_says_why_in_one_line(self) -> None:
         comparison = await _compare()
-        assert _row(comparison, "correct")["verdict"].startswith("cheaper and current not separated")
+        assert _row(comparison, "correct")["verdict"].startswith("the evidence cannot tell cheaper and current apart")
         (line,) = _no_margin_lines(comparison)
-        assert "not separated never means the arms are alike" in line
+        assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
         advice = _no_margin_advice(comparison)
-        assert "grader(correct, margin=...)" in advice["Correct score"]
+        # Said in words, never as a call (no cell prints `grader(`).
+        assert advice["Correct score"].startswith("a margin on its grader")
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"
         (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
@@ -189,7 +200,7 @@ class TestNoMargin:
         comparison = await _run(CASES, arms, ["label"], "margins-accuracy", 2)
         (line,) = _no_margin_lines(comparison)
         advice = _no_margin_advice(comparison)
-        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert advice["Accuracy"] == "a margin on the classifier's field's grader, on every arm's run"
         assert "scorer" not in line + advice["Accuracy"], "accuracy takes a margin of its own: no duplicate scorer"
 
 
@@ -373,6 +384,6 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
         comparison = await _run(CASES, {"current": priced, "cheaper": priced}, ["label", correct], "no-margin-kinds", 1)
         (_line,) = _no_margin_lines(comparison)
         advice = _no_margin_advice(comparison)
-        assert advice["Correct score"] == "where it is graded: `grader(correct, margin=...)`"
-        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert advice["Correct score"] == "a margin on its grader"
+        assert advice["Accuracy"] == "a margin on the classifier's field's grader, on every arm's run"
         assert advice["Production cost"] == "cannot: the engine owns its description"

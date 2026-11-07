@@ -1,0 +1,17 @@
+[
+  {
+    "need": "An interval on overall balanced accuracy (and on p95 latency), so settle_cases can size the overall gate the pick clears by under a point",
+    "why": "The recommendation's narrowest line is the overall gate; settle_cases reports it unsettled because the figure states no spread, though every cell's accuracy carries a half-width and counts that could be combined",
+    "workaround": "Carry point_estimate:overall and point_estimate:p95 as open caveats with material_if clauses; the next step asks for a case-level interval on a fresh run; no figure typed"
+  },
+  {
+    "need": "Block queries that name a target-matrix cell as the place (settle and levers sources), e.g. strata=['complex.news']",
+    "why": "The claims turn on one cell, Complex x News; block_render refuses a cell id in query.strata for settle and levers, though settle_cases and levers_effects take the cell as a place",
+    "workaround": "Show the whole settle table for the pick (nine cells plus two gates) and the prompt lever on overall balanced accuracy without intervals; the cell-level lever effect is cited in prose by its key"
+  },
+  {
+    "need": "A joint-label confusion (true cell to predicted cell) for a classifier whose target is a crossed matrix",
+    "why": "The per-axis confusions for Brisk-S few-shot and Nano-XS few-shot are nearly identical on complexity and on domain, yet the two differ clearly in the Complex x News cell; where those turns go is only visible in the joint table",
+    "workaround": "Leave the confusion out (listed in omitted) and say where the loss sits from the cell accuracies and the two-arm comparison"
+  }
+]

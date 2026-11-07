@@ -62,11 +62,11 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, model_validator
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import UNPRICED, format_number, spell_dollars
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
     RequestSettingsReading,
@@ -115,13 +115,10 @@ from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.words import judged_heading
+from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
-
-
-#: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
-UNPRICED = "unpriced"
 
 
 def dollars_text(amount: float | None) -> str:
@@ -140,6 +137,10 @@ def dollars_text(amount: float | None) -> str:
     the spend was measured and was nothing. Said here rather than by each caller, so every surface that prints a
     possibly-unpriced amount says it in one word.
 
+    From a thousand dollars up the whole dollars are grouped (``$7,560.00``), with
+    :func:`~threetears.evals.kernel.numbers.group_thousands`: the package's one spelling of a grouped
+    amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
+
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
     :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
@@ -148,12 +149,7 @@ def dollars_text(amount: float | None) -> str:
     """
     if amount is None:
         return UNPRICED
-    if amount == 0:
-        return "$0"
-    if abs(amount) >= 0.1:
-        return f"${amount:.2f}"
-    decimals = 2 - math.floor(math.log10(abs(amount)))
-    return f"${amount:.{decimals}f}"
+    return spell_dollars(amount)
 
 
 def _plural(count: int, noun: str) -> str:
@@ -322,18 +318,21 @@ class GoalCheckSummary(BaseModel):
             baseline = f"a candidate that did nothing passes it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
         if self.proven:
             return head if baseline is None else f"{head} ({baseline})"
-        if baseline is not None and self.did_nothing_passed == self.did_nothing_cases:
-            return f"{head} — NOT A MEASUREMENT: {baseline}, so this pass rate does not beat doing nothing"
+        # The page's words for a check not shown to beat doing nothing, and what follows from it; then what this run
+        # measured a candidate that did nothing to pass, which only a launch knows.
         reason = {
-            "refuted": "refuted: its control does not show it tells acting from doing nothing",
+            "refuted": CHECK_PROOF_WORDS["refuted"],
             "unproven": (
                 "unproven: its proof was recorded under an earlier proof rule and needs re-proving by a new launch"
                 if self.stale_proof
-                else "unproven: no control shows it tells acting from doing nothing"
+                else CHECK_PROOF_WORDS["unproven"]
             ),
-            None: "unproven: this run recorded no proof that it tells acting from doing nothing",
+            None: "unproven: this run recorded no proof that it can tell acting from doing nothing",
         }[self.proof]
-        return f"{head} — {reason}" + ("" if baseline is None else f"; {baseline}")
+        measured = None
+        if self.did_nothing_passed is not None and self.did_nothing_cases:
+            measured = f"at launch one passed it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
+        return f"{head} — {reason}; {NOT_SHOWN_TO_MEASURE}" + ("" if measured is None else f"; {measured}")
 
 
 class DimensionSummary(BaseModel):
@@ -799,6 +798,8 @@ class EvalSummary(BaseModel):
     :ivar max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
         it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
         the run), or ``None`` for a run whose writer recorded none.
+    :ivar cap_checked_on_estimates: ``True`` when that ceiling was checked against estimates (the run records it:
+        ``EvalRun.cap_checked_on_estimates``), ``None`` otherwise; left out of the JSON when unset.
     :ivar judge_shares_candidate_model: Each model that both judged the run's answers and produced them — the
         judge's model (as requested, or as a score says it was served) matching the run's candidate model or
         a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
@@ -854,6 +855,7 @@ class EvalSummary(BaseModel):
     arm_schedule: ArmSchedule | None = None
     max_cost_usd: float | None = None
     max_cost_usd_origin: CostCapOrigin | None = None
+    cap_checked_on_estimates: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     judge_shares_candidate_model: list[str] = []
     unconfirmed_models: list[UnconfirmedModelIdentity] = []
     request_settings: list[RequestSettingsReading] = []
@@ -1228,6 +1230,8 @@ def _spend_cap_line(summary: EvalSummary) -> str | None:
     if summary.max_cost_usd is None:
         return None
     line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
+    if summary.cap_checked_on_estimates:
+        line += ", checked against estimated rates"
     if not summary.spend:
         line += "; it counts only spend a result reports, and no result reported any"
     return line
@@ -1264,8 +1268,8 @@ def _proportion(
 
 def _dimension_line(dimension: DimensionSummary) -> str:
     """One judged dimension's line: its scale, its mean and range, and how often the judge could not tell."""
-    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
-    line = f"{dimension.name} ({scale}): "
+    scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
+    line = f"{judged_heading(dimension.name)}{scale}: "
     if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
         line += "no result carries a score"
     else:
@@ -1378,6 +1382,7 @@ def summarize_run(
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
+        cap_checked_on_estimates=run.cap_checked_on_estimates,
         judge_shares_candidate_model=tally.self_judging.models(),
         unconfirmed_models=tally.identities.identities(),
         request_settings=tally.settings.readings(),
@@ -1615,6 +1620,9 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            if row.answers_nothing:
+                # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
+                continue
             role = self._roles.setdefault(row.role, _RoleTally())
             role.calls += row.call_count or 0
             if row.call_count is None:

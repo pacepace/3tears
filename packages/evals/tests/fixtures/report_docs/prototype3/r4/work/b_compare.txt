@@ -1,0 +1,28 @@
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [persona]
+  arms: [f64, prod]
+  strata: [depth:1-2, depth:3-5, depth:6-10, depth:11+]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (4):
+  - cells: [1–2, -2.0, -4.416 to +0.4158, -2.0 pts]
+  - cells: [3–5, -4.5, -7.525 to -1.475, -4.5 pts]
+  - cells: [6–10, -11.0, -15.53 to -6.475, -11.0 pts]
+  - cells: [11+, -17.5, -24.65 to -10.35, -17.5 pts]
+total: 4
+offset: 0
+truncated: False
+notes: [Each row is f64 less Production on Stays in character, overall and in each place both hold it., The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from its own count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]

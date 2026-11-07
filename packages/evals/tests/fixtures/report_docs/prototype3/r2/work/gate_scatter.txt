@@ -1,0 +1,44 @@
+rendered block
+block_kind: gate_scatter
+query:
+  source: measures
+  aspect: 
+  measures: [pass_rate, latency_ms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Point, Latency (p95), Pass rate]
+rows (20):
+  - cells: [Atlas-M · reasoning off · no retry, 900 ms, 94.0%]
+  - cells: [Atlas-M · reasoning off · 1 retry, 1019 ms, 96.4%]
+  - cells: [Atlas-M · reasoning low · no retry, 1395 ms, 96.6%]
+  - cells: [Atlas-M · reasoning low · 1 retry, 1500 ms, 97.9%]
+  - cells: [Atlas-M · reasoning high · no retry, 2430 ms, 97.7%]
+  - cells: [Atlas-M · reasoning high · 1 retry, 2551 ms, 98.6%]
+  - cells: [Brisk-S · reasoning off · no retry, 300 ms, 91.1%]
+  - cells: [Brisk-S · reasoning off · 1 retry, 359 ms, 94.6%]
+  - cells: [Brisk-S · reasoning low · no retry, 465 ms, 95.3%]
+  - cells: [Brisk-S · reasoning low · 1 retry, 513 ms, 97.1%]
+  - cells: [Brisk-S · reasoning high · no retry, 810 ms, 96.6%]
+  - cells: [Brisk-S · reasoning high · 1 retry, 870 ms, 98.0%]
+  - cells: [Nano-XS · reasoning off · no retry, 140 ms, 81.0%]
+  - cells: [Nano-XS · reasoning off · 1 retry, 198 ms, 88.5%]
+  - cells: [Nano-XS · reasoning low · no retry, 217 ms, 87.9%]
+  - cells: [Nano-XS · reasoning low · 1 retry, 275 ms, 92.7%]
+  - cells: [Nano-XS · reasoning high · no retry, 378 ms, 91.3%]
+  - cells: [Nano-XS · reasoning high · 1 retry, 450 ms, 94.8%]
+  - cells: [budget 600 ms, 600 ms, ]
+  - cells: [floor 97%, , 97.0%]
+total: 20
+offset: 0
+truncated: False
+notes: [The Latency (p95) axis is on a log scale: its values span more than ten times.]

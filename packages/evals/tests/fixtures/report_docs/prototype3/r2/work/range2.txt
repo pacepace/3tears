@@ -1,0 +1,29 @@
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_ms]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.low.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: budget
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: ms
+domain: 
+criteria.p95.threshold = 600 ms
+columns: [Group, Row, From, To]
+rows (5):
+  - cells: [Latency, J · Brisk-S · reasoning low · 1 retry, 209 ms, 513 ms]
+  - cells: [Latency, L · Brisk-S · reasoning high · 1 retry, 364 ms, 870 ms]
+  - cells: [Latency, D · Atlas-M · reasoning low · 1 retry, 628 ms, 1500 ms]
+  - cells: [Latency, F · Atlas-M · reasoning high · 1 retry, 1094 ms, 2551 ms]
+  - cells: [, budget 600 ms, 600 ms, ]
+total: 5
+offset: 0
+truncated: False
+notes: []

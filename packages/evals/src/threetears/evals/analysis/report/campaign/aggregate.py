@@ -34,6 +34,7 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -43,6 +44,7 @@ from threetears.evals.analysis.report.model import (
     TableCell,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.numbers import format_number
 
 __all__ = ["EQUAL_WEIGHT_ROW", "aggregate_blocks", "equal_weight_cells"]
 
@@ -108,7 +110,7 @@ def aggregate_blocks(
     aggregate = readings.aggregate
     if aggregate is None:
         return []
-    names = AspectNames.of(report.bundle for report in reports.values())
+    names = AspectNames.of((report.bundle for report in reports.values()), campaign=campaign.name or None)
     row = _row_aggregate(readings) is not None
     charted = _charted(readings, aggregate)
     blocks: list[ReportBlock] = []
@@ -120,7 +122,20 @@ def aggregate_blocks(
             if (figure := _row_figure(arm)[0]).value is None
         ]
     if charted:
-        points = [point for arm in aggregate.arms if (point := _point(arm)) is not None]
+        # The campaign's tags, which each aspect's page is built with too, so an arm is one tag, and one colour, on
+        # this chart and on every aspect's outcome bar the page lays out.
+        labels = readings.arm_labels()
+        tags = campaign_arm_tags(
+            (report.bundle for report in reports.values()),
+            readings.control,
+            arms=[arm.variant_key for arm in campaign.arms],
+            also=(arm.arm for arm in aggregate.arms),
+            label_of=lambda key: labels.get(key, key),
+        )
+        declared = declared_arm_names(campaign.arms)
+        points = [
+            point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm], declared.get(arm.arm))) is not None
+        ]
         if len(points) >= 2:
             blocks.append(
                 ChartBlock(
@@ -128,6 +143,7 @@ def aggregate_blocks(
                     chart="cost_quality",
                     title=f"Cost and pass rate, {_ACROSS}" if len(readings.aspects) > 1 else "Cost and pass rate",
                     unit=MONEY,
+                    level=f"{format_number(round(aggregate.level * 100, 2))}%",
                     points=points,
                 )
             )
@@ -175,13 +191,17 @@ def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:
     return len(aggregate.arms) >= 2 and (len(readings.aspects) >= 2 or len(aggregate.arms) >= 3)
 
 
-def _point(arm: ArmAggregate) -> CostQualityPoint | None:
-    """An arm's point on the chart; None where its cost or its pass rate is withheld."""
+def _point(arm: ArmAggregate, tag: str, short_name: str | None) -> CostQualityPoint | None:
+    """An arm's point on the chart, tagged as the page tags it and named by its label, which a campaign gives each
+    arm, and in tight places by the short name it declares, else that label; None where its cost or its pass rate is
+    withheld."""
     rate, cost = arm.pass_rate, arm.cost
     if rate.value is None or rate.interval is None or cost.value is None or cost.interval is None:
         return None
     return CostQualityPoint(
         arm=arm.arm_label,
+        tag=tag,
+        short_name=short_name or arm.arm_label,
         cost=cost.value,
         cost_low=cost.interval[0],
         cost_high=cost.interval[1],

@@ -10,6 +10,7 @@ the same runs on the command line and over MCP.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import runpy
 from pathlib import Path
@@ -18,8 +19,12 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.harness.analyse import analyse, recording_path
+from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.kernel.host import check_world_conformance
+from threetears.evals.ops import OpsHost
+from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.quick import run_cli
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.schema import ClientRequestSettings, RecordedCall
@@ -34,6 +39,8 @@ from packages.evals.tests.ladder_support import (
     secret_markers,
     stated_spend,
 )
+from packages.evals.tests.doc_writer_support import TOY_DOC
+from packages.evals.tests.report_writer_support import MODEL, hand_written, reply, review, submitted
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -85,14 +92,17 @@ async def test_offline_it_replays_the_loop_and_grades_the_day_each_cell_left(
     assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_excluded) == (12, 3, 0)
     assert summary.errors == []
     # The did-nothing control: an agent that did nothing would pass the first check in the 4 full-day cases only,
-    # and the other two in every case, so their pass rates are printed as no measurement at all.
+    # and the other two in every case; each line says what the page says of an unproven check, then that baseline.
     assert [(goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) for goal in summary.goal_checks] == [
         ("unproven", 4, 12),
         ("unproven", 12, 12),
         ("unproven", 12, 12),
     ]
     lines = [line for line in summary.render().splitlines() if "goal check" in line]
-    assert "NOT A MEASUREMENT" not in lines[0] and all("NOT A MEASUREMENT" in line for line in lines[1:])
+    assert "at launch one passed it in 4 of 12 case(s)" in lines[0] and all(
+        "at launch one passed it in 12 of 12 case(s)" in line for line in lines[1:]
+    )
+    assert all("so it is not shown to measure the behaviour" in line for line in lines)
     # Each cell, read back: the checks graded the day it left and the calls it made.
     cases = {case.id: case for case in off_loop(host.storage.query_test_cases, summary.scope_id)}
     for cell in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
@@ -169,6 +179,51 @@ def test_serve_hosts_the_runs_on_the_command_line(
     assert run_cli(["ls", "--host", "serve:host", "--scope", "booking"]) == 0
     out = capsys.readouterr().out
     assert result.campaign_id in out and result.run_id in out
+
+
+#: The scripted report's headline: a sentence code's page never prints.
+_HEADLINE = "The agent books where a free hour fits and declines a full day."
+
+
+async def _scripted_report(result: Any) -> None:
+    """The harness door's report on the run's campaign, from a recording laid by hand (nothing reaches a model)."""
+    host = OpsHost.reading(result.host)
+    frozen = await report_snapshot_freeze(host, result.scope_id, campaign_id=result.campaign_id, created_by="test")
+    read = await snapshot_input(host, result.scope_id, frozen.snapshot_id)
+    doc = copy.deepcopy(TOY_DOC)
+    caveat = {"label": None, "material_if": "only if it moves the reading", "checked": None}
+    doc["confidence"]["caveats"] = [{"id": each.id, **caveat} for each in every_caveat(read)]
+    (aspect,) = read.aspects
+    doc["claims"][0]["evidence"][0]["query"]["aspect"] = aspect.name
+    doc["headline"] = doc["claims"][0]["text"] = _HEADLINE
+    doc["lede"] = "One arm ran, so nothing is compared."
+    doc["decision"] = [{"slot": "recommendation", "text": "No call: one arm ran."}]
+    doc["method"] = [{"term": "Arms", "text": "One agent.", "caveats": []}]
+    sessions = {"analyst": [reply(submitted(doc))], "editor-1": [reply(review())]}
+    hand_written(recording_path(result.name, MODEL, frozen.snapshot_id), sessions)
+    written = await analyse(result, MODEL)
+    assert written.ending == "stored" and written.stored is not None, written.outcome.reason
+
+
+async def test_serve_reports_the_harness_door_s_report_as_the_campaign_s_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``report`` over ``serve:host`` prints the campaign's page as code builds it until the harness door writes a
+    report; from then on it prints the writer's, which ``analyse`` linked as the campaign's analysis."""
+    module = _agent(tmp_path, monkeypatch)
+    result = await module.booking.run()  # the default store, which serve.py's host reads
+    argv = ["report", result.campaign_id, "--host", "serve:host", "--scope", "booking"]
+    capsys.readouterr()
+
+    assert await asyncio.to_thread(run_cli, argv) == 0
+    page = capsys.readouterr().out
+    assert page.startswith("# booking\n") and _HEADLINE not in page, page[:200]
+
+    await _scripted_report(result)
+    capsys.readouterr()
+
+    assert await asyncio.to_thread(run_cli, argv) == 0
+    assert _HEADLINE in capsys.readouterr().out
 
 
 async def test_serve_mounts_the_read_actions_over_mcp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

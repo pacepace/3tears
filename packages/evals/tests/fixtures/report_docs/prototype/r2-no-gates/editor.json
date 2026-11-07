@@ -1,0 +1,97 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the_trade and c1 together give the move (stop at Brisk-S low reasoning with 1 retry unless the owner declares otherwise), the reason (a point costs $319.67 a month up to the lean and $1,595.18 after it), and the risk (a floor above 97.1% or a p95 budget under 513 ms moves it; the steps above are under a point with no interval). The flag says plainly that the lean is the analyst's, not a rule."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The claims build in order: c1 sets the frontier and the knee; c2 (retry helps in all 9 model and reasoning pairs, verified from the lattice) and c3 (all five other Atlas-M settings matched or beaten, verified against price_tradeoff's off_frontier list) explain how the frontier is shaped; c4 adds the latency cost; c5 and c6 locate the lean's weak spot. Nothing contradicts the headline. The decision bands (where_it_flips, the explore controls) check out against the figures: the floor bands at 94.8/95.3/97.1/98%, the p95 cuts at 513/870/2551 ms, and the value-per-point bands from the price_tradeoff frontier."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The lean's weak axes are mostly visible: its p95 (513 ms) is above Nano-XS high's (450 ms) in c4, and multi-hop is named in watch and c5. Three things are framed harder than the data supports. (a) The step above the lean buys 0.8 points overall but 1.7 on multi-hop (95.6% to 97.3%, per the task read), so the next step pays most on exactly the lean's weakest task, and the page never says so. (b) 'Dear' in the headline is a judgement made with no value declared. The step costs $1,324 a month in total, on top of the lean's $1,208, and that absolute gap never appears on the first screen. (c) c6 says 'the lean's failures are planning slips a fix could target' on the strength of three cards the snapshot picked, one per stratum, out of roughly 35 failures; only the date-window card gives a share (9 of 17 wrong-args)."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Each omission checked. The dominance tool names Nano-XS off/no-retry dominant on cost alone (axes: []), which the report correctly sets aside. Outcome and extra_calls have no figures. Brisk-S low/no-retry is never_best per price_tradeoff and matters only under a p95 budget between 465 and 513 ms. Multi-hop is the weakest task in all 18 configurations (task read). The Nano-XS malformed card is on nano-xs.low.r1, off the shortlist. The calls-per-task omission is sound for order: per-task cost keeps every frontier position. Its dollar effect belongs under item 5."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "No-interval, best-of-18 and cost-basis are carried into the caveats, and two of them into next. Two gaps remain. (a) The cost_basis material_if says it matters 'only if the choice rests on the monthly dollar amounts rather than the order'. But the report's own settle route (what_settles_it, next[0]) is a monthly dollar value per point. Calls per task runs 1.45 to 1.89 and differs by option, so if the volume counts tasks the lean's band moves from $320–$1,595 to roughly $490–$2,260 (editor arithmetic from cost_per_1k × calls_per_task). An owner who declares $1,800 a point gets Brisk-S high under one basis and the lean under the other. (b) pass_undefined is a confidence caveat with no next step: nothing asks the owner to define a pass, or to confirm that a clarifying question is the only pass on ambiguous names."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All four name a declaration or an experiment, and what it settles: the owner's floor, budget or value per point; a paired rerun of nano-xs.high.r1, brisk-s.low.r1 and brisk-s.high.r1 with intervals; a targeted fix to the lean's slips and a rerun; and stating the volume's basis. Each one is specific enough to start on. The missing pass-definition step is scored under item 5."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c2's lattice, c4's range bars and c5's heatmap fit their claims, and the counterfactual holds for each. Three problems remain. c1 is the lead claim and its substance is two prices per point ($1,595.18 against $319.67), but no block shows a price per step: the log-axis scatter shows the knee only by eye. c3 re-draws c1's scatter filtered to 12 points; highlighting points on c1 would make the same case. c6's caption says 'one per task', but the lean has three cards over four tasks, with no single-lookup card. And rounding makes the page disagree with itself: c3 prints a 0.7-point gain while c1, c3 and the lattice show 98% against 98.6%, and the lean-to-Brisk-S-high gain the decision prices is 0.8, against a visible 97.1% to 98%."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The cost_basis caveat understates its reach. The report tells the owner to settle the trade by declaring a monthly value per point, and the bands it hands them ($319.67 to $1,595.18 for the lean) are dollar figures computed on a per-call basis. Calls per task runs 1.45 to 1.89 and differs by option. If the declared 4,000,000 counts tasks, the lean's band becomes roughly $490 to $2,260 and the Brisk-S high to Atlas-M boundary moves from about $17,200 to about $24,900. Rewrite material_if to say the value-per-point bands move with the basis, and only the order does not. If the tool cannot price on a task basis, record that as a capability gap."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The step above the lean buys 0.8 points overall but 1.7 on multi-hop (95.6% to 97.3%), the lean's weakest task and the one in watch. Say this beside the trade, or in watch, so an owner who weights multi-hop sees that the dearer step pays roughly twice as much there."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The headline's 'dear' rests on relative price per point alone. Put the absolute step on the first screen, in the_trade or our_lean: Brisk-S high costs $1,324 a month more than the lean's $1,208, so the reader can judge 'dear' for themselves."
+    },
+    {
+      "claim": "c6",
+      "severity": "should_fix",
+      "finding": "Scope the claim to what the evidence shows: three cards the snapshot chose, one per stratum, not a census of the lean's failures. Cite the one share the cards give (date-window slips are 9 of 17 wrong-args failures). Fix the caption too: there are three cards over four tasks, and single lookup has none."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The lead claim's numbers (price per point at each step) appear in no block. A small step table (each frontier step's gain, monthly cost gap and price per point) would carry it better than reading the knee off a log-axis scatter. It would also make c3's re-filtered scatter unnecessary: highlight the Atlas-M points on c1, or table them."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "pass_undefined is an open caveat with no next step. Add a declaration: the owner defines a pass, including whether a clarifying question is the only pass on ambiguous names."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "Rounding makes the page disagree with itself. Brisk-S high prints as 98% while Atlas-M high is 98.6%, yet c3 says the gain is 0.7 points; the lean-to-Brisk-S-high step reads as 97.1% to 98% while it is priced on a 0.8-point gain. Print pass rates at one consistent decimal so the gains a reader computes match the gains quoted."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The lede says Atlas-M is 'beaten' by a cheaper Brisk-S configuration at every setting but the top one. Atlas-M low/1 retry trails Brisk-S high/1 retry by 0.04 points, which is a tie. Use c3's 'matched or beaten'. The lede's 'for little cost' for retry also leaves out that retry lengthens p95 at every level (Nano-XS off goes from 140 to 198 ms)."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: the scatter_frontier values tables for c1 and c3 label points with raw arm ids (atlas-m.off.r0, brisk-s.low.r1, ...), not reader names. If those tables or chart labels render above the appendix, internal ids reach the body.",
+    "Invariant 1: counts are typed into prose rather than resolved through figure keys: 'each of its other five' (c3), 'the other fourteen configurations' (omitted), 'two steps above it' (the_trade).",
+    "Not an invariant, but every lattice tile (c2) prints 'Not gated here'. The campaign declared no gates, so this is renderer noise on all 18 tiles. The tiles also label cost 'per 1,000 replies' while the scatter says 'per 1k calls'; Method reconciles them, but the page would read cleaner with one label.",
+    "Invariant 3 holds: caveats_list is empty, so the four caveats are the analyst's own, and each one is shown with a material_if. The confidence form high_if_immaterial matches its open caveats (invariant 4)."
+  ],
+  "calls": 17
+}

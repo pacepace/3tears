@@ -1,0 +1,294 @@
+"""A host that launches the report writer over the quick path's own store: the writer measured as the thing under test.
+
+The quick path's host (:func:`~threetears.evals.quick.one_call.callable_host`) declares the callable kinds only, and
+builds a private launching host for each run. The writer is another kind, so it gets a host of its own, built here
+over the same store, with nothing of the callable host changed:
+
+- **its profile** declares the writer's kind contract and its measures
+  (:data:`~threetears.evals.ops.report_writer.writer_contract.WRITER_KIND_CONTRACT`,
+  :data:`~threetears.evals.ops.report_writer.writer_contract.WRITER_KIND_MEASURES`) on the engine's shared core, which
+  seats the judge and the spend ceiling a writer run fills;
+- **its launch registry** holds one entry,
+  :func:`~threetears.evals.actions.report_writing.launchable_report_writer_kind`, and its template checks admit
+  everything, since the writer's launch refuses a template it cannot honour itself;
+- **its scoring judge** is the judge model the caller built (the shipped client's ``Model``, or any client that names
+  its route and prices its calls), lent for the judge role only, as :meth:`~threetears.evals.quick.judged.Judge.clients`
+  lends a judged eval's, each call priced as the judge prices it, so a pass held to the out-of-run cap (the pairwise
+  pass) is admitted on the judge's own prices: nothing, for a judge replaying its recording;
+- **its launch settings** run at most two cells of a run at once, with the cost ceilings enforced, so every arm is
+  launched naming its share of ``max_cost_usd``, and hold an out-of-run pass to ``out_of_run_cost_usd`` (the writer
+  eval's part of its cap for one pairwise pass).
+
+**A model's family is read from the route it is built on**, never from a table of vendors: an id that names its vendor
+before a ``/`` (an aggregator's route) is of that vendor's family, any other id is of the provider it is sent to, and
+a model on an endpoint of the caller's own (``base_url``) is of no family the host can tell, so its run records the
+check as not made. The judge's route is its ``Model``'s; every writer is built by the model factory on
+``writer_provider``. The host's reading is its :attr:`OpsHost.model_family <threetears.evals.ops.OpsHost.model_family>`
+too, so a launch and the pairwise pass over its campaigns check the judge's family alike.
+
+**Every arm is held to its job's budget before it is priced.** A run's job is given a budget sized as if its cells ran
+one after another, and clamped at the engine's ceiling (:func:`~threetears.evals.run.jobs.adaptive_job_timeout_s`); a
+writer cell's deadline is a whole report (:func:`~threetears.evals.ops.report_writer.writer_launch.writer_launch_deadline`).
+An arm whose cells, two at a time, could outlast that budget would be cut off mid-report after it was paid for, so its
+plan refuses it, naming what to lower.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from dataclasses import replace
+from types import MappingProxyType
+from typing import Any, Final, Protocol
+
+from threetears.evals.actions.report_writing import launchable_report_writer_kind
+from threetears.evals.analysis.analyst.skill import AnalystSkill
+from threetears.evals.kernel import EvalStorage, ceiling_is_estimate, default_job_timeout
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host import (
+    SHARED_CORE,
+    CompletionClients,
+    CompletionRole,
+    EvalHost,
+    HostProfile,
+    MeasureRegistry,
+    TemplateChecks,
+    default_cell_timeout,
+)
+from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND,
+    WRITER_KIND_CONTRACT,
+    WRITER_KIND_MEASURES,
+    WriterModelFactory,
+)
+from threetears.evals.ops.report_writer.writer_launch import (
+    admit_writer_launch,
+    plan_writer_arm,
+    writer_launch_deadline,
+)
+from threetears.evals.quick.judged import BorrowedJudgeClient
+from threetears.evals.quick.result import CREATED_BY
+from threetears.evals.run import ArmPlan, LaunchHost, LaunchRequest, LaunchSettings
+from threetears.evals.run.jobs import adaptive_job_timeout_s
+from threetears.evals.schema import CompletionClient, DocumentStore, ProviderFailureDescriber
+from threetears.evals.schema.completion import RequestCeiling
+
+#: The host id the writer host's profile carries.
+_WRITER_HOST_ID: Final = "eval-writer"
+
+#: How many of a run's cells write at once: two reports side by side, never more.
+_WRITER_CELLS_AT_ONCE: Final = 2
+
+
+class WriterJudge(CompletionClient, Protocol):
+    """The scoring judge the writer host lends: a completion client that names the model it calls and its route.
+
+    The shipped client's ``Model`` is one; typed here by what the host reads, so importing the harness loads no client.
+    """
+
+    @property
+    def model_name(self) -> str:
+        """The model every call goes to, which a launch names as its judge."""
+        ...
+
+    @property
+    def provider(self) -> str:
+        """The provider its calls are sent to."""
+        ...
+
+    @property
+    def base_url(self) -> str | None:
+        """The endpoint of the caller's own it was built on, or ``None`` for its provider's own."""
+        ...
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one call with this prompt pair can cost, ``0.0`` while replaying, or ``None`` when it cannot say."""
+        ...
+
+
+def _family(model_id: str, provider: str, base_url: str | None) -> str | None:
+    """A model's family from its route: the vendor its id names before a ``/``, else its provider's; none for an
+    endpoint."""
+    if base_url is not None:
+        return None
+    vendor, slash, _ = model_id.partition("/")
+    if slash:
+        return vendor or None
+    return provider
+
+
+def _describe_failure() -> ProviderFailureDescriber:
+    """The shipped client's describer, imported when a host is built: the client loads only when a writer host does."""
+    from threetears.evals.providers import describe_failure
+
+    return describe_failure
+
+
+class _LentJudge(BorrowedJudgeClient):
+    """The judge, lent for one role at one temperature, each call priced as the judge prices it."""
+
+    def __init__(self, judge: WriterJudge, *, temperature: float | None) -> None:
+        super().__init__(judge, model_name=judge.model_name, temperature=temperature)
+        self._judge = judge
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The judge's own price for the call (:meth:`WriterJudge.price_ceiling`)."""
+        return self._judge.price_ceiling(system=system, user=user, response_format=response_format)
+
+    def ceiling_is_estimate(self) -> bool:
+        """Whether the judge's prices are estimates, as it says (the shipped ``Model`` does: an OpenRouter route's are),
+        so a cap checked on them says so; a judge that says nothing is read as pricing its own calls."""
+        return ceiling_is_estimate(self._judge)
+
+
+def _lent(judge: WriterJudge) -> CompletionClients:
+    """The host's client factory: ``judge``, lent for the judge role on its own model, and nothing else."""
+
+    def lend(role: CompletionRole, model: str | None, *, temperature: float | None = None) -> BorrowedJudgeClient:
+        if role != "judge":
+            raise ValueError(f"the writer host calls no model in the {role!r} role; its scoring judge is its only one")
+        if model is not None and model != judge.model_name:
+            raise ValueError(
+                f"a judge config asked for {model!r}, and the writer host's judge calls {judge.model_name!r}; "
+                "every page is scored on its one judge"
+            )
+        return _LentJudge(judge, temperature=temperature)
+
+    return lend
+
+
+def _admit(_checked: object) -> None:
+    """A template check the writer host leaves to the writer's launch, which refuses what a writer cannot honour."""
+
+
+def writer_ops_host(
+    store: DocumentStore,
+    *,
+    judge: WriterJudge,
+    models: WriterModelFactory,
+    budget: ReportBudget,
+    request_s: RequestCeiling,
+    max_cost_usd: float,
+    skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
+    writer_provider: str = "anthropic",
+    max_arms: int = 2,
+    identity: str = CREATED_BY,
+    out_of_run_cost_usd: float | None = None,
+) -> OpsHost:
+    """A host that launches report writer arms over ``store``, beside the quick host's runs in it (the module docstring).
+
+    :param store: The store the quick path keeps its runs in; the writer's cases, runs and campaigns join them.
+    :ptype store: DocumentStore
+    :param judge: The scoring judge, built with its route and its recording; every arm's pages are scored on it, and a
+        launch names its ``model_name`` as the judge.
+    :ptype judge: WriterJudge
+    :param models: The model factory: an arm's writer, by the model id its launch names and the skill the arm runs, at
+        a reasoning effort.
+    :ptype models: WriterModelFactory
+    :param budget: Each report's budget; its turn cap bounds how long a cell can run.
+    :ptype budget: ReportBudget
+    :param request_s: The ceiling for one request on the writer's client, by output cap, in seconds.
+    :ptype request_s: RequestCeiling
+    :param max_cost_usd: The most one run may spend, judge included; a launch names its share, at most this.
+    :ptype max_cost_usd: float
+    :param skills: The skill versions a launch may run, by digest; the shipped skill is always one.
+    :ptype skills: Mapping[str, AnalystSkill]
+    :param writer_provider: The provider the factory builds every writer on, which tells a writer's family.
+    :ptype writer_provider: str
+    :param max_arms: The most arms launched together, and the most runs unfinished at once.
+    :ptype max_arms: int
+    :param identity: Who the cells' tool calls run as.
+    :ptype identity: str
+    :param out_of_run_cost_usd: The most one out-of-run pass (the pairwise pass) may be priced at; ``None`` for
+        ``max_cost_usd``.
+    :ptype out_of_run_cost_usd: float | None
+    :return: The host: launches the writer kind, generates no analysis, and places each model's family as its launches
+        do.
+    :rtype: OpsHost
+    """
+    judge_family = _family(judge.model_name, judge.provider, judge.base_url)
+
+    def model_family(model_id: str) -> str | None:
+        if model_id == judge.model_name:
+            return judge_family
+        return _family(model_id, writer_provider, None)
+
+    settings = LaunchSettings(
+        max_launch_arms=max_arms,
+        max_admitted_runs=max_arms,
+        judge_concurrency=1,
+        max_concurrent_cells=_WRITER_CELLS_AT_ONCE,
+        enforcement_enabled=True,
+        max_cost_usd=max_cost_usd,
+        max_metered_calls=None,
+        max_out_of_run_cost_usd=max_cost_usd if out_of_run_cost_usd is None else out_of_run_cost_usd,
+    )
+    eval_host = EvalHost(
+        profile=HostProfile(
+            host_id=_WRITER_HOST_ID,
+            host_sweepables=SHARED_CORE,
+            measures=MeasureRegistry(WRITER_KIND_MEASURES),
+            kinds=(WRITER_KIND_CONTRACT,),
+        ),
+        storage=EvalStorage(store),
+        failure_describer=_describe_failure(),
+        trace_sink=None,
+        blocking_executor=None,
+        cell_timeout=default_cell_timeout,
+        clients=_lent(judge),
+    )
+    holder: list[OpsHost] = []
+    entry = launchable_report_writer_kind(
+        lambda: holder[0],
+        identity=identity,
+        models=models,
+        budget=budget,
+        request_s=request_s,
+        model_family=model_family,
+        skills=skills,
+    )
+
+    def plan(request: LaunchRequest) -> ArmPlan:
+        storage = holder[0].eval_host.storage
+        stored = (
+            []
+            if request.case_set is not None
+            else storage.query_test_cases(request.scope_id, template_id=request.template.id)
+        )
+        admitted = admit_writer_launch(request, stored, skills=skills, model_family=model_family)
+        planned = plan_writer_arm(holder[0].eval_host, request, admitted)
+        cell_s = writer_launch_deadline(request, admitted, budget=budget, request_s=request_s)
+        cells = planned.case_count * request.k_runs
+        width = 1 if request.measure_latency else min(request.settings.max_concurrent_cells, cells)
+        needed_s, job_s = math.ceil(cells / max(width, 1)) * cell_s, adaptive_job_timeout_s(cells, cell_s)
+        if needed_s > job_s:
+            raise ValidationFailedError(
+                f"the arm's {cells} writer cell(s), {width} at a time at {cell_s:.0f}s each, could run {needed_s:.0f}s, "
+                f"past its job's {job_s:.0f}s budget, which would cut a report off after it was paid for",
+                remedy="launch fewer cases, give the report budget a lower turn cap, or lower the request ceiling",
+            )
+        return planned
+
+    checks = TemplateChecks(
+        require_known_tools_allowed=_admit,
+        refuse_undeclared_world_seed=_admit,
+        refuse_undeliverable_template=_admit,
+        refuse_inadmissible_template_case=_admit,
+        kinds={WRITER_KIND: replace(entry, plan_arm=plan)},
+    )
+    host = OpsHost(
+        launch=LaunchHost(
+            eval_host=replace(eval_host, template_checks=checks),
+            settings=lambda: settings,
+            job_timeout_factory=default_job_timeout,
+        ),
+        model_family=model_family,
+    )
+    holder.append(host)
+    return host
+
+
+#: The writer eval builds its host here, its judge typed as the host reads it.
+__all__ = ["WriterJudge", "writer_ops_host"]

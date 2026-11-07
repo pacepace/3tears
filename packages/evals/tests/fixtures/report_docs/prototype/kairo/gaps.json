@@ -1,0 +1,105 @@
+[
+  {
+    "need": "measure_breakdown over the asked aspect's pass rate, slice by stratum",
+    "why": "to say where the asked reading's loss concentrates; the refusal accepts only judged dimensions, not the pass rate the reading is on",
+    "workaround": "broke down persona.holds_character instead and named it as holding character, a different measure from the pass rate",
+    "claim_ids": [
+      "c4"
+    ]
+  },
+  {
+    "need": "an action that resolves a figure key and prints what it reads",
+    "why": "to check every key in the draft resolves and prints the unit I expect before submitting",
+    "workaround": "put the keys into a block_render title, which resolves figure keys, and read the title back",
+    "claim_ids": []
+  },
+  {
+    "need": "a place in the report document's evidence for block_render's reference and emphasis parameters",
+    "why": "the margin band on the lead forest and the off-lane emphasis are passed beside query, not in it, so an evidence entry of block, query and caption alone would render without them",
+    "workaround": "carried reference and emphasis as extra fields on the evidence entry, beside query",
+    "claim_ids": [
+      "c1",
+      "c4"
+    ]
+  },
+  {
+    "need": "per-stratum intervals or a separated marker in the diverging_bars values table",
+    "why": "the notes say separated rows are bold, but the values table shows no interval and no marker, so I cannot tell which stratum deltas are leads",
+    "workaround": "read every stratum row as unseparated and said once in the caption that they are leads, not findings",
+    "claim_ids": [
+      "c4"
+    ]
+  },
+  {
+    "need": "an example excerpt centred on the reply the judge failed, and more than one frozen failure per arm and stratum",
+    "why": "the off-lane excerpts end in tool search output, not Kairo's failing line, and one card per arm cannot show whether a failure type is typical",
+    "workaround": "relied on the judge's reason text for what the failure looks like, and said in the caption the cards are the only ones frozen",
+    "claim_ids": [
+      "c5"
+    ]
+  },
+  {
+    "need": "confound_check: the reasoning-share difference beside 1017's character drop",
+    "why": "to say whether 1017 reasoning less than September could explain its lower rate of holding character",
+    "workaround": "carried the confound in confidence with a material_if clause and a next step that matches reasoning share; the call rests on cost, which the confound does not touch",
+    "claim_ids": [
+      "c3"
+    ]
+  },
+  {
+    "need": "settle: human ratings needed to calibrate the judge to a stated agreement",
+    "why": "to size the judge-calibration next step",
+    "workaround": "named the calibration step in words, without a sample size",
+    "claim_ids": []
+  },
+  {
+    "need": "the campaign's definition of a passing trial on the asked aspect",
+    "why": "Method must say what pass means; the overview gives graded_by none and the pass rate sits below the holding-character rate for every arm",
+    "workaround": "said in Method that the campaign does not state it, and that pass is the stricter test",
+    "claim_ids": [
+      "c1"
+    ]
+  },
+  {
+    "need": "the lever named by the confound:model caveat",
+    "why": "it says another swept lever took more than one value, but touches no arm, aspect or measure, so I cannot say what it qualifies",
+    "workaround": "carried it in confidence with a material_if that says the snapshot names nothing it touches",
+    "claim_ids": []
+  },
+  {
+    "need": "why production cost is missing on some trials, and whether the missing ones are selective; and why price_tradeoff's cost gap differs from the paired cost contrast",
+    "why": "qwen3.8-flash has production cost on 828 of 895 usable trials, and its cost gap reads +$0.53 per 1,000 in price_tradeoff but +$0.000616 per reply in the contrast, so I cannot say which cost difference the page should quote or whether missing records bias it",
+    "workaround": "quoted cost uplift and the per-arm means, put the recorded count in Watch, and made reconciling the cost the first next step",
+    "claim_ids": [
+      "c2"
+    ]
+  },
+  {
+    "need": "the earlier round's figures for a contradicted prior insight",
+    "why": "the prior insight says qwen3.8-flash lowers production cost; this run finds it costs more, and I cannot compare the two rounds on shared cases",
+    "workaround": "said the contradiction in Watch and made the reconciliation a next step",
+    "claim_ids": [
+      "c2"
+    ]
+  },
+  {
+    "need": "a landing field for method-reach caveats in the report document",
+    "why": "latency and the unreported token and call counts are caveats with reach method, and method entries carry no caveat id, so a landing check cannot see them",
+    "workaround": "described them in words in the Method entry 'Not compared', and kept report and scoped caveats in confidence",
+    "claim_ids": []
+  },
+  {
+    "need": "an investigate action that returns reasoning_ratio.<arm>",
+    "why": "the editor flagged that 1017's smaller reasoning share had no figure; the key exists in the grammar but no listing returns it, and the editor's tool, which has no blocks, cannot read it",
+    "workaround": "cited reasoning_ratio.1017 and reasoning_ratio.September in the confound caveat, having read them through a block_render title",
+    "claim_ids": [
+      "c3"
+    ]
+  },
+  {
+    "need": "a reader label for each confidence caveat in the report document",
+    "why": "caveat ids include run UUIDs and a criterion key, which must not print above the appendix if the renderer shows caveats by id",
+    "workaround": "added a label field with reader wording to every confidence caveat; the renderer has to use it",
+    "claim_ids": []
+  }
+]

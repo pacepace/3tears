@@ -1,0 +1,29 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: judged
+  aspect: 
+  measures: [facts]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 95% computed
+unit: percent
+domain: 
+criteria.facts.threshold = 90%
+columns: [Row, Value, 95% computed interval]
+rows (5):
+  - cells: [P · Production, 93.0%, 90.1% to 95.9%]
+  - cells: [A · f64, 92.1%, 89.0% to 95.2%]
+  - cells: [B · f16, 89.4%, 85.9% to 92.9%]
+  - cells: [C · cor, 94.0%, 91.3% to 96.7%]
+  - cells: [floor 90%, 90.0%, ]
+total: 5
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]

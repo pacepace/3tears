@@ -53,7 +53,6 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     inspect_campaign_bundle,
 )
 from threetears.evals.analysis.arms import short_digest
@@ -546,7 +545,9 @@ class TestAnArmWhereNoResultTookATurn:
         loaded = storage.load_analysis(analysis.id, analysis.scope_id)
         assert loaded is not None
 
-        table = _table(build_report(loaded), "scoreboard")
+        # Its aspect's page is code's, over the bundle frozen with it.
+        (held,) = loaded.aspects
+        table = _table(_code_only(AnalysisContextBundle.from_dict(dict(held.bundle))), "scoreboard")
         assert _row(table, _REFUSING)["other"] == 4
         assert _row(table, _REFUSING)["cost"] is None
 

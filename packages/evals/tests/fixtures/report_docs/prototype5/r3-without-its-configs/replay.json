@@ -1,0 +1,19 @@
+{
+  "snapshot_of": "r3 without its configs",
+  "model": "claude-opus-5-5",
+  "budget_usd": 10.0,
+  "withhold": [
+    "r3-classifier.md"
+  ],
+  "ending": "stored",
+  "reason": "",
+  "stored": true,
+  "analyst_rounds": 3,
+  "editor_rounds": 3,
+  "tally": {
+    "turns": 42,
+    "tool_calls": 77,
+    "bounces": 0,
+    "cost_usd": 4.315449399999999
+  }
+}

@@ -1,0 +1,131 @@
+campaign overview
+snapshot: report-snapshot:f415cf1cf53877f61c6710e31d14e4c9
+meta (7):
+  meta.campaign = Turn router classifier sweep
+  meta.behavior = Turn router: complexity × domain
+  meta.kind = choice
+  meta.design_shape = factorial
+  meta.run_date = 2026-10-24
+  meta.provenance = Synthetic example data from docs/eval-report-kit/references/r3-classifier.json
+  meta.volume_per_month = 30000000
+n_candidates = 9
+cases: none
+repeats: none
+arms (9):
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    settings (2):
+      settings.atlas-m.zero.model = Atlas-M
+      settings.atlas-m.zero.prompt = Zero-shot
+    scoreboard (3):
+      scoreboard.atlas-m.zero.cases = 48210
+      scoreboard.atlas-m.zero.lost = 0
+      scoreboard.atlas-m.zero.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    settings (2):
+      settings.atlas-m.few.model = Atlas-M
+      settings.atlas-m.few.prompt = Few-shot (12 ex.)
+    scoreboard (3):
+      scoreboard.atlas-m.few.cases = 48210
+      scoreboard.atlas-m.few.lost = 0
+      scoreboard.atlas-m.few.failed = 0
+  - role: challenger; short_name: none; served_model: Atlas-M
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    settings (2):
+      settings.atlas-m.rubric.model = Atlas-M
+      settings.atlas-m.rubric.prompt = Rubric + reasoning
+    scoreboard (3):
+      scoreboard.atlas-m.rubric.cases = 48210
+      scoreboard.atlas-m.rubric.lost = 0
+      scoreboard.atlas-m.rubric.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    settings (2):
+      settings.brisk-s.zero.model = Brisk-S
+      settings.brisk-s.zero.prompt = Zero-shot
+    scoreboard (3):
+      scoreboard.brisk-s.zero.cases = 48210
+      scoreboard.brisk-s.zero.lost = 0
+      scoreboard.brisk-s.zero.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    settings (2):
+      settings.brisk-s.few.model = Brisk-S
+      settings.brisk-s.few.prompt = Few-shot (12 ex.)
+    scoreboard (3):
+      scoreboard.brisk-s.few.cases = 48210
+      scoreboard.brisk-s.few.lost = 0
+      scoreboard.brisk-s.few.failed = 0
+  - role: challenger; short_name: none; served_model: Brisk-S
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    settings (2):
+      settings.brisk-s.rubric.model = Brisk-S
+      settings.brisk-s.rubric.prompt = Rubric + reasoning
+    scoreboard (3):
+      scoreboard.brisk-s.rubric.cases = 48210
+      scoreboard.brisk-s.rubric.lost = 0
+      scoreboard.brisk-s.rubric.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    settings (2):
+      settings.nano-xs.zero.model = Nano-XS
+      settings.nano-xs.zero.prompt = Zero-shot
+    scoreboard (3):
+      scoreboard.nano-xs.zero.cases = 48210
+      scoreboard.nano-xs.zero.lost = 0
+      scoreboard.nano-xs.zero.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    settings (2):
+      settings.nano-xs.few.model = Nano-XS
+      settings.nano-xs.few.prompt = Few-shot (12 ex.)
+    scoreboard (3):
+      scoreboard.nano-xs.few.cases = 48210
+      scoreboard.nano-xs.few.lost = 0
+      scoreboard.nano-xs.few.failed = 0
+  - role: challenger; short_name: none; served_model: Nano-XS
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    settings (2):
+      settings.nano-xs.rubric.model = Nano-XS
+      settings.nano-xs.rubric.prompt = Rubric + reasoning
+    scoreboard (3):
+      scoreboard.nano-xs.rubric.cases = 48210
+      scoreboard.nano-xs.rubric.lost = 0
+      scoreboard.nano-xs.rubric.failed = 0
+aspects: []
+measures (6):
+  - key: accuracy; source: measure; unit: pct; higher_is_better: True; merit_axis: none; grade: class_label; level: 95%; arms_without: []; aspects: []; slices: [cell]; statistics: [cell: mean, half_width]; key_form: measure.accuracy.<arm>.<statistic>; judge: []
+  - key: balanced_accuracy; source: measure; unit: pct; higher_is_better: True; merit_axis: none; grade: class_label; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean]; key_form: measure.balanced_accuracy.<arm>.<statistic>; judge: []
+  - key: traffic_accuracy; source: measure; unit: pct; higher_is_better: True; merit_axis: none; grade: class_label; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean]; key_form: measure.traffic_accuracy.<arm>.<statistic>; judge: []
+  - key: macro_f1; source: measure; unit: pct; higher_is_better: True; merit_axis: none; grade: none; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean]; key_form: measure.macro_f1.<arm>.<statistic>; judge: []
+  - key: cost_per_1m; source: measure; unit: usd_per_1m; higher_is_better: False; merit_axis: none; grade: none; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean]; key_form: measure.cost_per_1m.<arm>.<statistic>; judge: []
+  - key: latency_ms; source: measure; unit: ms; higher_is_better: False; merit_axis: none; grade: none; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: p95]; key_form: measure.latency_ms.<arm>.<statistic>; judge: []
+criteria (3):
+  - id: overall; kind: gate; measure: balanced_accuracy; statistic: mean; direction: higher_is_better; scope: overall; task: none
+    criteria.overall.threshold = 90%
+  - id: cell_floor; kind: gate; measure: accuracy; statistic: mean; direction: higher_is_better; scope: each_cell; task: none
+    criteria.cell_floor.threshold = 80%
+  - id: p95; kind: gate; measure: latency_ms; statistic: p95; direction: lower_is_better; scope: overall; task: none
+    criteria.p95.threshold = 250 ms
+cells (9):
+  cells.simple.science.name = Simple × Science
+  cells.simple.conv.name = Simple × Conversational
+  cells.simple.news.name = Simple × News
+  cells.medium.science.name = Medium × Science
+  cells.medium.conv.name = Medium × Conversational
+  cells.medium.news.name = Medium × News
+  cells.complex.science.name = Complex × Science
+  cells.complex.conv.name = Complex × Conversational
+  cells.complex.news.name = Complex × News
+caveats (4):
+  - id: no_control; kind: no_control; reach: report; source: implied
+  - id: point_estimate:overall; kind: point_estimate; reach: report; source: implied
+  - id: point_estimate:p95; kind: point_estimate; reach: report; source: implied
+  - id: best_of_n; kind: best_of_n; reach: report; source: implied
+late_criteria: []
+late_set_at: none
+prior_insights: []
+names: {"criterion": {"cell_floor": "Cell floor", "overall": "Overall accuracy", "p95": "Latency budget (p95)"}, "measure": {"accuracy": "Accuracy", "balanced_accuracy": "Balanced accuracy", "cost_per_1m": "Cost per million turns", "latency_ms": "Latency", "macro_f1": "Macro F1", "traffic_accuracy": "Traffic-weighted accuracy"}}
+total: 40
+offset: 0

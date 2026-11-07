@@ -1,0 +1,78 @@
+dominance
+survivors (4):
+  - arm: arm:production; gate_status: pass; borders: []; standing: control; behind: []; why: []; dominated_by: [arm:v2]; dominated_with_axes: [arm:v2]
+    figures (1):
+      cost_per_1k.production = $2.00
+  - arm: arm:v2; gate_status: pass; borders: []; standing: shown_better; behind: []; why: []; dominated_by: []; dominated_with_axes: []
+    figures (20):
+      cost_per_1k.v2 = $2.00
+      aspects.billing.reading.v2.change = -60
+      aspects.billing.flip_margin.v2 = 83.2
+      aspects.tone.reading.v2.change = +40
+      aspects.tone.flip_margin.v2 = 0
+      aspects.refunds.reading.v2.change = +25
+      aspects.refunds.flip_margin.v2 = 2.6
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.delta = -0.6
+      aspects.billing.contrast.v2.passed.delta = -60
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.delta = +0.4
+      aspects.tone.contrast.v2.passed.delta = +40
+      aspects.billing.floor.billing/rate_drop/*.v2.status = broken
+      aspects.billing.floor.billing/rate_drop/*.v2.margin = 10
+      aspects.billing.floor.billing/rate_drop/*.v2.worst_drop = 83.2
+      aspects.billing.floor.billing/rate_drop/*.v2.reason = v2 passed 6 of 20 to production's 18, a drop that exceeds the margin of 10 points on its whole interval (at least 23.9)
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.status = unclear
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.margin = 15
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.worst_drop = 19
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.short_by = 4
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.reason = `reply.cites_policy` cannot separate the arms (both 20 of 20)
+  - arm: arm:v3; gate_status: pass; borders: []; standing: not_shown_no_worse; behind: []; why: [floor billing/rate_drop/* is unclear, floor tone/rate_drop/reply.cites_policy is unclear, aspect 'refunds' declares no floor, so nothing there shows it no worse, its reading on aspect 'billing' is not within the margin, its reading on aspect 'tone' is not within the margin, its reading on aspect 'refunds' is not within the margin]; dominated_by: [arm:production, arm:v2, arm:v4]; dominated_with_axes: [arm:production, arm:v2, arm:v4]
+    figures (17):
+      cost_per_1k.v3 = $2.00
+      aspects.billing.reading.v3.change = -5
+      aspects.billing.flip_margin.v3 = 20.9
+      aspects.tone.reading.v3.change = 0
+      aspects.tone.flip_margin.v3 = 19.3
+      aspects.refunds.reading.v3.change = 0
+      aspects.refunds.flip_margin.v3 = 19
+      aspects.billing.floor.billing/rate_drop/*.v3.status = unclear
+      aspects.billing.floor.billing/rate_drop/*.v3.margin = 10
+      aspects.billing.floor.billing/rate_drop/*.v3.worst_drop = 20.9
+      aspects.billing.floor.billing/rate_drop/*.v3.short_by = 10.9
+      aspects.billing.floor.billing/rate_drop/*.v3.reason = v3's drop is not shown to stay within 10 points (it could be as much as 20.9)
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.status = unclear
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.margin = 15
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.worst_drop = 19
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.short_by = 4
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.reason = `reply.cites_policy` cannot separate the arms (v3 40 of 40, production 20 of 20)
+  - arm: arm:v4; gate_status: pass; borders: []; standing: not_shown_no_worse; behind: []; why: [floor billing/rate_drop/* is unclear, floor tone/rate_drop/reply.cites_policy is broken, aspect 'refunds' declares no floor, so nothing there shows it no worse, its reading on aspect 'billing' is not within the margin, its reading on aspect 'tone' is not within the margin, its reading on aspect 'refunds' is not within the margin]; dominated_by: []; dominated_with_axes: []
+    figures (17):
+      cost_per_1k.v4 = $1.00
+      aspects.billing.reading.v4.change = +5
+      aspects.billing.flip_margin.v4 = 15.9
+      aspects.tone.reading.v4.change = -10
+      aspects.tone.flip_margin.v4 = 32.4
+      aspects.refunds.reading.v4.change = +10
+      aspects.refunds.flip_margin.v4 = 12.7
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.delta = -0.6
+      aspects.billing.floor.billing/rate_drop/*.v4.status = unclear
+      aspects.billing.floor.billing/rate_drop/*.v4.margin = 10
+      aspects.billing.floor.billing/rate_drop/*.v4.worst_drop = 15.9
+      aspects.billing.floor.billing/rate_drop/*.v4.short_by = 5.9
+      aspects.billing.floor.billing/rate_drop/*.v4.reason = v4's drop is not shown to stay within 10 points (it could be as much as 15.9)
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.status = broken
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.margin = 15
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.worst_drop = 78.5
+      aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.reason = v4 passed `reply.cites_policy` on 8 of 20 to production's 20, a drop that exceeds the margin of 15 points on its whole interval (at least 23.9)
+out: []
+weighs: [control, asked, cost]
+dominant: []
+axes: []
+dominant_with_axes: []
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [tradeoff]
+  dominant: []
+  ranking_rule: []
+  withheld: 
+total: 4
+offset: 0

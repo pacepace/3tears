@@ -17,7 +17,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.declaration import AspectDesign
@@ -103,7 +103,7 @@ class EffectiveLever:
     provenance: Literal["overridden", "inherited", "unknown"]
 
 
-def _observed_models(results: list[EvalResult], role: str) -> set[str]:
+def _observed_models(results: list[ResultView], role: str) -> set[str]:
     """Every distinct model the given usage role spent tokens on across ``results``."""
     return {usage.model for result in results for usage in result.usage if usage.role == role and usage.model}
 
@@ -116,7 +116,7 @@ _EXERCISED_ARM_FLOOR = 2
 
 
 def _exercised(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> dict[str, dict[str, int]]:
     """How often each lever read off what ran was exercised: lever → run id → that run's results that observed it.
 
@@ -127,7 +127,7 @@ def _exercised(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose levers these are.
     :ptype profile: HostProfile
     :return: Every host lever with a recovery rule, each run counted (0 where none of its results observed it).
@@ -147,7 +147,7 @@ def _declared_axes(declared: AspectDesign | None) -> frozenset[str]:
     return frozenset(axis.axis_id for axis in declared.axes) if declared is not None else frozenset()
 
 
-def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]]) -> dict[str, str]:
+def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[ResultView]]) -> dict[str, str]:
     """Each run's arm: the variant key its observations carry, or ``run:<id>`` for a run none resolved a key for.
 
     The grouping the design lenses use (``_CampaignArms.groups``): an unplaced run cannot pool with any other, so it is
@@ -158,7 +158,7 @@ def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]]
 
 def _unexercised_levers(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
     declared_axes: Collection[str],
@@ -179,7 +179,7 @@ def _unexercised_levers(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose levers these are.
     :ptype profile: HostProfile
     :param declared_axes: The levers the campaign declared as axes, each a level whatever its calls.
@@ -207,7 +207,7 @@ def _unexercised_levers(
     )
 
 
-def _run_values(runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], role: str) -> set[str]:
+def _run_values(runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], role: str) -> set[str]:
     """The distinct values a role's model took across runs: each run that observed exactly one contributes it."""
     values = (_observed_models(results_by_run.get(run.id, []), role) for run in runs)
     return {next(iter(models)) for models in values if len(models) == 1}
@@ -254,7 +254,7 @@ def _with_unobserved_unknown(
     }
 
 
-def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostProfile) -> dict[str, EffectiveLever]:
+def _effective_config(run: EvalRun, results: list[ResultView], *, profile: HostProfile) -> dict[str, EffectiveLever]:
     """Resolve a run's levers to the values it actually ran at, with provenance.
 
     **Read through the host's registry, never off one host's carriers.** The registry is the
@@ -300,7 +300,7 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
     :param run: The run to read overlays from.
     :ptype run: EvalRun
     :param results: That run's results — the observation side of the resolution.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: Each applicable lever mapped to its :class:`EffectiveLever`.
@@ -310,7 +310,7 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
 
 
 def _resolve_config(
-    run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+    run: EvalRun, results: list[ResultView], *, profile: HostProfile
 ) -> tuple[dict[str, EffectiveLever], frozenset[str]]:
     """:func:`_effective_config`, keeping the ENGAGED set its first two passes already know.
 
@@ -327,7 +327,7 @@ def _resolve_config(
     :param run: The run to read.
     :ptype run: EvalRun
     :param results: That run's results.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: ``(each applicable lever's EffectiveLever, the levers this run ENGAGED)``.
@@ -369,7 +369,7 @@ def _resolve_config(
     return flat, frozenset(resolution.overlaid | (set(recovery) & set(flat)))
 
 
-def _effective_values(run: EvalRun, results: list[EvalResult], *, profile: HostProfile) -> dict[str, str]:
+def _effective_values(run: EvalRun, results: list[ResultView], *, profile: HostProfile) -> dict[str, str]:
     """Each lever whose value IS established, as plain strings.
 
     Levers resolving to ``unknown`` are absent rather than present-and-empty: a

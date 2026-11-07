@@ -1,0 +1,26 @@
+settle
+reads_as: code's arithmetic on the frozen input: the cases a design needs, sized on today's estimate and its spread (a normal approximation), and how often today's design would read the other way if the truth equals today's estimate; it plans a run, it tests nothing
+sided: one-sided at the snapshot's level: a bound centred on today's figure sits wholly on today's side of the line, which clears the line where today's figure passes (settles: clears) and confirms the miss where it misses (settles: misses); cases_needed is the size at which half such designs do if the truth equals today's figure, cases_needed_80 the size at which four in five do. A page prints two-sided intervals, which need more: cases_needed_two_sided and cases_needed_two_sided_80 are the same sizes for the two-sided interval at the level. Each size counts what count_of says the count counts: trials, not cases, on a repeated design
+hypothetical: False
+arms: [arm:nano-xs.few]
+rows (1):
+  - where: overall; name: none; against: criterion overall; settles: clears; unsettled:
+    estimate (1):
+      criteria.overall.nano-xs.few.value = 90.1%
+    criteria.overall.threshold = 90%
+    settle.criteria.overall.nano-xs.few.overall.distance = +0.1
+    settle.criteria.overall.nano-xs.few.overall.cases_needed = 241332
+    settle.criteria.overall.nano-xs.few.overall.cases_needed_80 = 551478
+    settle.criteria.overall.nano-xs.few.overall.cases_needed_two_sided = 342655
+    settle.criteria.overall.nano-xs.few.overall.cases_needed_two_sided_80 = 700113
+    settle.criteria.overall.nano-xs.few.overall.wrong_side = 23.1%
+    settle.criteria.overall.nano-xs.few.overall.level = 95% one-sided
+    counts (1):
+      spread.nano-xs.few.balanced_accuracy.overall.n = 48210
+    count_of (1):
+      spread.nano-xs.few.balanced_accuracy.overall.counts = cases
+    basis (1):
+      spread.nano-xs.few.balanced_accuracy.overall.basis = a pass/fail rate's binomial spread, from its count
+total: 1
+offset: 0
+notes: []

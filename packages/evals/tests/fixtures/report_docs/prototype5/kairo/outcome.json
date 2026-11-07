@@ -1,0 +1,233 @@
+{
+  "ending": "stored_with_findings",
+  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 1,
+          "reason": "The headline, decision block and c1 make the call clear: keep September. qwen3.8-flash is worse on character (-7.6 pts, -12.9 to -1.8), and both candidates cost more. The lede and Watch name the main risk, an unnamed provider routing. But the headline puts '27–28% more to run' down to the models themselves, when the cost belongs to this run's routing. An earlier high-confidence round found the opposite for qwen3.8-flash. A reader who stops at the headline gets the cost order as a fact about the models."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "No block contradicts its claim: c1's rows match its sentences, and c2's intervals are clear of zero. Two things slow a reader. The decision says qwen3.8-flash costs '$0.62 per 1,000 replies more', but the options table right beside it shows $2.43 against $1.89, a $0.54 gap. The $0.62 is a paired figure over 284 cases, and the page never says so. Also, c4 opens with 'off-lane failures look alike across arms', then says the qwen3.8-flash card fails a different way: it answers the request outright. The judge's reasons on all three qwen3.8-flash off-lane cards back that difference."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The candidates' weak axes are visible, and 1017's pass rate is correctly 'not told apart' (-7.4 to +2.6). But the confidence line reads High and calls the cost gap 'measured telemetry' that settles the call alone. Yet the page's own Next calls repricing on a named routing 'the one result that could reverse the call'. An earlier round, held at high confidence, found qwen3.8-flash lowers production cost. That overstates how settled the deciding axis is."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted would change the decision. The judged outcome and transcript scores, the booth-stays-offstage score and the delivery check go the same way or are not separated. The confirmatory readings don't move with the margin: the margin sweep holds at every value, with 1017 flipping at 5.8 and qwen3.8-flash at 10.8 without changing the call. Measuring spend is rightly kept apart from production cost."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "c1 and c2 carry the reasoning-share confound on 1017, and Next steps proposes a rerun at matched reasoning. c3 reads 1017's holds-character loss (-4.7, -8.7 to -0.6), which carries that confound, but c3 states no caveat. The model-confound clause in the confidence line says what would make it matter but not why the call holds until then."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: repricing on a named routing (could reopen the call), an off-lane directive rerun, 1017 at September's reasoning share, and judge calibration against human ratings."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "c1's and c2's forests show their claims' own figures. c3's headline figures are not in its block: the loss shares (48% and 53%) and September's 65.8% off-lane rate. The block draws only per-stratum changes. Its caption mentions 'bold rows' that the table doesn't mark. c2's block carries two captions."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The call rests on cost alone: the confidence line says 'the cost gap, which alone rules out both candidates'. Yet the headline, the Recommendation ('it costs the least to run') and c2's text put the cost order down to the models with no provider named. The run does not record who served each arm, and an earlier high-confidence round found qwen3.8-flash lowers production cost. The confidence still reads High and calls the cost gap 'measured telemetry', with no clause on routing. Fix: (1) scope the headline, Recommendation and c2 sentences to 'on this run's unnamed provider routing'. (2) Add a confidence clause saying the High covers the cost order on this routing only, that a named routing pricing a candidate at or below $1.89 per 1,000 replies would reopen the call, and why it holds until then (the prior result was on an unknown routing too). Otherwise lower the confidence. (3) Give the model-confound clause a reason the call holds until then, as the other clauses do.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "c2",
+          "severity": "should_fix",
+          "finding": "The decision and c2 cite +$0.62 and +$0.49 per 1,000 replies, but the options table shows $2.43 and $2.41 against $1.89, gaps of about $0.54 and $0.52. The cited figures are paired changes over the cases where both arms reported cost (284 and 293 cases), and the 27–28% comes from the arm means. Say this in c2 and the decision, or quote the table's gaps there, so a reader doesn't take the figures for an error. Also note that 1017's 'would more likely widen' rests on inference, since output tokens were not reported. Drop the duplicate caption on c2's block.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "c3",
+          "severity": "should_fix",
+          "finding": "c3 reads 1017's holds-character loss, which carries the reasoning-share confound, but states no caveat. Attach it as c1 does. Also put the claim's own figures in its block: the off-lane loss shares (48% for qwen3.8-flash, 53% for 1017) and September's off-lane rate of 65.8%. Remove or honour the caption's reference to bold rows, since none are marked. 'The weak spot for every model' holds among the eight strata shown, but the 'assistant shape' stratum (6 cases) is lower for September (58.8%). Say 'among the larger strata'.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "c4",
+          "severity": "should_fix",
+          "finding": "c4 opens with 'off-lane failures look alike across arms, September included', then says qwen3.8-flash fails differently: it answers the out-of-lane ask outright. Its sampled cards (landlord email, jeans wash, phone choice) all do. Lead with the difference instead: 1017 and September slip into narration or help-desk phrasing, while qwen3.8-flash gives the off-lane help. Say the pattern rests on 3 cards kept from 64 qwen3.8-flash failures.",
+          "id": "f1.4",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 9,
+      "passes": false,
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c1 say what to do: keep September. They say why. Both candidates cost 27–28% more on this run's routing, neither holds character better, and qwen3.8-flash is 7.6 points worse on pass rate (interval -12.9 to -1.8). They also name the main risk: an unnamed provider routing that, once named, could price a candidate at or below $1.89 per 1,000 replies. Options dominance agrees: September dominates both candidates."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim matches its own table. In c1, 1017's pass-rate interval (-7.4 to +2.6) crosses zero, and its holds-character interval (-8.7 to -0.6) does not. c2's paired cost gaps (+$0.62 and +$0.49, both clear of zero) support the headline. c3's off-lane rates (65.8%, 42.9%, 45.6%) are the lowest of the eight strata it shows for every arm. c4 now opens with the difference between the arms, which its cards bear out."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The call now rests on cost, and every place that says so limits it to this run's unnamed routing. The confidence line limits its High to the cost order on that routing and says what would reopen the call. September's own weak spot, off-lane asks at 65.8%, is shown in c3. 1017's character loss is stated alongside its 'not told apart' pass rate."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing left out would change the decision. The margin sweep holds at every margin, and the left-out measures don't separate the arms. One small inaccuracy: the note on small strata says only September falls lower in 'assistant shape' than off-lane, but 1017 does too (44.4% vs 45.6%). It does not touch the call."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The reasoning-share confound is attached to c1, c2 and c3, and a next step tests it. The model confound now says why the call holds: the recorded settings differ in the model alone, which campaign_overview confirms. The unnamed routing is the deciding risk and is carried into the confidence line, Watch and the first next step."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: repricing on named routings (the only thing that reopens the call), revising the off-lane directive, rerunning 1017 at a matched reasoning share, and calibrating the judge against human ratings."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "c1's block shows the gaps against the 15-point margin. c2's block shows the paired cost changes the claim cites, and its captions now say what is paired. c3's block holds the rates the claim states, with an accurate caption. c4's cards fit the claim, which now says it rests on 3 of 64 failures. One small wording issue in c2 is raised below."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "c2",
+          "severity": "should_fix",
+          "finding": "c2 says September has 'its own missing trials at its p95 cost ($2.02 per 1,000 replies)'. Read that way, $2.02 is September's p95, but its p95 is $5.30 per 1,000 replies. $2.02 is September's mean once its 33 trials with no reported cost are filled in at $5.30 each. The conclusion holds, since $2.24 and $2.36 are both above $2.02. Reword it, for example: 'September's mean, with its 33 missing trials set to its p95 cost of $5.30, would be $2.02 per 1,000 replies.'",
+          "id": "f2.1",
+          "since": 2
+        },
+        {
+          "claim": "c3",
+          "severity": "should_fix",
+          "finding": "The left-out note on small strata says only September's 'assistant shape' rate (58.8%) is below its off-lane rate. 1017's is too: 44.4% in assistant shape against 45.6% off-lane. Name both arms in that note. Also, 'the eight largest strata' includes lineage, which has 10 cases, but pushback, rejection, short and story have 10 cases as well. Either say 'strata of 10 or more cases' or say how the tie was broken. Off-lane is still the lowest for every arm among all of them.",
+          "id": "f2.2",
+          "since": 2
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4"
+      ],
+      "total": 14,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    },
+    {
+      "round": 3,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c1 say what to do: keep September. They say why. Both candidates cost 27–28% more on this run's routing. qwen3.8-flash is 7.6 points worse on pass rate, and 1017 is not separated from September. They also name the main risk: the provider routing is unnamed, and a named routing could reverse the cost order. The options table puts the pass rate and cost of each arm side by side."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "c1 to c3 hold together and match their blocks. The cost gaps are clear of zero (+$0.62 and +$0.49). Off-lane is the lowest stratum for every arm among strata of at least ten cases. The fill-in figures check out: $2.24, $2.36 and $2.02. Options dominance also gives September as the dominant option. c4 does not hold. Its claim that qwen3.8-flash fails differently from the other two is contradicted by the other kept cards: two of three kept cards for September and two of three for 1017 also give the off-lane help."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The page keeps 1017's pass rate 'not told apart' (-7.4 to +2.6 points) and does not call it a loss. It shows 1017's separated holds-character loss of 4.7 points. Each cost claim says it holds on this run's routing only. The confidence clauses say what each open caveat would need to be true to matter and why the call holds until then. The margin sweep confirms the call holds at every margin."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing left out would change the decision. The outcome and transcript scores, the offstage dimension, the delivery check and measuring spend all point the same way or are not separated. The note on small strata now names both September (58.8%) and 1017 (44.4%) for assistant shape."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The reasoning-share confound is carried on c1, c2 and c3, with a next step to rerun 1017 at matched reasoning. The unnamed routing is carried into the headline, the confidence line and the first next step. The model confound and the apparatus note are stated in the confidence line and in Method."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: repricing on a named routing, a revised off-lane directive, a rerun at matched reasoning, and judge calibration. The repricing is correctly named as the one result that could reverse the call."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "c1, c2 and c3 show their own figures, and the gaps are drawn. c4's block shows only one of three kept off-lane cards each for 1017 and September. The caption says 'One off-lane card each', which hides that three were kept for each. The unshown cards (September T42 and T64, 1017 T67 and T77) show the same give-the-help failure that c4 says sets qwen3.8-flash apart."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "c4",
+          "severity": "must_fix",
+          "finding": "c4 says qwen3.8-flash 'fails differently from the other two', and that the 1017 and September cards 'instead slip out of the DJ voice into narration or help-desk phrasing'. Three off-lane cards were kept for each arm, and the claim shows only one each for 1017 and September. Of the unshown cards, two of September's give the off-lane help: T42 suggests an opening line for the landlord email, and T64 answers 'Cold' to the laundry question. Two of 1017's do too: T67 answers 'Cold', and T77 says 'Buy whatever plays the bass cleanest'. So giving the off-lane help shows up in two of three kept cards for every arm, and narration or help-desk phrasing in only one each for September and 1017. Rewrite c4 to say that, in the kept cards, all three models mostly fail by supplying the out-of-lane help, and that only September and 1017 also show a narration or help-desk slip. Show all three kept cards per arm, or a count per failure kind, and fix the caption ('three of 39' for September, 'three of 62' for 1017). The next step on the off-lane directive can stay as it is, since it already aims at both failure kinds.",
+          "id": "f3.1",
+          "since": 3
+        }
+      ],
+      "resolved": [
+        "f2.1",
+        "f2.2"
+      ],
+      "total": 12,
+      "passes": true,
+      "must_fix": true,
+      "blocking": [
+        "f3.1"
+      ]
+    }
+  ]
+}

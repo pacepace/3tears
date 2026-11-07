@@ -1,0 +1,129 @@
+{
+  "resolutions": [
+    {
+      "finding": "must_fix (report): the cost_basis caveat understated its reach; the value-per-point bands are per-call dollar figures and move if the volume counts tasks.",
+      "status": "resolved",
+      "evidence": "material_if now says every dollar band moves with the basis, names calls per task for the lean (1.539) and Brisk-S high (1.476), and says only the order holds. what_settles_it and next[0] put the basis question first. Editor check (cost_per_1k x calls_per_task, editor-work/r2_basis.py): the per-task frontier keeps the same seven options in the same order, and the cheapest-at-each-floor answers don't change. The lean's band moves from $319.67-$1,595.18 to about $495-$2,319, so the caveat's claim is right. The tool prices per call only, so the report can't print the per-task bands without typing numbers. That is a tool gap, not a report fault."
+    },
+    {
+      "finding": "should_fix (c1): the step above the lean buys 0.8 points overall but 1.7 on multi-hop; say so beside the trade or in watch.",
+      "status": "resolved",
+      "evidence": "The watch slot now says the step lifts multi-hop from 95.6% to 97.3%, more than the 0.8 points it adds overall. Checked against the task read: by task the step adds +0.1 single, +1.7 multi-hop, +0.9 date math and +1.2 ambiguous, so multi-hop gains the most. One side effect is listed as a new finding: the watch states this without the hedge that c5's caption carries."
+    },
+    {
+      "finding": "should_fix (report): the headline's 'dear' rested on relative price alone; put the absolute step on the first screen.",
+      "status": "resolved",
+      "evidence": "The headline no longer says 'dear'. It gives both prices per point ($1,595.18 against $319.67) and leaves where to stop to the owner. the_trade gives the absolute step: $1,324 a month on top of the lean's $1,208."
+    },
+    {
+      "finding": "should_fix (c6): scope the claim to three snapshot-chosen cards, cite the one share, and fix the 'one per task' caption.",
+      "status": "resolved",
+      "evidence": "c6 now says 'The cards are a sample, not a census', and the caption says single lookup has no card and the snapshot chose them. examples_list confirms it: three lean cards (multihop, datemath, disamb), and the pool keeps at most one per arm and stratum. The 9-of-17 share is described in words ('the commonest wrong-argument pattern') rather than quoted. That is acceptable because the card's own reason prints the count."
+    },
+    {
+      "finding": "should_fix (c1): the lead claim's price per point appears in no block; add a step table and drop c3's re-filtered scatter.",
+      "status": "partially resolved",
+      "evidence": "c3's scatter was replaced by a table, which resolves that half. c1 gained a table of the seven frontier options, but it holds only pass rate and cost per 1k calls in long form: seven pass-rate rows, then seven cost rows. It shows no gain, no monthly cost gap and no price per point. To get from the block to $1,595.18 or $319.67, a reader has to multiply by 4,000 and divide by a gain they compute across rows nine apart. The caption ('the figures each price step is computed from') admits as much."
+    },
+    {
+      "finding": "should_fix (report): pass_undefined had no next step.",
+      "status": "resolved",
+      "evidence": "next[2] asks the owner to define a pass, including whether a clarifying question is the only pass on ambiguous names. It also says this settles whether the ambiguous-name rates, and so every overall rate, measure the product's bar."
+    },
+    {
+      "finding": "should_fix (c3): rounding makes the page disagree with itself (98% vs 98.6% quoted as 0.7; 97.1% to 98% priced as 0.8).",
+      "status": "partially resolved",
+      "evidence": "Method now has a 'Rounding' entry: gains are computed before rounding and can differ from the printed rates by a tenth. The display is unchanged. Brisk-S high still prints as 98% next to 98.6% while c3 quotes a 0.7 gain, and the step the decision prices still reads 97.1% to 98% for 0.8. The c3 caption also calls 97.9% against 98% a tie. That is true (the gap is -0.04), but only Method explains it."
+    },
+    {
+      "finding": "should_fix (report): the lede said Atlas-M was 'beaten' (one is a tie) and that retry comes 'for little cost' without its p95 cost.",
+      "status": "resolved",
+      "evidence": "The lede now says 'matched or beaten' and 'for little cost and a longer p95 tail'. Method states that retry leaves p50 unchanged and lengthens p95. Checked across all 18 arms: p50 is identical within every pair, and p95 rises at every pair (for example Nano-XS off goes from 140 to 198 ms, Atlas-M high from 2430 to 2551 ms)."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the decision slots and c1 answer the three first-screen questions. What to do: stop at Brisk-S low with 1 retry, labelled the analyst's lean, not a rule. Why: a point costs $319.67 a month up to the lean and $1,595.18 past it, and the step adds $1,324 to the lean's $1,208. The main risk: a floor above 97.1%, a p95 budget under 513 ms, or a value per point outside the band moves the lean, and the cost basis must be declared first. what_settles_it puts the declarations in order."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 sets the knee. c2 explains how retry shapes the frontier: its gain shrinks as the base rises, 7.5, 4.8, 3.5, 3.5, 2.4, 1.8, 1.4, 1.3 and 0.9 points, verified monotone across the lattice. c3 explains why Atlas-M is absent from the frontier until its top setting; this matches price_tradeoff's off_frontier list. c4 adds the latency cost and c5/c6 locate the lean's weak task. Every band was checked against the tool: the floor cuts at 94.8, 95.3, 97.1 and 98%, the value-per-point cuts at $319.67, $1,595.18 and $17,236.36, and the p95 cuts at 513 and 2551 ms. Nothing contradicts the headline. The p95 explore outcome is weaker than the rest (see findings), but it does not contradict anything."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The lean's weak axes are visible. In c4's bars its p95 (513 ms) sits above Nano-XS high's (450 ms). Multi-hop is named as its weakest task in watch and c5. The flag says plainly that the lean is the analyst's. c6 is now scoped as a sample. The no-interval caveat's framing (the steps above the lean are under a point, the steps up to it are larger) fits the scale of 1,200 cases per configuration. Editor arithmetic: the binomial SE of a difference near 97% is about 0.7 points, so 0.8 is about one SE and 2.4 about three. Two small overstatements remain. watch says an owner who weights multi-hop 'gets more for the step' on a 1.7-point task-level gain with no interval and no stated task size. The hedge exists, but only in c5's caption. the_trade prices the step to the dearer option to the cent but gives its latency cost only as 'lengthens the p95 tail'. The figure is 513 to 870 ms."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "The omissions were checked with the tool. options_dominance names Nano-XS off/no-retry undominated on cost alone. Outcome and extra_calls have no figures for any of the 18 arms. Multi-hop is the weakest task in all 18 configurations. The malformed card belongs to nano-xs.low.r1. Calls per task changes no frontier position or floor answer (editor per-task recompute). None of these changes a decision. Brisk-S low/no-retry's omission says 'the explore control covers' the p95 band where it matters, but that control never names it. A reader can still recover it from the lattice (465 ms, 95.3%), so the decision is unaffected. The row 'Price rows ... beyond the first page' describes tool paging, not anything a reader can place."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Each confound is either shown not to matter or carried into the story and the next steps. Cost basis: material_if now states its real reach (every dollar band moves, only the order holds), and next[0] asks for the basis. No interval: next[3] asks for a paired rerun of the three options either side of the lean, with intervals. Undefined pass: next[2] asks the owner to define it. Best-of-18 selection is carried with a material_if and partly answered by the paired rerun. Task mix enters through watch. 'No production configuration served as a control' is in the flag and Method."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each of the five names a declaration or an experiment and says what it settles. The declarations: the volume basis, which fixes the bands; a floor and p95 budget or a value per point, which picks the band; and a pass definition, which settles whether the ambiguous-name rates measure the product's bar. The experiments: a paired rerun of nano-xs.high.r1, the lean and brisk-s.high.r1 with intervals on each difference, which settles whether the steps are noise; and a date-window bounds check plus hop-by-hop planning on the lean, then a rerun, which settles whether the lean closes the gap at its own price."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c2's lattice, c4's range bars and c5's heatmap fit their claims, and the counterfactual holds for each. Three problems remain. c1, the lead, still has no block that shows its numbers: the new table lists pass rate and cost per 1k for the frontier options in long form, so no gain, monthly gap or price per point is on the page outside prose. c3's table splits the two axes of a pairwise-dominance claim nine rows apart, with pass rates in rows 1-9 and costs in rows 10-18. Its caption also inverts the order: it says each Atlas-M setting comes after the Brisk-S setting that matches it, but the table puts A before H, B and C before J, and D and E before L. A reader following the caption pairs the wrong rows."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c3",
+      "severity": "must_fix",
+      "finding": "The caption misdescribes its own table. It says 'Each Atlas-M setting after the cheaper Brisk-S setting that matches or beats it', but the rows run A, H, B, C, J, D, E, L, F, so every Atlas-M setting comes before its matcher (H matches A; J beats B and C; L ties D and beats E). Either reorder the arms to H, A, J, B, C, L, D, E, F, or change the caption to 'each Brisk-S setting after the Atlas-M settings it matches or beats'. Also, the long-form table puts each pair's pass rate and cost nine rows apart. If the table block can put measures in columns, use that. If it cannot, record it as a capability gap."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The lead claim is two prices per point ($1,595.18 past the lean against $319.67 before it), but no block prints a price per point. The added frontier table holds pass rate and cost per 1k only, in long form. Show each frontier step's gain, monthly cost gap and price per point: price_tradeoff's steps already carry those six rows as figure keys. If no block kind renders a price-step table, record that as a capability gap rather than leaving the lead's numbers prose-only."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The p95 explore control says who drops out but not who is best, and its middle cut is misattributed. Under 870 ms 'every Atlas-M setting is out as well' is true, but Atlas-M's lowest p95 is 900 ms. 870 ms is where Brisk-S high itself drops out. What a decider needs from this control: from 513 up to 870 ms the lean is the highest-pass option at any value per point (Brisk-S high no-retry, at 810 ms, reads 96.6%). Under 513 ms the best is Brisk-S low no-retry (465 ms, 95.3%), and under 465 ms Nano-XS high with retry (450 ms, 94.8%). The omitted row for Brisk-S low no-retry says this control covers it, but the control never names it."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "the_trade quantifies the step's dollar cost exactly but its latency cost only as 'lengthens the p95 tail'. Cite the figure: the lean's p95 of {measure.latency_ms.brisk-s.low.r1.p95} against {measure.latency_ms.brisk-s.high.r1.p95} for Brisk-S high, which is 513 against 870 ms."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The watch slot says an owner who weights multi-hop 'gets more for the step than its overall price says' on a task-level gain of 1.7 points (95.6% to 97.3%). That gain has no interval, the task's size is not stated, and it is drawn from a subset of the 1,200 cases, so its noise is wider than the overall 0.8. Carry c5's hedge into the slot ('descriptive, no interval'), or name the paired rerun in next[3] as what would confirm it."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The omitted row 'Price rows for options off the frontier beyond the first page' describes the tool's paging, which a reader can't place. Say what is left out: the price of each dominated option against the one that dominates it."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5 (not resolved from round 1): c1's scatter_frontier values table still labels its 18 points with raw arm ids (atlas-m.off.r0, brisk-s.low.r1, ...), while the table blocks use reader names (J · Brisk-S · reasoning low · 1 retry). If those point labels render above the appendix, internal ids reach the body. This is renderer-side; the analyst can't fix it in the doc.",
+    "Invariant 1 now holds: the round-1 typed counts ('each of its other five', 'the other fourteen configurations', 'two steps above it') are gone. Every figure in prose resolves through a key. The only typed quantity left is Method's 'a tenth of a point', which states the rounding rule rather than a data value.",
+    "Invariants 3 and 4 hold: the snapshot's caveats list is empty, so all four caveats are the analyst's own, each shown with a material_if. high_if_immaterial matches open caveats.",
+    "Not an invariant: the lattice's 'Not gated here' pills on all 18 tiles are still renderer noise, but c2's caption now explains them. The 'per 1,000 replies' and 'per 1k calls' labels are reconciled in Method's 'Cost basis'. The table block renders multi-measure queries in long form (Arm, Measure, Value), which hurts c1 and c3 (see findings)."
+  ],
+  "calls": 18
+}

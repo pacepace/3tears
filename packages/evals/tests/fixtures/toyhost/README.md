@@ -9,7 +9,7 @@ and nothing else.
 
 | Step | File | What it holds |
 |---|---|---|
-| Measures, bars, style | `profile.py` | The six measures (one a declared diagnostic), two bars in opposite directions, a style, a caveat kind the engine does not own, and the measure family the host declares (`extraction_grade`) — assembled into the `HostProfile` |
+| Measures, bars | `profile.py` | The six measures (one a declared diagnostic), two bars in opposite directions, and the measure family the host declares (`extraction_grade`) — assembled into the `HostProfile` |
 | Kind contract | `contract.py` | The extractor's overlays, its spec, and its rig seats — the apparatus its runs have |
 | Levers and apparatus | `sweepables.py` | The declared inputs and the two pinned roles, extending the engine's `SHARED_CORE` |
 | How one run resolves its levers | `variant.py` | The host's `VariantLeverReader`; the engine resolves the model, the kind and the kind contract's levers itself |
@@ -19,6 +19,7 @@ and nothing else.
 | What a launch may turn | `contract.py` | The extractor's `KindContract`: its overlay model and its template spec model |
 | The host value | `host.py` | The one `EvalHost` handed to every entrypoint |
 | Launching | `launch.py` | The `LaunchHost` and the extractor's launcher, for `start_run` |
+| Writing a report | `ops.py` | The `OpsHost`: its `AnalysisGeneration` (a report's budget, and a job ceiling derived from the writer's), its reading of a model's family, and the report writer's kind contract and measures on the profile |
 | Tracing | `tracing.py` | The host's own `TraceSink`, implemented without OpenTelemetry |
 | A model judge | `judge.py` | A rubric and a scripted `CompletionClient` the engine's `JudgeService` scores through |
 | Data | `corpus.py`, `run.py`, `campaign.py` | A hand-built observational corpus, a run path through the runner, and a declared campaign over each |
@@ -65,8 +66,6 @@ runner's own output, cell by cell.
   declares as one (`field_count_error`) — across **all four merit axes**.
 - **Two bars in opposite directions**, so the ratchet's lower-is-better branch runs.
 - **One world dimension in every registrable quadrant**, including `witnessed`.
-- **A caveat kind the engine does not own** (`adjudication_scope`).
-- **A style unlike the default on every axis.**
 - **Switchable faults** (`ToyWorldFaults`), so every `failed` verdict of the world conformance kit
   has a fixture, and **a poorer variant of the same world** (`optional_capabilities=False`).
 

@@ -79,6 +79,9 @@ def test_a_cell_stores_its_value_never_its_text() -> None:
         "anchor": None,
         "ref": None,
         "flag": None,
+        "status": None,
+        "tag": None,
+        "color": None,
     }
     with pytest.raises(ValueError, match="extra"):
         TableCell.model_validate({"value": 0.5, "text": "a lie"})
@@ -225,7 +228,7 @@ class TestTheRunSummaryServesItsLines:
         assert summary.total_spend_text == (
             "total spend: unknown in full: $0.0123 over the priced calls, plus 2 call(s) unpriced"
         )
-        assert summary.dimension_lines == ["helpful (judged 1-5): mean 4 (n=2, min 3, max 5)"]
+        assert summary.dimension_lines == ["helpful (judged), scored 1-5: mean 4 (n=2, min 3, max 5)"]
         assert _summary().spend_lines == [] and _summary().total_spend_text is None
 
     def test_the_intent_and_the_self_judging_warning(self) -> None:

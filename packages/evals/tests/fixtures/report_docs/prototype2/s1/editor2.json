@@ -1,0 +1,134 @@
+{
+  "resolutions": [
+    {
+      "finding": "must_fix (report): Method 'Margin verdicts' said the charted corrected intervals are the wider ones; c1 put v4's worst billing drop at 11.1 while Watch and Explore cite 15.9 from an interval not on the page.",
+      "status": "resolved",
+      "evidence": "c1 now carries a second forest of the reading intervals for v3 and v4 (v4 -15.87 to +30.51, v3 -20.93 to +15.87), captioned as the interval the margin verdict is read on. Method 'Margin verdicts' now says neither interval is always the wider and that v4's billing reading interval reaches further below zero, which is why Watch cites more than the first chart. This matches readings_list (v4 -15.9 to +30.5) and contrasts_list (v4 -11.1 to +21.1). A residual issue is new finding 2: the 98.33% level of that chart is never explained."
+    },
+    {
+      "finding": "must_fix (report): caveat unsettled:refunds had its material_if inverted ('only if the refund total check is sound').",
+      "status": "resolved",
+      "evidence": "It now reads 'only if the refund total check is broken ... If the check is sound, production truly gets no refund total right and no candidate can fall below it', which agrees with the second next step."
+    },
+    {
+      "finding": "should_fix (report): the headline said v4 'stops citing policy on tone replies'.",
+      "status": "resolved",
+      "evidence": "The headline now says v4 'cites policy on far fewer tone replies'. That fits 8 of 20 against production's 20 of 20 (floor reason, readings_list)."
+    },
+    {
+      "finding": "should_fix (c2): c2 showed only the uncorrected rate; 'Largest drop 78.5' sat unexplained next to 23.9; v2 and v3 read 'unclear' without explanation.",
+      "status": "resolved",
+      "evidence": "c2's first block is now the corrected contrast (v4 -0.6, -0.9615 to -0.2385, regressed, p_adjusted 0.0004). The floor-table caption says 'Largest drop is the far end of each interval', and Explore names 23.9 as the near end. The caption says v2 and v3 cite on every reply but twenty cases cannot show a perfect rate holding within the floor. A new residual is finding 1: the two blocks use different units and different intervals."
+    },
+    {
+      "finding": "should_fix (c4): production's own tone pass rate (10 of 20) was never shown.",
+      "status": "resolved",
+      "evidence": "c4 now says production 'passes only {aspects.tone.reading.v2.control_passed} tone requests', which reads 10 of 20."
+    },
+    {
+      "finding": "should_fix (report): Explore said the citation floor binds 'v4 alone', though v2 and v3 also flip at 19.",
+      "status": "resolved",
+      "evidence": "Explore's binds now says it 'decides v4 only; v2 and v3 read unclear at the declared floor and hold it above 19 points'. decision_sensitivity on floor:tone/tone/rate_drop/reply.cites_policy confirms the held_above flips for v2 and v3, and call_changes is False for both."
+    },
+    {
+      "finding": "should_fix (report): the apparatus caveats repeated one sentence nine times; grader_version and vendor_template were not tied to the refund check.",
+      "status": "resolved",
+      "evidence": "Each apparatus caveat now names its own mechanism. For example, ingest_backlog says a long queue trades thoroughness for speed, and scan_quality covers degraded against clean scans. grader_version and vendor_template each name themselves as one of the two facts most likely to explain production's zero refund totals, and point to the refund check in Next. That next step now covers 'the grading template and the grader version'."
+    },
+    {
+      "finding": "should_fix (report): next steps 1 and 2 overlapped, and neither gave a case count or said why none could be given.",
+      "status": "resolved",
+      "evidence": "The fix and the re-run are merged into one step, and that step says why no count is given. The reason is worded through the tool's internals and is muddled; see new finding 4."
+    },
+    {
+      "finding": "should_fix (report): Watch and Omitted named 'Code's dominance reading' / 'options_dominance'.",
+      "status": "resolved",
+      "evidence": "Watch now says 'A reading that counts v2's tone gain and treats no floor as a gate would rank v2 above production'. The Omitted entry describes the reading in the same terms. No tool name appears above the appendix."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the four decision slots and c1 together say what to do (keep production) and why. v2 is 60 points worse on billing (corrected -96.1 to -23.9, clear of the 10-point margin). v4 breaks the citation floor, and v3 gains nothing at the same price. They also say what could reverse the call: a v4 with its citations fixed, 50% cheaper, whose billing drop could still reach 15.9 points against a margin of 10."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (v2 fails billing), c2 (v4 fails the citation floor), c3 (only v4 is cheaper), c4 (v2's one gain comes with its billing loss) and c5 (refunds cannot show a loss) each follow from the question's rule, 'without losing any aspect', and lead to the headline. The one counter-reading in the data is met head-on in Watch. That reading is options_dominance: production is dominated by v2, which is 'shown_better'. Watch also says the tone gain is a totals gain. contrasts_list confirms this: tone totals for v2 are +0.4 and its tone citations change by 0. decision_sensitivity on all three margins and both floors gives holds=True, with no flip that changes the call."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The weak axes of the recommended option are now on the page. Production passes 10 of 20 tone requests (c4) and gets 0 of 20 refund totals right (c5). The headline's 'far fewer' fits 8 of 20 against 20 of 20. The lede ties 'clear of zero' to the corrected contrasts, which hold: billing v2 p_adj 0.0004, tone citation v4 p_adj 0.0004. The flag says most candidate readings are unresolved, not equal. c4's 'clear gain' rests on a corrected interval whose low end is +3.9, which still clears zero. Nothing is framed stronger than its interval."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked each omission against the snapshot. Policy citation on billing is delta 0 for every arm, interval ±0.2888 (contrasts_list). The other sets' reading intervals agree in direction with the contrasts: tone v4 reads -32.4 to +12.7 against a contrast of -32.1 to +12.1, and refunds v2 reads -2.6 to +57.5 against -7 to +57. The cost contrasts are not separated only because each arm's cost is a fixed price. The dominance reading is addressed in Watch. No sweep of any margin or floor changes the call. Nothing left out would change the decision."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All 17 snapshot caveats are shown, each with a specific material_if. The unsettled billing and tone caveats are scoped to a fixed v4 and carried into the first next step. unsettled:refunds now points the right way and is carried into the refund check. best_of_n is correctly scoped to a later re-test. grader_version and vendor_template are tied to the refund check. The rest of the apparatus set goes to the fourth next step (record settings). One small gap is new finding 6: the pipeline reads v3 and v4 as not within the refunds margin, and the page never says why the report reads that differently."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "There are four steps. Each names an experiment or a declaration and says what it settles: fix v4's citations and re-run it on billing and tone, hand-check the refund totals, template and grader, declare a tone grader, and record the apparatus. The first step's reason for giving no case count is the right call, but it is put in tool terms (finding 4)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1, c3, c4 and c5 fit their claims, and the counterfactual holds for all of them. c1's paired forests now show both the corrected interval and the margin-verdict interval. c2 is not the clearest way to show its claim. Its forest is in fractions of one: v4 -0.6, -0.9615 to -0.2385. The floor table under it is in points: largest drop 78.5 pts, so the floor interval is -78.5 to -23.9. That interval is a different, narrower one at a level the page never states. A reader sees a drop reaching 0.96 in one block and 78.5 in the next, and nothing on the page reconciles them. Explore then quotes 23.9 and 78.5. The round-1 problem of two unexplained intervals is fixed on c1 but recurs on c2. The 98.33% level on c1's second chart is also never explained."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "c2's two blocks use different units and different intervals for the same drop. The corrected forest is in fractions (-0.6, -0.9615 to -0.2385). The floor table is in points, with a largest drop of 78.5, so its interval is -78.5 to -23.9, the floor reading of aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.interval. Put the forest in points, as c1 and c4 are. Make the caption say that the floor is read on the per-arm reading interval, not on the corrected contrast above, so its far end (78.5) differs from the chart's (96.15)."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "c1's second forest prints a 98.33% interval, and nothing on the page says where that level comes from or what correction it carries. Method 'Intervals and correction' gives only the corrected 99.55% and the 'confidence intervals over cases' for rates. readings_list reports the same intervals with level 98%, so the page and the figure disagree on the label as well (see invariant concerns). Add one clause to Method 'Margin verdicts' that states the reading interval's level and basis."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "'up {aspects.tone.contrast.v2.passed.delta|pts} points' renders as 'up +40 points', with a doubled sign. Use |abs|pts, as c1 does. c1 has a related unit slip: 'passes 60 points fewer billing requests' mixes points with a request count. Say 'a billing pass rate 60 points lower'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The first next step explains the missing case count in tool terms ('the sizing computation reads only declared criteria'). It also contradicts itself: it calls the margins and floors the campaign's declared lines, then says sizing needs declared criteria. State the reader-facing reason instead. A margin against production depends on production's own spread, and sizing against a fixed line would ignore that and understate the need. settle_cases with a hypothetical line of 0.8 on v4's billing totals gives 12 cases two-sided, and today's 20 cases already leave v4 unresolved against the margin."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The first Explore row's binds names billing, tone and refunds, but its outcome speaks only for billing and tone, and gives v4's flip only on billing (15.9). decision_sensitivity on margin:refunds also holds. v4's tone reading flips only above 32.4 (aspects.tone.flip_margin.v4), which is the figure behind the lede's 'tone readings are unresolved'. Add both."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "The pipeline reads v3 and v4 as not within the refunds margin, with flip margins of 19 and 12.7, and notes that refunds declares no floor (options_dominance 'why'). The report says the refunds set cannot show any candidate losing ground. Its reasoning holds, since production is at 0 and no rate can go below it. But a reader who checks the appendix will find 'not within the margin' with no explanation. One clause in c5 or in the unsettled:refunds caveat would close the gap: those intervals reach below zero only because production sits at zero."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: c2's floor table prints the floor's id, humanized as 'tone/rate drop/reply cites policy', in its Floor column above the appendix. The renderer produces it, not the analyst's prose. A reader-facing name such as 'Policy citation, tone set' is wanted.",
+    "Label consistency: c1's second forest prints its reading intervals at '98.33%', while readings_list states those same readings' level as 98% (aspects.billing.reading.v4.level). One of the two is rounding differently.",
+    "Invariant 1: the apparatus:grader_version and apparatus:world:vendor_template caveats each speak of 'the two unrecorded facts', a typed count with no figure key behind it. It is an analytic judgment about the caveats, not a number from the data, so it is probably acceptable. It is noted for the rule's scope.",
+    "Otherwise holds: all 19 figure keys read (figure_keys_check, status reads for each). All 17 snapshot caveats are shown with a material_if (invariant 3). The confidence form is high_if_immaterial with caveats open (invariant 4). Method and the omitted list are present (invariant 6). No tool or action name appears above the appendix."
+  ],
+  "calls": 17
+}

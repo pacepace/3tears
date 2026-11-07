@@ -5,22 +5,49 @@ the case, the answer, the grades and why it failed — so it can be read after `
 store the run used. Cases are called by their own ``id`` when they carry one, else by their position, in the
 results and in every error line; the ``id`` itself is withheld from the runner and the graders. A plain ``def``
 runner is called in a worker thread; one handed a world's tools must be async, and is refused before anything runs.
+
+The quiet print's lines, read through ``render()`` and the files ``write`` leaves:
+
+- **A miss shows the graded field**, never the whole answer object it was read from: a runner's answer can run to
+  hundreds of characters, and the label is what was wrong.
+- **The judge's next step reads the sheet**: how many rows ``to_label.csv`` holds per dimension, and how many more
+  judged answers the calibrated tier's floor needs when it holds fewer.
+- **Total spend splits by role** when more than one role spent, each role's dollars read off its usage rows.
+- **A comparison leads on its classifier, else its first grader**, never on a cost alone, with a guardrail not held
+  said after the lead.
 """
 
 from __future__ import annotations
 
+import csv
+import json
 import re
 import threading
-from collections.abc import Mapping
-from typing import Any
+from collections import Counter
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Self
 
 import pytest
 
-from threetears.evals import Eval, World
+from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals import Answer, Eval, Judge, Result, World, grader
+from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
+from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import summarize_run
+from threetears.evals.analysis import campaign_report_markdown, campaign_verdicts, get_campaign, summarize_run
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "quick-results-tests"
 
@@ -221,3 +248,491 @@ async def test_a_sync_runner_handed_a_worlds_tools_is_refused_once_before_anythi
     with pytest.raises(ValueError, match=refusal):
         await Eval(CASES, World(tools=[lookup])(sync_agent), [QUEUE]).run(host=host, scope=SCOPE)
     assert off_loop(host.storage.query_templates, SCOPE) == []
+
+
+# --- the quiet print's lines --------------------------------------------------------------------------------------
+
+
+async def routed(case: Mapping[str, Any]) -> dict[str, Any]:
+    """Files every crash under bug, beside a long reason and a usage id: the shape of an app's own answer object."""
+    queue = "bug" if "crash" in case["text"] else "billing"
+    return {"queue": queue, "reason": "the ticket reads " + "much like a crash report " * 6, "usage_id": "u-1"}
+
+
+def _miss_lines(printed: str) -> list[str]:
+    return [line for line in printed.splitlines() if line.startswith("  case ")]
+
+
+async def test_a_classifier_miss_prints_the_graded_field_never_the_whole_answer() -> None:
+    result = await Eval(CASES, routed, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    (line,) = _miss_lines(result.render())
+    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    # The whole answer is still on the result, for a reader who asks for it.
+    (miss,) = result.misses()
+    assert isinstance(miss.answer, dict) and "usage_id" in miss.answer
+
+
+async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_on_the_classifier() -> None:
+    async def routed_safely(case: Mapping[str, Any]) -> dict[str, Any]:
+        return {**await routed(case), "safe": True}
+
+    cases = [{**case, "safe": True} for case in CASES]
+    result = await Eval(cases, routed_safely, [grader("safe", guard=0.05), QUEUE], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    (line,) = _miss_lines(result.render())
+    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    # The classifier's label match is printed as the page names it: the Accuracy it leads on.
+    assert any(re.match(r"  Accuracy: [\d.]+%, \d+ of \d+ trials", text) for text in result.render().splitlines())
+    matrix, _ = result.labels()
+    assert {(cell.expected, cell.predicted) for cell in matrix} >= {("billing", "bug")}
+    # The guardrail field, named, is counted as itself: every answer said safe, as every case expected.
+    guarded, _ = result.labels("safe")
+    assert {(cell.expected, cell.predicted) for cell in guarded} == {("true", "true")}
+
+
+@dataclass(frozen=True)
+class Routing:
+    """An app's own answer that JSON cannot hold, so the run stores its repr."""
+
+    queue: str
+    note: str
+
+
+async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
+    async def as_dataclass(case: Mapping[str, Any]) -> Routing:
+        return Routing(queue="billing", note="routed after reading " + "the whole ticket " * 20)
+
+    result = await Eval(CASES, as_dataclass, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    (miss, *_) = result.misses()
+    assert isinstance(miss.answer, str) and len(miss.answer) > 300, "stored as its repr"
+    line = _miss_lines(result.render())[0]
+    said = line.split("): ", 1)[1]
+    shown = said.removeprefix("answered no queue it can be graded on: ").rsplit(", expected ", 1)[0]
+    assert said.startswith("answered no queue it can be graded on: Routing(queue='billing'")
+    assert len(shown) == 120 and shown.endswith("…")
+
+
+async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_without_its_id() -> None:
+    async def unlabelled(case: Mapping[str, Any]) -> dict[str, Any]:
+        return {"id": "row-1", "note": "x" * 300}
+
+    result = await Eval(CASES, unlabelled, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    lines = _miss_lines(result.render())
+    assert len(lines) == 3
+    said = lines[0].split("): ", 1)[1]
+    assert said.startswith('answered no queue it can be graded on: {"note":"xxx')
+    shown = said.split("graded on: ", 1)[1].rsplit(", expected ", 1)[0]
+    assert len(shown) == 120 and shown.endswith("…"), "the answer is cut at 120 characters, the cut marked"
+    assert "row-1" not in said, "the answer's id is left out"
+
+
+async def test_a_miss_s_reasons_print_on_one_line_and_the_first_line_keeps_and_n_more() -> None:
+    async def raises_over_lines(case: Mapping[str, Any]) -> str:
+        raise ValueError("first line\nsecond line")
+
+    cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(7)]
+    result = await Eval(cases, raises_over_lines, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    printed = result.render().splitlines()
+    # The first line names the first five cases missed, as the cases table names them, and counts the rest.
+    assert "Cases that failed a trial: " in printed[0] and printed[0].endswith(", and 2 more.")
+    assert printed[0].split("failed a trial: ", 1)[1].count(", ") == 5
+    lines = _miss_lines(result.render())
+    assert lines[0] == "  case 0 (repeat 1): failed: the candidate raised ValueError: first line second line"
+    assert not [line for line in printed if line.strip() == "second line"], "no reason runs onto a line of its own"
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """One scripted judge reply, in the attribute names the engine reads, priced."""
+
+    content: str
+    model: str = "scripted/judge"
+    served_model: str | None = "scripted/judge"
+    input_tokens: int | None = 10
+    output_tokens: int | None = 5
+    cost_usd: float | None = 0.0002
+    price_source: str | None = "scripted rate"
+    reasoning_tokens: int | None = None
+    stop_reason: StopReason = "end_turn"
+    temperature: float | None = None
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class FakeJudge:
+    """A judge that passes every answer naming billing, and fails the rest, at a priced call each."""
+
+    model_name = "scripted/judge"
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Verdict:
+        dimension = system.split('single key "', 1)[1].split('"', 1)[0]
+        passed = "billing" in user.split("# Output under review\n", 1)[1]
+        return _Verdict(
+            json.dumps({"reasoning": "read it", "criteria_scores": {dimension: "pass" if passed else "fail"}})
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+#: Two pass/fail dimensions, so the sheet is counted per dimension.
+RUBRIC = {"billing": "The answer says the ticket is about billing.", "plain": "The answer is one word."}
+
+
+async def priced_hasty(case: Mapping[str, Any]) -> Answer:
+    """``hasty``'s answer, reported as one call at a tenth of a cent."""
+    return Answer(await hasty(case), model="m-1", input_tokens=40, output_tokens=2, cost_usd=0.001)
+
+
+def _sheet(written: Mapping[str, Path]) -> Counter[str]:
+    with written["to_label"].open(encoding="utf-8", newline="") as read:
+        return Counter(row["dimension"] for row in csv.DictReader(read))
+
+
+async def test_the_judge_s_next_step_says_what_the_sheet_holds_and_how_many_more_answers_the_floor_needs(
+    tmp_path: Path,
+) -> None:
+    labels = tmp_path / "labels.csv"
+    result = await Eval(CASES, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC, labels=labels)], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    sheet = _sheet(result.write(tmp_path / "report"))
+    assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per judged answer per dimension"
+    needed = CALIBRATION_MIN_RESULTS - 3
+    assert result.render().splitlines()[1] == (
+        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
+        "to_label.csv the report writes, which holds 3 per dimension, without looking at the judge's verdict; the "
+        f"calibrated tier's floor is {CALIBRATION_MIN_RESULTS} per dimension, so it needs {needed} more judged "
+        "answers per dimension"
+    )
+
+
+async def test_a_sheet_at_the_floor_asks_for_the_floor_s_ratings_of_each_dimension(tmp_path: Path) -> None:
+    cases = [{"text": f"refund {n}", "queue": "billing"} for n in range(CALIBRATION_MIN_RESULTS)]
+    result = await Eval(cases, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC)], k=1).run(store=":memory:", scope=SCOPE)
+    sheet = _sheet(result.write(tmp_path / "report"))
+    assert set(sheet.values()) == {CALIBRATION_MIN_RESULTS}
+    assert result.calibration_lines() == [
+        "judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels); next step: rate about "
+        f"{CALIBRATION_MIN_RESULTS} outputs of each dimension in the to_label.csv the report writes, which holds "
+        f"{CALIBRATION_MIN_RESULTS} per dimension, without looking at the judge's verdict"
+    ]
+
+
+async def test_total_spend_splits_by_role_when_more_than_one_role_spent() -> None:
+    judged = await Eval(CASES, priced_hasty, [QUEUE, Judge(FakeJudge(), RUBRIC)], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    summary = judged.summary
+    candidate, judge = summary.role_spend("candidate"), summary.role_spend("judge")
+    assert candidate is not None and judge is not None
+    (line,) = [line.strip() for line in judged.render().splitlines() if "total spend" in line]
+    # Three candidate calls at $0.001; six judge calls (three answers, two dimensions) at $0.0002, read off the rows.
+    assert line == "total spend: $0.0042, the results' cost (candidate $0.0030, judge $0.0012)"
+    assert candidate.cost_usd == pytest.approx(0.003) and judge.cost_usd == pytest.approx(0.0012)
+
+    alone = await Eval(CASES, priced_hasty, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    (line,) = [line.strip() for line in alone.render().splitlines() if "total spend" in line]
+    assert line == "total spend: $0.0030, the results' cost", "one role's total is not split"
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class FakeUnpricedJudge(FakeJudge):
+    """:class:`FakeJudge`, whose provider prices none of its calls."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Verdict:
+        verdict = await super().generate(system=system, user=user, response_format=response_format)
+        return _Verdict(verdict.content, cost_usd=None, price_source=None)
+
+
+async def test_an_unpriced_role_leaves_the_total_unsplit_and_never_sums_it_as_zero() -> None:
+    result = await Eval(CASES, priced_hasty, [QUEUE, Judge(FakeUnpricedJudge(), RUBRIC)], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    (line,) = [line.strip() for line in result.render().splitlines() if "total spend" in line]
+    assert line == "total spend: unknown in full: $0.00300 over the priced calls, plus 6 call(s) unpriced"
+
+
+#: Enough cases for a contrast to be tested, each priced by its length so the spend varies case to case.
+PAIRED = [{"text": f"refund number {'x' * n}", "queue": "billing", "safe": n % 4 != 0} for n in range(12)]
+
+
+async def cheap(case: Mapping[str, Any]) -> Answer:
+    """Files every ticket right, at a cost that grows with its text."""
+    return Answer({"queue": case["queue"], "leaks": False}, model="m-1", cost_usd=len(case["text"]) * 1e-6)
+
+
+async def dear(case: Mapping[str, Any]) -> Answer:
+    """``cheap``'s answers, at ten times the price."""
+    answered = await cheap(case)
+    assert answered.cost_usd is not None
+    return Answer(answered.value, model="m-2", cost_usd=answered.cost_usd * 10)
+
+
+@grader(guard=0.05)
+def no_leak(case: Mapping[str, Any], out: Any) -> bool:
+    """Never leaks; a guardrail every arm holds here, on too few cases to show it."""
+    return not out["leaks"]
+
+
+#: A sentence of the figures a decision rests on, which the first line says after it.
+_FIGURES = re.compile(
+    r" (?:Of [\d,]+ |Over [\d,]+ paired cases, |The interval |The mean is |The test read ).*?\.(?= \S|$)"
+)
+
+
+def _decided(result: Result) -> str:
+    """The print's first line with the figures after each decision left out: what the line decides. Each decision
+    states its figures, so the line holds some."""
+    line = result.render().splitlines()[0]
+    assert _FIGURES.search(line), line
+    return _FIGURES.sub("", line)
+
+
+async def test_a_comparison_leads_on_its_classifier_never_on_cost_and_names_a_guardrail_not_held_after() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [QUEUE, no_leak], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    cost = [row for row in result.contrasts() if row["measure_id"] == "production_replicating_cost"]
+    assert [row["outcome"] for row in cost] == ["improved"], "the cost separated, and is no lead on its own"
+    (accuracy,) = result.contrasts("accuracy")
+    (guarded,) = result.guardrails("cheap")
+    assert guarded["outcome"] == "undecided"
+    # The aspect page's verdict line: the lead, what else the evidence tells apart, the cost last, then what the
+    # guardrail means for the decision, each named as the page names it.
+    assert _decided(result) == (
+        f"{result.name}: Exploratory: Accuracy: {accuracy['verdict']}; also Production cost: {cost[0]['verdict']}. "
+        f"cheap may do worse than dear on the {guarded['guardrail']} guardrail."
+    )
+
+
+async def test_with_no_classifier_a_comparison_leads_on_its_first_grader() -> None:
+    def resolved(case: Mapping[str, Any], out: Any) -> bool:
+        return bool(out["queue"])
+
+    def short(case: Mapping[str, Any], out: Any) -> bool:
+        return len(str(out)) < 1000
+
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, short], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("resolved")
+    (cost,) = result.contrasts("production_replicating_cost")
+    assert _decided(result) == (
+        f"{result.name}: Exploratory: {first['reading']}: {first['verdict']}; also Production cost: {cost['verdict']}."
+    )
+
+
+def _worded(rows: list[dict[str, Any]], *, joined: str = "; ") -> str:
+    """Rows as the verdict line words them: each measure as the page heads its verdict, a cost without its unit."""
+    return joined.join(f"{str(row['reading']).split(', per ', 1)[0]}: {row['verdict']}" for row in rows)
+
+
+async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [no_leak], k=2).run(store=":memory:", scope=SCOPE)
+    (cost,) = result.contrasts("production_replicating_cost")
+    assert cost["outcome"] == "improved"
+    (guarded,) = result.guardrails("cheap")
+    # No reading leads, so no figures follow a decision: what the evidence leaves undecided, then the cost.
+    assert result.render().splitlines()[0] == (
+        f"{result.name}: Exploratory: the evidence cannot tell cheap and dear apart on every reading but cost; "
+        f"{_worded([cost])}. cheap may do worse than dear on the {guarded['guardrail']} guardrail."
+    )
+
+
+async def test_a_judge_only_comparison_leads_on_its_first_judged_dimension() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC)], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("answer.billing")
+    (cost,) = result.contrasts("production_replicating_cost")
+    assert first["outcome"] != "improved" and cost["outcome"] == "improved"
+    assert _decided(result) == f"{result.name}: Exploratory: {_worded([first])}; also {_worded([cost])}."
+
+
+async def test_a_judge_listed_first_leads_before_a_function_listed_after_it() -> None:
+    def short(case: Mapping[str, Any], out: Any) -> bool:
+        return len(str(out)) < 1000
+
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC), short], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("answer.billing")
+    assert _decided(result).startswith(f"{result.name}: Exploratory: {_worded([first])}")
+
+
+async def cheapest(case: Mapping[str, Any]) -> Answer:
+    """``cheap``'s answers, at a tenth of its price."""
+    answered = await cheap(case)
+    assert answered.cost_usd is not None
+    return Answer(answered.value, model="m-3", cost_usd=answered.cost_usd / 10)
+
+
+async def test_three_arms_lead_on_the_classifier_for_every_arm_tested() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap, "cheapest": cheapest}, [QUEUE], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    accuracy = result.contrasts("accuracy")
+    cost = [row for row in result.contrasts("production_replicating_cost") if row["outcome"] == "improved"]
+    assert sorted(row["arm"] for row in accuracy) == ["cheap", "cheapest"]
+    assert cost, "the cost separated, and follows the lead"
+    # One sentence per arm on the lead, what else the evidence tells apart after the last.
+    assert _decided(result) == (f"{result.name}: Exploratory: {_worded(accuracy, joined='. ')}; also {_worded(cost)}.")
+
+
+async def test_a_lead_with_nothing_else_told_apart_says_the_lead_alone() -> None:
+    async def twin(case: Mapping[str, Any]) -> Answer:
+        return await cheap(case)
+
+    result = await Eval(PAIRED, {"cheap": cheap, "twin": twin}, [QUEUE], k=2).run(store=":memory:", scope=SCOPE)
+    (accuracy,) = result.contrasts("accuracy")
+    assert not [row for row in result.contrasts() if row["outcome"] in ("improved", "regressed")]
+    # The line says what the result is, never what else it is not.
+    assert _decided(result) == f"{result.name}: Exploratory: {_worded([accuracy])}."
+
+
+def resolved(case: Mapping[str, Any], out: Any) -> bool:
+    """Files the ticket somewhere."""
+    return bool(out["queue"])
+
+
+@pytest.mark.parametrize("question", [None, "Does cheap resolve tickets as often as dear?"])
+async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grader_asked_or_not(
+    question: str | None,
+) -> None:
+    """A function listed before the classifier is the first grader: the printed first line and the page's lead both
+    read it, never the classifier's accuracy, never the cost. Declared, the question is that measure's and the lead
+    reads as asked, the line saying none was asked gone; undeclared, the lead is marked a lead and the line stays."""
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, QUEUE, no_leak], k=2, question=question).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("resolved")
+    prefix = "" if question is not None else "Exploratory: "
+    assert result.render().splitlines()[0].startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
+    (verdict,) = [
+        verdict
+        for verdict in result.page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "resolved"
+    ]
+    page = campaign_report_markdown(result.page)
+    bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
+    asked = question is not None
+    # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
+    said = bold[0].strip("*")
+    assert _FIGURES.search(said) and _FIGURES.sub("", said) == f"{verdict.heading}: {verdict.words}."
+    assert bold[1].startswith("**cheap may do worse than dear on the No leak score guardrail")
+    assert ("Exploratory comparison." in page.splitlines()) is not asked
+    assert result.question == question
+
+
+# --- the question's type decides the margin (owner, 2026-11-06) -----------------------------------------------------
+
+#: Thirty cases, each labelled ``a``.
+_LABELLED = [{"n": index, "label": "a"} for index in range(30)]
+
+#: The question every test below asks of the two arms.
+_BETTER = "Does v2 label cases right more often than v1?"
+
+
+def _missing(misses: int) -> Any:
+    """A runner labelling the first ``misses`` cases wrong and the rest right."""
+
+    async def label(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"label": "b" if case["n"] < misses else "a"}
+
+    return label
+
+
+@pytest.mark.parametrize(
+    ("misses", "reading", "words"),
+    [(0, "better", "shown better"), (30, "worse", "shown worse"), (15, "unclear", "cannot tell apart")],
+    ids=["shown-better", "shown-worse", "undecided"],
+)
+async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_files_no_margin(
+    misses: int, reading: str, words: str
+) -> None:
+    """A question alone is a superiority question: v2's pass rate against v1's (who misses half) is shown better,
+    shown worse or undecided (the evidence cannot tell them apart), against zero, and no margin is filed anywhere: not on the aspect, not on the result,
+    and the page never reads "no worse than the margin"."""
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(misses)}, ["label"], k=1, question=_BETTER).run(
+        store=":memory:", scope=SCOPE
+    )
+    campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    assert [aspect.margin for aspect in campaign.aspects] == [None]
+    assert result.margin is None
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin, row.confirmatory) == (reading, None, True)
+    page = campaign_report_markdown(result.page)
+    # The aspect the quick path labelled `classify` is called by the campaign's name.
+    (cells,) = [
+        line
+        for line in page.splitlines()
+        if line.startswith(
+            f"| {aspect_name(result.page.aspects[0].report.bundle, campaign=result.page.campaign_name)} | v2 |"
+        )
+    ]
+    assert cells.endswith(f"| {words} |")
+    assert "no worse than the margin" not in page and "No margin was declared" not in page
+
+
+async def test_an_eval_margin_is_the_author_s_in_the_measure_s_units_and_makes_a_non_inferiority_question() -> None:
+    """``Eval(margin=0.2)`` is 20 points of the pass rate, filed on the aspect: two arms alike read no worse than it."""
+    result = await Eval(
+        _LABELLED, {"v1": _missing(0), "v2": _missing(0)}, ["label"], k=1, question=_BETTER, margin=0.2
+    ).run(store=":memory:", scope=SCOPE)
+    campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    assert [aspect.margin for aspect in campaign.aspects] == [20.0]
+    assert result.margin == 0.2
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin, row.confirmatory) == ("within_margin", 20.0, True)
+    # Read again against the other arm, the same question carries the same margin.
+    again = await result.against("v2")
+    assert again.margin == 0.2 and again.page.readings.readings[0].margin == 20.0
+
+
+@pytest.mark.parametrize(
+    ("arguments", "says"),
+    [
+        ({"margin": 0.05}, "this eval asks no question for it to apply to: pass question= with it"),
+        ({"margin": 5, "question": _BETTER}, r"strictly between 0 and 1 \(0.05 is 5 points\), not 5"),
+        ({"margin": True, "question": _BETTER}, "strictly between 0 and 1, not True"),
+    ],
+    ids=["no-question", "in-points", "not-a-number"],
+)
+def test_a_margin_with_no_question_or_out_of_its_units_is_refused_where_the_eval_is_written(
+    arguments: dict[str, Any], says: str
+) -> None:
+    with pytest.raises(ValueError, match=says):
+        Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], **arguments)
+
+
+async def test_a_margin_read_again_with_no_question_is_refused_naming_why() -> None:
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    with pytest.raises(ValueError, match="asks no question for it to apply to"):
+        await result.against("v1", margin=0.05)
+
+
+async def test_a_no_margin_question_whose_candidate_reads_shown_worse_fails_the_gate_and_its_verdicts_carry_it() -> (
+    None
+):
+    """The question's pass rate is in its family whether or not a margin is written, so the page, the gate and the
+    campaign's verdicts read it alike: v2, missing every case where v1 misses half, is shown worse on the row, its
+    pass-rate contrast regressed in the verdicts, and the gate fails."""
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(30)}, ["label"], k=1, question=_BETTER).run(
+        store=":memory:", scope=SCOPE
+    )
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin) == ("worse", None)
+    verdicts = off_loop(campaign_verdicts, result.host, result.campaign_id, result.scope_id)
+    (pass_rate,) = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading == "trial"]
+    assert (pass_rate.outcome, pass_rate.arm) == ("regressed", "v2")
+    assert pass_rate.aspect is not None, "read as asked, in the question's family"
+    assert result.gate().failed

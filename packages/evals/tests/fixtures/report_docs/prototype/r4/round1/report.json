@@ -1,0 +1,200 @@
+{
+  "schema": "report-doc/1",
+  "story": "tradeoff",
+  "flag": "Nothing declared before the run says what a point of staying in character is worth against cost, so the choice between Production and f64 is the persona owner's to make.",
+  "headline": "Switching to {arm:f64} saves {price.f64.prod.persona.monthly_cost_gap|abs} a month but stays in character {contrast.f64.persona.delta|abs|pts} points less often, with most of the loss in long conversations.",
+  "lede": "{arm:f64} loses character clearly ({contrast.f64.persona.interval|interval} points against {arm:prod}), and it is the only challenger that holds both guardrails. The answer changes if f64 turns out to sit under either guardrail floor, which its thin clearance still allows, or once a price per point of character is declared.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "f64_guardrail_clearance",
+        "material_if": "Material if f64's true speculation or music-facts rate sits under its floor. It clears each on its point estimate by less than its change against Production could be, and if it fails either, Production is the only option left and the trade becomes a decision to keep it."
+      },
+      {
+        "id": "judge_not_described",
+        "material_if": "Material only if the judge reads staying in character differently for f64 than for Production. Cost, the other side of the trade, is measured, and blind raters lean the same way in long conversations."
+      },
+      {
+        "id": "contrasts_uncorrected",
+        "material_if": "Material only if correcting across the three challengers moved a verdict that puts an option in or out. The losses that matter here, f64's character and cor's speculation, sit well clear of zero."
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "the_trade",
+      "text": "Moving all traffic from {arm:prod} to {arm:f64} saves {price.f64.prod.persona.monthly_cost_gap|abs} a month at the declared volume and gives up {price.f64.prod.persona.gain|abs|pts} points of staying in character."
+    },
+    {
+      "slot": "where_it_flips",
+      "text": "Production is the better buy if a point of staying in character is worth more than {price.f64.prod.persona.monthly_per_point} a month, and f64 below that. The interval on the loss puts the line anywhere from {price.f64.prod.persona.monthly_per_point_low} to {price.f64.prod.persona.monthly_per_point_high}."
+    },
+    {
+      "slot": "our_lean",
+      "text": "Our lean, not a recommendation: keep Production until a mix that hands long conversations to Production has been run. The judged loss and the blind raters' preference both sit in long conversations, which is the part such a mix would keep. If the call can't wait, the price line above decides it."
+    },
+    {
+      "slot": "watch",
+      "text": "f64 clears the speculation floor by {criteria.specul.f64.gap|pts} points and the music-facts floor by {criteria.facts.f64.gap|pts} points, both on point estimates with no interval on the rate itself. Its change against Production on each reaches further down than that clearance, so either guardrail could still fail."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "A declared price per point of staying in character from the persona owner, after a re-run confirms f64 holds both guardrails."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:f64} is the only challenger that holds both guardrails, and it stays in character {contrast.f64.persona.delta|abs|pts} points less often than {arm:prod}. It costs {price.f64.prod.persona.monthly_cost_gap|abs} less a month at the declared volume.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "forest",
+          "query": {"source": "contrasts", "measures": ["persona"]},
+          "caption": "Change in staying in character against Production, each challenger, with its interval."
+        },
+        {
+          "block": "bars",
+          "query": {"source": "measures", "measures": ["cost_per_1k"]},
+          "caption": "Cost per 1,000 replies, each arm."
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "f64's gap to Production widens with every step in conversation length, to {strata.depth:11+.f64.persona.vs_control|abs|pts} points at 11+ turns. Conversations of 6–10 turns carry the largest share of its loss ({strata.depth:6-10.loss_share.f64.persona|pct}).",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "lines",
+          "query": {"source": "strata", "measures": ["persona"], "arms": ["prod", "f64"], "strata": ["depth:1-2", "depth:3-5", "depth:6-10", "depth:11+"]},
+          "emphasis": "f64",
+          "caption": "Stays in character by conversation length in turns, Production and f64. A breakdown read after the fact, uncorrected: a lead, not a confirmed finding."
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "Blind raters prefer Production over f64 more strongly in long conversations than in short ones.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {"source": "human_pref"},
+          "caption": "Share of blind ratings preferring Production over f64, by conversation length; half means no preference. The snapshot holds no interval on these shares."
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "{arm:cor}, the middle option on both cost and character, declines to speculate {contrast.cor.specul.delta|abs|pts} points less often than Production and lands under the guardrail floor, so it is not a middle path.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "forest",
+          "query": {"source": "contrasts", "measures": ["specul"]},
+          "caption": "Change in declining to speculate against Production, each challenger, with its interval."
+        },
+        {
+          "block": "dot_interval",
+          "query": {"source": "measures", "measures": ["specul"]},
+          "reference": "floor",
+          "caption": "Declines to speculate, each arm, against the guardrail floor. The snapshot holds no interval on these rates."
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "text": "{arm:f16}, the cheapest option, gets music facts right {contrast.f16.facts.delta|abs|pts} points less often than Production and lands under the guardrail floor on its point estimate.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "judged", "measures": ["facts"]},
+          "reference": "floor",
+          "caption": "Music facts correct, each arm, against the guardrail floor. The snapshot holds no interval on these rates, so how far under the floor f16 truly sits is not settled."
+        },
+        {
+          "block": "forest",
+          "query": {"source": "contrasts", "measures": ["facts"]},
+          "caption": "Change in music facts correct against Production, each challenger, with its interval."
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "text": "f64 is also faster at the tail, {measure.latency_s.f64.p95} at the p95, and is not separated from Production on completing requested actions.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {"source": "measures", "measures": ["latency_s"]},
+          "caption": "Latency from p50 to p95, each arm. No latency budget was declared."
+        },
+        {
+          "block": "forest",
+          "query": {"source": "contrasts", "measures": ["task"]},
+          "caption": "Change in completing the requested action against Production, each challenger, with its interval."
+        }
+      ]
+    }
+  ],
+  "explore": [
+    {
+      "control": "Price of one point of staying in character, per month",
+      "binds": "Production against f64",
+      "outcome": "Production is the better buy above {price.f64.prod.persona.monthly_per_point} a point a month and f64 below it; the interval on the loss spreads that line from {price.f64.prod.persona.monthly_per_point_low} to {price.f64.prod.persona.monthly_per_point_high}."
+    },
+    {
+      "control": "Speculation guardrail floor",
+      "binds": "f64 and cor",
+      "outcome": "Raised above {criteria.specul.f64.value}, the floor drops f64 and leaves Production alone, so the trade becomes a decision to keep Production. cor enters only if the floor is loosened to {criteria.specul.cor.value} or lower."
+    },
+    {
+      "control": "Music-facts guardrail floor",
+      "binds": "f64 and f16",
+      "outcome": "Raised above {criteria.facts.f64.value}, the floor drops f64 and leaves Production alone. f16 enters only if the floor is loosened to {criteria.facts.f16.value} or lower, and then joins the trade as the cheapest, least in-character option."
+    }
+  ],
+  "omitted": [
+    {"what": "f16's and cor's character losses as their own claims", "why": "Both options are out on a guardrail; their character figures sit in the lead forest and add nothing to the trade."},
+    {"what": "The five scenario strata (song intros, recommendations, banter, off-topic deflection, taking a correction)", "why": "Named in the snapshot but holding no figures for any arm, so there is nothing to show."},
+    {"what": "Failure examples", "why": "The snapshot froze no failed trials for any arm."},
+    {"what": "f64 against f16 as an output-budget comparison", "why": "Same served model at different output caps; the smaller cap is worse on character and facts, but f16 is out on a guardrail, so this is a lead for the model's configuration, not part of the call."},
+    {"what": "cor's music-facts and character figures, where it beats or nears Production", "why": "cor is out on speculation, which no other strength offsets under a standing guardrail."},
+    {"what": "Interval half-widths within each conversation-length stratum", "why": "They describe the precision of an exploratory breakdown; the appendix holds them."},
+    {"what": "Monthly cost for f16 and cor", "why": "Gated options are not priced; their per-reply cost is in the cost bars."},
+    {"what": "Each stratum's share of cases beside its share of the loss", "why": "No block draws both; one loss share is in the claim sentence, the rest in the appendix."}
+  ],
+  "next": [
+    {
+      "text": "Re-run the speculation and music-facts cases on f64 with more cases.",
+      "settles": "Whether f64 holds both guardrails. If it fails either, Production is the only survivor and the report becomes a decision to keep it."
+    },
+    {
+      "text": "Declare a price per point of staying in character, made by the persona owner.",
+      "settles": "The trade itself: against the price line, it picks Production or f64 without another run."
+    },
+    {
+      "text": "Run a mix that serves f64 early in a conversation and hands it to Production once it reaches the 6–10 turn range, read on the same cases, guardrails and blind ratings.",
+      "settles": "What the mix costs and whether it keeps Production's character in long conversations, where the loss and the raters' preference sit; also whether switching model mid-conversation itself breaks character. Nobody has run it, so no figure prices it yet."
+    },
+    {
+      "text": "Record the judge and calibrate it against human ratings of staying in character.",
+      "settles": "Whether the size of f64's character loss is real, which sets the price per point the trade is read at."
+    }
+  ],
+  "method": [
+    {"term": "Cases and repeats", "text": "{scoreboard.prod.cases} cases per arm and {scoreboard.prod.ran} trials per arm; no trial was lost or failed on any arm."},
+    {"term": "Intervals", "text": "{family.level} intervals on paired differences against Production. {family.disclosure}"},
+    {"term": "What pass means", "text": "Staying in character and music facts are judged pass or fail per reply. Completing the requested action and declining to speculate are checked by code."},
+    {"term": "Guardrails", "text": "Standing guardrails read on each arm's mean: declining to speculate at least {criteria.specul.threshold}, and music facts correct at least {criteria.facts.threshold}. Staying in character, the asked aspect, has no declared margin or floor."},
+    {"term": "Judge", "text": "Which judge read the two judged aspects, and how it was calibrated, is not recorded in the snapshot."},
+    {"term": "Cost basis", "text": "Cost per 1,000 replies from the measured runs. Monthly figures are at the declared volume of {meta.volume_per_month|int} replies a month. A price per point is arithmetic on point estimates, its band read off the interval on the loss."},
+    {"term": "Breakdowns by length", "text": "Conversation-length strata are read after the fact and uncorrected; they are leads."},
+    {"term": "Blind ratings", "text": "Pairwise blind ratings of Production against f64 only, by conversation length; the block's note gives the count. No interval was stored."},
+    {"term": "Not compared", "text": "No mix of models was run. Blind ratings cover f64 only. How runs were placed on machines is not recorded, so latency is read as reported."},
+    {"term": "Source", "text": "{meta.provenance}"}
+  ]
+}

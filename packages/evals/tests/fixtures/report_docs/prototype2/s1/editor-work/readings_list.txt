@@ -1,0 +1,185 @@
+readings listing
+aspects (3):
+  - aspect: billing; pairs: []; bars: []; note: none
+    aspects.billing.margin = 10
+    family (5):
+      aspects.billing.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.billing.family.correction = holm
+      aspects.billing.family.alpha = 0.05
+      aspects.billing.family.family_size = 11
+      aspects.billing.family.level = 99.55%
+    readings (3):
+      -
+        arm:v2 = v2 (A)
+        figures (8):
+          aspects.billing.reading.v2.change = -60
+          aspects.billing.reading.v2.interval = -83.2 to -23.9
+          aspects.billing.reading.v2.margin = 10
+          aspects.billing.reading.v2.level = 98%
+          aspects.billing.reading.v2.verdict = worse
+          aspects.billing.reading.v2.control_passed = 18 of 20
+          aspects.billing.reading.v2.arm_passed = 6 of 20
+          aspects.billing.reading.v2.why = v2 passed 6 of 20 to production's 18, a drop that exceeds the margin of 10 points on its whole interval (at least 16.8)
+        aspects.billing.flip_margin.v2 = 83.2
+      -
+        arm:v3 = v3 (B)
+        figures (8):
+          aspects.billing.reading.v3.change = -5
+          aspects.billing.reading.v3.interval = -20.9 to +15.9
+          aspects.billing.reading.v3.margin = 10
+          aspects.billing.reading.v3.level = 98%
+          aspects.billing.reading.v3.verdict = unclear
+          aspects.billing.reading.v3.control_passed = 18 of 20
+          aspects.billing.reading.v3.arm_passed = 17 of 20
+          aspects.billing.reading.v3.why = its interval reaches zero, and v3's drop is not shown to stay within 10 points (it could be as much as 20.9)
+        aspects.billing.flip_margin.v3 = 20.9
+      -
+        arm:v4 = v4 (C)
+        figures (8):
+          aspects.billing.reading.v4.change = +5
+          aspects.billing.reading.v4.interval = -15.9 to +30.5
+          aspects.billing.reading.v4.margin = 10
+          aspects.billing.reading.v4.level = 98%
+          aspects.billing.reading.v4.verdict = unclear
+          aspects.billing.reading.v4.control_passed = 18 of 20
+          aspects.billing.reading.v4.arm_passed = 19 of 20
+          aspects.billing.reading.v4.why = its interval reaches zero, and v4's drop is not shown to stay within 10 points (it could be as much as 15.9)
+        aspects.billing.flip_margin.v4 = 15.9
+    floors (3):
+      - floor: billing/rate_drop/*; arm: v2; status: broken
+        figures (8):
+          aspects.billing.floor.billing/rate_drop/*.v2.status = broken
+          aspects.billing.floor.billing/rate_drop/*.v2.speaks_for = the pass rate
+          aspects.billing.floor.billing/rate_drop/*.v2.interval = -83.2 to -23.9
+          aspects.billing.floor.billing/rate_drop/*.v2.worst_drop = 83.2
+          aspects.billing.floor.billing/rate_drop/*.v2.margin = 10
+          aspects.billing.floor.billing/rate_drop/*.v2.reason = v2 passed 6 of 20 to production's 18, a drop that exceeds the margin of 10 points on its whole interval (at least 23.9)
+          aspects.billing.floor.billing/rate_drop/*.v2.held_above = 83.2
+          aspects.billing.floor.billing/rate_drop/*.v2.broken_at = 23.9
+      - floor: billing/rate_drop/*; arm: v3; status: unclear
+        figures (9):
+          aspects.billing.floor.billing/rate_drop/*.v3.status = unclear
+          aspects.billing.floor.billing/rate_drop/*.v3.speaks_for = the pass rate
+          aspects.billing.floor.billing/rate_drop/*.v3.interval = -20.9 to +15.9
+          aspects.billing.floor.billing/rate_drop/*.v3.worst_drop = 20.9
+          aspects.billing.floor.billing/rate_drop/*.v3.margin = 10
+          aspects.billing.floor.billing/rate_drop/*.v3.short_by = 10.9
+          aspects.billing.floor.billing/rate_drop/*.v3.reason = v3's drop is not shown to stay within 10 points (it could be as much as 20.9)
+          aspects.billing.floor.billing/rate_drop/*.v3.held_above = 20.9
+          aspects.billing.floor.billing/rate_drop/*.v3.broken_at = -15.9
+      - floor: billing/rate_drop/*; arm: v4; status: unclear
+        figures (9):
+          aspects.billing.floor.billing/rate_drop/*.v4.status = unclear
+          aspects.billing.floor.billing/rate_drop/*.v4.speaks_for = the pass rate
+          aspects.billing.floor.billing/rate_drop/*.v4.interval = -15.9 to +30.5
+          aspects.billing.floor.billing/rate_drop/*.v4.worst_drop = 15.9
+          aspects.billing.floor.billing/rate_drop/*.v4.margin = 10
+          aspects.billing.floor.billing/rate_drop/*.v4.short_by = 5.9
+          aspects.billing.floor.billing/rate_drop/*.v4.reason = v4's drop is not shown to stay within 10 points (it could be as much as 15.9)
+          aspects.billing.floor.billing/rate_drop/*.v4.held_above = 15.9
+          aspects.billing.floor.billing/rate_drop/*.v4.broken_at = -30.5
+  - aspect: tone; pairs: []; bars: []; note: none
+    aspects.tone.margin = 10
+    family (5):
+      aspects.tone.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.tone.family.correction = holm
+      aspects.tone.family.alpha = 0.05
+      aspects.tone.family.family_size = 11
+      aspects.tone.family.level = 99.55%
+    readings (3):
+      -
+        arm:v2 = v2 (A)
+        figures (8):
+          aspects.tone.reading.v2.change = +40
+          aspects.tone.reading.v2.interval = +7.6 to +62.2
+          aspects.tone.reading.v2.margin = 10
+          aspects.tone.reading.v2.level = 98%
+          aspects.tone.reading.v2.verdict = better
+          aspects.tone.reading.v2.control_passed = 10 of 20
+          aspects.tone.reading.v2.arm_passed = 18 of 20
+          aspects.tone.reading.v2.why = v2's gain over production is shown: its whole interval is above zero
+        aspects.tone.flip_margin.v2 = 0
+      -
+        arm:v3 = v3 (B)
+        figures (8):
+          aspects.tone.reading.v3.change = 0
+          aspects.tone.reading.v3.interval = -19.3 to +20.9
+          aspects.tone.reading.v3.margin = 10
+          aspects.tone.reading.v3.level = 98%
+          aspects.tone.reading.v3.verdict = unclear
+          aspects.tone.reading.v3.control_passed = 10 of 20
+          aspects.tone.reading.v3.arm_passed = 20 of 40
+          aspects.tone.reading.v3.why = its interval reaches zero, and v3's drop is not shown to stay within 10 points (it could be as much as 19.3)
+        aspects.tone.flip_margin.v3 = 19.3
+      -
+        arm:v4 = v4 (C)
+        figures (8):
+          aspects.tone.reading.v4.change = -10
+          aspects.tone.reading.v4.interval = -32.4 to +12.7
+          aspects.tone.reading.v4.margin = 10
+          aspects.tone.reading.v4.level = 98%
+          aspects.tone.reading.v4.verdict = unclear
+          aspects.tone.reading.v4.control_passed = 10 of 20
+          aspects.tone.reading.v4.arm_passed = 8 of 20
+          aspects.tone.reading.v4.why = its interval reaches zero, and v4's drop is not shown to stay within 10 points (it could be as much as 32.4)
+        aspects.tone.flip_margin.v4 = 32.4
+    floors (3):
+      - floor: tone/rate_drop/reply.cites_policy; arm: v2; status: unclear
+        figures (10):
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.status = unclear
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.reading = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.speaks_for = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.interval = -19 to +19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.worst_drop = 19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.margin = 15
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.short_by = 4
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.reason = `reply.cites_policy` cannot separate the arms (both 20 of 20)
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.held_above = 19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.broken_at = -19
+      - floor: tone/rate_drop/reply.cites_policy; arm: v3; status: unclear
+        figures (10):
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.status = unclear
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.reading = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.speaks_for = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.interval = -19 to +19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.worst_drop = 19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.margin = 15
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.short_by = 4
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.reason = `reply.cites_policy` cannot separate the arms (v3 40 of 40, production 20 of 20)
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.held_above = 19
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v3.broken_at = -19
+      - floor: tone/rate_drop/reply.cites_policy; arm: v4; status: broken
+        figures (9):
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.status = broken
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.reading = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.speaks_for = reply.cites_policy
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.interval = -78.5 to -23.9
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.worst_drop = 78.5
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.margin = 15
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.reason = v4 passed `reply.cites_policy` on 8 of 20 to production's 20, a drop that exceeds the margin of 15 points on its whole interval (at least 23.9)
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.held_above = 78.5
+          aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.broken_at = 23.9
+  - aspect: refunds; pairs: []; floors: []; bars: []; note: none
+    aspects.refunds.margin = 10
+    family (5):
+      aspects.refunds.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.refunds.family.correction = holm
+      aspects.refunds.family.alpha = 0.05
+      aspects.refunds.family.family_size = 11
+      aspects.refunds.family.level = 99.55%
+    readings (1):
+      -
+        arm:v2 = v2 (A)
+        figures (8):
+          aspects.refunds.reading.v2.change = +25
+          aspects.refunds.reading.v2.interval = -2.6 to +57.5
+          aspects.refunds.reading.v2.margin = 10
+          aspects.refunds.reading.v2.level = 98%
+          aspects.refunds.reading.v2.verdict = within_margin
+          aspects.refunds.reading.v2.control_passed = 0 of 20
+          aspects.refunds.reading.v2.arm_passed = 5 of 20
+          aspects.refunds.reading.v2.why = v2's drop is shown to stay within 10 points (it is at most 2.6)
+        aspects.refunds.flip_margin.v2 = 2.6
+total: 15
+offset: 0
+next: action='readings_list', snapshot_id='report-snapshot:cbe4fd230e040e604b34df5704aa5b38', offset=13

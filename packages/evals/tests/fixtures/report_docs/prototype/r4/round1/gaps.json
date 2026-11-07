@@ -1,0 +1,57 @@
+[
+  {
+    "need": "A cost-against-persona scatter_frontier: one judged dimension paired with one measured cost per arm, with the priced frontier line",
+    "why": "The tradeoff's lead evidence is the two axes in one view; the measures source lacks judged persona and the judged source lacks cost, so both refusals leave no source that pairs them",
+    "workaround": "Lead claim carries two blocks side by side: a forest of persona change and bars of cost per 1,000 replies; the price per point is stated in prose by its price keys"
+  },
+  {
+    "need": "An interval on each arm's guardrail rate (facts, speculation) against its floor",
+    "why": "f64 clears both floors only by its point estimate and f16 misses facts by a fraction of a point; measure_read with ci or half_width returns nothing and dot_interval draws no interval, so neither clearance can be called settled or borderline",
+    "workaround": "Say each clearance is a point estimate with no interval in the snapshot; carry f64's clearance as an open caveat and f16's miss as thin in why_not"
+  },
+  {
+    "need": "A figure key for human preference slices, with its interval and count",
+    "why": "Blind ratings are the only evidence of what listeners notice, and the grammar has no human_pref path, so prose cannot cite the share; the block note gives a rating count but no interval, so separation from no preference cannot be read",
+    "workaround": "The claim sentence states the direction in words with no number and the diverging_bars block carries the shares; separation stays unstated"
+  },
+  {
+    "need": "A no_preference reference line on human_pref blocks",
+    "why": "The block note itself says 50% is no preference, but reference no_preference is refused as having no figure to sit at",
+    "workaround": "Draw diverging_bars without a reference; the caption names the no-preference point in words"
+  },
+  {
+    "need": "A strata block that carries each stratum's share of cases and of a candidate's loss, and interval bands from the stratum half-widths",
+    "why": "The depth claim turns on where the loss sits relative to traffic; lines and table over strata show only means, though the snapshot holds share, loss_share and half_width",
+    "workaround": "Lines show the two levels by depth; one loss-share figure goes in prose by its key; the rest stays in the appendix"
+  },
+  {
+    "need": "settle: how many cases would separate f64's guardrail rates from their floors, and how many ratings would separate long-conversation preference from no preference",
+    "why": "Both are the step that would turn the main open caveats into evidence, and statistics.md says to name the count",
+    "workaround": "Next steps name the re-run in words without a case count"
+  },
+  {
+    "need": "Pricing or bounding a depth-routed mix (f64 for early turns, Production from a turn threshold) from the measured strata",
+    "why": "The loss and the listener preference both concentrate in long conversations, so the mix is the most useful option a decider would weigh, but no key states its cost or gain",
+    "workaround": "Name the mix as a next step, unpriced, with the seam that suggests it"
+  },
+  {
+    "need": "A figure-key resolver: check a draft's prose keys against the snapshot before submission",
+    "why": "Several keys I cite (criteria gaps, price fields, strata shares) were read off tool output, and without render_report or a resolver a mistyped key is caught only at submission",
+    "workaround": "Cite only keys copied verbatim from tool output"
+  },
+  {
+    "need": "Judge description in the snapshot: which judge read persona and facts, and its calibration tier and agreement",
+    "why": "Both the asked aspect and one guardrail are judged; overview lists no judge and caveats_list is empty, so the judge's standing cannot be read either way",
+    "workaround": "Carry the judge as an open report-wide caveat with a material_if clause; lean on the relative reading and the blind human ratings"
+  },
+  {
+    "need": "Failure examples for the judged persona loss in long conversations",
+    "why": "examples_list returns nothing for any arm, so the page cannot show what a lost character looks like at depth",
+    "workaround": "No examples block; noted in omitted"
+  },
+  {
+    "need": "A block source for price_tradeoff: the frontier, each step's per-point price with its band, monthly at declared volume",
+    "why": "The tradeoff's deciding figure is the price per point; no block kind reads it, so it reaches the page only as prose",
+    "workaround": "State the monthly price per point and its band in prose by price keys, in the lead claim and in where_it_flips"
+  }
+]

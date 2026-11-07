@@ -89,7 +89,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.host.measures import MeasureRegistry
-from threetears.evals.kernel.host.style import StyleProfile
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
@@ -219,9 +218,6 @@ class HostProfile:
     bars: BarRegistry = field(default_factory=BarRegistry)
     """The incumbent standards per behavior. A host with none registers an empty registry."""
 
-    style: StyleProfile = field(default_factory=StyleProfile)
-    """The bounded presentation contract. No field of it is free text."""
-
     world: WorldRegistry | None = None
     """What a run may set before the subject starts, and what it may only witness.
 
@@ -230,18 +226,6 @@ class HostProfile:
     representability is ``inapplicable`` rather than ``uncovered``. An empty *registry* says this
     host has a world and seeds nothing in it, which is a claim a run record can expose. Collapsing
     the two would lose the only distinction that tells an unevaluable area from an unbuilt one.
-    """
-
-    caveat_kinds: frozenset[str] = frozenset()
-    """Caveat kinds this host declares, BEYOND the four the engine owns.
-
-    The engine's four (``apparatus``/``sampling``/``instrument``/``scope``) are always available;
-    this is the host's extension of them, for the same reason R8 gives the lever vocabulary to the
-    host. A closed engine-owned set on a host-facing field forces a domain with a legitimate fifth
-    kind to jam it into ``scope``, and the field then stops meaning anything — which is the one
-    thing a required classification exists to prevent. Empty is the normal case: the four cover
-    what has been seen, and they were derived from one host's caveats, so they are offered rather
-    than asserted to be complete.
     """
 
     variant_levers: VariantLeverReader | None = None
@@ -338,9 +322,8 @@ class HostProfile:
     """The model ids this host allows to write a campaign's analysis. Empty: any model.
 
     An allow-list, not a deny-list: once a host opts in, a model nobody has measured writing the strict
-    analysis contract is refused rather than admitted by default. ``analysis_generate`` (and
-    :func:`~threetears.evals.analysis.generator.generate_analysis`) check the requested model against it
-    before the first provider request, so a writer known unable to produce the contract costs nothing,
+    analysis contract is refused rather than admitted by default. ``analysis_generate`` checks the requested model
+    against it before the first provider request, so a writer known unable to produce the contract costs nothing,
     not a billed call and its billed repair. A reporter run measuring writers is exempt: it exists to
     find out which models belong here. Ids are compared exactly, as the host's client is asked for them.
     """

@@ -3,7 +3,7 @@
 The engine is five packages: :mod:`~threetears.evals.schema` (the stored shapes and the ports a host
 implements), :mod:`~threetears.evals.kernel` (the behaviour every other package runs on, and the host
 contract under :mod:`~threetears.evals.kernel.host`), :mod:`~threetears.evals.run` (launching, executing, judging
-and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports) and :mod:`~threetears.evals.gen` (generating
+and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, analyses and reports) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
 :mod:`~threetears.evals.quick` (an eval's host, and the command line). Above the engine sit the surfaces an
@@ -27,8 +27,8 @@ is loaded on first use, so importing this package loads none of the engine.
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
 ``tests/test_package_matrix.py`` holds the tuple equal to the roots it enforces. What a release promises about each
-of those names is its tier, which the build ships: :func:`surface_tier` reads one name's, and :func:`declared_names`
-lists every name promised anything, so a host's test gates its imports against the version it runs.
+of those names is its tier, which the build ships: :func:`surface_tier` reads one name's, and ``docs/surface.md`` lists
+every name promised anything by rung, so a host's test gates its imports against the version it runs.
 
 **There is no installed host.** A product adopts the engine by building one
 :class:`~threetears.evals.kernel.host.EvalHost` — its vocabulary, its storage and its services —
@@ -129,6 +129,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.storage",
     "threetears.evals.testing",
     "threetears.evals.quick",
+    "threetears.evals.harness",
     "threetears.evals.ops",
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",

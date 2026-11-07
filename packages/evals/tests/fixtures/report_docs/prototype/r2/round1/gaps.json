@@ -1,0 +1,52 @@
+[
+  {
+    "need": "An interval on each configuration's overall pass rate (measure_read with statistics ci/half_width/n returns only the mean; the snapshot holds no readings or contrasts)",
+    "why": "The pick clears the pass-rate gate by a tenth of a point; without an interval the page cannot say whether that clearance is borderline or settled",
+    "workaround": "Treat the clearance as borderline in words: a flag, an open caveat and the first Watch item; no interval is shown or typed"
+  },
+  {
+    "need": "settle: how many fresh cases a re-test of the pick needs to separate its pass rate from the gate",
+    "why": "The first next step is a re-test, and it should name its size",
+    "workaround": "The next step names the re-test without a case count"
+  },
+  {
+    "need": "A selection-adjusted reading for the best of many configurations near one gate",
+    "why": "The pick is the one of eighteen that happened to clear the gate; its estimate is optimistic and nothing quantifies how much",
+    "workaround": "Said in words in the confidence caveat and Watch; the re-test is specified on fresh cases"
+  },
+  {
+    "need": "Price gated fallbacks against the survivor (price_tradeoff prices survivors only, and arm_filter on the survivor returns an empty against list)",
+    "why": "If the pick fails its re-test the decider needs what each fallback costs, which is a gate relaxation priced in money",
+    "workaround": "A cost bars block over the survivor and the configurations that clear the pass-rate gate, plus cost_per_month keys in prose"
+  },
+  {
+    "need": "Figure keys for factor effects in a factorial sweep: what one retry, or a step of reasoning, adds within each model (no control, so measure_breakdown and arm_minus_control refuse)",
+    "why": "Retry against reasoning is the design's main finding; it can only be read off adjacent lattice tiles",
+    "workaround": "The lattice block carries the figures; the claim states the direction in words with no number"
+  },
+  {
+    "need": "Task case counts or a declared traffic mix (measure_read by task reports n_cases none)",
+    "why": "The gate is on the overall rate, and the pick is below the gate on two tasks; whether the eval's case mix matches production decides whether the overall figure is the right one to gate (confound_check is not available either)",
+    "workaround": "Carried as an open caveat with its material_if and a declaration in next steps"
+  },
+  {
+    "need": "A cost unit that matches the campaign: cost_per_1k's usd_per_1k filter and block cells print 'per 1,000 replies' while the measure is named 'Cost per 1k calls' for planner queries",
+    "why": "The page would call a planner query a reply",
+    "workaround": "Prose cites monthly cost (cost_per_month) at the declared volume; the cost bars caption names the unit"
+  },
+  {
+    "need": "Reader names on every point of gate_scatter (only the emphasized point gets its name; the rest print raw arm ids)",
+    "why": "Writing rules forbid ids above the appendix, and the scatter is the lead block",
+    "workaround": "Kept the scatter for its two-gate view; the lattice beside it names every configuration"
+  },
+  {
+    "need": "A way to resolve a figure-keyed prose string before submit",
+    "why": "No action checks that every key in the draft resolves and prints as intended",
+    "workaround": "Resolved the keys through a block_render title, which accepts figure keys"
+  },
+  {
+    "need": "What makes a trial pass, and caveat ids for analyst-raised caveats (caveats_list is empty, yet the pick's gate rests on a point estimate)",
+    "why": "Method must say what pass means, and confidence.caveats needs ids that land",
+    "workaround": "Method says pass is not defined in the snapshot and names the failure kinds the examples record; caveat ids are the analyst's own"
+  }
+]

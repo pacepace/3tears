@@ -1,0 +1,133 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the recommendation slot and c1 say what to do (serve brisk-s.few at $1,200 a month) and why: c1's lattice shows 1 'Passes' tile of 9, and options_dominance leaves brisk-s.few the only survivor. They also give the main risk: the 0.7-point overall clearance, flagged as optimistic because the configuration was picked for passing. The three why_not slots name the failing gate for every other configuration, and each matches dominance's 'out' reasons."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (the only passer) leads to c2 (its narrowest clearance, beyond the noise), c3 (the binding cell that rules out nano-xs.few), c4 (the latency wall above it) and c5 (a model-dependent prompt effect, marked detail). The lede, flag, caveat 1, watch #1 and next #1 all tell the same story about the overall clearance. Explore matches decision_sensitivity on all three thresholds: no call above 90.7% overall, nano-xs.few below a 76.7% floor, no call above 82.9%, no call below 184 ms. One loose end: c5 credits 'the rubric's effect', while next #4 says rubric and reasoning can't be credited separately."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "brisk-s.few's weak axes are shown with their sizes. The overall gap is 0.7 points with a winner's-curse warning (watch #1). Complex x News is 2.9 points over the floor with a half-width of 1.2 (watch #2). The flag states plainly that balanced accuracy has no stated interval. Claims stay within the intervals. nano-xs.few's 76.7 sits 3.3 below the floor against a half-width of 1.4, and brisk-s.few's 2.9 against 1.2. Two small overreaches remain. 'Far narrower than the clearance' (caveat 1) describes a derived half-width of about 0.31 against a 0.67 clearance, which is about half. And the page never states the cell intervals' level (95%)."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "Most reasons check out. Scoreboard: 0 lost and 0 failed for every arm. Traffic-weighted and macro F1 order the near-decision configurations the same way (92.2 vs 92.0 and 89.6 vs 89.0 for brisk-s.few vs nano-xs.few). Latency: only p95 is held. Domain/complexity confusion now carries an honest reason and a next step. One reason does not hold, and it hides an option an order of magnitude cheaper. The cascade is dismissed because it 'would probably miss the latency budget', but with about 7.5% of turns (3,600 of 48,210) taking two calls, the mix's p95 falls near the 33rd percentile of the two-call latency. The page itself says that can't be read from p95-only data. Modelled, the cost is about $57 plus 7.5% of $1,200, roughly $150 a month against $1,200. That would change what a cost-minded decider asks to run next, though not today's call."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "The rubric + reasoning bundle goes to next #4. Selection on the same set is in watch #1, with next #1 as a fresh-sample confirmation. Gold-label noise is caveat 2, now correctly stated as able to reorder close configurations, with next #5. The undefined 'correct turn' (one axis or both) is in Method, with next #3. Conversation clustering, the one threat to the inferred overall interval, is caveat 1's material_if. The only gap: c5's 'the rubric's effect' still reads the bundle as the rubric alone."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five name an experiment or a declaration and say what each would settle. Next #1 is the fresh-sample confirmation, the step the call depends on. Next #2 is priced ($57 against $1,200 a month) and warns that nano-xs.few's 0.1-point overall clearance is inside the noise. Next #3 pairs a declaration with a breakdown. Next #4 separates the rubric from the reasoning. Next #5 sizes the label noise. Gaps that keep this from being crisp: next #1 and #5 give no sample size. No step settles caveat 1's clustering condition directly (a conversation-clustered interval on this set). The modelled cascade, the cheapest untested route, is not offered as a run."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's lattice, c3's two heatmaps (the second now shows all 9 panels) and c4's gate scatter (log latency axis, with a caption noting the cell floor it doesn't draw) fit their claims, and the counterfactual holds for each. c2's dot_interval prints bare dots, as its caption admits. It repeats the balanced-accuracy values already in c1 and c4, and it can't show the half of c2 that is new, 'wider than the noise'. If the cell half-widths were 3 points, the block would look the same. c5's bars are drawn from zero across 78 to 93%, so the claimed lifts of 1.1 points (Atlas-M) and 0.8 points (Brisk-S) are invisible, and the diff_heatmap covers only Nano-XS. Balanced accuracy for all 9 configurations is drawn four times (c1, c2, c4, c5 / 1)."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted cascade: the reason 'Complex x News is too large a share of turns for a second call to stay out of the p95 tail, so it would probably miss the latency budget' does not follow from the data. If about 7.5% of turns (cells.complex.news.n_cases 3,600 of 48,210, on this set's mix) take two calls, the mix's p95 sits near the 33rd percentile of the two-call latency, not at criteria.p95.nano-xs.few.value plus criteria.p95.brisk-s.few.value. The page's own 'Latency distributions' entry says only p95 is held, so that percentile can't be modelled. Say 'nobody ran it, and its latency tail can't be modelled from p95 alone'. Also name the real accuracy risk: Complex x News turns that Nano-XS mislabels stay on Nano-XS, so the mixed path's Complex x News accuracy is unknown too. Modelled, the cost is about $57 plus 7.5% of $1,200, roughly $150 against $1,200 a month. That is large enough to offer as a next step: run the cascade and measure its p95 and its Complex x News accuracy."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The block can't carry the claim's new half. The dot_interval prints bare balanced-accuracy dots that c1's lattice and c4's scatter already show against the same gate, and nothing on the page draws the cell intervals the 'wider than the noise' argument rests on. If they were 3 points wide, no block would change. Draw the evidence: brisk-s.few's nine cell accuracies with their 95% intervals, against the floor and the overall gate. Or fold c2's text into c1/c4 and drop the duplicate block."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "The bars are drawn from zero on a 0 to 100 axis, so the claimed lifts of rubric + reasoning over few-shot are invisible: Atlas-M 92.1 to 93.2 (1.1 points) and Brisk-S 90.7 to 91.5 (0.8 points). The diff_heatmap shows only Nano-XS. A per-model slope or dot chart across the three prompt styles, or a diff block for all three models, would show the interaction the claim makes. Also write 'rubric + reasoning's effect depends on the model' rather than 'the rubric's effect', to match next #4, which says the two can't be credited separately."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Caveat overall_interval_inferred says balanced accuracy's own interval is 'far narrower than the clearance'. From brisk-s.few's nine cell half-widths, assuming independence, it is about +/-0.31 against a 0.67 clearance (shown as 0.7): about half, not far narrower. That still clears the gate at about 4 standard errors. Say 'about half the clearance'. State somewhere on the page (Method 'Intervals') that the cell intervals are 95% intervals over turns, so 'known to within 1.4 points' has a level."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Caveat 1's material condition, turns clustering by conversation, is the one assumption the high_if_immaterial confidence rests on, and no next step tests it directly. The fresh sample in next #1 tests reproduction, not the interval's validity. If the snapshot's turns carry conversation ids, a conversation-clustered (or bootstrapped) interval on this set settles it cheaply. Also give next #1 and #5 a sample size, or say what size would separate the 0.7-point clearance and the 2.9-point Complex x News margin."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5 (persists from round 1): c4's gate_scatter values table still labels its points with raw arm ids (atlas-m.zero, brisk-s.few, ...) above the appendix, while every other block prints display names. This is a renderer fix, not the analyst's.",
+    "Invariant 1 can't vouch for qualitative figure claims with no number in them: the omitted entry's 'both axes' diagonals for nano-xs.few sit far above that cell's accuracy' and Method's 'per-axis confusion tables don't reconcile' rest on confusion figures the editor cut can't read (campaign_overview lists no confusion measure).",
+    "Rendering note, not an invariant (persists): the lattice prints '1302 ms' without a thousands separator, and the c5 bars values table repeats each value in its Note column."
+  ],
+  "resolutions": [
+    {
+      "finding": "report must_fix: the page said no interval exists on any gate figure, though cell accuracy holds 95% half-widths",
+      "status": "resolved",
+      "evidence": "The flag now says only balanced accuracy lacks a stated interval and that the cell accuracies have one. Watch #2 cites cells.complex.news.brisk-s.few.accuracy.half_width (1.2) and why_not #1 cites nano-xs.few's (1.4). Method 'Intervals' and the c2/c3 captions now say which figures carry intervals and which blocks don't draw them."
+    },
+    {
+      "finding": "c2 must_fix: the 0.7-point overall clearance was framed as possibly inside noise, though the cell intervals imply an interval of about +/-0.3",
+      "status": "resolved",
+      "evidence": "'just' is gone from the headline. c2 states the clearance is wider than the noise because balanced accuracy averages disjoint cells, each within cells.complex.conv.brisk-s.few.accuracy.half_width (1.4, the widest of brisk-s.few's nine; derived interval about +/-0.31). The caveat is now overall_interval_inferred, and its material_if names clustering. Next #1 is now confirmation on a fresh sample, and next #2 notes that nano-xs.few's 0.1-point clearance is inside the noise. The wording 'far narrower' is still slightly strong (new finding)."
+    },
+    {
+      "finding": "c5 should_fix: 'no prompt style's effect holds across models' contradicted by few-shot beating zero-shot on every model",
+      "status": "resolved",
+      "evidence": "c5 is narrowed to few-shot versus rubric + reasoning: it lifts Atlas-M (92.1 to 93.2) and Brisk-S (90.7 to 91.5) and drops Nano-XS to 83.9. The bars caption says few-shot beats zero-shot on every model."
+    },
+    {
+      "finding": "c5 should_fix: 'mostly by misreading medium complexity' does not hold against the cell accuracies",
+      "status": "resolved",
+      "evidence": "c5 now says the drop is 'by a similar amount in every cell'. A diff_heatmap (c5 / 2) shows nano-xs.rubric less nano-xs.few at -5.7 to -6.7 points in all nine cells, and the medium-complexity cause is gone."
+    },
+    {
+      "finding": "c3 should_fix: 'weakest cell for every configuration' carried by a heatmap showing 2 of 9",
+      "status": "resolved",
+      "evidence": "c3 / 2 adds a heatmap of every configuration's nine cells (27 rows), and Complex x News is the minimum in each panel (65.1 to 86.0). The two-arm heatmap stays as the focus panel."
+    },
+    {
+      "finding": "report should_fix: the omitted 'domain-axis confusion' reason claimed domain errors are small from a complexity-only confusion",
+      "status": "resolved",
+      "evidence": "The claim that domain errors are small is gone. The omitted reason now says neither axis's confusion can locate the Complex x News failure, and that the per-axis tables don't reconcile until the definition of a correct turn is settled. Next #3 makes that declaration plus a per-axis breakdown the step. The diagonal figures can't be checked from the editor cut, which holds no confusion measure."
+    },
+    {
+      "finding": "report should_fix: explore p95 called accuracy above 483 ms 'a trade nobody has priced'",
+      "status": "resolved",
+      "evidence": "Explore 'Latency budget (p95)' now cites price.brisk-s.few.atlas-m.few.balanced_accuracy.gain / monthly_cost_gap and the brisk-s.rubric pair (from cost_per_1m, about +1.4 points for $6,600 and +0.8 to 0.9 for $1,650 a month), and names brisk-s.rubric the cheaper step up. decision_sensitivity on threshold:p95 confirms brisk-s.few stays the pick on cost at every budget from 184 ms up."
+    },
+    {
+      "finding": "report should_fix: the omitted cascade ('routed mix') was dismissed as circular",
+      "status": "partially resolved",
+      "evidence": "'Circular' is gone, and 'nobody ran it, so no figure states its cost, accuracy or latency' is right. The new second reason, that a second call for Complex x News turns 'would probably miss the latency budget', does not follow from what the snapshot holds. With about 7.5% of turns (3,600 of 48,210) taking two calls, the mix's p95 sits near the 33rd percentile of the two-call latency, not at the sum of two p95s. The page's own 'Latency distributions' omission says only p95 is held, so that tail can't be modelled. The round-1 suggestion of 'about 80 + 184 ms' was itself an overestimate. See the new finding."
+    },
+    {
+      "finding": "report should_fix: caveat gold_label_agreement said label noise 'moves every configuration alike'",
+      "status": "resolved",
+      "evidence": "The material_if now reads 'label noise shifts the readings against the absolute gates and can reorder close configurations', and it is scoped to medium complexity and Complex x News."
+    },
+    {
+      "finding": "report should_fix: nano-xs.few is within 0.2 points of brisk-s.few on traffic-weighted accuracy, hidden by 'same order'",
+      "status": "resolved",
+      "evidence": "why_not #1 now says nano-xs.few is 'nearly as accurate on the production traffic mix' at cost_per_month.nano-xs.few ($57) against $1,200. The omitted reason says it is 'within a fraction of a point'. This is qualitative, with no measure.traffic_accuracy keys (92.0 vs 92.2), but enough for the decider."
+    }
+  ],
+  "calls": 20
+}

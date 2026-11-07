@@ -1,0 +1,47 @@
+sensitivity
+parameter: threshold:trouble.resolves
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion trouble.resolves
+criteria.trouble.resolves.threshold = 90%
+boundary_belongs_to: below
+declared_call:
+  modes: [decide]
+  dominant: [arm:atlas-m]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks (4):
+  - task: billing; arm: arm:atlas-m
+  - task: trouble; arm: arm:atlas-m
+  - task: persona; arm: arm:atlas-m
+  - task: research; arm: arm:atlas-m
+segments (2):
+  - low: none; modes: [decide]; dominant: [arm:atlas-m]
+    high:
+      criteria.trouble.resolves.atlas-m.value = 90%
+    picks (4):
+      - task: billing; arm: arm:atlas-m
+      - task: trouble; arm: arm:atlas-m
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: arm:atlas-m
+  - high: none; modes: [no_call]; dominant: []
+    low:
+      criteria.trouble.resolves.atlas-m.value = 90%
+    picks (4):
+      - task: billing; arm: arm:atlas-m
+      - task: trouble; arm: none
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: arm:atlas-m
+holds: False
+picks_hold: False
+flips (4):
+  - arm: arm:brisk-s; where: none; call_changes: False; picks_change: False
+    criteria.trouble.resolves.brisk-s.value = 74%
+  - arm: arm:open-70b; where: none; call_changes: False; picks_change: False
+    criteria.trouble.resolves.open-70b.value = 82%
+  - arm: arm:atlas-m; where: none; call_changes: True; picks_change: True
+    criteria.trouble.resolves.atlas-m.value = 90%
+  - arm: arm:atlas-l; where: none; call_changes: False; picks_change: False
+    criteria.trouble.resolves.atlas-l.value = 91%
+total: 4
+offset: 0
+notes: []
+bars_as: warnings

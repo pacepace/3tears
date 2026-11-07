@@ -1,0 +1,129 @@
+{
+  "resolutions": [
+    {
+      "finding": "c2 must_fix: heatmap caption called the pair 'the two cheapest options inside the latency budget'",
+      "status": "resolved",
+      "evidence": "The caption now reads 'the only two configurations inside both the latency budget and the overall accuracy gate'. Checked against c1's gate_matrix and c3's points: inside 250 ms are Brisk-S zero-shot (86.0%), Brisk-S few-shot (90.7%), Nano-XS zero-shot (78.2%), Nano-XS few-shot (90.1%) and Nano-XS rubric (83.9%). Only the two named clear 90%. Its added clause 'the complex news cell is the only one either misses' also holds: the pick misses none, and Nano-XS few-shot misses only complex news (76.7%)."
+    },
+    {
+      "finding": "c5 should_fix: 'few-shot is the lever that lifts the small models' contradicted by the Brisk-S rows; 'takes much of it back' implied stacking",
+      "status": "resolved",
+      "evidence": "c5 now reads 'On Nano-XS, few-shot examples lift overall accuracy far more than the rubric with reasoning: +11.9 points from zero-shot against +5.7. On Brisk-S the two prompts are close, and the rubric is out there on latency.' Both keys read (+11.9, +5.7). The Brisk-S block shows +4.7 against +5.5, which is close. Brisk-S rubric p95 is 496 ms. The 'takes it back' wording is gone."
+    },
+    {
+      "finding": "c5 should_fix: levers block printed model effects and interactions that omitted[5] said were left out; interaction rows mislabelled",
+      "status": "resolved",
+      "evidence": "c5 now has two levers blocks, each restricted to one model's three prompt arms (3 rows each, no interaction rows). omitted[5] now says 'only the prompt lever is shown, within each model'. One leftover is renderer text: both block notes still say 'each interaction is how that effect changes across another setting' though neither block shows one."
+    },
+    {
+      "finding": "report should_fix: the overall-accuracy interval is derivable from the cell half-widths and settles sampling noise",
+      "status": "partially resolved",
+      "evidence": "The point is taken throughout. The lede says 'more than its sampling noise'. The point_estimate:overall material_if and Method 'Intervals' say the cells' spreads put noise 'well inside' the 0.7-point clearance. watch says 'Sampling noise doesn't reach the line'. next[0] is narrowed to selection and fresh turns. I recomputed it: the nine 95% half-widths in c2's heatmap give sqrt(7.81)/9 = 0.31 points, an interval of about 90.4-91.0. The figure itself is still not on the page, and the snapshot can't supply it: spread.brisk-s.few.balanced_accuracy.overall.{interval,se,low,high} all return 'unstated'. That is a kit gap, not an analyst lapse. Method could still name the arithmetic (the nine cell half-widths combined in quadrature, over nine) so a reader can check 'well inside' from the heatmap."
+    },
+    {
+      "finding": "c4 should_fix: settle table printed '—' for the overall distance; 8 of 16 columns empty; note says 'Each bar'",
+      "status": "partially resolved",
+      "evidence": "c4 is narrowed to the cell floor ('the narrowest, complex news, clears by 2.9 points'), and the overall clearance moved to watch, so the table now proves the claim it makes: every cell 'clears', complex news +2.9, 617 cases needed two-sided against 3,600. The table is still padded. Four columns are all '—' (Trials needed one-/two-sided, Repeats of a case, Trials today). Arm and Level are constant on every row. Case counts print as '435.0' and '617.0'. The note still says 'Each bar' on a table. These are renderer defects."
+    },
+    {
+      "finding": "report should_fix: next[1] said 're-run that cell' though it needs overall accuracy to hold; a tuned prompt is a new selection",
+      "status": "resolved",
+      "evidence": "next[1] now says 're-run the whole configuration on fresh turns' and 'A prompt tuned to one cell is a new pick in its own right, so its result needs the same fresh-turn check.' Its aside on the rubric, which 'lowered that cell by 5.8 points', reads correctly: 76.7% to 70.9%."
+    },
+    {
+      "finding": "report should_fix: omitted[2] asserted near-identical per-axis errors with no figure to back it",
+      "status": "resolved",
+      "evidence": "omitted[2] now cites four confusion figures, and all four read: complex read as complex 92.7% (pick) against 92.3%, news read as news 95.8% against 95.5%. The previous finding's premise that no per-axis figure exists was wrong, since confusion.<axis>.<arm>.<true>.<pred> reads on this snapshot. The new reason also says why the tables would not help: the marginals can't locate the joint complex x news gap."
+    },
+    {
+      "finding": "report should_fix: printing (signed +0.7 in prose; '21.05 times'; scatter line labelled 'floor 90%')",
+      "status": "partially resolved",
+      "evidence": "Fixed: the lede and watch now use |abs ('by only 0.7 points', '0.7 points over'). Regressed: why_not now writes {cost.gap.brisk-s.few.nano-xs.few.multiple|int}, and |int drops the unit, so the decision block prints 'the pick costs 21 as much' (the unfiltered key prints '21.05 times'). Not fixed: the gate_scatter still labels the overall-accuracy line 'floor 90%' (renderer). c3's caption now names it 'the overall accuracy line', which mitigates it."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "A reader of the headline, decision slots and c1 gets four things. What to do: ship Brisk-S few-shot. Why: the only one of nine inside all three gates, which options_dominance confirms as the sole survivor. The cost: $1,200 a month, $40 per 1M. The main risk: a 0.7-point overall clearance that holds against noise but was read on the set the pick was chosen from. why_not disposes of every rival with a checked figure: Nano-XS few-shot's complex news interval sits wholly under 80%, the closest Atlas-M runs at 420 ms, and the zero-shot and Nano-XS rubric configurations miss overall. One visible defect: why_not prints 'the pick costs 21 as much' (see findings)."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The story runs c1 (sole survivor), c2 (the cheap rival fails only complex news, by 6.2 points), c3 (every more accurate option breaks latency, nearest 483 ms), c4 (the pick's cells are all settled, narrowest +2.9), then c5 (few-shot is Nano-XS's lever, which points next[1]). Round 1's two seams are closed: omitted[5] now matches what c5 shows, and c5 no longer contradicts its own rows. The explore outcomes match decision_sensitivity. The cell floor flips to Nano-XS few-shot at or below 76.7% and to no call above 82.9%. Overall has no call above 90.7%. Latency has no call below 184 ms, and raising it never moves the call. A small tension remains: the report says sampling noise is well inside the clearance yet keeps best-of-nine selection as an open risk on the same figure, without saying how large that could be (finding)."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The pick's weak axes lead: the 0.7-point overall clearance in the lede, flag, watch and caveats, and complex news at 82.9% (the weakest cell for all nine, verified against the sensitivity flips) in the recommendation and c4. c2's per-cell differences are captioned unpaired and uncorrected. The round-1 overreaches are gone: the c2 caption is now true, and c5 is stated per model with Brisk-S called 'close'. c2's 'level with the pick or ahead' covers medium science (+0.5) and complex science (+0.3), both inside intervals that span zero, so it is fair."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Each omission was checked and none would change the call. Traffic-weighted accuracy and macro F1 rank as balanced accuracy does. The confusion tables now carry figures showing like marginals (92.7 vs 92.3, 95.8 vs 95.5). No failure examples are held. Atlas-M's latency misses (420-1302 ms against 250) are far beyond noise. The model-lever omission now matches c5. On the cost of the more accurate configurations: Brisk-S rubric is $95 and Atlas-M few-shot $260 per 1M, both dominated by the pick, and decision_sensitivity shows that raising the latency budget never changes the call."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All four caveats carry material_if clauses tied to the story. point_estimate:overall is now narrowed correctly to selection and drift. point_estimate:p95 notes a 66 ms clearance. no_control is scoped to the unpaired c2 comparison. best_of_n flows into watch and next[0]. Unpaired, uncorrected intervals are in Method and the c2 caption. The remaining gap is calibration, not omission. With a combined standard error near 0.16 points, a best-of-nine selection effect would have to be several standard errors to cross 0.7. So the residual risk is mostly drift between this set and fresh traffic, and the report could say that."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names an experiment or declaration and what it settles. next[0], a fresh held-out run of the pick, settles whether the clearance survives outside the selection set and names the fallback (a trade between accuracy and latency). next[1], complex news examples for Nano-XS few-shot with the whole configuration re-run on fresh turns, settles whether the cheaper, faster option takes the call, and it flags its own selection risk. next[2], the owner declaring whether the $1,143-a-month saving is worth a second iteration, settles whether next[1] runs at all."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "Each block now carries its claim, and the counterfactual holds. c1's gate_matrix would show a second all-pass column if the claim were false. c2's heatmap and compare bars place the gap at complex news (+6.2, interval +4.4 to +8.0). c3's gate_scatter shows every point above 90.7% beyond 250 ms. c4's settle table shows all nine cells 'clears', with complex news nearest at +2.9. c5's two per-model lever blocks show +11.9 vs +5.7 and +4.7 vs +5.5. The remaining defects are presentation, mostly the renderer's: c4's table has four all-'—' columns, constant Arm and Level columns, '435.0'-style counts and an 'Each bar' note. The c3 chart labels the overall line 'floor 90%' and its axis 'Balanced accuracy' while the prose says 'overall accuracy'. c5's notes mention interactions it doesn't show."
+    }
+  ],
+  "total": 14,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "why_not prints 'the pick costs 21 as much'. The |int filter on cost.gap.brisk-s.few.nano-xs.few.multiple drops the word 'times', which the unfiltered key prints ('21.05 times'). This is broken text in the decision block, and the round-1 fix introduced it. Write '{...multiple|int} times as much', or rephrase."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The best_of_n caveat, watch ('a fresh run tends to read it lower') and the lede ('more than its sampling noise but as the best of nine configurations') keep selection open without sizing it. That sits awkwardly beside the report's own statement that sampling noise is well inside the 0.7-point clearance (derived half-width about 0.31, standard error about 0.16). A winner's-curse shift is bounded by that same noise, and the pick was selected on three gates, not on overall accuracy alone. Say that selection alone is unlikely to take back 0.7 points, and that the open risk is fresh traffic differing from this set. The lede's 'but as the best of nine' clause also reads unclearly."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "'Well inside the clearance' (Method 'Intervals', the point_estimate:overall caveat, watch) is a quantitative claim the page doesn't let a reader check. The snapshot refuses spread.brisk-s.few.balanced_accuracy.overall.* as unstated, so no figure can be printed. Method should at least name the arithmetic: the nine cell half-widths from c2's heatmap, combined in quadrature and divided by nine. Raise with the kit: a combined interval for a mean of disjoint cells should be a readable figure."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The settle table is still padded and partly misprinted, mostly by the renderer. Four columns are all '—' (Trials needed one-/two-sided, Repeats of a case, Trials today). Arm and Level repeat one value on every row. Case counts print as '7.0', '435.0', '617.0'. The note says 'Each bar' on a table. Query or render only the columns that carry values, and print counts as integers."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The gate_scatter labels the overall line 'floor 90%' (the page reserves 'floor' for the per-cell floor), and its axis and c5's notes say 'Balanced accuracy' where every sentence says 'overall accuracy'. Use one term on the charts, or have Method name the equivalence once."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "Both levers block notes say 'each interaction is how that effect changes across another setting', but neither block shows an interaction. This is renderer note text. It should describe only the rows present."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: all 34 distinct figure keys in report.json read through figure_keys_check, none refused or unstated. The prose statement that overall accuracy's sampling noise is 'well inside' the clearance carries no number, so it isn't a breach. But it rests on a figure the snapshot reports as unstated (spread.<arm>.balanced_accuracy.overall.*).",
+    "Invariant 2: every block renders. These renderer text defects remain: c4's note says 'bars' on a table and its counts print with '.0'; c5's notes describe interactions that aren't shown; c1's row label reads 'Latency budget (p95) (p95 at most 250 ms)'.",
+    "Invariant 5: no internal ids or hashes appear in the blocks. Charts use the measure's display name 'Balanced accuracy' alongside the prose term 'overall accuracy' (a second, undefined name, not a key).",
+    "Invariant 6: Method is present. report.json has no explicit full-results appendix entry; I assume the page generates it, which the doc alone doesn't show."
+  ],
+  "calls": 8
+}

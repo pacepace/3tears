@@ -1,0 +1,353 @@
+breakdown
+measure: persona.holds_character
+control: arm:September
+slice_by: stratum
+arms: [arm:qwen3.8-flash, arm:1017]
+slices (26):
+  - id: off_lane; aspect: character adherence (v2); share: none
+    strata.off_lane.name = off lane
+    strata.off_lane.n_cases = 38
+    strata.off_lane.September.persona.holds_character.mean = 65.8%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.off_lane.qwen3.8-flash.persona.holds_character.mean = 42.9%
+        strata.off_lane.qwen3.8-flash.persona.holds_character.vs_control = -22.9
+        strata.off_lane.loss_share.qwen3.8-flash.persona.holds_character = 48%
+      - arm: arm:1017
+        strata.off_lane.1017.persona.holds_character.mean = 45.6%
+        strata.off_lane.1017.persona.holds_character.vs_control = -20.2
+        strata.off_lane.loss_share.1017.persona.holds_character = 53%
+  - id: machinery; aspect: character adherence (v2); share: none
+    strata.machinery.name = machinery
+    strata.machinery.n_cases = 30
+    strata.machinery.September.persona.holds_character.mean = 90%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.machinery.qwen3.8-flash.persona.holds_character.mean = 85.4%
+        strata.machinery.qwen3.8-flash.persona.holds_character.vs_control = -4.6
+        strata.machinery.loss_share.qwen3.8-flash.persona.holds_character = 8%
+      - arm: arm:1017
+        strata.machinery.1017.persona.holds_character.mean = 85.6%
+        strata.machinery.1017.persona.holds_character.vs_control = -4.4
+        strata.machinery.loss_share.1017.persona.holds_character = 9%
+  - id: about; aspect: character adherence (v2); share: none
+    strata.about.name = about
+    strata.about.n_cases = 23
+    strata.about.September.persona.holds_character.mean = 98.6%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.about.qwen3.8-flash.persona.holds_character.mean = 95.7%
+        strata.about.qwen3.8-flash.persona.holds_character.vs_control = -2.9
+        strata.about.loss_share.qwen3.8-flash.persona.holds_character = 4%
+      - arm: arm:1017
+        strata.about.1017.persona.holds_character.mean = 98.6%
+        strata.about.1017.persona.holds_character.vs_control = 0
+        strata.about.loss_share.1017.persona.holds_character = 0%
+  - id: superlative; aspect: character adherence (v2); share: none
+    strata.superlative.name = superlative
+    strata.superlative.n_cases = 22
+    strata.superlative.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.superlative.qwen3.8-flash.persona.holds_character.mean = 96.8%
+        strata.superlative.qwen3.8-flash.persona.holds_character.vs_control = -3.2
+        strata.superlative.loss_share.qwen3.8-flash.persona.holds_character = 4%
+      - arm: arm:1017
+        strata.superlative.1017.persona.holds_character.mean = 98.5%
+        strata.superlative.1017.persona.holds_character.vs_control = -1.5
+        strata.superlative.loss_share.1017.persona.holds_character = 2%
+  - id: small_talk; aspect: character adherence (v2); share: none
+    strata.small_talk.name = small talk
+    strata.small_talk.n_cases = 17
+    strata.small_talk.September.persona.holds_character.mean = 98%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.small_talk.qwen3.8-flash.persona.holds_character.mean = 96.1%
+        strata.small_talk.qwen3.8-flash.persona.holds_character.vs_control = -2
+        strata.small_talk.loss_share.qwen3.8-flash.persona.holds_character = 2%
+      - arm: arm:1017
+        strata.small_talk.1017.persona.holds_character.mean = 98%
+        strata.small_talk.1017.persona.holds_character.vs_control = 0
+        strata.small_talk.loss_share.1017.persona.holds_character = 0%
+  - id: multi; aspect: character adherence (v2); share: none
+    strata.multi.name = multi
+    strata.multi.n_cases = 12
+    strata.multi.September.persona.holds_character.mean = 72.2%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.multi.qwen3.8-flash.persona.holds_character.mean = 63.9%
+        strata.multi.qwen3.8-flash.persona.holds_character.vs_control = -8.3
+        strata.multi.loss_share.qwen3.8-flash.persona.holds_character = 5%
+      - arm: arm:1017
+        strata.multi.1017.persona.holds_character.mean = 58.3%
+        strata.multi.1017.persona.holds_character.vs_control = -13.9
+        strata.multi.loss_share.1017.persona.holds_character = 11%
+  - id: emotional; aspect: character adherence (v2); share: none
+    strata.emotional.name = emotional
+    strata.emotional.n_cases = 11
+    strata.emotional.September.persona.holds_character.mean = 97%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.emotional.qwen3.8-flash.persona.holds_character.mean = 93.9%
+        strata.emotional.qwen3.8-flash.persona.holds_character.vs_control = -3
+        strata.emotional.loss_share.qwen3.8-flash.persona.holds_character = 2%
+      - arm: arm:1017
+        strata.emotional.1017.persona.holds_character.mean = 93.9%
+        strata.emotional.1017.persona.holds_character.vs_control = -3
+        strata.emotional.loss_share.1017.persona.holds_character = 2%
+  - id: lineage; aspect: character adherence (v2); share: none
+    strata.lineage.name = lineage
+    strata.lineage.n_cases = 10
+    strata.lineage.September.persona.holds_character.mean = 96.6%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.lineage.qwen3.8-flash.persona.holds_character.mean = 96.6%
+        strata.lineage.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.lineage.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.lineage.1017.persona.holds_character.mean = 96.7%
+        strata.lineage.1017.persona.holds_character.vs_control = +0.1
+        strata.lineage.loss_share.1017.persona.holds_character = 0%
+  - id: pushback; aspect: character adherence (v2); share: none
+    strata.pushback.name = pushback
+    strata.pushback.n_cases = 10
+    strata.pushback.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.pushback.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.pushback.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.pushback.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.pushback.1017.persona.holds_character.mean = 100%
+        strata.pushback.1017.persona.holds_character.vs_control = 0
+        strata.pushback.loss_share.1017.persona.holds_character = 0%
+  - id: rejection; aspect: character adherence (v2); share: none
+    strata.rejection.name = rejection
+    strata.rejection.n_cases = 10
+    strata.rejection.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.rejection.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.rejection.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.rejection.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.rejection.1017.persona.holds_character.mean = 100%
+        strata.rejection.1017.persona.holds_character.vs_control = 0
+        strata.rejection.loss_share.1017.persona.holds_character = 0%
+  - id: short; aspect: character adherence (v2); share: none
+    strata.short.name = short
+    strata.short.n_cases = 10
+    strata.short.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.short.qwen3.8-flash.persona.holds_character.mean = 96.7%
+        strata.short.qwen3.8-flash.persona.holds_character.vs_control = -3.3
+        strata.short.loss_share.qwen3.8-flash.persona.holds_character = 2%
+      - arm: arm:1017
+        strata.short.1017.persona.holds_character.mean = 96.7%
+        strata.short.1017.persona.holds_character.vs_control = -3.3
+        strata.short.loss_share.1017.persona.holds_character = 2%
+  - id: story; aspect: character adherence (v2); share: none
+    strata.story.name = story
+    strata.story.n_cases = 10
+    strata.story.September.persona.holds_character.mean = 93.3%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.story.qwen3.8-flash.persona.holds_character.mean = 83.3%
+        strata.story.qwen3.8-flash.persona.holds_character.vs_control = -10
+        strata.story.loss_share.qwen3.8-flash.persona.holds_character = 5%
+      - arm: arm:1017
+        strata.story.1017.persona.holds_character.mean = 96.7%
+        strata.story.1017.persona.holds_character.vs_control = +3.3
+        strata.story.loss_share.1017.persona.holds_character = -2%
+  - id: slang; aspect: character adherence (v2); share: none
+    strata.slang.name = slang
+    strata.slang.n_cases = 9
+    strata.slang.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.slang.qwen3.8-flash.persona.holds_character.mean = 92.6%
+        strata.slang.qwen3.8-flash.persona.holds_character.vs_control = -7.4
+        strata.slang.loss_share.qwen3.8-flash.persona.holds_character = 4%
+      - arm: arm:1017
+        strata.slang.1017.persona.holds_character.mean = 100%
+        strata.slang.1017.persona.holds_character.vs_control = 0
+        strata.slang.loss_share.1017.persona.holds_character = 0%
+  - id: ai_opinion; aspect: character adherence (v2); share: none
+    strata.ai_opinion.name = ai opinion
+    strata.ai_opinion.n_cases = 8
+    strata.ai_opinion.September.persona.holds_character.mean = 91.7%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.ai_opinion.qwen3.8-flash.persona.holds_character.mean = 95.8%
+        strata.ai_opinion.qwen3.8-flash.persona.holds_character.vs_control = +4.2
+        strata.ai_opinion.loss_share.qwen3.8-flash.persona.holds_character = -2%
+      - arm: arm:1017
+        strata.ai_opinion.1017.persona.holds_character.mean = 91.7%
+        strata.ai_opinion.1017.persona.holds_character.vs_control = 0
+        strata.ai_opinion.loss_share.1017.persona.holds_character = 0%
+  - id: discovery; aspect: character adherence (v2); share: none
+    strata.discovery.name = discovery
+    strata.discovery.n_cases = 8
+    strata.discovery.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.discovery.qwen3.8-flash.persona.holds_character.mean = 95.8%
+        strata.discovery.qwen3.8-flash.persona.holds_character.vs_control = -4.2
+        strata.discovery.loss_share.qwen3.8-flash.persona.holds_character = 2%
+      - arm: arm:1017
+        strata.discovery.1017.persona.holds_character.mean = 95.8%
+        strata.discovery.1017.persona.holds_character.vs_control = -4.2
+        strata.discovery.loss_share.1017.persona.holds_character = 2%
+  - id: identify; aspect: character adherence (v2); share: none
+    strata.identify.name = identify
+    strata.identify.n_cases = 8
+    strata.identify.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.identify.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.identify.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.identify.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.identify.1017.persona.holds_character.mean = 100%
+        strata.identify.1017.persona.holds_character.vs_control = 0
+        strata.identify.loss_share.1017.persona.holds_character = 0%
+  - id: next_up; aspect: character adherence (v2); share: none
+    strata.next_up.name = next up
+    strata.next_up.n_cases = 8
+    strata.next_up.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.next_up.qwen3.8-flash.persona.holds_character.mean = 83.3%
+        strata.next_up.qwen3.8-flash.persona.holds_character.vs_control = -16.7
+        strata.next_up.loss_share.qwen3.8-flash.persona.holds_character = 7%
+      - arm: arm:1017
+        strata.next_up.1017.persona.holds_character.mean = 83.3%
+        strata.next_up.1017.persona.holds_character.vs_control = -16.7
+        strata.next_up.loss_share.1017.persona.holds_character = 9%
+  - id: music_tech; aspect: character adherence (v2); share: none
+    strata.music_tech.name = music tech
+    strata.music_tech.n_cases = 7
+    strata.music_tech.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.music_tech.qwen3.8-flash.persona.holds_character.mean = 85.7%
+        strata.music_tech.qwen3.8-flash.persona.holds_character.vs_control = -14.3
+        strata.music_tech.loss_share.qwen3.8-flash.persona.holds_character = 5%
+      - arm: arm:1017
+        strata.music_tech.1017.persona.holds_character.mean = 95.2%
+        strata.music_tech.1017.persona.holds_character.vs_control = -4.8
+        strata.music_tech.loss_share.1017.persona.holds_character = 2%
+  - id: taste; aspect: character adherence (v2); share: none
+    strata.taste.name = taste
+    strata.taste.n_cases = 7
+    strata.taste.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.taste.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.taste.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.taste.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.taste.1017.persona.holds_character.mean = 100%
+        strata.taste.1017.persona.holds_character.vs_control = 0
+        strata.taste.loss_share.1017.persona.holds_character = 0%
+  - id: assistant_shape; aspect: character adherence (v2); share: none
+    strata.assistant_shape.name = assistant shape
+    strata.assistant_shape.n_cases = 6
+    strata.assistant_shape.September.persona.holds_character.mean = 58.8%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.assistant_shape.qwen3.8-flash.persona.holds_character.mean = 44.4%
+        strata.assistant_shape.qwen3.8-flash.persona.holds_character.vs_control = -14.4
+        strata.assistant_shape.loss_share.qwen3.8-flash.persona.holds_character = 5%
+      - arm: arm:1017
+        strata.assistant_shape.1017.persona.holds_character.mean = 44.4%
+        strata.assistant_shape.1017.persona.holds_character.vs_control = -14.4
+        strata.assistant_shape.loss_share.1017.persona.holds_character = 6%
+  - id: correction; aspect: character adherence (v2); share: none
+    strata.correction.name = correction
+    strata.correction.n_cases = 6
+    strata.correction.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.correction.qwen3.8-flash.persona.holds_character.mean = 94.4%
+        strata.correction.qwen3.8-flash.persona.holds_character.vs_control = -5.6
+        strata.correction.loss_share.qwen3.8-flash.persona.holds_character = 2%
+      - arm: arm:1017
+        strata.correction.1017.persona.holds_character.mean = 100%
+        strata.correction.1017.persona.holds_character.vs_control = 0
+        strata.correction.loss_share.1017.persona.holds_character = 0%
+  - id: debate; aspect: character adherence (v2); share: none
+    strata.debate.name = debate
+    strata.debate.n_cases = 6
+    strata.debate.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.debate.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.debate.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.debate.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.debate.1017.persona.holds_character.mean = 94.4%
+        strata.debate.1017.persona.holds_character.vs_control = -5.6
+        strata.debate.loss_share.1017.persona.holds_character = 2%
+  - id: praise; aspect: character adherence (v2); share: none
+    strata.praise.name = praise
+    strata.praise.n_cases = 6
+    strata.praise.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.praise.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.praise.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.praise.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.praise.1017.persona.holds_character.mean = 100%
+        strata.praise.1017.persona.holds_character.vs_control = 0
+        strata.praise.loss_share.1017.persona.holds_character = 0%
+  - id: request; aspect: character adherence (v2); share: none
+    strata.request.name = request
+    strata.request.n_cases = 6
+    strata.request.September.persona.holds_character.mean = 100%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.request.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.request.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.request.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.request.1017.persona.holds_character.mean = 94.4%
+        strata.request.1017.persona.holds_character.vs_control = -5.6
+        strata.request.loss_share.1017.persona.holds_character = 2%
+  - id: sequence; aspect: character adherence (v2); share: none
+    strata.sequence.name = sequence
+    strata.sequence.n_cases = 6
+    strata.sequence.September.persona.holds_character.mean = 94.4%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.sequence.qwen3.8-flash.persona.holds_character.mean = 100%
+        strata.sequence.qwen3.8-flash.persona.holds_character.vs_control = +5.6
+        strata.sequence.loss_share.qwen3.8-flash.persona.holds_character = -2%
+      - arm: arm:1017
+        strata.sequence.1017.persona.holds_character.mean = 100%
+        strata.sequence.1017.persona.holds_character.vs_control = +5.6
+        strata.sequence.loss_share.1017.persona.holds_character = -2%
+  - id: ai_mechanics; aspect: character adherence (v2); share: none
+    strata.ai_mechanics.name = ai mechanics
+    strata.ai_mechanics.n_cases = 5
+    strata.ai_mechanics.September.persona.holds_character.mean = 86.7%
+    arms (2):
+      - arm: arm:qwen3.8-flash
+        strata.ai_mechanics.qwen3.8-flash.persona.holds_character.mean = 86.7%
+        strata.ai_mechanics.qwen3.8-flash.persona.holds_character.vs_control = 0
+        strata.ai_mechanics.loss_share.qwen3.8-flash.persona.holds_character = 0%
+      - arm: arm:1017
+        strata.ai_mechanics.1017.persona.holds_character.mean = 86.7%
+        strata.ai_mechanics.1017.persona.holds_character.vs_control = 0
+        strata.ai_mechanics.loss_share.1017.persona.holds_character = 0%
+total: 26
+offset: 0
+concentrated_in (2):
+  - arm: arm:qwen3.8-flash; aspect: character adherence (v2); dimension: none; slice: off_lane
+    strata.off_lane.loss_share.qwen3.8-flash.persona.holds_character = 48%
+  - arm: arm:1017; aspect: character adherence (v2); dimension: none; slice: off_lane
+    strata.off_lane.loss_share.1017.persona.holds_character = 53%
+exploratory: True
+notes: []

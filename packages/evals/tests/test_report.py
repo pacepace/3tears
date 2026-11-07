@@ -4,15 +4,14 @@ Driven end to end on the toy host: its corpus campaign is generated through the 
 for the model) and read back as a report through the service. Then:
 
 - **It serializes two ways, from one block list.** Markdown and HTML each carry the title line, the basis line, the
-  verdict, the scoreboard, the author's words, code's numbers and every chart's values; the machine form is the
-  bundle the page was computed from.
-- **Who wrote what stays legible.** An author's caveat is attached to its finding as written; what code adds is a
-  disclosure; the memo is labelled as written by its model, and every number on the page is code's.
-- **A campaign with no analysis is reported from its evidence**, with no author's words at all, and an archived
-  analysis is not the campaign's report.
-- **Every refusal fires** — a block linked to a finding the report does not hold, a table showing more rows than it
-  has or a row keying other columns, a chart drawing the other kind's marks, a finding's words that name no finding,
-  a basis the report disagrees with.
+  verdict, the scoreboard, code's numbers and every chart's values; the machine form is the bundle the page was
+  computed from.
+- **Every word on it is code's.** What code adds is a disclosure, the writer is named in the methods, and a block of
+  an author's words is no block a page holds.
+- **A campaign with no analysis is reported from its evidence**, and an archived analysis is not the campaign's
+  report.
+- **Every refusal fires** — a block linked to a finding, which no page holds, a table showing more rows than it has
+  or a row keying other columns, a chart drawing the other kind's marks.
 
 The HTML's no-script property has its own file, ``test_report_html_no_script.py``.
 """
@@ -23,6 +22,7 @@ import html
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     NO_ANALYSIS,
@@ -36,21 +36,15 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    TextBlock,
     analysis_report,
     build_code_only_report,
-    build_report,
     campaign_report,
-    campaign_report_html,
     report_html,
     report_markdown,
     set_campaign_control,
 )
 from threetears.evals.analysis.report.build import contrast_rows
-from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.model import table_row
-from threetears.evals.kernel.authored import NextStep
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -71,16 +65,15 @@ async def toy() -> tuple[EvalHost, EvalAnalysis, Report]:
 
 
 class TestTheToyAnalysisSerializesTwoWays:
-    async def test_markdown_carries_the_title_the_basis_the_words_the_numbers_and_the_chart_values(
+    async def test_markdown_carries_the_title_the_question_the_arms_and_the_writer_in_the_methods(
         self, toy: tuple[Any, EvalAnalysis, Report]
     ) -> None:
         _, analysis, report = toy
         markdown = report_markdown(report)
-        finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The campaign's name is the title; the declared question is quoted whole under it, then the arms;
-        # who wrote the memo is in the methods.
+        # The heading is the campaign's name; the declared question is quoted whole on its
+        # own line under it, then the arms and the aspect; who wrote the analysis is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
         # The title is the first line: nothing stands above it.
@@ -91,17 +84,9 @@ class TestTheToyAnalysisSerializesTwoWays:
         )
         assert lines[top + 3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
-        # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
-        assert f"**{finding.title}**" in markdown and "**F1." not in markdown
-        assert "**Readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
-        # The finding's intervals are drawn in that table's rows, so no chart of them follows it.
-        assert not _finding_charts(report) and "**Turn time**" not in markdown
-        assert f"Caveat (sampling): {finding.caveats[0].text}" in markdown
         assert "## Methods" in markdown
 
-    async def test_html_carries_the_same_and_draws_the_chart_and_the_intervals_inline(
-        self, toy: tuple[Any, Any, Report]
-    ) -> None:
+    async def test_html_carries_the_same_and_draws_the_chart(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         page = report_html(report)
 
@@ -109,19 +94,13 @@ class TestTheToyAnalysisSerializesTwoWays:
         assert page.index("<header>") < page.index(f"<h1>{_escaped(report.title)}</h1>") < page.index("</header>")
         header = page[page.index("<header>") + len("<header>") : page.index("</header>")]
         assert header.lstrip().startswith("<h1>") and 'role="alert"' not in page
-        # The outcome bar is the page's one chart, beside its hidden table; the finding's intervals are glyphs in
-        # its readings table, whose rows already print every figure a glyph draws.
-        assert 'data-chart="outcome_bar"' in page and 'data-chart="interval_rows"' not in page
-        assert page.count('<svg class="viz"') == page.count('<table class="visually-hidden">') == 1
-        assert page.count('<svg class="viz-glyph"') == 2
+        # The outcome bar is the page's one chart, beside its table.
+        assert 'data-figure="outcome_bar"' in page and 'data-figure="interval_rows"' not in page
+        assert page.count('data-kind="') == page.count('class="tbl chart-values"') == 1
 
 
 def _escaped(text: str) -> str:
     return html.escape(text, quote=True)
-
-
-def _finding_charts(report: Report) -> list[ChartBlock]:
-    return [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "memo"]
 
 
 # =============================================================================
@@ -135,63 +114,11 @@ class TestTheToyReportsContent:
         order = list(SECTION_TITLES)
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
-        # No decision rule is declared, and the glossary is the serializers', drawn from the blocks' terms.
-        assert set(seen) == set(order) - {"decision", "glossary"}
+        # No decision rule is declared, the glossary is the serializers', drawn from the blocks' terms, and code's page
+        # lays out no writer's words.
+        assert set(seen) == set(order) - {"decision", "glossary", "memo"}
 
-    async def test_an_authors_caveat_is_attached_to_its_finding_as_written(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (caveat,) = [block for block in report.blocks if isinstance(block, TextBlock) and block.role == "caveat"]
-        written = analysis.document.findings[0].caveats[0]
-
-        assert (caveat.section, caveat.finding, caveat.body) == ("memo", 0, written.text)
-        assert [(fact.name, fact.value) for fact in caveat.facts] == [("Kind", written.kind)]
-
-    async def test_the_evidence_table_is_codes_numbers_at_the_finding(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
-        evidence = analysis.resolutions[0].evidence
-
-        assert table.finding == 0
-        # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
-        rulers = measure_rulers(analysis.aspects[0].decision_surface)
-        stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
-        # One row per arm, one column per reading: the toy's finding reads one measure on each arm.
-        assert [row["reading_0"] for row in table.values()] == pytest.approx(stated)
-        assert any(cell["reading_0"].unit == "s" for cell in table.rows), (
-            "the toy's turn time reads in s on its surface"
-        )
-        assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
-
-    async def test_a_finding_s_evidence_carries_its_intervals_in_the_table_on_the_same_ruler(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
-        evidence = analysis.resolutions[0].evidence
-        surface = analysis.aspects[0].decision_surface
-        factor = measure_rulers(surface)[evidence[0].measure_id].factor
-
-        # Each arm's cell carries the interval its cell holds on the reading, restated onto the same ruler.
-        cells = [row["reading_0"] for row in table.rows]
-        assert all(cell.unit == "s" and not cell.zero_line for cell in cells)
-        resolved = [resolve_reading(surface, row.cell_ref, row.measure_id, row.reading) for row in evidence]
-        assert [cell.low for cell in cells] == pytest.approx([r.ci_low * factor for r in resolved])  # type: ignore[operator]
-        assert [cell.high for cell in cells] == pytest.approx([r.ci_high * factor for r in resolved])  # type: ignore[operator]
-        assert all(cell.low <= cell.value <= cell.high for cell in cells)  # type: ignore[operator]
-        assert not _finding_charts(report)
-
-    async def test_the_recommendation_rests_on_its_finding(self, toy: tuple[Any, Any, Report]) -> None:
-        _, _, report = toy
-        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-        assert recommendation.rests_on == [0]
-        assert [fact.name for fact in recommendation.facts] == ["Disposition"]
-        assert recommendation.facts[0].value.startswith("recommend ")
-
-    async def test_the_memo_is_labelled_as_its_writer_s_and_the_methods_say_how_it_was_generated(
+    async def test_the_methods_name_the_analysis_s_writer_and_say_how_it_was_generated(
         self, toy: tuple[Any, EvalAnalysis, Report]
     ) -> None:
         _, analysis, report = toy
@@ -200,31 +127,17 @@ class TestTheToyReportsContent:
         assert isinstance(table, TableBlock) and table.name == "methods"
         rows = {str(row["item"]): str(row["value"]) for row in table.values()}
         assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
-        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's.
-        assert analysis.aspects[0].bundle_fingerprint in rows["Bundle"]
-        assert generation.bundle_fingerprint not in rows["Bundle"]
+        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's: in
+        # a cell of its own, never in a sentence.
+        assert analysis.aspects[0].bundle_fingerprint in rows["Fingerprint"]
+        assert generation.bundle_fingerprint not in rows["Fingerprint"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
-        # After the table: the memo's coverage map in its own fold, then the engine's disclosures in theirs.
-        assert {block.fold for block in notes} == {"Coverage", "Disclosures"}
-        # The memo is never introduced: the page does not describe itself.
+        # After the table: the engine's disclosures, in their fold.
+        assert {block.fold for block in notes} == {"Disclosures"}
+        # The writer is never introduced: the page does not describe itself.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
-
-    async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
-        _, _, report = toy
-        (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        # The map restates no finding: it counts them, in the methods' Coverage fold, after the methods table.
-        assert coverage.section == "methods" and coverage.fold == "Coverage"
-        assert coverage.values()[0]["findings"] == "1 finding"
-        methods = [block for block in report.blocks if block.section == "methods"]
-        assert isinstance(methods[0], TableBlock) and methods[0].name == "methods" and methods[1] is coverage
-        unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
-        said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
-        assert len(said) == (1 if unnamed else 0) and all(b.fold == "Coverage" for b in said)
-        # In a fold of its own name the table is titled once, by the fold.
-        assert "<details><summary>Coverage</summary>\n\n| Lever | Coverage |" in report_markdown(report)
-        assert "**Coverage**" not in report_markdown(report)
 
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy
@@ -243,32 +156,9 @@ def bundle() -> AnalysisContextBundle:
 
 
 def _report(bundle: AnalysisContextBundle, **update: Any) -> Report:
-    """A one-finding analysis report that passes, with ``update`` applied over its fields."""
+    """A report that passes, with ``update`` applied over its fields."""
     fields: dict[str, Any] = {
-        "basis": "analysis",
         "title": "t",
-        "finding_count": 1,
-        "source": {
-            "analysis_id": "a",
-            "campaign_id": "c",
-            "scope_id": "s",
-            "behavior": "b",
-            "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
-            "bundle_fingerprint": "f",
-        },
-        "blocks": [{"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": "t"}],
-        "bundle": bundle,
-    }
-    return Report.model_validate(fields | update)
-
-
-def _code_only(bundle: AnalysisContextBundle, **update: Any) -> Report:
-    """A code-only report that passes, with ``update`` applied over its fields."""
-    fields: dict[str, Any] = {
-        "basis": "code_only",
-        "title": "t",
-        "finding_count": 0,
         "source": {
             "campaign_id": "c",
             "scope_id": "s",
@@ -297,20 +187,20 @@ def _table(**update: Any) -> TableBlock:
 
 class TestTheReportsRefusals:
     def test_the_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
-        assert _report(bundle).finding_count == 1
+        assert [block.kind for block in _report(bundle).blocks] == ["disclosure"]
 
     @pytest.mark.parametrize(
         "block",
         [
-            {"kind": "text", "section": "memo", "role": "finding_body", "finding": 1, "body": "t"},
+            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "finding": 1},
             {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "rests_on": [3]},
         ],
         ids=["finding", "rests_on"],
     )
-    def test_a_block_linked_to_a_finding_the_report_does_not_hold_is_refused(
+    def test_a_block_naming_a_finding_field_it_no_longer_has_is_refused(
         self, bundle: AnalysisContextBundle, block: dict[str, Any]
     ) -> None:
-        with pytest.raises(ValueError, match=r"is linked to finding position\(s\) \[\d\], and the report holds 1"):
+        with pytest.raises(ValidationError, match="extra_forbidden"):
             _report(bundle, blocks=[block])
 
     def test_a_table_showing_more_rows_than_it_has_is_refused(self) -> None:
@@ -318,7 +208,7 @@ class TestTheReportsRefusals:
             _table(rows=[table_row({"arm": "a"}), table_row({"arm": "b"})])
 
     def test_a_truncated_table_says_so(self, bundle: AnalysisContextBundle) -> None:
-        markdown = report_markdown(_report(bundle, blocks=[_table(total_rows=4)], finding_count=0))
+        markdown = report_markdown(_report(bundle, blocks=[_table(total_rows=4)]))
         assert "_1 of 4 rows shown._" in markdown
 
     def test_a_row_stating_a_value_no_column_shows_is_refused(self) -> None:
@@ -342,46 +232,17 @@ class TestTheReportsRefusals:
         with pytest.raises(ValueError, match="its interval runs from 2.0 down to 1.0"):
             IntervalRow(label="a", value=1.5, low=2.0, high=1.0, n_cases=5)
 
-    @pytest.mark.parametrize("role", ["finding_title", "finding_body", "caveat", "carried_forward"])
-    def test_a_findings_own_words_that_name_no_finding_are_refused(self, role: str) -> None:
-        with pytest.raises(ValueError, match=f"a {role} block belongs to a finding and names none"):
-            TextBlock(section="memo", role=role, body="t")  # type: ignore[arg-type]
-
-    def test_a_recommendation_belongs_to_no_finding(self) -> None:
-        assert TextBlock(section="memo", role="recommendation", body="t").finding is None
-
     @pytest.mark.parametrize("value", ["words", True, None])
     def test_a_unit_qualifies_only_a_number(self, value: Any) -> None:
         with pytest.raises(ValueError, match="qualifies a number"):
             TableCell(value=value, unit="s")
 
 
-class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
-    def test_the_code_only_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
-        assert _code_only(bundle).basis == "code_only"
-
-    @pytest.mark.parametrize("missing", ["analysis_id", "generator_model"])
-    def test_an_analysis_report_names_its_analysis_and_its_writer(
-        self, bundle: AnalysisContextBundle, missing: str
-    ) -> None:
-        source = _report(bundle).source.model_dump() | {missing: None}
-        with pytest.raises(ValueError, match="an analysis report names its analysis_id and generator_model"):
-            _report(bundle, source=source)
-
-    @pytest.mark.parametrize("named", [{"analysis_id": "a"}, {"generator_model": "m"}])
-    def test_a_code_only_report_names_no_analysis(self, bundle: AnalysisContextBundle, named: dict[str, str]) -> None:
-        source = _code_only(bundle).source.model_dump() | named
-        with pytest.raises(ValueError, match="a code-only report renders no analysis"):
-            _code_only(bundle, source=source)
-
-    def test_a_code_only_report_counts_no_findings(self, bundle: AnalysisContextBundle) -> None:
-        with pytest.raises(ValueError, match="has no findings, and this one counts 1"):
-            _code_only(bundle, finding_count=1)
-
-    def test_a_code_only_report_holds_no_authors_words(self, bundle: AnalysisContextBundle) -> None:
+class TestAPageHoldsNoAuthorsWords:
+    def test_a_block_of_an_authors_words_is_refused(self, bundle: AnalysisContextBundle) -> None:
         blocks = [{"kind": "text", "section": "memo", "role": "answer", "body": "words"}]
-        with pytest.raises(ValueError, match=r"blocks \[0\] are text blocks"):
-            _code_only(bundle, blocks=blocks)
+        with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
+            _report(bundle, blocks=blocks)
 
 
 # =============================================================================
@@ -400,14 +261,9 @@ def code_only() -> tuple[EvalHost, Report]:
 class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
     def test_it_is_code_only_and_its_memo_section_says_so(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
-        assert report.basis == "code_only" and report.finding_count == 0
         (methods,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "methods"]
         assert {"item": "Analysis", "value": NO_ANALYSIS} in methods.values()
         assert "analysis" not in report.title
-
-    def test_it_holds_no_authors_words(self, code_only: tuple[EvalHost, Report]) -> None:
-        _, report = code_only
-        assert not [block for block in report.blocks if isinstance(block, TextBlock)]
 
     def test_it_counts_every_arm_s_trials_on_its_first_screen(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -421,8 +277,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         _, report = code_only
         (methods, *notes) = [block for block in report.blocks if block.section == "methods"]
         assert isinstance(methods, TableBlock) and all(block.fold == "Disclosures" for block in notes)
-        (bundle,) = [row["value"] for row in methods.values() if row["item"] == "Bundle"]
-        assert report.source.bundle_fingerprint in str(bundle) and "its JSON beside this page" in str(bundle)
+        (evidence,) = [row["value"] for row in methods.values() if row["item"] == "Evidence"]
+        (fingerprint,) = [row["value"] for row in methods.values() if row["item"] == "Fingerprint"]
+        assert report.source.bundle_fingerprint in str(fingerprint) and "its JSON beside this page" in str(evidence)
 
     def test_it_serializes_as_one_page_and_its_markdown(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -431,7 +288,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         assert markdown.startswith(f"# {report.title}\n")
         assert markdown.count(NO_ANALYSIS) == 1
         page = report_html(report)
-        assert 'data-basis="code_only"' in page and 'data-chart="outcome_bar"' in page
+        assert 'data-basis="code_only"' in page and 'data-figure="outcome_bar"' in page
 
     def test_a_time_axis_withheld_says_why(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -452,12 +309,15 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 
 
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
+    """The campaign's newest analysis is its report, through either door: a memo, a retired writer's, is stood in for
+    by code's page naming it (its own page is laid out by its id over what was frozen with it, not over the evidence
+    now), and its aspect's page is code's, over the bundle frozen with it."""
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
-    assert campaign_report_html(resolved) == campaign_report_html(stored)
-    assert resolved.basis == "analysis" and resolved.analysis_id == analysis.id
-    assert report.basis == "analysis" and report.source.analysis_id == analysis.id
+    assert (resolved.basis, resolved.unread_analysis_id) == ("code_only", analysis.id)
+    assert (stored.basis, stored.unread_analysis_id) == ("code_only", analysis.id)
+    assert report.source.bundle_fingerprint == analysis.aspects[0].bundle_fingerprint
 
 
 async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
@@ -467,24 +327,28 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
 
     report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     assert report.basis == "code_only" and report.analysis_id is None
+    assert report.unread_analysis_id is None, "the campaign has no report standing in for the archived analysis"
     # The archived analysis is still readable by its id.
-    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).analysis_id == analysis.id
+    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).unread_analysis_id == analysis.id
 
 
-async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(
+async def test_a_lever_no_comparison_exercised_is_said_in_words_never_by_its_path(
     toy: tuple[EvalHost, EvalAnalysis, Report],
 ) -> None:
-    """The writer proposed holding a never-exercised research model fixed: a step that spends money on a non-lever."""
+    """A research model the runs never exercised is said in words under Not tested, never as its lever's path."""
     _, analysis, _ = toy
     lever = "persona.tool_configs.research.research_model"
-    held = NextStep(title="evaluate with the research model held fixed", why="it moved", leverage="high", lever=lever)
-    document = analysis.document.model_copy(update={"next": [held, *analysis.document.next]})
     unexercised = {"factor": lever, "role": "research", "results": 1, "arms": ["candidate"]}
     (aspect,) = analysis.aspects
-    frozen = aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})
-    report = build_report(analysis.model_copy(update={"document": document, "aspects": [frozen]}))
-    steps = [block.body for block in report.blocks if isinstance(block, TextBlock) and block.role == "next_step"]
-    assert steps and not [step for step in steps if "research model" in step]
+    frozen = analysis.model_copy(
+        update={
+            "aspects": [aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})]
+        }
+    )
+    (held,) = frozen.aspects
+    report = build_code_only_report(
+        AnalysisContextBundle.from_dict(dict(held.bundle)), assembled_at=analysis.generation.bundle_assembled_at
+    )
     markdown = report_markdown(report)
     assert lever not in markdown and "research model: one research call was made, on " in markdown
 
@@ -551,11 +415,12 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
     (comparisons,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
     (shown,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
     # The level every interval holds at is said once, in the column's header, never in each cell.
-    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4498, 0.5502] s")
-    assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99%)"
+    # Six members, the question's pass rate among them (owner, 2026-11-06), so each interval holds at 1 − α/6.
+    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4482, 0.5518] s")
+    assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99.2%)"
     # A program's row has no header, so its interval says its level.
     (row,) = [row for row in contrast_rows(report.bundle) if row["reading"] == "Turn time"]
-    assert row["change"] == "0.5 s [0.4498, 0.5502] s at 99%"
+    assert row["change"] == "0.5 s [0.4482, 0.5518] s at 99.2%"
     # A share on 0–1 is stated as a percent, its cell restated onto that ruler.
     (accuracy,) = [row for row in statistics.rows if row["reading"].value == "Field accuracy"]
     assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("91%", "%")

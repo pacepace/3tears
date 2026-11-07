@@ -1,0 +1,120 @@
+sensitivity
+parameter: threshold:pass_rate
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion pass_rate
+criteria.pass_rate.threshold = 97%
+boundary_belongs_to: below
+declared_call:
+  modes: [no_call]
+  dominant: []
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (1):
+  - low: none; high: none; modes: [no_call]; dominant: []; picks: []
+holds: True
+picks_hold: True
+flips (50):
+  - arm: arm:nano-xs.off.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r0.multihop.value = 74.2%
+  - arm: arm:nano-xs.off.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r0.disamb.value = 77.8%
+  - arm: arm:nano-xs.off.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r0.datemath.value = 80.5%
+  - arm: arm:nano-xs.low.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r0.multihop.value = 83.5%
+  - arm: arm:nano-xs.off.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r1.multihop.value = 84.4%
+  - arm: arm:nano-xs.low.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r0.disamb.value = 85.8%
+  - arm: arm:nano-xs.off.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r1.disamb.value = 86.6%
+  - arm: arm:nano-xs.off.r0; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r0.single.value = 86.8%
+  - arm: arm:brisk-s.off.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r0.multihop.value = 87.3%
+  - arm: arm:nano-xs.low.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r0.datemath.value = 87.6%
+  - arm: arm:nano-xs.off.r1; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r1.datemath.value = 88.2%
+  - arm: arm:brisk-s.off.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r0.disamb.value = 89.3%
+  - arm: arm:nano-xs.high.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r0.multihop.value = 89.3%
+  - arm: arm:nano-xs.low.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r1.multihop.value = 90%
+  - arm: arm:atlas-m.off.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r0.multihop.value = 90.2%
+  - arm: arm:nano-xs.high.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r0.disamb.value = 90.3%
+  - arm: arm:brisk-s.off.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r0.datemath.value = 90.8%
+  - arm: arm:nano-xs.high.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r0.datemath.value = 91.1%
+  - arm: arm:nano-xs.low.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r1.disamb.value = 91.4%
+  - arm: arm:nano-xs.low.r0; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r0.single.value = 91.7%
+  - arm: arm:nano-xs.off.r1; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.off.r1.single.value = 92%
+  - arm: arm:atlas-m.off.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r0.disamb.value = 92.2%
+  - arm: arm:brisk-s.off.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r1.multihop.value = 92.3%
+  - arm: arm:nano-xs.low.r1; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r1.datemath.value = 92.5%
+  - arm: arm:brisk-s.low.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.low.r0.multihop.value = 92.8%
+  - arm: arm:nano-xs.high.r0; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r0.single.value = 93%
+  - arm: arm:brisk-s.off.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r1.disamb.value = 93.5%
+  - arm: arm:nano-xs.high.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r1.multihop.value = 93.5%
+  - arm: arm:atlas-m.off.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r0.datemath.value = 93.7%
+  - arm: arm:atlas-m.off.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r1.multihop.value = 94.1%
+  - arm: arm:atlas-m.low.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r0.multihop.value = 94.1%
+  - arm: arm:brisk-s.low.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.low.r0.disamb.value = 94.1%
+  - arm: arm:nano-xs.high.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r1.disamb.value = 94.2%
+  - arm: arm:brisk-s.off.r0; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r0.single.value = 94.3%
+  - arm: arm:brisk-s.off.r1; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r1.datemath.value = 94.4%
+  - arm: arm:nano-xs.high.r1; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r1.datemath.value = 94.7%
+  - arm: arm:nano-xs.low.r1; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r1.single.value = 95%
+  - arm: arm:brisk-s.low.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.low.r0.datemath.value = 95.1%
+  - arm: arm:atlas-m.off.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r1.disamb.value = 95.3%
+  - arm: arm:atlas-m.low.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r0.disamb.value = 95.4%
+  - arm: arm:brisk-s.high.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.high.r0.multihop.value = 95.5%
+  - arm: arm:brisk-s.low.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.low.r1.multihop.value = 95.6%
+  - arm: arm:nano-xs.high.r1; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r1.single.value = 95.8%
+  - arm: arm:brisk-s.high.r0; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.high.r0.disamb.value = 96.1%
+  - arm: arm:atlas-m.off.r1; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r1.datemath.value = 96.2%
+  - arm: arm:atlas-m.low.r0; where: datemath; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r0.datemath.value = 96.4%
+  - arm: arm:atlas-m.low.r1; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r1.multihop.value = 96.4%
+  - arm: arm:brisk-s.low.r1; where: disamb; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.low.r1.disamb.value = 96.4%
+  - arm: arm:atlas-m.high.r0; where: multihop; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.high.r0.multihop.value = 96.6%
+  - arm: arm:brisk-s.off.r1; where: single; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r1.single.value = 96.6%
+total: 72
+offset: 0
+notes: []
+next: action='decision_sensitivity', snapshot_id='report-snapshot:2e61d231b0d76ff45bb0bb6140895ce0', parameter='threshold:pass_rate', offset=50

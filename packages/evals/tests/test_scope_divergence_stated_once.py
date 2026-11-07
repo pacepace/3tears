@@ -15,30 +15,24 @@ holds both to account on campaigns built to provoke them.
   against the others all move, so one model pair publishes four divergences — two of them contained by
   ``total_ms``, which is the four-and-two the symptom counted. Where the whole's movement went is a fact about
   the whole and the lever pair, not about any part, and it was copied onto each of the four.
-  ``TestWhereAWholeRunSwingWentIsStatedOnce`` pins that it is now stated once, in ``whole_swings``, and
-  ``TestAReporterCaseFrozenBeforeTheMoveStillRebuilds`` that a case frozen over the older shape keeps every value.
+  ``TestWhereAWholeRunSwingWentIsStatedOnce`` pins that it is now stated once, in ``whole_swings``.
 """
 
 from __future__ import annotations
 
-import json
 import random
 import uuid
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from threetears.evals.analysis.reporter_kind import ReporterCase
 from threetears.evals.kernel.host import HostProfile, KindContract, ResolvesInto, Sweepable, freeze
 from threetears.evals.schema import EvalRun, LatencyMetrics, SweepableValue
-from threetears.evals.schema.hashing import canonical_digest
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -241,24 +235,6 @@ class TestWhereAWholeRunSwingWentIsStatedOnce:
             assert (divergence.lever, divergence.level_a, divergence.level_b, divergence.end_to_end.name) in swings
 
     @_SWEEPS
-    def test_the_writer_reads_each_carrier_once(self, models: Sequence[str], runs_per_level: int) -> None:
-        view = json.loads(
-            _writer_message(_bundle(models, runs_per_level=runs_per_level, seed="swing")).removeprefix(
-                "CAMPAIGN BUNDLE (JSON):\n"
-            )
-        )
-        (aspect,) = view["aspects"]
-        payload = aspect["disclosures"]
-        assert all("carried_by" not in divergence for divergence in payload["scope_divergences"])
-        carriers = Counter(
-            (swing["lever"], swing["level_a"], swing["level_b"], swing["whole"], swing["carried_by"])
-            for swing in payload["whole_swings"]
-        )
-        published = {(d["lever"], d["level_a"], d["level_b"]) for d in payload["scope_divergences"]}
-        assert {key[:3] for key in carriers} == published
-        assert set(carriers.values()) == {1}
-
-    @_SWEEPS
     def test_each_withheld_or_contained_statement_names_its_own_part(
         self, models: Sequence[str], runs_per_level: int
     ) -> None:
@@ -275,31 +251,3 @@ class TestWhereAWholeRunSwingWentIsStatedOnce:
             statements = [(d.subsystem.name, d.unattributed_withheld) for d in at_pair]
             assert len(set(statements)) == len(statements)
             assert all(d.unattributed_withheld and d.subsystem.name in d.unattributed_withheld for d in at_pair)
-
-
-def _frozen_before_49(bundle: AnalysisContextBundle) -> dict[str, Any]:
-    """``bundle`` as a shape-48 assembly wrote it: each divergence carrying its whole's swing, and no ``whole_swings``."""
-    frozen = bundle.to_dict()
-    swings = {(s["lever"], s["level_a"], s["level_b"], s["whole"]): s for s in frozen.pop("whole_swings")}
-    for divergence in frozen["scope_divergences"]:
-        swing = swings[
-            (divergence["lever"], divergence["level_a"], divergence["level_b"], divergence["end_to_end"]["name"])
-        ]
-        divergence |= {
-            "whole_components": swing["components"],
-            "carried_by": swing["carried_by"],
-            "carried_share": swing["carried_share"],
-        }
-    frozen["schema_version"] = 48
-    return frozen
-
-
-def _case(frozen: dict[str, Any]) -> ReporterCase:
-    return ReporterCase(
-        bundle=frozen, bundle_fingerprint=canonical_digest(frozen), bundle_assembled_at="2026-01-01T00:00:00+00:00"
-    )
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

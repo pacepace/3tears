@@ -67,6 +67,7 @@ from threetears.evals.schema.models import (
     utc_now_iso,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_keyed_results, without_payloads
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
@@ -179,7 +180,8 @@ class SecondJudgeReport(EvalBaseModel, CoreShapeModel):
 
 @dataclass(frozen=True)
 class _Planned:
-    """One result to ask about: what its first judge read, and the dims it holds a score on, in dimension order."""
+    """One result to ask about: what its first judge read, and the dims it holds a score on, in dimension order; the
+    result held without its verbatim fields, since its judging is written to it as the store holds it."""
 
     result: EvalResult
     inputs: ReproducibleJudgeInputs
@@ -271,19 +273,20 @@ def _collect(
                     remedy=f"name it under {config.rubric_dim_id!r}, or name a config authored for {dim!r}",
                 )
             configs[dim] = config
-    results = storage.query_eval_results_by_run(run.id, scope_id)
+    # The run's keys, then its results by id a page at a time: the named ones alone when results are named.
+    keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
     if result_ids is not None:
-        known = {result.id for result in results}
+        known = {key.id for key in keys}
         if stray := sorted(set(result_ids) - known):
             raise ValidationFailedError(
                 f"result(s) {stray} are not results of run '{run_id}' in this scope",
                 remedy=f"name results of run '{run_id}' ({FIND_RESULT})",
             )
         wanted = set(result_ids)
-        results = [result for result in results if result.id in wanted]
+        keys = [key for key in keys if key.id in wanted]
     eligible: list[_Planned] = []
     skipped: list[SecondJudgeSkip] = []
-    for result in results:
+    for result in iter_keyed_results(storage, scope_id, keys):
         scored = _scored_dims(result)
         if not scored:
             skipped.append(SecondJudgeSkip(result_id=result.id, reason="it holds no judge score to pair with"))
@@ -299,7 +302,8 @@ def _collect(
         if not dims:
             skipped.append(SecondJudgeSkip(result_id=result.id, reason="none of its scored dims is one its run judged"))
             continue
-        eligible.append(_Planned(result=result, inputs=inputs, dims=dims))
+        # Kept without its verbatim fields: the pass reads its scores, and reloads it to write.
+        eligible.append(_Planned(result=without_payloads(result), inputs=inputs, dims=dims))
     if not eligible:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
         raise ValidationFailedError(

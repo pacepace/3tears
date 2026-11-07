@@ -43,6 +43,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.kernel.campaign import EvalCampaign, VariantIndexEntry
+from threetears.evals.kernel.run_pages import ResultKey, read_results
 from threetears.evals.schema.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
     Aspect,
@@ -65,7 +66,6 @@ from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, declared_name, utc_now_iso
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
-from threetears.evals.kernel.campaign import CampaignView, derive_window
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 
 if TYPE_CHECKING:
@@ -127,8 +127,12 @@ class CampaignStore(Protocol):
         """Load one run within a scope, or ``None``."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to one run within a scope."""
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        """The key of every result of one run within a scope, in one read that ships no other field."""
+        ...
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """The named results within a scope, in one read by id."""
         ...
 
 
@@ -155,10 +159,19 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
 #: carrying rules this one does not enforce; ``created_by`` is absent because a later editor is not the author.
-_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = ("name", "description", "question", "aspects", "floors", "short_names")
+_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = (
+    "name",
+    "description",
+    "question",
+    "aspects",
+    "floors",
+    "short_names",
+    "arm_short_names",
+)
 
-#: The part of an update that rewrites the declaration: frozen once any aspect holds a run. ``short_names`` is not in
-#: it: what a page prints for an aspect asks nothing of its runs, so it stays editable, as ``name`` does.
+#: The part of an update that rewrites the declaration: frozen once any aspect holds a run. ``short_names`` and
+#: ``arm_short_names`` are not in it: what a page prints for an aspect or an arm asks nothing of its runs, so each
+#: stays editable, as ``name`` does.
 _DECLARATION_FIELDS = frozenset({"question", "aspects", "floors"})
 
 
@@ -184,6 +197,24 @@ class ArmDefinition(EvalBaseModel):
             "says more. Its variant key and lever map are read from the first; every other must carry the same key."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        # Stated in the schema for a host's form; the validator below enforces it.
+        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
+        description=(
+            f"What a page prints for the arm where space is tight, at most {DECLARED_NAME_CHARS} characters, and no "
+            "other arm's label or short name. Omitted, the page computes one from what differs from the control."
+        ),
+    )
+
+    @field_validator("short_name")
+    @classmethod
+    def _a_short_name_is_short(cls, name: str | None) -> str | None:
+        """Refuse a blank or over-long short name where it is declared, before anything is read.
+
+        :raises ValueError: The name is blank or longer than :data:`DECLARED_NAME_CHARS`.
+        """
+        return None if name is None else declared_name(name, what="an arm")
 
 
 class AspectDefinition(EvalBaseModel):
@@ -199,6 +230,8 @@ class AspectDefinition(EvalBaseModel):
     )
     short_name: str | None = Field(
         default=None,
+        # Stated in the schema for a host's form; the validator below enforces it.
+        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
         description=(
             f"What a page prints for the aspect in place of its label, at most {DECLARED_NAME_CHARS} characters, "
             "and no other aspect's label or short name. Omitted, the label is printed whole."
@@ -351,8 +384,7 @@ def create_campaign(
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition fails validation; names no aspect and adopts none; holds a run
         outside the scope, in two aspects, or of two revisions of one template in one aspect; adopts two aspects under
-        one label, or a run two sources hold; names no control and gives a margin or a floor; names a control, asks a
-        question and declares an aspect with no margin; gives a margin
+        one label, or a run two sources hold; names no control and gives a margin or a floor; gives a margin
         for an aspect it did not adopt, or a floor on an aspect that declares no design; says neither declared nor
         exploratory, or both; names an arm from a run no aspect holds, from runs carrying two keys, or one an adopted
         aspect knows under another key; or declares a design this host cannot honour.
@@ -416,7 +448,6 @@ def create_campaign(
     )
     _hold_relative_terms_to_a_control(
         has_control=any(arm.role == "control" for arm in arms),
-        question=question,
         declared=own,
         margins=[f"adopted aspect {label!r}" for label in authored.margins],
         floors=[Floor(aspect=floor.aspect, clause=floor.clause).key for floor in authored.floors],
@@ -700,31 +731,29 @@ _DECLARE_A_BAR = (
 def _hold_relative_terms_to_a_control(
     *,
     has_control: bool,
-    question: str,
     declared: Sequence[Aspect],
     margins: Sequence[str],
     floors: Sequence[str],
 ) -> None:
-    """Refuse a margin or a floor on a campaign naming no control, and a declared aspect without its margin on one
-    that names a control and asks a question.
+    """Refuse a margin or a floor on a campaign naming no control.
 
     A margin is how far a candidate may fall below the control, and every floor is a line read against it (a drop
     from the control's pass rate, a cost below the control's), so on a campaign of one arm (a measurement) or of
     arms with no control (a choice) each is read against nothing: what such a campaign holds its arms to is an
-    absolute bar, which reads each arm on its own. Where there is a control and a question, a declared aspect needs
-    its margin, or nothing would say how far a candidate may fall before it is shown worse.
+    absolute bar, which reads each arm on its own. Where there is a control, a margin is the author's choice and never
+    required: a question with one is a non-inferiority question, its drop read against the margin, and a question
+    without one is a superiority question, its drop read against zero
+    (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`). The engine never picks one.
 
     :param has_control: Whether the campaign the write leaves names a control arm.
     :ptype has_control: bool
-    :param question: The question it asks.
-    :ptype question: str
     :param declared: The aspects the write declares, whose own margins it states.
     :ptype declared: Sequence[Aspect]
     :param margins: Where else the write states a margin, as a refusal names each.
     :ptype margins: Sequence[str]
     :param floors: The keys of the floors the write states.
     :ptype floors: Sequence[str]
-    :raises ValidationFailedError: Naming each margin and floor, or each aspect missing its margin.
+    :raises ValidationFailedError: Naming each margin and floor.
     """
     if not has_control:
         relative = [
@@ -738,14 +767,6 @@ def _hold_relative_terms_to_a_control(
                 "so it would be read against nothing",
                 remedy=_DECLARE_A_BAR,
             )
-        return
-    if question and (missing := [a.label for a in declared if a.design is not None and a.margin is None]):
-        raise ValidationFailedError(
-            f"aspect(s) {', '.join(map(repr, missing))} declare a design and no margin, and the campaign asks a "
-            "question of its control, so nothing would say how far a candidate may fall below the control there "
-            "before it is shown worse",
-            remedy=f"declare margin on each: {_MARGIN_DESCRIPTION}",
-        )
 
 
 def _refuse_floors_on_undeclared_aspects(floors: Sequence[Floor], aspects: Sequence[Aspect]) -> None:
@@ -807,7 +828,8 @@ def _resolve_arms(
     """The arms a create names, each addressed from its runs, held to the arms its adopted aspects already name.
 
     An arm named here that is a source's arm keeps the source's ``named_at``: naming it again changes nothing that
-    was read against it. Every other arm named here is named ``at``.
+    was read against it. It keeps the source's ``short_name`` too, unless it declares its own. Every other arm named
+    here is named ``at``.
 
     :raises ValidationFailedError: An arm's run is in no aspect, its runs carry two keys, or an adopted aspect names
         an arm of the same label or role under another key; or two adopted aspects disagree about one.
@@ -837,8 +859,16 @@ def _resolve_arms(
                         "agree about it"
                     ),
                 )
-            elif same.named_at == at:
-                named[index] = same.model_copy(update={"named_at": other.named_at})
+            else:
+                # Naming an adopted arm again re-dates nothing, and keeps the name a page prints for it unless this
+                # create declares another.
+                kept: dict[str, Any] = {}
+                if same.named_at == at:
+                    kept["named_at"] = other.named_at
+                if same.short_name is None and other.short_name is not None:
+                    kept["short_name"] = other.short_name
+                if kept:
+                    named[index] = same.model_copy(update=kept)
     return sorted(named, key=lambda arm: arm.role != "control")
 
 
@@ -890,6 +920,7 @@ def _arm_from_runs(
         levers=first.levers,
         identity_version=first.identity_version,
         named_at=at,
+        short_name=defined.short_name,
     )
 
 
@@ -1057,14 +1088,15 @@ def update_campaign(
     """Amend a campaign's name, description, declaration or control.
 
     Only ``name``, ``description``, ``question``, ``aspects`` (:class:`AspectDefinition`, replacing the aspects whole),
-    ``floors`` and ``short_names`` (an aspect's label to what a page prints for it, or null to print the label) may be
-    named, and an unrecognised key is refused rather than ignored. A write of the declaration —
+    ``floors``, ``short_names`` (an aspect's label to what a page prints for it, or null to print the label) and
+    ``arm_short_names`` (a named arm's label to what a page prints for it, or null to compute one) may be named, and an unrecognised key is refused rather than ignored. A write of the declaration —
     ``question``, ``aspects`` or ``floors`` — is stamped with ``updated_by`` and dated now, and every aspect it
     declares is dated now too; the declaration gate runs here exactly as it does at creation.
 
     **The declaration is frozen once any aspect holds a run.** It is what those runs were gathered to answer, so once
     the campaign holds a run, ``question``, ``aspects`` and ``floors`` are refused in any form, and so is re-pointing
-    or clearing a control already named. ``name``, ``description`` and ``short_names`` stay editable, since none asks
+    or clearing a control already named. ``name``, ``description``, ``short_names`` and ``arm_short_names`` stay
+    editable, since none asks
     anything of the runs, and a control may be named once,
     from a member run, while none is (which is how a comparison names its control after launching its arms). The
     amended declaration is a new campaign (``campaign_create``, which adopts the aspects it keeps with
@@ -1104,8 +1136,8 @@ def update_campaign(
     :raises NotFoundError: No campaign with that id in the scope, or an aspect names a template the scope lacks.
     :raises ConflictError: The campaign holds a run, and the update writes the declaration, clears its control, or
         names a control where one is already named (:func:`_refuse_frozen_declaration`).
-    :raises ValidationFailedError: Nothing to change, a field that is not updatable, an aspect holding runs or a
-        declared one with no margin, a floor on an undeclared aspect, a declaration this host cannot honour; a
+    :raises ValidationFailedError: Nothing to change, a field that is not updatable, an aspect holding runs, a floor
+        on an undeclared aspect, a declaration this host cannot honour; a
         withdrawal without ``exploratory``, or ``exploratory`` beside a design; or a control named beside
         ``clear_control``, on an exploratory campaign, or from a run the campaign does not hold.
     :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
@@ -1174,6 +1206,7 @@ def update_campaign(
             )
         aspects = _named(aspects, updates["short_names"])
         changes["aspects"] = aspects
+    arm_names = updates.get("arm_short_names")
     declared = any(aspect.design is not None for aspect in aspects)
     if exploratory and declared:
         raise ValidationFailedError(
@@ -1194,6 +1227,9 @@ def update_campaign(
         question, floors, arms = "", [], []
         if writes:
             writes = writes | {"question"}
+    if "arm_short_names" in updates:
+        arms = _named_arms(arms, arm_names)
+        changes["arms"] = arms
     _refuse_floors_on_undeclared_aspects(floors, aspects)
     if writes:
         declared_here = {aspect.label for aspect in aspects} if "aspects" in updates else set()
@@ -1233,7 +1269,6 @@ def update_campaign(
         left = changes.get("arms", arms)
         _hold_relative_terms_to_a_control(
             has_control=any(arm.role == "control" for arm in left),
-            question=question if writes else campaign.question,
             declared=[aspect for aspect in aspects if "aspects" in updates] if writes else [],
             margins=[f"aspect {aspect.label!r}" for aspect in aspects if aspect.margin is not None],
             floors=[floor.key for floor in floors],
@@ -1256,6 +1291,43 @@ def update_campaign(
         updated_by,
     )
     return updated
+
+
+def _named_arms(arms: Sequence[CampaignArm], short_names: object) -> list[CampaignArm]:
+    """``arms`` with the short names an update gives, by label: a name sets one, null clears it, an arm not named keeps
+    its own.
+
+    :raises ValidationFailedError: ``short_names`` is not a map of labels to names or nulls, names a label the campaign
+        names no arm by, or gives a blank or over-long name.
+    """
+    if not isinstance(short_names, dict) or not all(
+        isinstance(label, str) and (name is None or isinstance(name, str)) for label, name in short_names.items()
+    ):
+        raise ValidationFailedError(
+            "invalid campaign update: arm_short_names maps an arm's label to its short name, or to null to clear it",
+            remedy=SCHEMA_REMEDY,
+        )
+    labels = [arm.label for arm in arms]
+    if stray := sorted(set(short_names) - set(labels)):
+        raise ValidationFailedError(
+            f"arm_short_names names {', '.join(map(repr, stray))}, which the campaign names no arm by",
+            remedy=(
+                f"key each short name by one of its arms' labels: {', '.join(map(repr, labels))}"
+                if labels
+                else "name the campaign's arms first (campaign_create's arms, or control_from_run_id): an arm the "
+                "page derives from its runs has no declaration to name"
+            ),
+        )
+    try:
+        for label, name in short_names.items():
+            if name is not None:
+                declared_name(name, what=f"arm {label!r}")
+    except ValueError as e:
+        raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
+    return [
+        arm.model_copy(update={"short_name": short_names[arm.label]}) if arm.label in short_names else arm
+        for arm in arms
+    ]
 
 
 def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
@@ -1293,7 +1365,7 @@ def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
 def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, label: str, at: str) -> Aspect:
     """An aspect an update declares, as ``label``: no runs (they join through :func:`add_runs_to_campaign`), dated now.
 
-    :raises ValidationFailedError: The aspect names runs, or declares a design and no margin.
+    :raises ValidationFailedError: The aspect names runs.
     """
     if defined.run_ids:
         raise ValidationFailedError(
@@ -1321,69 +1393,6 @@ def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> Eva
     if campaign is None:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
-
-
-def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -> CampaignView:
-    """Load a campaign and enrich it with its read-time-derived window.
-
-    The window (a campaign's [start, end] time span) is DERIVED from the
-    member runs' ``created_at`` rather than stored, so it never drifts as runs
-    join or leave. Deriving it means reading the runs — only their id, archived
-    flag and start time (``CampaignStore.load_eval_run_stamps``), in one batch,
-    within the campaign's scope, which is where its members live.
-
-    **A member run that does not resolve is REPORTED, not skipped.** All three
-    fates are disclosed — resolved (feeds the window), archived, unresolvable —
-    because the third one is not rare: bulk eval-schema wipes delete runs
-    without going through the run-delete cascade, which is what detaches
-    memberships, so a campaign outlives its runs. A campaign can claim a
-    score of members and resolve none of them. Expect it to recur on
-    every rebuild; the disclosure is the durable answer, not a cleanup pass.
-
-    Every surface that reads one campaign reaches this, so they all answer
-    with the same facts.
-
-    :param storage: The campaign store.
-    :ptype storage: CampaignStore
-    :param campaign_id: Campaign to load.
-    :ptype campaign_id: str
-    :param scope_id: The scope the campaign and its member runs live in.
-    :ptype scope_id: str
-    :return: A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
-        plus its derived window (or ``None``).
-    :rtype: CampaignView
-    :raises NotFoundError: No campaign with that id in the scope.
-    """
-    campaign = get_campaign(storage, campaign_id, scope_id)
-    archived_run_ids: list[str] = []
-    unresolved_run_ids: list[str] = []
-    created_ats: list[str] = []
-    # One batch read of the three scalars the window needs, reduced in the store: a
-    # member run is mostly the host's frozen payload, and a campaign has many of them.
-    loaded = {stamp.id: stamp for stamp in storage.load_eval_run_stamps(campaign.run_ids, scope_id)}
-    for run_id in campaign.run_ids:
-        run = loaded.get(run_id)
-        if run is None:
-            # Recorded rather than dropped: membership is refused outside the scope, so a
-            # member that does not resolve is a run destroyed outside the delete cascade —
-            # a fact about the campaign the reader needs, and not visible from run_ids.
-            unresolved_run_ids.append(run_id)
-            continue
-        # The window describes the COHORT — the runs a report over this
-        # campaign would actually read — so an archived member must not
-        # stretch it. Naming those members beside it keeps the narrower
-        # window from reading as missing data.
-        if run.archived:
-            archived_run_ids.append(run_id)
-        else:
-            created_ats.append(run.created_at)
-    window = derive_window(created_ats)
-    return CampaignView(
-        campaign=campaign,
-        window=window,
-        archived_run_ids=archived_run_ids,
-        unresolved_run_ids=unresolved_run_ids,
-    )
 
 
 def list_campaigns(
@@ -1691,7 +1700,6 @@ def set_campaign_control(
     arms = _with_control(storage, campaign, list(campaign.arms), run_id, profile=profile)
     _hold_relative_terms_to_a_control(
         has_control=any(arm.role == "control" for arm in arms),
-        question=campaign.question,
         declared=[],
         margins=[f"aspect {aspect.label!r}" for aspect in campaign.aspects if aspect.margin is not None],
         floors=[floor.key for floor in campaign.floors],
@@ -1738,6 +1746,7 @@ def _with_control(
         )
     addressed = _address_arm(storage, campaign.scope_id, run_id, profile=profile)
     label = campaign.control.label if campaign.control is not None else UPGRADED_CONTROL_LABEL
+    named = next((arm.short_name for arm in arms if arm.role == "control"), None)
     control = CampaignArm(
         label=label,
         role="control",
@@ -1745,6 +1754,7 @@ def _with_control(
         levers=addressed.levers,
         identity_version=addressed.identity_version,
         named_at=utc_now_iso(),
+        short_name=named,
     )
     return [control, *candidates]
 
@@ -1900,7 +1910,9 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
             remedy=f"name a run of this scope ({FIND_RUN})",
         )
     identity = resolve_variant_identity(run=run, profile=profile)
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    # The key is the first result's (`variant_key_of_run`), so the run's keys are read and that one result by id: never
+    # the run's results.
+    results = read_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id)[:1])
     key = variant_key_of_run(results)
     if key is None:
         # A run launched a moment ago has no observation yet, and a designation made AT launch
@@ -1938,7 +1950,6 @@ __all__ = [
     "create_campaign",
     "declarable_axes",
     "get_campaign",
-    "get_campaign_view",
     "list_campaigns",
     "remove_runs_from_campaign",
     "set_campaign_control",

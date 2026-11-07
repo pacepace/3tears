@@ -1,0 +1,76 @@
+##### traffic_accuracy
+  - aspect: none; slice: none
+      measure.traffic_accuracy.atlas-m.zero.mean = 91.2%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.atlas-m.few.mean = 93.5%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.atlas-m.rubric.mean = 94.6%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.brisk-s.zero.mean = 87.5%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.brisk-s.few.mean = 92.2%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.brisk-s.rubric.mean = 93.1%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.nano-xs.zero.mean = 80.2%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.nano-xs.few.mean = 92%
+  - aspect: none; slice: none
+      measure.traffic_accuracy.nano-xs.rubric.mean = 86%
+##### macro_f1
+  - aspect: none; slice: none
+      measure.macro_f1.atlas-m.zero.mean = 88.7%
+  - aspect: none; slice: none
+      measure.macro_f1.atlas-m.few.mean = 91%
+  - aspect: none; slice: none
+      measure.macro_f1.atlas-m.rubric.mean = 92.1%
+  - aspect: none; slice: none
+      measure.macro_f1.brisk-s.zero.mean = 84.9%
+  - aspect: none; slice: none
+      measure.macro_f1.brisk-s.few.mean = 89.6%
+  - aspect: none; slice: none
+      measure.macro_f1.brisk-s.rubric.mean = 90.4%
+  - aspect: none; slice: none
+      measure.macro_f1.nano-xs.zero.mean = 77.1%
+  - aspect: none; slice: none
+      measure.macro_f1.nano-xs.few.mean = 89%
+  - aspect: none; slice: none
+      measure.macro_f1.nano-xs.rubric.mean = 82.8%
+##### balanced_accuracy
+  - aspect: none; slice: none
+      measure.balanced_accuracy.atlas-m.zero.mean = 89.8%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.atlas-m.few.mean = 92.1%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.atlas-m.rubric.mean = 93.2%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.brisk-s.zero.mean = 86%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.brisk-s.few.mean = 90.7%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.brisk-s.rubric.mean = 91.5%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.nano-xs.zero.mean = 78.2%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.nano-xs.few.mean = 90.1%
+  - aspect: none; slice: none
+      measure.balanced_accuracy.nano-xs.rubric.mean = 83.9%
+##### cost_per_1m
+  - aspect: none; slice: none
+      measure.cost_per_1m.atlas-m.zero.mean = $180 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.atlas-m.few.mean = $260 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.atlas-m.rubric.mean = $610 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.brisk-s.zero.mean = $28 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.brisk-s.few.mean = $40 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.brisk-s.rubric.mean = $95 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.nano-xs.zero.mean = $1.3 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.nano-xs.few.mean = $1.9 per 1,000,000 turns
+  - aspect: none; slice: none
+      measure.cost_per_1m.nano-xs.rubric.mean = $4.6 per 1,000,000 turns

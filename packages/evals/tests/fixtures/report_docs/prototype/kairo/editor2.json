@@ -1,0 +1,122 @@
+{
+  "resolutions": [
+    {
+      "finding": "c5 (must_fix): the claim that off-lane failures look the same on every model is contradicted by its own evidence (1017's T15 fits neither mode); excerpts show music-search output, not the failing reply.",
+      "status": "resolved",
+      "evidence": "c5 now reads 'Each model's frozen off-lane failure slips differently' and names one slip per arm: September help desk (T14), qwen3.8-flash landlord email (T44), 1017 queued voice line read as a backstage recap (T15). That matches the three judge reasons in the block. The caption now says these are the only failed off-lane trials frozen per arm, so they show kinds of slip, not frequency. The excerpt weakness remains. T15 and T14 still end in music-search output. The caption now discloses this and points to the judge's reason (see item 7)."
+    },
+    {
+      "finding": "report (should_fix): answer the question in its own terms; both candidates are within the 15-point margin and both floors held, yet the page said 'clearly worse' with no margin verdict.",
+      "status": "resolved",
+      "evidence": "The lede now says 'both still stay within the {aspect.margin|int}-point margin the question allows'. The recommendation says 'Both candidates stay within the question's margin, but neither keeps Kairo in character better'. The qwen3.8-flash why_not adds '(within the margin)'. c1 adds 'though within the margin'. The c1 caption says both sit inside the band and the call is the same at any margin. All of this agrees with readings_list (verdict within_margin for both; worst drops 10.8 and 5.8) and both floors held."
+    },
+    {
+      "finding": "report (should_fix): the omitted entry on the judge's outcome and transcript grades gave a false reason for 1017.",
+      "status": "resolved",
+      "evidence": "The entry now reads 'For {arm:qwen3.8-flash} they fall with holding character; for {arm:1017} they are not separated from {arm:September}'. contrasts_list confirms it: qwen3.8-flash outcome -0.2129 and transcript -0.1321, both regressed; 1017 outcome +0.01449 and transcript +0.01672, both p_adj 1, not separated."
+    },
+    {
+      "finding": "c2 (should_fix): the deciding finding should carry its corrected interval; Method wrongly said cost uplift carries no interval.",
+      "status": "resolved",
+      "evidence": "c2 now leads with a forest of the corrected production_replicating_cost contrasts at 99.69%: qwen3.8-flash +$0.616 per 1,000 (+$0.379 to +$0.853), 1017 +$0.492 (+$0.174 to +$0.811). The per-arm bars are kept second. The claim says 'both differences stay clear of zero after correction'. Method's 'Cost basis' now separates the corrected per-reply contrast from the percentage uplift, which is arithmetic on means."
+    },
+    {
+      "finding": "report (should_fix): '1017's smaller reasoning share' in the confound caveat and next step 4 had no figure behind it.",
+      "status": "resolved",
+      "evidence": "The confound caveat now prints {reasoning_ratio.1017|pct} against {reasoning_ratio.September|pct}. Next step 4 now hedges: matching 'would raise its reasoning, so it is unlikely to make {arm:1017} cheaper'. Residual: the editor cut cannot read reasoning_ratio (measure_read refuses it), so I could not verify the direction this sentence depends on. The page now prints both values, so a reader can check it."
+    },
+    {
+      "finding": "report (should_fix): the second short_run caveat said 'the same lost trials'; each run lost one distinct trial.",
+      "status": "resolved",
+      "evidence": "The second caveat now reads 'The other of {arm:qwen3.8-flash}'s {scoreboard.qwen3.8-flash.lost|int} lost trials, on its second run'. Its label also says 'the other {arm:qwen3.8-flash} run'. This matches caveats_list: 298 of 299 cells and 597 of 598 cells, with scoreboard lost = 2."
+    },
+    {
+      "finding": "report (should_fix): watch slot 2 said off lane is where every option is weakest; assistant shape reads lower on 6 cases.",
+      "status": "resolved",
+      "evidence": "Watch slot 2 now reads 'the weakest stratum large enough to read'. measure_read by stratum confirms it: September off lane 65.8% on 38 cases. The only lower reading is assistant shape at 58.8% on 6 cases. Multi (12 cases) reads 72.2%."
+    },
+    {
+      "finding": "invariant concern (5): caveat ids are run UUIDs and a criterion key; confirm the renderer labels caveats.",
+      "status": "resolved",
+      "evidence": "Every confidence caveat now carries a plain-language label (e.g. 'A trial lost to the harness on one {arm:qwen3.8-flash} run', 'The character floor was set after the results'), so the renderer has a label to print instead of the id."
+    },
+    {
+      "finding": "invariant concern (1): the lead finding's pass rate has no stated definition.",
+      "status": "resolved",
+      "evidence": "Method 'Pass' now says the campaign does not define a pass and that pass is the share of usable trials the grader marked passed. It also says pass is stricter than holding character on every arm (85.3/77.7/82.3% against 91.5/85.4/86.6%) and that qwen3.8-flash's drop holds on holding character alone (-6.0, 99.69% -10.1 to -1.8). The lead therefore does not rest on the undefined measure. A naming issue remains (see the c1 finding)."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the recommendation and the two why_not slots give the call (keep September), why (both candidates cost more per reply, with corrected cost contrasts +$0.616 and +$0.492 per 1,000 clear of zero, and neither is better in character), and the asked question's answer (both within the 15-point margin). The two watch slots give the main risks: the earlier round's cheaper qwen3.8-flash, with cost recorded on 828 of its 895 usable trials, and September's own off-lane weakness at 65.8%. The late-criteria flag is also on the first screen."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The claims build in order. c1: the pass rate is within margin, qwen3.8-flash is down and 1017 is not separated. c2: cost decides. c3: 1017 is also lower on holding character, -4.7 (99.69% -8.2 to -1.3). c4: off lane carries 48% and 53% of the losses. c5: what those slips look like. options_dominance names September dominant; price_tradeoff finds no price per point because September is at least as good on both axes. decision_sensitivity holds at every margin from 0 to 20 (flips at 5.8 and 10.8 change nothing), matching both explore rows. Nothing in the snapshot contradicts the headline. One small blemish: in c1, '{arm:1017} is not separated from it' could be read as 'from qwen3.8-flash'."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "September's weak axis is visible (watch 2: off lane 65.8%, its weakest readable stratum). The within-margin answer now appears beside 'clearly worse'. 'Clearly worse' for qwen3.8-flash is earned: the reading's interval is -10.8 to -3.4 at 95%, and the corrected contrast is -12.6 to -2.6 at p_adj 0.00012. c5 no longer generalises from three examples. One precision issue remains, not an overstatement. The lede, the qwen3.8-flash why_not and c1 call the pass-rate drop (7.6) a drop 'in character', while c3 calls the separate holding-character measure 'holding character' and gives a different drop for the same arm (6.0). Method explains the relation, but the first screen blurs the two."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "No omitted item would change the decision, and every omission reason I checked is accurate. Goal state is not separated for either candidate (p_adj 0.11 and 0.50). Failed-reply notices are not separated (p_adj 0.79). The outcome and transcript grades fall for qwen3.8-flash and are not separated for 1017 (p_adj 1). The smaller strata cited (next up -16.7, music tech -14.3, assistant shape -14.4) have 6 to 8 cases each. The price per point is genuinely unpriceable (price_tradeoff: no_price). Latency is legitimately excluded (concurrent execution)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "confound:observed:reasoning_ratio is scoped: it bears only on whether 1017's character loss belongs to the model, and its cost is measured at the share it ran. Both ratios are cited by key, and next step 4 carries it. confound:model's material_if correctly says the snapshot names no arm or measure it touches (caveats_list: touches nothing). The simulator settings are scoped to the character readings, not cost. The two short runs are bounded against qwen3.8-flash's interval, which stays clear of zero. The late margin and late floor are marked checked immaterial, matching the code's check. One thing I could not confirm: the editor cut cannot read reasoning_ratio, so next step 4's 'matching would raise its reasoning' is unverified here."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five steps name an experiment or a declaration and what it settles, and each says whether it could reopen the call. (1) Reconcile qwen3.8-flash's cost with the earlier round on shared cases, and explain the missing cost records. (2) Calibrate the judge on off-lane-heavy human ratings. (3) Tighten the off-lane directive and rerun on all three models. (4) Rerun 1017 at matched reasoning share. (5) Declare the question, control and margin in advance. One possible addition is in the c5 finding."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1, c2 and c3 fit and pass the counterfactual. c2's new contrast forest shows the deciding finding directly; if either interval crossed zero, the claim would have to change. Two blocks are not the clearest way to show their claims. c4: the claim is a loss share (48% and 53%), but the diverging bars show each stratum's change with no stratum size, so a reader cannot get from -22.9 against -4.6 to 'about half'. c5: the claim describes what each slip looks like, but the T15 and T14 excerpts end in music-search output, so two of the three failing replies are visible only through the judge's paraphrase. The caption now admits this, which is honest, but the block still does not show the slip."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The claim is a share of each candidate's loss (strata.off_lane.loss_share: qwen3.8-flash 48%, 1017 53%), but the block shows only per-stratum change in points, with no stratum sizes. Off lane's 38 cases against machinery's 30 and multi's 12 is what turns -22.9 into about half. Show the share, or each stratum's case count, in the block or the caption. Note too that multi carries 11% of 1017's loss, and its frozen failures (T213, T215, 'nine times seven') are off-lane-type asks. The off-lane problem is somewhat larger than the off-lane stratum alone."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "Two of the three excerpts (T15, T14) end in music-search tool output, so the slip itself is visible only through the judge's reason. If the excerpt window cannot be moved, put the failing line in the claim or the caption. The judge quotes them: 'Jules asks me who won the match tonight' (T15) and 'Scores and fixtures, I can't help you with' (T14). Also, 1017's third-person queued line recurs outside off lane in examples_list (T26, next up: 'Jules asks what's next'). That suggests a queue-wording slip, the directive this round promoted, not an off-lane one. Next step 3 targets only the off-lane directive. Consider naming queue wording for 1017 there."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The lede, the qwen3.8-flash why_not and c1 describe the pass-rate drop (7.6 points) as being worse 'in character'. c3 then reports 'holding character' as a different measure, with a different drop for the same arm (6.0). A reader meets two character numbers for qwen3.8-flash with no bridge on the page above Method. Name the lead measure as the pass rate on character adherence, or give the 6.0 holding-character drop beside it once. Also, in c1, '{arm:1017} is not separated from it' should name September explicitly."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The second short_run caveat's material_if ('together they are too few to move its reading') states no condition. It asserts immateriality, but caveats_list has immaterial: False and no code check for it. Either phrase it as a condition ('Only if two lost trials could close a drop whose interval sits clear of zero; they cannot'), as the first short_run caveat does, or leave it to the first caveat's clause."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: several keys cannot be resolved through the editor cut, so I did not check them: reasoning_ratio.1017 and reasoning_ratio.September (measure_read refuses 'reasoning_ratio'), judge.model and judge.tier (campaign_overview lists graded_by: none on the aspect and no judge block), and cost.uplift_range. The store-time check must confirm each one resolves. For reasoning_ratio, the direction (1017 below September) also carries next step 4's 'matching would raise its reasoning'.",
+    "Invariant 3: the second short_run caveat carries a material_if clause that is an assertion of immateriality, not a condition (see findings). It is neither a true material_if nor code-checked immaterial."
+  ],
+  "calls": 22
+}

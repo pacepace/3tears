@@ -157,11 +157,23 @@ _REFUSING = [
     "scope_export",
     "report_read",
     "bars_propose",
-    "analysis_estimate",
     "campaign_create",
     "judge_second_estimate",
     "launch_estimate",
 ]
+
+
+async def test_the_analysis_estimate_reads_no_run_and_answers() -> None:
+    """The report writer's estimate is the host's budget and the writer's most turns, which no run's row changes; the
+    job's freeze is what reads the runs, and refuses there."""
+    fixture, unreadable, readable = off_loop(_fixture)
+    arguments = _calls(fixture, unreadable, readable)["analysis_estimate"]
+
+    outcome = await _tools()["analysis_estimate"].call(
+        {"action": "analysis_estimate", **arguments}, host=fixture.host, caller=CALLER
+    )
+
+    assert not outcome.is_error and "would_start: True" in outcome.text, outcome.text
 
 
 @pytest.mark.parametrize("action", _REFUSING)

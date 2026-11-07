@@ -1,26 +1,23 @@
-"""Build a :class:`~threetears.evals.analysis.report.model.Report` — from a stored analysis, or from the evidence alone.
+"""Build a :class:`~threetears.evals.analysis.report.model.Report` — code's page over an aspect's evidence.
 
-**One builder, one page, every door.** :func:`build_report` lays out a stored analysis over the bundle frozen with it
-at generation; :func:`build_code_only_report` lays out a campaign's evidence assembled now, when no analysis exists.
-Both go through :func:`_page`, so the two differ only in the memo section: every count, verdict, chart and
-disclosure is computed here, from the bundle alone, and no door — the quick path's ``compare``, the command line, an
-MCP action — adds, drops or reorders a block.
+**One builder, one page, every door.** :func:`build_code_only_report` lays out an aspect's evidence as code's page:
+every count, verdict, chart and disclosure is computed here, from the bundle alone, and no door — a campaign's page,
+which folds one per aspect, the quick path's ``compare``, the command line, an MCP action — adds, drops or reorders a
+block. The writer's report is a report document, drawn by its own page.
 
 The page, screen by screen:
 
-1. **The first screen.** The title first, nothing above it (the campaign's name, and what it compares where no
-   question was declared); the declared question quoted on its own line, and under it the arms line (each arm named in
+1. **The first screen.** The title first, nothing above it: the campaign's name; the declared question quoted on its
+   own line, and under it the arms line (each arm named in
    full once by the version that answered it, the control marked, the date); the verdict line
    (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; one line per candidate breaking a
    floor, and each report-wide caveat once; the scoreboard, a bare table of
    counts and the cost per reply, and its outcome bar; then the caveats, in normal weight.
 2. **Decision.** The aspect's floors, each read on each candidate: broken, held or unclear (:mod:`.decision`), and
    for an unclear one the cases that would show it holds.
-3. **What it means.** Each finding as one sentence its writer wrote and a table code built from the readings it
-   chose, everything else in a closed ``Evidence`` fold; the recommendations and next steps. Then the contrasts that
-   can resolve (one line when none can), the guardrails, and the readings by stratum and label.
-4. **Cases** and **Trials.** One row per case, each arm's trials as marks, its trial ids last and the failed ones
-   first; then the trials' census in one line and only what went wrong: a row and a record (``T4 · case 1 · arm ·
+3. **What it means.** The contrasts that can resolve (one line when none can), the guardrails, and the readings by
+   stratum and label.
+4. **Cases** and **Trials.** One row per case, each arm's trials as marks, its trial ids last in their own order; then the trials' census in one line and only what went wrong: a row and a record (``T4 · case 1 · arm ·
    outcome``, open up to a cap) per failed or lost trial, and every passed trial as one row of a closed table.
 5. **Not tested** and **Methods.** What the campaign could not speak to; then a table (arms, judge, settings sent,
    cost, the analysis's writer, the bundle) and the engine's disclosures folded.
@@ -31,14 +28,21 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
 from itertools import chain
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol, TypedDict
 
 from threetears.evals.analysis.agreement import tier_sentence
-from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, surface_order
+from threetears.evals.analysis.arms import (
+    arm_levels,
+    arm_names,
+    distinguishing_axes,
+    elide_level,
+    multi_rig_variants,
+    short_digest,
+    surface_order,
+)
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     ArmScoreboard,
@@ -49,24 +53,22 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     TrialRow,
     UnexercisedFactor,
-    asks_a_question,
     refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_trial_ids
-from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.kinds import campaign_kind
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.references import cell_index, resolve_reading
+from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
+from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.report.blocks import money_columns
+from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
     SHARE,
-    UNITLESS,
     MeasureRuler,
     Rulers,
-    analysis_rulers,
     reply_cost_ruler,
     report_rulers,
     surface_order_sentence,
@@ -78,18 +80,14 @@ from threetears.evals.analysis.report.model import (
     SECTION_TITLES,
     DisclosureBlock,
     DisclosureSource,
-    Fact,
     OutcomeBar,
     OutcomeSegment,
     Report,
-    ReportBasis,
     ReportBlock,
     ReportSource,
     TableBlock,
     TableCell,
     TableColumn,
-    TextBlock,
-    TextRole,
     TrialBlock,
     TrialDetail,
     Verdict,
@@ -105,22 +103,22 @@ from threetears.evals.analysis.report.decision import (
     floor_readings,
     floors_projection,
     projected_cell,
+    projected_usd_value,
     projection_note,
     read_floor,
 )
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.campaign.provenance import (
     aspect_provenance_blocks,
+    calibration_blocks,
     caveat_blocks,
     setup_disclosure,
 )
 from threetears.evals.analysis.report.campaign.warnings import floor_line
-from threetears.evals.analysis.report.campaign_page import (
-    AspectNames,
-    campaign_verdict,
-    campaign_warnings,
-    timing_caveats,
-)
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.provenance import timing_caveats
+from threetears.evals.analysis.report.campaign.scorecard import campaign_verdict
+from threetears.evals.analysis.report.campaign.warnings import campaign_warnings
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
     CauseWords,
@@ -129,28 +127,39 @@ from threetears.evals.analysis.report.verdict import (
     cause_short,
     caveat_lines,
     fail_words,
+    guardrail_lines,
+    interval_words,
     loss_words,
+    VerdictLine,
     verdict_line,
 )
 from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
-    CONFIDENCE_WORDS,
-    NO_RECOMMENDATION_WORDS,
-    UNTRACED,
+    campaign_arm_tags,
     comparison_words,
-    evidence_rows,
     guardrail_words,
+    input_arm_tags,
+    reader_arm_labels,
+    PASS_RATE,
+    judged_heading,
+    one_figure_each,
+    reading_verb,
     reading_heading,
-    reading_name,
-    stands_on_words,
+    reason_words,
 )
 from threetears.evals.analysis.reporting import self_judging_text
+from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.style import (
+    CANNOT_TELL_APART,
+    GLOSSARY,
+    page_date,
     ArmName,
+    arm_display_name,
     arm_name,
     code,
     declared_check_name,
     humanize,
+    lever_reader_name,
     measure_name,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
@@ -164,28 +173,19 @@ from threetears.evals.analysis.quantities import (
     with_unit,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.authored import Finding, NextStep
 from threetears.evals.kernel.campaign import (
-    AspectAnalysis,
     EvalAnalysis,
-    EvidenceRow,
-    FindingResolution,
     ReadingKind,
     VariantIndexEntry,
 )
 from threetears.evals.kernel.declaration import (
-    JUDGED_MERIT_AXIS,
-    CampaignArm,
     CostLower,
     RateDrop,
-    axis_in_question_scope,
-    resolve_control_arm,
 )
-from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
     METRIC_DESCRIPTORS,
-    MeritAxis,
     goal_check_of,
     RUN_MARGIN_MEASURES,
     ClassifierStatistic,
@@ -203,13 +203,14 @@ from threetears.evals.kernel.surface import (
     TimeAxis,
     earlier_control_mark,
 )
-from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR, ClientRequestSettings
+from threetears.evals.schema.models import (
+    CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
+    ClientRequestSettings,
+    sent_settings_phrase,
+)
 
 #: What the methods say of a report no analysis was written for.
-NO_ANALYSIS = "none written; the analysis_generate action writes one from this same evidence"
-
-#: The ``Scope`` fact on a finding resting wholly on readings no declared question asked about.
-EXPLORATORY_FINDING = "exploratory: no declared question asked about its readings, so it is a lead"
+NO_ANALYSIS = "none written yet; generating an analysis writes one from this same evidence"
 
 #: How a guardrail is decided, said once in the methods' disclosures.
 _GUARDRAILS_DISCLOSURE = (
@@ -225,54 +226,13 @@ _GUARDRAILS_DISCLOSURE = (
 
 
 # =============================================================================
-# The two entry points
+# The entry point
 # =============================================================================
 
 
-def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, trials: TrialDetail = "all") -> Report:
-    """Lay one stored analysis of a campaign of one aspect out as the campaign's page, over the bundle frozen with it.
-
-    A campaign of several aspects reads through its campaign page, which this page is one fold of; it is refused here.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
-        campaign by its id.
-    :ptype campaign_name: str | None
-    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
-        default, or ``table`` for their table alone.
-    :ptype trials: TrialDetail
-    :return: The report, ``basis="analysis"``.
-    :rtype: Report
-    :raises RefusedInput: The analysis covers several aspects, or its bundle predates one aspect per bundle.
-    """
-    generation = analysis.generation
-    bundle = analysis_bundle(analysis)
-    source = ReportSource(
-        analysis_id=analysis.id,
-        campaign_id=analysis.campaign_id,
-        campaign_name=campaign_name or None,
-        scope_id=analysis.scope_id,
-        behavior=analysis.behavior,
-        generated_at=generation.generated_at,
-        generator_model=generation.generator_model,
-        # This aspect's bundle, as it is frozen and served beside the page; the generation's is the campaign bundle's.
-        bundle_fingerprint=_only_aspect(analysis).bundle_fingerprint,
-    )
-    return _page(
-        bundle,
-        basis="analysis",
-        source=source,
-        memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
-        finding_count=len(analysis.document.findings),
-        writer=analysis_writer(analysis),
-        trials=trials,
-    )
-
-
 def analysis_writer(analysis: EvalAnalysis) -> str:
-    """Who wrote a stored analysis's memo, as a page's methods name its writer: the model, the prompt and its version,
-    and the day.
+    """Who wrote a stored analysis, as a page's methods name its writer: the model, the prompt and its version, and
+    the day.
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
@@ -324,9 +284,12 @@ def build_code_only_report(
     assembled_at: str,
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
+    arm_tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     writer: str | None = None,
     bundle_fingerprint: str | None = None,
     trials: TrialDetail = "all",
+    measure_order: Sequence[str] = (),
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -338,15 +301,26 @@ def build_code_only_report(
     :ptype bundle: AnalysisContextBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
     :ptype assembled_at: str
-    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
+    :param campaign_name: The campaign's name, which the title qualifies what it compares with; ``None`` names the
         campaign by its id.
     :ptype campaign_name: str | None
     :param arm_labels: The labels the campaign gives its arms, by variant key
         (:meth:`~threetears.evals.analysis.campaign_readings.CampaignReadings.arm_labels`), which name those arms
         everywhere on the page in place of their variants' names; None names every arm by its variant.
     :ptype arm_labels: Mapping[str, str] | None
-    :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
-        says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
+    :param arm_tags: The letter tag each arm carries across the campaign's page, by variant key
+        (:func:`~threetears.evals.analysis.report.words.campaign_arm_tags`), so an arm this aspect shares with others
+        is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
+        does a map that leaves out an arm of this page: in the order the aspect's variant index lists them, since an
+        aspect's bundle does not carry its campaign's declared order, so a caller showing the page beside its
+        campaign's passes the campaign's tags.
+    :ptype arm_tags: Mapping[str, str] | None
+    :param arm_short_names: The short names the campaign's arms declare, by variant key
+        (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in
+        its tight places ahead of any it would compute; None computes every arm's.
+    :ptype arm_short_names: Mapping[str, str] | None
+    :param writer: Who wrote the analysis of the campaign page this page is a fold of, as the methods name a writer
+        (:func:`analysis_writer`); None says no analysis was written. This page lays out none of its words.
     :ptype writer: str | None
     :param bundle_fingerprint: The bundle's fingerprint in the current version
         (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.fingerprint`), where the caller has
@@ -356,7 +330,12 @@ def build_code_only_report(
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
         default, or ``table`` for their table alone.
     :ptype trials: TrialDetail
-    :return: The report, ``basis="code_only"``.
+    :param measure_order: The aspect's graders' measures, in the order its design lists them
+        (``AspectDesign.measure_order``), which the verdict line leads on the first of, as the campaign's page and
+        the quick print do (:func:`~threetears.evals.analysis.report.verdict.verdict_line`); empty where none is
+        listed.
+    :ptype measure_order: Sequence[str]
+    :return: The aspect's page, code's alone.
     :rtype: Report
     """
     source = ReportSource(
@@ -367,54 +346,16 @@ def build_code_only_report(
         generated_at=assembled_at,
         bundle_fingerprint=bundle_fingerprint if bundle_fingerprint is not None else bundle.fingerprint(),
     )
-    memo = _question_blocks(bundle)
     return _page(
         bundle,
-        basis="code_only",
         source=source,
-        memo=lambda *_: memo,
-        finding_count=0,
         writer=writer,
         arm_labels=arm_labels,
+        tags=arm_tags,
+        arm_short_names=arm_short_names,
         trials=trials,
+        measure_order=measure_order,
     )
-
-
-def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
-    """The evidence bundle a stored analysis of one aspect was written over, read back from the analysis.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :return: The bundle, as frozen at generation.
-    :rtype: AnalysisContextBundle
-    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle of another shape than this
-        build's, which is regenerated, never read.
-    """
-    held = _only_aspect(analysis)
-    refuse_a_bundle_of_another_shape(
-        held.bundle,
-        what=f"analysis {analysis.id}",
-        remedy="generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands",
-    )
-    return AnalysisContextBundle.from_dict(dict(held.bundle))
-
-
-def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
-    """The one aspect a page of one aspect lays out.
-
-    :raises RefusedInput: The analysis covers several aspects.
-    """
-    if len(analysis.aspects) != 1:
-        raise RefusedInput(
-            f"analysis {analysis.id} covers {len(analysis.aspects)} aspects "
-            f"({', '.join(aspect.label for aspect in analysis.aspects)}), and this page lays out one",
-            remedy=(
-                "read each aspect's evidence with threetears.evals.analysis.inspect_analysis_bundle (naming its "
-                "aspect) and the memo with threetears.evals.analysis.get_analysis; the campaign's page, which lays out "
-                "every aspect, is read through report_read, or threetears.evals.analysis.analysis_report by its id"
-            ),
-        )
-    return analysis.aspects[0]
 
 
 def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
@@ -424,68 +365,269 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
     :rtype: CampaignBundle
-    :raises RefusedInput: The analysis was written over a bundle of another shape.
+    :raises RefusedInput: The analysis was written over a bundle of another shape, refused before any aspect's bundle
+        is read.
     """
     what = f"analysis {analysis.id}"
     remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
-    bundles = []
+    # Every aspect's stored shape is checked before any is read: reading one is the costly half, and an analysis
+    # whose later aspect no longer reads is refused without paying for the earlier ones.
     for held in analysis.aspects:
         refuse_a_bundle_of_another_shape(held.bundle, what=what, remedy=remedy)
-        bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
+    bundles = [AnalysisContextBundle.from_dict(dict(held.bundle)) for held in analysis.aspects]
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
 
-def analysis_verdict(analysis: EvalAnalysis) -> str:
-    """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
-    memo's words.
+class AnalysisLead(NamedTuple):
+    """What a stored analysis is listed by, written by code over what was frozen with it (:func:`analysis_lead`).
 
-    It opens with what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in the
-    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
+    :ivar caveats: What warns on the analysis's page, then its one caveat line on when its criteria were set, in the
+        page's own words; empty with neither.
+    :ivar verdict: The verdict alone.
+    """
+
+    caveats: list[str]
+    verdict: str
+
+    def line(self) -> str:
+        """The caveats, then the verdict, as one line: what an analysis is listed by (``AnalysisLine.verdict``).
+
+        :return: The line.
+        :rtype: str
+        """
+        return " ".join([*self.caveats, self.verdict])
+
+
+def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> AnalysisLead:
+    """The verdict a stored analysis is listed by, and its caveats beside it, both written by code over what was frozen
+    with it — never a writer's words.
+
+    The caveats are what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in
+    the page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
     frozen with it, without the writer's why beside them; then the page's one caveat line on when its criteria were
     set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never a line per
-    criterion. Then the verdict. An analysis
-    of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
-    by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
-    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
-    broken and no criterion set after its readings, the line is the verdict alone.
+    criterion. Every arm is named as a page names it
+    (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`): its label, else its computed name, a level too
+    long to print by its lever (told apart by the tag the report document gives it, where two arms read alike), an
+    empty text level as ``no <lever>``. The verdict of an analysis of
+    one aspect is the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed by its campaign's verdict, as the campaign's page
+    reads it: what code read on each aspect, in the campaign's order
+    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
-    :return: The verdict line.
-    :rtype: str
+    :param bundle: The campaign bundle frozen with it (:func:`analysis_campaign_bundle`), where the caller has put it
+        back together already; None puts it back together here.
+    :ptype bundle: CampaignBundle | None
+    :return: The caveats and the verdict.
+    :rtype: AnalysisLead
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
-    campaign = analysis_campaign_bundle(analysis)
-    readings = campaign.readings
-    names = AspectNames.of(campaign.aspects)
-    warnings = campaign_warnings(readings, names)
-    warnings += timing_caveats(campaign.aspects)
+    campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
+    # Every arm by the name a page prints it by, read at render time (its label, else its computed name, a cut level by
+    # its lever), told apart by the tag the campaign's report document wears it by, since a listing prints that
+    # document's headline beside these lines: the frozen readings are relabelled for print only.
+    labels = reader_arm_labels(campaign, input_arm_tags(campaign))
+    readings = campaign.readings.relabelled(labels)
+    names = AspectNames.of(campaign.aspects, campaign=campaign.name or None)
+    caveats = [*campaign_warnings(readings, names), *timing_caveats(campaign.aspects, names)]
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
-        bundle = campaign.aspects[0]
-        verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
-    return " ".join([*warnings, verdict])
+        aspect = campaign.aspects[0]
+        declared = campaign.declaration.aspects[0]
+        verdict = aspect_verdict(
+            aspect,
+            measure_order=declared.design.measure_order if declared.design is not None else [],
+            arm_labels=readings.arm_labels(),
+        ).text
+    return AnalysisLead(caveats=caveats, verdict=verdict)
+
+
+def aspect_verdict(
+    bundle: AnalysisContextBundle, *, measure_order: Sequence[str] = (), arm_labels: Mapping[str, str] | None = None
+) -> VerdictLine:
+    """The verdict line an aspect's own page opens with, each arm by its variant's name, read without laying the page
+    out: what a stored analysis of one aspect is listed by, and what the quick print's first line and the exit line
+    print (:func:`~threetears.evals.analysis.report.verdict.verdict_line`).
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param measure_order: The aspect's graders' measures, in the order its design lists them.
+    :ptype measure_order: Sequence[str]
+    :param arm_labels: The names a surface prints the arms by, by variant key, which replace their variants' names
+        (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`, as a listing reads them); None names each
+        arm by its variant.
+    :ptype arm_labels: Mapping[str, str] | None
+    :return: The verdict line.
+    :rtype: VerdictLine
+    """
+    return verdict_line(
+        bundle,
+        _namer(_arm_names(bundle, labels=arm_labels)),
+        case_name=_case_namer(bundle),
+        verdicts=_typed_verdicts(bundle, arm_labels=arm_labels),
+        order=measure_order,
+        evidence=contrast_evidence(bundle),
+    )
+
+
+def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str | None]:
+    """The figures each contrast verdict over ``bundle`` rests on, as the sentences its verdict line says after the
+    decision, each arm the subject: what each arm passed of its trials (or its mean, for a reading that is no rate),
+    then what the interval allows the arm to be against the control, in points for a rate, over the cases the test
+    read. Each figure is the contrasts table's, at its precision; the interval's level is the table's header's. A
+    sentence carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: A verdict's figures, or None where it has no change or interval to state (it is untested, or no
+        contrast of the bundle is its).
+    :rtype: Callable[[Verdict], str | None]
+    """
+    surface = bundle_decision_surface(bundle)
+    rulers = report_rulers(surface, bundle.measure_catalog)
+    tested = {
+        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): comparison
+        for family in bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+    }
+    forms = _change_forms(
+        rulers, ((name, reading, held.delta, held.interval) for (_, name, reading, _), held in tested.items())
+    )
+
+    def figures(verdict: Verdict) -> str | None:
+        comparison = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
+        if comparison is None or verdict.control is None or comparison.delta is None or comparison.interval is None:
+            return None
+        if comparison.control.mean is None or comparison.contrast.mean is None:
+            return None
+        ruler = rulers.of(comparison.name, comparison.reading)
+        form = forms.get((comparison.name, comparison.reading))
+        sides = [
+            (verdict.control, *_side_reading(bundle, surface, comparison, comparison.control, ruler)),
+            (verdict.arm, *_side_reading(bundle, surface, comparison, comparison.contrast, ruler)),
+        ]
+        said = [_sides_sentence(sides, verdict.heading, comparison.reading)]
+        low, high = (end * ruler.factor for end in comparison.interval)
+        paired = (
+            comparison.test == "paired" and not comparison.control.n_left_out and not comparison.contrast.n_left_out
+        )
+        allows = interval_words(
+            verdict.arm,
+            low,
+            high,
+            amount=lambda value: _amount(value, ruler, form),
+            unit=" points" if ruler.unit == PERCENT else "",
+            higher_is_better=comparison.higher_is_better,
+        )
+        if paired:
+            said.append(f"Over {comparison.control.n_cases} paired cases, {allows[:1].lower()}{allows[1:]}")
+        else:
+            said += [f"The test read {_comparison_cases(comparison)} cases.", allows]
+        return " ".join(said)
+
+    return figures
+
+
+def _sides_sentence(sides: Sequence[tuple[str, str, int | None, int | None]], heading: str, reading: str) -> str:
+    """Both arms' figures in the reading's own words: the pass rate as what each arm passed (``Of 90 trials each, v1
+    passed 73 and v2 88.``); a counted measure as what it was on each arm's trials, in its own verb
+    (``Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.``), never "passed", which is the pass rate's;
+    one sentence per arm where they ran different trials; a reading that is no rate by its means."""
+    (control, control_text, control_passed, control_trials), (arm, arm_text, arm_passed, arm_trials) = sides
+    if control_passed is None or control_trials is None or arm_passed is None or arm_trials is None:
+        return f"The mean is {control_text} on {control} and {arm_text} on {arm}."
+    if reading == "trial":
+        if control_trials == arm_trials:
+            return f"Of {control_trials} trials each, {control} passed {control_passed} and {arm} {arm_passed}."
+        return f"Of {control_trials} trials, {control} passed {control_passed}. Of {arm_trials}, {arm} passed {arm_passed}."
+    verb = reading_verb(heading)
+    if control_trials == arm_trials:
+        return f"Of {control_trials} trials each, {heading} {verb} on {control_passed} for {control} and {arm_passed} for {arm}."
+    return (
+        f"{heading} {verb} on {control_passed} of {control_trials} trials for {control}. {heading} {verb} on "
+        f"{arm_passed} of {arm_trials} for {arm}."
+    )
+
+
+def _amount(value: float, ruler: MeasureRuler, form: MoneyForm | None) -> str:
+    """A change's size as a sentence states it, unsigned, on the measure's ruler as the contrasts table prints it:
+    points bare (the sentence names them once), money in its form, any other unit beside the number."""
+    if form is not None and is_money(ruler.unit):
+        return form.spell(abs(value))
+    unit = delta_unit(ruler.unit)
+    number = number_in(abs(value), unit)
+    return number if ruler.unit == PERCENT or not unit else f"{number} {unit}"
+
+
+def _side_reading(
+    bundle: AnalysisContextBundle,
+    surface: DecisionSurface,
+    comparison: FamilyComparison,
+    side: ComparedCell,
+    ruler: MeasureRuler,
+) -> tuple[str, int | None, int | None]:
+    """One arm's figure on a contrast's reading as the contrasts table prints it, without its own interval, and for a
+    rate the trials it passed and the trials it is over: the pass rate's from the scoreboard, a pass/fail measure's
+    from the arm's cell; None for each where no count is read."""
+    _, figure = _side_text(surface, comparison, side, ruler)
+    text = _mean_text(figure if figure is not None else side.mean or 0.0, ruler)
+    if ruler.unit != PERCENT:
+        return text, None, None
+    if comparison.reading == "trial":
+        board = next((row for row in bundle.scoreboard if row.variant_key == side.variant_key), None)
+        return (text, None, None) if board is None else (text, board.passed, board.usable)
+    described = bundle.measure_catalog.get(comparison.name) or METRIC_DESCRIPTORS.get(comparison.name)
+    # A share of trials: a pass/fail check, a boolean measure, or a classifier's accuracy (its trials' label match).
+    counted = described is not None and (
+        described.pass_fail or described.data_type == "boolean" or comparison.name == ACCURACY_MEASURE
+    )
+    if comparison.reading != "measure" or not counted:
+        return text, None, None
+    try:
+        resolved = resolve_reading(
+            surface, cell_ref(side.variant_key, side.apparatus_class_id), comparison.name, comparison.reading
+        )
+    except UnresolvableReference:
+        return text, None, None
+    if resolved.n <= 0 or figure != resolved.mean:
+        return text, None, None
+    return text, round(resolved.mean * resolved.n), resolved.n
+
+
+def _typed_verdicts(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str, str] | None = None) -> list[Verdict]:
+    """The guardrails' and the contrasts' typed verdicts over one bundle, each arm by its variant's name (or by
+    ``arm_labels``, where a surface names it otherwise), as its page words them: what its verdict line prints, read
+    without laying the page out."""
+    surface = bundle_decision_surface(bundle)
+    rulers = report_rulers(surface, bundle.measure_catalog)
+    cell_name = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))
+    guardrails = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers, check_names=bundle.goal_check_names)
+    return [*guardrails, *contrast_verdicts(bundle, surface, arm_labels=arm_labels)]
 
 
 def _page(
     bundle: AnalysisContextBundle,
     *,
-    basis: ReportBasis,
     source: ReportSource,
-    memo: Callable[[_ChartLedger, dict[str, ArmName]], list[ReportBlock]],
-    finding_count: int,
     writer: str | None,
     arm_labels: Mapping[str, str] | None = None,
+    tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
+    measure_order: Sequence[str] = (),
 ) -> Report:
-    """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
+    """Code's page over one bundle: the same screens, whatever door renders it.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
-    page in place of their variants' names. ``trials`` says whether each failed or lost trial's record is laid out.
+    page in place of their variants' names; ``tags`` the campaign's letter tags for them, which tag and colour them on
+    its charts; ``arm_short_names`` the short names its arms declare, which its charts print in tight places.
+    ``trials`` says whether each failed or lost trial's record is laid out. The title is built over the arms the page
+    names and the one aspect its bundle reads.
 
-    The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
-    out is counted on the way, for the scoreboard's one line about what was not charted.
+    The contrasts are laid out before the scoreboard, though they print after it: each chart they leave out is counted
+    on the way, for the scoreboard's one line about what was not charted.
     """
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
@@ -498,12 +640,8 @@ def _page(
     )
     bars_read = bar_verdicts(surface, cell_name, check_names=bundle.goal_check_names)
     contrasts_read = contrast_verdicts(bundle, surface, arm_labels=arm_labels)
-    written = memo(charts, names)
-    # What the memo says with the methods (its coverage map) or with what was not tested (a finding standing on
-    # no reading) is laid out after what code says there, never before it.
-    folded = [block for block in written if block.section == "methods"]
-    noted = [block for block in written if block.section == "not_tested"]
-    written = [block for block in written if block.section not in ("methods", "not_tested")]
+    # The readings no declared question asked about are said with what was not tested, after what code says there.
+    noted = _question_blocks(bundle)
     contrasts = _contrast_blocks(bundle, surface, contrasts_read, guardrails_read, charts, names, rulers)
     contrasts += _bar_blocks(surface, bars_read, rulers)
     notes = [block for block in contrasts if block.section == "methods"]
@@ -511,10 +649,19 @@ def _page(
     if (not_charted := charts.sentence()) is not None:
         notes.append(_note(not_charted, "charts"))
     name = source.campaign_name or f"Campaign {source.campaign_id}"
-    verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle))
+    # The aspect as every line of the page names it: an engine-given label gives way to the campaign's name.
+    printed = aspect_name(bundle, campaign=source.campaign_name or None)
+    verdict = verdict_line(
+        bundle,
+        arm,
+        case_name=_case_namer(bundle),
+        verdicts=[*guardrails_read, *contrasts_read],
+        order=measure_order,
+        evidence=contrast_evidence(bundle),
+    )
     blocks: list[ReportBlock] = [
         # Under the title: the question and the arms, the verdict, then what warns and each report-wide caveat once.
-        *_heading_blocks(bundle, names, source),
+        *_heading_blocks(bundle, names, source, aspect=None if printed == name else printed),
         DisclosureBlock(
             section="header",
             source="verdict",
@@ -525,14 +672,18 @@ def _page(
             term=(
                 "exploratory"
                 if verdict.rule == "exploratory" or (verdict.rule == "too_small" and not bundle.question_declared)
+                else CANNOT_TELL_APART
+                # prose-canary: allow — VerdictLine.text is the verdict rule's sentence, not anything a model wrote
+                if "cannot tell" in verdict.text
                 else None
             ),
         ),
-        *_floor_warning_blocks(bundle, arm),
-        *caveat_blocks([bundle], section="header"),
-        *_scoreboard_blocks(bundle, arm),
-        *_decision_blocks(bundle, arm),
-        *written,
+        *_floor_warning_blocks(bundle, arm, printed),
+        *caveat_blocks(
+            [bundle], section="header", names=AspectNames.of([bundle], campaign=source.campaign_name or None)
+        ),
+        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}, arm_short_names or {}), tags),
+        *_decision_blocks(bundle, arm, printed),
         *contrasts,
         *_case_blocks(bundle, arm),
         *_trial_blocks(bundle, arm, records=trials == "all"),
@@ -544,8 +695,7 @@ def _page(
             names,
             source=source,
             writer=writer,
-            tables=folded,
-            memo_disclosures=notes,
+            left_disclosures=notes,
         ),
         # When each criterion set after its readings was set: the detail the first screen's one line points at.
         *aspect_provenance_blocks(bundle),
@@ -554,11 +704,10 @@ def _page(
     # with what was not tested, though they are laid out with the questions).
     order = list(SECTION_TITLES)
     blocks.sort(key=lambda block: order.index(block.section))
-    blocks = _traced(blocks, bundle)
+    blocks = [_in_one_form(block) for block in _anchored(blocks)]
     return Report(
-        basis=basis,
-        title=_title(bundle, name, arm),
-        finding_count=finding_count,
+        # The heading is the campaign's name; what it compares is the arms line under it.
+        title=name,
         source=source,
         blocks=blocks,
         verdicts=[*guardrails_read, *bars_read, *contrasts_read],
@@ -566,17 +715,22 @@ def _page(
     )
 
 
-def _traced(blocks: Sequence[ReportBlock], bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """The page with each finding's trace drawn: from its figures to the cells printing the same figures, and from its
-    trial ids to the trials.
+def _in_one_form(block: ReportBlock) -> ReportBlock:
+    """A table with each column's money in one form chosen from the column's own values, by the one owner of money's
+    scale (:func:`~threetears.evals.analysis.report.blocks.money_columns`, #993); any other block as it is."""
+    if not isinstance(block, TableBlock):
+        return block
+    # The code-only report's money in a table is drawn per a count its heading names, so it never carries the mark.
+    return block.model_copy(update={"rows": money_columns(block.rows)})
+
+
+def _anchored(blocks: Sequence[ReportBlock]) -> list[ReportBlock]:
+    """The page with each reading's anchor kept by one cell, and a closed table holding one anchored by its fold.
 
     Every cell printing a reading's own figure at a cell carries that reading's id (:func:`_at`), and one cell keeps
     it: a cell shown open before one in a closed table, a contrast before any other table, else the first on the page.
-    A finding's figure links to that cell where it is shown open. Where it sits in a table shown closed, the figure
-    links to the table's fold, which every browser shows, since a browser that leaves the fold shut would not show a
-    cell inside it; a cell deeper in the page's folds is linked to from nowhere. A finding whose figures link nowhere
-    and whose trials the page does not hold says so (:data:`UNTRACED`) in its ``Evidence`` fold, after its facts,
-    rather than leave a reader looking for a link.
+    Where the cell keeping it sits in a table shown closed, the table's fold carries the anchor too, which every
+    browser shows, since a browser that leaves the fold shut would not show a cell inside it.
     """
     placed = list(blocks)
     landing: dict[str, str] = {}
@@ -606,34 +760,7 @@ def _traced(blocks: Sequence[ReportBlock], bundle: AnalysisContextBundle) -> lis
         if shown == "folded" and fold in {landing.get(cell.anchor or "") for row in rows for cell in row.values()}:
             update["anchor"] = fold
         placed[index] = table.model_copy(update=update)
-    held = {trial.trial_id for trial in bundle.trials}
-    traced: list[ReportBlock] = []
-    for block in placed:
-        if isinstance(block, TableBlock) and block.name == "evidence" and block.finding is not None:
-            rows = [
-                {
-                    key: cell if cell.ref is None else cell.model_copy(update={"ref": landing.get(cell.ref)})
-                    for key, cell in row.items()
-                }
-                for row in block.rows
-            ]
-            block = block.model_copy(update={"rows": rows})
-        traced.append(block)
-        if isinstance(block, TableBlock) and block.name == "finding_facts" and block.finding is not None:
-            position = block.finding
-            linked = any(
-                cell.ref is not None
-                for other in traced
-                if isinstance(other, TableBlock) and other.name == "evidence" and other.finding == position
-                for row in other.rows
-                for cell in row.values()
-            )
-            trials = str(block.rows[0]["trials"].value).split(", ") if "trials" in block.rows[0] else []
-            if not linked and not held.intersection(trials):
-                traced.append(
-                    DisclosureBlock(section="memo", source="memo", text=UNTRACED, finding=position, fold="Evidence")
-                )
-    return traced
+    return placed
 
 
 def _shown(table: TableBlock) -> Literal["open", "folded", "hidden"]:
@@ -669,10 +796,13 @@ def _arm_names(
     displays = arm_names(bundle.variant_index if index is None else index)
     control = _control_key(bundle)
     names = {key: arm_name(display, control=key == control) for key, display in displays.items()}
+    # A name spelled from the arm's levers is printed by the one display-name rule, so every surface reads it alike.
+    names = {key: replace(name, label=arm_display_name(name.label, name.levers)) for key, name in names.items()}
     if labels:
         # A campaign's own labels, where its page is being built: the label is the name, the model stays beside it.
         names = {
-            key: replace(name, label=labels[key], given=True) if key in labels else name for key, name in names.items()
+            key: replace(name, label=labels[key], given=True, levers=()) if key in labels else name
+            for key, name in names.items()
         }
     taken = [name.label for name in names.values()]
     return {
@@ -694,27 +824,6 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
     return name
 
 
-def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
-    """The title, a name: the campaign's, with the question it asks where none was declared.
-
-    A name that is itself a question (the quick path's ``does v2 do better than v1?``) is the title as written. A
-    declared question is never cut down to a title: it is quoted whole on its own line (:func:`_question_line`).
-    """
-    if name.rstrip().endswith("?"):
-        return _capitalized(name)
-    if _question(bundle) is not None:
-        return name
-    control = _control_key(bundle)
-    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != control]
-    if control is None or not others:
-        return name
-    asked = f"does {' or '.join(others)} do better than {arm(control)}?"
-    # A name that only lists the arms (the quick path's ``a vs b``) adds nothing to the question it asks.
-    if all(part.strip() in {arm(control), *others} for part in name.split(" vs ")):
-        return asked[:1].upper() + asked[1:]
-    return f"{name}: {asked}"
-
-
 #: A first word that is a plain word, which a title may capitalize; an identifier (``queue_v5``, ``v4-flash``) is not.
 _PLAIN_WORD = re.compile(r"[a-z]+(?:['-][a-z]+)*(?=[\s,;:?!.]|$)")
 
@@ -725,21 +834,22 @@ def _capitalized(title: str) -> str:
 
 
 def _heading_blocks(
-    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, *, aspect: str | None
 ) -> list[ReportBlock]:
-    """The first screen's lines between the title and the verdict.
+    """The first screen's lines between the title, which is the campaign's name, and the verdict.
 
     With a question declared, the question quoted on its own line; then the subhead carrying what the question need
-    not: the arms line, each arm with its version. When its criteria were set is a caveat under the verdict
+    not: the arms line, each arm with its version, and the aspect where its name is not the title's (``aspect``).
+    When its criteria were set is a caveat under the verdict
     (:func:`~threetears.evals.analysis.report.campaign.provenance.caveat_blocks`), said once.
     """
-    arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
+    arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source, aspect=aspect))
     asked = _question_line(bundle)
     basis = [] if asked is None else [DisclosureBlock(section="header", source="basis", text=asked)]
     return [*basis, arms]
 
 
-def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str) -> list[ReportBlock]:
     """One line per candidate breaking a floor, under the verdict, in the words a campaign's page warns in
     (:func:`~threetears.evals.analysis.report.campaign.warnings.floor_line`): what it means for the candidate, never the
     rate or the interval, which the Floors section reads clause by clause. A floor held or unclear says nothing here."""
@@ -748,7 +858,7 @@ def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], st
         broken = [verdict.floor for verdict in read if verdict.outcome == "broken"]
         if broken:
             margins = [floor.clause.max_points if isinstance(floor.clause, RateDrop) else None for floor in broken]
-            text = floor_line(arm(key), margins, aspect_name(bundle))
+            text = floor_line(arm(key), margins, aspect)
             blocks.append(DisclosureBlock(section="header", source="floor", text=text))
     return blocks
 
@@ -764,8 +874,11 @@ def _question_line(bundle: AnalysisContextBundle) -> str | None:
     return f'"{_capitalized(" ".join(question.split()))}"'
 
 
-def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
-    """The arms line: each arm named in full, once, the control first and marked, then the date, then the design.
+def _arms_line(
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, *, aspect: str | None = None
+) -> str:
+    """The arms line: each arm named in full, once, the control first and marked, then the aspect where the title
+    does not name it (``aspect``), then the date, then the design.
 
     An arm named by its model is named by the version that answered it where the responses named one model other
     than the one asked for (``arm_served_models``, the served-models check's own reading): what ran, not the alias,
@@ -787,24 +900,23 @@ def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source:
     }
     arms = " vs ".join(versioned[key].first() if key in versioned else _namer(names)(key) for key in ordered)
     return " · ".join(
-        part for part in (arms or "no arm ran", _date(source.generated_at), _design_words(bundle)) if part
+        part for part in (arms or "no arm ran", aspect, _date(source.generated_at), _design_words(bundle)) if part
     )
 
 
 def _date(stamp: str) -> str:
-    """An ISO-8601 instant as the page dates it (``14 Oct 2026``), or as given when it does not parse."""
-    try:
-        moment = datetime.fromisoformat(stamp)
-    except ValueError:
-        # NOSILENT: an unparseable stamp is printed as stored rather than dropped or reformatted
-        return stamp
-    return f"{moment.day} {moment:%b %Y}"
+    """An ISO-8601 instant as the page dates it (``14 Oct 2026``, :func:`~threetears.evals.analysis.style.page_date`)."""
+    return page_date(stamp)
 
 
-def _dollars(amount: float | None, ruler: MeasureRuler = UNITLESS) -> str | None:
-    """A cost as the scoreboard prints it, on its ruler: ``$0.003092``, or ``$3.092`` per 1,000 replies; None where
-    none was measured."""
-    return None if amount is None else format_number(amount * ruler.factor, prefix="$")
+def _dollars(amount: float | None, ruler: MeasureRuler) -> str | None:
+    """A cost as the scoreboard prints it, on its ruler and in its one form (the one owner of money's scale, #993):
+    ``$3.09`` per 1,000 replies beside every other arm's; None where none was measured."""
+    if amount is None:
+        return None
+    if ruler.money is None:
+        raise ValueError("a cost is spelled on a money ruler, and this one holds no form")
+    return ruler.money.spell(amount * ruler.factor)
 
 
 def _cost_ruler(bundle: AnalysisContextBundle) -> MeasureRuler:
@@ -818,8 +930,88 @@ def _per_reply(bundle: AnalysisContextBundle | None) -> str:
     return per or "per reply"
 
 
-def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _short_names(
+    bundle: AnalysisContextBundle,
+    names: Mapping[str, ArmName],
+    given: Mapping[str, str],
+    declared: Mapping[str, str],
+) -> dict[str, str]:
+    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the short name the campaign declares for
+    it, as declared; else the label the campaign gives it; the control's ``control``; else only the levels where it
+    differs from the control, the model first and trimmed of the prefix it shares with the control's. With no control,
+    or nothing that differs, an arm's short name is its name, and so is it where that name is no longer than the short
+    one (a quick run's ``v4-flash``, never ``candidate v4-flash``). Declared names are unique, which the campaign
+    refuses otherwise, so only a computed one can collide: one that agrees with any other arm's short name is named in
+    full, so no two read alike."""
+    control = _control_key(bundle)
+    entries = {entry.variant_key: entry for entry in bundle.variant_index}
+    distinguishing = distinguishing_axes(bundle.variant_index)
+    base = {level.axis_id: level for level in arm_levels(entries.get(control) if control else None, distinguishing)}
+    shorts: dict[str, str] = {}
+    for key, name in names.items():
+        if key in declared:
+            shorts[key] = declared[key]
+            continue
+        if key in given:
+            shorts[key] = given[key]
+        elif key == control:
+            shorts[key] = "control"
+        elif control is None:
+            shorts[key] = name.label
+        else:
+            differing = [
+                level
+                for level in arm_levels(entries.get(key), distinguishing)
+                if level.axis_id not in base or base[level.axis_id].content_hash != level.content_hash
+            ]
+            ordered = sorted(differing, key=lambda level: level.axis_id != CANDIDATE_MODEL_LEVER)
+            trimmed = [level.axis_id == CANDIDATE_MODEL_LEVER and level.axis_id in base for level in ordered]
+            parts = [
+                _trimmed(level.display, base[level.axis_id].display)
+                if cut
+                else f"{lever_reader_name(level.axis_id)} {elide_level(level.display)}"
+                for level, cut in zip(ordered, trimmed, strict=True)
+            ]
+            # Computed from the levers it differs on, so printed by the one display-name rule; a model trimmed of the
+            # control's prefix is a model's name, which no lever's reader name opens.
+            levers = [level.axis_id for level, cut in zip(ordered, trimmed, strict=True) if not cut]
+            shorts[key] = arm_display_name(" · ".join(parts), levers) or name.label
+        if len(name.label) <= len(shorts[key]):
+            shorts[key] = name.label
+    taken = list(shorts.values())
+    return {
+        key: short if key in declared or taken.count(short) == 1 else names[key].label for key, short in shorts.items()
+    }
+
+
+#: What separates the parts of a model's name, where a shared prefix may be cut.
+_MODEL_SEPARATORS = frozenset("-_ .")
+
+
+def _trimmed(model: str, base: str) -> str:
+    """``model`` without the prefix it shares with ``base``, cut at a separator, as GENERATOR.md §6.1 trims a
+    candidate's model against the control's (``Meridian-4.1-flash`` against ``Meridian-4.1`` is ``flash``); the whole
+    model where under four characters are shared or nothing is left."""
+    shared = 0
+    while shared < min(len(model), len(base)) and model[shared] == base[shared]:
+        shared += 1
+    if not (shared == len(base) and shared < len(model) and model[shared] in _MODEL_SEPARATORS):
+        while shared > 0 and model[shared - 1] not in _MODEL_SEPARATORS:
+            shared -= 1
+    rest = model[shared:].lstrip("".join(_MODEL_SEPARATORS))
+    return rest if shared >= 4 and rest else model
+
+
+def _scoreboard_blocks(
+    bundle: AnalysisContextBundle,
+    arm: Callable[[str], str],
+    shorts: Mapping[str, str],
+    given_tags: Mapping[str, str] | None = None,
+) -> list[ReportBlock]:
     """The scoreboard table, its outcome bar, then only what changes how the verdict is read, in normal weight.
+
+    The outcome bar tags each arm by ``given_tags``, a campaign's, where they tag every arm of the scoreboard, and
+    else by this page's own order.
 
     A fact that changes how the verdict should be read belongs on the first screen, and nothing else does: the case
     floor, then an arm whose every trial failed. Everything else that qualifies the table is a
@@ -835,6 +1027,12 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
             )
         ]
     control = _control_key(bundle)
+    keys = [board.variant_key for board in boards]
+    tags = (
+        dict(given_tags)
+        if given_tags is not None and all(key in given_tags for key in keys)
+        else campaign_arm_tags([bundle], control)
+    )
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})
@@ -869,7 +1067,12 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
         TableColumn(key="check", header="Failed by check", term="failed by check"),
         TableColumn(key="judged", header="Failed by judge", term="failed by judge"),
         *([TableColumn(key="other", header=_other_failures_header(other_causes))] if other_causes else []),
-        TableColumn(key="cost", header=f"Cost {_per_reply(bundle)}", term="cost per reply"),
+        # The term the header says, so the glossary defines the words a reader sees.
+        TableColumn(
+            key="cost",
+            header=f"Cost {_per_reply(bundle)}",
+            term=f"cost {_per_reply(bundle)}" if f"cost {_per_reply(bundle)}" in GLOSSARY else "cost per reply",
+        ),
     ]
     rows = [{column.key: row[column.key] for column in columns} for row in rows]
     surface = bundle_decision_surface(bundle)
@@ -894,7 +1097,7 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
             section="scoreboard",
             chart="outcome_bar",
             title="Outcomes",
-            bars=[_outcome_bar(board, arm) for board in boards],
+            bars=[_outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key)) for board in boards],
         ),
     ]
     blocks += [
@@ -954,8 +1157,9 @@ def _unpriced_cost_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]
     )
 
 
-def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
-    """One arm's census as its stacked bar: passed, then each failure cause, then each loss cause."""
+def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str], tag: str, short: str | None) -> OutcomeBar:
+    """One arm's census as its stacked bar, tagged and short-named as every chart of the page tags and names it:
+    passed, then each failure cause, then each loss cause."""
     segments = [OutcomeSegment(state="passed", label="passed", count=board.passed)] if board.passed else []
     segments += [
         OutcomeSegment(state="failed", label=f"failed: {cause_short(cause)}", count=count)
@@ -965,7 +1169,7 @@ def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
         OutcomeSegment(state="lost", label=f"lost: {cause_short(cause)}", count=count)
         for cause, count in sorted(board.lost.items(), key=lambda item: (-item[1], item[0]))
     ]
-    return OutcomeBar(arm=arm(board.variant_key), segments=segments)
+    return OutcomeBar(arm=arm(board.variant_key), segments=segments, tag=tag, short_name=short)
 
 
 def _design_words(bundle: AnalysisContextBundle) -> str:
@@ -1000,7 +1204,7 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
     return f"{case_words} · {repeat_words}"
 
 
-def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str) -> list[ReportBlock]:
     """The aspect's floors, each on each candidate against the control, as a table, never prose.
 
     Each floor's row opens with the floor as a sentence naming its arm. The control heads its column by name, as does
@@ -1009,8 +1213,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     reading it is not about. A broken floor is also a line under the verdict (:func:`_floor_warning_blocks`); here it
     reads as plainly as a held one.
 
-    A campaign that asks a question and declares no floor says so in one line; an exploratory one, which asks nothing
-    and so cannot declare a floor, has no floor block at all. Where a floor is unclear, a ``To show the floors hold``
+    An aspect with no floor declared has no floor block at all: the page says what it holds, never what it lacks.
+    Where a floor is unclear, a ``To show the floors hold``
     table follows: for each unclear floor, what showing it holds needs if the arms do not differ and if they differ as
     observed, each count with its cost
     (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
@@ -1027,9 +1231,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     if control is None or not _candidates(bundle):
         return []
     if not read:
-        if not asks_a_question(bundle.declared):
-            return []
-        return [DisclosureBlock(section="decision", source="floor", text=f"No floor was declared on {bundle.aspect}.")]
+        return []
     cost = _cost_ruler(bundle)
     others = list(read)
     rows: list[dict[str, CellValue]] = []
@@ -1064,7 +1266,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                 # Each rate its own status, so a row's status is about the reading on that row and no other.
                 shown = [
                     (
-                        rate.rate.name,
+                        PASS_RATE if rate.rate.measure is None else rate.rate.name,
                         f"{rate.rate.control_passed} of {rate.rate.control_n}",
                         f"{rate.rate.candidate_passed} of {rate.rate.candidate_n}",
                         f"{rate.outcome}: {rate.reason}",
@@ -1098,7 +1300,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         TableBlock(
             section="decision",
             name="decision",
-            title=f"Floors on {bundle.aspect}",
+            title=f"Floors on {aspect}",
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="floor by floor, each arm against the control",
@@ -1140,14 +1342,28 @@ def _projection_blocks(
         TableColumn(key="none", header="If no difference"),
         TableColumn(key="observed", header="If as observed"),
     ]
+    # Every projected cost the table states is one set of totals, in one form (#993).
+    costs = money_ruler(
+        (
+            projected_usd_value(cost)
+            for verdict, _, projection in projected
+            for need in (
+                (projection.if_observed,)
+                if isinstance(verdict.floor.clause, CostLower)
+                else (projection.if_none, projection.if_observed)
+            )
+            if (cost := projection.cost(need)) is not None
+        ),
+        per=0,
+    ).form
     rows: list[dict[str, CellValue]] = [
         {
             "floor": verdict.statement,
             "arm": name,
             "none": None
             if isinstance(verdict.floor.clause, CostLower)
-            else projected_cell(projection, projection.if_none),
-            "observed": projected_cell(projection, projection.if_observed),
+            else projected_cell(projection, projection.if_none, costs),
+            "observed": projected_cell(projection, projection.if_observed, costs),
         }
         for verdict, name, projection in projected
     ]
@@ -1203,7 +1419,7 @@ class _ChartLedger:
 
     def sentence(self) -> str | None:
         """Every interval not drawn, in one sentence; None when nothing was left out, or no arm could have one drawn
-        at all (the caveat under the scoreboard says so). Read after the memo and the contrasts are laid out."""
+        at all (the caveat under the scoreboard says so). Read after the contrasts are laid out."""
         if all(usable < MIN_CASES for usable in self._usable.values()):
             return None
         parts = []
@@ -1221,531 +1437,8 @@ class _ChartLedger:
 
 
 # =============================================================================
-# Screen 2: what it means — the memo, then the contrasts against the control
+# Screen 2: what it means — the unasked readings, then the contrasts against the control
 # =============================================================================
-
-
-def _memo_blocks(
-    analysis: EvalAnalysis,
-    bundle: AnalysisContextBundle,
-    charts: _ChartLedger,
-    names: dict[str, ArmName],
-) -> list[ReportBlock]:
-    """The memo: the writer's summary across the campaign, its summary of the aspect, the findings, the recommendation
-    and the next steps.
-
-    A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
-    else it carries sits in a closed ``Evidence`` fold. The memo's words are printed as written (:func:`_as_written`):
-    code reads none of them. A finding is cited by its headline, never by a number.
-
-    Findings are evidence: one that names no reading (its resolution's tier is ``none``) is not a finding, so it is
-    not laid out here but noted in one line with what was not tested (``The analysis also noted: …``). The coverage
-    map goes to the methods, folded: it restates nothing the findings say.
-    """
-    document = analysis.document
-    held = _only_aspect(analysis)
-    # The analysis's own variant index names the cells its memo cites, by the page's rule.
-    arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
-    axes = _question_axes(bundle)
-    blocks: list[ReportBlock] = []
-    if said := _as_written(document.summary):
-        # The writer's read across the campaign leads its memo here as it leads the campaign's page.
-        blocks.append(TextBlock(section="memo", role="summary", body=said))
-    for summary in document.aspect_summaries:
-        if summary.aspect != held.label:
-            continue
-        # What changed and how sure, then what it means: the writer's three parts, as written.
-        parts: tuple[tuple[TextRole, str], ...] = (
-            ("what_changed", summary.what_changed),
-            ("how_sure", summary.how_sure),
-        )
-        for role, said in parts:
-            if part := _as_written(said):
-                blocks.append(TextBlock(section="memo", role=role, body=part))
-        blocks.append(TextBlock(section="memo", role="answer", body=_as_written(summary.means)))
-    resolutions: list[FindingResolution | None] = (
-        list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
-    )
-    headlines = [_as_written(finding.title) for finding in document.findings]
-    noted: list[ReportBlock] = []
-    for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
-        if resolution is not None and resolution.evidence_tier == "none":
-            if title := _as_written(finding.title):
-                noted.append(
-                    DisclosureBlock(
-                        section="not_tested", source="memo", text=f"The analysis also noted: {title.rstrip('.')}."
-                    )
-                )
-            continue
-        exploratory = axes is None or _rests_on_exploratory(resolution, held.decision_surface, axes)
-        found = _finding_blocks(
-            analysis,
-            position,
-            finding,
-            resolution,
-            arm,
-            charts,
-            exploratory=exploratory,
-            headlines=headlines,
-            bundle=bundle,
-        )
-        blocks.extend(found)
-    blocks.extend(_recommendation_blocks(analysis, bundle))
-    coverage_status = {row.name: row.status for row in held.coverage.levers}
-    steps: list[str] = []
-    # A lever no comparison exercised is no lever, so no step measures it, whatever the writer proposed.
-    unexercised = {factor.factor for factor in bundle.unexercised_factors}
-    exercised = [step for step in document.next if step.lever not in unexercised]
-    kept: list[NextStep] = []
-    for step in exercised:
-        title = _as_written(step.title)
-        facts = [Fact(name="Leverage", value=step.leverage)]
-        if step.lever:
-            status = coverage_status.get(step.lever) or "no coverage row"
-            facts.append(Fact(name="Lever", value=f"{step.lever} ({status})"))
-        # The facts ride on the block for a program; the page prints them once, in the fold below.
-        kept.append(step)
-        steps.append(title)
-        blocks.append(TextBlock(section="memo", role="next_step", body=steps[-1], facts=facts))
-        if why := _as_written(step.why):
-            blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
-        blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
-    blocks.extend(_coverage_blocks(analysis, kept, steps))
-    return [*blocks, *noted]
-
-
-def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """The writer's one recommendation: the arm, its reasons, how sure, and what it is made over.
-
-    The reasons are the writer's words, as written; the arm, its guardrails' standing, the floors it is made
-    over and the cases its findings show are code's facts beside them. A recommendation of a candidate over an
-    undecided guardrail is never read as shown safe: the standing says so.
-    """
-    listed = analysis.campaign_bundle.get("arms")
-    arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
-    recommended = analysis.document.recommended()
-    if recommended is None:
-        kind = campaign_kind(arms)
-        return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
-    chosen = next((arm for arm in arms if arm.label == recommended.arm), None)
-    # The arm as this page names it everywhere else; the writer's label where the page holds no cell of it.
-    page_names = _arm_names(bundle)
-    keys = [] if chosen is None else [chosen.variant_key, *resolve_control_arm(chosen).variant_keys]
-    named = next((page_names[key].label for key in keys if key in page_names), recommended.arm)
-    facts = [
-        Fact(name="Arm", value=recommended.arm),
-        Fact(name="Confidence", value=CONFIDENCE_WORDS[recommended.confidence]),
-    ]
-    if chosen is not None and chosen.role != "control":
-        keys = sorted({chosen.variant_key, *resolve_control_arm(chosen).variant_keys} - {""})
-        if standing := _guardrail_standing(keys, bundle, _namer(_arm_names(bundle))):
-            facts.append(Fact(name="Guardrails", value=standing))
-    if recommended.floors_overridden:
-        facts.append(
-            Fact(
-                name="Floors overridden",
-                value="; ".join(
-                    f"{override.floor}: {_as_written(override.why)}" for override in recommended.floors_overridden
-                ),
-            )
-        )
-    if recommended.behind_on:
-        facts.append(
-            Fact(
-                name="Picked though behind",
-                value="; ".join(
-                    f"{behind.aspect}, behind {behind.ahead_arm}: {' '.join(behind.why.split())}"
-                    for behind in recommended.behind_on
-                ),
-            )
-        )
-    if recommended.bars_missed:
-        facts.append(
-            Fact(
-                name="Bars missed",
-                value="; ".join(
-                    f"{missed.aspect}, {missed.measure}: {' '.join(missed.why.split())}"
-                    for missed in recommended.bars_missed
-                ),
-            )
-        )
-    # The findings a recommendation rests on are the ones printed just above it: its block carries them for a
-    # program (``rests_on``), and the page does not cite them again.
-    if cases := _cases_of(bundle, recommended.rests_on, analysis.document.findings, analysis):
-        facts.append(Fact(name="See", value=", ".join(cases)))
-    blocks: list[ReportBlock] = [
-        TextBlock(
-            section="memo",
-            role="recommendation",
-            body=_as_written(" ".join(recommended.reasons)),
-            rests_on=list(recommended.rests_on),
-            facts=[Fact(name="Disposition", value=f"recommend {named}")],
-        ),
-        _facts_table(facts, name="recommendation_facts"),
-    ]
-    return blocks
-
-
-def _cited(headlines: Sequence[str], cited: Sequence[int]) -> str:
-    """Findings as a reader finds them on the page: by their headlines, never by a number, `` · `` between them."""
-    return " · ".join(headlines[position].rstrip(".") for position in cited if 0 <= position < len(headlines))
-
-
-#: The glossary term each fact's header links, where the fact is a term of art.
-_FACT_TERMS: dict[str, str] = {
-    "Confidence": "confidence",
-    "Based on": "based on",
-    "Lever": "lever",
-    "Leverage": "leverage",
-    "Trials": "trial",
-    "Guardrails": "guardrail",
-}
-
-
-def _facts_table(facts: Sequence[Fact], *, name: str, finding: int | None = None, fold: str = "Evidence") -> TableBlock:
-    """Facts code states beside an author's words, as one row of a table in a closed fold, a column per fact so
-    each header links its glossary term — never a ``Key: value`` line."""
-    columns = [
-        TableColumn(key=re.sub(r"\W+", "_", fact.name.casefold()), header=fact.name, term=_FACT_TERMS.get(fact.name))
-        for fact in facts
-    ]
-    row = {column.key: TableCell(value=fact.value) for column, fact in zip(columns, facts, strict=True)}
-    return TableBlock(
-        section="memo",
-        finding=finding,
-        name=name,
-        title="Evidence",
-        columns=columns,
-        rows=[row],
-        order="as code states them",
-        total_rows=1,
-        fold=fold,
-    )
-
-
-def _ref_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable[[str], str]:
-    """Name the arm a cell reference points at by its label, with its test setup where it ran under two."""
-    multi = multi_rig_variants(surface.cells)
-    by_ref = {ref: (cell.variant_key, cell.apparatus_class_id) for ref, cell in cell_index(surface).items()}
-    namer = _namer(names)
-
-    def name(ref: str) -> str:
-        variant, rig = by_ref.get(ref, (variant_of_cell_ref(ref) or ref, ""))
-        return namer(variant) + (f" (test setup {short_digest(rig)})" if variant in multi and rig else "")
-
-    return name
-
-
-def _coverage_blocks(analysis: EvalAnalysis, kept: Sequence[NextStep], steps: Sequence[str]) -> list[ReportBlock]:
-    """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631), in the
-    methods' closed ``Coverage`` fold: nothing is said twice at one level, so it counts the findings rather than
-    restating their headlines.
-
-    One row per lever: its status, how many findings name it in their ``axes`` (or "no finding"), and the next
-    steps whose ``lever`` names it, as the page words them (``steps``, beside the ``kept`` steps they word, in the
-    memo's order); a ``thin`` or
-    ``unswept`` lever no step names says so. Then one line naming the levers no finding names, when there are any.
-    """
-    levers = _only_aspect(analysis).coverage.levers
-    if not levers:
-        return []
-    findings = analysis.document.findings
-    rows: list[dict[str, CellValue]] = []
-    for row in levers:
-        named = sum(1 for finding in findings if row.name in finding.axes)
-        worded = [said for step, said in zip(kept, steps, strict=True) if step.lever == row.name]
-        gap = row.status in ("thin", "unswept")
-        rows.append(
-            {
-                "lever": row.name,
-                "status": row.status,
-                "findings": f"{named} finding{'' if named == 1 else 's'}" if named else "no finding",
-                "next": "; ".join(worded) or ("no next step names it" if gap else None),
-            }
-        )
-    unnamed = [row.name for row in levers if not any(row.name in finding.axes for finding in findings)]
-    blocks: list[ReportBlock] = [
-        TableBlock(
-            section="methods",
-            name="coverage",
-            title="Coverage",
-            columns=[
-                TableColumn(key="lever", header="Lever", term="lever"),
-                TableColumn(key="status", header="Coverage", term="coverage"),
-                TableColumn(key="findings", header="Findings"),
-                TableColumn(key="next", header="Next step"),
-            ],
-            rows=[table_row(row) for row in rows],
-            order="as the coverage map lists the levers",
-            total_rows=len(rows),
-            fold="Coverage",
-        )
-    ]
-    if unnamed:
-        blocks.append(
-            DisclosureBlock(
-                section="methods", source="memo", text=f"Levers no finding names: {_listed(unnamed)}.", fold="Coverage"
-            )
-        )
-    return blocks
-
-
-def _guardrail_standing(keys: Sequence[str], bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """What a recommended candidate leaves not held among the guardrails, in words; None when every one held.
-
-    Stated by code on the recommendation, so an arm recommended over an undecided guardrail is never read as shown
-    safe.
-    """
-    parts = []
-    for variant in keys:
-        standing = bundle.guardrails.of_arm(variant)
-        said = []
-        if standing.breached:
-            breached = ", ".join(_guardrail_heading(bundle, name, "measure") for name in standing.breached)
-            said.append(f"breached {breached}")
-        if standing.undecided:
-            undecided = ", ".join(_guardrail_heading(bundle, name, "measure") for name in standing.undecided)
-            said.append(f"undecided on {undecided}, so not known to be safe")
-        if said:
-            parts.append(f"{arm(variant)}: {'; '.join(said)}")
-    return " | ".join(parts) or None
-
-
-def _campaign_trials(analysis: EvalAnalysis) -> dict[str, tuple[str, str]]:
-    """The writer's trial ids, each to its aspect and that trial's id in the aspect's bundle.
-
-    The writer names trials across the campaign, ``T1`` … ``TN`` aspect after aspect, as its campaign bundle numbers
-    them (:func:`~threetears.evals.analysis.campaign_bundle.campaign_trial_ids`); a page lays out one aspect's
-    bundle, whose trials carry their own ids, so every id the memo names is read through this before the page links
-    or counts it.
-    """
-    return campaign_trial_ids((held.label, _frozen_trial_ids(held)) for held in analysis.aspects)
-
-
-def _frozen_trial_ids(held: AspectAnalysis) -> list[str]:
-    """The trial ids an aspect's frozen bundle carries, in its order, read without parsing the bundle."""
-    listed = held.bundle.get("trials")
-    return [
-        trial_id
-        for trial in (listed if isinstance(listed, list) else [])
-        if isinstance(trial, Mapping) and isinstance(trial_id := trial.get("trial_id"), str)
-    ]
-
-
-def _bundle_trials(analysis: EvalAnalysis | None, bundle: AnalysisContextBundle, trials: Sequence[str]) -> list[str]:
-    """``trials``, as the writer named them, read as the ids of this page's bundle; a campaign id naming another
-    aspect's trial is left out, and an id no map holds is kept as written."""
-    if analysis is None:
-        return list(trials)
-    numbered = _campaign_trials(analysis)
-    kept = []
-    for trial in trials:
-        if trial not in numbered:
-            kept.append(trial)
-        elif numbered[trial][0] == bundle.aspect:
-            kept.append(numbered[trial][1])
-    return kept
-
-
-def _cases_of(
-    bundle: AnalysisContextBundle,
-    rests_on: Sequence[int],
-    findings: Sequence[Finding],
-    analysis: EvalAnalysis | None = None,
-) -> list[str]:
-    """The cases the trials of the named findings show, each as the cases table names it, in case order; the
-    writer's trial ids read as the bundle's (:func:`_bundle_trials`)."""
-    named = {
-        trial
-        for position in rests_on
-        if 0 <= position < len(findings)
-        for trial in _bundle_trials(analysis, bundle, findings[position].trials)
-    }
-    numbers = _case_numbers(bundle)
-    case_name = _case_namer(bundle)
-    cases = sorted({trial.case_id for trial in bundle.trials if trial.trial_id in named}, key=numbers.__getitem__)
-    return [case_name(case) for case in cases]
-
-
-def _finding_blocks(
-    analysis: EvalAnalysis,
-    position: int,
-    finding: Finding,
-    resolution: FindingResolution | None,
-    arm: Callable[[str], str],
-    charts: _ChartLedger,
-    *,
-    exploratory: bool,
-    headlines: Sequence[str] = (),
-    bundle: AnalysisContextBundle | None = None,
-) -> list[ReportBlock]:
-    """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
-
-    Every sentence is the writer's, as written; the table is code's.
-    """
-    facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
-    if exploratory:
-        facts.append(Fact(name="Scope", value=EXPLORATORY_FINDING))
-    if resolution is not None:
-        facts.append(Fact(name="Based on", value=stands_on_words(analysis, resolution.evidence_tier)))
-    if finding.axes:
-        facts.append(Fact(name="Lever", value=", ".join(finding.axes)))
-    if trials := _bundle_trials(analysis, bundle, finding.trials) if bundle is not None else list(finding.trials):
-        facts.append(Fact(name="Trials", value=", ".join(trials)))
-    if finding.invalidates:
-        facts.append(Fact(name="Overturns", value=_cited(headlines, finding.invalidates)))
-    table = _evidence_table(analysis, position, resolution, arm, charts) if resolution and resolution.evidence else None
-    title = _as_written(finding.title)
-    blocks: list[ReportBlock] = [
-        # The facts ride on the block for a program; the page prints them once, in the finding's fold.
-        TextBlock(
-            section="memo",
-            role="finding_title",
-            finding=position,
-            body=title,
-            facts=facts,
-            anchor=f"F{position + 1}",
-        )
-    ]
-    if table is not None:
-        blocks.append(table)
-    blocks.append(_facts_table(facts, name="finding_facts", finding=position))
-    if body := _as_written(finding.body):
-        blocks.append(TextBlock(section="memo", role="finding_body", finding=position, body=body, fold="Evidence"))
-    for caveat in finding.caveats:
-        if said := _as_written(caveat.text):
-            blocks.append(
-                TextBlock(
-                    section="memo",
-                    role="caveat",
-                    finding=position,
-                    body=said,
-                    facts=[Fact(name="Kind", value=caveat.kind)],
-                    fold="Evidence",
-                )
-            )
-    if durable := _as_written(finding.durable):
-        blocks.append(
-            TextBlock(section="memo", role="carried_forward", finding=position, body=durable, fold="Evidence")
-        )
-    return blocks
-
-
-def _as_written(text: str) -> str:
-    """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
-    keep the prompt's rules is for a host's reporter eval to measure, in whatever language they are written."""
-    return " ".join(text.split())
-
-
-def _evidence_table(
-    analysis: EvalAnalysis,
-    position: int,
-    resolution: FindingResolution,
-    arm: Callable[[str], str],
-    charts: _ChartLedger,
-) -> TableBlock:
-    """A finding's readings as code states them: one row per arm, one column per reading, then the cases.
-
-    Each reading's cell carries its interval where the arm has the cases for one and one was computed
-    (:meth:`_ChartLedger.drawable`), so HTML draws it beside the figure, every arm's on the column's one scale.
-    """
-    rows = evidence_rows(analysis, resolution.evidence, arm)
-    readings = list(dict.fromkeys(str(row["measure"].value) for row in rows))
-    keys = {reading: f"reading_{index}" for index, reading in enumerate(readings)}
-    # With several aspects, one arm on two aspects is two rows, each led by its aspect.
-    by_aspect = len(analysis.aspects) > 1
-    by_arm: dict[tuple[str, str], dict[str, TableCell]] = {}
-    for row, evidence in zip(rows, resolution.evidence, strict=True):
-        name = str(row["arm"].value)
-        lead = {"aspect": TableCell(value=evidence.aspect)} if by_aspect else {}
-        line = by_arm.setdefault(
-            (evidence.aspect if by_aspect else "", name),
-            {**lead, "arm": TableCell(value=name), **{key: TableCell(value=None) for key in keys.values()}},
-        )
-        figure = _with_interval(row["value"], analysis, evidence, charts, str(row["measure"].value))
-        # The figure names its reading at its cell; :func:`_traced` links it to a cell printing the same figure, or to
-        # the closed fold holding one, and drops the link where none does.
-        place = reading_anchor(evidence.cell_ref, evidence.measure_id, evidence.reading)
-        line[keys[str(row["measure"].value)]] = figure.model_copy(update={"ref": place})
-        cases = row["cases"].value
-        held = line.get("cases")
-        if held is None or (isinstance(cases, int) and isinstance(held.value, int) and cases > held.value):
-            line["cases"] = TableCell(value=cases)
-    pivot = [line for line in by_arm.values()]
-    return TableBlock(
-        section="memo",
-        finding=position,
-        name="evidence",
-        title="Readings",
-        columns=[
-            *([TableColumn(key="aspect", header="Aspect", term="aspect")] if by_aspect else []),
-            TableColumn(key="arm", header="Arm"),
-            *(TableColumn(key=key, header=reading) for reading, key in keys.items()),
-            TableColumn(key="cases", header="Cases", term="cases"),
-        ],
-        rows=pivot,
-        order="each arm as the author listed it, each reading a column",
-        total_rows=len(pivot),
-    )
-
-
-def _with_interval(
-    cell: TableCell, analysis: EvalAnalysis, evidence: EvidenceRow, charts: _ChartLedger, what: str
-) -> TableCell:
-    """An evidence cell with the interval its arm's cell holds on the reading, on the cell's ruler, where the arm has
-    the cases to draw one; the cell as handed otherwise (a count, or a figure with no interval), the ledger told."""
-    if not cell.is_number:
-        return cell
-    try:
-        resolved = resolve_reading(
-            analysis.aspect(evidence.aspect).decision_surface, evidence.cell_ref, evidence.measure_id, evidence.reading
-        )
-    except UnresolvableReference:
-        # NOSILENT: the reading has no interval to draw, and the ledger names it among those not drawn
-        charts.left_out(what)
-        return cell
-    low, high = resolved.ci_low, resolved.ci_high
-    interval = (low, high) if low is not None and high is not None else None
-    variant = variant_of_cell_ref(evidence.cell_ref) or evidence.cell_ref
-    if not charts.drawable(variant, resolved.n_cases, interval, what) or interval is None:
-        return cell
-    factor = analysis_rulers(analysis, evidence.aspect).of(evidence.measure_id, evidence.reading).factor
-    return TableCell(value=cell.value, unit=cell.unit, low=interval[0] * factor, high=interval[1] * factor)
-
-
-def _question_axes(bundle: AnalysisContextBundle) -> list[MeritAxis] | None:
-    """The merit axes the aspect's question names, ``[]`` for every axis; None where none is asked, so every finding
-    is a lead."""
-    declared = bundle.declared
-    if declared is None or not bundle.question_declared:
-        return None
-    return list(declared.design.merit_axes or [])
-
-
-def _rests_on_exploratory(
-    resolution: FindingResolution | None, surface: DecisionSurface, axes: Sequence[MeritAxis]
-) -> bool:
-    """Whether a finding's every reading lies outside the declared question's axes — it did not ask about any of them.
-
-    A finding citing no reading (a point about coverage or the test setup) is not labelled; a guardrail reading is
-    never exploratory, since it is held because it was declared one.
-    """
-    if resolution is None or not resolution.evidence:
-        return False
-    for row in resolution.evidence:
-        if row.reading == "judged":
-            dimension = surface.dimensions.get(row.measure_id)
-            if dimension is not None and dimension.axis == "boundary":
-                return False
-            if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
-                return False
-        else:
-            measure = surface.measures.get(row.measure_id)
-            if measure is not None and measure.guardrail:
-                return False
-            if axis_in_question_scope(measure.merit_axis if measure is not None else None, axes):
-                return False
-    return True
 
 
 def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
@@ -1756,19 +1449,12 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     exploratory = [
         *(
             measure_name(name, catalog[name].reader_name if name in catalog else None, declared=bundle.check_name(name))
-            for name in scope.exploratory_measures
+            for name in one_figure_each(scope.exploratory_measures, read=catalog)
         ),
-        *(f"{name} (judged)" for name in scope.exploratory_dimensions),
+        *(judged_heading(name) for name in scope.exploratory_dimensions),
     ]
     if exploratory and scope.questions_declared:
-        blocks += [
-            DisclosureBlock(
-                section="not_tested",
-                source="scope",
-                text="No declared question asks about these readings, so read them as leads.",
-            ),
-            _readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]),
-        ]
+        blocks.append(_readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]))
     return blocks
 
 
@@ -1814,7 +1500,9 @@ def _contrast_blocks(
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm, rulers))
     blocks.extend(_readings_blocks(bundle, surface, names, rulers))
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
-    blocks.extend(_strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names))
+    blocks.extend(
+        _strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names, stratum_names=bundle.stratum_names)
+    )
     blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
 
@@ -1848,45 +1536,12 @@ def _self_judging_blocks(
 
 
 def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A line for each arm a guardrail leaves not shown safe, above the contrasts it might be picked from."""
-    blocks: list[ReportBlock] = []
-    variants = list(dict.fromkeys(check.contrast.variant_key for check in bundle.guardrails.checks))
-    for variant in variants:
-        said: dict[str, list[str]] = {"breached": [], "undecided": []}
-        for check in bundle.guardrails.checks:
-            if check.contrast.variant_key == variant and check.decision in said:
-                heading = _guardrail_heading(bundle, check.name, check.reading)
-                if heading not in said[check.decision]:
-                    said[check.decision].append(heading)
-        breached = said["breached"]
-        undecided = [name for name in said["undecided"] if name not in breached]
-        if breached:
-            blocks.append(
-                DisclosureBlock(
-                    section="contrasts",
-                    source="guardrails",
-                    text=f"{arm(variant)} breached the guardrail {', '.join(breached)}.",
-                    term="guardrail",
-                )
-            )
-        if undecided:
-            blocks.append(
-                DisclosureBlock(
-                    section="contrasts",
-                    source="guardrails",
-                    text=f"{arm(variant)} is not known to be safe on the guardrail {', '.join(undecided)}.",
-                    term="guardrail",
-                )
-            )
-    return blocks
-
-
-def _guardrail_heading(bundle: AnalysisContextBundle, name: str, reading: str) -> str:
-    """A guardrail as a reader reads it: a measure by its reader name, a judged dimension by its own."""
-    descriptor = bundle.measure_catalog.get(name) if reading == "measure" else None
-    if reading == "measure" and goal_check_of(name) is not None:
-        return measure_name(name, declared=bundle.check_name(name))
-    return (descriptor.reader_name if descriptor is not None else None) or reading_name(name)
+    """A line for each arm a guardrail leaves not shown safe, above the contrasts it might be picked from, in the
+    verdict line's own words (:func:`~threetears.evals.analysis.report.verdict.guardrail_lines`)."""
+    return [
+        DisclosureBlock(section="contrasts", source="guardrails", text=line, term="guardrail")
+        for line in guardrail_lines(bundle, arm)
+    ]
 
 
 def _small_n(comparison: FamilyComparison) -> int | None:
@@ -1913,9 +1568,15 @@ def _comparison_cases(comparison: FamilyComparison) -> str:
 
 
 def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
-    """One figure of a measure as a table cell: restated onto the measure's ruler and carrying its unit."""
+    """One figure of a measure as a table cell: restated onto the measure's ruler and carrying its unit, money in the
+    form its ruler chose over every figure of the measure (so two arms' means in one row read alike, #993)."""
     if value is None:
         return TableCell(value=None)
+    if ruler.money is not None and is_money(ruler.unit):
+        form = ruler.money
+        return TableCell(
+            value=value * ruler.factor, unit=ruler.unit, decimals=form.decimals, per_thousand=form.per_thousand
+        )
     return TableCell(value=value * ruler.factor, unit=ruler.unit)
 
 
@@ -1961,25 +1622,64 @@ def _change(
     *,
     interval: tuple[float, float] | None = None,
     margin: float | None = None,
+    form: MoneyForm | None = None,
 ) -> TableCell:
     """A change in a measure as a table cell: on the measure's ruler, in the unit a change in it is stated in.
 
     Handed the interval on the delta, the cell carries it, with the declared margin, on the same ruler, read against
-    zero — what HTML draws beside the figure as the row's glyph; the row's interval column spells it.
+    zero — what HTML draws beside the figure as the row's glyph; the row's interval column spells it. Handed the form
+    the measure's changes read in (:func:`_change_forms`), a change in money is written in it, as its interval is.
     """
     if delta is None:
         return TableCell(value=None)
     unit = delta_unit(ruler.unit)
     if interval is None:
-        return TableCell(value=delta * ruler.factor, unit=unit)
-    return TableCell(
-        value=delta * ruler.factor,
-        unit=unit,
-        low=interval[0] * ruler.factor,
-        high=interval[1] * ruler.factor,
-        margin=abs(margin) * ruler.factor if margin is not None else None,
-        zero_line=True,
-    )
+        cell = TableCell(value=delta * ruler.factor, unit=unit)
+    else:
+        cell = TableCell(
+            value=delta * ruler.factor,
+            unit=unit,
+            low=interval[0] * ruler.factor,
+            high=interval[1] * ruler.factor,
+            margin=abs(margin) * ruler.factor if margin is not None else None,
+            zero_line=True,
+        )
+    if form is None:
+        return cell
+    return cell.model_copy(update={"decimals": form.decimals, "per_thousand": form.per_thousand})
+
+
+def _change_forms(
+    rulers: Rulers, changes: Iterable[tuple[str, str, float | None, tuple[float, float] | None]]
+) -> dict[tuple[str, str], MoneyForm]:
+    """The one form each money measure's changes read in, a change and its interval's ends alike (#993): from every
+    change a table states of the measure and the widths of their intervals, on the measure's ruler
+    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`). A measure of another unit has none.
+
+    :param rulers: The report's rulers.
+    :ptype rulers: Rulers
+    :param changes: Each change the table states: its measure's name and reading, its delta and its interval, as
+        stored.
+    :ptype changes: Iterable[tuple[str, str, float | None, tuple[float, float] | None]]
+    :return: Each money measure's form, by name and reading.
+    :rtype: dict[tuple[str, str], MoneyForm]
+    """
+    held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+    for name, reading, delta, interval in changes:
+        ruler = rulers.of(name, reading)
+        if ruler.money is None or not is_money(ruler.unit):
+            continue
+        deltas, widths = held.setdefault((name, reading), ([], []))
+        if delta is not None:
+            deltas.append(delta * ruler.factor)
+        if interval is not None:
+            widths.append(abs(interval[1] - interval[0]) * ruler.factor)
+    forms: dict[tuple[str, str], MoneyForm] = {}
+    for (name, reading), (deltas, widths) in held.items():
+        money = rulers.of(name, reading).money
+        assert money is not None
+        forms[name, reading] = money.for_changes(deltas, widths)
+    return forms
 
 
 def _side_cell(
@@ -2027,9 +1727,14 @@ def _interval_cell(low: float, high: float, unit: str) -> str:
 
 
 def _interval_on_delta(
-    interval: tuple[float, float] | None, ruler: MeasureRuler, level: float | None = None
+    interval: tuple[float, float] | None,
+    ruler: MeasureRuler,
+    level: float | None = None,
+    *,
+    form: MoneyForm | None = None,
 ) -> str | None:
-    """An interval on a delta, on the measure's ruler in the unit a change is stated in.
+    """An interval on a delta, on the measure's ruler in the unit a change is stated in: money's ends in the form its
+    change reads in (``form``, :func:`_change_forms`).
 
     The level it holds at is said once, in the table's header, so a cell carries it only where a caller asks — a
     program's row (:func:`contrast_rows`), which has no header to carry it.
@@ -2037,7 +1742,10 @@ def _interval_on_delta(
     if interval is None:
         return None
     low, high = (bound * ruler.factor for bound in interval)
-    text = _interval_cell(low, high, delta_unit(ruler.unit))
+    if form is not None and is_money(ruler.unit):
+        text = f"[{form.spell(low)}, {form.spell(high)}]"
+    else:
+        text = _interval_cell(low, high, delta_unit(ruler.unit))
     return text if level is None else f"{text} at {_level_text(level)}"
 
 
@@ -2077,20 +1785,21 @@ def _immaterial_words(margin: float | None, heading: str, ruler: MeasureRuler) -
 
 
 def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str | None]:
-    """Why a contrast's verdict is what it is, as a code and, where there is more to say, in words."""
+    """Why a contrast's verdict is what it is, as a code and, where there is more to say, in the page's words (a
+    stored reason reworded by :func:`~threetears.evals.analysis.report.words.reason_words`)."""
     if comparison.verdict == "untested":
-        return "untestable", comparison.untested_reason
+        return "untestable", reason_words(comparison.untested_reason)
     if comparison.verdict in ("improved", "regressed"):
         return "separated", None
     if comparison.verdict == "equivalent":
         return "inside_margin", None
     if comparison.margin_source is None:
-        return "no_margin", comparison.not_separated_reason
+        return "no_margin", reason_words(comparison.not_separated_reason)
     if comparison.equivalence_p_adjusted is None:
-        return "margin_untested", comparison.not_separated_reason or comparison.equivalence_untested_reason or (
-            "the test was unpaired, and the equivalence test reads only cases both arms ran"
-        )
-    return "not_inside_margin", None
+        return "margin_untested", reason_words(
+            comparison.not_separated_reason or comparison.equivalence_untested_reason
+        ) or "the test was unpaired, and the equivalence test reads only cases both arms ran"
+    return "not_inside_margin", reason_words(comparison.not_separated_reason)
 
 
 def contrast_verdicts(
@@ -2148,6 +1857,16 @@ def contrast_verdicts(
     return verdicts
 
 
+def _verdict_cell(verdict: Verdict) -> str:
+    """A contrast's verdict as the contrasts table's cell says it: its words, the undecided reading in its short cell
+    form (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), since the row's columns name both arms."""
+    if verdict.outcome != "not_separated" or verdict.control is None:
+        return verdict.words
+    sentence = comparison_words("not_separated", verdict.arm, verdict.control)
+    # prose-canary: allow — Verdict.words is the sentence comparison_words rendered, not anything a model wrote
+    return CANNOT_TELL_APART + verdict.words.removeprefix(sentence)
+
+
 def _contrast_words(
     comparison: FamilyComparison, arms: tuple[str, str], margin: float | None, heading: str, ruler: MeasureRuler
 ) -> str:
@@ -2156,8 +1875,8 @@ def _contrast_words(
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     return (
         comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
-        + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
-        + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
+        + (f" ({reason_words(comparison.untested_reason)})" if comparison.untested_reason else "")
+        + (f" ({reason_words(comparison.not_separated_reason)})" if comparison.not_separated_reason else "")
         + (
             f" (margin {_margin_text(margin, ruler)}{on_runs})"
             if comparison.verdict == "equivalent" and margin is not None
@@ -2209,6 +1928,15 @@ def _comparison_blocks(
         for comparison in family.comparisons
         if family.interval_level is not None and comparison.interval is not None and _small_n(comparison) is None
     }
+    forms = _change_forms(
+        rulers,
+        (
+            (comparison.name, comparison.reading, comparison.delta, comparison.interval)
+            for family in comparisons.families
+            for comparison in family.comparisons
+            if min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and _small_n(comparison) is None
+        ),
+    )
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
@@ -2219,8 +1947,9 @@ def _comparison_blocks(
                 under.append(small)
                 continue
             heading = ruler.scaled(verdict.heading)
+            form = forms.get((comparison.name, comparison.reading))
             interval = _interval_on_delta(
-                comparison.interval, ruler, None if len(levels) == 1 else family.interval_level
+                comparison.interval, ruler, None if len(levels) == 1 else family.interval_level, form=form
             )
             # The interval is drawn in the row only where both arms have the cases and one was computed.
             arm_ok = charts.drawable(
@@ -2244,9 +1973,10 @@ def _comparison_blocks(
                         ruler,
                         interval=comparison.interval if arm_ok and control_ok else None,
                         margin=_contrast_margin(bundle, comparison),
+                        form=form,
                     ),
                     "interval": TableCell(value=interval),
-                    "verdict": TableCell(value=verdict.words),
+                    "verdict": TableCell(value=_verdict_cell(verdict)),
                     "cases": TableCell(value=_comparison_cases(comparison)),
                 }
             )
@@ -2293,13 +2023,13 @@ def _comparison_blocks(
         # Two arms: each arm's figure heads its own column, and an arm column would only repeat the header.
         two_arms = len(candidates) == 1 and len(controls) == 1
         columns = [
-            TableColumn(key="reading", header="Reading"),
+            TableColumn(key="reading", header="Reading", term="reading"),
             *([] if two_arms else [TableColumn(key="contrast", header="Arm")]),
             TableColumn(key="control", header=f"▸ {controls[0]}" if len(controls) == 1 else "Control", term="control"),
             TableColumn(key="arm", header=candidates[0] if two_arms else "Value", term="arm mean"),
             TableColumn(key="change", header="Change", term="change"),
             TableColumn(key="interval", header=_interval_header(levels), term="interval"),
-            TableColumn(key="verdict", header="Verdict", term="separated"),
+            TableColumn(key="verdict", header="Verdict", term="verdict"),
             TableColumn(key="cases", header="Cases", term="cases"),
         ]
         blocks += [
@@ -2312,6 +2042,7 @@ def _comparison_blocks(
                 order="by declared question, then as the bundle tested them"
                 + ("" if two_arms else "; one row per reading on each arm, the control's figure repeated"),
                 total_rows=len(shown),
+                key_columns=1 if two_arms else 2,
             ),
             TableBlock(
                 section="contrasts",
@@ -2319,7 +2050,7 @@ def _comparison_blocks(
                 title="Statistics",
                 columns=[
                     TableColumn(key="question", header="Question"),
-                    TableColumn(key="reading", header="Reading"),
+                    TableColumn(key="reading", header="Reading", term="reading"),
                     TableColumn(key="contrast", header="Arm"),
                     TableColumn(key="control_mean", header="Control mean", term="control mean"),
                     TableColumn(key="arm_mean", header="Arm mean", term="arm mean"),
@@ -2372,13 +2103,23 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
     verdicts = iter(contrast_verdicts(bundle, surface))
     rulers = report_rulers(surface, bundle.measure_catalog)
     rows: list[dict[str, CellValue]] = []
+    forms = _change_forms(
+        rulers,
+        (
+            (comparison.name, comparison.reading, comparison.delta, comparison.interval)
+            for family in bundle.multiple_comparisons.families
+            for comparison in family.comparisons
+            if _small_n(comparison) is None
+        ),
+    )
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             verdict = next(verdicts)
             ruler = rulers.of(comparison.name, comparison.reading)
             small = _small_n(comparison)
+            form = forms.get((comparison.name, comparison.reading))
             # A program's row has no header to carry the interval's level, so the cell says it.
-            interval = _interval_on_delta(comparison.interval, ruler, family.interval_level)
+            interval = _interval_on_delta(comparison.interval, ruler, family.interval_level, form=form)
             rows.append(
                 {
                     "question": (
@@ -2395,7 +2136,7 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
                     "delta": None if small is not None else _change(comparison.delta, ruler).value,
                     "change": None
                     if small is not None or comparison.delta is None
-                    else _change(comparison.delta, ruler).text + (f" {interval}" if interval else ""),
+                    else _change(comparison.delta, ruler, form=form).text + (f" {interval}" if interval else ""),
                     "interval": None if small is not None else interval,
                     "hedges_g": None if small is not None else comparison.hedges_g,
                     "pairing_r": comparison.pairing_correlation.r
@@ -2483,7 +2224,7 @@ def guardrail_verdicts(
                 kind="guardrail",
                 outcome=check.decision,
                 reason=reason,
-                reason_detail=check.undecided_reason,
+                reason_detail=reason_words(check.undecided_reason),
                 reading=check.reading,
                 name=check.name,
                 heading=reading_heading(
@@ -2509,7 +2250,7 @@ def guardrail_verdicts(
                 + (
                     f" ({_straddled(check, rulers.of(check.name, check.reading))})"
                     if reason == "interval_straddles"
-                    else f" ({check.undecided_reason})"
+                    else f" ({reason_words(check.undecided_reason)})"
                     if check.undecided_reason
                     else ""
                 ),
@@ -2575,9 +2316,13 @@ def _guardrail_blocks(
     if not guardrails.checks:
         return []
     rows: list[dict[str, TableCell]] = []
+    forms = _change_forms(
+        rulers, ((check.name, check.reading, check.delta, check.interval) for check in guardrails.checks)
+    )
     for check, verdict in zip(guardrails.checks, verdicts, strict=True):
         ruler = rulers.of(check.name, check.reading)
-        interval = _interval_on_delta(check.interval, ruler)
+        form = forms.get((check.name, check.reading))
+        interval = _interval_on_delta(check.interval, ruler, form=form)
         rows.append(
             {
                 "guardrail": TableCell(value=ruler.scaled(verdict.heading)),
@@ -2605,7 +2350,7 @@ def _guardrail_blocks(
                         else f"{check.contrast.n_cases} vs {check.control.n_cases}"
                     )
                 ),
-                "delta": _change(check.delta, ruler),
+                "delta": _change(check.delta, ruler, form=form),
                 "interval": TableCell(
                     value=None
                     if interval is None
@@ -2741,7 +2486,8 @@ def _readings_blocks(
             and not measures[name].texts
             and not measures[name].categories
         ]
-        for name in sorted(readings, key=lambda name: reading_heading(surface, name, declared=bundle.check_name(name))):
+        ordered = sorted(readings, key=lambda name: reading_heading(surface, name, declared=bundle.check_name(name)))
+        for name in one_figure_each(ordered):
             summary = measures[name]
             places.append((cell, name, "measure", summary.rate if summary.rate is not None else summary.mean))
             rows.append(
@@ -2754,13 +2500,13 @@ def _readings_blocks(
                     "cases": summary.n_independent or None,
                 }
             )
-        for reading in sorted(cell.judged, key=lambda reading: reading_name(reading.dimension)):
+        for reading in sorted(cell.judged, key=lambda reading: judged_heading(reading.dimension)):
             ruler = rulers.of(reading.dimension, "judged")
             places.append((cell, reading.dimension, "judged", reading.mean))
             rows.append(
                 {
                     "arm": label,
-                    "reading": f"{reading_name(reading.dimension)} (judged)",
+                    "reading": judged_heading(reading.dimension),
                     "value": None if reading.mean is None else _figure_text(reading.mean, reading.sem, ruler),
                     "cases": reading.n_independent or None,
                 }
@@ -2769,7 +2515,7 @@ def _readings_blocks(
         return []
     columns = [
         *([TableColumn(key="arm", header="Arm")] if len(surface.cells) > 1 else []),
-        TableColumn(key="reading", header="Reading"),
+        TableColumn(key="reading", header="Reading", term="reading"),
         TableColumn(key="value", header="Value", term="interval"),
         TableColumn(key="cases", header="Cases", term="cases"),
     ]
@@ -2808,12 +2554,17 @@ def _value_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
 
 def _figure_text(mean: float, sem: float | None, ruler: MeasureRuler) -> str:
     """A mean on its ruler with its standard error beside it, where one was estimated."""
-    spread = f" ± {number_in(sem * ruler.factor, ruler.unit)}" if sem is not None else ""
+    spread = f" ± {_spread_text(sem, ruler)}" if sem is not None else ""
     return f"{_mean_text(mean, ruler)}{spread}"
 
 
 def _strata_blocks(
-    surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers, *, check_names: Mapping[str, str]
+    surface: DecisionSurface,
+    arms: dict[str, ArmName],
+    rulers: Rulers,
+    *,
+    check_names: Mapping[str, str],
+    stratum_names: Mapping[str, str],
 ) -> list[ReportBlock]:
     """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
     control = surface.control_variant_key
@@ -2833,6 +2584,9 @@ def _strata_blocks(
         {stratum.stratum for cell in cells for stratum in cell.strata}, key=lambda name: (name is None, name or "")
     )
     columns = {name: f"stratum_{index}" for index, name in enumerate(names)}
+    # Where every stratum is too small to read alone, one line says so and no cell repeats it.
+    sizes = [stratum.n_cases for cell in cells for stratum in cell.strata]
+    all_thin = max(sizes) < STRATUM_MIN_CASES
     rows: list[dict[str, CellValue]] = []
     thin: list[str] = []
     for cell in cells:
@@ -2848,32 +2602,51 @@ def _strata_blocks(
             cases[columns[name]] = None
         for name, stratum in by_name.items():
             cases[columns[name]] = _cases_text(stratum.n_observations, stratum.n_cases)
-            if stratum.n_cases < STRATUM_MIN_CASES:
+            if stratum.n_cases < STRATUM_MIN_CASES and not all_thin:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
-                thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
+                thin.append(
+                    f"{_stratum_word(name, stratum_names)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})"
+                )
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, check_names=check_names))
         rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
-    blocks: list[ReportBlock] = [
-        TableBlock(
-            section="contrasts",
-            name="strata",
-            title="By stratum",
-            columns=[
-                TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
-                TableColumn(key="reading", header="Reading"),
-                TableColumn(key="all", header="All cases", term="cases"),
-                *(TableColumn(key=columns[name], header=_stratum_word(name), term="stratum") for name in names),
-            ],
-            rows=[table_row(row) for row in rows],
-            order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
-            + " Within each arm: its cases, then each measure by name, then each judged dimension.",
-            total_rows=len(rows),
-            details=True,
+    order = (
+        surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
+        + " Within each arm: its cases, then each measure by name, then each judged dimension."
+    )
+    table = TableBlock(
+        section="contrasts",
+        name="strata",
+        title="By stratum",
+        columns=[
+            TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
+            TableColumn(key="reading", header="Reading"),
+            TableColumn(key="all", header="All cases", term="cases"),
+            *(
+                TableColumn(key=columns[name], header=_stratum_word(name, stratum_names), term="stratum")
+                for name in names
+            ),
+        ],
+        rows=[table_row(row) for row in rows],
+        order=order,
+        total_rows=len(rows),
+        details=True,
+        key_columns=2,
+    )
+    blocks: list[ReportBlock] = [_by_stratum_row(table) if len(names) > _STRATA_COLUMNS else table]
+    if all_thin:
+        low, high = min(sizes), max(sizes)
+        span = f"{low} case{'' if low == 1 else 's'}" if low == high else f"{low} to {high} cases"
+        blocks.insert(
+            0,
+            DisclosureBlock(
+                section="contrasts",
+                source="strata",
+                text=f"Every stratum holds {span}; a stratum is read alone from {STRATUM_MIN_CASES} cases.",
+            ),
         )
-    ]
-    if thin:
+    elif thin:
         # A list of counts belongs beside the table it qualifies, in the methods' fold, not in a line of prose.
         blocks.append(
             _note(
@@ -2885,16 +2658,63 @@ def _strata_blocks(
     return blocks
 
 
-def _stratum_word(name: str | None) -> str:
-    """A stratum as a column header and a disclosure name it: its own name, or :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else name
+#: The most strata the table by stratum lays out as columns, beside the arm, the reading and the pooled figure; more,
+#: and a stratum is a row, each arm a column, so the table stays as wide as the arms, never as the strata.
+_STRATA_COLUMNS = 6
+
+
+def _by_stratum_row(table: TableBlock) -> TableBlock:
+    """The table by stratum turned a stratum per row: all cases first, then each stratum, each reading under it in the
+    arms' own order, every arm a column holding its cell as it was; a row no arm holds is left out."""
+    arms = list(dict.fromkeys(row["arm"].text for row in table.rows))
+    readings = list(dict.fromkeys(row["reading"].text for row in table.rows))
+    held = {(row["arm"].text, row["reading"].text): row for row in table.rows}
+    places = [column for column in table.columns if column.key not in ("arm", "reading")]
+    rows: list[dict[str, TableCell]] = []
+    for place in places:
+        for reading in readings:
+            cells = {
+                f"arm_{at}": held[arm, reading][place.key] if (arm, reading) in held else TableCell(value=None)
+                for at, arm in enumerate(arms)
+            }
+            if all(cell.value is None for cell in cells.values()):
+                continue
+            rows.append({"stratum": TableCell(value=place.header), "reading": TableCell(value=reading), **cells})
+    control = next((column.term for column in table.columns if column.key == "arm"), None)
+    return table.model_copy(
+        update={
+            "columns": [
+                TableColumn(key="stratum", header="Stratum", term="stratum"),
+                TableColumn(key="reading", header="Reading"),
+                *(
+                    TableColumn(key=f"arm_{at}", header=arm, term=control if arm.startswith("▸ ") else None)
+                    for at, arm in enumerate(arms)
+                ),
+            ],
+            "rows": rows,
+            "order": "All cases, then each stratum by name; within each, its cases, then each measure by name, then "
+            "each judged dimension. The arms are the columns, in the order the arms' rows would take: "
+            + table.order.split(" Within each arm")[0],
+            "total_rows": len(rows),
+        }
+    )
+
+
+def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
+    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
+    :data:`NO_STRATUM`."""
+    return NO_STRATUM if name is None else declared.get(name, name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
-    """How many cases and trials a figure rests on — cases first, since they are the independent draws."""
+    """How many cases and trials a figure rests on — cases first, since they are the independent draws; one case run
+    once is its count alone (``1 case``), and a count of one is never plural."""
+    trials = f"{n_trials} trial{'' if n_trials == 1 else 's'}"
     if n_cases is None:
-        return f"{n_trials} trials, cases unrecorded"
-    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {n_trials} trials"
+        return f"{trials}, cases unrecorded"
+    if n_cases == 1 and n_trials == 1:
+        return "1 case"
+    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {trials}"
 
 
 def _measure_rows(
@@ -2920,8 +2740,14 @@ def _measure_rows(
             if not summary.texts
         }
     )
+    # A classifier's accuracy is its trials' label match: one row, named as the accuracy, in the match's own form,
+    # which counts a stratum too small to estimate a rate on.
+    doubled = ACCURACY_MEASURE in measures and MATCH_MEASURE in measures
     rows: list[dict[str, CellValue]] = []
     for measure in measures:
+        if doubled and measure == ACCURACY_MEASURE:
+            continue
+        named = ACCURACY_MEASURE if doubled and measure == MATCH_MEASURE else measure
         ruler = rulers.of(measure, "measure")
 
         def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> CellValue:
@@ -2932,7 +2758,7 @@ def _measure_rows(
         row: dict[str, CellValue] = {
             "arm": arm,
             "reading": ruler.labelled(
-                reading_heading(surface, measure, declared=declared_check_name(check_names, measure))
+                reading_heading(surface, named, declared=declared_check_name(check_names, named))
             ),
             "all": figure(pooled, cell),
         }
@@ -2960,7 +2786,7 @@ def _judged_rows(
         ruler = rulers.of(dimension, "judged")
         row: dict[str, CellValue] = {
             "arm": arm,
-            "reading": f"{reading_name(dimension)} (judged)",
+            "reading": judged_heading(dimension),
             "all": _judged_text(pooled[dimension], ruler) if dimension in pooled else None,
         }
         for name in columns:
@@ -2975,7 +2801,7 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
 
     A rate is a share by its shape, so it reads as a percent (:data:`SHARE`) whatever the catalog said of its
     measure; a mean is stated with its unit on the figure, and its spread as a bare number beside it on the same
-    scale (``98.9% ± 6.5``, ``$0.0459 ± 0.007414``).
+    scale, money in the mean's one form (``98.9% ± 6.5``, ``$0.046 ± $0.007``).
     """
     n = _n_text(summary.n, summary.n_independent)
     if summary.rate is not None:
@@ -2983,16 +2809,29 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
             return f"{round(summary.rate * summary.n)} of {summary.n} {n}"
         return f"{_mean_text(summary.rate, SHARE)}{_interval(summary.ci_low, summary.ci_high, SHARE)} {n}"
     if summary.mean is not None:
-        spread = f" ± {number_in(summary.sem * ruler.factor, ruler.unit)}" if summary.sem is not None else ""
+        spread = f" ± {_spread_text(summary.sem, ruler)}" if summary.sem is not None else ""
         return f"{_mean_text(summary.mean, ruler)}{spread} {n}"
     counts = sorted(summary.categories.items(), key=lambda item: (-item[1], item[0]))
     return "; ".join(f"{category}: {count}" for category, count in counts) + f" {n}"
+
+
+def _spread_text(sem: float, ruler: MeasureRuler) -> str:
+    """A mean's standard error on its ruler: money in dollars to its own two significant figures, as every money figure
+    reads (``$0.0074`` beside ``$0.046``), never at four figures and never rounded to a zero it is not; any other unit
+    as a bare number at the unit's precision."""
+    if is_money(ruler.unit) and ruler.money is not None:
+        scaled = sem * ruler.factor
+        return money_form([scaled]).spell(scaled)
+    return number_in(sem * ruler.factor, ruler.unit)
 
 
 def _mean_text(value: float, ruler: MeasureRuler) -> str:
     """A mean on its ruler, the unit on the figure where the unit sits there (``98.9%``, ``$0.0459``), bare where the
     row's heading names it (a latency's ``950`` under ``Turn time (ms)``)."""
     scaled = value * ruler.factor
+    if is_money(ruler.unit) and ruler.money is not None:
+        # In the measure's one form, by the one owner of money's scale (#993).
+        return ruler.money.spell(scaled)
     if ruler.unit == PERCENT or is_money(ruler.unit):
         return with_unit(scaled, ruler.unit)
     return number_in(scaled, ruler.unit)
@@ -3002,6 +2841,8 @@ def _interval(low: float | None, high: float | None, ruler: MeasureRuler) -> str
     """An interval as ``[low, high]`` on its ruler, or nothing when either end is unestimated."""
     if low is None or high is None:
         return ""
+    if is_money(ruler.unit) and ruler.money is not None:
+        return f" [{ruler.money.spell(low * ruler.factor)}, {ruler.money.spell(high * ruler.factor)}]"
     return f" {_interval_cell(low * ruler.factor, high * ruler.factor, ruler.unit)}"
 
 
@@ -3009,7 +2850,7 @@ def _judged_text(reading: JudgedReading, ruler: MeasureRuler) -> str:
     """One judged dimension's mean, with its standard error and the scores it rests on, on the dimension's ruler."""
     if reading.mean is None:
         return f"no score (n={reading.n})"
-    spread = f" ± {number_in(reading.sem * ruler.factor, ruler.unit)}" if reading.sem is not None else ""
+    spread = f" ± {_spread_text(reading.sem, ruler)}" if reading.sem is not None else ""
     text = f"{_mean_text(reading.mean, ruler)}{spread} {_n_text(reading.n, reading.n_independent)}"
     if (powered := reading.prediction_powered) is not None:
         text += f"; {_prediction_powered_text(powered, ruler)}"
@@ -3186,12 +3027,12 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             "flag": {0: "regression", 1: "no usable trial", 2: None}[group(case)],
         }
         if strata:
-            row["stratum"] = trials[0].stratum
+            row["stratum"] = _stratum_word(trials[0].stratum, bundle.stratum_names) if trials[0].stratum else None
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
-        # The ids are navigation, not information: the failed and lost ones lead, since those are the records a
-        # reader clicks through to; the passed ones follow, each a row of the closed table.
-        row["trials"] = " ".join(trial.trial_id for trial in _wrong_first(trials))
+        # The ids are navigation, not information: in their own order, so a row reads T1 T2 T3 on every replay; which
+        # failed is the marks' to say.
+        row["trials"] = " ".join(trial.trial_id for trial in sorted(trials, key=_trial_order))
         rows.append(row)
     blocks: list[ReportBlock] = [
         TableBlock(
@@ -3231,7 +3072,8 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
 
 def _marks(trials: Sequence[TrialRow]) -> str:
     """One arm's trials of one case as marks, repeat by repeat, its losses and failures named by cause."""
-    ordered = sorted(trials, key=lambda trial: trial.repeat)
+    # Repeat by repeat, two trials of one repeat in their ids' order, so a replay of one recording marks alike.
+    ordered = sorted(trials, key=lambda trial: (trial.repeat, _trial_order(trial)))
     marks = " ".join(_MARKS[trial.state] for trial in ordered) or "not run"
     named = Counter(
         f"{'lost' if trial.state == 'lost' else 'failed'}: {cause_short(trial.cause or 'unknown')}"
@@ -3265,6 +3107,47 @@ def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
 def _wrong_first(trials: Sequence[TrialRow]) -> list[TrialRow]:
     """``trials`` with the failed ones first, then the lost, then the passed, each group as the bundle numbers it."""
     return sorted(trials, key=lambda trial: _STATE_ORDER[trial.state])
+
+
+#: A heading in what a case asked: a ``## <name>`` line, which opens a part.
+_ASKED_HEADING = re.compile(r"^## (?P<name>[^\n]+)$", re.MULTILINE)
+
+
+class _AskedAndWorld(TypedDict):
+    first_input: str
+    world: str
+    world_parts: list[str]
+
+
+def _asked_and_world(asked: str) -> _AskedAndWorld:
+    """What a case asked, split from the world state its host wrote into it: each ``## <name>`` part whose body opens
+    on JSON (``{`` or ``[``), up to the next heading or the end, is the state's; everything else stays what the case
+    asked. The state is a fold of its own, counted by its parts, so no page prints a host's JSON open."""
+    starts = [match.start() for match in _ASKED_HEADING.finditer(asked)]
+    if not starts:
+        return {"first_input": asked, "world": "", "world_parts": []}
+    kept, world, names = [asked[: starts[0]]], [], []
+    for start, end in zip(starts, [*starts[1:], len(asked)], strict=True):
+        part = asked[start:end]
+        heading, _, body = part.partition("\n")
+        if body.lstrip().startswith(("{", "[")):
+            world.append(part.strip())
+            names.append(heading.removeprefix("## ").strip())
+        else:
+            kept.append(part)
+    if not world:
+        return {"first_input": asked, "world": "", "world_parts": []}
+    return {"first_input": "".join(kept).strip(), "world": "\n\n".join(world), "world_parts": names}
+
+
+#: A trial id's number: ``T12`` is 12, so ids sort as numbers, never as text (``T11`` after ``T7``).
+_TRIAL_NUMBER = re.compile(r"\d+")
+
+
+def _trial_order(trial: TrialRow) -> tuple[int, str]:
+    """Where a trial sorts among its case's: by its id's number, then by its id."""
+    found = _TRIAL_NUMBER.search(trial.trial_id)
+    return (int(found.group(0)) if found else 0, trial.trial_id)
 
 
 def _census_line(bundle: AnalysisContextBundle) -> str:
@@ -3350,7 +3233,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, r
                 state=trial.state,
                 cause_words=f"{words.words}. {words.remedy[:1].upper()}{words.remedy[1:]}.",
                 why=why,
-                first_input=trial.first_input,
+                **_asked_and_world(trial.first_input),
                 excerpt=trial.excerpt,
                 # The trial's own record keeps the rate name; the page prints a declared name beside the expression.
                 failed_checks=[
@@ -3432,14 +3315,16 @@ def _not_tested_blocks(
 ) -> list[ReportBlock]:
     """Everything the campaign could not speak to, one line each — a list, never a score.
 
-    ``also`` is what the memo says here (a finding standing on no reading, a code-only page's unasked readings),
-    laid out after code's own lines and before the folded disclosures.
+    ``also`` is the page's unasked readings (:func:`_question_blocks`), laid out after code's own lines and before
+    the folded disclosures.
     """
     said: list[str] = []
     for row in bundle.coverage:
-        if row.status in ("thin", "unswept"):
-            why = "one level ran" if row.status == "unswept" else "too few repeats to read"
-            said.append(f"Lever {row.name} is {row.status}: {why}.")
+        if row.status == "unswept":
+            # Said as what it means, never the word: one level ran, so nothing is known of changing it.
+            said.append(f"One {row.name} ran, so this page says nothing of changing the {row.name}.")
+        elif row.status == "thin":
+            said.append(f"Each {row.name} ran too few repeats to read what changing the {row.name} does.")
     said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
     case_name = _case_namer(bundle)
@@ -3460,10 +3345,7 @@ def _not_tested_blocks(
             said.append(_unproven_check_sentence(proof, bundle.goal_check_names.get(proof.check)))
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
     blocks += _no_margin_blocks(bundle)
-    blocks += [
-        DisclosureBlock(section="not_tested", source="calibration", text=text, term="calibrated")
-        for text in _calibration_sentences(bundle.judge_evidence_tiers)
-    ]
+    blocks += calibration_blocks(bundle)
     blocks += also
     quoted = [bundle.held_fixed_reading.disclosure] if bundle.held_fixed_reading.disclosure else []
     if bundle.cost_unmeasured:
@@ -3498,34 +3380,14 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
     return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
 
 
-def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:
-    """Each judge not yet calibrated against people, as a state and its next step — never as a failure.
+#: What a goal check not shown to beat doing nothing is, by its proof, as the page and the print both say it.
+CHECK_PROOF_WORDS: dict[str, str] = {
+    "refuted": "refuted: its control shows it cannot tell acting from doing nothing",
+    "unproven": "unproven: no control shows it can tell acting from doing nothing",
+}
 
-    A new judge has no labels, so on a first campaign this is said on every report: where the judge stands and what
-    to do next, one line per judge and state, every dimension it holds for named once.
-    """
-    by_judge: dict[tuple[str, bool, int], list[str]] = {}
-    for tier in tiers:
-        criterion = tier.calibration
-        if tier.tier == "calibrated" or criterion.state in ("met", "not_met"):
-            continue
-        key = (
-            tier.judge_model or "an unnamed judge",
-            criterion.n == 0,
-            criterion.results_needed or criterion.min_results,
-        )
-        dims = by_judge.setdefault(key, [])
-        if (dim := humanize("dimension", tier.rubric_dim)) not in dims:
-            dims.append(dim)
-    said = []
-    for (judge, none_yet, more), dims in by_judge.items():
-        state = "is uncalibrated" if none_yet else "is not yet calibrated"
-        why = "no human labels yet" if none_yet else "too few human labels so far"
-        said.append(
-            f"Judge {judge} {state} on {_listed(dims)}: {why}, so its scores are directional. "
-            f"Rate about {more} of its outputs to calibrate it."
-        )
-    return said
+#: What follows from a goal check not shown to beat doing nothing, as the page and the print both say it.
+NOT_SHOWN_TO_MEASURE = "a candidate that did nothing might pass it, so it is not shown to measure the behaviour"
 
 
 def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None) -> str:
@@ -3537,17 +3399,14 @@ def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None)
             f"Goal check {check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
             "it. Any pass rate it has predates the rule."
         )
-    why = "its control shows it cannot" if proof.proof == "refuted" else "no control shows it can"
     notes = []
     if proof.unrecorded:
         notes.append(f"{proof.unrecorded} of {proof.runs} runs recorded no proof")
     if proof.stale:
         notes.append(f"{proof.stale} of {proof.runs} runs proved it under an earlier rule; relaunch to re-prove")
     tail = f" ({'; '.join(notes)})" if notes else ""
-    return (
-        f"Goal check {check} is {proof.proof}: {why} tell acting from doing nothing{tail}. "
-        "A candidate that did nothing might pass it, so it is not shown to measure the behaviour."
-    )
+    words = CHECK_PROOF_WORDS["refuted" if proof.proof == "refuted" else "unproven"]
+    return f"Goal check {check} is {words}{tail}. {NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
 
 
 def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
@@ -3567,11 +3426,11 @@ def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     def declaring(name: str) -> str:
         if name not in METRIC_DESCRIPTORS:
             ranged = catalog[name].family == "mechanical" and catalog[name].value_range is None
-            # A check is graded by its scenario, not a grader the caller names: no call to quote.
-            call = "" if goal_check_of(name) is not None else f": `grader({name}, margin=...)`"
-            return f"where it is graded{call}" + (", with its `range=`" if ranged else "")
+            # A check is graded by its scenario, not a grader the caller names: it takes its margin where declared.
+            where = "on its check" if goal_check_of(name) is not None else "on its grader"
+            return f"a margin {where}" + (", with the range its values take" if ranged else "")
         if name in RUN_MARGIN_MEASURES:
-            return "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+            return "a margin on the classifier's field's grader, on every arm's run"
         return "cannot: the engine owns its description"
 
     rows: list[dict[str, CellValue]] = [
@@ -3585,7 +3444,10 @@ def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         DisclosureBlock(
             section="not_tested",
             source="not_tested",
-            text="No margin is declared on these, so none can read equivalent: not separated never means the arms are alike.",
+            text=(
+                f"No margin is declared on these, so none can read equivalent: {CANNOT_TELL_APART} never means the "
+                "arms are alike."
+            ),
         ),
         _readings_table("no_margin", "No margin", rows),
     ]
@@ -3599,19 +3461,27 @@ def _method_blocks(
     *,
     source: ReportSource,
     writer: str | None,
-    tables: Sequence[ReportBlock] = (),
-    memo_disclosures: Sequence[ReportBlock] = (),
+    left_disclosures: Sequence[ReportBlock] = (),
 ) -> list[ReportBlock]:
-    """How everything on the page was measured and made: a table, the memo's folded tables (its coverage map,
-    ``tables``), then the engine's disclosures and the memo's (``memo_disclosures``) in one closed fold."""
-    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer), *tables]
+    """How everything on the page was measured and made: a table, then the engine's disclosures and those the
+    contrasts and charts left for the methods (``left_disclosures``) in one closed fold."""
+    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer)]
 
     def say(source_of: DisclosureSource, text: str | None) -> None:
         if text and text.strip():
             blocks.append(DisclosureBlock(section="methods", source=source_of, text=text.strip(), fold="Disclosures"))
 
-    for tier in bundle.judge_evidence_tiers:
-        say("measurement", "Judge: " + tier_sentence(tier))
+    for index, sentence in enumerate(_judge_sentences(bundle)):
+        # The first judge's line links the judged score, so the glossary states its scale once.
+        blocks.append(
+            DisclosureBlock(
+                section="methods",
+                source="measurement",
+                text=sentence,
+                fold="Disclosures",
+                term="judged score" if index == 0 else None,
+            )
+        )
     if (settings := setup_disclosure("settings", bundle, arm)) is not None:
         blocks.append(settings)
     for variant_key, cells in arm_exclusions(bundle).items():
@@ -3642,6 +3512,8 @@ def _method_blocks(
             )
     say("measurement", bundle.launch_disclosure)
     say("cost", _unpriced_cost_line(bundle, arm))
+    if (routed := setup_disclosure("cost", bundle, arm)) is not None:
+        blocks.append(routed)
     if (latency := setup_disclosure("latency", bundle, arm)) is not None:
         blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):
@@ -3651,7 +3523,7 @@ def _method_blocks(
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
     _time_axis_disclosures(surface.time_axis, bundle.time_axis_withheld, say)
-    blocks.extend(memo_disclosures)
+    blocks.extend(left_disclosures)
     return blocks
 
 
@@ -3678,8 +3550,16 @@ def _methods_table(
         )
         if level.judge_sent_settings:
             rows.append(("Judge settings sent", "; ".join(_settings_words(sent) for sent in level.judge_sent_settings)))
+    # What each arm's trials cost: totals, which count nothing and are never scaled, in their one form (#993).
+    totals = money_ruler((board.test_cost_usd for board in bundle.scoreboard), per=0)
+    # A total that counts only part of its trials' spend is a floor, and says so beside itself (#993).
     costs = [
-        f"{_namer(names)(board.variant_key)} {_dollars(board.test_cost_usd)}"
+        f"{_namer(names)(board.variant_key)} {totals.spell(board.test_cost_usd)}"
+        + (
+            f" ({PRICED_TRIALS_TEMPLATE.format(priced=board.ran - board.n_cost_unpriced, trials=board.ran)})"
+            if board.n_cost_unpriced
+            else ""
+        )
         for board in bundle.scoreboard
         if board.test_cost_usd is not None
     ]
@@ -3699,12 +3579,14 @@ def _methods_table(
         rows.append(("Readings not shown", f"{len(unshown)} carried by no trial: {_listed(unshown)}"))
     rows.append(
         (
-            "Bundle",
-            f"{source.bundle_fingerprint}, shape {bundle.schema_version}, 3tears-evals "
-            f"{bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON beside this "
-            "page",
+            "Evidence",
+            # The build as one token (``3tears-evals <version>,``), which a reader and the oracle read it by.
+            f"3tears-evals {bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON "
+            "beside this page",
         )
     )
+    # The digest a reader checks the JSON against: an id, so a cell of its own, as code, never in a sentence.
+    rows.append(("Fingerprint", code(source.bundle_fingerprint)))
     return TableBlock(
         section="methods",
         name="methods",
@@ -3714,6 +3596,29 @@ def _methods_table(
         order="the arms, the judge, the cost, then how the page was made",
         total_rows=len(rows),
     )
+
+
+#: Where a judge sentence names its dimensions, while its judges are grouped by everything else they say.
+_DIMS = "\x00"
+
+
+def _judge_sentences(bundle: AnalysisContextBundle) -> list[str]:
+    """Each judge's tier, one sentence per judge that reads alike: the dimensions it holds for named together, its
+    settings as words, never ``key=value``, and its prompt's id left to the bundle's JSON, which names it by dimension
+    (``tier_sentence`` states one dimension in full)."""
+    alike: dict[str, list[str]] = {}
+    for tier in bundle.judge_evidence_tiers:
+        said = tier_sentence(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}))
+        said = said.replace(sent_settings_phrase(tier.judge_sent_settings), _sent_words(tier.judge_sent_settings))
+        # The dimension by the name every other surface gives it, never its stored id.
+        if (dim := measure_name(tier.rubric_dim)) not in alike.setdefault(said, []):
+            alike[said].append(dim)
+    return ["Judge: " + said.replace(_DIMS, _listed_words(dims), 1) for said, dims in alike.items()]
+
+
+def _sent_words(sent: ClientRequestSettings | None) -> str:
+    """A judge's sent settings as the clause its sentence carries, in words."""
+    return "request settings unconfirmed" if sent is None else f"sent {_settings_words(sent)}"
 
 
 def _settings_words(sent: ClientRequestSettings) -> str:
@@ -3910,27 +3815,47 @@ def _verdict_order_sentence(bundle: AnalysisContextBundle) -> str | None:
 
 
 def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """Say, per arm, what its runs set away from the subject's production configuration; None when nothing moved."""
-    parts: list[str] = []
-    qualified = False
-    for variant_key, pooled in sorted(bundle.arm_production_footings.items()):
+    """Say what the arms' runs set away from the subject's production configuration; None when nothing moved.
+
+    The settings left unchecked are said once for the arms that share them (``every arm`` where all do), so a long
+    list never prints once per arm; then each arm's own moves in one short clause each."""
+    unchecked_by: dict[tuple[str, ...], list[str]] = {}
+    own: list[str] = []
+    arms_held = sorted(bundle.arm_production_footings.items())
+    for variant_key, pooled in arms_held:
         footings = list(pooled.runs.values())
-        moved = sorted({f"{name}={level}" for f in footings if f is not None for name, level in f.moved.items()})
-        unchecked = sorted({name for f in footings if f is not None for name in f.unchecked})
+        moved = sorted({f"{name} to {level}" for f in footings if f is not None for name, level in f.moved.items()})
+        unchecked = tuple(sorted({name for f in footings if f is not None for name in f.unchecked}))
         unread = sum(1 for f in footings if f is None)
+        if unchecked:
+            unchecked_by.setdefault(unchecked, []).append(arm(variant_key))
         said = [
             *([f"set {', '.join(moved)}"] if moved else []),
-            *([f"left unchecked whether {', '.join(unchecked)} is production's"] if unchecked else []),
             *([f"{unread} run(s) nobody checked"] if unread else []),
         ]
-        qualified = qualified or bool(said)
-        parts.append(f"arm {arm(variant_key)} " + ("; ".join(said) or "moved nothing off production"))
-    if not qualified:
+        if said:
+            own.append(f"arm {arm(variant_key)} {' and '.join(said)}")
+    if not unchecked_by and not own:
         return None
+    parts = [
+        f"{'every arm' if len(names) == len(arms_held) and len(names) > 1 else _arm_words(names)} left unchecked "
+        f"whether {', '.join(unchecked)} is production's"
+        for unchecked, names in unchecked_by.items()
+    ]
     return (
         "A per-reply cost is what production would spend only where its arm's runs moved nothing off the subject's "
-        "production configuration: " + "; ".join(parts) + "."
+        "production configuration: " + "; ".join([*parts, *own]) + "."
     )
+
+
+def _arm_words(names: Sequence[str]) -> str:
+    """``arm a`` or ``arms a and b``."""
+    return f"{'arm' if len(names) == 1 else 'arms'} {_listed_words(names)}"
+
+
+def _listed_words(names: Sequence[str]) -> str:
+    """Names as a sentence lists them: ``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _some_arms(
@@ -3949,18 +3874,21 @@ def _listed(ids: Sequence[str]) -> str:
 
 
 __all__ = [
+    "AnalysisLead",
+    "aspect_verdict",
+    "contrast_evidence",
     "NO_ANALYSIS",
     "contrast_rows",
     "report_cell_labels",
-    "analysis_bundle",
     "analysis_campaign_bundle",
-    "analysis_verdict",
+    "analysis_lead",
+    "CHECK_PROOF_WORDS",
+    "NOT_SHOWN_TO_MEASURE",
     "NO_STRATUM",
     "TOO_FEW_CASES",
     "bar_verdicts",
     "build_code_only_report",
     "analysis_writer",
-    "build_report",
     "contrast_verdicts",
     "guardrail_verdicts",
 ]

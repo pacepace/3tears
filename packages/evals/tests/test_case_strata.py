@@ -10,8 +10,8 @@ assembled through a real store and read back:
   down, and its report has no strata table and no strata disclosure.
 - **The report carries it**: a ``strata`` table, a column per stratum after the pooled one, each
   stratum's case count first, and a disclosure naming every stratum under
-  :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report and in an
-  analysis's, in Markdown and HTML; a rate over fewer cases than a rate is read on is stated as a count.
+  :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report, over the evidence now or the
+  bundle an analysis froze, in Markdown and HTML; a rate over fewer cases than a rate is read on is stated as a count.
 - **The stored shapes refuse what cannot be true**: strata that do not add up to their cell, a stratum
   listed twice, a breakdown made only of undeclared cases, two nominated stratum axes, an ``llm`` one.
 - **Generation stamps it**: a case generated from a template that nominates an axis takes that axis's
@@ -20,7 +20,7 @@ assembled through a real store and read back:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
@@ -33,7 +33,6 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     report_html,
     report_markdown,
 )
@@ -65,6 +64,15 @@ from packages.evals.tests.factories import (
     make_template,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 _SCOPE = "uni-1"
 _PROFILE = HostProfile(host_id="strata", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
@@ -307,13 +315,14 @@ class TestTheReportCarriesStrata:
         headers = [column.header for column in table.columns]
         assert headers == ["Arm", "Reading", "All cases", "lookalike", "plain", NO_STRATUM]
         # A share on 0–1 reads as a percent to one decimal, its spread beside it on the same scale.
+        # The classifier's accuracy is its trials' label match: one row, named Accuracy, never a second "Label
+        # matched" row with the same figure.
         accuracy = _row(table, "sonnet", "Accuracy")
-        assert accuracy["all"].startswith("87.5% ± ") and accuracy["all"].endswith("(n=16)")
-        assert accuracy[_column(table, "lookalike")] == "33.3% ± 33.3 (n=3)"
-        assert accuracy[_column(table, "plain")] == "100% ± 0 (n=12)"
+        assert accuracy["all"].startswith("87.5% [") and accuracy["all"].endswith("(n=16)")
+        assert not [row for row in table.values() if row["reading"] == "Label matched"]
         # A rate over fewer cases than one is estimated on is stated as a count, never as a rate or an interval.
-        assert _row(table, "sonnet", "Label matched")[_column(table, "lookalike")] == "1 of 3 (n=3)"
-        assert _row(table, "sonnet", "Label matched")[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
+        assert accuracy[_column(table, "lookalike")] == "1 of 3 (n=3)"
+        assert accuracy[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
 
     def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
@@ -341,7 +350,7 @@ class TestTheReportCarriesStrata:
         recall = _row(table, "sonnet", "Recall of NONE")
         assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
         assert recall[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
-        assert _row(table, "sonnet", f"{_TONE} (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
+        assert _row(table, "sonnet", "conversation tone (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
 
     def test_a_stratum_below_the_floor_is_disclosed_by_name_and_count(self) -> None:
         report = _code_only(_bundle(*_mixed()))
@@ -371,7 +380,7 @@ class TestTheReportCarriesStrata:
         html = report_html(report)
         assert "By stratum" in html and 'data-source="strata"' in html
 
-    def test_an_analysis_report_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
+    def test_an_analysis_s_page_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
         bundle = _bundle(*_mixed())
         analysis = make_analysis(
             aspects=[
@@ -380,7 +389,9 @@ class TestTheReportCarriesStrata:
                 )
             ],
         )
-        report = build_report(analysis)
+        # An analysis's aspect page is code's, over the bundle frozen with it.
+        (held,) = analysis.aspects
+        report = _code_only(AnalysisContextBundle.from_dict(dict(held.bundle)))
 
         table = _strata_table(report)
         assert [column.header for column in table.columns][2:] == ["All cases", "lookalike", "plain", NO_STRATUM]

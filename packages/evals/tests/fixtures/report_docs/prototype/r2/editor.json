@@ -1,0 +1,105 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the decision slots and c1 together say what to do (use brisk-s.low.r1, then re-test it), why (it is the only one of 18 configurations inside both gates: 97.1% against 97%, and 513 ms against 600 ms) and the main risk (it clears the pass-rate gate by 0.1 points, a point estimate with no interval). The fallback is also on the first screen: if the re-test fails, the owner decides which gate gives."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (the only configuration that passes both gates) leads to c2 (why low reasoning plus a retry is the sweet spot), then c3 (what the fallbacks cost) and c4 (where the pick is weak). Watch, Next and the caveats all follow from the thin margin, and nothing contradicts the headline. The lede's cheapness claim and c2's latency claim disagree with the lattice, but they don't undercut the recommendation. They are scored under items 3 and 7."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The pick's weak axes are visible: the 0.1-point margin appears in the headline, Watch and c1, and multi-hop at 95.6% appears in c4. But three things are framed stronger than the data supports. (1) The lede calls the pick 'one of the cheapest configurations tried', yet 9 of 18 cost less: all six Nano-XS configurations ($0.03 to $0.111 per 1k) and Brisk-S off.r0, off.r1 and low.r0 ($0.18, $0.196, $0.288). At $0.302 the pick ranks 10th of 18. (2) The confidence form is high_if_immaterial, but the first caveat's own material_if admits the risk cannot be ruled out. On 1,200 cases a 0.1-point margin is a small fraction of binomial sampling error (about 0.5 points SE). (3) The flag calls the pick 'the best of 18 configurations', but four configurations have a higher pass rate."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "None of the omitted items would change the call, and price_tradeoff confirms one priced option, so there is nothing to trade. Atlas-M high reasoning and the other configurations' per-task rates still appear in the lattice and the appendix, and p50 binds nothing. The reason given for omitting calls per task ('doesn't change the call') holds for the pick, but it does not cover the cost basis (see the cost finding)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "The three live confounds are named with material_if clauses and carried into Next: a point estimate with no interval (Next 1), best-of-sweep selection (Next 1), and eval case mix against production traffic (Next 4, with the pick below the gate on both multi-hop at 95.6% and ambiguous-entity at 96.4%). One gap remains. The latency gate is read off a single eval-harness p95 with no interval, the pick's 87 ms headroom is called 'wider' with no caveat, and Next 1 asks only for pass-rate intervals."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names an experiment or a declaration and what it settles: re-running the pick on fresh cases with intervals, the owner declaring the fallback before the result (naming brisk-s.high.r1 and its monthly cost), a multi-hop planning directive, and declaring the production mix. Next 2 is sequenced well, decided before the re-test can bias it."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's gate scatter is the right block, and the claim would flip with the values. c2 is half contradicted by its own lattice. 'Each step up in reasoning ... pushes latency past the budget' is false for Nano-XS, which stays within budget at every level (high.r1 450 ms). It is also false for Brisk-S off to low (359 to 513 ms). Only Brisk-S low to high crosses (810/870 ms), and Atlas-M is over at every level. The lattice also shows the retry's latency cost (465 to 513 ms on the pick, 48 of its 87 ms headroom), which c2's 'almost no added cost' leaves out. c3's bars show cost only, while the claim's 'room to spare' and the caption's 'all but the pick miss the latency budget' are not in the block. c4's examples block shows date-math and ambiguous-entity failures that the claim text never uses."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The lede says the pick is 'one of the cheapest configurations tried'. 9 of 18 configurations cost less per 1k: Nano-XS at $0.03 to $0.111, and Brisk-S off.r0, off.r1 and low.r0 at $0.18, $0.196 and $0.288. At $0.302 the pick sits at the median. The true statement is narrower: it is the cheapest configuration that clears the pass-rate gate, at about half the cost of the next one (brisk-s.high.r1, $0.633). Say that."
+    },
+    {
+      "claim": "c2",
+      "severity": "must_fix",
+      "finding": "'Each step up in reasoning costs far more and pushes latency past the budget' is contradicted by the lattice. Nano-XS is under 600 ms at every reasoning level (off.r0 140, high.r1 450 ms). Brisk-S off to low stays under (359 to 513 ms with a retry). Only Brisk-S low to high crosses the budget, and Atlas-M is over at every level. Restate it as: moving Brisk-S from low to high reasoning pushes p95 past the budget. Also, 'for almost no added cost' should say that the retry adds latency: 48 ms of the pick's 87 ms headroom (465 to 513 ms)."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Confidence is high_if_immaterial, but caveat pick_clears_gate_on_point_estimate concedes in its own material_if that the margin 'cannot rule out' a true rate below the gate. On 1,200 cases a 0.1-point clearance is well inside sampling noise (binomial SE about 0.5 points), and the headline itself says not to rely on the pick before a re-test. Either use the low form, or state that the recommendation is conditional on the re-test."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The flag says the pick 'is the best of 18 configurations tried'. By pass rate it ranks fifth: atlas-m.high.r1 98.6%, brisk-s.high.r1 98%, atlas-m.low.r1 97.9% and atlas-m.high.r0 97.7% all pass more often. The selection point is that it is the only one of 18 that happened to land inside both gates. Reword."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Explore, pass-rate gate: 'At or below 95.3% the pick moves to brisk-s.low.r0' holds only between 94.8% and 95.3%. decision_sensitivity shows nano-xs.high.r1 taking over below 94.8% ($0.111 per 1k), then nano-xs.low.r1 below 92.7% and further Nano-XS configurations lower still. Next 2 explicitly contemplates the pass-rate gate giving, so the reader needs the whole ladder."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Explore, latency budget: 'The pick holds at every budget from 513 ms up' is true only if cost breaks the tie. The snapshot declares no ranking rule (dominance ranking_rule is empty). From 870 ms, brisk-s.high.r1 clears the pass-rate gate by about 1 point rather than 0.1, which, given the report's own worry, may be what the owner prefers. Say that the pick holds above 870 ms only if the cheaper option wins."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The cost basis is stated three ways. The snapshot names the cost_per_1k measure 'Cost per 1k calls', the c2 lattice prints 'per 1,000 replies', the c3 caption says 'per thousand planner queries', and Method says 'per planner query'. Calls per task run from 1.43 to 1.89 (pick 1.539). If the measure is per call, the monthly figures ($1,208 for the pick, about $2,532 for brisk-s.high.r1 at 4,000,000 queries) understate by about 1.5x. Resolve the basis, or flag it in Method. The omitted entry 'Calls per task' should then mention cost."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The block shows cost only, while the claim rests on 'room to spare' on pass rate and the caption on latency misses. Neither is in the values. Latency, not cost, is what keeps these options out, so either show pass rate and p95 next to cost, or frame the bars as the price of relaxing the latency budget."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The examples block shows three failures, but the claim uses only the multi-hop one. The ambiguous-entity example (TQ-1103) is scored wrong because the gold answer requires a clarifying question, a scoring convention that affects how to read the 96.4% disamb rate. Use it or drop it. Next 3 (a multi-hop planning directive) rests on a single frozen example, so say so."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The latency gate rests on one eval-harness p95 per configuration, with no interval, and the report calls the pick's 87 ms headroom 'wider' with no caveat. Next 1 should also re-measure p95 on the fresh cases. Production latency under load is a confound the page never names."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: the c1 gate_scatter values table labels 17 of 18 points by internal arm id (for example 'atlas-m.off.r0', 'nano-xs.high.r1'), and only the pick by its display name ('Brisk-S · Low · 1 retry'). These ids appear above the appendix.",
+    "Units across blocks: the c2 lattice prints cost as 'per 1,000 replies', while the snapshot's measure name says 'per 1k calls' and the c3 caption says 'per thousand planner queries'. No invariant covers this, but the page states one figure in three units."
+  ],
+  "calls": 20
+}

@@ -1,0 +1,117 @@
+{
+  "resolutions": [
+    {
+      "finding": "must_fix (report): the recommendation asserted 'a change to the model or its prompt will' change the clarity-case result, against the report's own judge and run-setup caveats.",
+      "status": "resolved",
+      "evidence": "The recommendation now keeps 'more cases will not change that' (the clarity interval tops out at 78.7%, the bar is 90%) and replaces the remedy clause with 'Whether the cause is the model, the judge or the run setup stays open until the case check and the judge calibration come back.' The headline says 'yet', and the lede names the judge calibration as what would change the answer."
+    },
+    {
+      "finding": "should_fix (report): the frozen failures' case ids bear on the central open question; the same-cases check should state what the ids suggest and move ahead of the prompt fix; the omitted entry undersold the examples.",
+      "status": "resolved",
+      "evidence": "New detail claim c4 shows both examples blocks: accuracy fails only tc-19, on repeats 1 and 2; the kept clarity failures are tc-12, tc-13 and tc-14. The same-cases check is now next step 1, and the decision 'next' slot says it decides whether calibration or a model fix comes next. The omitted entry now reads 'only their case ids carry information, shown as the detail claim'. One new overreach in next step 1 is listed under findings."
+    },
+    {
+      "finding": "should_fix (report): the 314-trial sizing (settle.criteria.accuracy/bar/answer.correct.solo.overall.cases_needed_two_sided_80) treats trials as independent, yet the accuracy failures sit on one case, so more repeats of the same cases would not settle the bar.",
+      "status": "resolved",
+      "evidence": "The watch slot now says 'at least 314 trials drawn from new cases; that sizing treats trials as independent, so it is a lower bound'. Next step 5 says 'more repeats of the same cases will not do' and calls the figure 'a floor, not a target'. Method adds a 'Sample sizes' entry. spread.solo.answer.correct.overall.counts reads 'trials', which confirms the basis."
+    },
+    {
+      "finding": "should_fix (c1): no block shows the interval against the bar; the interval block used a 0 to 1 scale and printed 0.3866 to 0.7812 against the text's 37.8% to 78.7%; c2 had the same split.",
+      "status": "partially resolved",
+      "evidence": "c1 and c2 now carry one dot_interval each, in percent, and the interval moved into the caption, read by key (37.8% to 78.7%; 75.3% to 99.2%). The scale mismatch and the duplicate block are gone. But the chart still draws no interval (blocks.txt c1/1 rows: 'A · solo, 60%' and 'floor 90%'). The claim's substance, 'whole interval sits below the bar', still rests on the caption, not the figure. Method's 'Intervals' entry says no block can draw a bar reading's interval, which is now stated rather than hidden."
+    },
+    {
+      "finding": "should_fix (c3): 'lower' rested on 3.6 against 4.2 with standard errors 0.21 and 0.22 on an unscaled score, and neither table printed the SE.",
+      "status": "resolved",
+      "evidence": "c3 now reads 'somewhat lower ... a gap near its noise on a score with no stated scale, and no line says what score is clear enough'. Both captions print the SE (0.2103, 0.2248). The gap is about 1.9 combined standard errors, so 'near its noise' is fair. The two aspects are still in separate tables, and Method says no block draws both in one table."
+    },
+    {
+      "finding": "invariant concern 1: counts typed in omitted and Method prose ('five frozen failed trials ...', 'the eight apparatus:world:* settings', 'eight world settings').",
+      "status": "resolved",
+      "evidence": "The omitted apparatus entry now lists the kinds in words with no count, and Method's 'Unrecorded apparatus' entry has no count. A smaller new instance is in c4; see invariant_concerns."
+    },
+    {
+      "finding": "invariant concern 5: the omitted list named internal ids and tool names (options_dominance, count.failing, settle_cases, decision_sensitivity, apparatus:*).",
+      "status": "resolved",
+      "evidence": "The omitted entries now say 'the code's dominance reading and its count of failed bars', 'the sizing tool' and 'grader version, OCR build, simulator model and settings, world settings'. No tool name or caveat id appears in the prose."
+    },
+    {
+      "finding": "invariant concern: Method's 'Bars' entry cited the accuracy criterion's threshold for both aspects.",
+      "status": "resolved",
+      "evidence": "Method now cites aspects.accuracy.bar.answer.correct.solo.bar and aspects.clarity.bar.answer.correct.solo.bar separately. Both read 90%."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the recommendation slot and c1 give the call, the reason and the main risk. The call: don't rely on solo for the clarity cases yet. The reason: 60% judged correct against a 90% bar, whole interval 37.8% to 78.7% below it. The main risk, from the lede: the judge has 0 calibration ratings, and a calibration showing it marks right answers wrong would change the answer. The flag adds that the bars warn and never gate, and the headline says the accuracy pass is not settled."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "Each claim leads to the next. c1 is the miss. c2 passes on its point estimate only (95%, interval 75.3% to 99.2% against 90%). c3 shows the clarity score is unanswerable. c4's case ids feed directly into next step 1 and the decision 'next' slot. The large tension, 95% on one case set against 60% on the other, is addressed by the judge_temperature caveat and the same-cases check rather than left standing. The recommendation's 'cause stays open' matches the lede and the caveats."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The weak axes are visible. c2 and the watch slot say the accuracy pass holds on its point estimate only. c3 says the clarity gap (3.6 against 4.2, SE 0.21 and 0.22) is near its noise. The recommendation no longer promises a remedy. 'More cases will not change that' holds: the interval tops at 78.7% against a 90% bar. One overreach sits outside the decision and the claims: next step 1 says 'the ids suggest they did: the clarity failures fall on cases that pass every accuracy trial'. That treats the three kept failures as all of them; aspects.clarity.scoreboard.solo.failed reads 16. It also offers a consequence of 'same cases' as evidence for it (see findings). c4 itself is correctly hedged."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Every omitted item checks out against the snapshot. Cost is $0.00200 per trial on both aspects. Pass rate repeats correctness (aspects.clarity.measure.passed.solo.mean 0.6, accuracy 0.95). The campaign-wide figures read the accuracy trials: criteria.clarity/bar/answer.correct.solo.value reads 95% against the aspect's 60%, and options_dominance marks solo gate_status pass. The clarity sizing reads 314, identical to accuracy's, so it is on the wrong figure. decision_sensitivity on threshold:clarity/bar/answer.correct notes 'a bar criterion warns and never gates'. examples_list shows no reply, reason or excerpt on any trial. None of these would change the call."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "judge_uncalibrated and nothing_declared carry material_if clauses and lead to next steps: step 2 calibrates, step 4 declares. The same-cases question is next step 1. The 13 apparatus caveats (reach: method) land once in Method. But unreported:judge_temperature is promoted to a confidence caveat whose material_if says it could make the gap between the case sets 'partly the judge's'. No next step records or checks it, and the same goes for the unrecorded run setup. Step 1's 'settles' then routes a same-cases answer straight to 'calibrate the judge next', skipping the cheaper check of whether the judge's sampling or the rig differed between the two runs."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names an experiment or a declaration and what it settles. Step 1 checks whether the aspects ran the same cases, and both outcomes are routed. Step 2 is human correctness ratings. Step 3 records replies and reasons, fixes and re-runs. Step 4 declares a clarity scale and line. Step 5 adds new accuracy cases, at least 314 trials, as a floor. The cheap step that decides the order now comes first. The gap in step 1's routing is scored under item 5."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "The counterfactual holds for every claim. If c1's value or interval rose above 90%, c1 and the headline would have to change, and the same goes for c2 and c4's ids. But the lead claim's chart does not show the lead claim. c1/1 renders 'A · solo, 60%' and 'floor 90%' with no interval, so 'whole interval sits below the bar' lives only in the caption. c2/1 does the same for 'interval reaches below it'. The chart also labels the line 'floor' while every sentence calls it a bar. c3 compares one score across aspects in two separate one-row tables. Method states both are the kit's limits, which explains the gap but does not close it."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Next step 1 says 'The ids suggest they did: the clarity failures fall on cases that pass every accuracy trial.' The snapshot keeps only three of the 16 failed clarity trials (aspects.clarity.scoreboard.solo.failed = 16): tc-12, tc-13 and tc-14, repeat 1 only. So 'the clarity failures' should be 'the kept clarity failures', as c4 says. The pool keeps 'other cases before a repeat', and 16 failures over 2 repeats fits whole cases failing. If the pool walks cases in id order, the failures are tc-12 to tc-19, which would include tc-19, the accuracy failure. The colon also reverses the logic: 'they fall on cases that pass accuracy' holds only if the ids name the same cases, so it cannot be evidence that they do. State what the ids can show (both sets number tc-00 to tc-19) and leave 'same cases' to the check."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The judge_temperature caveat is material to the gap between the case sets, by its own material_if, and the run-setup apparatus is unrecorded too. No next step records or checks either. Step 1's 'settles' sends a same-cases answer straight to judge calibration. Add the cheap check before calibration: record the judge's sampling settings and the apparatus for both aspects' runs, or re-run both aspects together under one recorded setup. That separates 'the judge or setup differed between runs' from 'the judge is wrong'."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The chart for the lead claim draws the value (60%) and a line labelled 'floor 90%' but no interval, so 'whole interval sits below the bar' is visible only in the caption. c2 has the same gap. The line label 'floor' also contradicts the page's 'bar' everywhere else. If the kit cannot draw a bar reading's interval, as Method says, record it as a capability gap and use whichever block can print value, interval and bar side by side. At the least, make the caption lead with the interval and the bar as the claim's evidence."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The accuracy caption renders as 'Every failed accuracy-case trial: two, on one case.' This is grammatical but awkward. 'Both failed accuracy-case trials fall on one case' or 'The {…failed|words} failed accuracy-case trials fall on one case' reads cleanly. The clarity caption omits how many clarity trials failed (16, aspects.clarity.scoreboard.solo.failed) next to the three kept, so a reader cannot tell how little of the failure set the ids cover."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: c4 types counts in words rather than reading them through a figure key. The claim says 'a single case fails, on both its repeats' (aspects.accuracy.repeats reads 2), and the clarity caption says 'up to three the snapshot keeps'. These are small, but they are numbers in prose.",
+    "Invariant 5: the c4 examples blocks render trial ids (T39, T40, T65, T67, T69) above the appendix next to the case ids. The case ids carry the claim, but the trial ids are internal and carry nothing. This is likely a renderer default rather than analyst prose."
+  ],
+  "calls": 12
+}

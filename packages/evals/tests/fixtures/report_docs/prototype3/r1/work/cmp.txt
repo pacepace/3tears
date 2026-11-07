@@ -1,0 +1,30 @@
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [overall]
+  arms: [atlas-m, atlas-l]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: score
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (5):
+  - cells: [Billing & account Q&A, -2, -3.556 to -0.4444, -2]
+  - cells: [Troubleshooting (multi-turn), -5, -7.263 to -2.737, -5]
+  - cells: [Persona small talk, -3, -5.121 to -0.8787, -3]
+  - cells: [Research-needed questions, -3, -4.980 to -1.02, -3]
+  - cells: [Speculation bait, -1, -3.546 to +1.546, -1]
+total: 5
+offset: 0
+truncated: False
+notes: [Each row is Atlas-M less Atlas-L on Overall quality, overall and in each place both hold it., The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+==========

@@ -21,6 +21,10 @@ from packages.evals.tests.example_loader import EXAMPLES
 def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy ``examples/<name>`` into ``tmp_path`` and make it the working directory, with no key and no ``RECORD``.
 
+    The copy is also put first on ``sys.path``, through the monkeypatch, which gives the process its ``sys.path`` back
+    when the test ends: loading a rung's file puts its directory there for the process, and a test's copy must not
+    stay there for the tests after it.
+
     :param name: The rung's directory, ``"1-triage"``.
     :ptype name: str
     :param tmp_path: The test's directory.
@@ -35,6 +39,7 @@ def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     for variable in ("RECORD", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.chdir(copy)
+    monkeypatch.syspath_prepend(str(copy))
     return copy
 
 

@@ -1,0 +1,172 @@
+dominance
+survivors (1):
+  - arm: arm:atlas-m; gate_status: borderline; warnings: []; standing: not_behind; behind: []; why: []; dominated_by: []; dominated_with_axes: []
+    borders (1):
+      - criterion: trouble.resolves; place: trouble; status: borderline
+        figures (3):
+          criteria.trouble.resolves.threshold = 90%
+          criteria.trouble.resolves.atlas-m.value = 90%
+          criteria.trouble.resolves.atlas-m.gap = 0
+    figures (20):
+      cost_per_1k.atlas-m = $31.37
+      criteria.overall.atlas-m.billing.gap = 7
+      criteria.overall.atlas-m.trouble.gap = 3
+      criteria.overall.atlas-m.persona.gap = 3
+      criteria.overall.atlas-m.research.gap = 4
+      criteria.overall.atlas-m.specul.gap = 4
+      criteria.p95.atlas-m.billing.gap = 0.9 s
+      criteria.p95.atlas-m.trouble.gap = 0.27 s
+      criteria.p95.atlas-m.persona.gap = 1.32 s
+      criteria.p95.atlas-m.research.gap = 0.16 s
+      criteria.p95.atlas-m.specul.gap = 1.11 s
+      criteria.trouble.resolves.atlas-m.gap = 0
+      criteria.trouble.steps.atlas-m.gap = 5
+      criteria.trouble.confirms.atlas-m.gap = 3
+      criteria.trouble.escalates.atlas-m.gap = 5
+      criteria.persona.character.atlas-m.gap = 5
+      criteria.research.toolcall.atlas-m.gap = 5
+      criteria.research.cites.atlas-m.gap = 4
+      criteria.research.unsupported.atlas-m.gap = 4
+      criteria.specul.declines.atlas-m.gap = 3
+out (3):
+  - arm: arm:atlas-l; breached: []; unknown: []
+    gates (4):
+      - criterion: p95; place: billing; status: fail
+        figures (3):
+          criteria.p95.threshold = 3 s
+          criteria.p95.atlas-l.billing.value = 3.6 s
+          criteria.p95.atlas-l.billing.gap = -0.6 s
+      - criterion: p95; place: trouble; status: fail
+        figures (3):
+          criteria.p95.threshold = 3 s
+          criteria.p95.atlas-l.trouble.value = 4.68 s
+          criteria.p95.atlas-l.trouble.gap = -1.68 s
+      - criterion: p95; place: research; status: fail
+        figures (3):
+          criteria.p95.threshold = 3 s
+          criteria.p95.atlas-l.research.value = 4.86 s
+          criteria.p95.atlas-l.research.gap = -1.86 s
+      - criterion: p95; place: specul; status: fail
+        figures (3):
+          criteria.p95.threshold = 3 s
+          criteria.p95.atlas-l.specul.value = 3.24 s
+          criteria.p95.atlas-l.specul.gap = -0.24 s
+  - arm: arm:brisk-s; breached: []; unknown: []
+    gates (12):
+      - criterion: overall; place: trouble; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.brisk-s.trouble.value = 79
+          criteria.overall.brisk-s.trouble.gap = -6
+      - criterion: overall; place: persona; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.brisk-s.persona.value = 84
+          criteria.overall.brisk-s.persona.gap = -1
+      - criterion: overall; place: research; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.brisk-s.research.value = 81
+          criteria.overall.brisk-s.research.gap = -4
+      - criterion: overall; place: specul; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.brisk-s.specul.value = 83
+          criteria.overall.brisk-s.specul.gap = -2
+      - criterion: trouble.resolves; place: trouble; status: fail
+        figures (3):
+          criteria.trouble.resolves.threshold = 90%
+          criteria.trouble.resolves.brisk-s.value = 74%
+          criteria.trouble.resolves.brisk-s.gap = -16
+      - criterion: trouble.confirms; place: trouble; status: fail
+        figures (3):
+          criteria.trouble.confirms.threshold = 95%
+          criteria.trouble.confirms.brisk-s.value = 88%
+          criteria.trouble.confirms.brisk-s.gap = -7
+      - criterion: trouble.escalates; place: trouble; status: fail
+        figures (3):
+          criteria.trouble.escalates.threshold = 90%
+          criteria.trouble.escalates.brisk-s.value = 85%
+          criteria.trouble.escalates.brisk-s.gap = -5
+      - criterion: persona.character; place: persona; status: fail
+        figures (3):
+          criteria.persona.character.threshold = 90%
+          criteria.persona.character.brisk-s.value = 86%
+          criteria.persona.character.brisk-s.gap = -4
+      - criterion: research.toolcall; place: research; status: fail
+        figures (3):
+          criteria.research.toolcall.threshold = 90%
+          criteria.research.toolcall.brisk-s.value = 83%
+          criteria.research.toolcall.brisk-s.gap = -7
+      - criterion: research.cites; place: research; status: fail
+        figures (3):
+          criteria.research.cites.threshold = 90%
+          criteria.research.cites.brisk-s.value = 89%
+          criteria.research.cites.brisk-s.gap = -1
+      - criterion: research.unsupported; place: research; status: fail
+        figures (3):
+          criteria.research.unsupported.threshold = 90%
+          criteria.research.unsupported.brisk-s.value = 84%
+          criteria.research.unsupported.brisk-s.gap = -6
+      - criterion: specul.declines; place: specul; status: fail
+        figures (3):
+          criteria.specul.declines.threshold = 95%
+          criteria.specul.declines.brisk-s.value = 81%
+          criteria.specul.declines.brisk-s.gap = -14
+  - arm: arm:open-70b; breached: []; unknown: []
+    gates (8):
+      - criterion: overall; place: trouble; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.open-70b.trouble.value = 83
+          criteria.overall.open-70b.trouble.gap = -2
+      - criterion: overall; place: research; status: fail
+        figures (3):
+          criteria.overall.threshold = 85
+          criteria.overall.open-70b.research.value = 80
+          criteria.overall.open-70b.research.gap = -5
+      - criterion: trouble.resolves; place: trouble; status: fail
+        figures (3):
+          criteria.trouble.resolves.threshold = 90%
+          criteria.trouble.resolves.open-70b.value = 82%
+          criteria.trouble.resolves.open-70b.gap = -8
+      - criterion: trouble.confirms; place: trouble; status: fail
+        figures (3):
+          criteria.trouble.confirms.threshold = 95%
+          criteria.trouble.confirms.open-70b.value = 81%
+          criteria.trouble.confirms.open-70b.gap = -14
+      - criterion: research.toolcall; place: research; status: fail
+        figures (3):
+          criteria.research.toolcall.threshold = 90%
+          criteria.research.toolcall.open-70b.value = 88%
+          criteria.research.toolcall.open-70b.gap = -2
+      - criterion: research.cites; place: research; status: fail
+        figures (3):
+          criteria.research.cites.threshold = 90%
+          criteria.research.cites.open-70b.value = 85%
+          criteria.research.cites.open-70b.gap = -5
+      - criterion: research.unsupported; place: research; status: fail
+        figures (3):
+          criteria.research.unsupported.threshold = 90%
+          criteria.research.unsupported.open-70b.value = 86%
+          criteria.research.unsupported.open-70b.gap = -4
+      - criterion: specul.declines; place: specul; status: fail
+        figures (3):
+          criteria.specul.declines.threshold = 95%
+          criteria.specul.declines.open-70b.value = 89%
+          criteria.specul.declines.open-70b.gap = -6
+undecided: []
+bars_as: warnings
+weighs: [gates, cost]
+dominant: [arm:atlas-m]
+axes: []
+dominant_with_axes: [arm:atlas-m]
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [decide]
+  dominant: [arm:atlas-m]
+  ranking_rule: []
+  withheld: 
+total: 4
+offset: 0
+notes: []

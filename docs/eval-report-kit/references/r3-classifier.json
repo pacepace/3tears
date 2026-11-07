@@ -1,0 +1,816 @@
+{
+ "n": 48210,
+ "complexity": [
+  {
+   "id": "simple",
+   "name": "Simple"
+  },
+  {
+   "id": "medium",
+   "name": "Medium"
+  },
+  {
+   "id": "complex",
+   "name": "Complex"
+  }
+ ],
+ "domain": [
+  {
+   "id": "science",
+   "name": "Science"
+  },
+  {
+   "id": "conv",
+   "name": "Conversational"
+  },
+  {
+   "id": "news",
+   "name": "News"
+  }
+ ],
+ "models": [
+  {
+   "id": "atlas-m",
+   "name": "Atlas-M"
+  },
+  {
+   "id": "brisk-s",
+   "name": "Brisk-S"
+  },
+  {
+   "id": "nano-xs",
+   "name": "Nano-XS"
+  }
+ ],
+ "prompts": [
+  {
+   "id": "zero",
+   "name": "Zero-shot"
+  },
+  {
+   "id": "few",
+   "name": "Few-shot (12 ex.)"
+  },
+  {
+   "id": "rubric",
+   "name": "Rubric + reasoning"
+  }
+ ],
+ "volume_per_month": 30000000,
+ "criteria": {
+  "overall": 90.0,
+  "cell_floor": 80.0,
+  "p95": 250
+ },
+ "counts": {
+  "simple|science": 3120,
+  "simple|conv": 14880,
+  "simple|news": 4410,
+  "medium|science": 4260,
+  "medium|conv": 7350,
+  "medium|news": 5190,
+  "complex|science": 3440,
+  "complex|conv": 1960,
+  "complex|news": 3600
+ },
+ "configs": [
+  {
+   "id": "atlas-m.zero",
+   "model": "atlas-m",
+   "prompt": "zero",
+   "balanced": 89.8,
+   "traffic": 91.2,
+   "macro_f1": 88.7,
+   "cost": 180,
+   "p95": 420,
+   "cells": {
+    "simple|science": {
+     "acc": 93.8,
+     "ci": 0.8
+    },
+    "simple|conv": {
+     "acc": 95.8,
+     "ci": 0.3
+    },
+    "simple|news": {
+     "acc": 93.1,
+     "ci": 0.7
+    },
+    "medium|science": {
+     "acc": 88.8,
+     "ci": 0.9
+    },
+    "medium|conv": {
+     "acc": 90.8,
+     "ci": 0.7
+    },
+    "medium|news": {
+     "acc": 86.9,
+     "ci": 0.9
+    },
+    "complex|science": {
+     "acc": 87.5,
+     "ci": 1.1
+    },
+    "complex|conv": {
+     "acc": 88.8,
+     "ci": 1.4
+    },
+    "complex|news": {
+     "acc": 82.9,
+     "ci": 1.2
+    }
+   },
+   "conf_complexity": [
+    [
+     96.4,
+     3.3,
+     0.3
+    ],
+    [
+     6.2,
+     87.7,
+     6.2
+    ],
+    [
+     0.6,
+     7.4,
+     92.1
+    ]
+   ],
+   "conf_domain": [
+    [
+     97.3,
+     0.7,
+     2.0
+    ],
+    [
+     0.9,
+     98.2,
+     0.9
+    ],
+    [
+     3.2,
+     1.4,
+     95.4
+    ]
+   ]
+  },
+  {
+   "id": "atlas-m.few",
+   "model": "atlas-m",
+   "prompt": "few",
+   "balanced": 92.1,
+   "traffic": 93.5,
+   "macro_f1": 91.0,
+   "cost": 260,
+   "p95": 483,
+   "cells": {
+    "simple|science": {
+     "acc": 96.3,
+     "ci": 0.7
+    },
+    "simple|conv": {
+     "acc": 97.8,
+     "ci": 0.2
+    },
+    "simple|news": {
+     "acc": 94.9,
+     "ci": 0.6
+    },
+    "medium|science": {
+     "acc": 90.8,
+     "ci": 0.9
+    },
+    "medium|conv": {
+     "acc": 93.3,
+     "ci": 0.6
+    },
+    "medium|news": {
+     "acc": 89.3,
+     "ci": 0.8
+    },
+    "complex|science": {
+     "acc": 89.7,
+     "ci": 1.0
+    },
+    "complex|conv": {
+     "acc": 91.5,
+     "ci": 1.2
+    },
+    "complex|news": {
+     "acc": 85.5,
+     "ci": 1.2
+    }
+   },
+   "conf_complexity": [
+    [
+     97.2,
+     2.6,
+     0.2
+    ],
+    [
+     4.8,
+     90.5,
+     4.8
+    ],
+    [
+     0.4,
+     5.7,
+     93.9
+    ]
+   ],
+   "conf_domain": [
+    [
+     97.9,
+     0.6,
+     1.5
+    ],
+    [
+     0.7,
+     98.6,
+     0.7
+    ],
+    [
+     2.4,
+     1.1,
+     96.5
+    ]
+   ]
+  },
+  {
+   "id": "atlas-m.rubric",
+   "model": "atlas-m",
+   "prompt": "rubric",
+   "balanced": 93.2,
+   "traffic": 94.6,
+   "macro_f1": 92.1,
+   "cost": 610,
+   "p95": 1302,
+   "cells": {
+    "simple|science": {
+     "acc": 97.5,
+     "ci": 0.5
+    },
+    "simple|conv": {
+     "acc": 99.2,
+     "ci": 0.1
+    },
+    "simple|news": {
+     "acc": 96.1,
+     "ci": 0.6
+    },
+    "medium|science": {
+     "acc": 92.0,
+     "ci": 0.8
+    },
+    "medium|conv": {
+     "acc": 94.4,
+     "ci": 0.5
+    },
+    "medium|news": {
+     "acc": 90.0,
+     "ci": 0.8
+    },
+    "complex|science": {
+     "acc": 91.2,
+     "ci": 0.9
+    },
+    "complex|conv": {
+     "acc": 92.2,
+     "ci": 1.2
+    },
+    "complex|news": {
+     "acc": 86.0,
+     "ci": 1.1
+    }
+   },
+   "conf_complexity": [
+    [
+     97.6,
+     2.2,
+     0.2
+    ],
+    [
+     4.1,
+     91.8,
+     4.1
+    ],
+    [
+     0.4,
+     4.9,
+     94.7
+    ]
+   ],
+   "conf_domain": [
+    [
+     98.2,
+     0.5,
+     1.3
+    ],
+    [
+     0.6,
+     98.8,
+     0.6
+    ],
+    [
+     2.2,
+     0.9,
+     96.9
+    ]
+   ]
+  },
+  {
+   "id": "brisk-s.zero",
+   "model": "brisk-s",
+   "prompt": "zero",
+   "balanced": 86.0,
+   "traffic": 87.5,
+   "macro_f1": 84.9,
+   "cost": 28,
+   "p95": 160,
+   "cells": {
+    "simple|science": {
+     "acc": 90.1,
+     "ci": 1.0
+    },
+    "simple|conv": {
+     "acc": 92.1,
+     "ci": 0.4
+    },
+    "simple|news": {
+     "acc": 89.4,
+     "ci": 0.9
+    },
+    "medium|science": {
+     "acc": 85.1,
+     "ci": 1.1
+    },
+    "medium|conv": {
+     "acc": 87.2,
+     "ci": 0.8
+    },
+    "medium|news": {
+     "acc": 83.1,
+     "ci": 1.0
+    },
+    "complex|science": {
+     "acc": 84.2,
+     "ci": 1.2
+    },
+    "complex|conv": {
+     "acc": 85.1,
+     "ci": 1.6
+    },
+    "complex|news": {
+     "acc": 77.9,
+     "ci": 1.4
+    }
+   },
+   "conf_complexity": [
+    [
+     95.1,
+     4.6,
+     0.3
+    ],
+    [
+     8.4,
+     83.1,
+     8.4
+    ],
+    [
+     0.8,
+     10.1,
+     89.1
+    ]
+   ],
+   "conf_domain": [
+    [
+     96.2,
+     0.9,
+     2.8
+    ],
+    [
+     1.3,
+     97.5,
+     1.3
+    ],
+    [
+     4.4,
+     1.9,
+     93.7
+    ]
+   ]
+  },
+  {
+   "id": "brisk-s.few",
+   "model": "brisk-s",
+   "prompt": "few",
+   "balanced": 90.7,
+   "traffic": 92.2,
+   "macro_f1": 89.6,
+   "cost": 40,
+   "p95": 184,
+   "cells": {
+    "simple|science": {
+     "acc": 95.1,
+     "ci": 0.8
+    },
+    "simple|conv": {
+     "acc": 97.1,
+     "ci": 0.3
+    },
+    "simple|news": {
+     "acc": 94.0,
+     "ci": 0.7
+    },
+    "medium|science": {
+     "acc": 89.9,
+     "ci": 0.9
+    },
+    "medium|conv": {
+     "acc": 91.6,
+     "ci": 0.6
+    },
+    "medium|news": {
+     "acc": 87.5,
+     "ci": 0.9
+    },
+    "complex|science": {
+     "acc": 88.5,
+     "ci": 1.1
+    },
+    "complex|conv": {
+     "acc": 89.4,
+     "ci": 1.4
+    },
+    "complex|news": {
+     "acc": 82.9,
+     "ci": 1.2
+    }
+   },
+   "conf_complexity": [
+    [
+     96.7,
+     3.0,
+     0.2
+    ],
+    [
+     5.6,
+     88.7,
+     5.6
+    ],
+    [
+     0.5,
+     6.8,
+     92.7
+    ]
+   ],
+   "conf_domain": [
+    [
+     97.5,
+     0.7,
+     1.9
+    ],
+    [
+     0.8,
+     98.3,
+     0.8
+    ],
+    [
+     2.9,
+     1.3,
+     95.8
+    ]
+   ]
+  },
+  {
+   "id": "brisk-s.rubric",
+   "model": "brisk-s",
+   "prompt": "rubric",
+   "balanced": 91.5,
+   "traffic": 93.1,
+   "macro_f1": 90.4,
+   "cost": 95,
+   "p95": 496,
+   "cells": {
+    "simple|science": {
+     "acc": 95.5,
+     "ci": 0.7
+    },
+    "simple|conv": {
+     "acc": 97.9,
+     "ci": 0.2
+    },
+    "simple|news": {
+     "acc": 94.5,
+     "ci": 0.7
+    },
+    "medium|science": {
+     "acc": 91.0,
+     "ci": 0.9
+    },
+    "medium|conv": {
+     "acc": 92.9,
+     "ci": 0.6
+    },
+    "medium|news": {
+     "acc": 88.2,
+     "ci": 0.9
+    },
+    "complex|science": {
+     "acc": 89.4,
+     "ci": 1.0
+    },
+    "complex|conv": {
+     "acc": 90.9,
+     "ci": 1.3
+    },
+    "complex|news": {
+     "acc": 83.6,
+     "ci": 1.2
+    }
+   },
+   "conf_complexity": [
+    [
+     97.0,
+     2.8,
+     0.2
+    ],
+    [
+     5.1,
+     89.8,
+     5.1
+    ],
+    [
+     0.5,
+     6.1,
+     93.4
+    ]
+   ],
+   "conf_domain": [
+    [
+     97.7,
+     0.6,
+     1.7
+    ],
+    [
+     0.8,
+     98.5,
+     0.8
+    ],
+    [
+     2.7,
+     1.1,
+     96.2
+    ]
+   ]
+  },
+  {
+   "id": "nano-xs.zero",
+   "model": "nano-xs",
+   "prompt": "zero",
+   "balanced": 78.2,
+   "traffic": 80.2,
+   "macro_f1": 77.1,
+   "cost": 1.3,
+   "p95": 70,
+   "cells": {
+    "simple|science": {
+     "acc": 84.4,
+     "ci": 1.3
+    },
+    "simple|conv": {
+     "acc": 86.4,
+     "ci": 0.6
+    },
+    "simple|news": {
+     "acc": 82.4,
+     "ci": 1.1
+    },
+    "medium|science": {
+     "acc": 77.8,
+     "ci": 1.2
+    },
+    "medium|conv": {
+     "acc": 80.5,
+     "ci": 0.9
+    },
+    "medium|news": {
+     "acc": 73.5,
+     "ci": 1.2
+    },
+    "complex|science": {
+     "acc": 76.1,
+     "ci": 1.4
+    },
+    "complex|conv": {
+     "acc": 77.6,
+     "ci": 1.8
+    },
+    "complex|news": {
+     "acc": 65.1,
+     "ci": 1.6
+    }
+   },
+   "conf_complexity": [
+    [
+     92.3,
+     7.1,
+     0.5
+    ],
+    [
+     13.2,
+     73.6,
+     13.2
+    ],
+    [
+     1.2,
+     15.8,
+     83.0
+    ]
+   ],
+   "conf_domain": [
+    [
+     94.1,
+     1.4,
+     4.5
+    ],
+    [
+     2.0,
+     96.1,
+     2.0
+    ],
+    [
+     6.9,
+     2.9,
+     90.2
+    ]
+   ]
+  },
+  {
+   "id": "nano-xs.few",
+   "model": "nano-xs",
+   "prompt": "few",
+   "balanced": 90.1,
+   "traffic": 92.0,
+   "macro_f1": 89.0,
+   "cost": 1.9,
+   "p95": 80,
+   "cells": {
+    "simple|science": {
+     "acc": 96.2,
+     "ci": 0.7
+    },
+    "simple|conv": {
+     "acc": 98.2,
+     "ci": 0.2
+    },
+    "simple|news": {
+     "acc": 94.5,
+     "ci": 0.7
+    },
+    "medium|science": {
+     "acc": 89.4,
+     "ci": 0.9
+    },
+    "medium|conv": {
+     "acc": 91.9,
+     "ci": 0.6
+    },
+    "medium|news": {
+     "acc": 86.0,
+     "ci": 0.9
+    },
+    "complex|science": {
+     "acc": 88.2,
+     "ci": 1.1
+    },
+    "complex|conv": {
+     "acc": 89.8,
+     "ci": 1.3
+    },
+    "complex|news": {
+     "acc": 76.7,
+     "ci": 1.4
+    }
+   },
+   "conf_complexity": [
+    [
+     96.5,
+     3.2,
+     0.2
+    ],
+    [
+     6.0,
+     88.0,
+     6.0
+    ],
+    [
+     0.5,
+     7.2,
+     92.3
+    ]
+   ],
+   "conf_domain": [
+    [
+     97.3,
+     0.7,
+     2.1
+    ],
+    [
+     0.9,
+     98.2,
+     0.9
+    ],
+    [
+     3.2,
+     1.3,
+     95.5
+    ]
+   ]
+  },
+  {
+   "id": "nano-xs.rubric",
+   "model": "nano-xs",
+   "prompt": "rubric",
+   "balanced": 83.9,
+   "traffic": 86.0,
+   "macro_f1": 82.8,
+   "cost": 4.6,
+   "p95": 217,
+   "cells": {
+    "simple|science": {
+     "acc": 89.5,
+     "ci": 1.1
+    },
+    "simple|conv": {
+     "acc": 92.5,
+     "ci": 0.4
+    },
+    "simple|news": {
+     "acc": 88.2,
+     "ci": 1.0
+    },
+    "medium|science": {
+     "acc": 83.6,
+     "ci": 1.1
+    },
+    "medium|conv": {
+     "acc": 85.7,
+     "ci": 0.8
+    },
+    "medium|news": {
+     "acc": 79.5,
+     "ci": 1.1
+    },
+    "complex|science": {
+     "acc": 82.0,
+     "ci": 1.3
+    },
+    "complex|conv": {
+     "acc": 83.3,
+     "ci": 1.6
+    },
+    "complex|news": {
+     "acc": 70.9,
+     "ci": 1.5
+    }
+   },
+   "conf_complexity": [
+    [
+     94.4,
+     5.3,
+     0.4
+    ],
+    [
+     9.7,
+     80.5,
+     9.7
+    ],
+    [
+     0.9,
+     11.7,
+     87.5
+    ]
+   ],
+   "conf_domain": [
+    [
+     95.7,
+     1.1,
+     3.2
+    ],
+    [
+     1.4,
+     97.1,
+     1.4
+    ],
+    [
+     5.0,
+     2.2,
+     92.8
+    ]
+   ]
+  }
+ ]
+}

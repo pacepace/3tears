@@ -30,7 +30,8 @@ from threetears.evals.kernel.host import SHARED_CORE, RolePins, Sweepable, Sweep
 from threetears.evals.schema import SweepableValue
 
 if TYPE_CHECKING:
-    from threetears.evals.schema import EvalResult, EvalRun
+    from threetears.evals.kernel import ResultView
+    from threetears.evals.schema import EvalRun
 
 #: Where the toy host keeps its own vocabulary on the shared carrier: ``EvalRun.host_payload``,
 #: the engine-owned opaque slot. The engine stores it verbatim and never reads it, so a host's data
@@ -49,7 +50,7 @@ def _reader(key: str, *, default: Any = None) -> Any:
     :rtype: Any
     """
 
-    def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
+    def read(run: EvalRun, _results: Sequence[ResultView]) -> Any:
         return (run.host_payload or {}).get(_TOYHOST_NAMESPACE, {}).get(key, default)
 
     return read
@@ -202,13 +203,13 @@ def _payload(run: EvalRun) -> dict[str, Any]:
     return payload
 
 
-def _retrieval_members(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
+def _retrieval_members(run: EvalRun, _results: Sequence[ResultView]) -> dict[str, Any]:
     """One member per retrieval knob this batch's launch overlaid.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused — overlays are declared on the batch.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: ``{retrieval.<key>: value}``; empty for a batch that overlaid nothing.
     :rtype: dict[str, Any]
     """
@@ -223,13 +224,13 @@ def _is_retrieval_member(name: str) -> bool:
     return name.startswith(RETRIEVAL_MEMBER_PREFIX) and name.removeprefix(RETRIEVAL_MEMBER_PREFIX) in TOY_RETRIEVAL_KEYS
 
 
-def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | None:
+def _resolved_retrieval(run: EvalRun, _results: Sequence[ResultView]) -> str | None:
     """The resolved retrieval configuration's content hash — the level two batches agree on.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: The hash, or ``None`` for a batch that recorded no resolved configuration.
     :rtype: str | None
     """
@@ -237,13 +238,13 @@ def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | N
     return None if config is None else SweepableValue.of(config, display="retrieval config").content_hash
 
 
-def _retrieval_residual(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
+def _retrieval_residual(run: EvalRun, _results: Sequence[ResultView], removed: frozenset[str]) -> dict[str, Any] | None:
     """The resolved retrieval configuration with the named knobs taken back out.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :param removed: ``retrieval.<key>`` member names.
     :ptype removed: frozenset[str]
     :return: The configuration minus those keys, or ``None`` for a batch that recorded none.

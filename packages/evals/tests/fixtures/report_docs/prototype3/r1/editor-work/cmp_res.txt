@@ -1,0 +1,19 @@
+arms comparison
+reads_as: code's arithmetic on the frozen input: the first arm minus the second, with an interval read off what the snapshot states (a paired contrast where one holds, else each arm's own spread combined as independent); a normal approximation, never a test the pipeline ran
+first: arm:atlas-l
+second: arm:atlas-m
+measure: resolves
+better: higher_is_better
+assumed: 
+rows (1):
+  - where: task.trouble; paired_with: none; excludes_zero: False; ahead: none; unread:
+    task.trouble.name = Troubleshooting (multi-turn)
+    task.trouble.atlas-l.resolves.mean = 91%
+    task.trouble.atlas-m.resolves.mean = 90%
+    compare.atlas-l.atlas-m.resolves.task.trouble.difference = +1
+    compare.atlas-l.atlas-m.resolves.task.trouble.interval = -5.1 to +7.1
+    compare.atlas-l.atlas-m.resolves.task.trouble.level = 95%
+    compare.atlas-l.atlas-m.resolves.task.trouble.basis = independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+total: 1
+offset: 0
+notes: []

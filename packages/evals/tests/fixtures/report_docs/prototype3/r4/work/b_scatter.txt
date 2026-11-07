@@ -1,0 +1,3 @@
+refused: block_render: the 'scatter_frontier' block over 'measures' cannot be drawn: query.measures name ['persona'], which the 'measures' source does not hold; it reads ['cost_per_1k', 'latency_s', 'specul', 'task']
+remedy: block_catalog lists each kind, the sources it draws and the sources this snapshot holds rows of; campaign_overview lists the ids a query may name
+recovery: {"parameters":["query.measures"],"accepted":["snapshot_id","block_kind","query","reference","emphasis","title","limit","offset"],"valid_values_from":"block_catalog","see":{"action":"help","topic":"block_render"}}

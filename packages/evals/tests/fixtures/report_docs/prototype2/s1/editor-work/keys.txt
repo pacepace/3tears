@@ -1,0 +1,39 @@
+keys checked
+reads_as: each key as a report writes it, read on the snapshot: what it prints through its filters, the family it reads by, or why it reads nothing and what to write instead
+keys (17):
+  - asked: {arm:v2}; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:v2]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:v2 = v2 (A)
+  - asked: {arm:v3}; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:v3]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:v3 = v3 (B)
+  - asked: {arm:v4}; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:v4]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:v4 = v4 (C)
+  - asked: {aspects.billing.cases|words}; status: reads; form: aspects.<aspect>.cases; what: the cases one aspect ran: the control's, else the count every arm agrees on; arms: []; aspects: [billing]; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    aspects.billing.cases|words = twenty
+  - asked: {aspects.billing.contrast.v2.passed.delta|abs|pts}; status: reads; form: aspects.<aspect>.contrast.<arm>.<measure>.<statistic>; what: a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more than one; arms: [arm:v2]; aspects: [billing]; filters_taken: [pts, abs]; refusal: none; remedy: none
+    aspects.billing.contrast.v2.passed.delta|abs|pts = 60
+  - asked: {aspects.billing.family.family_size|words}; status: reads; form: aspects.<aspect>.family.<field>; what: the contrast family correcting one aspect's contrasts, where the input holds more than one; arms: []; aspects: [billing]; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    aspects.billing.family.family_size|words = eleven
+  - asked: {aspects.billing.family.level}; status: reads; form: aspects.<aspect>.family.<field>; what: the contrast family correcting one aspect's contrasts, where the input holds more than one; arms: []; aspects: [billing]; filters_taken: []; refusal: none; remedy: none
+    aspects.billing.family.level = 99.55%
+  - asked: {aspects.billing.flip_margin.v4|abs|pts}; status: reads; form: aspects.<aspect>.flip_margin.<candidate>; what: the margin above which a candidate's reading on one aspect holds: its interval's worst drop; arms: [arm:v4]; aspects: [billing]; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    aspects.billing.flip_margin.v4|abs|pts = 15.9
+  - asked: {aspects.billing.margin|int}; status: reads; form: aspects.<aspect>.<field>; what: any aspect, by id; arms: []; aspects: [billing]; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    aspects.billing.margin|int = 10
+  - asked: {aspects.tone.contrast.v2.passed.delta|pts}; status: reads; form: aspects.<aspect>.contrast.<arm>.<measure>.<statistic>; what: a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more than one; arms: [arm:v2]; aspects: [tone]; filters_taken: [pts, abs]; refusal: none; remedy: none
+    aspects.tone.contrast.v2.passed.delta|pts = +40
+  - asked: {aspects.tone.depth.v3.repeats|words}; status: reads; form: aspects.<aspect>.depth.<arm>.<field>; what: how deeply one arm ran one aspect: its distinct cases, its trials, the mean repeats a case got; arms: [arm:v3]; aspects: [tone]; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    aspects.tone.depth.v3.repeats|words = two
+  - asked: {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.broken_at|abs|pts}; status: reads; form: aspects.<aspect>.floor.<floor>.<arm>.<field>; what: a floor read on one candidate, on the aspect the read names (one the input may hold no aspect record for): `held_above` is the margin above which it holds (minus the interval's low end), `broken_at` the margin at or below which it breaks (minus the high end); arms: [arm:v4]; aspects: [tone]; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.broken_at|abs|pts = 23.9
+  - asked: {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.held_above|abs|pts}; status: reads; form: aspects.<aspect>.floor.<floor>.<arm>.<field>; what: a floor read on one candidate, on the aspect the read names (one the input may hold no aspect record for): `held_above` is the margin above which it holds (minus the interval's low end), `broken_at` the margin at or below which it breaks (minus the high end); arms: [arm:v4]; aspects: [tone]; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.held_above|abs|pts = 78.5
+  - asked: {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.margin|int}; status: reads; form: aspects.<aspect>.floor.<floor>.<arm>.<field>; what: a floor read on one candidate, on the aspect the read names (one the input may hold no aspect record for): `held_above` is the margin above which it holds (minus the interval's low end), `broken_at` the margin at or below which it breaks (minus the high end); arms: [arm:v4]; aspects: [tone]; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.margin|int = 15
+  - asked: {cost.uplift.v4|abs|pct}; status: reads; form: cost.uplift.<candidate>; what: how much more a candidate costs than the control, as a share of the control's cost; arms: [arm:v4]; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    cost.uplift.v4|abs|pct = 50%
+  - asked: {meta.run_date}; status: reads; form: meta.<field>; what: the campaign's own words; arms: []; aspects: []; filters_taken: []; refusal: none; remedy: none
+    meta.run_date = 2026-10-01
+  - asked: {scoreboard.v4.reply_cost_usd|usd_per_1k}; status: reads; form: scoreboard.<arm>.<statistic>; what: how an arm's trials came out; arms: [arm:v4]; aspects: []; filters_taken: [abs, usd, usd_per_1k]; refusal: none; remedy: none
+    scoreboard.v4.reply_cost_usd|usd_per_1k = $1.00 per 1,000 replies
+total: 17
+offset: 0

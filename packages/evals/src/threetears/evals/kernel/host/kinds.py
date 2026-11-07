@@ -87,11 +87,18 @@ from threetears.evals.schema.values import IntervalScale, NominalScale, OrdinalS
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
-    from threetears.evals.schema.models import EvalResult, EvalRun
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import EvalRun
 
 #: The longest display a nominal level is shown at before it is cut. A level is joined on its content
 #: hash, so the cut costs a reader nothing but the tail of a long value.
 _DISPLAY_LIMIT = 60
+
+#: How a frozen level with no value is displayed, and one whose value is empty: placeholders, which a reader-facing
+#: name replaces with words (``no system prompt``, :func:`~threetears.evals.analysis.report.words.reader_arm_name`). The display is
+#: what a stored variant index holds, so neither spelling ever changes.
+NO_VALUE_DISPLAY = "(none)"
+EMPTY_VALUE_DISPLAY = "(empty)"
 
 #: The suffix an open family's container lever carries, so the container and the map it expands are
 #: two names: ``gm.house_rules`` is the whole rule set as one level, ``gm.house_rules.*`` the family.
@@ -469,7 +476,7 @@ class KindContract:
     def _reader(self, field_name: str) -> SweepableReader:
         """A reader of one field off a run's frozen overlays."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> Any:
             overlays = self._overlays_of(run)
             return None if overlays is None else overlays.get(field_name)
 
@@ -484,7 +491,7 @@ class KindContract:
         to compare against, so its runs read unchecked.
         """
 
-        def departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+        def departs(run: EvalRun, _results: Sequence[ResultView]) -> bool | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return False
@@ -497,7 +504,7 @@ class KindContract:
     def _member_reader(self, knob: _Knob) -> SweepableReader:
         """A reader of an open family's members: one per entry the run's map holds."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> dict[str, Any]:
             overlays = self._overlays_of(run)
             entries = (overlays or {}).get(knob.field_name) or {}
             return {f"{knob.lever}.{key}": value for key, value in entries.items()}
@@ -507,7 +514,7 @@ class KindContract:
     def _residual_reader(self, knob: _Knob) -> ResidualReader:
         """A reader of an open family's map with the named members taken back out."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
+        def read(run: EvalRun, _results: Sequence[ResultView], removed: frozenset[str]) -> dict[str, Any] | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return None
@@ -696,7 +703,7 @@ def _ordered_levels(annotation: Any) -> tuple[Any, ...] | None:
 def _level(knob: _Knob, value: Any) -> SweepableValue:
     """One field's frozen value as a level on its axis."""
     if value is None:
-        return SweepableValue.of(None, display="(none)")
+        return SweepableValue.of(None, display=NO_VALUE_DISPLAY)
     scale: Scale
     if knob.numeric and not isinstance(value, bool):
         scale = IntervalScale(value=float(value), unit=knob.interval_unit)
@@ -713,7 +720,7 @@ def _display(value: Any) -> str:
     text = value if isinstance(value, str) else canonical_json(value)
     text = " ".join(text.split())
     if not text:
-        return "(empty)"
+        return EMPTY_VALUE_DISPLAY
     return text if len(text) <= _DISPLAY_LIMIT else f"{text[: _DISPLAY_LIMIT - 1]}…"
 
 
@@ -725,4 +732,12 @@ def _field_errors(refused: ValidationError) -> str:
     )
 
 
-__all__ = ["Interval", "KindContract", "KindContractError", "Ordinal", "freeze"]
+__all__ = [
+    "EMPTY_VALUE_DISPLAY",
+    "NO_VALUE_DISPLAY",
+    "Interval",
+    "KindContract",
+    "KindContractError",
+    "Ordinal",
+    "freeze",
+]

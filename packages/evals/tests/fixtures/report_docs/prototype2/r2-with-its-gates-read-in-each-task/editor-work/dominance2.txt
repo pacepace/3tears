@@ -1,0 +1,276 @@
+dominance
+survivors: []
+out (10):
+  - arm: arm:atlas-m.off.r0; breached: []
+    gates (7):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r0.multihop.value = 90.2%
+          criteria.pass_rate.atlas-m.off.r0.multihop.gap = -6.8
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r0.datemath.value = 93.7%
+          criteria.pass_rate.atlas-m.off.r0.datemath.gap = -3.3
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r0.disamb.value = 92.2%
+          criteria.pass_rate.atlas-m.off.r0.disamb.gap = -4.8
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:atlas-m.off.r1; breached: []
+    gates (7):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r1.multihop.value = 94.1%
+          criteria.pass_rate.atlas-m.off.r1.multihop.gap = -2.9
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r1.datemath.value = 96.2%
+          criteria.pass_rate.atlas-m.off.r1.datemath.gap = -0.8
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r1.disamb.value = 95.3%
+          criteria.pass_rate.atlas-m.off.r1.disamb.gap = -1.7
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:atlas-m.low.r0; breached: []
+    gates (7):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.low.r0.multihop.value = 94.1%
+          criteria.pass_rate.atlas-m.low.r0.multihop.gap = -2.9
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.low.r0.datemath.value = 96.4%
+          criteria.pass_rate.atlas-m.low.r0.datemath.gap = -0.6
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.low.r0.disamb.value = 95.4%
+          criteria.pass_rate.atlas-m.low.r0.disamb.gap = -1.6
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:atlas-m.low.r1; breached: []
+    gates (5):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.low.r1.multihop.value = 96.4%
+          criteria.pass_rate.atlas-m.low.r1.multihop.gap = -0.6
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:atlas-m.high.r0; breached: []
+    gates (5):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.high.r0.multihop.value = 96.6%
+          criteria.pass_rate.atlas-m.high.r0.multihop.gap = -0.4
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:atlas-m.high.r1; breached: []
+    gates (4):
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:brisk-s.off.r0; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r0.single.value = 94.3%
+          criteria.pass_rate.brisk-s.off.r0.single.gap = -2.7
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r0.multihop.value = 87.3%
+          criteria.pass_rate.brisk-s.off.r0.multihop.gap = -9.7
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r0.datemath.value = 90.8%
+          criteria.pass_rate.brisk-s.off.r0.datemath.gap = -6.2
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r0.disamb.value = 89.3%
+          criteria.pass_rate.brisk-s.off.r0.disamb.gap = -7.7
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:brisk-s.off.r1; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r1.single.value = 96.6%
+          criteria.pass_rate.brisk-s.off.r1.single.gap = -0.4
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r1.multihop.value = 92.3%
+          criteria.pass_rate.brisk-s.off.r1.multihop.gap = -4.7
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r1.datemath.value = 94.4%
+          criteria.pass_rate.brisk-s.off.r1.datemath.gap = -2.6
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r1.disamb.value = 93.5%
+          criteria.pass_rate.brisk-s.off.r1.disamb.gap = -3.5
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:brisk-s.low.r0; breached: []
+    gates (7):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r0.multihop.value = 92.8%
+          criteria.pass_rate.brisk-s.low.r0.multihop.gap = -4.2
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r0.datemath.value = 95.1%
+          criteria.pass_rate.brisk-s.low.r0.datemath.gap = -1.9
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r0.disamb.value = 94.1%
+          criteria.pass_rate.brisk-s.low.r0.disamb.gap = -2.9
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:brisk-s.low.r1; breached: []
+    gates (6):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r1.multihop.value = 95.6%
+          criteria.pass_rate.brisk-s.low.r1.multihop.gap = -1.4
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r1.disamb.value = 96.4%
+          criteria.pass_rate.brisk-s.low.r1.disamb.gap = -0.6
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+weighs: [gates, cost]
+dominant: []
+axes: []
+dominant_with_axes: []
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [no_call]
+  dominant: []
+  ranking_rule: []
+  withheld: 
+total: 18
+offset: 0
+next: action='options_dominance', snapshot_id='report-snapshot:2e61d231b0d76ff45bb0bb6140895ce0', offset=10

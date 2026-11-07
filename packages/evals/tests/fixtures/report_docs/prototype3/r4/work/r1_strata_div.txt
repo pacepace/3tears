@@ -1,0 +1,32 @@
+rendered block
+block_kind: diverging_bars
+query:
+  source: strata
+  aspect: 
+  measures: [persona]
+  arms: [f64, cor]
+  strata: [depth:1-2, depth:3-5, depth:6-10, depth:11+]
+  limit: 0
+  transform: arm_minus_control
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, Note]
+rows (8):
+  - cells: [A · f64, 1–2, -2.0, -2.0 pts]
+  - cells: [A · f64, 3–5, -4.5, -4.5 pts]
+  - cells: [A · f64, 6–10, -11.0, -11.0 pts]
+  - cells: [A · f64, 11+, -17.5, -17.5 pts]
+  - cells: [C · cor, 1–2, -1.0, -1.0 pts]
+  - cells: [C · cor, 3–5, -2.0, -2.0 pts]
+  - cells: [C · cor, 6–10, -3.5, -3.5 pts]
+  - cells: [C · cor, 11+, -4.5, -4.5 pts]
+total: 8
+offset: 0
+truncated: False
+notes: [Changes computed from each arm's figures, uncorrected. Bold rows are separated at 95% before any correction; read them as leads.]

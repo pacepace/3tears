@@ -1,0 +1,32 @@
+[
+  {
+    "need": "A scatter_frontier of cost per 1k replies against a judged dimension (stays in character), one point per arm with the frontier line",
+    "why": "The story is a cost-versus-character trade; scatter_frontier refuses because cost lives in the measures source and persona in the judged source, and no source holds both",
+    "workaround": "Two side-by-side blocks: cost bars and the persona forest, plus the prices block for the step between them"
+  },
+  {
+    "need": "Failure examples for the judged persona dimension, ideally from late turns (6+) where the loss concentrates",
+    "why": "examples_list returns no frozen failures at all, so the page cannot show what breaking character looks like in long conversations",
+    "workaround": "State the concentration from the depth breakdown and name pulling late-turn examples as a next step"
+  },
+  {
+    "need": "Case-clustered intervals for strata that slice turns within a conversation (turn depth)",
+    "why": "The depth strata count trials (their n sums to each arm's 2,400 runs over 300 cases), and the compare block reads them as independent binomial draws, which likely understates the spread for turns of one conversation",
+    "workaround": "Present the depth breakdown as an uncorrected lead and say its intervals are approximate"
+  },
+  {
+    "need": "A persona margin sweep that shows the margin at which f64 would count as no worse than production, and hence dominate on cost",
+    "why": "decision_sensitivity on margin:persona over 0-15 reports a tradeoff at every margin, with no flip, though f64's lower bound sits inside a wide margin; the call under a hypothetical margin is not shown",
+    "workaround": "Describe in words that declaring a persona margin wider than f64's worst plausible drop would turn the trade into a decision; cite the contrast interval"
+  },
+  {
+    "need": "Counts and intervals for the scenario strata (song intros, banter, taking a correction, etc.)",
+    "why": "Those strata hold only a change against the control, with no n, mean or interval, so whether banter and corrections carry the loss cannot be read as separated",
+    "workaround": "Leave the scenario breakdown out of the body and list it in omitted as unreadable at stated precision"
+  },
+  {
+    "need": "figure_keys_check over a whole report document (or a block of prose), extracting every braced key itself",
+    "why": "The action takes a list of keys, so checking a draft means hand-copying every key out of the prose, which is where a miss or a typo slips through; a long list also pages",
+    "workaround": "Listed the draft's keys by hand in two calls"
+  }
+]

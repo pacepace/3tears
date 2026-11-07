@@ -1,0 +1,19 @@
+sensitivity
+parameter: threshold:p95
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion p95
+criteria.p95.threshold = 600 ms
+boundary_belongs_to: above
+declared_call:
+  modes: [no_call]
+  dominant: []
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (1):
+  - low: none; high: none; modes: [no_call]; dominant: []; picks: []
+holds: True
+picks_hold: True
+flips: []
+total: 0
+offset: 0
+notes: []

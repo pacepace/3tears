@@ -13,11 +13,15 @@ difference, so the rule is:
 - every level is cut alike, wherever the name is printed — and two arms the cut would name alike are
   told apart by their digests, so no two arms ever print the same name;
 - no report dumps an arm's whole lever set: it names the arm by its difference, and the bundle beside it carries the
-  rest.
+  rest;
+- where a chart has no room for an arm's name it prints the arm's short name (GENERATOR.md §6.1): the campaign's
+  label, else the control's role, else only what differs from the control, the model first and trimmed of the prefix
+  it shares with the control's; never longer than the arm's own name, and two arms whose short names would read alike
+  are each named in full.
 
-The first half pins the rule on the naming functions themselves; the second builds reports — code-only ones through
-the toy host, and analysis reports by hand — and reads their tables in both outputs, Markdown and HTML, since a name
-is only as consistent as the one surface that spells it differently.
+The first half pins the rule on the naming functions themselves; the second builds code-only reports through the toy
+host and reads their tables in both outputs, Markdown and HTML, since a name is only as consistent as the one surface
+that spells it differently.
 """
 
 from __future__ import annotations
@@ -33,7 +37,6 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     report_html,
     report_markdown,
 )
@@ -48,12 +51,8 @@ from threetears.evals.analysis.arms import (
     short_digest,
     writer_arms,
 )
-from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.report import TableBlock
-from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
-from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
-from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.analysis.report import ChartBlock, TableBlock
+from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host import HostProfile, KindContract
 from threetears.evals.schema import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
@@ -70,11 +69,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import analysed_aspect, make_analysis
+from packages.evals.tests.g2_support import g2_report
 from packages.evals.tests.report_support import toy_campaign_host
-
-#: Three rigs, by their apparatus class ids.
-RIG, RIG_B, RIG_C = "a" * 64, "b" * 64, "c" * 64
 
 # =============================================================================
 # The rule, on the naming functions
@@ -317,7 +313,11 @@ def _assert_every_output_prints(report: Report, names: set[str]) -> None:
     assert set(_arm_column(report, "scoreboard")) == names
     for name in names:
         assert f"| {name} |" in markdown or f"| ▸ {name} |" in markdown, name
-        assert f"<td>{html.escape(name)}</td>" in page or f"<td>▸ {html.escape(name)}</td>" in page, name
+        # A cell of 40 characters or more wraps (``class="wrap"``), as every long cell of a table does.
+        cells = [
+            f"{td}{marker}{html.escape(name)}</td>" for td in ("<td>", '<td class="wrap">') for marker in ("", "▸ ")
+        ]
+        assert any(cell in page for cell in cells), name
 
 
 @pytest.fixture(scope="module")
@@ -377,157 +377,6 @@ class TestTheCutNeverMergesTwoArms:
         _assert_every_output_prints(cut_alike, set(arms))
 
 
-# =============================================================================
-# An analysis report: its recommendations and evidence name arms the same way
-# =============================================================================
-
-#: What only the shared lever set holds — a label carrying it leaked the lever dump.
-_LEVER_DUMP_MARK = "A support agent who"
-
-
-def _rig_only_index() -> list[VariantIndexEntry]:
-    """#567's campaign: one assistant stack, carrying another kind's lever, measured under three rigs."""
-    return [_entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))]
-
-
-def _mixed_index() -> list[VariantIndexEntry]:
-    """An assistant arm and a classifier arm, each carrying the other kind's levers as the engine resolves them."""
-    not_assistant = SweepableValue.not_this_kind("assistant")
-    return [
-        _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier")),
-        _entry(
-            candidate_kind=_value("classifier"),
-            model=_value("openai/gpt-5-mini"),
-            backstory=not_assistant,
-            directives=not_assistant,
-            classifier__prompt=_value("Label the request."),
-        ),
-    ]
-
-
-def _cell(variant: str, rig: str) -> CellFacts:
-    """One cell: six trials over two cases, carrying latency."""
-    latency = MeasureSummary(
-        population="scored", name="total_ms", attribution_scope="end_to_end", n=6, n_independent=2, mean=41250.0
-    )
-    return CellFacts(
-        variant_key=variant,
-        apparatus_class_id=rig,
-        run_ids=[f"run-{variant[:6]}-{rig[:2]}"],
-        n_observations=6,
-        n_cases=2,
-        repeats_per_case_min=3,
-        repeats_per_case_max=3,
-        measures=MeasureCollection(measures=[latency]),
-    )
-
-
-def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry]) -> EvalAnalysis:
-    """An analysis whose recommendation and finding evidence name every cell in ``cells``, over ``index``."""
-    refs = [cell_ref(variant, rig) for variant, rig in cells]
-    rows = [
-        {
-            "aspect": "conversation",
-            "cell_ref": ref,
-            "measure_id": "total_ms",
-            "reading": "measure",
-            "value": 41250.0,
-            "n": 6,
-            "dispersion": "sem",
-        }
-        for ref in refs
-    ]
-    document = AuthoredCampaignAnalysis.model_validate(
-        {
-            "findings": [
-                {
-                    "title": "No rig moved the latency.",
-                    "body": "",
-                    "confidence": "high",
-                    "axes": [],
-                    "evidence": [{"cell": ref, "measure_id": "total_ms", "reading": "measure"} for ref in refs],
-                    "trials": [],
-                    "caveats": [],
-                    "invalidates": [],
-                    "durable": "",
-                }
-            ],
-            "recommendation": [
-                {
-                    "arm": "control",
-                    "reasons": ["Keep the current assistant prompt."],
-                    "confidence": "high",
-                    "rests_on": [0],
-                    "floors_overridden": [],
-                    "behind_on": [],
-                    "bars_missed": [],
-                }
-            ],
-            "aspect_summaries": [],
-            "summary": "Keep the current assistant prompt.",
-            "next": [],
-        }
-    )
-    surface = DecisionSurface(
-        cells=sorted(
-            (_cell(variant, rig) for variant, rig in cells), key=lambda c: (c.variant_key, c.apparatus_class_id)
-        ),
-        measures={"total_ms": MeasureFacts(unit="ms", merit_axis="latency", higher_is_better=False)},
-    )
-    return make_analysis(
-        document=document,
-        aspects=[analysed_aspect(decision_surface=surface, variant_index=index)],
-        resolutions=[FindingResolution.model_validate({"evidence": rows})],
-    )
-
-
-def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
-    (arm,) = _rig_only_index()
-    rigs = [RIG, RIG_B, RIG_C]
-    names = [f"gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
-    return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
-
-
-def _mixed_analysis() -> tuple[EvalAnalysis, list[str]]:
-    assistant, classifier = index = _mixed_index()
-    return (
-        _analysis_naming([(assistant.variant_key, RIG), (classifier.variant_key, RIG)], index),
-        ["assistant", "classifier"],
-    )
-
-
-@pytest.fixture(params=[_rig_only_analysis, _mixed_analysis], ids=["one-arm-three-rigs", "two-kinds"])
-def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
-    """An analysis report, and the names its recommendation and evidence must give the cells they name, in order."""
-    subject, names = request.param()
-    return build_report(subject), names
-
-
-class TestAnAnalysisReportNamesArmsByTheRule:
-    def test_the_recommendation_names_its_one_arm_by_its_label(self, named: tuple[Report, list[str]]) -> None:
-        report, _ = named
-        (facts,) = [
-            block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
-        ]
-        # The facts are one row, a column per fact, so each header links its term.
-        assert [column.header for column in facts.columns] == ["Arm", "Confidence"]
-        (row,) = facts.values()
-        assert row["arm"] == "control"
-        assert "**Recommend control:** Keep the current assistant prompt." in report_markdown(report).splitlines()
-        assert "| control | high |" in report_markdown(report)
-        assert "<td>control</td>" in report_html(report)
-
-    def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
-        report, names = named
-        assert _arm_column(report, "evidence") == names
-
-    def test_no_output_carries_a_lever_dump_or_an_inapplicable_lever(self, named: tuple[Report, list[str]]) -> None:
-        report, _ = named
-        for output in (report_markdown(report), report_html(report)):
-            assert _LEVER_DUMP_MARK not in output
-            assert "(not a " not in output
-
-
 # --- a campaign's derived arms are labelled as the page names them -------------------------------------------------
 
 
@@ -547,3 +396,106 @@ def test_a_derived_arm_is_labelled_by_the_page_s_word_and_a_taken_one_gets_a_num
     held = named.model_copy(update={"arms": [named.control.model_copy(update={"label": "1024tok"})]})
     labels = [arm.label for arm in campaign_arms(host.storage, held, profile=host.profile)]
     assert labels[0] == "1024tok" and labels[1:] == ["1024tok (2)"]
+
+
+# --- an arm's short name, where a chart has no room for its name ---------------------------------------------------
+
+#: The control's model, and two candidates' sharing its prefix: one trimmed to ``flash``, one whose separator differs,
+#: so both trim to ``flash`` too.
+_CONTROL_MODEL, _FLASH, _FLASH_UNDERSCORED = "Meridian-4.1", "Meridian-4.1-flash", "Meridian-4.1_flash"
+
+
+def _modelled_page(arms: list[tuple[str, int]], labels: dict[int, str] | None = None) -> tuple[Report, list[str]]:
+    """The code-only page of a toy campaign with one arm per ``(model, chunk_tokens)``, the first its control, and the
+    campaign's ``labels`` by arm position; with each arm's variant key, in that order."""
+    profile = toyhost_profile()
+    host = toyhost_host(profile=profile)
+    batches = [
+        toyhost_batch(
+            chunk_tokens=chunk, retriever_top_k=3, extraction_schema="v1", ocr_engine_version="tess-5.3.1", model=model
+        ).model_copy(update={"candidate_model": model})
+        for model, chunk in arms
+    ]
+    for batch in batches:
+        host.storage.save_eval_run(batch)
+        for result in toyhost_measurements(
+            batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
+        ):
+            host.storage.save_eval_result(result)
+    campaign = toyhost_campaign_of_one_aspect(
+        id="5f1d7c2a-8e3b-4a6d-9c0f-2b7e4d1a6c3e",
+        scope_id=TOYHOST_SCOPE,
+        name="short names",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        subject_kind="extractor_config",
+        behavior="extract_invoice_fields",
+        template_id="",
+        run_ids=[batch.id for batch in batches],
+        design=toyhost_aspect_design(),
+        created_by="test:fixture",
+    )
+    host.storage.save_campaign(campaign)
+    campaign = set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, batches[0].id, set_by="t", profile=profile
+    )
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    by_levels = {
+        (entry.levers["model"].display, entry.levers["chunk_tokens"].display): entry.variant_key
+        for entry in bundle.variant_index
+    }
+    keys = [by_levels[(model, f"{chunk}tok")] for model, chunk in arms]
+    given = {keys[position]: label for position, label in (labels or {}).items()}
+    report = build_code_only_report(
+        bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name=campaign.name, arm_labels=given or None
+    )
+    return report, keys
+
+
+def _short_names(report: Report) -> dict[str, str | None]:
+    """Each arm's name on the outcome bar, to the short name it carries for a tight place."""
+    (chart,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.chart == "outcome_bar"]
+    return {bar.arm: bar.short_name for bar in chart.bars}
+
+
+class TestAnArmsShortNameIsWhatSetsItApart:
+    def test_the_control_is_its_role_and_a_candidate_only_what_differs_with_the_shared_model_prefix_trimmed(
+        self,
+    ) -> None:
+        """GENERATOR.md §6.1: against ``Meridian-4.1`` at 256 tokens, ``Meridian-4.1-flash`` at 1024 is ``flash ·
+        chunk tokens 1024tok``, the model first; at 256 it differs in its model alone, so is ``flash``."""
+        report, keys = _modelled_page([(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256)])
+        shorts = _short_names(report)
+        control, wide, narrow = (
+            next(name for name in shorts if f"model {model}" in name and f"{chunk}tok" in name)
+            for model, chunk in ((_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256))
+        )
+        assert shorts == {control: "control", wide: "flash · chunk tokens 1024tok", narrow: "flash"}
+        assert all(len(short or name) <= len(name) for name, short in shorts.items())
+        assert len(keys) == len(shorts)
+
+    def test_a_campaign_label_names_the_arm_in_tight_places_too(self) -> None:
+        """An alias wins: the control labelled ``Production`` is ``Production``, a candidate labelled ``fast`` is
+        ``fast``, and the unlabelled candidate is still named by what differs."""
+        report, _ = _modelled_page(
+            [(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256)], labels={0: "Production", 2: "fast"}
+        )
+        shorts = _short_names(report)
+        assert shorts["Production"] == "Production" and shorts["fast"] == "fast"
+        (other,) = [name for name in shorts if name not in ("Production", "fast")]
+        assert shorts[other] == "flash · chunk tokens 1024tok"
+
+    def test_two_arms_whose_short_names_would_read_alike_are_each_named_in_full(self) -> None:
+        """``Meridian-4.1-flash`` and ``Meridian-4.1_flash``, both at 1024 tokens, both trim to ``flash · chunk tokens
+        1024tok``: each is named in full, so the two never read alike; the control keeps its role."""
+        report, _ = _modelled_page([(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH_UNDERSCORED, 1024)])
+        shorts = _short_names(report)
+        candidates = {name: short for name, short in shorts.items() if short != "control"}
+        assert len(candidates) == 2 and all(short == name for name, short in candidates.items())
+        assert len(set(shorts.values())) == len(shorts)
+
+    async def test_an_arm_s_own_name_wins_where_it_is_already_short(self) -> None:
+        """The quick path names its arms ``v4.1-flash`` and ``v4-flash``: no short name is longer than the arm's own,
+        so ``v4-flash`` is ``v4-flash``, never ``candidate v4-flash``."""
+        shorts = _short_names(await g2_report())
+        assert shorts["v4-flash"] == "v4-flash"
+        assert all(len(short or name) <= len(name) for name, short in shorts.items())

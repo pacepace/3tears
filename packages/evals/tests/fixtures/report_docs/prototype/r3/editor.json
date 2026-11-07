@@ -1,0 +1,107 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "Headline, recommendation and c1 together say what to do (serve brisk-s.few), why (the only one of 9 configurations to pass all three gates; c1's lattice shows 1 'Passes' tile out of 9) and the main risk (the 0.7-point overall clearance). The why_not slots name the failing gate for every rejected configuration, and dominance confirms each one. The risk is sized wrong (see item 3), but the reader can still act from the first screen."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (only passer) leads to c2 (thinnest margin), c3 (the binding cell), c4 (the latency wall) and then c5 (why the prompt styles diverge). Each one follows. Nothing contradicts the headline: every configuration more accurate than 90.7% misses p95 (483, 496 and 1302 ms against 250), and above the 82.9% cell floor or the 90.7% gate nothing passes, as decision_sensitivity confirms. c5's internal contradiction is scored under item 7."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The weak axes are shown: the overall gap of 0.7 points and the Complex x News gap of 2.9 points. But the flag, the lede, the c1/c2 captions, method 'Intervals' and both watch slots say no interval exists on any gate figure, and that is false. Cell accuracy is held at the 95% level with half-widths: brisk-s.few Complex x News is 82.9 +/- 1.2, clear of the 80% floor, and nano-xs.few is 76.7 +/- 1.4, clearly out. Balanced accuracy equals the plain mean of the nine cell accuracies for every configuration, and the nine cells divide up all 48,210 turns. So the overall interval follows from the cell intervals: about +/- 0.3, putting brisk-s.few at about 90.4 to 91.0, clear of the gate. The page's 'open question' is mostly answered by data it holds. Uncertainty is overstated, not understated, but it is still misframed."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "No omission changes the call under the declared gates. Scoreboard (0 lost, 0 failed), latency (only p95 held) and the other seven heatmaps (each is out on a named gate) all check out. Two reasons do not hold. (a) Domain-axis confusion: the Nano-XS complexity confusion cannot show that domain errors are small. nano-xs.few's complex cells average 84.9% against a 92.3% complexity-axis diagonal, so about 7 points of complex-cell error, including the binding 76.7% in Complex x News, comes from something the complexity confusion doesn't show. (b) Routed mix: 'circular' is wrong for a cascade that routes on Nano-XS's own predicted cell. The real obstacle is latency or the fact that nobody ran it. Traffic-weighted accuracy is ordered as stated, but nano-xs.few trails brisk-s.few by only 0.2 points there (92.0 vs 92.2)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Rubric and reasoning are bundled together; next #4 separates them for Brisk-S. Selection on the same set is in watch #1 and next #2. Label noise is caveat 2 plus next #5. The unresolved definition of accuracy (both axes or one) is stated in Method. One error inside caveat 2: label noise does not 'move every configuration alike'. A wrong gold label penalises a configuration in proportion to how often it gives the true class, so it can reorder close configurations."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 1,
+      "reason": "All five name an experiment and say what it settles. Next #3 is priced ($57 vs $1,200 a month) and notes nano-xs.few's own 0.1-point overall clearance; next #4 untangles the rubric confound. But the lead step, repeated in the decision 'next' slot and the one the call hangs on, asks for intervals the snapshot already holds for every cell, and these imply the overall interval. As written it sends the reader to compute what the page should already state. The step that remains truly open is a fresh-sample confirmation (next #2)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1 lattice, c2 dot plot and c4 gate scatter each fit their claim, and the counterfactual holds. c3 claims Complex x News is the weakest cell 'for every configuration'. That is true (it is the minimum cell for all 9), but the heatmap shows only 2 of 9, so the block cannot carry the claim. c5's conclusion, 'no prompt style's effect holds across models', is contradicted by its own bars: few-shot beats zero-shot on all three models (89.8 to 92.1, 86 to 90.7, 78.2 to 90.1). Its cause, 'mostly by misreading medium complexity', rests on the confusion block, but the cell accuracies that make up balanced accuracy fall about evenly, by 5.7 to 6.7 points in every one of the nine cells. Simple cells fall as much as medium ones."
+    }
+  ],
+  "total": 10,
+  "passes": false,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "False statement about the data, repeated in the flag, lede, c1/c2 captions, method 'Intervals' and the watch slots: 'No interval is reported on any gate figure.' The cell-floor gate reads cell accuracy, which the snapshot holds at the 95% level with half-widths: cells.complex.news.brisk-s.few.accuracy.half_width = 1.2 (82.9%, so about 81.7 to 84.1, clear of 80%) and nano-xs.few's is 1.4 (76.7%, so about 75.3 to 78.1, clearly below). Cite these keys in c3 and watch #2, and correct the flag, method and captions so they say only balanced accuracy lacks a stated interval."
+    },
+    {
+      "claim": "c2",
+      "severity": "must_fix",
+      "finding": "The headline's 'just', the lede's open question and caveat overall_clearance_point_estimate treat the 0.7-point overall clearance as possibly inside noise. The snapshot says otherwise. Balanced accuracy is the unweighted mean of the nine cell accuracies for all nine configurations (brisk-s.few's cells average 90.67, shown as 90.7; nano-xs.few's average 90.10, shown as 90.1). The nine cells divide up all 48,210 turns, so the overall interval is about sqrt(sum of squared cell half-widths)/9, about +/- 0.3 points: brisk-s.few about 90.4 to 91.0, so the 0.7-point clearance is about 2 half-widths. Either state this, as derived from the cell intervals (no figure key prints it, so the qualitative form will do: 'balanced accuracy averages nine disjoint cells, each within +/- 1.4 points, so its own interval is far narrower than the clearance'), and mark the caveat as nearly immaterial. Or say why the derivation cannot be trusted. Then reframe next #1 as confirming this, not discovering it. Note that nano-xs.few's 90.1 +/- 0.3 does straddle the gate, which strengthens next #3's warning."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "'No prompt style's effect holds across models' is contradicted by c5's own bars: few-shot lifts every model over zero-shot (Atlas-M 89.8 to 92.1, Brisk-S 86 to 90.7, Nano-XS 78.2 to 90.1). Narrow the claim to rubric + reasoning versus few-shot."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "'Mostly by misreading medium complexity' does not hold against the cell accuracies that make up balanced accuracy. From few-shot to rubric, Nano-XS falls by 5.7 to 6.7 points in every one of the nine cells: the simple cells by 6.7, 5.7 and 6.3, the medium cells by 5.8, 6.2 and 6.5. The confusion's medium row (88 to 80.5) also fails to reconcile with the medium cells, which average 82.9 for nano-xs.rubric, above its own 80.5% medium diagonal. That ties back to Method's unresolved 'match on both axes'. Soften the cause to 'the loss is spread across every cell', or settle the definition first."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The claim says Complex x News is the weakest cell 'for every configuration'. That is true (it is the minimum for all 9: 65.1 to 86.0), but the heatmap shows only brisk-s.few and nano-xs.few, and per-cell figures for the other seven are omitted. Either narrow the claim to the two shown, or add a block that shows Complex x News against each configuration's next-weakest cell for all 9."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted 'Domain-axis confusion': the stated reason ('domain errors are small... as the Nano-XS confusion shows') cannot come from a complexity-only confusion. The cell figures also argue against it. nano-xs.few's complex cells average 84.9% against a 92.3% complexity diagonal, so the complex-cell errors, including the binding Complex x News 76.7%, are mostly not complexity errors. This bears on next #3 (which examples to add) and on caveat 2. Show the domain confusion for nano-xs.few, or drop the claim that it is small."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Explore 'Latency budget (p95)' says that cost against accuracy above 483 ms is 'a trade nobody has priced'. The cost_per_month keys price it: atlas-m.few is +1.4 points for $7,800 against $1,200 a month, and brisk-s.rubric (admitted at 496 ms) is +0.8 points for $2,850. Cite them, and note that brisk-s.rubric, not atlas-m.few, would be the cheaper step up."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted 'routed mix': 'circular as stated' is the wrong reason. A cascade that sends turns Nano-XS predicts as Complex x News to Brisk-S is not circular. The honest reasons are that nobody ran it, and that a two-call path for about 7.5% of turns (3,600 of 48,210 are Complex x News) is more than the 5% tail, so its p95 would probably exceed the 250 ms budget (about 80 + 184 ms). That estimate is modelled, not measured."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Caveat gold_label_agreement says label noise 'moves every configuration alike'. It does not: a wrong gold label costs a configuration more the more often that configuration gives the true class. Restate it as 'shifts the readings against the absolute gates and can reorder close configurations'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "On traffic-weighted accuracy (production's mix), nano-xs.few is within 0.2 points of brisk-s.few (92.0 vs 92.2), at about one twentieth of the monthly cost ($57 vs $1,200). The omitted reason ('same order') is accurate but hides this. One clause in why_not or next #3 would show the decider how close the cheap option is apart from the Complex x News floor."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: c4's gate_scatter values table labels its points with raw arm ids (atlas-m.zero, brisk-s.few, ...) above the appendix. Every other block prints display names (Atlas-M · Zero-shot).",
+    "Invariant 1: counts written out as words bypass the figure-key check: 'three gates', 'nine cells', 'the other seven configurations', 'all nine are new', 'Three models crossed with three prompt styles'. 'Seven' and 'nine' depend on n_candidates.",
+    "No invariant catches a false statement about what the data holds: the flag says no gate figure has an interval, but cell accuracy holds 95% half-widths. Code could verify a claim that an interval is absent.",
+    "Rendering note, not an invariant: the c5 bars values table repeats each value in its Note column, and the lattice prints '1302 ms' without a thousands separator."
+  ],
+  "calls": 21
+}

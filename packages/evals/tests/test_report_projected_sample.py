@@ -30,8 +30,6 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
@@ -411,7 +409,7 @@ def _page(bundle: AnalysisContextBundle) -> Report:
     return build_code_only_report(bundle, assembled_at="2026-10-17T12:00:00+00:00", campaign_name="character")
 
 
-async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_is_not_shown_it() -> None:
+async def test_the_bundle_carries_what_the_bounded_interval_read() -> None:
     _, bundle = await _ruled()
     (family,) = bundle.multiple_comparisons.families
     (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
@@ -420,7 +418,6 @@ async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_
     assert sorted(control) == sorted(CONTROL) and sorted(contrast) == sorted(CANDIDATE)
     again = bounded_difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=LEVEL)
     assert again == passed.bounded_interval
-    assert '"case_values"' not in _writer_message(bundle)
 
 
 async def test_an_unclear_page_tables_the_cases_holding_needs_with_their_cost_at_the_nominal_level() -> None:
@@ -467,11 +464,6 @@ async def test_a_broken_page_tables_no_projection() -> None:
     assert "\n**Adopting candidate overrides the 10-point floor it breaks on " in report_markdown(report)
     assert _projection_table(report) is None
     assert "Showing the floors hold" not in report_markdown(report)
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))
 
 
 def test_an_unpaired_rate_s_projection_reads_no_interval_past_its_cap_and_says_more_than_it(

@@ -1,0 +1,1732 @@
+{
+  "id": "01a18943-2fc8-72cb-8d7a-efe8ca1506a2",
+  "doc_type": "eval_report_doc",
+  "schema_version": 14,
+  "scope_id": "toyhost-scope",
+  "snapshot_id": "report-snapshot:c8b23ae16d7d0a2739fb9746039006be",
+  "campaign_id": null,
+  "doc": {
+    "schema": "report-doc/1",
+    "story": "decision",
+    "headline": "Use {arm:brisk-s.low.r1}: the cheapest configuration to reach the {criteria.pass_rate.threshold} pass-rate gate, though it clears it by only {weakest.margin|abs|pts} points.",
+    "lede": "It costs {cost_per_1k.brisk-s.low.r1} per 1,000 calls as routed in this run, and the next passing option costs {cost.gap.brisk-s.high.r1.brisk-s.low.r1.multiple} as much. A fresh run of today's size would read it below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time; then {arm:brisk-s.high.r1} clears with room for {cost.gap.brisk-s.high.r1.brisk-s.low.r1.monthly|abs} more a month.",
+    "flag": "The confidence covers the cost order on declared point estimates only. Whether the pick truly clears the gate is open, near even odds, and the fresh read in Next settles it.",
+    "recommends": [
+      "brisk-s.low.r1"
+    ],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "point_estimate:pass_rate",
+          "label": null,
+          "material_if": "Only if the pick's true pass rate sits below the gate, which today's figures leave open: its computed interval, {spread.brisk-s.low.r1.pass_rate.overall.interval}, crosses the line, and a fresh run of today's size reads it below {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time. The high covers only that the pick is the cheapest configuration passing on point estimates as declared, with only {arm:brisk-s.high.r1} close behind; it does not cover whether the pick truly clears the gate. The fresh read in Next settles that, and a read below makes {arm:brisk-s.high.r1}, whose interval {spread.brisk-s.high.r1.pass_rate.overall.interval} sits wholly above the line, the pick.",
+          "checked": null
+        },
+        {
+          "id": "best_of_n",
+          "label": null,
+          "material_if": "Only if the pick's clearance is partly luck: it is the cheapest of {n_candidates|words} configurations read against one line, so a fresh run tends to read it lower. This pushes the same way as the caveat above, toward {arm:brisk-s.high.r1}, never toward a cheaper option.",
+          "checked": null
+        },
+        {
+          "id": "no_control",
+          "label": null,
+          "material_if": "Only for a claim that ranks two passing configurations against each other: the gap between {arm:brisk-s.high.r1} and the pick is read unpaired, and its interval, {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}, crosses zero. The call reads each option against the gate, not against each other.",
+          "checked": null
+        },
+        {
+          "id": "analyst:cost_routing",
+          "label": "Provider routing unknown",
+          "material_if": "Only if another provider's prices reorder the models: no arm names who served it, so the cost order between Brisk-S, Atlas-M and Nano-XS holds for this run's routing. The pick and its fallback share one model and one routing, so the gap between them would likely hold.",
+          "checked": null
+        }
+      ]
+    },
+    "decision": [
+      {
+        "slot": "recommendation",
+        "text": "Ship {arm:brisk-s.low.r1} on all traffic: of the {count.passing.pass_rate|words} configurations that reach the gate on their point estimates it costs least, at {cost_per_month.brisk-s.low.r1} a month at the declared volume and this run's routing."
+      },
+      {
+        "slot": "why_not",
+        "text": "{arm:brisk-s.high.r1} clears the gate with room but costs {cost.gap.brisk-s.high.r1.brisk-s.low.r1.multiple} as much. As routed in this run, with no provider recorded, every passing Atlas-M configuration costs more again, the cheapest {cost.gap.atlas-m.low.r1.brisk-s.low.r1.multiple} as much as the pick. No Nano-XS configuration reaches the gate; the best reads {criteria.pass_rate.nano-xs.high.r1.value}."
+      },
+      {
+        "slot": "watch",
+        "text": "The weakest margin is the pick's own: {weakest.value} against {weakest.threshold}, {weakest.margin|abs|pts} points clear, read as {weakest.interval}. A run that settles it four times in five, read on a two-sided interval, needs {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases. If a fresh read puts it below the gate, move to {arm:brisk-s.high.r1}, which a run of today's size reads on the wrong side only {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} of the time."
+      },
+      {
+        "slot": "next",
+        "text": "Ship now and confirm in parallel: read the pick's pass rate on {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} fresh cases or live tasks, and switch to {arm:brisk-s.high.r1} if it lands below the gate."
+      }
+    ],
+    "claims": [
+      {
+        "id": "pick",
+        "text": "Of {n_candidates|words} configurations, {count.passing.pass_rate|words} reach the {criteria.pass_rate.threshold} gate on pass rate, and {arm:brisk-s.low.r1} costs least among them, at {cost_per_1k.brisk-s.low.r1} per 1,000 calls as routed in this run; no provider is recorded for any arm, so the cost order across models is this routing's, not the models' own.",
+        "weight": "lead",
+        "evidence": [
+          {
+            "block": "scatter_frontier",
+            "query": {
+              "source": "measures",
+              "aspect": "",
+              "measures": [
+                "cost_per_1k",
+                "pass_rate"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "brisk-s.low.r1",
+            "caption": "Cost per 1,000 calls at this run's routing, on a log scale, against pass rate for every configuration, with the gate's line; the pick is marked."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "thin",
+        "text": "The pick clears the gate on its point estimate alone: its computed interval, {spread.brisk-s.low.r1.pass_rate.overall.interval}, crosses the line, while {arm:brisk-s.high.r1} sits wholly above it at {spread.brisk-s.high.r1.pass_rate.overall.interval}.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "dot_interval",
+            "query": {
+              "source": "measures",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.low.r1",
+                "brisk-s.high.r1",
+                "atlas-m.low.r1",
+                "atlas-m.high.r0",
+                "atlas-m.high.r1",
+                "brisk-s.high.r0",
+                "atlas-m.low.r0"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": "floor",
+            "emphasis": "brisk-s.low.r1",
+            "caption": "Pass rate with its computed interval for the passing configurations and the two nearest misses, against the gate."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "settle",
+        "text": "A fresh run of today's size would read the pick below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time, against {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} for {arm:brisk-s.high.r1}. The table's sizes settle each reading only half the time; sized to settle it four times in five on a two-sided interval, a run needs {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases for the pick and {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} for the fallback.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "table",
+            "query": {
+              "source": "settle",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.low.r1",
+                "brisk-s.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Distance to the gate, the cases a run needs to settle it half the time, one- and two-sided, and how often a run of today's size reads the other side; the four-in-five sizes are in the sentence above."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "price",
+        "text": "Headroom over the gate is priced on gains not told apart from zero: moving from the pick to {arm:brisk-s.high.r1} gains {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.gain|pts} points, interval {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}, at {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month per point; the step beyond, to an Atlas-M configuration as routed in this run with no provider recorded, costs {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} per point. Neither price has an upper end the data support.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "table",
+            "query": {
+              "source": "prices",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Each step along the cost and pass-rate frontier, priced per point a month at the declared volume, on point estimates; the second step crosses models at this run's unrecorded routing."
+          },
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.high.r1",
+                "brisk-s.low.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "The first step's gain: the high-reasoning fallback less the pick, overall with an unpaired interval that crosses zero, and by task with none."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "price_atlas",
+        "text": "The step to {arm:atlas-m.high.r1} gains {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.gain|pts} points over the fallback, interval {compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.interval}, also not told apart from zero.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "atlas-m.high.r1",
+                "brisk-s.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "The second step's gain: the Atlas-M configuration less the fallback, overall with an unpaired interval that crosses zero, and by task with none."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "multihop",
+        "text": "The pick reads lowest on multi-hop questions, at {task.multihop.brisk-s.low.r1.pass_rate.mean} against {task.multihop.brisk-s.high.r1.pass_rate.mean} for the fallback; task figures state no counts, so this ordering is descriptive, a lead for where a fix might aim.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "table",
+            "query": {
+              "source": "tasks",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.low.r1",
+                "brisk-s.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Pass rate by task for the pick and its fallback, with no interval because no task states its count."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "retry",
+        "text": "The retry is what lifts Brisk-S at low reasoning over the line: it adds {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|pts} points, interval {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval}.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "dot_interval",
+            "query": {
+              "source": "levers",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.off.r0",
+                "brisk-s.off.r1",
+                "brisk-s.low.r0",
+                "brisk-s.low.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "What reasoning and a retry each buy Brisk-S in pass rate at off and low reasoning, with unpaired intervals, and how the reasoning effect changes with a retry."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "latency",
+        "text": "No latency budget was declared, but the fallback's tail is longer: {measure.latency_ms.brisk-s.high.r1.p95} against {measure.latency_ms.brisk-s.low.r1.p95} for the pick.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "range_bars",
+            "query": {
+              "source": "measures",
+              "aspect": "",
+              "measures": [
+                "latency_ms"
+              ],
+              "arms": [
+                "brisk-s.low.r1",
+                "brisk-s.high.r1",
+                "atlas-m.low.r1",
+                "atlas-m.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Latency from median to tail for the pick, its fallback and the passing Atlas-M configurations with a retry."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "failures",
+        "text": "The pick's kept failures are planning errors: a collapsed multi-hop query, an off-by-one date window, and a guess where it should have asked which entity was meant.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "examples",
+            "query": {
+              "source": "examples",
+              "aspect": "",
+              "measures": [],
+              "arms": [
+                "brisk-s.low.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Failures the snapshot kept for the pick, from multi-hop, date math and ambiguous entities; it states no count of all its failures, so the cards show kinds, not shares."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      }
+    ],
+    "explore": [
+      {
+        "control": "How the gate is read",
+        "binds": "Whether the pick or its fallback ships",
+        "outcome": "Read on the point estimate, as declared, the pick passes. Read on the computed interval's lower end, the pick ({spread.brisk-s.low.r1.pass_rate.overall.interval}) no longer clears and {arm:brisk-s.high.r1} ({spread.brisk-s.high.r1.pass_rate.overall.interval}) is the cheapest that does."
+      },
+      {
+        "control": "The gate's level",
+        "binds": "Which configuration is cheapest to pass",
+        "outcome": "On point estimates, the pick holds for any gate above {criteria.pass_rate.brisk-s.low.r0.value} up to {criteria.pass_rate.brisk-s.low.r1.value}; above that, {arm:brisk-s.high.r1} up to {criteria.pass_rate.brisk-s.high.r1.value}, then {arm:atlas-m.high.r1} up to {criteria.pass_rate.atlas-m.high.r1.value}; past that nothing passes. Lower gates admit cheaper Brisk-S or Nano-XS configurations."
+      },
+      {
+        "control": "Price of a point of pass rate",
+        "binds": "Whether to buy headroom over the gate",
+        "outcome": "On point estimates, valuing a point at {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month or more favours {arm:brisk-s.high.r1}; at {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} or more, as routed in this run with no provider recorded, {arm:atlas-m.high.r1}. Neither gain is told apart from zero, so these prices have no supported upper end."
+      }
+    ],
+    "omitted": [
+      {
+        "what": "Calls per task",
+        "why": "Descriptive; the pick and its fallback differ little and it decides nothing the gate and cost don't. It stays in the options table."
+      },
+      {
+        "what": "Extra calls per task and the outcome measure",
+        "why": "The snapshot holds no figures for them."
+      },
+      {
+        "what": "Model and reasoning effects outside Brisk-S, and the retry and reasoning effects at high reasoning",
+        "why": "They explain why other configurations lose or cost more but don't change the call; the high-reasoning rows also print an unrounded bound."
+      },
+      {
+        "what": "How the retry's effect differs by model",
+        "why": "Retry helps Nano-XS more than Atlas-M, but no Nano-XS configuration reaches the gate, so it doesn't bear on the call."
+      },
+      {
+        "what": "The retry's cost per call, and the monthly cost gap of each price step",
+        "why": "No block draws them beside the gains; the per-point prices carry the trade, and the pick-to-fallback monthly gap stays in the lede and the options table."
+      },
+      {
+        "what": "Per-task figures for configurations other than the pick and its fallback",
+        "why": "No task gate was declared and tasks state no case counts; they stay in the task table."
+      },
+      {
+        "what": "A four-in-five column in the settle table",
+        "why": "Weighed and kept as prose: the settle table holds only the half-the-time sizes, so the four-in-five sizes Watch and Next use are stated by figure in the settle claim's sentence, beside the table."
+      },
+      {
+        "what": "Reading the confidence as low",
+        "why": "Weighed and not taken: the declared rule reads the gate on the point estimate, and every other part of the call (the cost order, the fallback, the miss of every Nano-XS configuration) is well separated, so the high is scoped to those and the open gate question is named in the flag and the first caveat."
+      }
+    ],
+    "next": [
+      {
+        "text": "Ship the pick and, in parallel, read its pass rate on {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} fresh cases or live tasks, the size that settles it four times in five on a two-sided interval.",
+        "settles": "Whether its true pass rate holds at the gate; a read below it means switching to the high-reasoning fallback."
+      },
+      {
+        "text": "The owner declares whether the gate must hold on the point estimate or on the interval's lower end.",
+        "settles": "Which of the pick and its fallback ships, without any further run."
+      },
+      {
+        "text": "Teach the pick to plan each hop of multi-hop questions and to ask when an entity is ambiguous, then read it on fresh held-out cases, at least {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} of them: the size that settles a clearance like the fallback's four times in five.",
+        "settles": "Whether the cheapest model can clear the gate with room on cases it was not tuned on, at roughly the pick's cost."
+      },
+      {
+        "text": "Record which provider served each model and what the monthly volume counts.",
+        "settles": "Whether the cost order between models and every monthly figure hold beyond this run's routing."
+      }
+    ],
+    "method": [
+      {
+        "term": "Cases",
+        "text": "Each configuration ran {scoreboard.brisk-s.low.r1.cases} research queries across four tasks (single lookup, multi-hop, date and unit math, ambiguous entity); no repeats are stated and none were lost.",
+        "caveats": []
+      },
+      {
+        "term": "Configurations",
+        "text": "A full grid of {count.levels.model|words} models, reasoning off, low or high, and with or without a retry; there is no control.",
+        "caveats": []
+      },
+      {
+        "term": "Pass",
+        "text": "The input doesn't define what makes a query pass; the kept failures are missing calls, wrong arguments and wrong tools.",
+        "caveats": []
+      },
+      {
+        "term": "Gate",
+        "text": "Pass rate of at least {criteria.pass_rate.threshold} overall, read on the point estimate as declared.",
+        "caveats": []
+      },
+      {
+        "term": "Intervals",
+        "text": "Computed here from each rate's binomial spread on its cases, by the normal approximation, at the level each block prints; differences between configurations combine the two spreads as independent and are not corrected for the number of configurations. Task figures state no counts and carry no interval.",
+        "caveats": []
+      },
+      {
+        "term": "Run sizes",
+        "text": "A run is sized to settle a reading four times in five on a two-sided interval; the settle table's own sizes settle it half the time.",
+        "caveats": []
+      },
+      {
+        "term": "Cost",
+        "text": "Cost per 1,000 calls as measured; no arm names its provider, so the routing is unknown. Monthly figures use the declared volume of {meta.volume_per_month}, whose unit the input doesn't state; they assume it counts what cost is priced per.",
+        "caveats": []
+      },
+      {
+        "term": "Latency",
+        "text": "Median and tail percentiles per configuration; no budget was declared.",
+        "caveats": []
+      },
+      {
+        "term": "Source",
+        "text": "{meta.provenance}, run {meta.run_date}.",
+        "caveats": []
+      }
+    ]
+  },
+  "ending": "stored_with_findings",
+  "findings": [
+    {
+      "claim": "settle",
+      "severity": "should_fix",
+      "finding": "The settle table still prints only the half-the-time sizes: 38,350 one-sided and 54,451 two-sided for the pick, 572 and 812 for the fallback. The 111,255 that Watch and the first next step use, and the 1,660 that the third next step uses, appear only in prose. The caption admits this, but the figures a reader is told to plan a run on are still missing from the evidence. Next to them, 54,451 reads as the run size. Add a column 'Needed, two-sided, four in five' from settle.criteria.pass_rate.<arm>.overall.cases_needed_two_sided_80: 111,255 for the pick, 1,660 for the fallback. Then drop or relabel the half-the-time columns so the run size is plain.",
+      "id": "f1.2",
+      "since": 1
+    }
+  ],
+  "generation": {
+    "format": 2,
+    "model": "claude-opus-5-5",
+    "skill": {
+      "analyst": "91b0b70e4859932092e2b771214a2e40e56c33027d5a053fa76af6b874edee36",
+      "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
+      "package": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a"
+    },
+    "tally": {
+      "turns": [
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 39516,
+          "output_tokens": 499,
+          "reasoning_tokens": 23,
+          "cache_read_tokens": 29550,
+          "cache_write_tokens": 9962,
+          "cost_usd": 0.065716,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.8492091270163655,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 47522,
+          "output_tokens": 846,
+          "reasoning_tokens": 217,
+          "cache_read_tokens": 39512,
+          "cache_write_tokens": 8008,
+          "cost_usd": 0.0648704,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.807123001897708,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 54765,
+          "output_tokens": 1152,
+          "reasoning_tokens": 531,
+          "cache_read_tokens": 47520,
+          "cache_write_tokens": 7243,
+          "cost_usd": 0.068767,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 11.377045047935098,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 66096,
+          "output_tokens": 1485,
+          "reasoning_tokens": 1055,
+          "cache_read_tokens": 54763,
+          "cache_write_tokens": 11331,
+          "cost_usd": 0.0973156,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 16.24501013290137,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 75405,
+          "output_tokens": 478,
+          "reasoning_tokens": 370,
+          "cache_read_tokens": 66094,
+          "cache_write_tokens": 9309,
+          "cost_usd": 0.0693318,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.493090711068362,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 81009,
+          "output_tokens": 411,
+          "reasoning_tokens": 35,
+          "cache_read_tokens": 75403,
+          "cache_write_tokens": 5604,
+          "cost_usd": 0.0513286,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.1138530019670725,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 6,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 84286,
+          "output_tokens": 356,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 81007,
+          "cache_write_tokens": 3277,
+          "cost_usd": 0.0397144,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 3.456123584881425,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 7,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 87588,
+          "output_tokens": 822,
+          "reasoning_tokens": 177,
+          "cache_read_tokens": 84284,
+          "cache_write_tokens": 3302,
+          "cost_usd": 0.0498148,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 8.059668796136975,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 8,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 89387,
+          "output_tokens": 1010,
+          "reasoning_tokens": 53,
+          "cache_read_tokens": 87586,
+          "cache_write_tokens": 1799,
+          "cost_usd": 0.0467202,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 9.586264963028952,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 9,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 92620,
+          "output_tokens": 720,
+          "reasoning_tokens": 208,
+          "cache_read_tokens": 89385,
+          "cache_write_tokens": 3233,
+          "cost_usd": 0.04845,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.107238210970536,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 10,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 94993,
+          "output_tokens": 6192,
+          "reasoning_tokens": 5362,
+          "cache_read_tokens": 92618,
+          "cache_write_tokens": 2373,
+          "cost_usd": 0.1542366,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 62.67938144505024,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 11,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 105600,
+          "output_tokens": 851,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 94991,
+          "cache_write_tokens": 10607,
+          "cost_usd": 0.0890612,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.773612127872184,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 12,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 109740,
+          "output_tokens": 735,
+          "reasoning_tokens": 46,
+          "cache_read_tokens": 105598,
+          "cache_write_tokens": 4140,
+          "cost_usd": 0.0565276,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.826984378974885,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 13,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 110893,
+          "output_tokens": 5787,
+          "reasoning_tokens": 147,
+          "cache_read_tokens": 109738,
+          "cache_write_tokens": 1153,
+          "cost_usd": 0.1434606,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 45.53391318698414,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 14,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 122073,
+          "output_tokens": 1615,
+          "reasoning_tokens": 419,
+          "cache_read_tokens": 110891,
+          "cache_write_tokens": 11180,
+          "cost_usd": 0.1103862,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 13.412017005961388,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 15,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 126931,
+          "output_tokens": 6106,
+          "reasoning_tokens": 266,
+          "cache_read_tokens": 122071,
+          "cache_write_tokens": 4858,
+          "cost_usd": 0.1708322,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 41.58489168388769,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 16,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 138517,
+          "output_tokens": 6368,
+          "reasoning_tokens": 162,
+          "cache_read_tokens": 126929,
+          "cache_write_tokens": 11508,
+          "cost_usd": 0.2106058,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 42.40346743701957,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 19591,
+          "output_tokens": 3681,
+          "reasoning_tokens": 3191,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 12998,
+          "cost_usd": 0.1399438,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 36.11799576715566,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 29117,
+          "output_tokens": 621,
+          "reasoning_tokens": 345,
+          "cache_read_tokens": 19587,
+          "cache_write_tokens": 9528,
+          "cost_usd": 0.0639854,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.654595669126138,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34024,
+          "output_tokens": 3547,
+          "reasoning_tokens": 1252,
+          "cache_read_tokens": 29115,
+          "cache_write_tokens": 4907,
+          "cost_usd": 0.101306,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 37.862187517108396,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 17,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 147171,
+          "output_tokens": 2238,
+          "reasoning_tokens": 1278,
+          "cache_read_tokens": 138437,
+          "cache_write_tokens": 8652,
+          "cost_usd": 0.1160354,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 23.946415052050725,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 18,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 106530,
+          "output_tokens": 1245,
+          "reasoning_tokens": 819,
+          "cache_read_tokens": 29550,
+          "cache_write_tokens": 76978,
+          "cost_usd": 0.415708,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 14.122878923080862,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 19,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 110851,
+          "output_tokens": 498,
+          "reasoning_tokens": 66,
+          "cache_read_tokens": 106528,
+          "cache_write_tokens": 4321,
+          "cost_usd": 0.0528786,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.738666794029996,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 20,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 111606,
+          "output_tokens": 7252,
+          "reasoning_tokens": 381,
+          "cache_read_tokens": 110849,
+          "cache_write_tokens": 755,
+          "cost_usd": 0.1709928,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 52.083853314165026,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 21,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 124068,
+          "output_tokens": 7415,
+          "reasoning_tokens": 96,
+          "cache_read_tokens": 111604,
+          "cache_write_tokens": 12462,
+          "cost_usd": 0.2329388,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 49.99370560585521,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 21581,
+          "output_tokens": 3840,
+          "reasoning_tokens": 3381,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 14988,
+          "cost_usd": 0.1530738,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 35.10223393398337,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 30994,
+          "output_tokens": 257,
+          "reasoning_tokens": 71,
+          "cache_read_tokens": 21577,
+          "cache_write_tokens": 9415,
+          "cost_usd": 0.0565384,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 2.5568308760412037,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 31911,
+          "output_tokens": 184,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 30992,
+          "cache_write_tokens": 917,
+          "cost_usd": 0.0144714,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 1.8732272919733077,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 33781,
+          "output_tokens": 2402,
+          "reasoning_tokens": 603,
+          "cache_read_tokens": 31909,
+          "cache_write_tokens": 1870,
+          "cost_usd": 0.0637798,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 21.185380676062778,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 22,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 132869,
+          "output_tokens": 989,
+          "reasoning_tokens": 390,
+          "cache_read_tokens": 29550,
+          "cache_write_tokens": 103237,
+          "cost_usd": 0.542203,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 11.657507129944861,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 23,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 134582,
+          "output_tokens": 1591,
+          "reasoning_tokens": 1344,
+          "cache_read_tokens": 132787,
+          "cache_write_tokens": 1715,
+          "cost_usd": 0.0672724,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 17.398186966078356,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 24,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 135635,
+          "output_tokens": 7368,
+          "reasoning_tokens": 122,
+          "cache_read_tokens": 29550,
+          "cache_write_tokens": 106005,
+          "cost_usd": 0.683615,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 50.348520315019414,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 25,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 148091,
+          "output_tokens": 7590,
+          "reasoning_tokens": 35,
+          "cache_read_tokens": 135555,
+          "cache_write_tokens": 12534,
+          "cost_usd": 0.241589,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 50.68731789919548,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 21687,
+          "output_tokens": 3468,
+          "reasoning_tokens": 3115,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 15094,
+          "cost_usd": 0.1461638,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 32.73586222296581,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 30236,
+          "output_tokens": 503,
+          "reasoning_tokens": 183,
+          "cache_read_tokens": 21683,
+          "cache_write_tokens": 8551,
+          "cost_usd": 0.0571596,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.2310021698940545,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 33381,
+          "output_tokens": 3157,
+          "reasoning_tokens": 1554,
+          "cache_read_tokens": 30234,
+          "cache_write_tokens": 3145,
+          "cost_usd": 0.0849198,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 30.338298805989325,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        }
+      ],
+      "by_role": {
+        "analyst": {
+          "turns": 26,
+          "input_tokens": 2678344,
+          "output_tokens": 71619,
+          "reasoning_tokens": 13602,
+          "cache_read_tokens": 2242350,
+          "cache_write_tokens": 435546,
+          "cost_usd": 4.060372,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 45,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 573.2859458429739
+        },
+        "editor": {
+          "turns": 10,
+          "input_tokens": 286303,
+          "output_tokens": 21660,
+          "reasoning_tokens": 13695,
+          "cache_read_tokens": 204864,
+          "cache_write_tokens": 81413,
+          "cost_usd": 0.8813418000000001,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 16,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 210.65761493030004
+        }
+      },
+      "by_round": {
+        "analyst:1": {
+          "turns": 17,
+          "input_tokens": 1526941,
+          "output_tokens": 35433,
+          "reasoning_tokens": 9071,
+          "cache_read_tokens": 1417940,
+          "cache_write_tokens": 108887,
+          "cost_usd": 1.5371389999999998,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 33,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 297.30889384355396
+        },
+        "analyst:2": {
+          "turns": 5,
+          "input_tokens": 600226,
+          "output_tokens": 18648,
+          "reasoning_tokens": 2640,
+          "cache_read_tokens": 496968,
+          "cache_write_tokens": 103168,
+          "cost_usd": 0.9885536,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 7,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 145.88551968918182
+        },
+        "analyst:3": {
+          "turns": 4,
+          "input_tokens": 551177,
+          "output_tokens": 17538,
+          "reasoning_tokens": 1891,
+          "cache_read_tokens": 327442,
+          "cache_write_tokens": 223491,
+          "cost_usd": 1.5346794000000001,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 5,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 130.0915323102381
+        },
+        "editor:1": {
+          "turns": 3,
+          "input_tokens": 82732,
+          "output_tokens": 7849,
+          "reasoning_tokens": 4788,
+          "cache_read_tokens": 55291,
+          "cache_write_tokens": 27433,
+          "cost_usd": 0.3052352,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 6,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 80.6347789533902
+        },
+        "editor:2": {
+          "turns": 4,
+          "input_tokens": 118267,
+          "output_tokens": 6683,
+          "reasoning_tokens": 4055,
+          "cache_read_tokens": 91067,
+          "cache_write_tokens": 27190,
+          "cost_usd": 0.2878634,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 5,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 60.71767277806066
+        },
+        "editor:3": {
+          "turns": 3,
+          "input_tokens": 85304,
+          "output_tokens": 7128,
+          "reasoning_tokens": 4852,
+          "cache_read_tokens": 58506,
+          "cache_write_tokens": 26790,
+          "cost_usd": 0.28824320000000003,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 5,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 69.30516319884919
+        }
+      },
+      "total": {
+        "turns": 36,
+        "input_tokens": 2964647,
+        "output_tokens": 93279,
+        "reasoning_tokens": 27297,
+        "cache_read_tokens": 2447214,
+        "cache_write_tokens": 516959,
+        "cost_usd": 4.9417138,
+        "unpriced_turns": 0,
+        "unpriced_reasons": [],
+        "admitted_on_estimate": 0,
+        "tool_calls": 61,
+        "bounces": 0,
+        "bounce_kinds": {},
+        "wall_s": 783.9435607732739
+      },
+      "transcripts": {
+        "analyst": "2e259c3156ebbc18072c946f63df584f0c9a0ab0f0d37f6b78d8f2ac05e0fb9d",
+        "editor-1": "61e3c40c45681d27cc5c45c25b9e354f28513d679c4638c2c734c766f86fa4b9",
+        "editor-2": "e408804d61118f5f48f0a2540f4242a085d2ba6739a9ec05c5a7b91692e317e7",
+        "editor-3": "9bb231e961247ff018715e3d668db4f70e8d567fcc8500dbd0a0846b6ea9936f"
+      }
+    },
+    "reviews": [
+      {
+        "round": 1,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline names the pick, Brisk-S · reasoning low · 1 retry, and the reason: it is the cheapest of the five configurations that reach the 97% gate. It also states the main risk, a 0.1-point clearance. The lede adds the 38.6% chance that a fresh run reads it below the gate, and names the fallback, Brisk-S · reasoning high · 1 retry, at $1,324 more a month. Claim pick agrees with options_dominance, which finds the pick the only undominated passing option."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 1,
+            "reason": "No block contradicts its own sentence. Two figures on the page don't line up, though. Watch and Next say settling the pick takes 111,255 cases, but claim settle's table prints only 38,350 (one-sided) and 54,451 (two-sided), and nothing tells the reader that 111,255 is the two-sided, four-in-five size. Claim price's caption says neither step's gain carries an interval, while claim multihop prints an unpaired interval of -0.4 to +2.1 on that same pick-to-fallback gain."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 1,
+            "reason": "The pick's thin margin is shown clearly in the headline, claim thin and claim settle. But the confidence reads High over a caveat its own figures make material: the pick's interval of 96.2–98.1% crosses the gate, and a fresh run reads it below 38.6% of the time. Claim multihop says multi-hop is where high reasoning 'gains most' (+1.7), but the task rows have no interval and the overall gain's interval crosses zero."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "Nothing omitted bears on the call. Calls per task, effects outside Brisk-S and retry-by-model differences don't touch the gate or cost order among passing options, and per-task figures stay in the appendix."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "The unknown provider routing, the lack of a control, best-of-eighteen selection and the unstated volume unit are each carried into the confidence or Method, and two of them become next steps: the gate declaration and recording the routing and volume."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names a run or a declaration and what it settles: the fresh read of the pick's pass rate, the owner deciding how the gate is read, the planning fix, and recording the routing and volume. One weakness: the planning-fix rerun reuses the same 1,200 cases."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Claim multihop's own figure, the pick's 95.6% on multi-hop, is not in its block, which draws only differences. Claim price's block leaves out the gains it divides by (+0.8 and +0.7 points). Claim retry's $0.014 cost is not drawn, and one of its bounds prints as '+0.03535'. Claims pick, thin and settle are well matched to their blocks."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "",
+            "severity": "must_fix",
+            "finding": "The confidence reads 'High, if the caveats below aren't material' over a caveat that the page itself shows is plausibly material. The pick's computed interval, 96.2–98.1%, crosses the gate, and a fresh run reads it below 38.6% of the time. The best-of-eighteen caveat pushes the same way. Fix it one of two ways. Option one: scope the High to what holds, namely that the pick is the cheapest configuration passing on point estimates as declared, and only the Brisk-S fallback is close. Then say plainly that the High does not cover whether the pick truly clears 97%, and that the fresh read in Next settles it. Option two: make the form low.",
+            "id": "f1.1",
+            "since": 1
+          },
+          {
+            "claim": "settle",
+            "severity": "should_fix",
+            "finding": "Watch and Next cite 111,255 cases to settle the pick 'four times in five', but claim settle's table prints only 38,350 (one-sided, half of runs) and 54,451 (two-sided). 111,255 is the two-sided, four-in-five size (settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80). Add that column, or the 80% sizes, to the settle table and say which one the decision uses, so the reader can find Watch's figure in the evidence.",
+            "id": "f1.2",
+            "since": 1
+          },
+          {
+            "claim": "price",
+            "severity": "should_fix",
+            "finding": "The block gives prices per point but not the gains they divide by: +0.8 points from the pick to the high-reasoning fallback, and +0.7 from there to Atlas-M · reasoning high · 1 retry. Its caption also says neither gain carries an interval, yet claim multihop prints -0.4 to +2.1 for the first gain. Add the gains and the monthly cost gaps ($1,324 and $11,376) to the table. Then say the first gain's unpaired interval crosses zero, so $1,595.18 a month per point has no upper bound that the data support.",
+            "id": "f1.3",
+            "since": 1
+          },
+          {
+            "claim": "multihop",
+            "severity": "should_fix",
+            "finding": "The claim rests on the pick's 95.6% on multi-hop, which the block doesn't draw: it shows only the fallback-minus-pick differences. Add the pick's own task rates, or a column for them. Also soften 'gains most' (+1.7). The task rows carry no interval, and the overall +0.8 has an interval of -0.4 to +2.1, so the task ordering is descriptive, not established.",
+            "id": "f1.4",
+            "since": 1
+          },
+          {
+            "claim": "retry",
+            "severity": "should_fix",
+            "finding": "The lower bound on the high-reasoning retry effect prints as '+0.03535'. Round it like the others (+0.04, or +0.0). The claim's $0.014 extra cost per 1,000 calls is not in the block; either add the two arms' costs or drop the figure from the sentence.",
+            "id": "f1.5",
+            "since": 1
+          },
+          {
+            "claim": "pick",
+            "severity": "should_fix",
+            "finding": "Claim pick and the decision's 'Why not the others' rank models by cost: the cheapest passing Atlas-M is 5.5 times the pick's cost. No provider is named for any arm. The routing caveat covers this up top, but the claim itself should say the costs are as routed in this run, with the provider not recorded, so the cross-model ratio is not read as a property of the models.",
+            "id": "f1.6",
+            "since": 1
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "The third next step reruns the tuned pick 'on the same 1,200 cases' after teaching it on those cases' failures. A pass there wouldn't show it clears the gate with room on new traffic. Name fresh or held-out cases, sized against the settle figures.",
+            "id": "f1.7",
+            "since": 1
+          }
+        ],
+        "resolved": [],
+        "total": 11,
+        "passes": true,
+        "must_fix": true,
+        "blocking": [
+          "f1.1",
+          "f1.2",
+          "f1.3",
+          "f1.4",
+          "f1.5",
+          "f1.6",
+          "f1.7"
+        ]
+      },
+      {
+        "round": 2,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline names the pick, Brisk-S at low reasoning with one retry, and says why: it is the cheapest of five configurations that reach the 97% gate, at $0.302 per 1,000 calls as routed in this run. It also names the main risk: it clears by 0.1 points, and a fresh run would read it below the gate 38.6% of the time. The decision block names the fallback, Brisk-S at high reasoning with one retry, and the switch rule. Claim pick shows the frontier with the gate line."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "Each claim matches its block row by row. In claim thin, the pick's interval, 96.2–98.1%, crosses 97%, and the fallback's, 97.2–98.8%, does not. In claim settle, 38.6% against 0.9%. In claim multihop, 95.6% is the pick's lowest task rate. In claim retry, +1.9 with interval +0.3 to +3.4. The explore rows agree with the gate table: the pick holds for gates from 95.3% to 97.1%, then the fallback up to 98.0%. options_dominance names the pick as the only undominated survivor."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "The pick's thin clearance is in the headline, the lede and Watch, and claim thin puts it first among the supporting claims. The confidence is now scoped to the cost order on point estimates and says the gate question is open. The price claim says neither gain is told apart from zero."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "Nothing omitted bears on the pick-or-fallback call. That covers calls per task, effects outside Brisk-S, retry by model and per-task figures for other configurations. The decision to keep the confidence high is stated and argued in the open."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "Four confounds are each carried into the story with what would make them matter: the point-estimate gate, best of eighteen, no control and unknown provider routing. Each also reaches a next step: the fresh read, the gate declaration and recording the provider. One gap remains: claim price compares costs across models without the routing note (see finding)."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names a run or a declaration and what it settles. The fresh read uses 111,255 cases, the two-sided four-in-five size, and it checks out. The owner declares how the gate is read. Held-out tuning uses at least 1,660 fresh cases, the fallback's two-sided four-in-five size, which also checks out. Recording the provider and the volume unit is the fourth."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Claim settle's deciding figure, 111,255, is not in its block, and neither is the fallback's 1,660 that Next uses: the table prints only the half-the-time sizes. Claim price states the second gain, +0.7 with interval -0.4 to +1.7, and both monthly cost gaps ($1,324 and $11,376). Its blocks draw only the first gain and the per-point prices."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "price",
+            "severity": "must_fix",
+            "finding": "Claim price compares costs across models without saying who served them. The step from Brisk-S at high reasoning with one retry to Atlas-M at high reasoning with one retry is priced at $11,376 more a month, $17,236.36 per point, and the explore row repeats that price. No provider is recorded for either arm (cost_served_by). Claim pick now carries the routing note, but this claim does not, so a reader can take the Atlas-M premium as a property of the model. Add 'as routed in this run, with no provider recorded' to the second step, in the sentence and in the explore row.",
+            "id": "f2.1",
+            "since": 2
+          },
+          {
+            "claim": "settle",
+            "severity": "should_fix",
+            "finding": "The sentence now explains that 111,255 is the two-sided, four-in-five size, but the block still prints only the half-the-time sizes, 38,350 and 54,451. So the figure Watch and Next rest on can't be found in the evidence. The fallback's 1,660, which the third next step uses, is also missing. Add a column 'Needed, two-sided, four in five' (settle.criteria.pass_rate.<arm>.overall.cases_needed_two_sided_80): 111,255 for the pick, 1,660 for the fallback.",
+            "id": "f1.2",
+            "since": 1
+          },
+          {
+            "claim": "price",
+            "severity": "should_fix",
+            "finding": "The sentence states the second gain, +0.7 points with interval -0.4 to +1.7, and the monthly cost gaps of $1,324 and $11,376. The blocks draw only the first gain and the two per-point prices. Fix it one of two ways. Option one: add gain, interval and monthly gap columns to the step table, which also makes the per-point prices traceable. Option two: add a second diverging-bars row for the step to Atlas-M at high reasoning with one retry.",
+            "id": "f1.3",
+            "since": 1
+          }
+        ],
+        "resolved": [
+          "f1.1",
+          "f1.4",
+          "f1.5",
+          "f1.6",
+          "f1.7"
+        ],
+        "total": 13,
+        "passes": true,
+        "must_fix": true,
+        "blocking": [
+          "f2.1",
+          "f1.2",
+          "f1.3"
+        ]
+      },
+      {
+        "round": 3,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline names the pick (Brisk-S, low reasoning, one retry) and its reason: it is the cheapest configuration to reach the 97% gate. It also gives the main risk: it clears by only 0.1 points. The lede adds the cost ratio (2.1 times for the next passing option), the 38.6% chance a fresh run reads it below the gate, and the fallback with its monthly premium ($1,324). Claim pick shows the frontier with the gate line, and the decision block names Watch and the switch rule. Options dominance agrees: the pick is the only undominated survivor."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "Each claim follows from the one before. Pick shows the cheapest passer. Thin shows its interval (96.2–98.1%) crosses the line while the fallback's (97.2–98.8%) does not. Settle gives the odds (38.6% against 0.9%). Price and price_atlas show what headroom costs and that neither gain is told apart from zero. I read each sentence against its table row by row and found none its block contradicts. The figures match the snapshot: $1,595.18 and $17,236.36 a month per point, $1,324 and $11,376 monthly gaps, $1,208 a month for the pick."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "The pick's weak point, its 0.1-point clearance, is in the headline, the flag, the first caveat, Watch and claim thin. The confidence is scoped: the high covers the cost order on declared point estimates and says outright that it does not cover whether the pick truly clears the gate. Gains with intervals crossing zero are labelled as such in claims price and price_atlas. The multi-hop ordering is called descriptive."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "None of the omitted items would change the call. Nano-XS never reaches the gate, so how the retry helps it more doesn't matter here. Calls per task barely differ between the pick and its fallback. Per-task figures for other configurations are in the appendix. The one omission I would reverse is the four-in-five column in the settle table. That is an evidence problem, not a decision problem, and it is raised under item 7."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "All four open caveats are carried, each with what would make it matter and which way it pushes: the point-estimate gate, best of eighteen, no control (gaps read unpaired), and unknown provider routing. Routing is now named wherever costs are compared across models: claim pick, the decision block, claim price and the price row in explore. Next steps include recording the provider and the volume unit."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an action and what it settles. A fresh read of 111,255 cases settles whether the pick holds at the gate. An owner's declaration of how the gate is read settles pick versus fallback with no new run. A planning fix read on at least 1,660 held-out cases settles whether the cheapest model can clear with room. Recording the providers settles whether the cross-model cost order holds."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Claims thin, price, price_atlas, retry, latency and multihop each show their own figures, and the second gain now has its own block. But claim settle states 111,255 and 1,660, the sizes Watch and Next rest on, and its table prints only the half-the-time sizes (38,350 and 54,451 for the pick). The figure a reader is asked to act on is not in its evidence, and the table invites taking 54,451 as the size of the run."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "settle",
+            "severity": "should_fix",
+            "finding": "The settle table still prints only the half-the-time sizes: 38,350 one-sided and 54,451 two-sided for the pick, 572 and 812 for the fallback. The 111,255 that Watch and the first next step use, and the 1,660 that the third next step uses, appear only in prose. The caption admits this, but the figures a reader is told to plan a run on are still missing from the evidence. Next to them, 54,451 reads as the run size. Add a column 'Needed, two-sided, four in five' from settle.criteria.pass_rate.<arm>.overall.cases_needed_two_sided_80: 111,255 for the pick, 1,660 for the fallback. Then drop or relabel the half-the-time columns so the run size is plain.",
+            "id": "f1.2",
+            "since": 1
+          }
+        ],
+        "resolved": [
+          "f2.1",
+          "f1.3"
+        ],
+        "total": 13,
+        "passes": true,
+        "must_fix": false,
+        "blocking": [
+          "f1.2"
+        ]
+      }
+    ],
+    "sessions": {
+      "analyst": {
+        "digest": "2e259c3156ebbc18072c946f63df584f0c9a0ab0f0d37f6b78d8f2ac05e0fb9d",
+        "turns": 26,
+        "ref": "01a18943-2fc8-72cb-8d7a-efe8ca1506a2:session:analyst"
+      },
+      "editor-1": {
+        "digest": "61e3c40c45681d27cc5c45c25b9e354f28513d679c4638c2c734c766f86fa4b9",
+        "turns": 3,
+        "ref": "01a18943-2fc8-72cb-8d7a-efe8ca1506a2:session:editor-1"
+      },
+      "editor-2": {
+        "digest": "e408804d61118f5f48f0a2540f4242a085d2ba6739a9ec05c5a7b91692e317e7",
+        "turns": 4,
+        "ref": "01a18943-2fc8-72cb-8d7a-efe8ca1506a2:session:editor-2"
+      },
+      "editor-3": {
+        "digest": "9bb231e961247ff018715e3d668db4f70e8d567fcc8500dbd0a0846b6ea9936f",
+        "turns": 3,
+        "ref": "01a18943-2fc8-72cb-8d7a-efe8ca1506a2:session:editor-3"
+      }
+    }
+  },
+  "created_by": "agent:test",
+  "created_at": "2026-10-29T20:04:04.171006+00:00"
+}

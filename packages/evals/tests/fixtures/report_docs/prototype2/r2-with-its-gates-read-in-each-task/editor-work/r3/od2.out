@@ -1,0 +1,262 @@
+dominance
+survivors: []
+out (8):
+  - arm: arm:brisk-s.high.r0; breached: []
+    gates (7):
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.high.r0.multihop.value = 95.5%
+          criteria.pass_rate.brisk-s.high.r0.multihop.gap = -1.5
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.high.r0.datemath.value = 96.6%
+          criteria.pass_rate.brisk-s.high.r0.datemath.gap = -0.4
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.high.r0.disamb.value = 96.1%
+          criteria.pass_rate.brisk-s.high.r0.disamb.gap = -0.9
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:brisk-s.high.r1; breached: []
+    gates (4):
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.off.r0; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r0.single.value = 86.8%
+          criteria.pass_rate.nano-xs.off.r0.single.gap = -10.2
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r0.multihop.value = 74.2%
+          criteria.pass_rate.nano-xs.off.r0.multihop.gap = -22.8
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r0.datemath.value = 80.5%
+          criteria.pass_rate.nano-xs.off.r0.datemath.gap = -16.5
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r0.disamb.value = 77.8%
+          criteria.pass_rate.nano-xs.off.r0.disamb.gap = -19.2
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.off.r1; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r1.single.value = 92%
+          criteria.pass_rate.nano-xs.off.r1.single.gap = -5
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r1.multihop.value = 84.4%
+          criteria.pass_rate.nano-xs.off.r1.multihop.gap = -12.6
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r1.datemath.value = 88.2%
+          criteria.pass_rate.nano-xs.off.r1.datemath.gap = -8.8
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r1.disamb.value = 86.6%
+          criteria.pass_rate.nano-xs.off.r1.disamb.gap = -10.4
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.low.r0; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r0.single.value = 91.7%
+          criteria.pass_rate.nano-xs.low.r0.single.gap = -5.3
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r0.multihop.value = 83.5%
+          criteria.pass_rate.nano-xs.low.r0.multihop.gap = -13.5
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r0.datemath.value = 87.6%
+          criteria.pass_rate.nano-xs.low.r0.datemath.gap = -9.4
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r0.disamb.value = 85.8%
+          criteria.pass_rate.nano-xs.low.r0.disamb.gap = -11.2
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.low.r1; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r1.single.value = 95%
+          criteria.pass_rate.nano-xs.low.r1.single.gap = -2
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r1.multihop.value = 90%
+          criteria.pass_rate.nano-xs.low.r1.multihop.gap = -7
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r1.datemath.value = 92.5%
+          criteria.pass_rate.nano-xs.low.r1.datemath.gap = -4.5
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r1.disamb.value = 91.4%
+          criteria.pass_rate.nano-xs.low.r1.disamb.gap = -5.6
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.high.r0; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r0.single.value = 93%
+          criteria.pass_rate.nano-xs.high.r0.single.gap = -4
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r0.multihop.value = 89.3%
+          criteria.pass_rate.nano-xs.high.r0.multihop.gap = -7.7
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r0.datemath.value = 91.1%
+          criteria.pass_rate.nano-xs.high.r0.datemath.gap = -5.9
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r0.disamb.value = 90.3%
+          criteria.pass_rate.nano-xs.high.r0.disamb.gap = -6.7
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+  - arm: arm:nano-xs.high.r1; breached: []
+    gates (8):
+      - criterion: pass_rate; place: single; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r1.single.value = 95.8%
+          criteria.pass_rate.nano-xs.high.r1.single.gap = -1.2
+      - criterion: pass_rate; place: multihop; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r1.multihop.value = 93.5%
+          criteria.pass_rate.nano-xs.high.r1.multihop.gap = -3.5
+      - criterion: pass_rate; place: datemath; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r1.datemath.value = 94.7%
+          criteria.pass_rate.nano-xs.high.r1.datemath.gap = -2.3
+      - criterion: pass_rate; place: disamb; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r1.disamb.value = 94.2%
+          criteria.pass_rate.nano-xs.high.r1.disamb.gap = -2.8
+      - criterion: p95; place: single; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: multihop; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: datemath; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+      - criterion: p95; place: disamb; status: no_figure
+        figures (1):
+          criteria.p95.threshold = 600 ms
+weighs: [gates, cost]
+dominant: []
+axes: []
+dominant_with_axes: []
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [no_call]
+  dominant: []
+  ranking_rule: []
+  withheld: 
+total: 18
+offset: 10

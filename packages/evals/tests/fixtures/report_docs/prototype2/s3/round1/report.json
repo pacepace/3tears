@@ -1,0 +1,81 @@
+{
+  "schema": "report-doc/1",
+  "story": "status",
+  "flag": "One arm, no control: both bars warn and never gate, so nothing here blocks a release by rule, and the judge behind every figure has no human calibration.",
+  "headline": "Fix {arm:solo} on the clarity cases before relying on it: it is judged correct on only {aspects.clarity.bar.answer.correct.solo.value} of them against a {aspects.clarity.bar.answer.correct.solo.bar} bar, and its pass on the accuracy cases is not yet settled.",
+  "lede": "The clarity-case shortfall is clear: its whole interval ({aspects.clarity.bar.answer.correct.solo.interval|interval}) sits below the bar. A calibration showing the judge marks right answers wrong on those cases would change the answer.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {"id": "judge_uncalibrated", "material_if": "only if the judge marks right answers wrong on the clarity cases: the fix-first call rests entirely on its correctness grading, and every figure here is an absolute judged rate"},
+      {"id": "nothing_declared", "material_if": "only if the owner's real line for correctness sits below the top of the clarity cases' interval: the declared bars warn and never gate, so no rule says what is good enough to ship"},
+      {"id": "unreported:judge_temperature", "material_if": "only if the judge sampled differently between the accuracy and clarity runs, which would make the gap between the two case sets partly the judge's"}
+    ]
+  },
+  "decision": [
+    {"slot": "recommendation", "text": "Fix first. {arm:solo} answers the clarity cases correctly {aspects.clarity.bar.answer.correct.solo.value} of the time, clearly under its {aspects.clarity.bar.answer.correct.solo.bar} bar; more cases will not change that, a change to the model or its prompt will."},
+    {"slot": "what_is_tangled", "text": "How clear {arm:solo}'s answers are has no answer yet. The clarity aspect's bar reads correctness, not clarity, and the clarity score has no declared line and no stated scale."},
+    {"slot": "watch", "text": "The accuracy bar is the nearest line: {aspects.accuracy.bar.answer.correct.solo.value} against {aspects.accuracy.bar.answer.correct.solo.bar}, with an interval of {aspects.accuracy.bar.answer.correct.solo.interval|interval} that reaches below it. It passes on its point estimate only; about {settle.criteria.accuracy/bar/answer.correct.solo.overall.cases_needed_two_sided_80|int} trials, against {aspects.accuracy.scoreboard.solo.ran|int} today, would settle it four times in five if the rate holds."},
+    {"slot": "next", "text": "Read the failed clarity-case replies and fix what they share, then re-run those cases; calibrate the judge on the same cases at the same time."}
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "On the clarity cases, {arm:solo} is judged correct {aspects.clarity.bar.answer.correct.solo.value} of the time, and its whole interval sits below the {aspects.clarity.bar.answer.correct.solo.bar} bar.",
+      "weight": "lead",
+      "evidence": [
+        {"block": "dot_interval", "query": {"source": "judged", "measures": ["answer.correct"], "aspect": "clarity"}, "caption": "Answers judged correct on the clarity cases, against the bar."},
+        {"block": "dot_interval", "query": {"source": "measures", "measures": ["passed"], "aspect": "clarity"}, "caption": "The same trials as a pass rate with its interval; a pass is an answer judged correct."}
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "On the accuracy cases, {arm:solo} is judged correct {aspects.accuracy.bar.answer.correct.solo.value} of the time: above the {aspects.accuracy.bar.answer.correct.solo.bar} bar on its point estimate, with an interval that reaches below it.",
+      "weight": "support",
+      "evidence": [
+        {"block": "dot_interval", "query": {"source": "judged", "measures": ["answer.correct"], "aspect": "accuracy"}, "caption": "Answers judged correct on the accuracy cases, against the bar."},
+        {"block": "dot_interval", "query": {"source": "measures", "measures": ["passed"], "aspect": "accuracy"}, "caption": "The same trials as a pass rate with its interval."}
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "The clarity score is lower on the clarity cases than on the accuracy cases, but no line says what score is clear enough.",
+      "weight": "support",
+      "evidence": [
+        {"block": "table", "query": {"source": "judged", "measures": ["answer.correct", "answer.clear"], "aspect": "clarity"}, "caption": "Clarity cases: the judge's clarity score and correctness rate."},
+        {"block": "table", "query": {"source": "judged", "measures": ["answer.correct", "answer.clear"], "aspect": "accuracy"}, "caption": "Accuracy cases: the same two figures. The campaign states no scale for the clarity score."}
+      ]
+    }
+  ],
+  "explore": [
+    {"control": "The correctness bar", "binds": "The status of both case sets against their bars", "outcome": "The clarity cases miss at any bar above the top of their interval ({aspects.clarity.bar.answer.correct.solo.interval|interval}); the accuracy cases stay unsettled at any bar inside theirs ({aspects.accuracy.bar.answer.correct.solo.interval|interval}). The bars warn and never gate, so no setting changes a call."}
+  ],
+  "omitted": [
+    {"what": "Cost", "why": "Flat at {cost_per_1k.solo|usd_per_1k} with one arm, so it decides nothing; one line in Method."},
+    {"what": "The campaign-wide scoreboard, criterion-level figures, options_dominance's pass and count.failing for the clarity bar", "why": "They read the clarity criterion on the accuracy cases' figure ({criteria.clarity/bar/answer.correct.solo.value}) and the scoreboard counts only the accuracy trials, contradicting the clarity aspect's own bar reading ({aspects.clarity.bar.answer.correct.solo.value}, missed); the page cites aspect-scoped figures only (logged as a gap)."},
+    {"what": "settle_cases sizing for the clarity bar", "why": "It sizes the bar on the wrong aspect's figure; and the miss is already clear of the line, so more cases would not change it."},
+    {"what": "decision_sensitivity on both bars", "why": "A bar warns and never gates, so code makes no call to move; the explore control states the status bands in words."},
+    {"what": "Failure examples (five frozen failed trials: one accuracy case twice, three clarity cases)", "why": "Every one carries no reply, reason or excerpt, so a card would show nothing; reading them is the first next step."},
+    {"what": "Pass rate as its own measure", "why": "A pass is an answer judged correct, so it repeats the correctness figures; it appears only as the interval chart beside each bar."},
+    {"what": "Method-reach caveats: apparatus:grader_version, apparatus:ocr_engine_version, apparatus:simulator_model, apparatus:simulator_request_settings, apparatus:simulator_sent_settings, and the eight apparatus:world:* settings", "why": "Not recorded on every run, so whether they varied is unknown; they land once in Method because they qualify the rig, not one finding."},
+    {"what": "The production-replicating cost measure", "why": "Identical to the measuring spend on every trial; describes the method."}
+  ],
+  "next": [
+    {"text": "Read the failed clarity-case replies, fix what they share in the model's prompt, and re-run the clarity cases.", "settles": "Whether the clarity-case shortfall is a fixable failure mode, and whether a fix lifts it over the bar."},
+    {"text": "Collect human correctness ratings on the clarity cases and calibrate the judge against them.", "settles": "Whether the miss is the model's or the judge's: turns the judge caveat, which the call rests on, into evidence."},
+    {"text": "Confirm whether the accuracy and clarity aspects ran the same cases.", "settles": "If they did, the same cases read correct far more often in one run than the other, which points at the judge or the run setup rather than the model."},
+    {"text": "Declare what clarity means: a scale for the clarity score and a line on it, or point the clarity bar at the clarity score.", "settles": "The second half of the question, how clear the answers are, which today has nothing to be read against."},
+    {"text": "Run the accuracy cases to about {settle.criteria.accuracy/bar/answer.correct.solo.overall.cases_needed_two_sided_80|int} trials.", "settles": "Whether accuracy clears its bar, if the true rate is near today's estimate."}
+  ],
+  "method": [
+    {"term": "Cases and repeats", "text": "Accuracy: {aspects.accuracy.cases|int} cases, {aspects.accuracy.repeats|int} repeats each. Clarity: {aspects.clarity.cases|int} cases, {aspects.clarity.repeats|int} repeats each. Each aspect ran its own trials."},
+    {"term": "What pass means", "text": "A trial passes when the judge marks the answer correct. The campaign states nothing more, for either aspect."},
+    {"term": "Bars", "text": "Both aspects carry a bar of {criteria.accuracy/bar/answer.correct.threshold} on answer correctness, declared before the run. A bar warns and never gates. The clarity aspect's bar reads correctness, not the clarity score."},
+    {"term": "Intervals", "text": "Over cases, at the level each chart prints. The bar readings in the text and the pass-rate charts compute their intervals separately, so their ends differ slightly. The clarity score carries a standard error only."},
+    {"term": "The judge", "text": "Correctness and clarity are both judged, with {judged.answer.correct.calibration_ratings|int} human calibration ratings; the judge's tier is undetermined and its sampling temperature unreported."},
+    {"term": "Cost basis", "text": "{cost_per_1k.solo|usd_per_1k}, the same on every trial."},
+    {"term": "Unrecorded apparatus", "text": "The grader version, OCR build, simulator model and its settings, and eight world settings were not recorded on every run, so whether any varied between the accuracy and clarity runs cannot be established."},
+    {"term": "What wasn't compared", "text": "No control, no other arm and no prior run: every figure is absolute."},
+    {"term": "Source", "text": "The {meta.campaign} campaign, run {meta.run_date}."}
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Ship none of the {n_candidates|words} configurations yet: the {count.passing.pass_rate|words} that reach the pass-rate line in every task run over the latency budget, and every configuration inside the budget misses multi-hop.",
+  "flag": "The latency budget is declared for each task, but latency was recorded only over all tasks together: no configuration has a per-task latency figure. No exchange rate between pass rate and latency was declared.",
+  "lede": "{arm:brisk-s.high.r1} clears the pass line in every task, but its p95 latency over all tasks is {measure.latency_ms.brisk-s.high.r1.p95} against a {criteria.p95.threshold} budget, so at least one task runs that slow or slower. Latency measured per task, and a Brisk-S configuration between low and high reasoning, are what could change the answer.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {"id": "no_control", "material_if": "only for the comparisons between configurations, such as Brisk-S against Atlas-M at high reasoning; the call that nothing ships rests on each configuration's own figures against the declared lines."},
+      {"id": "best_of_n", "material_if": "only for the lean: {arm:brisk-s.high.r1} clears multi-hop by {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts} points, and as the best of {n_candidates|words} it reads high by chance. A re-run that reads it under the line leaves no configuration clearing pass rate everywhere, which keeps the call."}
+    ]
+  },
+  "decision": [
+    {"slot": "recommendation", "text": "Ship none of the {n_candidates|words} configurations as declared. Only {arm:brisk-s.high.r1} and {arm:atlas-m.high.r1} reach the pass line in all {count.places.pass_rate|words} tasks, and both run over the latency budget even over all tasks together, which means at least one task is over it too."},
+    {"slot": "why_not", "text": "{arm:brisk-s.low.r1}, the best configuration inside the budget at {measure.latency_ms.brisk-s.low.r1.p95} p95, misses the pass line in multi-hop by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs|pts} points and in ambiguous entities by {criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs|pts} points. {arm:atlas-m.high.r1} is the slowest of all at {measure.latency_ms.atlas-m.high.r1.p95} p95 and costs {cost_per_month.atlas-m.high.r1|usd_whole} a month. Every Nano-XS configuration misses the pass line in every task."},
+    {"slot": "where_it_flips", "text": "A budget of at least {measure.latency_ms.brisk-s.high.r1.p95} in every task would admit {arm:brisk-s.high.r1}, and more if its slowest task runs above that figure. A pass line at or below {task.multihop.brisk-s.low.r1.pass_rate.mean} would admit {arm:brisk-s.low.r1}, but only if it holds the budget in each task, which no figure shows yet."},
+    {"slot": "our_lean", "text": "Ours, not a rule the campaign set: move neither line yet. Measure latency per task and run Brisk-S between low and high reasoning first. If nothing then clears both, the latency budget is the line to put to the planner's owner, since {arm:brisk-s.high.r1} misses only that one, at {cost_per_month.brisk-s.high.r1|usd_whole} a month."},
+    {"slot": "watch", "text": "{arm:brisk-s.high.r1} clears multi-hop by {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts} points on its point estimate alone: per-task pass rates carry no interval, and it is the best of {n_candidates|words}. {arm:brisk-s.low.r1} is inside the budget only over all tasks; multi-hop, which plans two or three calls, may run slower than the whole."},
+    {"slot": "next", "text": "Record p95 latency in each task first: it decides which line each near option actually misses, and may need no new run if the trials kept their timings."}
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "No configuration clears both lines: {arm:brisk-s.high.r1} and {arm:atlas-m.high.r1} reach the pass line in every task but run over the latency budget, while {arm:brisk-s.low.r1}, the best inside the budget, misses multi-hop and ambiguous entities.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "tasks", "measures": ["pass_rate"], "arms": ["brisk-s.low.r1", "brisk-s.high.r1", "atlas-m.high.r1"]},
+          "reference": "floor",
+          "caption": "Pass rate in each task against the {criteria.pass_rate.threshold} line, as point estimates: no per-task interval was recorded. {arm:brisk-s.low.r1} scores highest of the configurations inside the budget in every task."
+        },
+        {
+          "block": "range_bars",
+          "query": {"source": "measures", "measures": ["latency_ms"]},
+          "reference": "budget",
+          "caption": "Latency from median to p95 over all tasks, against the {criteria.p95.threshold} budget the campaign set for each task."
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "text": "{arm:brisk-s.high.r1} costs {cost_per_month.brisk-s.high.r1|usd_whole} a month against {cost_per_month.atlas-m.high.r1|usd_whole} for {arm:atlas-m.high.r1}, and the two are not separated on pass rate ({compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.interval|interval} points).",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {"source": "measures", "measures": ["cost_per_1k"], "arms": ["brisk-s.low.r1", "brisk-s.high.r1", "atlas-m.low.r1", "atlas-m.high.r1"]},
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Cost per 1,000 calls on a log scale, for the configurations nearest the pass line."
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "text": "Within Brisk-S, the two lines cross between low and high reasoning: a retry lifts low reasoning by {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|abs|pts} points ({lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval|interval}) for little cost, and only high reasoning reaches the pass line in every task.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {"source": "configs", "measures": ["pass_rate", "latency_ms", "cost_per_1k"], "arms": ["brisk-s.off.r0", "brisk-s.off.r1", "brisk-s.low.r0", "brisk-s.low.r1", "brisk-s.high.r0", "brisk-s.high.r1"]},
+          "caption": "The Brisk-S configurations: pass rate over all tasks (the line is read in each task), cost per 1,000 calls, and p95 latency over all tasks."
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "text": "{arm:brisk-s.low.r1} misses where the plan is hard: it collapses a two-hop question into one query, and answers an ambiguous name without asking which one.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {"source": "examples", "arms": ["brisk-s.low.r1"], "strata": ["multihop", "disamb"]},
+          "caption": "The failed trials frozen for {arm:brisk-s.low.r1} in the two tasks it misses, the first frozen in each, not chosen."
+        }
+      ]
+    }
+  ],
+  "explore": [
+    {"control": "Latency budget (p95), read in each task", "binds": "{arm:brisk-s.high.r1} and {arm:atlas-m.high.r1}, the only configurations clearing pass rate in every task", "outcome": "Admits {arm:brisk-s.high.r1} only at a budget of at least {measure.latency_ms.brisk-s.high.r1.p95}, and higher if its slowest task is slower; the exact flip needs per-task latency, which was not recorded."},
+    {"control": "Pass-rate line, read in each task", "binds": "Every configuration inside the latency budget, nearest {arm:brisk-s.low.r1}", "outcome": "Admits {arm:brisk-s.low.r1} at a line of {task.multihop.brisk-s.low.r1.pass_rate.mean} or lower, if it also holds the budget in each task; a line above that admits nothing new inside the budget."}
+  ],
+  "omitted": [
+    {"what": "The gate matrix of task by configuration", "why": "Every cell reads as failing on the missing per-task latency, which hides where pass rate binds; the dot plot and range bars carry the same two gates readably."},
+    {"what": "Atlas-M at reasoning off and low, and Atlas-M high without a retry", "why": "Each misses the pass line in at least one task and runs over the budget; none is nearer either line than the configurations shown."},
+    {"what": "The six Nano-XS configurations in detail", "why": "All are inside the budget and far under the pass line in every task; the best of them is lower than Brisk-S low retry in every task, so they change nothing."},
+    {"what": "Pass rate over all tasks as a gate reading", "why": "The line is declared for each task; Brisk-S low retry clears it over all tasks while missing two tasks, so the pooled figure would read as a pass. It appears only in the Brisk-S table, labelled."},
+    {"what": "Model and reasoning lever effects (the full grid of one-setting differences)", "why": "They describe the grid; the Brisk-S ladder carries what bears on the call, and Atlas-M against Brisk-S is stated once in c2."},
+    {"what": "Retry effects for the other models, and their interactions", "why": "A retry lifts pass rate in every pairing; the interactions mostly include zero. Only the Brisk-S low case bears on the next step."},
+    {"what": "Calls per task", "why": "No line is declared on it and it varies little between configurations; it describes the planner's behavior, not the call."},
+    {"what": "Outcome and extra-calls measures", "why": "The snapshot lists them but holds no figures for them."},
+    {"what": "Two other frozen failures: an off-by-one date window from Brisk-S low retry, and truncated output from Nano-XS low retry", "why": "Brisk-S low retry passes date math at the line, and Nano-XS is far from it; neither failure is where the call binds."},
+    {"what": "Traffic shares by task", "why": "Every task is gated on its own, so the shares weigh no decision here; they matter only if routing by task is considered."}
+  ],
+  "next": [
+    {"text": "Record p95 latency in each task for every configuration, from the stored trials' timings if they were kept, else by re-running timing only.", "settles": "Whether Brisk-S low retry holds the budget in every task, and how far over it Brisk-S high retry sits in its slowest task: which line each near option really misses, and the budget that would admit it."},
+    {"text": "Run Brisk-S between low and high reasoning, and low reasoning with a second retry, on the multi-hop and ambiguous-entity cases, with latency kept per task.", "settles": "Whether one configuration clears both lines, which would turn this into a decision with no line moved."},
+    {"text": "Record case counts per task so each per-task pass rate carries an interval.", "settles": "Whether Brisk-S high retry's thin multi-hop clearance is real or the luck of the best of {n_candidates|words}, and how far Brisk-S low retry's misses are from the line."},
+    {"text": "The planner's owner declares which line gives if no configuration clears both, or a price for a point of pass rate in milliseconds of p95.", "settles": "Turns a dead end into a call between Brisk-S high retry and Brisk-S low retry."}
+  ],
+  "method": [
+    {"term": "Configurations", "text": "The configurations cross {count.levels.model|words} models with {count.levels.reasoning|words} reasoning levels and a retry or none, each run on the same case set; no configuration is a control, so each is read against the declared lines and against each other."},
+    {"term": "Cases", "text": "{scoreboard.brisk-s.high.r1.cases|int} cases per configuration, across {count.places.pass_rate|words} tasks with declared traffic shares; per-task case counts were not recorded."},
+    {"term": "Pass", "text": "The snapshot does not define a pass. Failed trials are scored against an expected call plan: a missing call, wrong arguments, a wrong tool, or malformed output."},
+    {"term": "Pass-rate line", "text": "At least {criteria.pass_rate.threshold} in each task, read on the point estimate; per-task figures carry no interval."},
+    {"term": "Latency budget", "text": "p95 at most {criteria.p95.threshold} in each task. Latency was recorded only over all tasks, as median and p95; whether configurations were timed on comparable machines is not stated."},
+    {"term": "Intervals", "text": "Differences between two configurations are {compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.level} intervals from each one's binomial spread, combined as independent, so wider than a paired reading of the same cases; they are not corrected for the number of comparisons."},
+    {"term": "Cost", "text": "Cost per 1,000 calls as measured, and per month at the declared volume of {meta.volume_per_month|int} calls."},
+    {"term": "Judge", "text": "None: pass is a check on the planned calls."},
+    {"term": "Source", "text": "{meta.provenance}"}
+  ]
+}

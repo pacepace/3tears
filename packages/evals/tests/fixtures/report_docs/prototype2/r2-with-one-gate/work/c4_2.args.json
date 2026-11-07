@@ -1,0 +1,1 @@
+{"action": "block_render", "snapshot_id": "report-snapshot:c8b23ae16d7d0a2739fb9746039006be", "block_kind": "examples", "query": {"source": "examples", "arms": ["brisk-s.low.r1"], "strata": ["multihop"]}}

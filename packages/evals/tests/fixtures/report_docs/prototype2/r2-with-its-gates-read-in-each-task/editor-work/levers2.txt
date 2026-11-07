@@ -1,0 +1,241 @@
+lever effects
+measure: pass_rate
+place: none
+level: none
+higher_is_better: True
+assumption: Each effect is the second arm minus the first, between two arms whose settings differ in one setting alone, read as arms_compare reads the same two arms: paired where a contrast pairs them overall, else the two means' difference with the two arms' own spreads (a stated interval, half-width or standard error, or a pass/fail rate's binomial spread from its count) combined as if independent, which is conservative where the arms ran the same cases; each effect's basis and level say which. An interaction's interval is recovered from its two effects' as if independent (MOVER), at their common level. With no spread to read there is no interval: a point difference, descriptive, with no test. Rows with an interval come first.
+settings (3):
+  - setting: model; isolated: True; note: none
+    values (3):
+      settings.atlas-m.off.r0.model = Atlas-M
+      settings.brisk-s.off.r0.model = Brisk-S
+      settings.nano-xs.off.r0.model = Nano-XS
+  - setting: reasoning; isolated: True; note: none
+    values (3):
+      settings.atlas-m.off.r0.reasoning = off
+      settings.atlas-m.low.r0.reasoning = low
+      settings.atlas-m.high.r0.reasoning = high
+  - setting: retry; isolated: True; note: none
+    values (2):
+      settings.atlas-m.off.r0.retry = 0
+      settings.atlas-m.off.r1.retry = 1
+effects (9):
+  - setting: retry
+    arm:atlas-m.off.r0 = Atlas-M · reasoning off · no retry (A)
+    arm:atlas-m.off.r1 = Atlas-M · reasoning off · 1 retry (B)
+    settings.atlas-m.off.r0.retry = 0
+    settings.atlas-m.off.r1.retry = 1
+    figures (4):
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect = +2.4
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.interval = +0.7 to +4.1
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.level = 95%
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:atlas-m.low.r0 = Atlas-M · reasoning low · no retry (C)
+    arm:atlas-m.low.r1 = Atlas-M · reasoning low · 1 retry (D)
+    settings.atlas-m.low.r0.retry = 0
+    settings.atlas-m.low.r1.retry = 1
+    figures (4):
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.effect = +1.4
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.interval = +0.1 to +2.7
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.level = 95%
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:atlas-m.high.r0 = Atlas-M · reasoning high · no retry (E)
+    arm:atlas-m.high.r1 = Atlas-M · reasoning high · 1 retry (F)
+    settings.atlas-m.high.r0.retry = 0
+    settings.atlas-m.high.r1.retry = 1
+    figures (4):
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect = +0.9
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.interval = -0.2 to +2
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.level = 95%
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:brisk-s.off.r0 = Brisk-S · reasoning off · no retry (G)
+    arm:brisk-s.off.r1 = Brisk-S · reasoning off · 1 retry (H)
+    settings.brisk-s.off.r0.retry = 0
+    settings.brisk-s.off.r1.retry = 1
+    figures (4):
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.effect = +3.5
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.interval = +1.5 to +5.6
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.level = 95%
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:brisk-s.low.r0 = Brisk-S · reasoning low · no retry (I)
+    arm:brisk-s.low.r1 = Brisk-S · reasoning low · 1 retry (J)
+    settings.brisk-s.low.r0.retry = 0
+    settings.brisk-s.low.r1.retry = 1
+    figures (4):
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect = +1.9
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval = +0.3 to +3.4
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.level = 95%
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:brisk-s.high.r0 = Brisk-S · reasoning high · no retry (K)
+    arm:brisk-s.high.r1 = Brisk-S · reasoning high · 1 retry (L)
+    settings.brisk-s.high.r0.retry = 0
+    settings.brisk-s.high.r1.retry = 1
+    figures (4):
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.effect = +1.3
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.interval = +0.03535 to +2.6
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.level = 95%
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:nano-xs.off.r0 = Nano-XS · reasoning off · no retry (M)
+    arm:nano-xs.off.r1 = Nano-XS · reasoning off · 1 retry (N)
+    settings.nano-xs.off.r0.retry = 0
+    settings.nano-xs.off.r1.retry = 1
+    figures (4):
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect = +7.5
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.interval = +4.6 to +10.4
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.level = 95%
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:nano-xs.low.r0 = Nano-XS · reasoning low · no retry (O)
+    arm:nano-xs.low.r1 = Nano-XS · reasoning low · 1 retry (Q)
+    settings.nano-xs.low.r0.retry = 0
+    settings.nano-xs.low.r1.retry = 1
+    figures (4):
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.effect = +4.8
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.interval = +2.4 to +7.1
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.level = 95%
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: retry
+    arm:nano-xs.high.r0 = Nano-XS · reasoning high · no retry (R)
+    arm:nano-xs.high.r1 = Nano-XS · reasoning high · 1 retry (S)
+    settings.nano-xs.high.r0.retry = 0
+    settings.nano-xs.high.r1.retry = 1
+    figures (4):
+      lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.effect = +3.4
+      lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.interval = +1.4 to +5.5
+      lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.level = 95%
+      lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+interactions (18):
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect = +2.4
+    lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.effect = +1.4
+    figures (3):
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.low.r0.atlas-m.low.r1.difference = -1
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.low.r0.atlas-m.low.r1.interval = -3.2 to +1.1
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.low.r0.atlas-m.low.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect = +2.4
+    lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect = +0.9
+    figures (3):
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.difference = -1.5
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.interval = -3.5 to +0.5
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.level = 95%
+  - setting: retry; across: model; verdict: within
+    lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect = +2.4
+    lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.effect = +3.5
+    figures (3):
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.brisk-s.off.r0.brisk-s.off.r1.difference = +1.2
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.brisk-s.off.r0.brisk-s.off.r1.interval = -1.5 to +3.8
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.brisk-s.off.r0.brisk-s.off.r1.level = 95%
+  - setting: retry; across: model; verdict: differs
+    lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect = +2.4
+    lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect = +7.5
+    figures (3):
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.difference = +5.1
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.interval = +1.8 to +8.5
+      lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.effect = +1.4
+    lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect = +0.9
+    figures (3):
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.difference = -0.5
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.interval = -2.2 to +1.2
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.atlas-m.high.r0.atlas-m.high.r1.level = 95%
+  - setting: retry; across: model; verdict: within
+    lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.effect = +1.4
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect = +1.9
+    figures (3):
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.difference = +0.5
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.interval = -1.5 to +2.5
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.level = 95%
+  - setting: retry; across: model; verdict: differs
+    lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.effect = +1.4
+    lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.effect = +4.8
+    figures (3):
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.difference = +3.4
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.interval = +0.7 to +6.1
+      lever.retry.atlas-m.low.r0.atlas-m.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.level = 95%
+  - setting: retry; across: model; verdict: within
+    lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect = +0.9
+    lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.effect = +1.3
+    figures (3):
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.difference = +0.4
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.interval = -1.2 to +2.1
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.level = 95%
+  - setting: retry; across: model; verdict: differs
+    lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect = +0.9
+    lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.effect = +3.4
+    figures (3):
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.difference = +2.5
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.interval = +0.3 to +4.8
+      lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.effect = +3.5
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect = +1.9
+    figures (3):
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.difference = -1.7
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.interval = -4.2 to +0.9
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.low.r0.brisk-s.low.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.effect = +3.5
+    lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.effect = +1.3
+    figures (3):
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.difference = -2.2
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.interval = -4.6 to +0.2
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.level = 95%
+  - setting: retry; across: model; verdict: differs
+    lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.effect = +3.5
+    lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect = +7.5
+    figures (3):
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.difference = +4
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.interval = +0.5 to +7.5
+      lever.retry.brisk-s.off.r0.brisk-s.off.r1.pass_rate.vs.nano-xs.off.r0.nano-xs.off.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect = +1.9
+    lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.effect = +1.3
+    figures (3):
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.difference = -0.5
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.interval = -2.5 to +1.5
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.brisk-s.high.r0.brisk-s.high.r1.level = 95%
+  - setting: retry; across: model; verdict: differs
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect = +1.9
+    lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.effect = +4.8
+    figures (3):
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.difference = +2.9
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.interval = +0.1 to +5.7
+      lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.level = 95%
+  - setting: retry; across: model; verdict: within
+    lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.effect = +1.3
+    lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.effect = +3.4
+    figures (3):
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.difference = +2.1
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.interval = -0.3 to +4.5
+      lever.retry.brisk-s.high.r0.brisk-s.high.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect = +7.5
+    lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.effect = +4.8
+    figures (3):
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.difference = -2.7
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.interval = -6.4 to +1
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.low.r0.nano-xs.low.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: differs
+    lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect = +7.5
+    lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.effect = +3.4
+    figures (3):
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.difference = -4.1
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.interval = -7.6 to -0.6
+      lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.level = 95%
+  - setting: retry; across: reasoning; verdict: within
+    lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.effect = +4.8
+    lever.retry.nano-xs.high.r0.nano-xs.high.r1.pass_rate.effect = +3.4
+    figures (3):
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.difference = -1.3
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.interval = -4.5 to +1.8
+      lever.retry.nano-xs.low.r0.nano-xs.low.r1.pass_rate.vs.nano-xs.high.r0.nano-xs.high.r1.level = 95%
+total: 27
+offset: 0

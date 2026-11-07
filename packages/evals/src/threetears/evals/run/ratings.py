@@ -10,8 +10,7 @@ the judge scored that dimension at all. A rating of a dimension the judge did no
 nothing to be compared with, and a scale the caller asserted could disagree with the score it is
 compared to; both are refused here rather than surfacing later as an unpaired rating.
 
-Read back through ``AnalysisContextBundle.judge_agreement`` (and a reporter run's
-``ReporterCalibration.rating_agreement``), which pair each rating with the result's judge score at
+Read back through ``AnalysisContextBundle.judge_agreement``, which pairs each rating with the result's judge score at
 read time. A rater who rates the same dimension of the same result again, as the same kind of rater,
 replaces their earlier rating: the document's id is derived from the result, the dimension, the rater
 and the rater's kind — so an agent rating under a person's identity stands beside that person's rating

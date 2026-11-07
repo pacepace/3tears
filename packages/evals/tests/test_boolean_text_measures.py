@@ -23,7 +23,7 @@ from threetears.evals.schema import EvalResult
 from threetears.evals.kernel import MetricDescriptor, classifier_label_measure, classifier_label_of, confusion_cell
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
-from threetears.evals.kernel.metrics import confusion_of, describe_measure
+from threetears.evals.kernel.metrics import confusion_of, describe_measure, measure_value_misfit
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
@@ -107,7 +107,73 @@ def test_a_number_under_a_boolean_name_is_dropped_and_reported() -> None:
     collection = _collection([_result("c1", on_target=1.0)])
 
     assert "on_target" not in {summary.name for summary in collection.measures}
-    assert "on_target" in collection.unreported_observations
+    assert collection.unreported_observations == [
+        "on_target (declared boolean, recorded as a number; dropped, not pooled)"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("measured", "entry"),
+    [
+        ({"grade": "high"}, "grade (declared numeric, recorded as text; dropped, not pooled)"),
+        ({"grade": True}, "grade (declared numeric, recorded as true or false; dropped, not pooled)"),
+        ({"ruling_text": 2.0}, "ruling_text (declared text, recorded as a number; dropped, not pooled)"),
+        ({"ruling_text": False}, "ruling_text (declared text, recorded as true or false; dropped, not pooled)"),
+        ({"on_target": "yes"}, "on_target (declared boolean, recorded as text; dropped, not pooled)"),
+        ({"match": 0.0}, "match (declared boolean, recorded as a number; dropped, not pooled)"),
+        ({"confusion_cell": 1.0}, "confusion_cell (declared categorical, recorded as a number; dropped, not pooled)"),
+    ],
+)
+def test_a_stored_value_its_declared_type_does_not_fit_is_named_with_its_reason_and_given_no_statistics(
+    measured: dict[str, bool | float | str], entry: str
+) -> None:
+    """A result stored before the runner refused the misfit: dropped from the statistics, named with why."""
+    (name,) = measured
+    collection = _collection([_result("c1", **measured), _result("c2", **measured)])
+
+    assert name not in {summary.name for summary in collection.measures}
+    assert collection.unreported_observations == [entry]
+
+
+@pytest.mark.parametrize(
+    ("value", "misfit"),
+    [
+        ("two", "declared no data type, read as numeric, recorded as text"),
+        (True, "declared no data type, read as numeric, recorded as true or false"),
+        (2.0, None),
+    ],
+)
+def test_an_untyped_measure_reaches_no_bundle_surface_and_its_type_rule_takes_only_a_number(
+    value: str | bool | float, misfit: str | None
+) -> None:
+    """The bundle leaves an untyped measure quiet whatever its value, so the type rule held where a result is written
+    is what keeps text or a bool out of the run summary's numbers, and it reads the measure as numeric."""
+    profile = HostProfile(
+        host_id="untyped",
+        host_sweepables=SHARED_CORE,
+        measures=MeasureRegistry((_measure("queue_jumps", None),)),  # type: ignore[arg-type]
+    )
+    results = [_result("c1", queue_jumps=value), _result("c2", queue_jumps=value)]
+
+    bundle = one_batch_bundle(results, profile=profile)
+
+    ((cell,), (run,)) = (bundle.cell_measures, bundle.run_summaries)
+    for collection in (cell.measures, run.measures):
+        assert "queue_jumps" not in {summary.name for summary in collection.measures}
+        assert not any(entry.startswith("queue_jumps") for entry in collection.unreported_observations)
+    assert measure_value_misfit(describe_measure("queue_jumps", profile.measures), value) == misfit
+
+
+def test_misfit_values_beside_fitting_ones_are_named_and_only_the_fitting_ones_pool() -> None:
+    results = [_result("c1", on_target=True), _result("c2", on_target=False), _result("c3", on_target=1.0)]
+
+    collection = _collection(results)
+    (summary,) = [summary for summary in collection.measures if summary.name == "on_target"]
+
+    assert (summary.n, summary.rate) == (2, 0.5)
+    assert collection.unreported_observations == [
+        "on_target (declared boolean, recorded as a number; dropped, not pooled)"
+    ]
 
 
 def test_a_boolean_reads_its_rate_as_the_point_estimate() -> None:
@@ -254,13 +320,16 @@ def test_no_match_no_accuracy_and_a_non_bool_match_is_reported_under_its_own_nam
 
     collection = _collection([_result("c1", match=1.0)])
 
-    assert "match" in collection.unreported_observations
+    assert "match (declared boolean, recorded as a number; dropped, not pooled)" in collection.unreported_observations
     assert not {"match", "accuracy"} & {summary.name for summary in collection.measures}
 
 
 def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
     collection = _collection([_result("c1", confusion_cell="attack->move")])
-    assert "confusion_cell" in collection.unreported_observations
+    assert collection.unreported_observations == [
+        "confusion_cell (declared categorical, recorded as text that is not one expected → predicted pair; "
+        "dropped, not pooled)"
+    ]
     assert not any(summary.name.startswith("classifier:") for summary in collection.measures)
 
 
