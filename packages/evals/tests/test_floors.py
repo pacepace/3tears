@@ -18,6 +18,7 @@ from typing import Any, get_args
 
 import pytest
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -260,7 +261,9 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     bundle, _, _ = await _shape(14)
     report = _page(bundle)
     (warning,) = _warnings(report)
-    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    # The aspect as the page names it: the quick path's label by the campaign's name (presentation build, chunk 4).
+    named = aspect_name(bundle, campaign=report.source.campaign_name)
+    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {named}."
     assert lint_prose(warning) == []
     header = [block for block in report.blocks if block.section == "header"]
     sources = [block.source for block in header if isinstance(block, DisclosureBlock)]

@@ -927,20 +927,33 @@ ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 ASPECT_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 
 
-def printed_aspect_name(label: str, short_name: str | None) -> str:
+#: The labels the quick path gives the one aspect of a campaign it declares, by what its eval grades
+#: (``quick/contract.py``, ``quick/one_call.py``): the engine's words for the work, which name nothing a reader asked.
+ENGINE_ASPECT_LABELS: frozenset[str] = frozenset({"classify", "score"})
+
+
+def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | None = None) -> str:
     """What a page prints for an aspect: its declared short name, else its whole label, never a shortening of it.
 
     The one statement of the rule: the campaign's uniqueness check and every page part
-    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it.
+    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it. A label the engine gave
+    (:data:`ENGINE_ASPECT_LABELS`) with no short name gives way to the campaign's name where the caller has it, so no
+    page heads a section, a fold or a title with the engine's word for the work.
 
     :param label: The aspect's label.
     :ptype label: str
     :param short_name: Its declared short name, or None.
     :ptype short_name: str | None
+    :param campaign: The campaign's name, which an engine-given label gives way to; None keeps the label.
+    :ptype campaign: str | None
     :return: The name a page prints.
     :rtype: str
     """
-    return short_name if short_name is not None else label
+    if short_name is not None:
+        return short_name
+    if campaign and label in ENGINE_ASPECT_LABELS:
+        return campaign
+    return label
 
 
 class Aspect(EvalDocumentModel, CoreShapeModel):

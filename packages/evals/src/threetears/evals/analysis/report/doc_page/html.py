@@ -46,6 +46,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocTerm,
     caveats_line,
     draft_line,
+    masthead_parts,
     open_findings_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
@@ -67,7 +68,7 @@ from threetears.evals.analysis.report.html_parts import (
     table_html,
 )
 from threetears.evals.analysis.report.parts.model import PageArmsKey, PageMasthead, PageSlot
-from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
+from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL
 
 #: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
 #: read).
@@ -96,12 +97,12 @@ def _prose(text: str) -> str:
 
 
 def _masthead(masthead: PageMasthead) -> str:
+    # Each part as a reader's page prints it (masthead_parts): the kind, the system in bold, then the rest.
+    kind, system, *rest = masthead_parts(masthead)
     spans = [
-        f'<span class="kind">{escape(masthead.kind)}</span>',
-        f"<span><b>{escape(masthead.system)}</b></span>",
-        *([f"<span>{escape(masthead.counts)}</span>"] if masthead.counts else []),
-        *([f"<span>{escape(RUN_TEMPLATE.format(date=masthead.run_date))}</span>"] if masthead.run_date else []),
-        *([f"<span>{escape(SYNTHETIC)}</span>"] if masthead.synthetic else []),
+        f'<span class="kind">{escape(kind)}</span>',
+        f"<span><b>{escape(system)}</b></span>",
+        *(f"<span>{escape(part)}</span>" for part in rest),
     ]
     return '<div class="mast">' + "".join(spans) + "</div>"
 
@@ -194,7 +195,7 @@ def _finding(finding: DocFinding) -> str:
     about = escape(finding.about)
     if finding.claim_place is not None:
         about = f'<a href="#claim-{finding.claim_place}">{about}</a>'
-    return f"<li><b>{escape(finding.severity)}</b> · {about}: {_prose(finding.finding)}</li>"
+    return f"<li><b>{escape(finding.severity)}</b> · {about}: {_prose(finding.said)}</li>"
 
 
 def _findings(findings: Sequence[DocFinding]) -> str:

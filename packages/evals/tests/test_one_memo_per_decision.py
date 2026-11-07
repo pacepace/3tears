@@ -593,7 +593,10 @@ def _timing(page: CampaignReport) -> list[str]:
 
 #: What :func:`_build_two` says once when its aspects are asked after their readings, its margins and control set
 #: before.
-_SET_LATE = "Criteria on every aspect were set after the results there existed, so they were not fixed in advance."
+_SET_LATE = (
+    "The aspect, bar and floor on every aspect were set after the results there existed, so they were not fixed in "
+    "advance."
+)
 
 
 def _criteria(page: CampaignReport) -> list[tuple[str, str, str]]:

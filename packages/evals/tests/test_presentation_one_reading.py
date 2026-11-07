@@ -275,7 +275,7 @@ def test_the_undecided_guardrail_says_what_it_means_first_then_the_cases_that_co
 ) -> None:
     (warning,) = _said(rungs["rung3"].result.page.blocks, "guardrails", "warnings")
     assert warning.text == (
-        "v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point "
+        "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
 

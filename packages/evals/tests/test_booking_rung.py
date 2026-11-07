@@ -217,7 +217,7 @@ async def test_serve_reports_the_harness_door_s_report_as_the_campaign_s_page(
 
     assert await asyncio.to_thread(run_cli, argv) == 0
     page = capsys.readouterr().out
-    assert page.startswith("# agent · score (booking)\n") and _HEADLINE not in page, page[:200]
+    assert page.startswith("# booking\n") and _HEADLINE not in page, page[:200]
 
     await _scripted_report(result)
     capsys.readouterr()

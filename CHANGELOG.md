@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each name once, each term defined, each heading once, one order on every replay
+
+**Changed:** a code page, an aspect page and a report document's page head with the campaign's name (its `<title>`
+too); what the page compares and on what is the line under the question (`v1 vs v2 · billing, tone`). A
+listing title (`CampaignLine.title`, `AnalysisLine.title`) names each part once: no arm the name already names, no
+measure that is the name (`triage`, never `triage · classify (triage)`). An aspect the quick path labelled `classify` or
+`score` is called by the campaign's name everywhere a page names it (its fold, its cells, its lines). The criteria-set-late
+line names what was set late and leads the report-wide caveats as their one flag (`The aspect, control and margin on X
+were set after the results there existed, …`); latency, request settings and an uncalibrated judge
+are plain lines under it; criteria set at one time on the same aspects share one row. No prose carries `key=value`, an
+execution-mode id or a bundle digest: the judge's settings read as words, judges that read alike are one line naming
+their dimensions, a footing that moved a setting reads `set model to v2`, arms leaving the same settings unchecked are
+named once together, the latency detail drops the execution mode's id, Methods carries an `Evidence` row and
+a `Fingerprint` cell where it printed `Bundle v2:…, shape 65`, and no cell prints `grader(…)` or a tool name (`(read
+it with result_get)` goes). A lever run at one level reads `One model ran, so this page says nothing of changing the
+model.` where it read `unswept`. The glossary states the judged scale once (`judged score`: 1 to 5, or pass or fail),
+defines `cost per 1,000 replies` where the header says it, and every `Reading` header links its term. A table in a
+section of its own name is titled by the section's heading alone (no `### Cases` then `**Cases**`). A case row's trial
+ids read in their own order (`T7 T8 T9`), its marks repeat by repeat with ties in id order. A host's world state in what
+a case asked prints as a count (`World state: 2 parts (music, discord)`) and a fold titled by the case, never open
+JSON. A report document's masthead dates `14 Mar 2026` and names an aspect once; an editor's finding prints a figure
+key as its value and a claim's id as `claim 2`. A settle table's `Settles` cell reads `today's estimate clears the
+line`, never the enum's word. A measurement's fold opens on its pass rate as a count, never a bare `measured`.
+
+**Hosts:** a campaign listing lists a draft by its own headline, marked `Draft: …`, where it listed code's verdict;
+`CampaignLine.question_short` holds the question whole or nothing, never a cut (read `question` where it is empty). A
+host pinning a report's first line, a listing title, the late line's words, a judge's methods line, the Methods
+`Bundle` row or a rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
+
 ### evals: one result, one sentence: the undecided reading says what it means, on every surface
 
 **Changed:** a contrast the evidence leaves undecided reads `the evidence cannot tell v2 and v1 apart` in a sentence

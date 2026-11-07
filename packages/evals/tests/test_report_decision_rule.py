@@ -19,6 +19,7 @@ from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -325,7 +326,9 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
     markdown = report_markdown(report)
     assert markdown.count(FLOORS_WARN_ONLY) == 1
     decision = markdown.split("\n## Floors\n", 1)[1].split("\n## ", 1)[0]
-    assert decision.index(f"**Floors on {report.bundle.aspect}**") < decision.index(FLOORS_WARN_ONLY)
+    # The aspect as the page names it: one the engine labelled by the campaign's name (presentation build, chunk 4).
+    named = aspect_name(report.bundle, campaign=report.source.campaign_name)
+    assert decision.index(f"**Floors on {named}**") < decision.index(FLOORS_WARN_ONLY)
     assert "unclear: 4 cases are too few for the interval that would show the cost either way" in decision
     # The prod numbers: v2 passed 14 of 60 trials to v1's 29. Shown past the margin on the whole interval, it is
     # broken, and says the drop exceeds the margin; past it on the point estimate alone, it is unclear.
@@ -671,7 +674,7 @@ async def test_a_drop_whose_whole_interval_is_past_the_margin_breaks_and_one_rea
     cases outright. Ten failed, the drop's whole interval is past the margin: broken, a line under the verdict. Eight
     failed, the drop is still 40 points but its interval reaches back within the margin: unclear, and no warning."""
     shown = await _rate_only_page([3] * 20, [3] * 10 + [0] * 10)
-    aspect = shown.bundle.aspect
+    aspect = aspect_name(shown.bundle, campaign=shown.source.campaign_name)
     (warning,) = _warnings(shown)
     assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {aspect}."
     markdown = report_markdown(shown)

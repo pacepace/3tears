@@ -243,11 +243,24 @@ CAMPAIGN_JSON_SHAPE = 6
 class CampaignAspectFold(EvalDocumentModel):
     """One aspect's fold of a campaign's page: its own page, under its heading and what code read there."""
 
-    aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
+    aspect: str = Field(min_length=1, description="The aspect's label, which the fold's id is made from.")
+    name: str = Field(
+        default="",
+        description=(
+            "What the page calls the aspect, the fold's heading: its declared short name, else its label, an "
+            "engine-given label giving way to the campaign's name; empty reads the label."
+        ),
+    )
     shows: str = Field(
         min_length=1,
         description="What code read on the aspect, in a few words beside the heading (`v2 shown worse`).",
     )
+
+    @property
+    def heading(self) -> str:
+        """The fold's heading: what the page calls the aspect (:attr:`name`), else its label."""
+        return self.name or self.aspect
+
     report: Report = Field(
         description=(
             "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold without its title, "

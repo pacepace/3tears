@@ -215,7 +215,8 @@ async def test_an_undecided_guardrail_no_arm_failed_says_the_cases_are_too_few_t
     line says so, so the sample's size never reads as a defect of the arm."""
     page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=10, leaks=0))
     (line,) = _warned(page.blocks, "guardrails")
-    aspect = page.aspects[0].aspect
+    # The aspect as the page names it: the quick path's `score` by the campaign's name (presentation build, chunk 4).
+    aspect = page.aspects[0].heading
     assert line == (
         f"same may do worse than current on the No leak score guardrail on {aspect}, by more than its 5-point margin. "
         "Of the 30 cases that could fail it, neither arm failed any, too few to settle it."

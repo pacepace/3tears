@@ -484,7 +484,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
         TableColumn(key="change", header="Change (pts)", term="change"),
         TableColumn(key="interval", header="Interval (pts)", term="interval"),
         TableColumn(key="margin", header="Margin (pts)", term="margin"),
-        TableColumn(key="reading", header="Reading"),
+        TableColumn(key="reading", header="Reading", term="reading"),
     ]
     rows = []
     for row in readings.readings:
@@ -923,7 +923,7 @@ def _settle_note(sizings: Sequence[_Sizing]) -> str:
 
 def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     """What code read on one aspect, beside its fold's heading, by the campaign's kind: ``v2 shown worse``, ``alpha
-    ahead of beta``, ``alpha misses a bar``.
+    ahead of beta``, ``alpha misses a bar``, ``reply passed 40 of 40 trials on 20 cases``.
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
@@ -936,7 +936,17 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
         return pairs_words(readings, aspect) or "not compared"
     if readings.kind == "measurement":
         missed = [status.arm_label for status in readings.missed_bars() if status.aspect == aspect]
-        return f"{', '.join(dict.fromkeys(missed))} misses a bar" if missed else "measured"
+        if missed:
+            return f"{', '.join(dict.fromkeys(missed))} misses a bar"
+        # The arm's pass rate as its count, as the lead states it, so no fold opens on a bare word.
+        figures = [
+            figure
+            for reading in readings.measures
+            # ``passed``: the trials' own pass rate, as the readings key it.
+            if reading.aspect == aspect and reading.measure == "passed"
+            if (figure := measured_figure(reading)) is not None
+        ]
+        return "; ".join(figures) or "measured"
     rows = readings.on_aspect(aspect)
     if not rows:
         return "not compared"

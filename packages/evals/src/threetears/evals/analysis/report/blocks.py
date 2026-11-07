@@ -154,6 +154,10 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of: a campaign's answer and warnings are on it too.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
 
+#: The report-wide caveats a page sets apart as a flag, by the id each carries: when the criteria were set, which
+#: changes how every reading is read. Every other report-wide caveat is a plain line under it.
+FLAGGED_CAVEATS: frozenset[str] = frozenset({"caveat-late", "caveat-untimed"})
+
 
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
@@ -1094,12 +1098,22 @@ class TrialBlock(_Block):
     why: str | None = Field(
         default=None, description="Which check or judged dimension failed it, or why it was lost, on one line."
     )
-    first_input: str = Field(default="", description="What the case asked.")
+    first_input: str = Field(default="", description="What the case asked, without its world state.")
+    world: str = Field(
+        default="",
+        description=(
+            "The world state the case began in, as its host wrote it (JSON, one part under each `## <name>`), "
+            "which a page folds under the case's name and never prints open; empty where the case states none."
+        ),
+    )
+    world_parts: list[str] = Field(
+        default_factory=list, description="The names of the world state's parts, in its order: what a page counts."
+    )
     excerpt: str = Field(default="", description="The tail of what the judge was handed.")
     failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
     judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
     error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
-    result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
+    result_id: str = Field(min_length=1, description="The stored result's id.")
     open: bool = Field(
         default=False,
         description="Whether the record is shown open, in HTML and Markdown: a failed or lost trial, up to a cap.",
@@ -1179,6 +1193,7 @@ ReportBlock = Annotated[TableBlock | ChartBlock | TrialBlock | DisclosureBlock, 
 
 __all__ = [
     "FIRST_SCREEN",
+    "FLAGGED_CAVEATS",
     "FOLDED_SECTIONS",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",

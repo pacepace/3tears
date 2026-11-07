@@ -72,10 +72,10 @@ class TestTheToyAnalysisSerializesTwoWays:
         markdown = report_markdown(report)
         lines = markdown.splitlines()
 
-        # The title is code's (what is compared and on what, the campaign's name a qualifier); the declared question is
-        # quoted whole on its own line under it, then the arms; who wrote the analysis is in the methods.
+        # The heading is the campaign's name (presentation build, chunk 4); the declared question is quoted whole on its
+        # own line under it, then the arms and the aspect; who wrote the analysis is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "1024tok vs 256tok · extract_invoice_fields (chunk width sweep)"
+        assert report.title == "chunk width sweep"
         # The title is the first line: nothing stands above it.
         top = lines.index(f"# {report.title}")
         assert top == 0
@@ -127,9 +127,10 @@ class TestTheToyReportsContent:
         assert isinstance(table, TableBlock) and table.name == "methods"
         rows = {str(row["item"]): str(row["value"]) for row in table.values()}
         assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
-        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's.
-        assert analysis.aspects[0].bundle_fingerprint in rows["Bundle"]
-        assert generation.bundle_fingerprint not in rows["Bundle"]
+        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's: in
+        # a cell of its own, never in a sentence (presentation build, chunk 4).
+        assert analysis.aspects[0].bundle_fingerprint in rows["Fingerprint"]
+        assert generation.bundle_fingerprint not in rows["Fingerprint"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
@@ -276,8 +277,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         _, report = code_only
         (methods, *notes) = [block for block in report.blocks if block.section == "methods"]
         assert isinstance(methods, TableBlock) and all(block.fold == "Disclosures" for block in notes)
-        (bundle,) = [row["value"] for row in methods.values() if row["item"] == "Bundle"]
-        assert report.source.bundle_fingerprint in str(bundle) and "its JSON beside this page" in str(bundle)
+        (evidence,) = [row["value"] for row in methods.values() if row["item"] == "Evidence"]
+        (fingerprint,) = [row["value"] for row in methods.values() if row["item"] == "Fingerprint"]
+        assert report.source.bundle_fingerprint in str(fingerprint) and "its JSON beside this page" in str(evidence)
 
     def test_it_serializes_as_one_page_and_its_markdown(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only

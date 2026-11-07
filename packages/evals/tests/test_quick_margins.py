@@ -188,7 +188,8 @@ class TestNoMargin:
         assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
         advice = _no_margin_advice(comparison)
-        assert "grader(correct, margin=...)" in advice["Correct score"]
+        # Said in words, never as a call (presentation build, chunk 4: no cell prints `grader(`).
+        assert advice["Correct score"].startswith("a margin on its grader")
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"
         (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
@@ -199,7 +200,7 @@ class TestNoMargin:
         comparison = await _run(CASES, arms, ["label"], "margins-accuracy", 2)
         (line,) = _no_margin_lines(comparison)
         advice = _no_margin_advice(comparison)
-        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert advice["Accuracy"] == "a margin on the classifier's field's grader, on every arm's run"
         assert "scorer" not in line + advice["Accuracy"], "accuracy takes a margin of its own: no duplicate scorer"
 
 
@@ -383,6 +384,6 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
         comparison = await _run(CASES, {"current": priced, "cheaper": priced}, ["label", correct], "no-margin-kinds", 1)
         (_line,) = _no_margin_lines(comparison)
         advice = _no_margin_advice(comparison)
-        assert advice["Correct score"] == "where it is graded: `grader(correct, margin=...)`"
-        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert advice["Correct score"] == "a margin on its grader"
+        assert advice["Accuracy"] == "a margin on the classifier's field's grader, on every arm's run"
         assert advice["Production cost"] == "cannot: the engine owns its description"

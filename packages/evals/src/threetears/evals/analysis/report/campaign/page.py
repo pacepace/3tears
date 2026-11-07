@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.campaign_title import declared_title, named_title
+from threetears.evals.analysis.campaign_title import arms_line, declared_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
@@ -121,13 +121,14 @@ def build_campaign_report(
         writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
     :ptype unread_line: str
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
-        candidates), which the title names; None names the arms its readings label.
+        candidates), which the arms line under the heading names; None names the arms its readings label.
     :ptype arms: Sequence[CampaignArm] | None
     :param lead: The page's answer where its caller states its own, in place of the lead code writes from the
         readings: the way a harness whose eval reads a figure of its own (a judge's preference, a promotion's
         reading) states its answer on the page, as its own blocks with their own tone. They replace code's lead
         block in place, in their order: on every campaign page that is directly after the question line (or the
-        line saying the page is an exploratory comparison), before where the report is and what warns. Each is in
+        line saying the page is an exploratory comparison) and the arms line under it, before where the report is and
+        what warns. Each is in
         the ``answer`` section. None for code's lead; an empty sequence is refused. Nothing else on the page changes
         with it.
     :ptype lead: Sequence[ReportBlock] | None
@@ -145,18 +146,19 @@ def build_campaign_report(
         _check_lead(lead)
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
-    names = AspectNames.of(bundles)
-    # The first screen is the decision: the question, the lead, then where the campaign's report is where it has one,
-    # then what warns, one line per arm, and each report-wide caveat once.
+    names = AspectNames.of(bundles, campaign=campaign.name or None)
+    # The first screen is the decision: the question, what the page compares, the lead, then where the campaign's
+    # report is where it has one, then what warns, one line per arm, and each report-wide caveat once.
     blocks: list[ReportBlock] = [
         *question_blocks(campaign, compares=kind != "measurement"),
+        *_arms_blocks(campaign, readings, arms),
         *(_lead_blocks(campaign, readings, reports, names=names) if lead is None else lead),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names),
         *guardrail_warnings(campaign, readings, reports, names=names),
-        *caveat_blocks(bundles, section="warnings"),
+        *caveat_blocks(bundles, section="warnings", names=names),
     ]
     if kind == "change":
         blocks += table_blocks(campaign, readings, reports, names=names)
@@ -178,6 +180,7 @@ def build_campaign_report(
     folds = [
         CampaignAspectFold(
             aspect=aspect.label,
+            name=names(aspect.label),
             shows=aspect_shows(readings, aspect.label),
             # What the campaign states once for every aspect, its fold does not say again.
             report=for_the_campaign(reports[aspect.label], alone=folds_alone),
@@ -188,7 +191,7 @@ def build_campaign_report(
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
     return CampaignReport(
         basis="code_only",
-        title=_title(campaign, readings, arms),
+        title=_title(campaign),
         campaign_id=campaign.id,
         campaign_name=campaign.name or None,
         scope_id=campaign.scope_id,
@@ -285,19 +288,26 @@ def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
     ]
 
 
-def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:
-    """The campaign's title (:func:`~threetears.evals.analysis.campaign_title.named_title`): over ``arms`` where given,
-    else over the arms the readings name (the control first), each by its label."""
-    name = campaign.name or f"Campaign {campaign.id}"
+def _title(campaign: EvalCampaign) -> str:
+    """The page's heading: the campaign's name, which says what the campaign is; what it compares and on what is the
+    line under it (:func:`_arms_blocks`), so the heading never stacks names."""
+    return campaign.name or f"Campaign {campaign.id}"
+
+
+def _arms_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None
+) -> list[ReportBlock]:
+    """The line under the heading (:func:`~threetears.evals.analysis.campaign_title.arms_line`): the arms, each by
+    its name, and the aspects, each part the campaign's name does not already say; over ``arms`` where given (each as a
+    title names it), else over the arms the readings name, each by its label. Nothing where the name says it all."""
     aspects = [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
     if arms is not None:
-        return declared_title(name, arms, aspects, given={arm.label for arm in campaign.arms})
-    return named_title(
-        name,
-        control=[readings.control_label] if readings.control is not None else [],
-        candidates=[label for key, label in readings.arm_labels().items() if key != readings.control],
-        aspects=aspects,
-    )
+        control, candidates = declared_arm_names(arms, given={arm.label for arm in campaign.arms})
+    else:
+        control = [readings.control_label] if readings.control is not None else []
+        candidates = [label for key, label in readings.arm_labels().items() if key != readings.control]
+    line = arms_line(_title(campaign), control=control, candidates=candidates, aspects=aspects)
+    return [DisclosureBlock(section="header", source="arms", text=line)] if line else []
 
 
 def _checked_reports(

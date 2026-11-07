@@ -665,7 +665,8 @@ async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_fi
     (row,) = result.page.readings.readings
     assert (row.reading, row.margin, row.confirmatory) == (reading, None, True)
     page = campaign_report_markdown(result.page)
-    (cells,) = [line for line in page.splitlines() if line.startswith("| classify | v2 |")]
+    # The aspect the quick path labelled `classify` is called by the campaign's name (presentation build, chunk 4).
+    (cells,) = [line for line in page.splitlines() if line.startswith(f"| {result.page.aspects[0].heading} | v2 |")]
     assert cells.endswith(f"| {words} |")
     assert "no worse than the margin" not in page and "No margin was declared" not in page
 

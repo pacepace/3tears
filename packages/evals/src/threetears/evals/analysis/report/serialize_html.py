@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
+    FLAGGED_CAVEATS,
     FOLDED_SECTIONS,
     SECTION_TITLES,
     ChartBlock,
@@ -89,7 +90,7 @@ from threetears.evals.analysis.report.html_parts import (
     term_link,
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
-from threetears.evals.analysis.report.serialize_md import trial_summary
+from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -184,7 +185,7 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
     links = [(section, titles[section]) for section in before]
-    links += [(fold_anchor(slug), fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(fold_anchor(slug), fold.heading) for fold, slug in zip(report.aspects, slugs, strict=True)]
     links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{escape(text)}</a>' for href, text in links) + "</nav>")
@@ -220,7 +221,12 @@ def _campaign_section(report: CampaignReport, section: str, *, static: bool) -> 
     blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
-        *_section(section, report.section_titles[section], _folded(blocks, static=static), count=None),
+        *_section(
+            section,
+            report.section_titles[section],
+            _folded(blocks, static=static, heading=report.section_titles[section]),
+            count=None,
+        ),
         "</section>",
     ]
 
@@ -252,7 +258,7 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[s
     inner = _prefixed("\n".join(body), prefix)
     return [
         f'<section id="{fold_anchor(slug)}">',
-        f'<details class="section"><summary><h2>{escape(fold.aspect)}</h2> '
+        f'<details class="section"><summary><h2>{escape(fold.heading)}</h2> '
         f'<span class="count">· {escape(fold.shows)}</span></summary>',
         f'<div class="section-body" id="{fold_anchor(slug)}--body">',
         inner,
@@ -291,7 +297,7 @@ def _sections(report: Report, present: Sequence[str], *, static: bool) -> list[s
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        body = _folded(blocks, static=static)
+        body = _folded(blocks, static=static, heading=titles[section])
         parts.extend(_section(section, titles[section], body, count=_section_count(section, blocks)))
         parts.append("</section>")
     return parts
@@ -340,8 +346,9 @@ def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> i
     return None if table is None else table.total_rows
 
 
-def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[str]:
-    """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``."""
+def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool, heading: str | None = None) -> list[str]:
+    """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``; a table titled as the
+    section's ``heading`` untitled, so no heading prints twice."""
     parts: list[str] = []
     open_fold: str | None = None
     for index, block in blocks:
@@ -351,6 +358,10 @@ def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[
             if block.fold is not None:
                 parts.append(f'<details class="fold"><summary>{escape(block.fold)}</summary>')
             open_fold = block.fold
+        if isinstance(block, TableBlock) and block.fold is None and not block.details and block.title == heading:
+            # A table in a section of its own name is titled once, by the section's heading: drawn as one in a fold of
+            # that name is, without a title of its own.
+            block = block.model_copy(update={"fold": block.title})
         parts.append(_block(block, index, static=static))
     if open_fold is not None:
         parts.append("</details>")
@@ -377,6 +388,11 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>Why</dt><dd>{escape(block.cause_words)}</dd>")
     if block.first_input:
         parts.append(f"<dt>What the case asked</dt><dd><pre>{escape(block.first_input)}</pre></dd>")
+    if block.world:
+        parts.append(
+            f"<dt>{escape(world_count(block.world_parts))}</dt><dd><details><summary>"
+            f"{escape(block.case_label)}'s world state</summary><pre>{escape(block.world)}</pre></details></dd>"
+        )
     if block.excerpt:
         parts.append(f"<dt>What the judge saw (its last part)</dt><dd><pre>{escape(block.excerpt)}</pre></dd>")
     if block.failed_checks:
@@ -399,7 +415,7 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>What the judge said</dt><dd><ul>{judged}</ul></dd>")
     if block.error_words:
         parts.append(f"<dt>Recorded error</dt><dd><pre>{escape(block.error_words)}</pre></dd>")
-    parts.append(f"<dt>Stored result</dt><dd><code>{escape(block.result_id)}</code> (read it with result_get)</dd>")
+    parts.append(f"<dt>Stored result</dt><dd><code>{escape(block.result_id)}</code></dd>")
     opened = " open" if block.open else ""
     return (
         f'<details class="trial" id="{escape(block.trial_id)}" data-state="{escape(block.state)}"{opened}>'
@@ -440,9 +456,12 @@ def _disclosure(block: DisclosureBlock) -> str:
     if block.section in ("header", "warnings") and block.source in _WARNING_SOURCES:
         # What warns, under the title: the kit's flag, set apart, never announced over it.
         return f'<p class="flag warning"{anchor}>{_FLAG_ICON}<strong>{text}</strong></p>'
-    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
-        # A report-wide caveat, once, beside what warns: a flag too, in normal weight.
+    if block.anchor in FLAGGED_CAVEATS:
+        # When the criteria were set, once, beside what warns: the one report-wide caveat set apart, in normal weight.
         return f'<p class="flag report-caveat"{anchor} data-source="{escape(block.source)}">{_FLAG_ICON}<span>{text}</span></p>'
+    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
+        # Every other report-wide caveat, once: a plain line under the flag, never a callout of the same weight.
+        return f'<p class="line report-caveat"{anchor} data-source="{escape(block.source)}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

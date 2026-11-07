@@ -110,13 +110,13 @@ async def page_of(
 
 
 def opening(page: CampaignReport) -> list[tuple[str, str]]:
-    """What the page says up to its first table, less its warnings and its question: each line by its source and
-    text."""
+    """What the page says up to its first table, less its warnings, its question and the arms line under it: each line
+    by its source and text."""
     said: list[tuple[str, str]] = []
     for block in page.blocks:
         if isinstance(block, TableBlock):
             break
-        if isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
+        if isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis", "arms"}:
             said.append((block.source, block.text))
     return said
 

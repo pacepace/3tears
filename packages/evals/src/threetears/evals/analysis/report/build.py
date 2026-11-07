@@ -7,8 +7,8 @@ block. The writer's report is a report document, drawn by its own page.
 
 The page, screen by screen:
 
-1. **The first screen.** The title first, nothing above it (what the campaign compares and on what, with its name as a
-   qualifier: :func:`~threetears.evals.analysis.campaign_title.named_title`); the declared question quoted on its own line, and under it the arms line (each arm named in
+1. **The first screen.** The title first, nothing above it: the campaign's name; the declared question quoted on its
+   own line, and under it the arms line (each arm named in
    full once by the version that answered it, the control marked, the date); the verdict line
    (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; one line per candidate breaking a
    floor, and each report-wide caveat once; the scoreboard, a bare table of
@@ -17,8 +17,7 @@ The page, screen by screen:
    for an unclear one the cases that would show it holds.
 3. **What it means.** The contrasts that can resolve (one line when none can), the guardrails, and the readings by
    stratum and label.
-4. **Cases** and **Trials.** One row per case, each arm's trials as marks, its trial ids last and the failed ones
-   first; then the trials' census in one line and only what went wrong: a row and a record (``T4 · case 1 · arm ·
+4. **Cases** and **Trials.** One row per case, each arm's trials as marks, its trial ids last in their own order; then the trials' census in one line and only what went wrong: a row and a record (``T4 · case 1 · arm ·
    outcome``, open up to a cap) per failed or lost trial, and every passed trial as one row of a closed table.
 5. **Not tested** and **Methods.** What the campaign could not speak to; then a table (arms, judge, settings sent,
    cost, the analysis's writer, the bundle) and the engine's disclosures folded.
@@ -31,9 +30,8 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
 from itertools import chain
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import (
@@ -110,7 +108,6 @@ from threetears.evals.analysis.report.decision import (
     projection_note,
     read_floor,
 )
-from threetears.evals.analysis.campaign_title import named_title
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.campaign.provenance import (
     aspect_provenance_blocks,
@@ -147,6 +144,8 @@ from threetears.evals.analysis.reporting import self_judging_text
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.style import (
     CANNOT_TELL_APART,
+    GLOSSARY,
+    page_date,
     ArmName,
     arm_display_name,
     arm_name,
@@ -196,10 +195,14 @@ from threetears.evals.kernel.surface import (
     TimeAxis,
     earlier_control_mark,
 )
-from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR, ClientRequestSettings
+from threetears.evals.schema.models import (
+    CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
+    ClientRequestSettings,
+    sent_settings_phrase,
+)
 
 #: What the methods say of a report no analysis was written for.
-NO_ANALYSIS = "none written; the analysis_generate action writes one from this same evidence"
+NO_ANALYSIS = "none written yet; generating an analysis writes one from this same evidence"
 
 #: How a guardrail is decided, said once in the methods' disclosures.
 _GUARDRAILS_DISCLOSURE = (
@@ -390,9 +393,9 @@ def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = 
     """
     campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
     readings = campaign.readings
-    names = AspectNames.of(campaign.aspects)
+    names = AspectNames.of(campaign.aspects, campaign=campaign.name or None)
     warnings = campaign_warnings(readings, names)
-    warnings += timing_caveats(campaign.aspects)
+    warnings += timing_caveats(campaign.aspects, names)
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
@@ -586,6 +589,8 @@ def _page(
     if (not_charted := charts.sentence()) is not None:
         notes.append(_note(not_charted, "charts"))
     name = source.campaign_name or f"Campaign {source.campaign_id}"
+    # The aspect as every line of the page names it: an engine-given label gives way to the campaign's name.
+    printed = aspect_name(bundle, campaign=source.campaign_name or None)
     verdict = verdict_line(
         bundle,
         arm,
@@ -596,7 +601,7 @@ def _page(
     )
     blocks: list[ReportBlock] = [
         # Under the title: the question and the arms, the verdict, then what warns and each report-wide caveat once.
-        *_heading_blocks(bundle, names, source),
+        *_heading_blocks(bundle, names, source, aspect=None if printed == name else printed),
         DisclosureBlock(
             section="header",
             source="verdict",
@@ -610,10 +615,12 @@ def _page(
                 else None
             ),
         ),
-        *_floor_warning_blocks(bundle, arm),
-        *caveat_blocks([bundle], section="header"),
+        *_floor_warning_blocks(bundle, arm, printed),
+        *caveat_blocks(
+            [bundle], section="header", names=AspectNames.of([bundle], campaign=source.campaign_name or None)
+        ),
         *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}, arm_short_names or {}), tags),
-        *_decision_blocks(bundle, arm),
+        *_decision_blocks(bundle, arm, printed),
         *contrasts,
         *_case_blocks(bundle, arm),
         *_trial_blocks(bundle, arm, records=trials == "all"),
@@ -636,7 +643,8 @@ def _page(
     blocks.sort(key=lambda block: order.index(block.section))
     blocks = [_in_one_form(block) for block in _anchored(blocks)]
     return Report(
-        title=_title(bundle, name, arm, arm_short_names or {}),
+        # The heading is the campaign's name; what it compares is the arms line under it.
+        title=name,
         source=source,
         blocks=blocks,
         verdicts=[*guardrails_read, *bars_read, *contrasts_read],
@@ -753,25 +761,6 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
     return name
 
 
-def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str], short_names: Mapping[str, str]) -> str:
-    """The title: what the campaign compares and on what, with its name as a qualifier
-    (:func:`~threetears.evals.analysis.campaign_title.named_title`), over the arms the page names and the one aspect
-    this bundle reads. A declared question is never in the title: it is quoted whole on its own line
-    (:func:`_question_line`).
-    """
-    control = _control_key(bundle)
-
-    def printed(key: str) -> str:
-        return short_names.get(key) or arm(key)
-
-    return named_title(
-        name,
-        control=[printed(control)] if control is not None else [],
-        candidates=[printed(board.variant_key) for board in bundle.scoreboard if board.variant_key != control],
-        aspects=[(bundle.aspect, bundle.short_name)],
-    )
-
-
 #: A first word that is a plain word, which a title may capitalize; an identifier (``queue_v5``, ``v4-flash``) is not.
 _PLAIN_WORD = re.compile(r"[a-z]+(?:['-][a-z]+)*(?=[\s,;:?!.]|$)")
 
@@ -782,21 +771,22 @@ def _capitalized(title: str) -> str:
 
 
 def _heading_blocks(
-    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, *, aspect: str | None
 ) -> list[ReportBlock]:
-    """The first screen's lines between the title and the verdict.
+    """The first screen's lines between the title, which is the campaign's name, and the verdict.
 
     With a question declared, the question quoted on its own line; then the subhead carrying what the question need
-    not: the arms line, each arm with its version. When its criteria were set is a caveat under the verdict
+    not: the arms line, each arm with its version, and the aspect where its name is not the title's (``aspect``).
+    When its criteria were set is a caveat under the verdict
     (:func:`~threetears.evals.analysis.report.campaign.provenance.caveat_blocks`), said once.
     """
-    arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
+    arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source, aspect=aspect))
     asked = _question_line(bundle)
     basis = [] if asked is None else [DisclosureBlock(section="header", source="basis", text=asked)]
     return [*basis, arms]
 
 
-def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str) -> list[ReportBlock]:
     """One line per candidate breaking a floor, under the verdict, in the words a campaign's page warns in
     (:func:`~threetears.evals.analysis.report.campaign.warnings.floor_line`): what it means for the candidate, never the
     rate or the interval, which the Floors section reads clause by clause. A floor held or unclear says nothing here."""
@@ -805,7 +795,7 @@ def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], st
         broken = [verdict.floor for verdict in read if verdict.outcome == "broken"]
         if broken:
             margins = [floor.clause.max_points if isinstance(floor.clause, RateDrop) else None for floor in broken]
-            text = floor_line(arm(key), margins, aspect_name(bundle))
+            text = floor_line(arm(key), margins, aspect)
             blocks.append(DisclosureBlock(section="header", source="floor", text=text))
     return blocks
 
@@ -821,8 +811,11 @@ def _question_line(bundle: AnalysisContextBundle) -> str | None:
     return f'"{_capitalized(" ".join(question.split()))}"'
 
 
-def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
-    """The arms line: each arm named in full, once, the control first and marked, then the date, then the design.
+def _arms_line(
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, *, aspect: str | None = None
+) -> str:
+    """The arms line: each arm named in full, once, the control first and marked, then the aspect where the title
+    does not name it (``aspect``), then the date, then the design.
 
     An arm named by its model is named by the version that answered it where the responses named one model other
     than the one asked for (``arm_served_models``, the served-models check's own reading): what ran, not the alias,
@@ -844,18 +837,13 @@ def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source:
     }
     arms = " vs ".join(versioned[key].first() if key in versioned else _namer(names)(key) for key in ordered)
     return " · ".join(
-        part for part in (arms or "no arm ran", _date(source.generated_at), _design_words(bundle)) if part
+        part for part in (arms or "no arm ran", aspect, _date(source.generated_at), _design_words(bundle)) if part
     )
 
 
 def _date(stamp: str) -> str:
-    """An ISO-8601 instant as the page dates it (``14 Oct 2026``), or as given when it does not parse."""
-    try:
-        moment = datetime.fromisoformat(stamp)
-    except ValueError:
-        # NOSILENT: an unparseable stamp is printed as stored rather than dropped or reformatted
-        return stamp
-    return f"{moment.day} {moment:%b %Y}"
+    """An ISO-8601 instant as the page dates it (``14 Oct 2026``, :func:`~threetears.evals.analysis.style.page_date`)."""
+    return page_date(stamp)
 
 
 def _dollars(amount: float | None, ruler: MeasureRuler) -> str | None:
@@ -1016,7 +1004,12 @@ def _scoreboard_blocks(
         TableColumn(key="check", header="Failed by check", term="failed by check"),
         TableColumn(key="judged", header="Failed by judge", term="failed by judge"),
         *([TableColumn(key="other", header=_other_failures_header(other_causes))] if other_causes else []),
-        TableColumn(key="cost", header=f"Cost {_per_reply(bundle)}", term="cost per reply"),
+        # The term the header says, so the glossary defines the words a reader sees.
+        TableColumn(
+            key="cost",
+            header=f"Cost {_per_reply(bundle)}",
+            term=f"cost {_per_reply(bundle)}" if f"cost {_per_reply(bundle)}" in GLOSSARY else "cost per reply",
+        ),
     ]
     rows = [{column.key: row[column.key] for column in columns} for row in rows]
     surface = bundle_decision_surface(bundle)
@@ -1148,7 +1141,7 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
     return f"{case_words} · {repeat_words}"
 
 
-def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str) -> list[ReportBlock]:
     """The aspect's floors, each on each candidate against the control, as a table, never prose.
 
     Each floor's row opens with the floor as a sentence naming its arm. The control heads its column by name, as does
@@ -1244,7 +1237,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         TableBlock(
             section="decision",
             name="decision",
-            title=f"Floors on {bundle.aspect}",
+            title=f"Floors on {aspect}",
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="floor by floor, each arm against the control",
@@ -1998,7 +1991,7 @@ def _comparison_blocks(
         # Two arms: each arm's figure heads its own column, and an arm column would only repeat the header.
         two_arms = len(candidates) == 1 and len(controls) == 1
         columns = [
-            TableColumn(key="reading", header="Reading"),
+            TableColumn(key="reading", header="Reading", term="reading"),
             *([] if two_arms else [TableColumn(key="contrast", header="Arm")]),
             TableColumn(key="control", header=f"▸ {controls[0]}" if len(controls) == 1 else "Control", term="control"),
             TableColumn(key="arm", header=candidates[0] if two_arms else "Value", term="arm mean"),
@@ -2024,7 +2017,7 @@ def _comparison_blocks(
                 title="Statistics",
                 columns=[
                     TableColumn(key="question", header="Question"),
-                    TableColumn(key="reading", header="Reading"),
+                    TableColumn(key="reading", header="Reading", term="reading"),
                     TableColumn(key="contrast", header="Arm"),
                     TableColumn(key="control_mean", header="Control mean", term="control mean"),
                     TableColumn(key="arm_mean", header="Arm mean", term="arm mean"),
@@ -2488,7 +2481,7 @@ def _readings_blocks(
         return []
     columns = [
         *([TableColumn(key="arm", header="Arm")] if len(surface.cells) > 1 else []),
-        TableColumn(key="reading", header="Reading"),
+        TableColumn(key="reading", header="Reading", term="reading"),
         TableColumn(key="value", header="Value", term="interval"),
         TableColumn(key="cases", header="Cases", term="cases"),
     ]
@@ -2924,9 +2917,9 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             row["stratum"] = _stratum_word(trials[0].stratum, bundle.stratum_names) if trials[0].stratum else None
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
-        # The ids are navigation, not information: the failed and lost ones lead, since those are the records a
-        # reader clicks through to; the passed ones follow, each a row of the closed table.
-        row["trials"] = " ".join(trial.trial_id for trial in _wrong_first(trials))
+        # The ids are navigation, not information: in their own order, so a row reads T1 T2 T3 on every replay; which
+        # failed is the marks' to say.
+        row["trials"] = " ".join(trial.trial_id for trial in sorted(trials, key=_trial_order))
         rows.append(row)
     blocks: list[ReportBlock] = [
         TableBlock(
@@ -2966,7 +2959,8 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
 
 def _marks(trials: Sequence[TrialRow]) -> str:
     """One arm's trials of one case as marks, repeat by repeat, its losses and failures named by cause."""
-    ordered = sorted(trials, key=lambda trial: trial.repeat)
+    # Repeat by repeat, two trials of one repeat in their ids' order, so a replay of one recording marks alike.
+    ordered = sorted(trials, key=lambda trial: (trial.repeat, _trial_order(trial)))
     marks = " ".join(_MARKS[trial.state] for trial in ordered) or "not run"
     named = Counter(
         f"{'lost' if trial.state == 'lost' else 'failed'}: {cause_short(trial.cause or 'unknown')}"
@@ -3000,6 +2994,47 @@ def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
 def _wrong_first(trials: Sequence[TrialRow]) -> list[TrialRow]:
     """``trials`` with the failed ones first, then the lost, then the passed, each group as the bundle numbers it."""
     return sorted(trials, key=lambda trial: _STATE_ORDER[trial.state])
+
+
+#: A heading in what a case asked: a ``## <name>`` line, which opens a part.
+_ASKED_HEADING = re.compile(r"^## (?P<name>[^\n]+)$", re.MULTILINE)
+
+
+class _AskedAndWorld(TypedDict):
+    first_input: str
+    world: str
+    world_parts: list[str]
+
+
+def _asked_and_world(asked: str) -> _AskedAndWorld:
+    """What a case asked, split from the world state its host wrote into it: each ``## <name>`` part whose body opens
+    on JSON (``{`` or ``[``), up to the next heading or the end, is the state's; everything else stays what the case
+    asked. The state is a fold of its own, counted by its parts, so no page prints a host's JSON open."""
+    starts = [match.start() for match in _ASKED_HEADING.finditer(asked)]
+    if not starts:
+        return {"first_input": asked, "world": "", "world_parts": []}
+    kept, world, names = [asked[: starts[0]]], [], []
+    for start, end in zip(starts, [*starts[1:], len(asked)], strict=True):
+        part = asked[start:end]
+        heading, _, body = part.partition("\n")
+        if body.lstrip().startswith(("{", "[")):
+            world.append(part.strip())
+            names.append(heading.removeprefix("## ").strip())
+        else:
+            kept.append(part)
+    if not world:
+        return {"first_input": asked, "world": "", "world_parts": []}
+    return {"first_input": "".join(kept).strip(), "world": "\n\n".join(world), "world_parts": names}
+
+
+#: A trial id's number: ``T12`` is 12, so ids sort as numbers, never as text (``T11`` after ``T7``).
+_TRIAL_NUMBER = re.compile(r"\d+")
+
+
+def _trial_order(trial: TrialRow) -> tuple[int, str]:
+    """Where a trial sorts among its case's: by its id's number, then by its id."""
+    found = _TRIAL_NUMBER.search(trial.trial_id)
+    return (int(found.group(0)) if found else 0, trial.trial_id)
 
 
 def _census_line(bundle: AnalysisContextBundle) -> str:
@@ -3085,7 +3120,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, r
                 state=trial.state,
                 cause_words=f"{words.words}. {words.remedy[:1].upper()}{words.remedy[1:]}.",
                 why=why,
-                first_input=trial.first_input,
+                **_asked_and_world(trial.first_input),
                 excerpt=trial.excerpt,
                 # The trial's own record keeps the rate name; the page prints a declared name beside the expression.
                 failed_checks=[
@@ -3172,9 +3207,11 @@ def _not_tested_blocks(
     """
     said: list[str] = []
     for row in bundle.coverage:
-        if row.status in ("thin", "unswept"):
-            why = "one level ran" if row.status == "unswept" else "too few repeats to read"
-            said.append(f"Lever {row.name} is {row.status}: {why}.")
+        if row.status == "unswept":
+            # Said as what it means, never the word: one level ran, so nothing is known of changing it.
+            said.append(f"One {row.name} ran, so this page says nothing of changing the {row.name}.")
+        elif row.status == "thin":
+            said.append(f"Each {row.name} ran too few repeats to read what changing the {row.name} does.")
     said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
     case_name = _case_namer(bundle)
@@ -3276,11 +3313,11 @@ def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     def declaring(name: str) -> str:
         if name not in METRIC_DESCRIPTORS:
             ranged = catalog[name].family == "mechanical" and catalog[name].value_range is None
-            # A check is graded by its scenario, not a grader the caller names: no call to quote.
-            call = "" if goal_check_of(name) is not None else f": `grader({name}, margin=...)`"
-            return f"where it is graded{call}" + (", with its `range=`" if ranged else "")
+            # A check is graded by its scenario, not a grader the caller names: it takes its margin where declared.
+            where = "on its check" if goal_check_of(name) is not None else "on its grader"
+            return f"a margin {where}" + (", with the range its values take" if ranged else "")
         if name in RUN_MARGIN_MEASURES:
-            return "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+            return "a margin on the classifier's field's grader, on every arm's run"
         return "cannot: the engine owns its description"
 
     rows: list[dict[str, CellValue]] = [
@@ -3321,11 +3358,16 @@ def _method_blocks(
         if text and text.strip():
             blocks.append(DisclosureBlock(section="methods", source=source_of, text=text.strip(), fold="Disclosures"))
 
-    for tier in bundle.judge_evidence_tiers:
-        # A reserved judge axis by its plain name, as every other surface names it, never its stored id.
-        say(
-            "measurement",
-            "Judge: " + tier_sentence(tier.model_copy(update={"rubric_dim": reading_name(tier.rubric_dim)})),
+    for index, sentence in enumerate(_judge_sentences(bundle)):
+        # The first judge's line links the judged score, so the glossary states its scale once.
+        blocks.append(
+            DisclosureBlock(
+                section="methods",
+                source="measurement",
+                text=sentence,
+                fold="Disclosures",
+                term="judged score" if index == 0 else None,
+            )
         )
     if (settings := setup_disclosure("settings", bundle, arm)) is not None:
         blocks.append(settings)
@@ -3424,12 +3466,14 @@ def _methods_table(
         rows.append(("Readings not shown", f"{len(unshown)} carried by no trial: {_listed(unshown)}"))
     rows.append(
         (
-            "Bundle",
-            f"{source.bundle_fingerprint}, shape {bundle.schema_version}, 3tears-evals "
-            f"{bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON beside this "
-            "page",
+            "Evidence",
+            # The build as one token (``3tears-evals <version>,``), which a reader and the oracle read it by.
+            f"3tears-evals {bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON "
+            "beside this page",
         )
     )
+    # The digest a reader checks the JSON against: an id, so a cell of its own, as code, never in a sentence.
+    rows.append(("Fingerprint", code(source.bundle_fingerprint)))
     return TableBlock(
         section="methods",
         name="methods",
@@ -3439,6 +3483,29 @@ def _methods_table(
         order="the arms, the judge, the cost, then how the page was made",
         total_rows=len(rows),
     )
+
+
+#: Where a judge sentence names its dimensions, while its judges are grouped by everything else they say.
+_DIMS = "\x00"
+
+
+def _judge_sentences(bundle: AnalysisContextBundle) -> list[str]:
+    """Each judge's tier, one sentence per judge that reads alike: the dimensions it holds for named together, its
+    settings as words, never ``key=value``, and its prompt's id left to the bundle's JSON, which names it by dimension
+    (``tier_sentence`` states one dimension in full)."""
+    alike: dict[str, list[str]] = {}
+    for tier in bundle.judge_evidence_tiers:
+        said = tier_sentence(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}))
+        said = said.replace(sent_settings_phrase(tier.judge_sent_settings), _sent_words(tier.judge_sent_settings))
+        # A reserved judge axis by its plain name, as every other surface names it, never its stored id.
+        if (dim := reading_name(tier.rubric_dim)) not in alike.setdefault(said, []):
+            alike[said].append(dim)
+    return ["Judge: " + said.replace(_DIMS, _listed_words(dims), 1) for said, dims in alike.items()]
+
+
+def _sent_words(sent: ClientRequestSettings | None) -> str:
+    """A judge's sent settings as the clause its sentence carries, in words."""
+    return "request settings unconfirmed" if sent is None else f"sent {_settings_words(sent)}"
 
 
 def _settings_words(sent: ClientRequestSettings) -> str:
@@ -3636,11 +3703,12 @@ def _verdict_order_sentence(bundle: AnalysisContextBundle) -> str | None:
 
 def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
     """Say, per arm, what its runs set away from the subject's production configuration; None when nothing moved."""
-    parts: list[str] = []
+    # Arms that moved alike are said once, together: the same list of settings never prints twice.
+    alike: dict[str, list[str]] = {}
     qualified = False
     for variant_key, pooled in sorted(bundle.arm_production_footings.items()):
         footings = list(pooled.runs.values())
-        moved = sorted({f"{name}={level}" for f in footings if f is not None for name, level in f.moved.items()})
+        moved = sorted({f"{name} to {level}" for f in footings if f is not None for name, level in f.moved.items()})
         unchecked = sorted({name for f in footings if f is not None for name in f.unchecked})
         unread = sum(1 for f in footings if f is None)
         said = [
@@ -3649,13 +3717,19 @@ def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[s
             *([f"{unread} run(s) nobody checked"] if unread else []),
         ]
         qualified = qualified or bool(said)
-        parts.append(f"arm {arm(variant_key)} " + ("; ".join(said) or "moved nothing off production"))
+        alike.setdefault("; ".join(said) or "moved nothing off production", []).append(arm(variant_key))
     if not qualified:
         return None
+    parts = [f"{'arm' if len(arms) == 1 else 'arms'} {_listed_words(arms)} {words}" for words, arms in alike.items()]
     return (
         "A per-reply cost is what production would spend only where its arm's runs moved nothing off the subject's "
         "production configuration: " + "; ".join(parts) + "."
     )
+
+
+def _listed_words(names: Sequence[str]) -> str:
+    """Names as a sentence lists them: ``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _some_arms(

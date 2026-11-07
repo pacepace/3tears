@@ -95,9 +95,9 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     result = await module.invoices.run(store=":memory:")
     # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
     lines = report_markdown(result.report).splitlines()
-    # The title is code's: what is compared and on what, the campaign's name the qualifier; the declared question is
-    # quoted under it, and the result reads as asked, never as exploratory.
-    assert lines[0] == "# v1 vs v2 · classify (invoices)"
+    # The heading is the campaign's name, its arms the line under the question; the declared question is quoted under
+    # it, and the result reads as asked, never as exploratory.
+    assert lines[0] == "# invoices"
     assert lines[1] == f'"{QUESTION}"'
     assert lines[3].startswith("v1 (control) vs v2 · ")
     # Never "no difference", never "not separated": the campaign's lead sentence, then what the guardrail means.
@@ -164,14 +164,14 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     # The page quotes the declared question and leads on its measure, the first grader (the classifier's accuracy), as
     # the printed line does, decided rather than a lead; the guardrail warns as loudly as a broken floor, beside the
     # lead and never in its place, and picks no arm.
-    assert lines[0] == "# v1 vs v2 · classify (invoices)"
+    assert lines[0] == "# invoices"
     assert lines[1] == f'"{QUESTION}"'
     assert "Exploratory comparison." not in lines
     bold = [line for line in first_screen if line.startswith("**")]
     # The guardrail says what it means for the decision, then what leaves it undecided: of the 30 cases that could
     # fail it, one noisy invoice each, too few to settle it.
     warning = (
-        "v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point "
+        "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
     assert bold == [f"**{_LEAD}**", f"**{warning}**"]
@@ -187,7 +187,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     assert not [line for line in lines if line.startswith("On classify, the evidence cannot tell a drop")]
     assert module.invoices.margin is None and result.margin is None
     assert (
-        "| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |"
+        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |"
     ) in lines
     assert "no worse than the margin" not in "\n".join(lines)
 

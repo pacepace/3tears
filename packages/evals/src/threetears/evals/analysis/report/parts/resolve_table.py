@@ -87,7 +87,7 @@ from threetears.evals.analysis.report.parts.resolve_magnitudes import price_note
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
-from threetears.evals.analysis.analyst.settle import SettleRow
+from threetears.evals.analysis.analyst.settle import SETTLES_WORDS, SettleRow
 from threetears.evals.analysis.report_input import (
     BarRead,
     Cell,
@@ -467,7 +467,8 @@ def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "estimate": _read(item.estimate[0] if item.estimate else None),
             "line": _read(item.line),
             "distance": _read(item.distance),
-            "settles": _words(item.settles),
+            # Which side of its line today's estimate is on, as a sentence, never the enum's word.
+            "settles": _words(SETTLES_WORDS[item.settles] if item.settles is not None else None),
             **_sizes(item),
             "wrong_side": _read(item.wrong_side),
             "level": _read(item.level),

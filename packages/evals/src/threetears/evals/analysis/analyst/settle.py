@@ -112,7 +112,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
 from threetears.evals.kernel.errors import RefusedInput
 
-__all__ = ["SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
+__all__ = ["SETTLES_WORDS", "SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
 
 #: The criterion kinds that remove an option that misses them, as declared.
 _GATING = frozenset({"gate", "guardrail"})
@@ -198,6 +198,13 @@ Assumed = int | Literal["share"]
 #: Which side of its line today's estimate is on, so which way a row's sizes settle it; ``on_the_line`` where it sits
 #: exactly on it, which no size settles at today's estimate.
 Settles = Literal["clears", "misses", "on_the_line"]
+
+#: Each :data:`Settles` as a table prints it: a sentence about today's estimate, never the enum's word.
+SETTLES_WORDS: dict[Settles, str] = {
+    "clears": "today's estimate clears the line",
+    "misses": "today's estimate misses the line",
+    "on_the_line": "today's estimate sits on the line",
+}
 
 _MODEL = ConfigDict(frozen=True, extra="forbid")
 

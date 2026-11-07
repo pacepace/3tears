@@ -49,7 +49,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from threetears.evals.analysis.campaign_title import report_input_title
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
@@ -214,6 +213,8 @@ def _masthead(reader: _Reader) -> PageMasthead:
         kind = "measurement"
     else:
         kind = "change" if any(arm.role == "control" for arm in report_input.arms) else "choice"
+    # As the editor and the judge read it (doc_page_text), so a recorded review keeps its key: a reader's page dates it
+    # and names each part once where it prints it (masthead_parts).
     return PageMasthead(
         kind=_KIND_LABELS[kind],
         system=meta.behavior or meta.campaign,
@@ -450,7 +451,47 @@ def _explore(doc: ReportDoc, reader: _Reader) -> TableBlock | None:
     )
 
 
-def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int]) -> list[DocFinding]:
+#: An engine key in an editor's finding, as the editor quoted it: a dotted figure path, in backticks or not, and the
+#: value it was read at where the editor wrote one (``settle.margin.<aspect>.<arm>.cases_needed_80 = 62``).
+_FINDING_KEY = re.compile(
+    r"`?(?P<key>[a-z_][\w-]*(?:\.[\w-]+(?:\.[\w-]+)*)+?)`?(?:\s*=\s*`?(?P<value>-?\d[\d.,]*\d|-?\d)`?)?(?![\w-])"
+)
+
+#: A claim's id in an editor's finding (``c2``), which the page names by its place.
+_CLAIM_ID = re.compile(r"\b(?P<id>c\d+)\b")
+
+
+def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str:
+    """An editor's finding as a page prints it: each figure key it quotes written out as the figure it names (its
+    value, as every key on the page prints), each claim id as the claim's place (``claim 2``), so no finding prints
+    the engine's vocabulary. A key that does not resolve on this input is left as the editor wrote it."""
+
+    def figure(match: re.Match[str]) -> str:
+        key = match.group("key").rstrip(".")
+        try:
+            return (
+                render(f"{{{key}}}", reader.report_input, reader.arm_names)
+                + match.group(0)[len(match.group(0).rstrip(".")) :]
+            )
+        except UnresolvableReference:
+            # NOSILENT: not a figure key on this input (a version, a model id): the editor's words stand.
+            return match.group(0)
+
+    def claim(match: re.Match[str]) -> str:
+        place = places.get(match.group("id"))
+        if place is None:
+            return match.group(0)
+        # ``Claim 2`` where it opens a sentence, ``claim 2`` inside one.
+        opens = (
+            not match.string[: match.start()].rstrip(" `") or match.string[: match.start()].rstrip(" `")[-1] in ".!?"
+        )
+        word = CLAIM_WORD.format(place=place)
+        return word if opens else word[:1].lower() + word[1:]
+
+    return _CLAIM_ID.sub(claim, _FINDING_KEY.sub(figure, text))
+
+
+def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int], reader: _Reader) -> list[DocFinding]:
     shown = []
     for finding in findings:
         place = places.get(finding.claim)
@@ -459,7 +500,9 @@ def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int]) -> l
                 about=CLAIM_WORD.format(place=place) if place is not None else PAGE_WORD,
                 claim_place=place,
                 severity=SEVERITY_WORDS[finding.severity],
+                # As the editor wrote it, which the judge reads (doc_page_text); a reader's page prints its words.
                 finding=finding.finding,
+                words=_finding_words(finding.finding, reader, places),
             )
         )
     return shown
@@ -517,7 +560,8 @@ def build(
         for place, claim in enumerate(doc.claims, start=1)
     ]
     page = DocPage(
-        title=report_input_title(report_input),
+        # The page's name is the campaign's: what it compares is the masthead's, so the name never stacks.
+        title=report_input.meta.campaign,
         masthead=_masthead(reader),
         headline=reader.written(doc.headline, "headline"),
         lede=reader.written(doc.lede, "lede"),
@@ -560,7 +604,7 @@ def build(
             )
             for index, item in enumerate(doc.method)
         ],
-        findings=_findings(findings, {claim.id: claim.place for claim in claims}),
+        findings=_findings(findings, {claim.id: claim.place for claim in claims}, reader),
         made=made,
         draft=draft,
     )

@@ -38,6 +38,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.phase_log import charged, phase_logged
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.report_doc_store import read_report_doc
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -166,7 +167,11 @@ class CampaignLineReport(EvalBaseModel):
 
     analysis_id: str
     headline: str = Field(
-        description="Code's verdict line over the evidence it was written from (AnalysisLine.verdict)."
+        description=(
+            "What the report says, in one line. A draft is listed by its own headline, every figure key written out as "
+            "its page prints it, marked `Draft: ` (DRAFT_HEADLINE); any other report by code's verdict line over the "
+            "evidence it was written from (AnalysisLine.verdict), as is a draft whose document no longer reads."
+        )
     )
     why_regenerate: str | None = Field(
         description=(
@@ -203,7 +208,10 @@ class CampaignLine(EvalBaseModel):
             "The arms are its declared arms' short names (else labels), control first, joined ` vs `, or, past "
             f"{TITLE_ARMS}, `<control> vs N candidates`; a campaign declaring none names the distinct candidate models "
             "of its runs, and a judge campaign counts its judges. The measure is its aspects' printed names, or past "
-            f"{TITLE_ASPECTS} `N aspects`. Nothing from a call, a recommendation or a verdict enters it."
+            f"{TITLE_ASPECTS} `N aspects`; an aspect the engine labelled (`classify`, `score`) by the campaign's name. "
+            "Each name once: the arms are left out where the name names every one (`<name> · <measure>`), the measure "
+            "where it is the name or an arm, and the name alone stands where nothing else is left. Nothing from a "
+            "call, a recommendation or a verdict enters it. A report page heads with the name alone."
         ),
     )
     name: str
@@ -220,8 +228,9 @@ class CampaignLine(EvalBaseModel):
     question_short: str = Field(
         default="",
         description=(
-            f"The question cut to at most {QUESTION_SHORT_CHARS} characters at a word boundary, ending in an ellipsis "
-            "where it was cut; empty asks none."
+            f"The question whole, its spaces collapsed, where it is at most {QUESTION_SHORT_CHARS} characters; empty "
+            "where it is longer (read question) or it asks none. Never cut: a listing prints a question whole or not "
+            "at all."
         ),
     )
     arms: list[CampaignLineArm] = Field(
@@ -660,7 +669,7 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         aspect_runs={aspect.label: list(aspect.run_ids) for aspect in campaign.aspects},
         created_at=campaign.created_at,
         question=campaign.question,
-        question_short=question_short(campaign.question),
+        question_short=_whole_question(campaign.question),
         arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
         call=(
             CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
@@ -809,21 +818,30 @@ def _refuse_long_name(name: str) -> None:
         )
 
 
-def question_short(question: str) -> str:
-    """A question cut to :data:`QUESTION_SHORT_CHARS` characters at a word boundary, an ellipsis marking the cut.
-
-    :param question: The question, as declared.
-    :ptype question: str
-    :return: It whole when it fits; else its words up to the limit and ``…``, or its first characters and ``…`` when
-        its first word alone is longer.
-    :rtype: str
-    """
+def _whole_question(question: str) -> str:
+    """A question as a listing line holds it (:attr:`CampaignLine.question_short`): whole, its spaces collapsed, where
+    it fits in :data:`QUESTION_SHORT_CHARS` characters; else nothing, never a cut."""
     text = " ".join(question.split())
-    if len(text) <= QUESTION_SHORT_CHARS:
-        return text
-    room = text[: QUESTION_SHORT_CHARS - 1]
-    cut = room.rsplit(" ", 1)[0] if " " in room else room
-    return cut.rstrip(" ,;:.-") + "…"
+    return text if len(text) <= QUESTION_SHORT_CHARS else ""
+
+
+#: How a draft is listed: its own headline, marked, so no reader takes it for a report its editor passed.
+DRAFT_HEADLINE = "Draft: {headline}"
+
+
+def _draft_headline(host: EvalHost, analysis: EvalAnalysis) -> str | None:
+    """A draft's own headline as its page prints it, every figure key written out, marked a draft
+    (:data:`DRAFT_HEADLINE`); None where its document no longer reads, which its line lists by code's verdict and the
+    regenerate line. Blocking."""
+    if analysis.report_doc_id is None:
+        return None
+    try:
+        stored = read_report_doc(host.storage, analysis.report_doc_id, analysis.scope_id)
+    except RefusedInput, NotFoundError:
+        # NOSILENT: a document that no longer reads is listed by code's verdict, and its line says to regenerate
+        # (why_regenerate), as the report read lays it out code-only.
+        return None
+    return DRAFT_HEADLINE.format(headline=stored.page.headline)
 
 
 def _runs_moved(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
@@ -857,9 +875,10 @@ def _with_report(
         ),
         None,
     )
+    drafted = _draft_headline(host, analysis) if listed.draft else None
     report = CampaignLineReport(
         analysis_id=analysis.id,
-        headline=listed.verdict,
+        headline=drafted or listed.verdict,
         why_regenerate=why,
         generated_at=listed.generated_at,
         generator_model=listed.generator_model,

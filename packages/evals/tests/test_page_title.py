@@ -5,8 +5,9 @@ Contracts held here (``threetears.evals.analysis.campaign_title``, ``threetears.
 ``threetears.evals.ops.report_read``):
 
 - **one title**: the title of a frozen bundle's arms equals the title of the campaign declaring them;
-- **the report's head** is the title the analysis is listed by: the page's `<title>`, which a document's page prints
-  (its first line is its headline, the title line of the campaign page is covered by test_campaign_first_screen).
+- **the report's head** is the campaign's name, which the title the analysis is listed by qualifies with: the page's
+  `<title>` (a page heads with the name and never stacks names, presentation build chunk 4; a document's first line is
+  its headline, the title line of the campaign page is covered by test_campaign_first_screen).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def test_a_frozen_bundle_s_arms_title_a_campaign_as_the_campaign_declaring_them_
     ) == campaign_title(declared)
 
 
-async def test_a_stored_analysis_is_listed_and_its_report_headed_by_its_campaign_s_title() -> None:
+async def test_a_stored_analysis_is_listed_by_its_campaign_s_title_and_its_report_headed_by_its_name() -> None:
     fixture = off_loop(ops_fixture)
     (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await settled(fixture.host, job.job_id)
@@ -42,6 +43,6 @@ async def test_a_stored_analysis_is_listed_and_its_report_headed_by_its_campaign
         (listed,) = analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE).analyses
         assert listed.title.endswith(f"({fixture.campaign.name})")
         html = report_read(host, fixture.campaign.id, TOYHOST_SCOPE, format="html").body
-        assert f"<title>{listed.title}</title>" in html
+        assert f"<title>{fixture.campaign.name}</title>" in html
 
     await run_blocking(host.blocking_executor, read)

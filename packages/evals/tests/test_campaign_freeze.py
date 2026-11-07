@@ -357,7 +357,8 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
     )
     # The page says it once, in the one caveat line on when its criteria were set, and Design & provenance dates it.
     assert timing_caveats([page]) == [
-        f"Criteria on {bundle.aspect} were set after the results there existed, so they were not fixed in advance."
+        f"The bar and guardrail margin on {bundle.aspect} were set after the results there existed, so they were not "
+        "fixed in advance."
     ]
     # Design & provenance also holds the test setup's rows (the cost's routing, chunk 1); the criteria's are their own.
     (table,) = [
@@ -366,4 +367,7 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
         if isinstance(block, TableBlock) and block.name == "criteria_set"
     ]
     guard_rows = [row for row in table.values() if "guardrail" in str(row["criterion"])]
-    assert guard_rows == [{"criterion": "guardrail margin on tone", "set_on": "15 Mar 2026", "aspects": bundle.aspect}]
+    # Set at one time on the same aspect, the bar and the guardrail's margin share a row (presentation build, chunk 4).
+    (row,) = guard_rows
+    assert row["criterion"].split("; ")[-1] == "guardrail margin on tone"
+    assert (row["set_on"], row["aspects"]) == ("15 Mar 2026", bundle.aspect)
