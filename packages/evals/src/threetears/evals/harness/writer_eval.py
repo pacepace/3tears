@@ -156,14 +156,13 @@ from threetears.evals.analysis.report.blocks import (
     Verdict,
 )
 from threetears.evals.analysis.report.md_parts import table_lines
-from threetears.evals.analysis.report.parts.charting import count_text
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.numbers import format_number, group_thousands, money_form, spell_dollars
+from threetears.evals.kernel.numbers import format_number, group_thousands, money_form, spell_count, spell_dollars
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
@@ -1693,9 +1692,9 @@ def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
             "cannot_tell": read.cannot_tell,
             "to_settle": None
             if settle is None
-            else f"more than {count_text(PROJECTION_CASE_CAP)}"
+            else f"more than {spell_count(PROJECTION_CASE_CAP)}"
             if settle > PROJECTION_CASE_CAP
-            else count_text(settle),
+            else spell_count(settle),
             "spent": spent if read.cap_usd is None else f"{spent} of {form.spell(read.cap_usd)}",
         }
     )
@@ -1836,13 +1835,17 @@ def _answer_sentence(
     elif primary.outcome == "not_separated":
         preference += ", too few cases to tell from an even split"
         if settle is not None:
-            # A count as every count on the page reads, thousands separated (count_text): ``about 2,969``.
+            # A projection that assumes the observed share is the true one: said as conditional and coarse (one
+            # significant figure, as a count reads, spell_count), since a share on these few cases moves between two
+            # recordings of near-identical pages: ``if the share stayed near 52%, roughly 3,000 cases would settle it``.
+            near = render_cell(_in_points(read.share)) if read.share is not None else None
             about = (
-                f"more than {count_text(PROJECTION_CASE_CAP)}"
+                f"more than {spell_count(PROJECTION_CASE_CAP)}"
                 if settle > PROJECTION_CASE_CAP
-                else f"about {count_text(settle)}"
+                else f"roughly {spell_count(_coarse(settle))}"
             )
-            preference += f"; {about} cases would settle it"
+            condition = f"if the share stayed near {near}%, " if near is not None else ""
+            preference += f"; {condition}{about} cases would settle it"
     else:
         preference += f", which reads as {primary.outcome.replace('_', ' ')}"
     if decision is None:
@@ -1861,6 +1864,15 @@ def _read_on(read: WriterPairwise | None, cases: int) -> int:
     if read is None or read.stopping is None or read.stopping.stopped_at is None:
         return cases
     return read.cases_read
+
+
+def _coarse(count: int) -> int:
+    """A projected count to one significant figure (``2,969`` to ``3,000``, ``44`` to ``40``): the precision a
+    projection on a handful of cases supports."""
+    if count < 10:
+        return count
+    step: int = 10 ** (len(str(count)) - 1)
+    return (count + step // 2) // step * step
 
 
 def _cases(n: int, side: str) -> str:

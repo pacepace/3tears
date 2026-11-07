@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
 
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, percent_columns
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
     REPLIES,
@@ -181,7 +181,8 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
         name="options",
         title=OPTIONS_TITLE,
         columns=columns,
-        rows=rows,
+        # Each column's percentages at one precision, as every other table on the page reads them (C-15).
+        rows=percent_columns(rows),
         order=ARMS_TABLE_ORDER,
         total_rows=len(rows),
     )

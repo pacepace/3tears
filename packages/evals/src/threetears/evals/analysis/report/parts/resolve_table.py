@@ -59,7 +59,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Sequence
 
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns, percent_columns
+from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns, bare_columns, percent_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
@@ -655,7 +655,7 @@ def _table(context: ChartContext) -> Drawn:
     money = money_columns(rows, reconciles=beside)
     # A table of what an analysis computes prints each figure as its key reads it (this module's docstring), so the
     # prose citing it reads alike; every other table reads its percentages at one precision per column.
-    laid = money if context.query.source in _AS_KEYED else percent_columns(money)
+    laid = money if context.query.source in _AS_KEYED else percent_columns(money, bare=bare_columns(columns))
     columns, rows = _with_intervals(columns, laid, context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (

@@ -136,7 +136,9 @@ async def test_a_floor_broken_beside_a_row_not_shown_worse_is_marked_on_its_cell
     assert row.reading == "unclear"
     matrix = _table(page, "scorecard")
     billing = next(cells for cells in matrix.rows if cells["aspect"].text == "billing")
-    assert _by_arm(matrix, billing)[CANDIDATE_LABEL].text == "-60 (unclear; floor broken)"
+    assert (
+        _by_arm(matrix, billing)[CANDIDATE_LABEL].text == "-60.0 (unclear; floor broken)"
+    )  # its (pts) columns read at one decimal (C-15, N-4)
     assert "The floor broken on" not in campaign_report_markdown(page)
 
 
@@ -505,7 +507,8 @@ def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
         "tone": "50 (10 of 20 cases)",
         "refunds": "0 (0 of 20 cases; cannot show a drop)",
         # Its pass rate across the aspects reads no margin, so it is marked neither way.
-        aggregate.EQUAL_WEIGHT_ROW: "46.7",
+        # A (%) column whose values whole percents keep apart reads whole (C-15, N-4).
+        aggregate.EQUAL_WEIGHT_ROW: "47",
     }
 
 
@@ -549,7 +552,7 @@ def test_cannot_show_a_drop_is_decided_on_the_per_case_shares_a_drop_is_read_on(
     not marked. With every share nought, none can."""
     uneven = _uneven_control([1.0] + [0.0] * 9, passed=1, trials=19)
     (row,) = _table(uneven.page(), "scorecard").rows
-    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5.3 (1 of 19 trials, 10 cases)"
+    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5 (1 of 19 trials, 10 cases)"
     nothing = _uneven_control([0.0] * 10, passed=0, trials=19)
     matrix = _table(nothing.page(), "scorecard")
     assert _by_arm(matrix, matrix.rows[0])["production"].text == "0 (0 of 19 trials, 10 cases; cannot show a drop)"

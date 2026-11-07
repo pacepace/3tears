@@ -23,7 +23,7 @@ import statistics
 
 from pydantic import Field
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, spell_count
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (
@@ -311,7 +311,7 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
         if off_setting:
             others = sorted(recorded - {_recorded_text(spec.recorded)})
             problems.append(
-                f"{off_setting} score(s) at the {spec.setting} setting were recorded at "
+                f"{spell_count(off_setting)} score(s) at the {spec.setting} setting were recorded at "
                 f"{', '.join(others) or 'another temperature'}, not {_recorded_text(spec.recorded)}"
             )
         reads.append(

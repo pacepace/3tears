@@ -21,8 +21,11 @@ from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, 
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
+    bare_at,
+    bare_places,
     percent_at,
     percent_places,
+    respell_bare,
     respell_percents,
     BarRow,
     BarSegment,
@@ -543,6 +546,9 @@ class TableCell(EvalDocumentModel):
             return form.spell(number)
         if self.decimals is not None and self.is_number and self.unit == PERCENT:
             return percent_at(number, self.decimals)
+        if self.decimals is not None and self.is_number and not self.unit:
+            # A bare figure under a (%) or (pts) head, at its column's one precision.
+            return bare_at(number, self.decimals)
         return with_unit(number, self.unit)
 
     @property
@@ -554,8 +560,8 @@ class TableCell(EvalDocumentModel):
     def text(self) -> str:
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
-        if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            said = self.amount(self.value)
+        if (self.unit or self.decimals is not None) and self.is_number and isinstance(self.value, int | float):
+            said = self.amount(float(self.value))
         else:
             said = render_cell(self.value)
         return said if self.flag is None else f"{said} ({self.flag})"
@@ -631,7 +637,25 @@ def _cell_amounts(cell: TableCell) -> list[float | None]:
     return [point, cell.low, cell.high]
 
 
-def percent_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, TableCell]]:
+#: The ends of a column head that names its cells' unit, so the cells state bare figures (``Pass rate (%)``,
+#: ``Change (pts)``): :func:`percent_columns` reads them by its rule.
+BARE_UNIT_HEADS = ("(%)", "(pts)")
+
+
+def bare_columns(columns: Sequence[TableColumn]) -> dict[str, str]:
+    """The columns whose head names their cells' unit (:data:`BARE_UNIT_HEADS`), each by the unit it names.
+
+    :param columns: A table's columns.
+    :ptype columns: Sequence[TableColumn]
+    :return: Each such column's key, by its unit's head.
+    :rtype: dict[str, str]
+    """
+    return {column.key: unit for column in columns for unit in BARE_UNIT_HEADS if column.header.endswith(unit)}
+
+
+def percent_columns(
+    rows: Sequence[Mapping[str, TableCell]], *, bare: Mapping[str, str] | None = None
+) -> list[dict[str, TableCell]]:
     """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
     decimal for the whole column only where whole percents would print two of its values alike or an interval's two
     ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%`` never
@@ -644,19 +668,47 @@ def percent_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, T
 
     :param rows: The table's rows, by column key.
     :ptype rows: Sequence[Mapping[str, TableCell]]
+    :param bare: The columns whose head names their unit, ``(%)`` or ``(pts)``, so their cells state bare figures
+        (``21.1``, ``[17.2, 25]``), each by the unit it names: every column of one unit in the table reads at one
+        precision by the same rule (a figure type across its columns: points, or percent), its leading figure and its
+        interval's ends. None for none.
+    :ptype bare: Mapping[str, str] | None
     :return: The rows, each column's percentages respelled at its one precision.
     :rtype: list[dict[str, TableCell]]
     """
+    bare = bare or {}
     keys = list(dict.fromkeys(key for row in rows for key in row))
     places = {
         key: chosen
         for key in keys
+        if key not in bare
         if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
     }
+    by_unit = {
+        unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
+        for unit in set(bare.values())
+    }
+    figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
     return [
-        {key: _respelled_percents(cell, places[key]) if key in places else cell for key, cell in row.items()}
+        {
+            key: _respelled_percents(cell, places[key])
+            if key in places
+            else _respelled_bare(cell, figures[key])
+            if key in figures
+            else cell
+            for key, cell in row.items()
+        }
         for row in rows
     ]
+
+
+def _respelled_bare(cell: TableCell, places: int) -> TableCell:
+    """A bare figure's cell at ``places`` decimals (:func:`respell_bare`); a number keeps its value and glyph."""
+    if cell.is_number and not cell.unit:
+        return cell.model_copy(update={"decimals": places})
+    text = _said(cell)
+    respelled = respell_bare(text, places)
+    return cell if respelled == text else cell.model_copy(update={"value": respelled})
 
 
 def _said(cell: TableCell) -> str:
@@ -1107,11 +1159,27 @@ class ChartBlock(_Block):
         )
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
-        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture.
+        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture, a column whose
+        head names its unit (``Pass rate (%)``) read at one precision with every column of its unit
+        (:func:`percent_columns`'s rule).
 
         :return: ``(headers, rows)``, each row's cells as text.
         :rtype: tuple[list[str], list[list[str]]]
         """
+        headers, body = self._values_table()
+        units = {at: unit for at, header in enumerate(headers) for unit in BARE_UNIT_HEADS if header.endswith(unit)}
+        for unit in set(units.values()):
+            columns = [at for at, named in units.items() if named == unit]
+            places = bare_places(row[at] for row in body for at in columns if at < len(row))
+            if places is None:
+                continue
+            for row in body:
+                for at in columns:
+                    if at < len(row):
+                        row[at] = respell_bare(row[at], places)
+        return headers, body
+
+    def _values_table(self) -> tuple[list[str], list[list[str]]]:
         if self.data is not None:
             return self.data.values_table(self.unit)
         if self.chart == "outcome_bar":

@@ -383,6 +383,66 @@ def respell_percents(text: str, places: int) -> str:
     return _CELL_PERCENT.sub(lambda match: match[1] + percent_at(float(match[2]), places), text)
 
 
+#: A bare figure a cell under a ``(%)`` or ``(pts)`` head states: its leading figure, before any words in
+#: parentheses (``20.2 (167 of 828 trials)``), and an interval's two ends (``[17.2, 25]``).
+_LEADING_FIGURE = re.compile(r"^([+\-−]?)(\d+(?:\.\d+)?)(?=$| )")
+_BRACKETED = re.compile(r"\[([+\-−]?)(\d+(?:\.\d+)?), ([+\-−]?)(\d+(?:\.\d+)?)\]")
+
+
+def _bare_figures(text: str) -> list[str]:
+    """The bare figures one cell states: its leading one and its interval's ends."""
+    found = [match[2] for match in _LEADING_FIGURE.finditer(text)]
+    for match in _BRACKETED.finditer(text):
+        found += [match[2], match[4]]
+    return found
+
+
+def bare_places(texts: Iterable[str]) -> int | None:
+    """The decimals a column of bare percents or points reads at, by :func:`percent_places`'s rule: whole, one
+    decimal where whole figures would print two alike or a figure at a half cannot decide its whole. None for a
+    column that states none, or one written to two decimals or more.
+
+    :param texts: The column's cells, as they print.
+    :ptype texts: Iterable[str]
+    :return: 0 or 1; None for a column to leave as it is.
+    :rtype: int | None
+    """
+    return percent_places(f"{figure}%" for text in texts for figure in _bare_figures(text))
+
+
+def bare_at(value: float, places: int) -> str:
+    """A bare figure at ``places`` decimals, half away from zero, its sign kept; an exact zero reads ``0``.
+
+    :param value: The figure.
+    :ptype value: float
+    :param places: The decimals.
+    :ptype places: int
+    :return: ``21``, ``-7.4``, ``0``.
+    :rtype: str
+    """
+    if value == 0:
+        return "0"
+    step = decimal.Decimal(1).scaleb(-places)
+    return str(decimal.Decimal(repr(value)).quantize(step, rounding=decimal.ROUND_HALF_UP))
+
+
+def respell_bare(text: str, places: int) -> str:
+    """A cell's leading bare figure and its interval's ends at ``places`` decimals (:func:`bare_at`).
+
+    :param text: The cell's text.
+    :ptype text: str
+    :param places: The column's decimals (:func:`bare_places`).
+    :ptype places: int
+    :return: The text.
+    :rtype: str
+    """
+    text = _LEADING_FIGURE.sub(lambda match: match[1] + bare_at(float(match[2]), places), text, count=1)
+    return _BRACKETED.sub(
+        lambda match: f"[{match[1]}{bare_at(float(match[2]), places)}, {match[3]}{bare_at(float(match[4]), places)}]",
+        text,
+    )
+
+
 def _percents_by_column(table: list[list[str]]) -> list[list[str]]:
     """A table's text with each column's percentages at its one precision (:func:`percent_places`); changed in place."""
     for column in range(max((len(row) for row in table), default=0)):
