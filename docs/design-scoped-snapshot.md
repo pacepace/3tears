@@ -170,8 +170,19 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
   ask names; when the ask fails, a `retained` table is judged as one the copy keeps part of (a group the
   copy does not hold is read only when a write stamped it, never each of a night's hundreds of runs), and
   any other, a `partial_groups` one included, stays behind until an ask answers. A `retained` table (a retention
-  keeps some rows) cannot be diffed when rows it kept went from L3 (rows it let go may count again):
-  the scope stays behind, said at ERROR, never guessed at and never read whole.
+  keeps some rows) cannot be diffed when rows it kept went from L3 (rows it let go may count again): that one
+  table is read whole for the scope, through the L1's retention, said at WARNING, and the scope is brought
+  forward; never guessed at, and never left behind for it (cobalt prod 2026-11-07: a scope stuck behind L3
+  serves stale numbers until someone notices). The scope's other tables stay diffed.
+- **Counted in pages.** The count answers one row a group, and a scope can hold more groups than the L3 rail
+  answers a statement (a night's 1,986 runs of a feed, against the rail's 1,000): it is read in keyset pages of
+  the group column under the rail's cap (`rows_per_statement`), the NULL group first. Cut, the groups past the
+  cut looked gone from L3: a retained table refused the scope on every retry, and any other dropped them.
+- **Behind is said.** A scope a catch-up leaves behind L3 (refused, raised, held by a write in progress or by
+  another replica's claim) is named, with why, in `status().behind`, `read_with_behind()` and
+  `read_versioned()` until this L1 commits it current. `behind` (the property) names only the scopes whose
+  chunks the L1 could not apply, which the snapshot retries itself, so a consumer that starts catch-ups for
+  scopes behind L3 leaves out just those.
   The contract it rests on: every write stamps every row it inserts or updates. A delete is seen by the
   counts; an update that stamps nothing is not seen at all.
 - **Each scope on its own,** before its first read and after its last: unchanged in L3 and untouched by

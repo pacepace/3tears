@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3AnswerCutError
 from threetears.core.backends.schema_sql import build_key_led_delete_sql
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, l3_row_pages, read_l3_rows
@@ -158,6 +158,26 @@ async def test_an_answer_that_reaches_the_cap_is_read_again_in_halves() -> None:
     assert _keys(held) == _keys(_rows(8, 3))
     assert len(table.fetched) > 1
     assert all(_LED.search(sql) for sql, _ in table.fetched)
+
+
+class _SayingTable(_Table):
+    """the rail as it answers now: an answer it cut raises (``truncated``), rather than coming back short."""
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        rows = await super().fetch(sql, *params)
+        if "= ANY($1" in sql and len([r for r in self.rows if r["feature_id"] in set(params[0])]) > self.cap:
+            raise L3AnswerCutError("cut", rows=len(rows))
+        return rows
+
+
+async def test_an_answer_the_rail_says_it_cut_is_read_again_in_halves() -> None:
+    # the rail raises on a cut answer: the key-led read takes that as an answer that reached the cap
+    table = _SayingTable(_rows(8, 3), cap=10)
+
+    held = await _layer(cap=10).read_rows_led_by([f"f{i:04d}" for i in range(8)], conn=table)
+
+    assert _keys(held) == _keys(_rows(8, 3))
+    assert len(table.fetched) > 1
 
 
 async def test_one_value_holding_more_rows_than_the_cap_is_paged_by_the_rest_of_its_key() -> None:

@@ -27,6 +27,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.complete_copy import Unsettled
+from threetears.core.collections import scope_epochs as scope_epochs_module
 from threetears.core.collections.scope_epochs import (
     STALLED_WRITE_SECONDS,
     WHOLE,
@@ -617,3 +618,45 @@ async def test_a_restarted_pod_abandons_at_its_first_settle_the_write_its_dead_p
         f"the restarted pod still waits on its dead predecessor's write: {settled}"
     )
     assert (settled.version, settled.epoch("state:VA"), settled.epoch("state:MD")) == (dead, dead, before)
+
+
+class _CuttingConn:
+    """a caller's connection behind a rail that answers at most four rows a statement and drops the rest, without
+    saying so (the L3 rail's ``tx.fetch`` does not say it cut)."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    async def fetch(self, sql: str, *params: Any) -> list[Any]:
+        return list(await self._conn.fetch(sql, *params))[:4]
+
+
+async def test_a_commit_of_more_scopes_than_the_rail_answers_a_statement_settles_every_one(
+    held: _Held, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a commit's moved scopes were the rows of an UPDATE ... RETURNING, which the rail cuts at its cap: cobalt prod
+    moved 531 scopes in one write on 2026-11-07, and past 1,000 the scopes beyond the cut, touched by the write's data
+    transactions, were never settled at the commit. Read in pages under the cap, every scope it moves is enrolled."""
+    monkeypatch.setattr(scope_epochs_module, "DEFAULT_PAGE_SIZE", 3)
+    scopes = {f"state:S{i:02d}" for i in range(10)}
+    version: int = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(version, scopes, conn=conn))
+
+    enrolled: set[str] = set()
+    enroll = CallerTransaction.enroll
+
+    def recording(transaction: CallerTransaction, collection: Any, entity_id: Any, **kwargs: Any) -> None:
+        enrolled.add(str(entity_id))
+        enroll(transaction, collection, entity_id, **kwargs)
+
+    monkeypatch.setattr(CallerTransaction, "enroll", recording)
+    async with held.pool.acquire() as raw:
+        conn = _CuttingConn(raw)
+        async with CallerTransaction(conn):
+            await held.epochs.commit(version, set(), conn=conn)
+
+    assert scopes <= enrolled, f"scopes the commit moved were never settled: {sorted(scopes - enrolled)}"
+    assert dict((await held.epochs.snapshot()).epochs) == dict.fromkeys(scopes, version)

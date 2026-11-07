@@ -40,6 +40,7 @@ __all__ = [
     "DurableStore",
     "FileLoad",
     "KeyLedReadingStore",
+    "L3AnswerCutError",
     "L3Backend",
     "L3Reader",
     "LoadFile",
@@ -87,12 +88,32 @@ class ArrowL3Reader(Protocol):
 
 
 #: the most rows the L3 rail (the hub's broker, behind ``NatsProxyL3Backend``) answers one
-#: statement. It cuts there and does not say so, so every reader that might pass it pages or reads
-#: in halves against this number: the one owner of it. A transport states its own cap as
+#: statement. The broker cuts there and marks the reply ``truncated``; the rail's ``fetch`` and
+#: ``fetch_arrow`` raise :class:`L3AnswerCutError` on such a reply, so a statement that is not paged
+#: under this number fails loud rather than reading short. Every reader that might pass it pages or
+#: reads in halves against this number: the one owner of it. A transport states its own cap as
 #: ``rows_per_statement``, ``None`` for one that never cuts. One that states nothing -- a direct
 #: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
+
+
+class L3AnswerCutError(RuntimeError):
+    """the L3 rail answered a statement with fewer rows than it matched: the broker cut the answer at its row cap
+    (:data:`L3_RAIL_ROW_CAP`) and said so (``truncated``).
+
+    A reader that reads every row a statement matches pages under the cap; one that reaches this read short and
+    would act on rows it never saw (cobalt prod 2026-11-07: a scoped snapshot's diff counted 1,000 of a state's 1,986
+    runs of a feed table and took the rest for gone, leaving 27 states behind L3). Raised, never retried: the same
+    statement is cut the same way again.
+
+    :ivar rows: how many rows the cut answer carried
+    """
+
+    def __init__(self, message: str, *, rows: int) -> None:
+        super().__init__(message)
+        self.rows = rows
+
 
 #: the longest a pod waits for one ``l3.load_files`` reply, in seconds. NATS request/reply is at most
 #: once: a broker that restarts mid-load loses the reply, and a wait that grew with the load (each
