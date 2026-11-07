@@ -182,8 +182,9 @@ class CampaignLineReport(EvalBaseModel):
         description=(
             "What qualifies the headline, written by code over the evidence the report was written from, in its "
             "page's own words: each arm missing a bar, then each candidate breaking a floor, then the one line on "
-            "when its criteria were set, where one holds (the lines AnalysisLine.verdict opens with). Empty with "
-            "none, and for a report this build cannot read."
+            "when its criteria were set, where one holds (the lines AnalysisLine.verdict opens with), and last, over "
+            "evidence of an earlier shape this build reads as stored, the one line saying so (the line "
+            "AnalysisLine.verdict closes with). Empty with none, and for a report this build cannot read."
         ),
     )
     why_regenerate: str | None = Field(
@@ -876,7 +877,8 @@ def _with_report(
 
     Its headline is the stored document's own, its figure keys written out, where the document reads and its editor
     passed it (not a draft); else code's verdict, and the regenerate line where the bundle does not read. Code's
-    warnings and timing caveats are listed beside it, never in it."""
+    warnings and timing caveats are listed beside it, never in it, and so is the line saying the evidence is of an
+    earlier shape read as stored."""
     reading = _analysis_reading(host, analysis, campaign, read)
     listed = reading.line
     headline, unread = _headline(host, reading)
@@ -885,6 +887,12 @@ def _with_report(
         why = f"{NO_LONGER_READS} ({unread})"
     if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
+    caveats = list(reading.lead.caveats) if reading.lead is not None else []
+    if why is None and read.bundle is not None:
+        # Evidence of an earlier shape this build reads as stored: listed written, the line saying so beside the
+        # headline, as on the analysis's own line; only once nothing needs regenerating, so a line never carries both.
+        if stored := stored_shape_line(aspect.schema_version for aspect in read.bundle.aspects):
+            caveats.append(stored)
     attempt = next(
         (
             attempt
@@ -896,7 +904,7 @@ def _with_report(
     report = CampaignLineReport(
         analysis_id=analysis.id,
         headline=headline,
-        caveats=reading.lead.caveats if reading.lead is not None else [],
+        caveats=caveats,
         why_regenerate=why,
         generated_at=listed.generated_at,
         generator_model=listed.generator_model,

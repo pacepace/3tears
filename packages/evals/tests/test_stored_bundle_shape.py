@@ -41,7 +41,7 @@ from threetears.evals.analysis.service import analysis_report, record_campaign_c
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.declaration import OverriddenBar
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
-from threetears.evals.ops.analysis import analyses_list, link_written_report, report_read
+from threetears.evals.ops.analysis import analyses_list, campaigns_list, link_written_report, report_read
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.report_writer.tally import Tally
 from threetears.evals.ops.report_writer.writer_bank import WriterCaseMint, writer_case_mint
@@ -289,6 +289,24 @@ async def test_the_listing_reads_a_report_over_shape_64_evidence_as_written_its_
     assert line.verdict == f"{before.verdict} {STORED_LINE}"
     assert line.verdict.count(STORED_LINE) == 1
     assert line.findings == before.findings > 0
+
+
+async def test_the_campaign_listing_lists_a_shape_64_report_written_the_line_beside_its_headline() -> None:
+    # The listing's headline is the report's own; the stored-shape line is a caveat beside it, never in it.
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    host = fixture.host.eval_host
+    (before,) = [
+        one for one in off_loop(campaigns_list, host, TOYHOST_SCOPE).campaigns if one.id == fixture.campaign.id
+    ]
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+
+    (line,) = [one for one in off_loop(campaigns_list, host, TOYHOST_SCOPE).campaigns if one.id == fixture.campaign.id]
+
+    assert before.report is not None and line.report is not None
+    assert line.report_state == "written" and line.report.why_regenerate is None
+    assert line.report.headline == before.report.headline and STORED_LINE not in line.report.headline
+    assert line.report.caveats == [*before.report.caveats, STORED_LINE]
 
 
 async def test_the_analysis_read_by_its_id_over_shape_64_evidence_opens_with_the_line() -> None:

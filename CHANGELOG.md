@@ -39,8 +39,9 @@ lists such an analysis as written, the same line after its verdict, and `needs_r
 names the shape in `aspects[].bundle_schema_version`.
 
 **Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
-its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written`, and its
-findings count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
+its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written` (the line
+after `AnalysisLine.verdict`, and last in `CampaignLineReport.caveats`, never in the headline), and its findings
+count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
 stored-shape line instead; regenerating stays a deliberate act.
 
 ### evals: a campaign's listing leads with its report's own headline, and no arm is named by a cut prompt
