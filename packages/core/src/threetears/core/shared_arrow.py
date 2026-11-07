@@ -1934,11 +1934,11 @@ class SharedArrowStore:
             staging.mkdir()
             _write_tables(staging, tables, room, base)
             (staging / _LOCK_FILE).touch()
-            files = _directory_files(staging)
+            staged = _directory_files(staging)
             with self._state:
                 # renamed and recorded in one hold, so the tally never misses a version the directory holds
                 os.rename(staging, self._versions / name)
-                self._held.add(self._versions / name, files)
+                self._held.add(self._versions / name, staged)
         except SharedArrowFullError:
             with self._state:
                 self._refused += 1
