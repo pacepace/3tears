@@ -34,7 +34,6 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
     Reread,
     cost_note,
     main,
-    pages,
     pairs,
     reread,
     stored_record,
@@ -42,6 +41,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
 from threetears.evals.ops.report_writer.preference import preference_rubric
+from threetears.evals.schema import JudgeEvidence
 
 #: The scripted judge's name, as the anchor rows record the judge asked.
 _JUDGE = "scripted/anchor-judge"
@@ -141,7 +141,33 @@ def _read(stored: dict[str, Any], found: list[Page], judge: FakeAnchorJudge, cap
 
 @pytest.fixture(scope="module")
 def found() -> list[Page]:
-    return asyncio.run(pages())[0]
+    """The pages the anchor pairs are made from, as the stored record lists them: each page's place and Opus total.
+
+    A reread reads a page only through its pair's two texts and the editor's totals, so each page here is its place
+    in words, and its review the one total. Replaying the recordings for the real pages costs over a minute and adds
+    nothing these tests read; the dry calibration test holds the replay itself.
+    """
+    record = json.loads(stored_record(RECORDS).read_text(encoding="utf-8"))
+    built: list[Page] = []
+    for page in record["pages"]:
+        author = re.fullmatch(r"agent:(\S+) report editor @(\S+)", page["author"])
+        assert author is not None, page["author"]
+        model, editor = author.groups()
+        place = f"{page['run']} round {page['round']}"
+        built.append(
+            Page(
+                run=page["run"],
+                round=page["round"],
+                evidence=JudgeEvidence(
+                    subject=None, artifact=f"The page of {place}.", case_material=f"The facts of {place}."
+                ),
+                measures={},
+                review={"items": [{"score": page["total"]}]},
+                editor=editor,
+                model=model,
+            )
+        )
+    return built
 
 
 @pytest.fixture(scope="module")
