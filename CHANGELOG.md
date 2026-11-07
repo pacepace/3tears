@@ -13,8 +13,9 @@ packages (bumped in lock-step).
 the providers under the fake. A pydantic `date` field there cannot build on `FakeDate`, so `start()` raised with the
 clock already frozen, and every later test in the process read it (the testament pool interleaves packages; a
 per-package shard never did). A repo-wide test plugin, `tests/clock_isolation.py`, resolves every loaded lazy
-`threetears` name before each test, fails a test that leaves the clock frozen at its teardown, and fails each test
-after it at setup, naming the test that leaked it.
+`threetears` name before each test, fails a test that leaves a freeze it started running at its teardown, and fails
+each test after it that would run on that freeze at setup, naming the test that leaked it. A freeze enclosing a
+group of tests on purpose (a class decorator, a class- or module-scoped fixture) passes.
 
 **Hosts:** a suite that freezes the clock with freezegun after `import threetears.evals` and before reading a lazy
 name (`Model`, `Eval`, ...) gets the same raise, and a freezegun `start()` that raises leaves the process frozen.
