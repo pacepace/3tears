@@ -387,12 +387,13 @@ def _price_charts() -> list[tuple[ReportInput, BarsChart]]:
 
 
 def test_a_money_charts_labels_and_ticks_share_one_spelling_grouped() -> None:
-    """A price chart's notes and its ticks in the one form of every amount it draws (#993): whole dollars where the
-    least is $10 or more, else cents and up; the kit draws its ticks to the same decimals, thousands grouped."""
-    for _held, data in _price_charts():
+    """A price chart's notes and its ticks in the one form of every amount it draws (#993): each amount to two
+    significant figures, a price per 1,000 (a rate) in whole dollars from $10 and a month's (a total) to cents (owner
+    ruling Q3, 2026-11-09); the kit draws its ticks to the largest amount's decimals, thousands grouped."""
+    for held, data in _price_charts():
         assert data.rows is not None
         drawn = [end for row in data.rows for end in (row.value, row.lo, row.hi) if end is not None]
-        form = money_form(drawn)
+        form = money_form(drawn, rate=held.meta.volume_per_month is None)
         assert data.fmt == f"usd:{form.decimals}" and data.tick_fmt in (None, data.fmt), (data.fmt, data.tick_fmt)
         for row in data.rows:
             assert row.note is not None and row.value is not None

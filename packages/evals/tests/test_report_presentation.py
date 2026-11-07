@@ -256,6 +256,30 @@ def _places(amounts: Iterable[str]) -> set[int]:
     }
 
 
+def _two_forms(amounts: Iterable[str]) -> bool:
+    """Whether a set of amounts reads in two forms of money (owner ruling Q3, 2026-11-09: one count of significant
+    figures per set, never one count of decimals): an amount under a dollar to other than two significant figures, or
+    three where it reconciles with a month beside it; one from a dollar to $10 to other than cents; or amounts from $10
+    up both in whole dollars (a rate's) and to cents (a total's)."""
+    whole = cents = False
+    for amount in amounts:
+        digits = re.sub(r"[^\d.]", "", amount.removesuffix("/1000"))
+        if not digits or float(digits) == 0:
+            continue
+        integer, _, fraction = digits.partition(".")
+        if int(integer) == 0:
+            if len(fraction.lstrip("0")) not in (2, 3):
+                return True
+        elif int(integer) < 10:
+            if len(fraction) != 2:
+                return True
+        elif fraction:
+            cents = True
+        else:
+            whole = True
+    return whole and cents
+
+
 def _tables(page: str) -> list[list[list[str]]]:
     """Every Markdown table on a page, as its rows of cells, its head first (its rule row dropped)."""
     tables: list[list[list[str]]] = []
@@ -274,8 +298,8 @@ def _tables(page: str) -> list[list[list[str]]]:
 def _money_faults(page: str, arms: set[str]) -> list[str]:
     """Every way a page's money text breaks the one-form rule (#993): an amount carrying the per-1,000 mark in a table
     that names the count it is drawn per (two scales on one amount); a mean's or a change's interval whose ends read
-    to other decimals than it does; one figure type in a table read to two forms (a column's, and a row's across the
-    arms where the arms are the columns); an amount to one decimal; and a partly priced total that says nothing of it
+    to other decimals than it does; one figure type in a table read in two forms (:func:`_two_forms`: a column's, and a
+    row's across the arms where the arms are the columns); an amount to one decimal; and a partly priced total that says nothing of it
     beside itself."""
     faults: list[str] = []
     for table in _tables(page):
@@ -295,15 +319,15 @@ def _money_faults(page: str, arms: set[str]) -> list[str]:
                 for found in [re.findall(_SPELLED, row[at])]
                 if len(found) == 1
             ]
-            if len(_places(column)) > 1:
+            if _two_forms(column):
                 faults.append(f"column {head[at]!r}: {column}")
         for row in rows if len(under) >= 2 else []:
             bare = [row[at] for at in under if at < len(row) and re.fullmatch(_SPELLED, row[at])]
-            if len(_places(bare)) > 1:
+            if _two_forms(bare):
                 faults.append(f"row: {row}")
         # A projection's costs, in whichever column they sit, are one set of totals.
         projected = [found for row in rows for cell in row for found in re.findall(rf"\d cases, ({_SPELLED})", cell)]
-        if len(_places(projected)) > 1:
+        if _two_forms(projected):
             faults.append(f"projected: {projected}")
     # Money keeps cents or whole dollars, never one decimal ($2.3).
     faults.extend(f"one decimal: {found.group(0)}" for found in re.finditer(r"\$\d[\d,]*\.\d(?![\d])", page))
