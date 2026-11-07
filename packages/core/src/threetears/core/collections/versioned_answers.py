@@ -80,6 +80,7 @@ import itertools
 import json
 import math
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Buffer, Callable, Coroutine, Mapping
 from contextvars import ContextVar
@@ -745,12 +746,30 @@ _BASE64_TEXT_SLICE: Final = 1 << 20
 #: the most bytes one call encodes as base64: a multiple of 3, so each slice's text is its share of the whole's
 _BASE64_DATA_SLICE: Final = 3 << 18
 
+#: how long a worker sleeps between slices so the event loop runs: any sleep above zero takes the worker off the
+#: interpreter lock until the loop has had it. ``time.sleep(0)`` hands the lock back to the same worker before the
+#: loop's thread wakes, so a loop waiting on the lock waits a whole switch interval (5 ms) per step, twice per timer:
+#: 13 ms late reading a 12.5 MB answer, against 3 ms with this pause, for 1.5 ms more on the worker.
+_LOOP_TURN_SECONDS: Final = 0.0001
+
+
+def _let_the_loop_run() -> None:
+    """pause a worker between slices so the event loop's thread takes the interpreter lock.
+
+    The pause is :data:`_LOOP_TURN_SECONDS`.
+
+    :return: nothing
+    :rtype: None
+    """
+    time.sleep(_LOOP_TURN_SECONDS)
+
 
 def _unbase64(body: str | bytes) -> bytes:
     """a row's ``body`` back to its gzip bytes, a slice per call, so no one call decodes a large answer whole.
 
     ``base64.b64decode`` holds the interpreter lock for its whole call (9-15 ms at 12.5 MB); each slice here is
-    about a millisecond, and the bytes grow in place (``BytesIO.getvalue`` hands its buffer over, no copy).
+    about a millisecond, the worker pauses between slices so the loop takes the lock (:func:`_let_the_loop_run`),
+    and the bytes grow in place (``BytesIO.getvalue`` hands its buffer over, no copy).
 
     :param body: the base64 text
     :ptype body: str | bytes
@@ -759,6 +778,8 @@ def _unbase64(body: str | bytes) -> bytes:
     """
     out = io.BytesIO()
     for start in range(0, len(body), _BASE64_TEXT_SLICE):
+        if start:
+            _let_the_loop_run()
         out.write(base64.b64decode(body[start : start + _BASE64_TEXT_SLICE]))
     return out.getvalue()
 
@@ -800,7 +821,8 @@ def _encoded_row(version: str, digest: str, text: str | bytes | bytearray) -> _E
     """an answer gzipped (:func:`_gzipped`) and written as its row and the row's L2 bytes. Run on a worker thread.
 
     The base64 is written a slice per call into the L2 bytes, which grow in place, and the row's ``body`` is read
-    back out of them: no call encodes the whole answer, and ``serialize`` hands the bytes on rather than run
+    back out of them: no call encodes the whole answer, the worker pauses between slices so the loop takes the lock
+    (:func:`_let_the_loop_run`), and ``serialize`` hands the bytes on rather than run
     ``json.dumps`` over megabytes on the event loop (16 ms at 12.5 MB).
 
     :param version: the answer's version
@@ -818,6 +840,8 @@ def _encoded_row(version: str, digest: str, text: str | bytes | bytearray) -> _E
     out.write(head)
     view = memoryview(gzipped)
     for start in range(0, len(gzipped), _BASE64_DATA_SLICE):
+        if start:
+            _let_the_loop_run()
         out.write(base64.b64encode(view[start : start + _BASE64_DATA_SLICE]))
     out.write(_BODY_CLOSES)
     stored = out.getvalue()

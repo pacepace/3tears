@@ -43,6 +43,15 @@ readiness models leave out.
 **Removed:** `3tears-registry` no longer depends on `3tears-agent-tools`. An app that reached agent-tools
 through registry now declares it itself.
 
+### core: reading or storing a large cached answer leaves the event loop free
+
+**Fixed (core):** `VersionedAnswers` decodes and encodes a large answer's base64 a slice at a time on a worker
+thread, but the worker never let go of the interpreter lock between slices, so the event loop waited a full switch
+interval (5 ms) for every step it took: 13 ms late reading a 12.5 MB answer from L2 on a laptop, and 24 ms on a
+CI runner. The worker now sleeps 0.1 ms between slices, which hands the lock to the loop; the loop is at most
+3 ms late on the same read, and the read takes 1.5 ms longer. A zero sleep does not help: the worker takes the
+lock back before the loop's thread wakes. Answers, their bytes in L1 and L2, and every API are unchanged.
+
 ### agent-tools: a tool pod serves its own metrics on the health port's `/metrics`
 
 **Added:** `ToolServerBootstrap(..., extra_metric_registries=...)`. The health port's `/metrics` now
