@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import sys
@@ -262,6 +263,23 @@ def test_held_is_a_change_of_at_most_the_set_tolerance(
     assert read.held() == {name: holds if name == measure else True for name in MEASURES}
     row = list(read.lines())[4 if measure == "preference" else 6]
     assert row.endswith(f"| {change} | {'yes' if holds else 'no'} |"), row
+
+
+def test_a_change_shown_as_exactly_the_tolerance_holds(found: list[Page], stored: dict[str, Any]) -> None:
+    """20 of 20 pairs consistent to 19 of 20 is a change of 0.05, which a float difference puts just over it."""
+    last = pairs(found)[-1]
+    dropped = (last.a.run, *sorted((last.a.round, last.b.round)))
+
+    def kept(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if (r["run"], *sorted((int(r["first"]), int(r["second"])))) != dropped]
+
+    read = _read(stored, found, FakeAnchorJudge(_script(found, lean=1), "judge-v1"))
+    read = dataclasses.replace(read, stored={**stored, "anchor": kept(stored["anchor"])}, rows=kept(read.rows))
+    assert read.before is not None and read.before.consistent() == (20, 20)
+    assert read.now is not None and read.now.consistent() == (19, 20)
+    assert read.held()["order consistency"] is True
+    row = list(read.lines())[5]
+    assert row.endswith("| -0.050 | yes |"), row
 
 
 def test_the_reread_only_reads_the_stored_record_and_writes_to_a_new_out_directory(
