@@ -145,6 +145,7 @@ from threetears.evals.analysis.report.words import (
     one_figure_each,
     reading_verb,
     reading_heading,
+    reason_words,
 )
 from threetears.evals.analysis.reporting import self_judging_text
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -1783,20 +1784,21 @@ def _immaterial_words(margin: float | None, heading: str, ruler: MeasureRuler) -
 
 
 def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str | None]:
-    """Why a contrast's verdict is what it is, as a code and, where there is more to say, in words."""
+    """Why a contrast's verdict is what it is, as a code and, where there is more to say, in the page's words (a
+    stored reason reworded by :func:`~threetears.evals.analysis.report.words.reason_words`)."""
     if comparison.verdict == "untested":
-        return "untestable", comparison.untested_reason
+        return "untestable", reason_words(comparison.untested_reason)
     if comparison.verdict in ("improved", "regressed"):
         return "separated", None
     if comparison.verdict == "equivalent":
         return "inside_margin", None
     if comparison.margin_source is None:
-        return "no_margin", comparison.not_separated_reason
+        return "no_margin", reason_words(comparison.not_separated_reason)
     if comparison.equivalence_p_adjusted is None:
-        return "margin_untested", comparison.not_separated_reason or comparison.equivalence_untested_reason or (
-            "the test was unpaired, and the equivalence test reads only cases both arms ran"
-        )
-    return "not_inside_margin", comparison.not_separated_reason
+        return "margin_untested", reason_words(
+            comparison.not_separated_reason or comparison.equivalence_untested_reason
+        ) or "the test was unpaired, and the equivalence test reads only cases both arms ran"
+    return "not_inside_margin", reason_words(comparison.not_separated_reason)
 
 
 def contrast_verdicts(
@@ -1871,8 +1873,8 @@ def _contrast_words(
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     return (
         comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
-        + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
-        + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
+        + (f" ({reason_words(comparison.untested_reason)})" if comparison.untested_reason else "")
+        + (f" ({reason_words(comparison.not_separated_reason)})" if comparison.not_separated_reason else "")
         + (
             f" (margin {_margin_text(margin, ruler)}{on_runs})"
             if comparison.verdict == "equivalent" and margin is not None
@@ -2220,7 +2222,7 @@ def guardrail_verdicts(
                 kind="guardrail",
                 outcome=check.decision,
                 reason=reason,
-                reason_detail=check.undecided_reason,
+                reason_detail=reason_words(check.undecided_reason),
                 reading=check.reading,
                 name=check.name,
                 heading=reading_heading(
@@ -2246,7 +2248,7 @@ def guardrail_verdicts(
                 + (
                     f" ({_straddled(check, rulers.of(check.name, check.reading))})"
                     if reason == "interval_straddles"
-                    else f" ({check.undecided_reason})"
+                    else f" ({reason_words(check.undecided_reason)})"
                     if check.undecided_reason
                     else ""
                 ),

@@ -108,7 +108,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
+from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels, reason_words
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
@@ -817,7 +817,7 @@ class _Builder:
                                 p_adjusted=comparison.p_adjusted,
                                 materiality=comparison.materiality,
                                 confounds=[confound.dimension for confound in comparison.mechanism_confounds],
-                                reason=comparison.untested_reason or comparison.not_separated_reason,
+                                reason=reason_words(comparison.untested_reason or comparison.not_separated_reason),
                                 **_analyst_only(ANALYST_CONTRAST_FIELDS, counted, partial(_test_counts, comparison)),
                             ),
                         )

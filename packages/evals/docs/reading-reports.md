@@ -199,9 +199,10 @@ reading (`v2 unclear, a lead.`), then the arms line and the scoreboard. Laid out
 page opens on its own first screen; the invoices example (rung 3) renders this (the date is the render's):
 
 ```markdown
-# v1 vs v2 · classify (invoices)
+# invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
-v1 (control) vs v2 · 6 Nov 2026 · 30 cases × 3 repeats
+
+v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
 **Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
@@ -209,8 +210,8 @@ v1 (control) vs v2 · 6 Nov 2026 · 30 cases × 3 repeats
 
 | Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
-| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.0459 |
-| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
+| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.046 |
+| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.070 |
 ```
 
 A campaign that asks a question opens on its name, then the question quoted on its own line,

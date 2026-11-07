@@ -12,6 +12,12 @@ template and campaign as the tree at ``00107a5b7`` computed them (the commit nam
 for byte. The same fixture without names, and with every name declared, computes them alike today. The stored
 documents of the fixture without names are pinned too (:data:`PINNED_DOCUMENTS`): a template and a campaign that
 name nothing are written exactly as before.
+
+**A reason a bundle stores is never reworded** (:class:`TestAStoredReasonIsNeverReworded`). The fixture's cost
+reading stores :data:`~threetears.evals.analysis.stats.UNIFORM_MOVE_NEEDS_RANGE` as its ``not_separated_reason``, and
+the fingerprints read it: the presentation build reworded that constant (05996fcd5) and moved every aspect and
+campaign fingerprint here, which no capture of the hot-path oracle carries the reason to catch. A page rewords a
+stored reason at render time (:func:`~threetears.evals.analysis.report.words.reason_words`).
 """
 
 from __future__ import annotations
@@ -33,6 +39,13 @@ from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.words import reason_words
+from threetears.evals.analysis.stats import (
+    EQUIVALENCE_NEEDS_RANGE,
+    GUARDRAIL_HELD_NEEDS_RANGE,
+    UNIFORM_MOVE_NEEDS_RANGE,
+    UNIFORM_MOVE_OUTSIDE_RANGE,
+)
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm
@@ -371,6 +384,71 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
         frame = built["campaign_bundle"].to_dict()
         assert [arm["short_name"] for arm in frame["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
         assert [arm["short_name"] for arm in frame["declaration"]["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+
+
+# --- a reason a bundle stores is never reworded -------------------------------------------------------------------
+
+#: What a failure below means, and the fix.
+STORED_REASON_MOVED = (
+    "a reason text is stored in the bundle and fingerprinted: rewording it moves every stored campaign's fingerprint "
+    "and evidence digest, and hosts regenerate their reports for a wording change (05996fcd5 did, to "
+    "UNIFORM_MOVE_NEEDS_RANGE). Restore the stored text and reword at render time, in "
+    "threetears.evals.analysis.report.words.reason_words"
+)
+
+#: The sha256 of each reason the statistics write into a bundle, as ``501dac039`` wrote it.
+STORED_REASONS = {
+    "UNIFORM_MOVE_NEEDS_RANGE": (
+        UNIFORM_MOVE_NEEDS_RANGE,
+        "a146ff23aeba58dd968170eca2fee5ab3d0b25a8f0eedafd482295b7d430cdc2",
+    ),
+    "UNIFORM_MOVE_OUTSIDE_RANGE": (
+        UNIFORM_MOVE_OUTSIDE_RANGE,
+        "ef88c46f55ec926bfb522d0bd45b29d669a982dc33ab6db9477872e81f0a504d",
+    ),
+    "EQUIVALENCE_NEEDS_RANGE": (
+        EQUIVALENCE_NEEDS_RANGE,
+        "0bcca759256ea9ca222ed142409272bf5fb2ae0e9e3c1ab7f9cf3dae6081024b",
+    ),
+    "GUARDRAIL_HELD_NEEDS_RANGE": (
+        GUARDRAIL_HELD_NEEDS_RANGE,
+        "92c353b375b83254020d8b402485fc652ab8feac060eaf0cec82a5246a184763",
+    ),
+}
+
+
+class TestAStoredReasonIsNeverReworded:
+    """A reason the bundle stores keeps its words; the page says it in the reader's."""
+
+    @pytest.mark.parametrize("name", sorted(STORED_REASONS))
+    def test_each_stored_reason_is_written_as_it_always_was(self, name: str) -> None:
+        text, digest = STORED_REASONS[name]
+        assert hashlib.sha256(text.encode()).hexdigest() == digest, f"{name}: {STORED_REASON_MOVED}"
+
+    def test_the_fixture_stores_the_reason_and_its_fingerprints_are_pinned(self) -> None:
+        built = _fixture(named=False)
+        assert UNIFORM_MOVE_NEEDS_RANGE in json.dumps(built["campaign_bundle"].to_dict()), (
+            "the pinned fixture no longer carries the reason it guards"
+        )
+        campaign = built["campaign_bundle"]
+        assert campaign.fingerprint(like=PINNED["campaign fingerprint"]) == PINNED["campaign fingerprint"], (
+            STORED_REASON_MOVED
+        )
+        assert campaign.fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
+        for label, bundle in built["bundles"].items():
+            assert bundle.fingerprint() == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
+
+    def test_the_page_says_the_stored_reason_in_the_readers_words(self) -> None:
+        said = reason_words(UNIFORM_MOVE_NEEDS_RANGE)
+        assert said is not None and "can tell that from no move" in said and "not separated" not in said
+        _, page = _page(named=False)
+        markdown = campaign_report_markdown(page)
+        assert said in markdown
+        assert UNIFORM_MOVE_NEEDS_RANGE not in markdown
+
+    def test_any_other_reason_reads_as_stored(self) -> None:
+        assert reason_words(EQUIVALENCE_NEEDS_RANGE) == EQUIVALENCE_NEEDS_RANGE
+        assert reason_words(None) is None
 
 
 # --- an aspect's short name ---------------------------------------------------------------------------------------

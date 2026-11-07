@@ -29,6 +29,7 @@ from threetears.evals.analysis.arms import (
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE
 from threetears.evals.analysis.style import (
     arm_display_name,
     arm_name,
@@ -115,6 +116,35 @@ COMPARISON_VERDICT_WORDS = worded(
 
 #: A measure's better end, in brackets, where it is not the higher one a reader assumes.
 LOWER_IS_BETTER = " (lower is better)"
+
+#: Each reason a bundle stores in the engine's words, as a page says it. A stored reason is part of the evidence a
+#: bundle's fingerprint and evidence digest read, so its text never changes once stored: rewording it in the engine
+#: would move every stored campaign carrying it and make each host regenerate its reports for a wording change. The
+#: stored text stays byte for byte as written, and a page rewords it here, at render time (:func:`reason_words`).
+_STORED_REASON_WORDS: dict[str, str] = {
+    UNIFORM_MOVE_NEEDS_RANGE: (
+        "declare value_range on this measure for a uniform move to be tested: every case moved by the same amount, "
+        "and with no declared range no test of a mean can tell that from no move (the exact sign-flip test asks "
+        "whether the move is symmetric about zero, not whether the mean moved, and an unbounded value can hide a rare "
+        "large move the other way), so the evidence cannot tell the two apart, and nothing here says they are alike"
+    ),
+}
+
+
+def reason_words(reason: str | None) -> str | None:
+    """A reason a bundle stores, as a page says it: each stored text :data:`_STORED_REASON_WORDS` rewords in the
+    reader's words wherever it appears, and any other reason unchanged.
+
+    :param reason: The reason as the bundle stores it, or None where it stores none.
+    :ptype reason: str | None
+    :return: The reason in the page's words, or None.
+    :rtype: str | None
+    """
+    if reason is None:
+        return None
+    for stored, said in _STORED_REASON_WORDS.items():
+        reason = reason.replace(stored, said)
+    return reason
 
 
 def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, higher_is_better: bool = True) -> str:
@@ -619,5 +649,6 @@ __all__ = [
     "reading_heading",
     "reading_verb",
     "reading_name",
+    "reason_words",
     "worded",
 ]
