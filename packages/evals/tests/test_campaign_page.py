@@ -137,7 +137,10 @@ async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
         )
         assert verdict not in fold.head
         assert verdict.text not in campaign_report_markdown(page)
-        assert 'class="verdict"' not in campaign_report_html(page)
+        assert verdict.text not in campaign_report_html(page)
+    # The page's one verdict line is the campaign's own lead, under its question.
+    (lead,) = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"]
+    assert campaign_report_html(page).count('class="verdict"') == 1 and lead.text in campaign_report_html(page)
 
 
 @pytest.mark.parametrize("link", [{"finding": 0}, {"rests_on": [0]}], ids=["finding", "rests_on"])
