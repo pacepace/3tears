@@ -37,6 +37,7 @@ from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection, stored_shape_line
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.style import written_check_names
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import (
@@ -1362,6 +1363,20 @@ def report_doc_report(
     return _doc_page(host, campaign, read, analysis_id=None, trials=trials)
 
 
+def _written_checks(bundle: CampaignBundle) -> CampaignBundle:
+    """``bundle`` with each aspect naming its goal checks as a report document's page does
+    (:func:`~threetears.evals.analysis.style.written_check_names`), so the evidence record laid out after the document
+    names each check as the document's own tables do and one page never carries a check under two forms. Only the
+    presentation names move (``goal_check_names``, no part of any fingerprint); every reading stays as read."""
+    aspects = [
+        aspect.model_copy(
+            update={"goal_check_names": written_check_names(aspect.named_checks(), aspect.goal_check_names)}
+        )
+        for aspect in bundle.aspects
+    ]
+    return bundle.model_copy(update={"aspects": aspects})
+
+
 def _doc_page(
     host: EvalHost,
     campaign: EvalCampaign,
@@ -1385,7 +1400,7 @@ def _doc_page(
             raise RefusedInput(
                 f"report document {read.record.id}'s snapshot {snapshot.id} holds no bundle", remedy=NO_LONGER_READS
             )
-        bundle = CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}")
+        bundle = _written_checks(CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}"))
         declared = _with_declaration(campaign, bundle.declaration)
         # The document's page drops the campaign's own blocks, so each fold keeps what only those would state.
         page = _campaign_page(

@@ -22,7 +22,7 @@ from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYL
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money, number_in, with_unit
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema.hashing import round_floats
 
@@ -204,9 +204,14 @@ def _header(text: str, term: str | None) -> str:
 
 
 def term_link(term: str, label: str, *, css: str = "") -> str:
-    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place."""
+    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place; a
+    term the page defines itself (a goal check's name) carries :data:`CHECK_LINK_TITLE`, since its definition is a
+    host's text, which no attribute carries."""
     style = f' class="{css}"' if css else ""
-    return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(GLOSSARY[term])}">{label}</a>'
+    if term not in GLOSSARY:
+        return f'<a{style} href="#{check_anchor(term)}" title="{escape(CHECK_LINK_TITLE)}">{label}</a>'
+    said = GLOSSARY[term]
+    return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(said)}">{label}</a>'
 
 
 def code_html(text: str) -> str:
@@ -729,6 +734,12 @@ def glossary_slug(term: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-")
 
 
+def check_anchor(name: str) -> str:
+    """A goal check's glossary entry's id: the checks' own namespace, so a declared name that is a term of art's words
+    (``Outcome``) never repeats the term's id."""
+    return f"g-check-{glossary_slug(name)}"
+
+
 def inline_html(text: str) -> str:
     """Escape ``text``, then turn its bold and code spans into markup."""
     return _CODE.sub(r"<code>\1</code>", _BOLD.sub(r"<strong>\1</strong>", escape(text)))
@@ -788,6 +799,7 @@ __all__ = [
     "chart_html",
     "code_html",
     "escape",
+    "check_anchor",
     "glossary_slug",
     "grid_html",
     "inline_html",

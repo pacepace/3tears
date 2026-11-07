@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a goal check is named by what it tests in every header and lead, its expression in the glossary
+
+**Changed:** every table header, reading row and lead names a goal check by the display name its template declares
+(`EvalTemplate.goal_check_names`), else by what it tests, read off its expression alone: `state.refund.amount <= ...`
+is `Refund amount check`, `call_count("discord.send_message") >= 1 or ...` is `Send message calls check`,
+`field_accuracy >= 0.92` is `Field accuracy check`. The same expression has the same name on every aspect and run;
+two checks that would share a name are numbered (`Ticket status check 1`, `Ticket status check 2`), and an expression
+that names nothing a reader can read is `Goal check`. A production campaign headed a table, and led its page, with a
+four-line `call_count(...) >= 1 or ...`. The page's glossary defines each check's name by its expression, whole, on
+one line, once ("Send message calls check: The goal check `( call_count(...) >= 1 or ... )`, which code runs on every
+trial."), and says which aspect a name holds on where one name stands for different expressions; a check's entry has
+an id of its own (`g-check-...`). A check's column header links its entry, and every link to a check carries one hover
+("Code runs this goal check on every trial; the glossary states it in full."), never the host's text. The Markdown
+glossary sets an expression in a span no backtick inside it can close. The Design & provenance `Checks` legend this
+replaces is gone. A column whose aspects name one check apart is headed by each name (`Total right / Sum right
+(%)`); two columns whose checks share a name each name their aspects. A trial's failed-check cell, an unproven check's
+line and a floor's sentence name the check the same way; a trial's record prints the name beside the expression it
+failed. A report document's own tables, and the evidence record laid out after them, still print an undeclared
+check's expression (`written_check_names`, `input_check_name`, both new, provisional), until the report writer's
+recorded judge is recorded again, since its recorded replies read that text. This reverses the earlier rule that an
+undeclared check is printed by its whole expression (owner ruling, 2026-11-09).
+
+**Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
+a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
+where it returned None for an undeclared one. `style.check_names`, `style.check_definition`,
+`style.written_check_names`, `style.GOAL_CHECK` and `style.CHECK_LINK_TITLE` are new. `measure_name(goal_check_key)`
+with no `declared` returns the check's subject name, where it returned the expression as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins (new) are what the serializers
+print. A host pinning a header, a lead or the provenance legend that printed a check's expression updates its match.
+Nothing stored changes: the campaign's readings keep a check's expression in their frozen words, and the writer's
+report input keeps its label.
+
 ### evals: the report page fits a host's frame without crushing its key column
 
 **Fixed:** a table's pinned key column holds a floor (8rem, or 30% of the frame) as well as its cap, and wraps at its

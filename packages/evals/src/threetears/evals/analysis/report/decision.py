@@ -224,8 +224,8 @@ class FloorReadings:
     is the t interval on the arm's cost per reply minus the control's at ``confidence``, computed from the per-case
     costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
     any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
-    ``check_names`` is each goal check's declared display name by its expression
-    (``AnalysisContextBundle.goal_check_names``), which a floor naming a check no rate here carries is said by.
+    ``check_names`` is each goal check's name by its expression (``AnalysisContextBundle.named_checks``), which a
+    floor naming a check no rate here carries is said by.
     """
 
     rates: tuple[RateReading, ...]
@@ -289,7 +289,8 @@ class FloorVerdict:
 
 def reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
     """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a check by its
-    declared display name (``check_names``, else the readings'), else a key in words, else a check's text as code."""
+    name (``check_names``, else the readings'), else a key in words, else a check's text as code (the campaign's
+    readings, which pass no names)."""
     rates = readings.rates if readings is not None else ()
     if (rate := next((rate for rate in rates if rate.answers(reading)), None)) is not None:
         return rate.name
@@ -316,9 +317,8 @@ def floor_statement(
     :param readings: What the floor is read against, whose rate names a named reading is said by; None to say it
         from its key.
     :ptype readings: FloorReadings | None
-    :param check_names: Each goal check's declared display name by its expression
-        (``AnalysisContextBundle.goal_check_names``), for a floor on a check said without ``readings``; None reads
-        the names ``readings`` carries.
+    :param check_names: Each goal check's name by its expression (``AnalysisContextBundle.named_checks``), for a
+        floor on a check said without ``readings``; None reads the names ``readings`` carries.
     :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
     :rtype: str
@@ -667,10 +667,10 @@ def floor_readings(
     comparison, where the family compared it. Cost is each arm's cost per reply, with the t interval on the per-case
     costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
-    A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes the names its
-    aspect's template declares (``AnalysisContextBundle.goal_check_names``) and names each check by them. The
-    campaign's readings pass none, since their words are baked into what a campaign is fingerprinted by, which a name
-    must never move.
+    A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes its aspect's
+    names for its checks (``AnalysisContextBundle.named_checks``, a declared name else what it tests) and names each
+    check by them. The campaign's readings pass none, since their words are baked into what a campaign is
+    fingerprinted by, which a name must never move.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -715,10 +715,17 @@ def floor_readings(
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
             descriptor = bundle.measure_catalog.get(name)
-            heading = measure_name(
-                name,
-                descriptor.reader_name if descriptor is not None else None,
-                declared=declared_check_name(check_names or {}, name),
+            check = goal_check_of(name)
+            # The campaign's readings pass no names: their words are frozen into what a campaign is fingerprinted by,
+            # so a check stays its expression there, and a page names it at render time.
+            heading = (
+                code(check)
+                if check is not None and check_names is None
+                else measure_name(
+                    name,
+                    descriptor.reader_name if descriptor is not None else None,
+                    declared=declared_check_name(check_names or {}, name),
+                )
             )
             rates.append(
                 _read_on(

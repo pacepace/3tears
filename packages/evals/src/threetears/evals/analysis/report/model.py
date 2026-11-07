@@ -38,7 +38,13 @@ from typing import Literal, Self, get_args
 
 from pydantic import Field, model_validator
 
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
+from threetears.evals.analysis.style import (
+    CANNOT_TELL_APART,
+    CANNOT_TELL_APART_PHRASE,
+    GLOSSARY,
+    check_definition,
+    code,
+)
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.kernel.declaration import CampaignCall
@@ -151,6 +157,40 @@ def _named_terms(block: TableBlock) -> list[str]:
     return list(dict.fromkeys(by_words[words.casefold()] for words in named if words.casefold() in by_words))
 
 
+def _check_entries(
+    read: Sequence[tuple[str | None, AnalysisContextBundle]],
+) -> list[tuple[str, list[tuple[str, str | None]]]]:
+    """The glossary's entry for each goal check's name the page prints: the name, then the expression it stands for,
+    the one place a page prints a check's expression beside its name, since every header and lead names the check
+    (``AnalysisContextBundle.named_checks``). A check a page names by its expression itself (a report document's page,
+    :func:`~threetears.evals.analysis.style.written_check_names`) has nothing to define, and no entry.
+
+    A name standing for one expression on every aspect that names that expression so is defined by it alone; one
+    standing for several, or for an expression another aspect names otherwise, says the aspect each holds on.
+
+    :param read: Each aspect's evidence, with the name the page calls the aspect by (None on an aspect's own page), in
+        the page's order.
+    :ptype read: Sequence[tuple[str | None, AnalysisContextBundle]]
+    :return: ``(name, [(expression, aspect or None), ...])`` per name, in the order first named.
+    :rtype: list[tuple[str, list[tuple[str, str | None]]]]
+    """
+    by_name: dict[str, dict[str, list[str]]] = {}
+    names_of: dict[str, set[str]] = {}
+    for aspect, bundle in read:
+        for check, name in bundle.named_checks().items():
+            if name == code(check):
+                continue
+            on = by_name.setdefault(name, {}).setdefault(check, [])
+            if aspect is not None and aspect not in on:
+                on.append(aspect)
+            names_of.setdefault(check, set()).add(name)
+    entries: list[tuple[str, list[tuple[str, str | None]]]] = []
+    for name, checks in by_name.items():
+        alone = len(checks) == 1 and all(len(names_of[check]) == 1 for check in checks)
+        entries.append((name, [(check, None if alone or not on else ", ".join(on)) for check, on in checks.items()]))
+    return entries
+
+
 class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
@@ -239,9 +279,23 @@ class Report(EvalDocumentModel):
                 else []
             )
             for term in found:
-                if term is not None and term not in linked:
+                # A header may link a goal check's name, which the page's check entries define, not GLOSSARY.
+                if term is not None and term in GLOSSARY and term not in linked:
                     linked.append(term)
         return linked
+
+    @property
+    def check_glossary(self) -> list[tuple[str, list[tuple[str, str | None]]]]:
+        """The glossary's goal-check entries: each check's name with the expression it stands for (:func:`_check_entries`),
+        which each serializer sets as code in its own form."""
+        return _check_entries([(None, self.bundle)])
+
+    @property
+    def glossary(self) -> list[tuple[str, str]]:
+        """The page's glossary, ``(term, definition)`` in order: each term it links (:attr:`terms`), then each goal
+        check's name with the expression it stands for, as a backtick span."""
+        checks = [(name, check_definition(said)) for name, said in self.check_glossary]
+        return [*((term, GLOSSARY[term]) for term in self.terms), *checks]
 
     def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
         """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
@@ -515,11 +569,26 @@ class CampaignReport(EvalDocumentModel):
             )
             for term in found:
                 # Two columns of one table can link one term: it is defined once.
-                if term is not None and term not in linked:
+                # A header may link a goal check's name, which the page's check entries define, not GLOSSARY.
+                if term is not None and term in GLOSSARY and term not in linked:
                     linked.append(term)
         for fold in self.aspects:
             linked += [term for term in fold.report.terms if term not in linked]
         return linked
+
+    @property
+    def check_glossary(self) -> list[tuple[str, list[tuple[str, str | None]]]]:
+        """The glossary's goal-check entries across the aspects: each check's name with the expression it stands for,
+        the aspect it does so on where that is not every aspect alike, which each serializer sets as code in its own
+        form."""
+        return _check_entries([(fold.heading, fold.report.bundle) for fold in self.aspects])
+
+    @property
+    def glossary(self) -> list[tuple[str, str]]:
+        """The page's one glossary, ``(term, definition)`` in order: each term it links (:attr:`terms`), then each goal
+        check's name with the expression it stands for, as a backtick span."""
+        checks = [(name, check_definition(said)) for name, said in self.check_glossary]
+        return [*((term, GLOSSARY[term]) for term in self.terms), *checks]
 
     @property
     def verdicts(self) -> list[Verdict]:

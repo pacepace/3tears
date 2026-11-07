@@ -4,9 +4,11 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
   dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
-  never passes through it: :func:`measure_name` names a check's measure by the display name its template declares,
-  when the caller passes it (``declared=``, read off the bundle with :func:`declared_check_name`), else by its
-  expression, verbatim.
+  never passes through it: :func:`measure_name` names a check's measure by the name the caller passes
+  (``declared=``, read off the bundle with :func:`declared_check_name`), the display name its template declares, else
+  ``Goal check`` (numbered, ``Goal check 2``, where an aspect reads several, :func:`check_names`). No header or lead
+  prints a check's expression; the page's glossary carries it, once, as the definition of the check's name
+  (:func:`check_definition`).
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :func:`arm_display_name` is the one rule a name code computed from an arm's levers is printed by, on every page:
@@ -20,8 +22,9 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 
 from __future__ import annotations
 
+import ast
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -101,29 +104,209 @@ def code(text: str) -> str:
     return f"`{text}`" if "`" not in text else text
 
 
-def measure_name(name: str, reader_name: str | None = None, *, declared: str | None = None) -> str:
-    """A measure as a page names it.
+#: What a page calls a goal check its template names nothing and whose expression names no subject a reader can read
+#: (:func:`_check_subject`): numbered where an aspect reads several such (:func:`check_names`).
+GOAL_CHECK = "Goal check"
 
-    A goal check's measure is named by ``declared``, the display name its template declares
-    (``EvalTemplate.goal_check_names``), which the caller reads off the aspect's bundle
-    (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.check_name`); the bundle's
-    ``measure_catalog`` never carries it, since the catalog is in every fingerprint. With none, a check is named by its
-    expression, verbatim and whole, as a code span: never humanized, never shortened, and never by the catalog's
-    rate name ("Pass rate of …"), since a single trial's failure has no rate. Any other measure by its reader name,
-    else its key humanized; ``declared`` names checks only.
+
+def measure_name(name: str, reader_name: str | None = None, *, declared: str | None = None) -> str:
+    """A measure as a page names it, in every header and every lead.
+
+    A goal check's measure is named by ``declared``: the name its aspect's bundle gives it
+    (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.check_name`), the display name its template
+    declares (``EvalTemplate.goal_check_names``), else what it tests (``Refund amount check``, :func:`check_names`).
+    The bundle's ``measure_catalog`` never carries it, since the catalog is in every fingerprint. With none passed, a
+    check is named by what it tests alone. Never by its expression, which a long check makes a paragraph in a header,
+    and never by the catalog's rate name ("Pass rate of …"), since a single trial's failure has no rate: the expression
+    is the glossary's definition of the name (:func:`check_definition`). Any other measure by its reader name, else its
+    key humanized; ``declared`` names checks only.
 
     :param name: The measure's key.
     :ptype name: str
     :param reader_name: Its reader-facing name, when the catalog carries one. Never read for a goal check.
     :ptype reader_name: str | None
-    :param declared: A goal check's declared display name, or None for none declared.
+    :param declared: A goal check's name on its aspect, or None for none given.
     :ptype declared: str | None
     :return: The name.
     :rtype: str
     """
     if (check := goal_check_of(name)) is not None:
-        return declared if declared is not None else code(check)
+        return declared if declared is not None else check_names([check], {})[check]
     return reader_name or humanize("dimension", name)
+
+
+#: The call predicates whose first argument names an action, by the words the subject takes after it.
+_ACTION_WORDS: dict[str, str] = {
+    "call_count": "calls",
+    "calls": "calls",
+    "called_before": "calls",
+    "called_after": "calls",
+    "last_call_was": "calls",
+    "refused": "refusals",
+    "refused_count": "refusals",
+    "fired": "firing",
+    "fired_armed": "firing",
+}
+
+#: The roots a path's subject never names: the world itself, and a value a generator binds per element.
+_ROOTS = frozenset({"state"})
+
+
+def _path(node: ast.expr) -> list[str] | None:
+    """A dotted path's names (``state.refund.amount`` -> ``[state, refund, amount]``), indexes skipped; None for any
+    other node."""
+    names: list[str] = []
+    while True:
+        if isinstance(node, ast.Attribute):
+            names.append(node.attr)
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Name):
+            names.append(node.id)
+            return names[::-1]
+        else:
+            return None
+
+
+def _subject_of(node: ast.AST, bound: frozenset[str]) -> str | None:
+    """The first subject the expression reads, in the order it is written: the action a call predicate names, else a
+    path's names, the world's root and a trailing ``length`` dropped; None where nothing in it names one."""
+    if isinstance(node, ast.Call):
+        name = node.func.id if isinstance(node.func, ast.Name) else None
+        first = node.args[0] if node.args else None
+        if name in _ACTION_WORDS and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return f"{re.sub(r'[_.]+', ' ', first.value.rsplit('.', 1)[-1]).strip()} {_ACTION_WORDS[name]}"
+        if name == "passed" and not node.args:
+            return "deliberate pass"
+        children: list[ast.AST] = [*node.args, *(keyword.value for keyword in node.keywords)]
+    elif isinstance(node, ast.GeneratorExp | ast.ListComp):
+        targets = {
+            target.id for gen in node.generators for target in ast.walk(gen.target) if isinstance(target, ast.Name)
+        }
+        bound = bound | targets
+        # A generator tests each element of a collection: the collection is its subject.
+        children = [*(gen.iter for gen in node.generators), node.elt]
+    elif isinstance(node, ast.expr) and (path := _path(node)) is not None:
+        if path[0] in bound:
+            return None
+        words = path[1:] if path[0] in _ROOTS and len(path) > 1 else path
+        words = words[:-1] if len(words) > 1 and words[-1] == "length" else words
+        return " ".join(re.sub(r"_+", " ", word) for word in words).strip() or None
+    else:
+        children = list(ast.iter_child_nodes(node))
+    for child in children:
+        if (found := _subject_of(child, bound)) is not None:
+            return found
+    return None
+
+
+def _check_subject(expression: str) -> str | None:
+    """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
+    ``state.refund.amount <= state.order.total``, ``Place order calls`` for ``call_count("inventory.place_order") >= 1
+    or ...``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression does not parse or names no
+    subject.
+
+    :param expression: The check, verbatim.
+    :ptype expression: str
+    :return: The subject, capitalised, or None.
+    :rtype: str | None
+    """
+    for text in (expression.strip(), f"({expression.strip()})"):
+        try:
+            tree = ast.parse(text, mode="eval")
+        except SyntaxError:
+            # NOSILENT: an expression this grammar cannot parse is named a goal check, never refused here.
+            continue
+        found = _subject_of(tree.body, frozenset())
+        return f"{found[:1].upper()}{found[1:]}" if found else None
+    return None
+
+
+def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
+    """The name a page gives each of an aspect's goal checks, by expression: the display name ``declared`` gives it,
+    else what it tests (:func:`_check_subject`) with ``check`` after it (``Refund amount check``), else
+    :data:`GOAL_CHECK`. An expression is named alike on every aspect and every run; only where two of ``checks`` would
+    share a name (or an unnamed one would take a declared one's) is each numbered, in the checks' sorted order
+    (``Ticket status check 1``, ``Ticket status check 2``).
+
+    :param checks: The checks a page names, by expression, in any order and with repeats.
+    :ptype checks: Iterable[str]
+    :param declared: Declared display names, by expression.
+    :ptype declared: Mapping[str, str]
+    :return: Each check's name, by expression, declared ones included, in sorted order.
+    :rtype: dict[str, str]
+    """
+    every = sorted({*checks, *declared})
+    taken = {name.casefold() for name in declared.values()}
+    named = {check: f"{subject} check" if (subject := _check_subject(check)) else GOAL_CHECK for check in every}
+    shared: dict[str, list[str]] = {}
+    for check in every:
+        if check not in declared:
+            shared.setdefault(named[check], []).append(check)
+    names = dict(declared)
+    for name, held in shared.items():
+        alone = len(held) == 1 and name.casefold() not in taken
+        names.update({check: name if alone else f"{name} {index}" for index, check in enumerate(held, start=1)})
+    return {check: names[check] for check in every}
+
+
+def written_check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
+    """What a report document's page calls each goal check, by expression: the display name ``declared`` gives it,
+    else its expression, as code. The one rule the document's own tables and the evidence record laid out after it
+    name a check by, so one page never carries a check under two forms. It names a check by its expression until the
+    report writer's recorded judge is recorded again, since the judge's recorded replies read the document's text and
+    a name there refuses them; it then returns :func:`check_names` over the same ``checks``.
+
+    :param checks: The checks the page names, by expression.
+    :ptype checks: Iterable[str]
+    :param declared: Declared display names, by expression.
+    :ptype declared: Mapping[str, str]
+    :return: Each check's name, by expression, in sorted order.
+    :rtype: dict[str, str]
+    """
+    return {check: declared.get(check) or code(check) for check in sorted({*checks, *declared})}
+
+
+#: The hover a link to a check's name carries: never the check's expression or its name, which are a host's text and
+#: never belong in an attribute; the glossary entry the link lands on states them.
+CHECK_LINK_TITLE = "Code runs this goal check on every trial; the glossary states it in full."
+
+
+#: A line break in a check's expression, with the indentation around it: laid out on one line, a reader's line wraps
+#: where the page does. Whitespace inside a line, a quoted string's included, stays as written.
+_ONE_LINE = re.compile(r"[ \t]*\r?\n[ \t]*")
+
+
+def _check_expression(expression: str) -> str:
+    """A check's expression on one line, as the glossary prints it: each line break and the indentation around it a
+    single space, every other character as written."""
+    return _ONE_LINE.sub(" ", expression).strip()
+
+
+def check_definition(
+    by_aspect: Sequence[tuple[str, str | None]],
+    *,
+    span: Callable[[str], str] = code,
+    words: Callable[[str], str] = str,
+) -> str:
+    """The glossary's sentence for a check's name: the expression it stands for, whole, as code, the one place a page
+    prints it beside the name.
+
+    :param by_aspect: Each expression the name stands for, with the aspect it does so on, or None where it stands for
+        one expression on every aspect the page reads.
+    :ptype by_aspect: Sequence[tuple[str, str | None]]
+    :param span: Sets an expression as code in the page's form: a backtick span (the default, :func:`code`), a
+        Markdown span no backtick inside can close, or escaped HTML.
+    :ptype span: Callable[[str], str]
+    :param words: Sets an aspect's name as the page's form prints text: as written, or escaped HTML.
+    :ptype words: Callable[[str], str]
+    :return: The sentence.
+    :rtype: str
+    """
+    said = [span(_check_expression(check)) + (f" on {words(aspect)}" if aspect else "") for check, aspect in by_aspect]
+    checks = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
+    return f"The goal check {checks}, which code runs on every trial."
 
 
 def declared_check_name(names: Mapping[str, str], measure: str) -> str | None:
@@ -450,7 +633,9 @@ __all__ = [
     "CANNOT_TELL_APART",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
+    "CHECK_LINK_TITLE",
     "GLOSSARY",
+    "GOAL_CHECK",
     "HUMANIZE_OVERRIDES",
     "MAX_HEADER_WORDS",
     "MAX_NUMERALS",
@@ -461,6 +646,8 @@ __all__ = [
     "arm_display_name",
     "arm_name",
     "cannot_tell_apart",
+    "check_definition",
+    "check_names",
     "code",
     "declared_check_name",
     "humanize",
@@ -470,4 +657,5 @@ __all__ = [
     "measure_name",
     "page_date",
     "sentences",
+    "written_check_names",
 ]

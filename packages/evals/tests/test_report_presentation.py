@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
+from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_measure
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     ArmServedModel,
@@ -402,8 +403,15 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         linked = {
             re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-") for term, words in GLOSSARY.items() if words in said
         }
+        # Beside the terms it links, the glossary defines each goal check's name by its expression (the owner's
+        # ruling of 2026-11-09), one entry per check the aspect reads.
+        checks = {
+            "check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            for name in report.bundle.named_checks().values()
+        }
         defined = re.findall(r'<dt id="g-([a-z0-9-]+)">', page)
-        assert linked and linked == set(defined) and len(defined) == len(set(defined))
+        assert linked and linked | checks == set(defined) and len(defined) == len(set(defined))
+        assert not linked & checks
         assert 'href="#g-' not in page
         assert set(report.terms) <= set(GLOSSARY)
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
@@ -692,7 +700,9 @@ async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table
     assert "What the case asked" not in passed_rows and "Stored result:" not in passed_rows
 
 
-async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:
+async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expression_in_its_record(
+    g2_ruled: tuple[Result, Report],
+) -> None:
     _, coded = g2_ruled
     expression = 'call_count("music.queue_track") >= 2'
     trials = list(coded.bundle.trials)
@@ -703,15 +713,21 @@ async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_rul
             "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
         }
     )
-    bundle = coded.bundle.model_copy(update={"trials": trials})
+    # A goal check a trial fails is one the aspect reads: its catalog describes it.
+    catalog = {**coded.bundle.measure_catalog, goal_check_measure(expression): describe_goal_check_rate(expression)}
+    bundle = coded.bundle.model_copy(update={"trials": trials, "measure_catalog": catalog})
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     whys = [row["why"] for row in table.values()]
-    # Code, as written: no underscores or dots stripped, and no "Pass rate of" on one trial's failure.
-    assert f"check: `{expression}`" in whys
+    # By its name, never its expression (the owner's ruling of 2026-11-09), and no "Pass rate of" on one trial's
+    # failure; the trial's record and the glossary print the expression as written, no underscores or dots stripped.
+    name = report.bundle.named_checks()[expression]
+    assert name == "Queue track calls check"
+    assert f"check: {name}" in whys and not [why for why in whys if why and expression in why]
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
-    assert f"- `{expression}`" in markdown
+    assert f"- `{name}`: `{expression}`" in markdown
+    assert f"- **{name}**: The goal check `{expression}`, which code runs on every trial." in markdown
 
 
 async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_ruled: tuple[Result, Report]) -> None:
@@ -730,9 +746,9 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
             ],
         }
     )
-    report = build_code_only_report(
-        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
-    )
+    # The name reaches the page as its template declares it: a trial's stored name gives way to the aspect's.
+    named = coded.bundle.model_copy(update={"trials": trials, "goal_check_names": {expression: "the *label* check"}})
+    report = build_code_only_report(named, assembled_at="2026-10-14T00:00Z")
     markdown = report_markdown(report)
     assert "- `the *label* check`: `` answer == `queued` ``" in markdown
     assert "- `tone`: 1 (ordinal). Asked: `Is it <b>kind</b>?`. `Closed early.</details>  ## Not a section`" in markdown

@@ -586,7 +586,7 @@ def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
     if late.criterion == "floor" and bundle.declared is not None:
         floor = next((floor for floor in bundle.declared.floors if floor.key == late.name), None)
         if floor is not None:
-            return floor_statement(floor.clause, candidate="the arm", check_names=bundle.goal_check_names)
+            return floor_statement(floor.clause, candidate="the arm", check_names=bundle.named_checks())
     return late.name or ""
 
 

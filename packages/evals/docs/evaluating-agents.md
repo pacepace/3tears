@@ -287,8 +287,9 @@ for result in results:
 
 **A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
 first key the control, runs both agents on the same seeded cases. Each goal check becomes a
-reading in the contrasts table, headed by its expression (its key is `goal_state:<check>`), with its interval and
-verdict, and an unproven check is named under Not tested.
+reading in the contrasts table, named by what it tests (`Refund amount check`, or the name its template declares;
+its key is `goal_state:<check>`, and the Glossary gives its expression), with its interval and verdict, and an
+unproven check is named under Not tested.
 [Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
 
 **Placements.** Every run records what it did with each dimension:

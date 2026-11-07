@@ -42,7 +42,7 @@ from threetears.evals.analysis.cells import (
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.style import declared_check_name
+from threetears.evals.analysis.style import check_names
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
@@ -64,6 +64,7 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.kernel.metrics import (
     AttributionScope,
+    goal_check_of,
     MeasureScale,
     MeritAxis,
     MetricDescriptor,
@@ -2903,7 +2904,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         exclude_if=lambda names: not names,
         description=(
             "What a page prints for a goal check, by its expression, as the member runs' templates declare it "
-            "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
+            "(`EvalTemplate.goal_check_names`). A check absent here is named by what it tests (`Refund amount check`, "
+            "`named_checks`), its expression in the page's glossary. Presentation "
             "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
             "`measure_catalog`, whose names every reading is read under."
         ),
@@ -3716,16 +3718,48 @@ class AnalysisContextBundle(EvalDocumentModel):
         """Whether the campaign asks this aspect a question, as the reading scope derived it."""
         return self.reading_scope.questions_declared
 
+    def named_checks(self) -> dict[str, str]:
+        """What a page calls each goal check this aspect names, by expression: the display name its template declares
+        (:attr:`goal_check_names`), else what it tests (``Refund amount check``,
+        :func:`~threetears.evals.analysis.style.check_names`), numbered only where two would share a name. Presentation
+        only, computed at render time: nothing stored moves.
+
+        :return: Each check's name, by its expression: every check the catalog reads, a proof states, a bar is held on
+            or a declared floor reads. A trial's failed checks are not read here: a goal check one failed is in the
+            catalog, and what else a trial records as failed (a grader's ``total is False`` on the quick path) is no
+            goal check, which its own reading names.
+        :rtype: dict[str, str]
+        """
+        read = [check for name in self.measure_catalog if (check := goal_check_of(name)) is not None]
+        read += [proof.check for proof in self.goal_check_proofs]
+        read += [check for bar in self.bar_adjudications if (check := goal_check_of(bar.measure_id)) is not None]
+        floors = self.declared.floors if self.declared is not None else []
+        # A floor names a check by its verbatim text, and any other reading by its key, which is an identifier or in
+        # the catalog.
+        read += [
+            reading
+            for floor in floors
+            if isinstance(reading := getattr(floor.clause, "reading", None), str)
+            and not reading.isidentifier()
+            and reading not in self.measure_catalog
+        ]
+        return check_names(read, self.goal_check_names)
+
     def check_name(self, measure: str) -> str | None:
-        """The display name the aspect's template declares for the goal check ``measure`` reads, for
+        """What a page calls the goal check ``measure`` reads (:meth:`named_checks`), for
         :func:`~threetears.evals.analysis.style.measure_name`'s ``declared``.
 
         :param measure: Any measure key.
         :ptype measure: str
-        :return: The declared name; None for a measure that is no goal check's, or a check no template names.
+        :return: The check's name; None for a measure that is no goal check's.
         :rtype: str | None
         """
-        return declared_check_name(self.goal_check_names, measure)
+        check = goal_check_of(measure)
+        if check is None:
+            return None
+        named = self.named_checks()
+        # A check this aspect names nowhere else is named among its checks, as every other is.
+        return named[check] if check in named else check_names([*named, check], self.goal_check_names)[check]
 
     def fingerprint(self, *, like: str | None = None) -> str:
         """Return the bundle's fingerprint — a stable A/B key: ``v2:`` and the sha256 of its identity JSON.

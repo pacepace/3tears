@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.campaign.answer_blocks import (
     stored_shape_blocks,
     unread_analysis_blocks,
 )
-from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.provenance import (
     caveat_blocks,
     for_the_campaign,
@@ -176,9 +176,8 @@ def build_campaign_report(
     blocks += depth_blocks(campaign, readings, reports, names=names)
     blocks += bar_blocks(readings, reports, names=names)
     blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
-    # Design & provenance: what each declared check name stands for, the design and when each criterion was set,
-    # then what depth says once.
-    blocks += check_legend_blocks(names)
+    # Design & provenance: the design and when each criterion was set, then what depth says once. What each check's
+    # name stands for is the glossary's (``CampaignReport.glossary``).
     blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
     blocks += depth_provenance_blocks(readings)
     folds = [

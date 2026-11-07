@@ -216,7 +216,8 @@ def reading_heading(
 ) -> str:
     """A reading as the page heads it, in a column, a row or a chart's title.
 
-    A goal check by its declared display name, else its expression, verbatim as code
+    A goal check by its name on its aspect, declared else what it tests (``Refund amount check``),
+    never its expression, which the page's glossary defines the name by
     (:func:`~threetears.evals.analysis.style.measure_name`); how
     each trial ended (a ``trial`` reading) as :data:`PASS_RATE`; any other reading by the
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
