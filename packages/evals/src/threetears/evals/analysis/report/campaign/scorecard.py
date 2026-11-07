@@ -37,7 +37,7 @@ from functools import reduce
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form
+from threetears.evals.kernel.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money, number_in
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler

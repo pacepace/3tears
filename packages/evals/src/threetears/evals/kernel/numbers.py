@@ -43,7 +43,6 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal
 
 #: What an absent or non-finite number reads as. Never ``0``, which would say something was measured.
 ABSENT = "—"
@@ -240,19 +239,6 @@ class MoneyForm:
         return MoneyForm(per_thousand=self.per_thousand, decimals=min(own, supported))
 
 
-def per_thousand_digits(digits: str) -> str:
-    """An amount's written digits moved per 1,000 exactly, by its decimal point, never rounded: ``0.008`` to ``8``,
-    ``0.0001743`` to ``0.1743``, ``1239`` to ``1239000``; for a column already written that moves into one form
-    (#993) and keeps every digit it was written with.
-
-    :param digits: A non-negative amount as written, with no sign, dollar sign or thousands separator.
-    :ptype digits: str
-    :return: The digits of a thousand times it, without trailing zeros past the point.
-    :rtype: str
-    """
-    return f"{(Decimal(digits) * PER_THOUSAND).normalize():f}"
-
-
 def money_form(
     amounts: Iterable[float | None],
     *,
@@ -365,7 +351,6 @@ __all__ = [
     "format_number",
     "format_signed",
     "money_form",
-    "per_thousand_digits",
     "spell_dollars",
     "spell_multiple",
 ]

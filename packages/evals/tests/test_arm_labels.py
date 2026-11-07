@@ -313,7 +313,11 @@ def _assert_every_output_prints(report: Report, names: set[str]) -> None:
     assert set(_arm_column(report, "scoreboard")) == names
     for name in names:
         assert f"| {name} |" in markdown or f"| ▸ {name} |" in markdown, name
-        assert f"<td>{html.escape(name)}</td>" in page or f"<td>▸ {html.escape(name)}</td>" in page, name
+        # A cell of 40 characters or more wraps (``class="wrap"``), as every long cell of a table does.
+        cells = [
+            f"{td}{marker}{html.escape(name)}</td>" for td in ("<td>", '<td class="wrap">') for marker in ("", "▸ ")
+        ]
+        assert any(cell in page for cell in cells), name
 
 
 @pytest.fixture(scope="module")

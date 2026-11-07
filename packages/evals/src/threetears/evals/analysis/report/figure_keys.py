@@ -7270,8 +7270,8 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
         "`per 1,000 conversations`); never write a unit after it. A figure "
         "in points alone prints its bare number, so the word `points` follows it, as above. Money per reply reads per "
         f"1,000 replies: write `{{{per_reply}|usd_per_1k}}`, which reads "
-        f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}", not `{{{per_reply}}}` '
-        f'("{format_figure(resolve(per_reply, example))}", a fraction of a cent).'
+        f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}" at any amount; a bare `{{{per_reply}}}` '
+        "reads so only under a cent, never as a fraction of a cent, and in plain dollars from a cent up."
     )
     lines.append(
         "Without a filter a rate reads as a percent, a change in points, money in dollars. A digit outside a key is "

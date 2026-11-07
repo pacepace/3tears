@@ -545,24 +545,23 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
 def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
     """Each arm's tag as the campaign's report document page tags it, by every variant key that names it: over the
     arms in its report input's order (the campaign's arms, then the other variants its aspects index, one per label;
-    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. Read off the bundle, so a
-    surface that prints the document's words beside code's (the campaign listing) tags an arm as the document does.
+    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. It is
+    :func:`campaign_arm_tags` over the campaign's declared arms, the call the code page tags by, so every page of a
+    campaign tags an arm alike. Read off the bundle, so a surface that prints the document's words beside code's (the
+    campaign listing) tags an arm as the document does.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: CampaignBundle
     :return: Variant key -> tag.
     :rtype: dict[str, str]
     """
-    keys = [
-        *(arm.variant_key for arm in bundle.arms),
-        *(entry.variant_key for aspect in bundle.aspects for entry in aspect.variant_index),
-    ]
-    first: dict[str, str] = {}
-    for key in keys:
-        first.setdefault(bundle.label_of(key), key)
     control = bundle.control()
-    labelled = arm_tags(list(first), bundle.label_of(control.variant_key) if control is not None else None)
-    return {key: labelled[bundle.label_of(key)] for key in dict.fromkeys(keys)}
+    return campaign_arm_tags(
+        bundle.aspects,
+        control.variant_key if control is not None else None,
+        arms=[arm.variant_key for arm in bundle.arms],
+        label_of=bundle.label_of,
+    )
 
 
 def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[CampaignArm]:

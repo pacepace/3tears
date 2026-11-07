@@ -93,7 +93,7 @@ from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.build import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
-from threetears.evals.analysis.report.words import campaign_arm_tags
+from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -1020,10 +1020,11 @@ def _label_text(statistics: LabelStatistics) -> str:
 
 
 def _dimension_text(dimension: DimensionSummary) -> str:
-    """One judged dimension's line as the quiet print says it: a pass/fail one in percent with its count of trials, a
-    scored one's mean with its trials named, and how often the judge could not tell."""
-    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
-    line = f"{dimension.name} ({scale}): "
+    """One judged dimension's line as the quiet print says it: under the name the page gives it
+    (:func:`~threetears.evals.analysis.report.words.judged_heading`) and its scale, a pass/fail one in percent with its
+    count of trials, a scored one's mean with its trials named, and how often the judge could not tell."""
+    scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
+    line = f"{judged_heading(dimension.name)}{scale}: "
     if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
         line += "no result carries a score"
     elif dimension.scale == "pass_fail":

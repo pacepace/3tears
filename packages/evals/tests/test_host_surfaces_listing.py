@@ -308,7 +308,13 @@ def test_an_arm_reads_one_name_on_every_page_and_one_tag_on_one_listing_line(
     one listing line, headline and caveats, never names an arm two ways."""
     host, _ = _prompt_host(arms=arms)
     bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
-    code_tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    # The code page's tags, as the service tags its arms: the campaign's declared arms first.
+    code_tags = campaign_arm_tags(
+        bundle.aspects,
+        bundle.readings.control,
+        arms=[arm.variant_key for arm in bundle.arms],
+        label_of=bundle.label_of,
+    )
     code = reader_arm_labels(bundle, code_tags)
     listed_tags = input_arm_tags(bundle)
     listed = reader_arm_labels(bundle, listed_tags)

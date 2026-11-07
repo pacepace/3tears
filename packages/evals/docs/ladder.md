@@ -78,14 +78,14 @@ What it printed:
 ```text
 emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more.
 90 result(s): 90 scored
-  Urgent score: mean 0.8333 (n=90, min 0, max 1)
-  Escalates score: mean 0.9889 (n=90, min 0, max 1)
-  Accuracy: mean 0.9 (n=90, min 0, max 1)
+  Urgent score: 83.3%, 75 of 90 trials
+  Escalates score: 98.9%, 89 of 90 trials
+  Accuracy: 90%, 81 of 90 trials
   per label:
-    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases, ...
+    account: precision 100% (17 of 17 trials over 7 cases, [56.9%, 100%]), recall 81% (17 of 21 trials over 7 cases, ...
     ...
-  total spend: $0.00192, the results' cost
-top misses (5 of 20):
+  total spend: $0.0019, the results' cost
+top misses (5 of 20 failed trials):
   case double-charge (repeat ...): urgent gave 0
   case refund-after-cancel (repeat ...): urgent gave 0
   ...
@@ -160,12 +160,12 @@ What it printed:
 
 ```text
 replies: reply passed 40 of 40 trials on 20 cases.
-judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
+judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
 40 result(s): 40 scored, 0 excluded
-  answer grounded (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
-  answer answers (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
-  answer safe (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
-  total spend: $0.0168, the results' cost (candidate $0.00175, judge $0.0151)
+  answer grounded (judged), scored pass/fail: 100%, 40 of 40 trials
+  answer answers (judged), scored pass/fail: 100%, 40 of 40 trials
+  answer safe (judged), scored pass/fail: 100%, 40 of 40 trials
+  total spend: $0.017, the results' cost (candidate $0.0017, judge $0.0151)
 stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
 ```
@@ -261,10 +261,10 @@ exits 4:
 ```text
 invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
-  Number score: mean 0.8333 (n=90, min 0, max 1)
+  Number score: 83.3%, 75 of 90 trials
   ...
 v2: 90 result(s): 89 scored, 1 failed by the candidate
-  Number score: mean 1 (n=89, min 1, max 1)
+  Number score: 100%, 89 of 89 trials
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
@@ -398,7 +398,7 @@ What it printed:
 ```text
 booking: agent passed 31 of 36 trials on 12 cases. Cases that failed a trial: r08, r09, r10.
 36 result(s): 36 scored
-  In window score: mean 1 (n=36, min 1, max 1)
+  In window score: 100%, 36 of 36 trials
   goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 4 of 12 case(s)
   goal check not intersects(state.booked, state.busy): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)
   goal check call_count("day.book") <= 1: passed 35/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)

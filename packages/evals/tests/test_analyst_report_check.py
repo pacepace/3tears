@@ -457,8 +457,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: scope does, where two or more were refused.
 _EVALS_BYTES = "b014d6e25c053873f4d67c2beb06fc0b1edefc456290ba651bf2fef6fe60160f"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
-#: contrast's test read (``cases``).
-_EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"
+#: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
+#: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
+_EDITOR_BYTES = "4dddb29abaff5301a3e1d99374919e79995c5bdfcefe17de0e882f66be53afe4"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -482,7 +483,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "bb0e00035634c02c3fcb48f233873ef6a2cc377f649aa3e59f2ce7521594b9e9"
+_ANALYST_BYTES = "1b65b43026ea94a88d3e88e8d578ff7701705eb4e0bf6eb287c2f7613026ee95"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:

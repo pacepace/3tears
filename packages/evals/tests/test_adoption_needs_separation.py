@@ -83,10 +83,9 @@ class TestAGuardrailOnACandidate:
 
         assert held.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
         report = _page(bundle)
-        assert any(
-            isinstance(b, DisclosureBlock) and "not known to be safe" in b.text and "boundary.correct" in b.text
-            for b in report.blocks
-        )
+        # The guardrail sentence states it by the name the page prints the dimension by (verdict.guardrail_lines).
+        stated = "1024tok may do worse than 256tok on the boundary correct (judged) guardrail."
+        assert any(isinstance(b, DisclosureBlock) and b.text == stated for b in report.blocks)
         assert any(isinstance(b, TableBlock) and b.name == "guardrails" for b in report.blocks)
 
     def test_a_held_guardrail_adds_nothing_to_the_decision(self):
@@ -94,7 +93,4 @@ class TestAGuardrailOnACandidate:
         held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
         bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})
         report = _page(bundle)
-        assert not any(
-            isinstance(b, DisclosureBlock) and "boundary.correct" in b.text and "undecided" in b.text
-            for b in report.blocks
-        )
+        assert not any(isinstance(b, DisclosureBlock) and "boundary correct (judged)" in b.text for b in report.blocks)

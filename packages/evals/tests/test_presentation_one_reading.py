@@ -35,6 +35,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
 from threetears.evals.analysis.report.campaign.names import measure_name_of
+from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.words import (
     PASS_RATE,
     campaign_arm_tags,
@@ -49,6 +51,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 
+from packages.evals.tests.analyst_support import shape_bundle
 from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
@@ -446,7 +449,10 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
     for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
-        assert f"| {named} |" in surfaces["aspect.md"] and f"  {named}, scored pass/fail: mean " in surfaces["print"]
+        assert (
+            f"| {named} |" in surfaces["aspect.md"]
+            and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
+        )
         assert dimension not in surfaces["print"]
 
 
@@ -486,3 +492,21 @@ def test_kairo_s_leads_name_every_arm_by_the_name_its_pages_print() -> None:
         assert set(names.values()) == {"September", "qwen3.8-flash", "1017"}
         assert all(re.search(rf"(?<![\w.=]){re.escape(name)}(?![\w])", said) for name in names.values()), said
         assert "model=" not in said, said
+
+
+@pytest.mark.parametrize("capture", ["kairo", "s1", "s3"], ids=["kairo, one aspect", "three aspects", "two aspects"])
+def test_the_code_page_and_the_document_page_tag_every_arm_alike(capture: str) -> None:
+    # The code page tags arms over the campaign's declared arms (the service's ``campaign_arm_tags`` call), the
+    # document page and the listing by ``input_arm_tags``: one arm, one tag, on every page of a campaign.
+    bundle = kairo_bundle() if capture == "kairo" else shape_bundle(capture)
+    code = campaign_arm_tags(
+        bundle.aspects,
+        bundle.readings.control,
+        arms=[arm.variant_key for arm in bundle.arms],
+        label_of=bundle.label_of,
+    )
+    listed = input_arm_tags(bundle)
+    doc = {arm.id: arm.tag for arm in fact_arms(report_input(bundle))}
+    assert len(set(code.values())) == len(bundle.arms) >= 1
+    assert code == listed
+    assert all(listed[key] == doc[bundle.label_of(key)] for key in listed), (listed, doc)
