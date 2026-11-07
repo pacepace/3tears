@@ -117,7 +117,7 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     printed = capsys.readouterr().out
     assert "40 result(s): 40 scored, 0 excluded" in printed
     for dimension in ("grounded", "answers", "safe"):
-        assert f"answer.{dimension} (judged pass/fail): mean 1 (n=40" in printed
+        assert f"answer.{dimension} (judged pass/fail): 100%, 40 of 40 trials" in printed
     assert UNCALIBRATED in printed.splitlines()
     # The judge is another family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed

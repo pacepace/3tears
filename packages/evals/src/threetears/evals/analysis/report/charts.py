@@ -24,20 +24,15 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Iterator, Sequence
-from functools import partial
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.evals.kernel.numbers import (
-    PER_THOUSAND,
-    PER_THOUSAND_MARK,
     WHOLE_FROM,
     MoneyForm,
     format_number,
     group_thousands,
-    money_form,
-    per_thousand_digits,
 )
 from threetears.evals.analysis.quantities import (
     MONEY,
@@ -325,9 +320,8 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. Money is first put in one form per column (#993, :func:`_money_by_column`): per 1,000 (``$8/1000``) throughout
-    a column where any amount it holds is under a cent, so a column never reads ``$0.008`` beside ``$0.11``, and its
-    whole dollars grouped by thousands (``$1,239``), as the figure keys write money.
+    three. Money's whole dollars are first grouped by thousands (``$1,239``, :func:`_money_by_column`), as the figure keys
+    write money.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
@@ -357,46 +351,25 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     return table
 
 
-def _money_amount(found: re.Match[str]) -> float:
-    """The dollars one amount in a cell states, its sign and any per-1,000 mark read back."""
-    amount = float(found.group(2).replace(",", "")) / (PER_THOUSAND if found.group(3) else 1)
-    return -amount if found.group(1) in ("-", "−") else amount
-
-
 def _money_by_column(table: list[list[str]]) -> list[list[str]]:
-    """Every amount of money in each column of a table's text in that column's one form (#993): per 1,000
-    (``$8/1000``) throughout where any amount the column holds is under a cent
-    (:func:`~threetears.evals.kernel.numbers.money_form`), else in dollars, and every amount's whole dollars grouped by
-    thousands (``$1,239``). An amount is moved per 1,000 by its digits exactly, so it keeps every digit it was written
-    with and gains none it was never rounded to; a bound (``< $0.000001``) is left as it is. A cell naming the count
-    its money is drawn per (``$0.0240 per 1,000,000 conversations``) already states its scale: its amounts neither
-    choose the mark nor take it, so no amount carries two scales.
+    """Every amount of money in a table's text with its whole dollars grouped by thousands (``$1,239``), as the figure
+    keys write money; a bound (``< $0.000001``) is left as it is. The per-1,000 mark retired (2026-11-07): an amount is
+    never moved per 1,000 here, and one already written with the mark (a stored chart's) keeps it.
 
     :param table: The table's rows of cell texts; changed in place.
     :ptype table: list[list[str]]
     :return: The same rows.
     :rtype: list[list[str]]
     """
-    width = max((len(row) for row in table), default=0)
-    for column in range(width):
-        cells = [row[column] for row in table if column < len(row) and not _COUNTED.search(row[column])]
-        per_thousand = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
-        for row in table:
-            if column < len(row):
-                mark = per_thousand.per_thousand and not _COUNTED.search(row[column])
-                row[column] = _CELL_MONEY.sub(partial(_respelled, per_thousand=mark), row[column])
+    for row in table:
+        for column, cell in enumerate(row):
+            row[column] = _CELL_MONEY.sub(_respelled, cell)
     return table
 
 
-#: Words naming the count money is drawn per: ``per 1,000,000 conversations``.
-_COUNTED = re.compile(r"\bper [\d,]+ ")
-
-
-def _respelled(found: re.Match[str], per_thousand: bool) -> str:
-    """One amount in its column's form: moved per 1,000 by its digits where the column reads so, its thousands grouped."""
+def _respelled(found: re.Match[str]) -> str:
+    """One amount with its thousands grouped, any mark it was written with kept."""
     sign, digits, mark = found.group(1), found.group(2).replace(",", ""), found.group(3) or ""
-    if per_thousand and not mark:
-        digits, mark = per_thousand_digits(digits), PER_THOUSAND_MARK
     return f"{sign}${group_thousands(digits)}{mark}"
 
 
@@ -544,6 +517,11 @@ class _BarsFields(_Kind):
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
     log: bool | None = Field(default=None, description="A log value axis, the bars drawn from its low end.")
     reference: ChartReference | None = Field(default=None, description="A floor, budget or no-preference point.")
+    zero_label: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Printed at the zero line of a change chart: what zero is (the control's name).",
+    )
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
@@ -638,6 +616,9 @@ class ForestChart(_Drawable):
     fmt: Fmt = Field(description="The values' format.")
     level: str = Field(description='The intervals\' level ("95%").')
     reference: ChartReference | None = Field(default=None, description="The margin (kind `margin`).")
+    zero_label: str | None = Field(
+        default=None, min_length=1, description="Printed at the zero line: what zero is (the control's name)."
+    )
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -731,6 +712,10 @@ class ScatterPoint(_KitModel):
 
     x: float = Field(description="Across, in x units.")
     y: float = Field(description="Up, in y units.")
+    x_lo: float | None = Field(default=None, description="The low end of x's interval; drawn as a whisker with `x_hi`.")
+    x_hi: float | None = Field(default=None, description="The high end of x's interval.")
+    y_lo: float | None = Field(default=None, description="The low end of y's interval; drawn as a whisker with `y_hi`.")
+    y_hi: float | None = Field(default=None, description="The high end of y's interval.")
     id: str | None = Field(default=None, description="What `emphasis` and `paths` name.")
     label: str | None = Field(default=None, description="The point's label at 560 px and wider.")
     narrow_label: str | None = Field(default=None, description="Its label below 560 px; unlabelled when none.")
@@ -781,9 +766,18 @@ class _ScatterFields(_Kind):
     price_line: PriceLine | None = Field(default=None, description="A price line from the origin.")
     emphasis: str | None = Field(default=None, description="The id of the one point to ring.")
     height: float | None = Field(default=None, description="The plot's height in px.")
+    level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
 
     def check_drawable(self) -> None:
         super().check_drawable()
+        _need_level(
+            self.level,
+            any(
+                end is not None
+                for point in self.points or []
+                for end in (point.x_lo, point.x_hi, point.y_lo, point.y_hi)
+            ),
+        )
         ids = {point.id for point in self.points or [] if point.id is not None}
         for path in self.paths or []:
             if missing := [one for one in path.ids if one not in ids]:

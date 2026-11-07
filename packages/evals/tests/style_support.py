@@ -19,6 +19,10 @@ __all__ = ["Absence", "absence_violations", "lint_page"]
 #: A line quoting something whole, as the declared question does under the title: data, not prose.
 _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
 
+#: A header's closing unit, which names what its column's figures are in (``(%)``, ``($/1,000 replies)``): a name
+#: with its unit is still the name.
+_HEADER_UNIT = re.compile(r"\s*\([^()]*\)$")
+
 
 def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
@@ -52,7 +56,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         if line.startswith("|"):
             cells = [cell.strip() for cell in line.strip("|").split(" | ")]
             if not header_row and not line.startswith("|---"):
-                headers = [cell for cell in cells if cell.removeprefix("▸ ") not in names]
+                bare = {_HEADER_UNIT.sub("", name) for name in names}
+                headers = [cell for cell in cells if _HEADER_UNIT.sub("", cell.removeprefix("▸ ")) not in bare]
                 found += [v for cell in headers for v in lint_prose(cell, header=True) if v.rule == "header"]
             header_row = True
             continue

@@ -191,7 +191,11 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
         "$4.00 [$3.60, $4.40] per 1,000 replies",
         "pass rate 85% [80%, 90%]",
     ]
-    assert data["y_domain"] == [0, 100] and data["x_domain"][0] == 0, "no axis is cut to flatter a gap"  # type: ignore[index]
+    # Each axis is set to the data (the review's P46): it holds every interval end, within 0 to 100 for the pass rate.
+    x_low, x_high = data["x_domain"]  # type: ignore[misc]
+    y_low, y_high = data["y_domain"]  # type: ignore[misc]
+    assert 0 < x_low <= 0.72 and x_high >= 4.4, data["x_domain"]
+    assert 0 < y_low <= 55 and 90 <= y_high <= 100, data["y_domain"]
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:

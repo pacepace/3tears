@@ -273,7 +273,14 @@ def shape_of(name: str, aspects: Sequence[AspectTrials], *, control: bool, quest
     shapes below, or a test's own of the same parts."""
     campaign, bundles, arms, runs, results = _assembled(name, aspects, control=control, question=question)
     readings = campaign_readings(campaign, bundles, arms=arms)
-    tags = campaign_arm_tags(bundles.values(), readings.control)
+    # Tagged as the service tags a campaign's page: its declared arms first.
+    labels = readings.arm_labels()
+    tags = campaign_arm_tags(
+        bundles.values(),
+        readings.control,
+        arms=[arm.variant_key for arm in arms],
+        label_of=lambda key: labels.get(key, key),
+    )
     reports = {
         label: build_code_only_report(
             bundle, assembled_at=ASSEMBLED_AT, campaign_name=name, arm_labels=readings.arm_labels(), arm_tags=tags

@@ -131,7 +131,7 @@ def _table(
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=money_columns(rows, by_row=by_row, marked=False),
+        rows=money_columns(rows, by_row=by_row),
         order=order,
         total_rows=len(rows),
     )

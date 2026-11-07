@@ -14,6 +14,7 @@ import html
 import json
 import re
 from collections.abc import Collection
+from dataclasses import dataclass
 from importlib.resources import files
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
@@ -310,74 +311,139 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     return grid + _scale_line(block, scales)
 
 
-def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float]]:
+@dataclass(frozen=True)
+class _Scale:
+    """One glyph scale: the track's ends, which are the data's own (the glyph's inset keeps a mark off the edge), the
+    unit its spans are read in (a cell's own, else the one its column's header names), and a cell of the scale, which
+    spells a number as the column's cells do (its money form)."""
+
+    low: float
+    high: float
+    unit: str
+    cell: TableCell
+
+    def spell(self, number: float) -> str:
+        """A number on the scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``."""
+        if self.cell.unit:
+            return self.cell.amount(number)
+        return with_unit(number, self.unit)
+
+    def _on_number(self) -> bool:
+        """Whether the scale's unit is written on each number (a percent, money) or once after them (``pts``)."""
+        return self.unit == PERCENT or is_money(self.unit) or not self.unit
+
+    def span(self) -> str:
+        """The scale's ends, its unit once: ``-7.8 to 35.4 pts``, ``83.9% to 100%``, ``$0.031 to $0.10``."""
+        if self._on_number():
+            return f"{self.spell(self.low)} to {self.spell(self.high)}"
+        return f"{number_in(self.low, self.unit)} to {number_in(self.high, self.unit)} {self.unit}"
+
+    def interval(self, low: float, high: float) -> str:
+        """An interval on the scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``."""
+        if self._on_number():
+            return f"[{self.spell(low)}, {self.spell(high)}]"
+        return f"[{number_in(low, self.unit)}, {number_in(high, self.unit)}] {self.unit}"
+
+
+#: The unit a column's header names in its closing parentheses (``v2 (pts)``, ``Pass rate (%)``), which a cell
+#: stated bare under it is read in.
+_HEADER_UNIT = re.compile(r"\((%|pts)\)\s*$")
+
+
+def _read_unit(cell: TableCell, header: str) -> str:
+    """The unit a glyph cell's figures are read in: its own, else its column header's (:data:`_HEADER_UNIT`)."""
+    if cell.unit:
+        return cell.unit
+    named = _HEADER_UNIT.search(header)
+    return named.group(1) if named is not None else ""
+
+
+def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
     """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit, or, in a
-    table drawn on one scale (``TableBlock.shared_scale``: a matrix), whose columns are one quantity read for each arm, one for every cell of the table
-    in that unit, so a glyph compares across columns as well as down them.
+    table drawn on one scale (``TableBlock.shared_scale``: a matrix), whose columns are one quantity read for each arm,
+    one for every cell of the table read in that unit, so a glyph compares across columns as well as down them. Money
+    keeps a scale per column even there: two money measures are drawn on rulers of their own.
 
-    The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
-    difference, padded a little at either end so no mark sits on the edge.
+    The scale runs from the least to the greatest of every interval end, every point and every margin either side of
+    zero of the group, and holds zero where any cell is a difference or carries a margin: the data's own ends, never
+    padded, so the line under the table states what the track spans. A rate's scale stays within 0 to 100.
 
-    :return: ``{(column key, unit): (low, high)}``, for the columns with a cell carrying an interval.
-    :rtype: dict[tuple[str, str], tuple[float, float]]
+    :return: ``{(column key, cell unit): scale}``, for the columns with a cell carrying an interval.
+    :rtype: dict[tuple[str, str], _Scale]
     """
+    headers = {column.key: column.header for column in block.columns}
     ends: dict[tuple[str, str], list[float]] = {}
+    first: dict[tuple[str, str], TableCell] = {}
     for row in block.rows:
         for key, cell in row.items():
             if cell.low is None or cell.high is None or not cell.is_number:
                 continue
-            group = ends.setdefault((key, cell.unit), [])
-            group += [cell.low, cell.high, float(cell.value)]  # type: ignore[arg-type]
+            held = ends.setdefault((key, cell.unit), [])
+            first.setdefault((key, cell.unit), cell)
+            held += [cell.low, cell.high, float(cell.value)]  # type: ignore[arg-type]
             if cell.margin is not None:
-                group += [-cell.margin, cell.margin]
+                held += [-cell.margin, cell.margin, 0.0]
             if cell.zero_line:
-                group.append(0.0)
-    if block.shared_scale:
-        by_unit: dict[str, list[float]] = {}
-        for (_, unit), figures in ends.items():
-            by_unit.setdefault(unit, []).extend(figures)
-        ends = {(key, unit): by_unit[unit] for key, unit in ends}
-    scales = {}
-    for group_key, figures in ends.items():
+                held.append(0.0)
+    units = {group: _read_unit(cell, headers.get(group[0], "")) for group, cell in first.items()}
+
+    def pooled(group: tuple[str, str]) -> tuple[str, str]:
+        unit = units[group]
+        return ("", unit) if block.shared_scale and not is_money(unit) else group
+
+    by_scale: dict[tuple[str, str], list[float]] = {}
+    for group, figures in ends.items():
+        by_scale.setdefault(pooled(group), []).extend(figures)
+    scales: dict[tuple[str, str], _Scale] = {}
+    for group in ends:
+        figures = by_scale[pooled(group)]
         low, high = min(figures), max(figures)
-        pad = (high - low) * 0.05 or abs(high) * 0.05 or 1.0
-        scales[group_key] = (low - pad, high + pad)
+        if units[group] == PERCENT:
+            low, high = max(low, 0.0), min(high, 100.0)
+        if low == high:
+            # One figure alone: a track either side of it, so its mark is drawn where it is.
+            pad = abs(low) * 0.05 or 1.0
+            low, high = low - pad, high + pad
+        scales[group] = _Scale(low=low, high=high, unit=units[group], cell=first[group])
     return scales
 
 
-def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
+def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale]) -> str:
     """A cell's interval glyph on its column's scale, or a blank of the same width where the cell has none, so the
-    column's figures stay aligned."""
+    column's figures stay aligned. Its title states its figures as the scale's cells write them."""
     if cell.low is None or cell.high is None or not cell.is_number:
         return '<span class="no-glyph"></span>'
+    scale = scales[(key, cell.unit)]
+    said = f"{scale.spell(float(cell.value))}, interval {scale.interval(cell.low, cell.high)}"  # type: ignore[arg-type]
+    if cell.margin is not None:
+        said += f", margin ±{scale.spell(cell.margin)}"
     return interval_glyph_svg(
         float(cell.value),  # type: ignore[arg-type]
         cell.low,
         cell.high,
         unit=cell.unit,
-        scale=scales[(key, cell.unit)],
+        scale=(scale.low, scale.high),
         margin=cell.margin,
+        said=said,
     )
 
 
-def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
-    """One quiet line under a table with glyphs: each glyph column's scale, its ends written once per unit."""
+def _scale_line(block: TableBlock, scales: dict[tuple[str, str], _Scale]) -> str:
+    """One quiet line under a table with glyphs: each glyph column's scale, its ends written once per unit, in the
+    cells' own form and with the unit on every span (``Each column drawn from -7.8 to 35.4 pts and from $0.031 to
+    $0.10``)."""
     if not scales:
         return ""
     headers = {column.key: column.header for column in block.columns}
     spans: dict[str, list[str]] = {}
-    if block.shared_scale:
-        # One scale per unit for every column: written once, not once per column.
-        scales = {("", unit): scale for (_, unit), scale in scales.items()}
-        headers[""] = "Each column"
-    for (key, unit), (low, high) in scales.items():
-        if unit == PERCENT or is_money(unit):
-            ends = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
-        else:
-            ends = f"{number_in(low, unit)} to {number_in(high, unit)}" + (f" {unit}" if unit else "")
-        spans.setdefault(key, []).append(ends)
-    said = [f"{code_html(headers[key])} drawn from {' and from '.join(ends)}" for key, ends in spans.items()]
-    return f'<p class="axis">{" · ".join(said)}</p>'
+    for (key, _), scale in scales.items():
+        pooled = block.shared_scale and not is_money(scale.unit)
+        said = spans.setdefault("" if pooled else key, [])
+        if scale.span() not in said:
+            said.append(scale.span())
+    headers[""] = "Each column"
+    lines = [f"{code_html(headers[key])} drawn from {' and from '.join(ends)}" for key, ends in spans.items()]
+    return f'<p class="axis">{" · ".join(lines)}</p>'
 
 
 def _column_class(block: TableBlock, key: str) -> str:

@@ -1067,7 +1067,14 @@ def _campaign_page(
     printed = printed_arm_labels(bundle)
     readings = bundle.readings.relabelled(printed)
     labels = readings.arm_labels()
-    tags = campaign_arm_tags(bundle.aspects, readings.control)
+    # One tag per arm across the code page, its aspects' pages and the report document's page: the campaign's arms in
+    # its declared order first, as its report input lists them.
+    tags = campaign_arm_tags(
+        bundle.aspects,
+        readings.control,
+        arms=[arm.variant_key for arm in bundle.arms],
+        label_of=bundle.label_of,
+    )
     declared = declared_arm_names(bundle.arms)
     writer = analysis_writer(analysis) if analysis is not None else None
     checked = fingerprints or {}

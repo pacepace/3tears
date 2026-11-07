@@ -37,9 +37,14 @@ from functools import reduce
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
+from threetears.evals.kernel.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
+from threetears.evals.analysis.report.figures import PER_MILLION_LABEL, PER_THOUSAND_LABEL
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.kernel.surface import DecisionSurface
+from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.analysis.report.campaign.common import floor_of, points
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import (
@@ -70,7 +75,13 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
+    MetricDescriptor,
+    reads_as_rate,
+)
 
 __all__ = [
     "BAR_WORDS",
@@ -188,7 +199,8 @@ def row_figures(row: AspectReading, control: str) -> str:
     said.append(f"{change}, interval {interval_text(interval[0], interval[1], POINTS)}." if interval else f"{change}.")
     if row.reading == "unclear" and row.projection is not None and row.projection.if_observed.kind == "more":
         said.append(
-            f"About {row.projection.if_observed.cases:,} cases would settle it, if the arms differ as observed."
+            f"About {group_thousands(format_number(float(row.projection.if_observed.cases)))} cases would settle it, "
+            "if the arms differ as observed."
         )
     return " ".join(said)
 
@@ -1250,19 +1262,21 @@ def measure_blocks(
         TableColumn(key="cases", header="Cases", term="cases"),
     ]
     rows = []
-    forms = _money_forms(readings, reports)
+    rulers = _money_rulers(readings, reports)
+    rates = _rate_measures(readings, reports, {})
     for reading in _shown_measures(readings):
-        form = forms.get(reading.measure)
+        ruler = rulers.get(reading.measure)
+        rate = reading.measure in rates
         values: dict[str, CellValue | TableCell] = {
             "aspect": names.cell(reading.aspect),
             "arm": reading.arm_label,
-            "measure": _measure_words(reading, reports),
-            "value": _measured(reading.value, reading.passed, reading.trials, reading.cases)
-            if form is None
-            else _money_cell(reading.value, None, form),
-            "interval": _measured_interval(reading.interval, reading.passed is not None)
-            if form is None
-            else _money_interval(reading.interval, form),
+            "measure": _measure_words(reading, reports) + (_money_label(ruler) if ruler is not None else ""),
+            "value": _measured(reading.value, reading.passed, reading.trials, reading.cases, rate=rate)
+            if ruler is None
+            else _money_cell(reading.value, None, ruler),
+            "interval": _measured_interval(reading.interval, rate)
+            if ruler is None
+            else _money_interval(reading.interval, ruler),
             "cases": reading.cases,
         }
         if by_rig:
@@ -1335,16 +1349,23 @@ def _measure_matrix(
     measures: dict[str, MeasureReading] = {}
     for reading in shown:
         measures.setdefault(reading.measure, reading)
-    forms = _money_forms(readings, reports)
+    rulers = _money_rulers(readings, reports)
+    surfaces: dict[str, DecisionSurface] = {}
+    rates = _rate_measures(readings, reports, surfaces)
+    counts = _rate_counts(readings, reports, rates, surfaces)
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         *([TableColumn(key="arm", header="Arm")] if len(arms) > 1 else []),
         *(
             TableColumn(
                 key=f"measure:{key}",
-                header=f"{named} ({PERCENT})" if first.passed is not None else named,
+                header=f"{named} ({PERCENT})"
+                if key in rates
+                else named + _money_label(rulers[key])
+                if key in rulers
+                else named,
             )
-            for key, first in measures.items()
+            for key in measures
             for named in [_measure_header(key, readings, reports)]
         ),
     ]
@@ -1359,7 +1380,7 @@ def _measure_matrix(
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
                 found = [reading for reading in held if reading.measure == key]
-                cells[f"measure:{key}"] = _measure_cell(found, forms.get(key))
+                cells[f"measure:{key}"] = _measure_cell(found, rulers.get(key), rate=key in rates, counts=counts)
             rows.append(cells)
     return TableBlock(
         section="scorecard",
@@ -1373,26 +1394,32 @@ def _measure_matrix(
     )
 
 
-def _measure_cell(found: Sequence[MeasureReading], form: MoneyForm | None = None) -> TableCell:
-    """One measure on one aspect: its value with its interval, a pass rate in percent, money in its measure's one form
-    (``form``); a dash where it was not read, and a marked dash where it was read under several test setups, whose
-    figures the fold holds."""
+def _measure_cell(
+    found: Sequence[MeasureReading],
+    ruler: MoneyRuler | None = None,
+    *,
+    rate: bool,
+    counts: Mapping[tuple[str, str, str], str] | None = None,
+) -> TableCell:
+    """One measure on one aspect: its value with its interval, a rate (a pass rate, an accuracy) in percent, money in
+    its measure's one form on its ruler (``ruler``, per 1,000 replies as its header says); a dash where it was not
+    read, and a marked dash where it was read under several test setups, whose figures the fold holds."""
     if not found:
         return TableCell(value=None)
     if len(found) > 1:
         return TableCell(value=None, flag="split by setup")
     (reading,) = found
-    if form is not None:
-        return _money_cell(reading.value, reading.interval, form)
-    scale = 100.0 if reading.passed is not None else 1.0
-    places = 1 if reading.passed is not None else 4
+    if ruler is not None:
+        return _money_cell(reading.value, reading.interval, ruler)
+    scale = 100.0 if rate else 1.0
+    places = 1 if rate else 4
     if reading.value is None:
         return TableCell(value=None)
     value = round(scale * reading.value, places)
     count = (
         _rate_count(reading.passed, reading.trials, reading.cases)
         if reading.passed is not None and reading.trials is not None
-        else None
+        else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
     if reading.interval is None:
         return TableCell(value=value, flag=count)
@@ -1416,48 +1443,127 @@ def measured_figure(reading: MeasureReading) -> str | None:
     return passed_clause(reading.arm_label, reading.passed, reading.trials, reading.cases)
 
 
-def _money_forms(readings: CampaignReadings, reports: Mapping[str, Report]) -> dict[str, MoneyForm]:
-    """Each money measure's one form, by its key, chosen from every figure the scorecard states of it, its intervals'
-    ends included (:func:`~threetears.evals.kernel.numbers.money_form`): dollars per reply, or, where a figure is
-    under a cent, per 1,000 replies with its mark (``$0.30/1000``), as the measure's figures read on every row."""
-    held: dict[str, list[float]] = {}
+def _described(reading: MeasureReading, reports: Mapping[str, Report]) -> MetricDescriptor | None:
+    """A measure's description on its aspect: the bundle's catalog's, else the engine's own."""
+    catalog = reports[reading.aspect].bundle.measure_catalog
+    return catalog.get(reading.measure) or METRIC_DESCRIPTORS.get(reading.measure)
+
+
+def _summary(
+    reading: MeasureReading, reports: Mapping[str, Report], surfaces: dict[str, DecisionSurface]
+) -> MeasureSummary | None:
+    """A measure's summary on its arm's one cell on its aspect (a classifier's accuracy is its label match's); None
+    where the arm ran under several setups, whose cells the fold holds apart, or the cell carries no such measure."""
+    surface = surfaces.get(reading.aspect)
+    if surface is None:
+        surface = surfaces[reading.aspect] = bundle_decision_surface(reports[reading.aspect].bundle)
+    cells = [cell for cell in surface.cells if cell.variant_key == reading.arm]
+    if len(cells) != 1:
+        return None
+    held = {summary.name: summary for summary in cells[0].measures.measures}
+    return held.get(reading.measure) or (held.get(MATCH_MEASURE) if reading.measure == ACCURACY_MEASURE else None)
+
+
+def _rate_measures(
+    readings: CampaignReadings, reports: Mapping[str, Report], surfaces: dict[str, DecisionSurface] | None = None
+) -> frozenset[str]:
+    """The measures the scorecard reads as rates, by key, each stated in percent beside the pass rate: the pass rate
+    itself, every measure that reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`: a check, a goal
+    check's pass rate, a classifier's accuracy), and every one its cells summarise as a rate (a classifier's precision
+    and recall), so a row never reads ``68.9`` beside ``0.9`` (the review's P18)."""
+    held = {} if surfaces is None else surfaces
+    return frozenset(
+        reading.measure
+        for reading in readings.measures
+        if reading.passed is not None
+        or reads_as_rate("measure", reading.measure, descriptor=_described(reading, reports))
+        or ((summary := _summary(reading, reports, held)) is not None and summary.rate is not None)
+    )
+
+
+def _rate_counts(
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    rates: frozenset[str],
+    surfaces: dict[str, DecisionSurface] | None = None,
+) -> dict[tuple[str, str, str], str]:
+    """The count each rate other than the pass rate is computed over (an accuracy's matches of its trials), by aspect,
+    arm and measure, as the pass rate's beside it reads (``81 of 90 trials, 30 cases``), so a percent on the first
+    screen carries its count (the review's A6); read off the arm's one cell on its aspect (:func:`_summary`)."""
+    held = {} if surfaces is None else surfaces
+    counted: dict[tuple[str, str, str], str] = {}
     for reading in readings.measures:
-        described = reports[reading.aspect].bundle.measure_catalog.get(reading.measure) or METRIC_DESCRIPTORS.get(
-            reading.measure
+        if reading.measure not in rates or reading.passed is not None:
+            continue
+        summary = _summary(reading, reports, held)
+        share = None if summary is None else summary.rate if summary.rate is not None else summary.mean
+        if summary is None or share is None or not summary.n:
+            continue
+        counted[reading.aspect, reading.arm, reading.measure] = _rate_count(
+            round(share * summary.n), summary.n, summary.n_independent
         )
+    return counted
+
+
+def _money_rulers(readings: CampaignReadings, reports: Mapping[str, Report]) -> dict[str, MoneyRuler]:
+    """Each money measure's one ruler, by its key, chosen from every figure the scorecard states of it, its intervals
+    included (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`): money per reply drawn per 1,000 replies
+    (per 1,000,000 where a figure is under a cent there), the count in the header (:func:`_money_label`), never a mark
+    on the figure, as the measure's figures read on every row."""
+    held: dict[str, list[float]] = {}
+    spans: dict[str, list[tuple[float | None, float | None]]] = {}
+    for reading in readings.measures:
+        described = _described(reading, reports)
         if reading.passed is not None or described is None or not is_money(described.unit or ""):
             continue
         figures = held.setdefault(reading.measure, [])
         figures += [figure for figure in (reading.value, *(reading.interval or ())) if figure is not None]
-    return {key: money_form(figures) for key, figures in held.items()}
+        if reading.interval is not None:
+            spans.setdefault(reading.measure, []).append(reading.interval)
+    return {
+        key: money_ruler(figures, per=1, start=_PER_THOUSAND_REPLIES, intervals=spans.get(key, ()))
+        for key, figures in held.items()
+    }
 
 
-def _money_cell(value: float | None, interval: tuple[float, float] | None, form: MoneyForm) -> TableCell:
-    """A money figure in dollars, in its measure's one form, its interval where given."""
+#: How many replies a money measure's figures are drawn per, at the least.
+_PER_THOUSAND_REPLIES = 1000
+
+
+def _money_label(ruler: MoneyRuler) -> str:
+    """What a money measure's header adds for the count its figures are drawn per: `` ($/1,000 replies)``."""
+    return f" {PER_MILLION_LABEL if ruler.counted == 1_000_000 else PER_THOUSAND_LABEL}"
+
+
+def _money_cell(value: float | None, interval: tuple[float, float] | None, ruler: MoneyRuler) -> TableCell:
+    """A money figure on its measure's ruler, in its one form, its interval where given."""
     if value is None:
         return TableCell(value=None)
-    cell = TableCell(value=value, unit=MONEY, decimals=form.decimals, per_thousand=form.per_thousand)
+    cell = TableCell(value=ruler.drawn(value), unit=MONEY, decimals=ruler.form.decimals)
     if interval is None:
         return cell
-    return cell.model_copy(update={"low": interval[0], "high": interval[1]})
+    return cell.model_copy(update={"low": ruler.drawn(interval[0]), "high": ruler.drawn(interval[1])})
 
 
-def _money_interval(interval: tuple[float, float] | None, form: MoneyForm) -> str | None:
-    """A money figure's interval as the fold's table states it, its ends in the figure's one form."""
+def _money_interval(interval: tuple[float, float] | None, ruler: MoneyRuler) -> str | None:
+    """A money figure's interval as the fold's table states it, its ends in the figure's one form on its ruler."""
     if interval is None:
         return None
-    return f"[{form.spell(interval[0])}, {form.spell(interval[1])}]"
+    return f"[{ruler.spell(interval[0])}, {ruler.spell(interval[1])}]"
 
 
-def _measured(value: float | None, passed: int | None, trials: int | None, cases: int) -> CellValue:
-    """A measure's value as the table states it: a pass rate as its count, any other value as measured."""
+def _measured(value: float | None, passed: int | None, trials: int | None, cases: int, *, rate: bool) -> CellValue:
+    """A measure's value as the table states it: a pass rate as its count, any other rate in percent, any other value
+    as measured."""
     if passed is not None and trials is not None:
         return _counted(passed, trials, cases)
-    return None if value is None else round(value, 4)
+    if value is None:
+        return None
+    return f"{points(100 * value)}{PERCENT}" if rate else round(value, 4)
 
 
 def _measured_interval(interval: tuple[float, float] | None, rate: bool) -> str | None:
-    """A measure's interval as the table states it: a pass rate's in percent, any other in the measure's units."""
+    """A measure's interval as the table states it: a rate's in percent, any other in the measure's units."""
     if interval is None:
         return None
     if rate:

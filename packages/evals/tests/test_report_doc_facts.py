@@ -387,8 +387,8 @@ def test_a_caveat_on_a_contrast_a_claim_reads_that_nothing_carries_is_a_fact() -
         ),
     ]
     assert facts[0].fact == (
-        "The evidence of claim cost reads 1017 (B)'s contrast on Production cost, +$0.49/1000 (+$0.17/1000 to "
-        f"+$0.81/1000), and code attaches caveat `{_REASONING}` to that contrast; neither the claim nor the confidence "
+        "The evidence of claim cost reads 1017 (B)'s contrast on Production cost, +$0.00049 (+$0.00017 to "
+        f"+$0.00081), and code attaches caveat `{_REASONING}` to that contrast; neither the claim nor the confidence "
         "carries it."
     )
 

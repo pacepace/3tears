@@ -282,7 +282,7 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
     (line,) = _miss_lines(result.render())
     assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
     # The classifier's label match is printed as the page names it: the Accuracy it leads on.
-    assert any(text.startswith("  Accuracy: mean") for text in result.render().splitlines())
+    assert any(re.match(r"  Accuracy: [\d.]+%, \d+ of \d+ trials", text) for text in result.render().splitlines())
     matrix, _ = result.labels()
     assert {(cell.expected, cell.predicted) for cell in matrix} >= {("billing", "bug")}
     # The guardrail field, named, is counted as itself: every answer said safe, as every case expected.
@@ -405,7 +405,7 @@ async def test_the_judge_s_next_step_says_what_the_sheet_holds_and_how_many_more
     assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per judged answer per dimension"
     needed = CALIBRATION_MIN_RESULTS - 3
     assert result.render().splitlines()[1] == (
-        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate every output in the "
+        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
         "to_label.csv the report writes, which holds 3 per dimension, without looking at the judge's verdict; the "
         f"calibrated tier's floor is {CALIBRATION_MIN_RESULTS} per dimension, so it needs {needed} more judged "
         "answers per dimension"
@@ -433,12 +433,12 @@ async def test_total_spend_splits_by_role_when_more_than_one_role_spent() -> Non
     assert candidate is not None and judge is not None
     (line,) = [line.strip() for line in judged.render().splitlines() if "total spend" in line]
     # Three candidate calls at $0.001; six judge calls (three answers, two dimensions) at $0.0002, read off the rows.
-    assert line == "total spend: $0.00420, the results' cost (candidate $0.00300, judge $0.00120)"
+    assert line == "total spend: $0.0042, the results' cost (candidate $0.0030, judge $0.0012)"
     assert candidate.cost_usd == pytest.approx(0.003) and judge.cost_usd == pytest.approx(0.0012)
 
     alone = await Eval(CASES, priced_hasty, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     (line,) = [line.strip() for line in alone.render().splitlines() if "total spend" in line]
-    assert line == "total spend: $0.00300, the results' cost", "one role's total is not split"
+    assert line == "total spend: $0.0030, the results' cost", "one role's total is not split"
 
 
 # parity-with: threetears.evals.schema.CompletionClient

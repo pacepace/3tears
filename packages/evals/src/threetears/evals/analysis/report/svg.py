@@ -51,8 +51,9 @@ _GLYPH_DOT = 2.5
 GLYPH_STYLE = """
 svg.viz-glyph { width: 7.5em; height: 0.875em; vertical-align: -0.0625em; margin-right: 6px; overflow: visible; }
 svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
-svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1; }
+svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1.5; }
 svg.viz-glyph .viz-band { fill: var(--sunk); }
+svg.viz-glyph .viz-margin { stroke: var(--muted); stroke-width: 1; }
 svg.viz-glyph .viz-whisker { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; }
 svg.viz-glyph .viz-point { fill: var(--ink); }
 """
@@ -66,10 +67,12 @@ def interval_glyph_svg(
     unit: str,
     scale: tuple[float, float],
     margin: float | None = None,
+    said: str | None = None,
 ) -> str:
     """One figure's interval as the glyph a table cell draws beside it: a track from the scale's low end to its
-    high, a zero line where zero is on it, the margin as a quiet band either side of zero, the interval as a whisker
-    and the figure as a dot.
+    high, a zero tick where zero is on it, the margin as a quiet band either side of zero with a tick at each of its
+    ends on the track, the interval as a whisker and the figure as a dot. A margin wide enough to fill the track still
+    reads: its ticks sit where it ends, and the zero tick stands taller than them.
 
     The scale is the caller's, shared by every cell of the column in the same unit, so one row's glyph reads against
     the next; the scale's ends are written once under the table, not here. The glyph's ``<title>`` states its
@@ -87,6 +90,9 @@ def interval_glyph_svg(
     :ptype scale: tuple[float, float]
     :param margin: A declared margin either side of zero, or None.
     :ptype margin: float | None
+    :param said: What the glyph's title states, as the table's cells write its figures; None for the number rule's
+        spelling in ``unit``.
+    :ptype said: str | None
     :return: The ``<svg>`` element.
     :rtype: str
     """
@@ -97,9 +103,10 @@ def interval_glyph_svg(
         return _GLYPH_INSET + (figure - first) / span * (_GLYPH_WIDTH - 2 * _GLYPH_INSET)
 
     middle = _GLYPH_HEIGHT / 2
-    said = f"{with_unit(value, unit)}, interval {_interval_words(low, high, unit)}"
-    if margin is not None:
-        said += f", margin ±{with_unit(margin, unit)}"
+    if said is None:
+        said = f"{with_unit(value, unit)}, interval {_interval_words(low, high, unit)}"
+        if margin is not None:
+            said += f", margin ±{with_unit(margin, unit)}"
     marks = [
         f'<line class="viz-track" x1="{tenth_px(x_of(first))}" y1="{middle}" x2="{tenth_px(x_of(last))}" y2="{middle}"></line>'
     ]
@@ -109,6 +116,12 @@ def interval_glyph_svg(
             f'<rect class="viz-band" x="{tenth_px(band_low)}" y="1" width="{tenth_px(max(band_high - band_low, 0.0))}" '
             f'height="{_GLYPH_HEIGHT - 2}"></rect>'
         )
+        marks += [
+            f'<line class="viz-margin" x1="{tenth_px(x_of(end))}" y1="3" x2="{tenth_px(x_of(end))}" '
+            f'y2="{_GLYPH_HEIGHT - 3}"></line>'
+            for end in (-margin, margin)
+            if first <= end <= last
+        ]
     if first <= 0.0 <= last:
         marks.append(
             f'<line class="viz-zero" x1="{tenth_px(x_of(0.0))}" y1="0" x2="{tenth_px(x_of(0.0))}" y2="{_GLYPH_HEIGHT}"></line>'
