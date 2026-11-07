@@ -31,7 +31,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
-from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, what_runs
+from packages.evals.tests.page_contract_support import links, what_runs
 from packages.evals.tests.style_support import lint_page
 
 from packages.evals.tests.campaign_support import (
@@ -80,9 +80,9 @@ async def test_the_page_keeps_the_embed_s_invariants() -> None:
     parser = _Tags()
     parser.feed(html)
     tags = parser.tags
-    # Nothing runs or loads but the kit's fonts, through the package's own three links in the head.
+    # Nothing runs but the kit's script, and nothing loads: no link at all.
     assert what_runs(html) == []
-    assert font_links(html) == list(FONT_LINKS)
+    assert links(html) == []
     assert not [name for _, attrs in tags for name in attrs if name.startswith("on")]
     ids = [attrs["id"] for _, attrs in tags if attrs.get("id")]
     assert len(ids) == len(set(ids)), "an id is repeated"

@@ -27,8 +27,8 @@ page = campaign_report(host, campaign_id, scope_id)          # a host
 files = page.write("eval-report")  # report.html, report.md, campaign.json, bundle-<aspect>.json
 ```
 
-`report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page and the
-kit's fonts. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
+`report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page; its faces
+are a local stack, so nothing is fetched. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
 it; without it, every chart reads as its values table. Drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the call, and each
 aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)); the arms a report document recommends
@@ -379,14 +379,15 @@ dark alike.
 ### Embedding the page in a host
 
 Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
-The default page carries the package's `kit.js` inline and links the kit's fonts, so it needs a policy that allows
-that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts:
-`style-src` and `font-src` for `fonts.googleapis.com` and `fonts.gstatic.com`. Without those the page still reads, its
-text in the system faces the kit's stylesheet names after each Plex face.
+The default page carries the package's `kit.js` inline and loads nothing, so it needs a policy that allows that one
+inline script (by its hash, which changes only when the package's `kit.js` does) and inline styles. Its faces are IBM
+Plex where the reader has it installed, else the system's, each stack ending in a generic family. A host restyles the
+page through its seven `--host-*` tokens and stamps its theme on the page's one `<html>` tag
+([Fitting the page to the host](adopting-a-host.md#fitting-the-report-page-to-the-host)).
 
 A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
 `report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page needs no `script-src` at
-all. It has no `<script>` and no `<link>`, its text is in the system faces, and it carries its charts as inline SVG,
+all. It has no `<script>` and no `<link>`, and it carries its charts as inline SVG,
 drawn on the server by the kit's geometry and colour tokens, so they follow the page's light and dark themes; each
 mark's tooltip is its `<title>`, and each chart's values table stays under it for a screen reader and for copying the
 numbers out. A gate matrix, a lattice, example cards and interval rows are shown as their tables, each saying so in

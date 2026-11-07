@@ -5,9 +5,10 @@ Contracts held here (``analysis.report.charts`` values tables, ``analysis.report
 
 - **a computed change prints as its key reads it**: a compare or lever chart's value and interval ends, in points,
   read as the figure keys spell them (one decimal), never at a float's four figures;
-- **a settle table prints counts whole and leaves out what no row fills**: every size and count reads as its key
-  spells it (``617``, never ``617.0``), no column but a measure's is a dash in every row, and its note names the
-  column it explains, where a bar chart's names the bar;
+- **a settle table prints counts whole and leaves out what no row fills**: every size reads as its key spells it
+  (``617``, never ``617.0``) with what it counts, no column but a measure's is a dash in every row, it holds at most
+  four columns (the arm, what it is settled against, the four-in-five size as a page prints it, and that size
+  one-sided), and no note warns a reader off a column of its own, where a bar chart's note names the bar;
 - **a lever row's label is its own and says what it compares**: a move ends at the setting's value as the input
   states it (a declared level's name, else the value, a whole number whole), every row's label differs from every
   other's in its group, and the note speaks of interactions only where the block draws one;
@@ -38,7 +39,8 @@ from threetears.evals.actions.render import render_cited, render_page
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_render
 from threetears.evals.analysis.analyst.compare import arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
-from threetears.evals.analysis.analyst.settle import settle_cases
+from threetears.evals.analysis.analyst.cited import CitedFigure
+from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report_gates import task_costs
 from threetears.evals.kernel.numbers import money_form
@@ -171,13 +173,18 @@ def test_a_lever_chart_in_points_prints_each_effect_and_its_ends_as_their_keys_r
 # A settle table prints counts whole and leaves out what no row fills
 # =============================================================================
 
-#: A settle table's columns that hold a size or a count, each to the figure of a settle row it prints.
-_COUNTS = {
-    "Needed, one-sided": "cases_needed",
-    "Needed, two-sided": "cases_needed_two_sided",
-    "Trials needed, one-sided": "trials_needed",
-    "Trials needed, two-sided": "trials_needed_two_sided",
-}
+#: A settle table's two size columns, by header: the size at which four runs in five settle it as a page prints its
+#: interval (two-sided), then the same one-sided where the row has a two-sided size apart from it.
+_SIZES = ("Settles it 4 runs in 5", "The same, one-sided")
+
+
+def _sized(row: SettleRow) -> tuple[CitedFigure | None, CitedFigure | None]:
+    """A settle row's two sizes as its table prints them: the two-sided four-in-five size (between arms, the size is
+    two-sided already), then the one-sided one beside a two-sided size."""
+    two_sided = row.cases_needed_two_sided_80
+    if two_sided is None and row.settles != "on_the_line":
+        return row.cases_needed_80, None
+    return two_sided or row.cases_needed_80, row.cases_needed_80
 
 
 def test_a_settle_table_prints_every_size_as_its_key_reads_it_and_no_column_no_row_fills() -> None:
@@ -192,19 +199,21 @@ def test_a_settle_table_prints_every_size_as_its_key_reads_it_and_no_column_no_r
             if block is None or not rows:
                 continue
             assert len(block.rows) == len(rows)
-            for column, field in _COUNTS.items():
+            assert len(block.columns) <= 4, (name, block.columns)
+            for at, column in enumerate(_SIZES):
                 if column not in block.columns:
-                    assert all(getattr(row, field) is None for row in rows), (name, column)
+                    assert all(_sized(row)[at] is None and row.settles != "on_the_line" for row in rows), (name, column)
                     continue
                 for row, printed in zip(rows, _column(block, column), strict=True):
-                    figure = getattr(row, field)
-                    unsized = SETTLE_NO_SIZE if row.settles == "on_the_line" and column.startswith("Needed") else "—"
-                    assert printed == (figure.reads if figure is not None else unsized), (name, column, printed)
+                    figure = _sized(row)[at]
+                    unsized = SETTLE_NO_SIZE if row.settles == "on_the_line" else "—"
+                    counted = "cases" if row.cases else str(row.count_of[0].value) if row.count_of else ""
+                    expected = f"{figure.reads} {counted}".strip() if figure is not None else unsized
+                    assert printed == expected, (name, column, printed)
             for at, column in enumerate(block.columns[1:], start=1):
                 assert any(printed.cells[at] not in ("", "—") for printed in block.rows), (name, column)
-            note = block.notes[0]  # what its figure is; what would settle a row on its line follows
-            named = note.split('"')[1] if note.count('"') == 2 else ""
-            assert "bar" not in note.split('"')[0] and named in block.columns, (name, note)
+            # A table's columns name what they are: no note names one of its columns as one to read otherwise.
+            assert not any('"' in note for note in block.notes), (name, block.notes)
             seen += 1
     assert seen, "the control: some fixture settles an arm"
 
@@ -230,8 +239,9 @@ def test_a_settle_row_on_its_line_says_no_size_settles_it_and_what_would() -> No
         block = _drawn(held, "table", _query("settle", arms=[arm.id]))
         assert block is not None
         for at in on_line:
-            for column in ("Needed, one-sided", "Needed, two-sided"):
-                assert _column(block, column)[at] == SETTLE_NO_SIZE, (arm.id, column)
+            for column in _SIZES:
+                if column in block.columns:
+                    assert _column(block, column)[at] == SETTLE_NO_SIZE, (arm.id, column)
             would = rows[at].what_would
             assert any(note.lower().startswith(would.lower()) for note in block.notes), block.notes
         seen += 1

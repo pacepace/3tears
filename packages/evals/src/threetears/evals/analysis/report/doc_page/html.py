@@ -26,7 +26,7 @@ with no class, style or script of its own:
 **Nothing written into a field can make the page run or load anything**, as on every page this package writes: every
 text node is escaped before any markup is made of it (:mod:`~threetears.evals.analysis.report.html_parts`), and a
 chart's data reaches the page only as JSON escaped into its ``data-chart`` attribute. **The static page** is the
-default page less exactly the kit's script, the font links and each chart's ``div.chart``, plus each chart drawn on
+default page less exactly the kit's script and each chart's ``div.chart``, plus each chart drawn on
 the server as inline SVG.
 """
 
@@ -66,6 +66,7 @@ from threetears.evals.analysis.report.html_parts import (
     page_head,
     table_html,
 )
+from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report.parts.model import PageArmsKey, PageMasthead, PageSlot
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
@@ -206,7 +207,7 @@ def _appendix(page: DocPage) -> list[str]:
     return [
         f'<div class="part" data-part="appendix"><h2>{escape(APPENDIX_TITLE)}</h2></div>',
         _arms_key(page.arms_key),
-        "<section>" + "".join(table_html(table) for table in page.full_results) + "</section>",
+        "<section>" + "".join(table_html(laid_out(table)) for table in page.full_results) + "</section>",
         *([_omitted(page.omitted)] if page.omitted else []),
         _method(page.method),
         *([_findings(page.findings)] if page.findings else []),

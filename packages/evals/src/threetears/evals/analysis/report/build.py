@@ -319,7 +319,7 @@ def build_code_only_report(
     :ptype trials: TrialDetail
     :param measure_order: The aspect's graders' measures, in the order its design lists them
         (``AspectDesign.measure_order``), which the verdict line leads on the first of, as the campaign's page and
-        the quick print do (:func:`~threetears.evals.analysis.report.verdict.lead_measure`); empty where none is
+        the quick print do (the verdict line's lead measure); empty where none is
         listed.
     :ptype measure_order: Sequence[str]
     :return: The aspect's page, code's alone.
@@ -2557,6 +2557,9 @@ def _strata_blocks(
         {stratum.stratum for cell in cells for stratum in cell.strata}, key=lambda name: (name is None, name or "")
     )
     columns = {name: f"stratum_{index}" for index, name in enumerate(names)}
+    # Where every stratum is too small to read alone, one line says so and no cell repeats it.
+    sizes = [stratum.n_cases for cell in cells for stratum in cell.strata]
+    all_thin = max(sizes) < STRATUM_MIN_CASES
     rows: list[dict[str, CellValue]] = []
     thin: list[str] = []
     for cell in cells:
@@ -2572,7 +2575,7 @@ def _strata_blocks(
             cases[columns[name]] = None
         for name, stratum in by_name.items():
             cases[columns[name]] = _cases_text(stratum.n_observations, stratum.n_cases)
-            if stratum.n_cases < STRATUM_MIN_CASES:
+            if stratum.n_cases < STRATUM_MIN_CASES and not all_thin:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
                 thin.append(
@@ -2602,7 +2605,18 @@ def _strata_blocks(
             details=True,
         )
     ]
-    if thin:
+    if all_thin:
+        low, high = min(sizes), max(sizes)
+        span = f"{low} case{'' if low == 1 else 's'}" if low == high else f"{low} to {high} cases"
+        blocks.insert(
+            0,
+            DisclosureBlock(
+                section="contrasts",
+                source="strata",
+                text=f"Every stratum holds {span}; a stratum is read alone from {STRATUM_MIN_CASES} cases.",
+            ),
+        )
+    elif thin:
         # A list of counts belongs beside the table it qualifies, in the methods' fold, not in a line of prose.
         blocks.append(
             _note(
@@ -2621,10 +2635,14 @@ def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
-    """How many cases and trials a figure rests on — cases first, since they are the independent draws."""
+    """How many cases and trials a figure rests on — cases first, since they are the independent draws; one case run
+    once is its count alone (``1 case``), and a count of one is never plural."""
+    trials = f"{n_trials} trial{'' if n_trials == 1 else 's'}"
     if n_cases is None:
-        return f"{n_trials} trials, cases unrecorded"
-    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {n_trials} trials"
+        return f"{trials}, cases unrecorded"
+    if n_cases == 1 and n_trials == 1:
+        return "1 case"
+    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {trials}"
 
 
 def _measure_rows(

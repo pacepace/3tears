@@ -187,22 +187,35 @@ def _first_resolving(keys: Sequence[str], report_input: ReportInput) -> str | No
     return next((key for key in keys if _resolves(key, report_input)), None)
 
 
+def _noun(noun: str, count: object) -> str:
+    """``noun`` as a count of ``count`` takes it: singular for one, plural (an ``s``) for none or more than one."""
+    return noun if count == 1 else f"{noun}s"
+
+
+def _keyed_noun(key: str, noun: str, report_input: ReportInput) -> str:
+    """``noun`` as the count ``key`` resolves to takes it (:func:`_noun`)."""
+    return _noun(noun, resolve(key, report_input).value)
+
+
 def _masthead_counts(report_input: ReportInput, kind: str) -> str:
-    """The masthead's counts, as figure keys where they resolve: the arms, then the tasks or aspects, then the cases."""
+    """The masthead's counts, as figure keys where they resolve: the arms, then the tasks or aspects, then the cases;
+    each noun singular where its count is one (``vs 1 candidate``, ``× 1 repeat``)."""
     counts: list[str] = []
     if kind == "change":
         name = _first_resolving(("control.name", "control.id"), report_input)
-        counts.append(f"{{{name}}} vs {{n_candidates}} candidates" if name else "{n_candidates} candidates")
+        candidates = _keyed_noun("n_candidates", "candidate", report_input)
+        counts.append(f"{{{name}}} vs {{n_candidates}} {candidates}" if name else f"{{n_candidates}} {candidates}")
     elif kind == "choice":
         counts.append(f"{len(report_input.arms)} arms")
     if report_input.tasks:
-        counts.append(f"{len(report_input.tasks)} tasks")
+        counts.append(f"{len(report_input.tasks)} {_noun('task', len(report_input.tasks))}")
     elif len(report_input.aspects) > 1:
         counts.append(f"{len(report_input.aspects)} aspects")
     elif aspect := _first_resolving(("aspect.name", "aspect.id"), report_input):
         counts.append(f"{{{aspect}}}")
     if _resolves("cases", report_input) and _resolves("repeats", report_input):
-        counts.append("{cases} cases × {repeats} repeats")
+        cases = _keyed_noun("cases", "case", report_input)
+        counts.append(f"{{cases}} {cases} × {{repeats}} {_keyed_noun('repeats', 'repeat', report_input)}")
     return " · ".join(counts)
 
 

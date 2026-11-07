@@ -751,14 +751,16 @@ def settle_blocks(
     sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports)]
     if not sizings:
         return []
+    # The arm and both counts lead, so a frame as narrow as a host's (688 px) shows them without scrolling; the
+    # aspect, what settling shows and why it is unclear follow, the last in words that wrap.
     columns = [
-        TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="arm", header="Arm"),
+        TableColumn(key="none", header="If no difference"),
+        TableColumn(key="observed", header="If as observed"),
+        TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="shows", header="To show"),
         TableColumn(key="decided_by", header="Decided by", term="reading"),
         TableColumn(key="why", header="Why unclear"),
-        TableColumn(key="none", header="If no difference"),
-        TableColumn(key="observed", header="If as observed"),
     ]
     rows = [
         table_row(

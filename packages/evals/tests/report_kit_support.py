@@ -59,8 +59,8 @@ def chromium_unavailable() -> str | None:
 
 
 def render_checked(page: Path, shots: Path) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """``scripts/check.py`` run on ``page``, its screenshots in ``shots``: the run, and its line for each of the four
-    renders (1200 and 390 px, light and dark)."""
+    """``scripts/check.py`` run on ``page``, its screenshots in ``shots``: the run, and its line for each of the six
+    renders (1200, 688 and 390 px, light and dark)."""
     checked = run_script("check.py", page, Path("--out"), shots)
     runs = [line for line in checked.stdout.splitlines() if "px" in line and "scrollWidth=" in line]
     return checked, runs

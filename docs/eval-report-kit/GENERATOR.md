@@ -252,11 +252,11 @@ A reference page in `references/` is hand-built with the kit: every prose number
 
 The renderer applies the kit (`kit/kit.css`, `kit/kit.js`). Don't restyle per report.
 
-- **Host theming.** A host overrides only `--host-accent` (light and dark values). Series, status and sequential ramps are fixed so a brand color can never make a fail look like a pass.
+- **Host theming.** A host sets the seven `--host-*` tokens on the page's `<html>` tag (faces, text, muted text, surface, link, accent; `kit/API.md`). Series, status and sequential ramps are fixed so a brand color can never make a fail look like a pass.
 - **Both themes** are designed: tokens on `:root`, dark values under `prefers-color-scheme` and under `[data-theme="dark"]`. Heatmap cell text uses `--seq-tN` tokens because the dark ramp runs the other way.
-- **Type.** IBM Plex Sans Condensed for headlines, IBM Plex Sans for body and charts, IBM Plex Mono for ids and payloads. Tabular figures in tables and on axes.
-- **Layout.** A 44rem prose column; figures and tables break out to 68rem. Small multiples use auto-fill grids that collapse to one column. Wide tables scroll in their own container; the page never scrolls sideways.
-- **Restraint.** Borders only on figures. No shadows or gradients. One emphasis per chart.
+- **Type.** IBM Plex Sans Condensed for headlines, IBM Plex Sans for body and charts, IBM Plex Mono for ids and payloads, each as a local stack ending in a generic family. Tabular figures in tables and on axes.
+- **Layout.** A 44rem prose column; figures and tables break out to 68rem. Small multiples use auto-fill grids that collapse to one column. Wide tables scroll in their own container, a shadow showing there is more and the first column staying in view; the page never scrolls sideways.
+- **Restraint.** Borders only on figures. No shadows or gradients but a scrolling table's edge shadow. One emphasis per chart.
 
 ---
 

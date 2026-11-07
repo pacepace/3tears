@@ -1,11 +1,13 @@
-"""Render a built page at desktop and phone widths, light and dark, and report what breaks.
+"""Render a built page at desktop, host-frame and phone widths, light and dark, and report what breaks.
 
 Usage: python3 scripts/check.py <page.html> [--out DIR]
 Needs: pip install playwright && playwright install chromium
 
 Checks (GENERATOR.md §8, items 1-3): console and page errors; horizontal overflow
 (scrollWidth > viewport); elements that extend past the right edge outside a scrolling table;
-SVG text boxes that overlap each other inside one chart. Writes a full-page PNG per run.
+SVG text boxes that overlap each other inside one chart; a table wider than its frame whose first
+column does not stay in view (sticky). 688 px is the narrowest frame a host gives the page (Discodon's
+iframe at a 1024 px window). Writes a full-page PNG per run.
 Exit code 1 when any check fails.
 """
 
@@ -28,7 +30,14 @@ PROBE = """() => {
         overlaps.push(`chart ${si}: "${boxes[i].t.slice(0,24)}" × "${boxes[j].t.slice(0,24)}"`);
     }
   });
-  return {scrollWidth: document.documentElement.scrollWidth, past: out.slice(0, 8), overlaps: overlaps.slice(0, 12)};
+  const unpinned = [];
+  document.querySelectorAll('.tbl').forEach((frame, ti) => {
+    const first = frame.querySelector('tr > :first-child');
+    if (frame.scrollWidth > frame.clientWidth + 1 && first && getComputedStyle(first).position !== 'sticky')
+      unpinned.push(`table ${ti}: "${(first.textContent||'').trim().slice(0,24)}" scrolls with its first column`);
+  });
+  return {scrollWidth: document.documentElement.scrollWidth, past: out.slice(0, 8), overlaps: overlaps.slice(0, 12),
+          unpinned: unpinned.slice(0, 8)};
 }"""
 
 
@@ -36,7 +45,7 @@ async def run(page_path, out_dir):
     failed = False
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        for width in (1200, 390):
+        for width in (1200, 688, 390):
             for scheme in ("light", "dark"):
                 pg = await browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
                 errors = []
@@ -47,12 +56,12 @@ async def run(page_path, out_dir):
                 res = await pg.evaluate(PROBE)
                 shot = out_dir / f"{page_path.stem}-{width}-{scheme}.png"
                 await pg.screenshot(path=str(shot), full_page=True)
-                bad = errors or res["scrollWidth"] > width or res["past"] or res["overlaps"]
+                bad = errors or res["scrollWidth"] > width or res["past"] or res["overlaps"] or res["unpinned"]
                 failed |= bool(bad)
                 print(
                     f"{'FAIL' if bad else 'ok  '} {width}px {scheme:5}  scrollWidth={res['scrollWidth']}  screenshot={shot}"
                 )
-                for k in ("past", "overlaps"):
+                for k in ("past", "overlaps", "unpinned"):
                     for line in res[k]:
                         print(f"       {k}: {line}")
                 for e in errors:

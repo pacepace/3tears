@@ -6,8 +6,8 @@ Contracts held here (``analysis.report_rows`` selectors ``compare``, ``settle``,
 - **compare** draws two arms' difference with its interval, every row an ``arms_compare`` row, its figures as their
   keys read them; it names two arms, in order, and one measure; a pair the function refuses is refused with its
   reason; ``strata`` keeps places;
-- **settle** draws ``settle_cases`` rows: bars of how often a fresh run reads the other side, a table of every figure
-  as its key reads it; ``arms``, ``measures`` and ``strata`` narrow them;
+- **settle** draws ``settle_cases`` rows: bars of how often a fresh run reads the other side, a table of the sizes a
+  rerun takes as their keys read them; ``arms``, ``measures`` and ``strata`` narrow them;
 - **levers** draws ``lever_effects``' effects and interactions on one measure at one place, each with its interval;
 - **bar_reads** draws an arm against its absolute bar: its value, the interval it was read on and the bar's line;
 - **a lattice draws from the arms' settings** where the snapshot holds no configs rows, its tiles the same as the
@@ -15,8 +15,8 @@ Contracts held here (``analysis.report_rows`` selectors ``compare``, ``settle``,
 - **no number is recomputed**: every number a table of these prints is the figure its key reads;
 - **reader words**: a compare block names its arms and measure by reader names, never by id or key, even where its
   interval is the paired estimate a contrast states;
-- **one unit per size**: a settle table sets the cases and the trials a design needs beside today's cases and trials,
-  and the repeats of a case; on a count stating no cases, the trial columns no row fills are left out.
+- **one unit per size**: a settle table's size names what it counts beside it, distinct cases, else the trials or
+  observations its count is.
 
 Every expectation is read off the analysis functions' own results on the input (r1 to r5, the misfits, the shapes).
 """
@@ -224,9 +224,11 @@ def test_a_settle_table_prints_each_figure_as_its_key_reads_it_and_its_filters_n
         rows = settle_cases(held, [arms[0]], limit=_EVERY).rows
         block = block_render(held, block_kind="table", query=_query("settle", arms=[arms[0]]), limit=_EVERY)
         assert len(block.rows) == len(rows)
-        at = block.columns.index("A fresh run reads the other side")
+        at = block.columns.index("Settles it 4 runs in 5")
         for printed, row in zip(block.rows, rows, strict=True):
-            assert printed.cells[at] == (row.wrong_side.reads if row.wrong_side is not None else "—")
+            size = row.cases_needed_two_sided_80 or row.cases_needed_80
+            if size is not None:
+                assert printed.cells[at].split(" ", 1)[0] == size.reads
         whole = query_rows(_query("settle"), held)
         assert {row.arm for row in whole} == set(arms)
         assert {row.arm for row in query_rows(_query("settle", arms=[arms[-1]]), held)} == {arms[-1]}
@@ -409,33 +411,33 @@ def _settle_table(held: ReportInput) -> tuple[list[Any], list[list[str]], dict[s
     return rows, [printed.cells for printed in block.rows], {column: i for i, column in enumerate(block.columns)}
 
 
-def test_a_settle_table_on_repeated_cases_sets_each_size_beside_todays_count_in_its_own_unit() -> None:
+def _sizes(row: Any) -> list[Any]:
+    """A settle row's sizes as its table prints them: the four-in-five size as a page prints its interval (two-sided),
+    then, beside a two-sided size, the one-sided one."""
+    if row.cases_needed_two_sided_80 is None:
+        return [row.cases_needed_80]
+    return [row.cases_needed_two_sided_80, row.cases_needed_80]
+
+
+def test_a_settle_table_on_repeated_cases_counts_its_sizes_in_cases() -> None:
     held = _counted(400)
-    stat = held.measures["pass_rate"].per_arm[held.arms[0].id]
     rows, cells, at = _settle_table(held)
     for row, printed in zip(rows, cells, strict=True):
         assert row.trials_needed is not None and row.repeats and row.cases_needed is not None
-        assert printed[at["Sizes count"]] == "cases"
-        assert _numbers(printed[at["Needed, one-sided"]]) == _numbers(row.cases_needed.reads)
-        assert _numbers(printed[at["Today"]]) == [float(stat.n_cases or 0)]
-        for side, figure in (("one-sided", row.trials_needed), ("two-sided", row.trials_needed_two_sided)):
-            assert figure is not None
-            assert _numbers(printed[at[f"Trials needed, {side}"]]) == _numbers(figure.reads)
-        assert _numbers(printed[at["Repeats of a case"]]) == _numbers(row.repeats[0].reads)
-        assert _numbers(printed[at["Trials today"]]) == [float(stat.n or 0)]
+        for column, figure in zip(("Settles it 4 runs in 5", "The same, one-sided"), _sizes(row), strict=False):
+            assert printed[at[column]] == f"{figure.reads} cases"
+    assert len(at) <= 4, list(at)
 
 
 def test_a_settle_table_on_a_count_stating_no_cases_says_what_its_sizes_count() -> None:
     held = _counted(None)
-    stat = held.measures["pass_rate"].per_arm[held.arms[0].id]
     rows, cells, at = _settle_table(held)
     for row, printed in zip(rows, cells, strict=True):
         assert row.count_of and row.cases_needed is not None
-        assert printed[at["Sizes count"]] == row.count_of[0].reads != "cases"
-        assert _numbers(printed[at["Needed, one-sided"]]) == _numbers(row.cases_needed.reads)
-        assert _numbers(printed[at["Today"]]) == [float(stat.n or 0)]
-    # No row states trials apart from its count, so the trial columns are dashes in every row, and left out.
-    assert not {"Trials today", "Trials needed, one-sided", "Repeats of a case"} & set(at), list(at)
+        counted = row.count_of[0].reads
+        assert counted != "cases"
+        for column, figure in zip(("Settles it 4 runs in 5", "The same, one-sided"), _sizes(row), strict=False):
+            assert printed[at[column]] == f"{figure.reads} {counted}"
 
 
 def test_an_independent_compare_caption_says_how_both_arms_spreads_were_read_once_where_they_read_alike() -> None:

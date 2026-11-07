@@ -23,7 +23,7 @@ than v1 on the No invented total score guardrail.``
 exit line all print the sentence this module writes (:class:`VerdictLine`): the lead its :attr:`~VerdictLine.lead`,
 the aspect page and the print its :attr:`~VerdictLine.text`, the exit line its lead and why the gate failed. Each
 measure and guardrail is named as the page names it (its :class:`~threetears.evals.analysis.report.blocks.Verdict`'s
-heading), and a cost is never the lead (:func:`is_cost`).
+heading), and a cost is never the lead (:func:`_is_cost`).
 
 **No floor decides the verdict.** A floor only warns: a broken one is a line under this one
 (:mod:`~threetears.evals.analysis.report.decision`), and the verdict says what the contrasts came to beside it.
@@ -335,7 +335,7 @@ def passed_clause(arm: str, passed: int, trials: int, cases: int) -> str:
     return f"{arm} passed {passed} of {trials} trials on {cases} cases"
 
 
-def is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
+def _is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
     """Whether a measure is a cost: money, or on the cost merit axis, as the aspect's catalog describes it. A cost is
     never what a result leads on.
 
@@ -350,7 +350,7 @@ def is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
     return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
 
 
-def lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Sequence[str]) -> str | None:
+def _lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Sequence[str]) -> str | None:
     """The measure a result leads on: the first ``order`` lists (an aspect design's ``measure_order``, which an eval
     files in the order it lists its graders) that a contrast tested and that is no cost; with no order listed, the
     classifier's accuracy where no question is asked of the aspect; None where neither names one.
@@ -367,7 +367,7 @@ def lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Se
     held = set(tested)
     if not order:
         return None if bundle.question_declared else ACCURACY_MEASURE
-    return next((name for name in order if name in held and not is_cost(name, bundle)), None)
+    return next((name for name in order if name in held and not _is_cost(name, bundle)), None)
 
 
 def led_sentences(
@@ -380,7 +380,7 @@ def led_sentences(
     evidence: Callable[[Verdict], str | None] | None = None,
     also: Sequence[str] = (),
 ) -> list[str]:
-    """The result's sentence for each arm on the measure it leads on (:func:`lead_measure`), in its verdict's words:
+    """The result's sentence for each arm on the measure it leads on (:func:`_lead_measure`), in its verdict's words:
     ``Accuracy: the evidence cannot tell v2 and v1 apart.`` A contrast the question does not ask, where one is asked,
     is marked a lead. Empty where no contrast was tested on a lead measure.
 
@@ -417,9 +417,9 @@ def led_sentences(
 
 
 def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
-    """The contrast verdicts on the measure a result leads on (:func:`lead_measure`)."""
+    """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
     contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
-    lead = lead_measure(bundle, (verdict.name for verdict in contrasts), order)
+    lead = _lead_measure(bundle, (verdict.name for verdict in contrasts), order)
     return [verdict for verdict in contrasts if verdict.name == lead]
 
 
@@ -445,7 +445,7 @@ def verdict_line(
         it reads as every other surface does; none reads the bundle's contrasts in their verdict words alone.
     :ptype verdicts: Sequence[Verdict]
     :param order: The graders' measures, in the order the eval lists them (``AspectDesign.measure_order``), which a
-        comparison's line leads on the first of (:func:`lead_measure`).
+        comparison's line leads on the first of (:func:`_lead_measure`).
     :ptype order: Sequence[str]
     :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
         says the decision alone.
@@ -487,7 +487,7 @@ def verdict_line(
         bool(verdicts)
         and bool(said)
         and all(
-            is_cost(verdict.name, bundle)
+            _is_cost(verdict.name, bundle)
             for verdict in verdicts
             if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
         )
@@ -580,7 +580,7 @@ def _also(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], led: set[s
         for verdict in verdicts
         if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and verdict.heading not in led
     ]
-    found.sort(key=lambda verdict: is_cost(verdict.name, bundle))
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
     return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
 
 
@@ -592,7 +592,7 @@ def _told_apart(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], *, a
         for verdict in verdicts
         if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and (verdict.aspect is not None or not asked)
     ]
-    found.sort(key=lambda verdict: is_cost(verdict.name, bundle))
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
     return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
 
 
@@ -768,8 +768,6 @@ __all__ = [
     "cap_words",
     "cause_short",
     "fail_words",
-    "is_cost",
-    "lead_measure",
     "led_sentences",
     "loss_words",
     "measured_nothing",

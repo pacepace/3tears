@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE
-from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, KIT_JS, parsed, what_runs
+from packages.evals.tests.page_contract_support import KIT_JS, parsed, what_runs
 
 __all__ = ["assert_static", "less_drawings", "less_what_static_leaves_out"]
 
@@ -86,10 +86,10 @@ def assert_static(page: str) -> None:
 
 
 def less_what_static_leaves_out(page: str) -> str:
-    """The default ``page`` less the kit's script, the font links and each chart's ``div.chart``, each asserted
-    present first, so the comparison is about something."""
-    assert f"\n<script>{KIT_JS}</script>" in page and FONT_LINK_MARKUP + "\n" in page and _CHART_DIV.search(page)
-    page = page.replace(f"\n<script>{KIT_JS}</script>", "", 1).replace(FONT_LINK_MARKUP + "\n", "", 1)
+    """The default ``page`` less the kit's script and each chart's ``div.chart``, each asserted present first, so the
+    comparison is about something."""
+    assert f"\n<script>{KIT_JS}</script>" in page and _CHART_DIV.search(page)
+    page = page.replace(f"\n<script>{KIT_JS}</script>", "", 1)
     return _CHART_DIV.sub("", page)
 
 

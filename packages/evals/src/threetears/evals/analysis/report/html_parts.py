@@ -4,8 +4,8 @@ chip, and the escaping and inline Markdown under every text node.
 One owner for each, so a campaign's page and a report document's page lay a table, a chart or a pill out
 alike, byte for byte. Every function here escapes what it is given as text before it makes any markup of it, so no
 field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL; a function taking
-``markup`` takes HTML this package already wrote. The page's contract (one script, the kit's; nothing loaded but the
-kit's fonts) is :mod:`~threetears.evals.analysis.report.serialize_html`'s.
+``markup`` takes HTML this package already wrote. The page's contract (one script, the kit's; nothing loaded) is
+:mod:`~threetears.evals.analysis.report.serialize_html`'s.
 """
 
 from __future__ import annotations
@@ -32,14 +32,10 @@ _KIT_CSS = files("threetears.evals.analysis.report").joinpath("kit", "kit.css").
 #: one script, at the end of the body, and nothing else that runs.
 KIT_JS = files("threetears.evals.analysis.report").joinpath("kit", "kit.js").read_text(encoding="utf-8")
 
-#: The kit's fonts, as the kit's reference pages load them: a preconnect to each Google Fonts host, then the one stylesheet
-#: naming the three Plex faces. Written here and only here: no field of a report reaches the page's head.
-_FONT_LINKS = (
-    '<link rel="preconnect" href="https://fonts.googleapis.com">'
-    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
-    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500'
-    '&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">'
-)
+#: The page's one opening ``<html>`` tag, written once, right after the doctype, with nothing but its language: a host
+#: that frames the page rewrites this tag to stamp ``data-theme`` and an inline ``style`` setting the kit's
+#: ``--host-*`` tokens (``docs/adopting-a-host.md``), and leaves a page with any other count of it untouched.
+_HTML_OPEN = '<html lang="en">'
 
 #: The page's own structures the kit has no class for, from the kit's tokens (no colour or face of its own): the first
 #: screen, the sticky section links, the folds and their summaries, a table's title and its numeric, prose and glyph
@@ -108,7 +104,7 @@ td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
 td:target, tr:target > td { background: var(--accent-wash); }
 figure { margin: 0; }
 .fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
-.fig .tbl { border: 0; border-radius: 0; background: none; }
+.fig .tbl { border: 0; border-radius: 0; }
 .chart-values caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chart:not(:empty) + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
@@ -161,17 +157,16 @@ _PROSE_CELL = 40
 
 
 def page_head(title: str, *, static: bool) -> list[str]:
-    """The page's ``<head>``: its title, the kit's font links (none on a static page) and the stylesheet — the kit's,
-    then the page's own and the glyphs', and on a static page its drawn charts'. Nothing in it comes from a field but
-    the title, escaped."""
+    """The page's doctype, its one :data:`_HTML_OPEN` tag and its ``<head>``: its title and the stylesheet — the kit's,
+    then the page's own and the glyphs', and on a static page its drawn charts'. Nothing is loaded: the kit's faces are
+    a local stack ending in a generic family. Nothing in it comes from a field but the title, escaped."""
     return [
         "<!doctype html>",
-        '<html lang="en">',
+        _HTML_OPEN,
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{escape(one_line(title))}</title>",
-        *([] if static else [_FONT_LINKS]),
         f"<style>{_KIT_CSS}{_PAGE_STYLE}{GLYPH_STYLE}{CHART_STYLE if static else ''}</style>",
         "</head>",
     ]

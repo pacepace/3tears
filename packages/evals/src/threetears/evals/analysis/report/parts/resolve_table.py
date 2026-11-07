@@ -25,11 +25,9 @@ prices          the step along the price frontier (from one option to the next),
 bar_reads       the aspect, the measure, the arm, its value with the interval its bar was read on, the bar, the status
 compare         the place, each arm's mean, the first less the second, its interval, level and basis (in reader
                 names: a paired one names the candidate and the measure, never their ids)
-settle          the arm, the line (and place), today's estimate, the line, the distance, which way it settles, what
-                the sizes count (cases, else the trials or observations a figure's count is), the size a one-sided
-                and a two-sided design need, today's count in that unit; on a repeated design the trials those
-                sizes take (both sides), the repeats of a case and today's trials; how often a fresh run reads the
-                other side, the level
+settle          the arm, the line (and place), the size at which four runs in five settle it as a page prints its
+                interval (two-sided), then the same one-sided against a line, each with what it counts (cases, else
+                the trials or observations a figure's count is): four columns, so it reads in a narrow frame
 levers          the setting (or the two an interaction crosses), the move, the effect (or difference), its interval,
                 level, and an interaction's verdict
 ==============  ===================================================================================================
@@ -42,8 +40,8 @@ each interval's ends, headed by the chart's interval level (``95% interval``), s
 Markdown page, a values table) reads the interval and its level too.
 
 **A source's own column no row fills is left out** (:func:`_filled`): a source's fixed columns are every figure its
-rows can hold, and one that is a dash in every row (a settle table's trial sizes on a design that repeats no case, an
-interaction's verdict on a table of effects alone) says nothing a reader needs. The label column stays whatever it
+rows can hold, and one that is a dash in every row (a settle table's one-sided size where every row is between arms,
+an interaction's verdict on a table of effects alone) says nothing a reader needs. The label column stays whatever it
 holds, and so does a measure's column the query names: a dash there says the input holds no figure of it.
 
 An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash;
@@ -464,40 +462,33 @@ def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         yield {
             "arm": _arm(context, row.arm),
             "against": _words(settle_label(context, item)),
-            "estimate": _read(item.estimate[0] if item.estimate else None),
-            "line": _read(item.line),
-            "distance": _read(item.distance),
-            "settles": _words(item.settles),
             **_sizes(item),
-            "wrong_side": _read(item.wrong_side),
-            "level": _read(item.level),
         }
 
 
 def _sizes(row: SettleRow) -> _Row:
-    """A settle row's sizes, each beside today's count in the unit it counts, every figure as its key reads it.
-
-    The sizes count what the row's count counts, which a column says: distinct cases, or, where a figure states no
-    cases, the trials or observations its count is. Where its count is trials over fewer stated cases (a repeated
-    design), the sizes count the cases, today's count beside them is today's cases, and the trials those sizes take,
-    both sides, sit beside today's trials and the repeats of a case. A size never sits beside a count in another unit.
+    """A settle row's rerun sizes: the size at which four runs in five settle it, as a page prints its interval
+    (two-sided), then the same one-sided where the row has a two-sided size apart from it (against a line; a size
+    between arms is two-sided already); each figure as its key reads it, with what it counts beside it (distinct cases,
+    or, where a figure states no cases, the trials or observations its count is). The half-the-time sizes and how often
+    a run of today's size reads the other side are the analysis's to cite, not the table's: a rerun is sized four in
+    five, and a column a reader must be warned off is a column the table leaves out.
     """
-    count = row.counts[0] if row.counts else None
-    counted = str(row.count_of[0].value) if row.count_of else None
-    cases = row.cases[0] if row.cases else None
-    # An estimate exactly on its line has no size that settles it there: the cell says so, never a bare dash.
-    unsized = _words(SETTLE_NO_SIZE) if row.settles == "on_the_line" else None
+    counted = CASES_WORD if row.cases else str(row.count_of[0].value) if row.count_of else None
+
+    def size(figure: CitedFigure | None) -> TableCell:
+        if figure is None:
+            # An estimate exactly on its line has no size that settles it there: the cell says so, never a bare dash.
+            return _words(SETTLE_NO_SIZE) if row.settles == "on_the_line" else TableCell(value=None)
+        return TableCell(value=f"{figure.reads} {counted}" if counted else figure.reads)
+
+    two_sided = row.cases_needed_two_sided_80
     return {
-        "counted": _words(CASES_WORD if cases is not None else counted),
-        "cases_needed": unsized if unsized is not None and row.cases_needed is None else _read(row.cases_needed),
-        "cases_needed_two_sided": unsized
-        if unsized is not None and row.cases_needed_two_sided is None
-        else _read(row.cases_needed_two_sided),
-        "today": _read(cases if cases is not None else count),
-        "trials_needed": _read(row.trials_needed),
-        "trials_needed_two_sided": _read(row.trials_needed_two_sided),
-        "repeats": _read(row.repeats[0] if row.repeats else None),
-        "today_trials": _read(count if cases is not None else None),
+        "needed": size(two_sided if two_sided is not None else row.cases_needed_80),
+        # A row against a line has both sizes (one on its line, neither); a row between arms has its two-sided one.
+        "needed_one_sided": size(row.cases_needed_80)
+        if two_sided is not None or row.settles == "on_the_line"
+        else TableCell(value=None),
     }
 
 
@@ -586,27 +577,7 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
     "prices": (_prices, ("step", "per_point")),
     "bar_reads": (_bar_reads, ("aspect", "measure", "arm", "value", "bar", "status")),
     "compare": (_compare, ("place", "first", "second", "difference", "interval", "level", "basis")),
-    "settle": (
-        _settle,
-        (
-            "arm",
-            "against",
-            "estimate",
-            "line",
-            "distance",
-            "settles",
-            "counted",
-            "cases_needed",
-            "cases_needed_two_sided",
-            "today",
-            "trials_needed",
-            "trials_needed_two_sided",
-            "repeats",
-            "today_trials",
-            "wrong_side",
-            "level",
-        ),
-    ),
+    "settle": (_settle, ("arm", "against", "needed", "needed_one_sided")),
     "levers": (_levers, ("setting", "move", "difference", "interval", "level", "verdict")),
 }
 
