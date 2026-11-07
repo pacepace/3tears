@@ -796,6 +796,7 @@ class Acceptance:
         if self.dry:
             yield ""
             yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
+        yield self.envelope_line()
         yield ""
         yield self.read.readout
         if self.read.stopping_line is not None:
@@ -814,6 +815,15 @@ class Acceptance:
         if self.candidate.editor().digest != self.shipped.editor().digest:
             yield from self._two_editors()
         yield from result.disclosures
+
+    def envelope_line(self) -> str:
+        """The run's spend against the standing monthly envelope beside the shipped skill's verdict in the skill
+        ledger: a disclosure, never a refusal, since the envelope stands in for per-run approval."""
+        parts = [summary.total_cost_usd for summary in self.result.arms.values()] + [self.report.cost_usd]
+        spent = sum(part for part in parts if part is not None)
+        some = "" if None not in parts else "at least "
+        envelope = self.read.shipped.monthly_envelope_usd
+        return f"This run spent {some}${spent:.2f} of the ${envelope:.2f} monthly envelope in PROMOTIONS.toml."
 
     def _two_editors(self) -> Iterator[str]:
         """Beside the verdict, with two editors: what a PASS means, how many pairs were both finished, and each arm's

@@ -8,6 +8,7 @@ no entry until one is written, and the refusal names the digests to copy.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -47,3 +48,11 @@ def test_the_baseline_entry_is_unmeasured_and_says_why() -> None:
     entry = skill_record(load_skill())
     assert entry.basis == "unmeasured"
     assert entry.reason == "baseline: shipped before the gate existed"
+
+
+def test_every_verdict_carries_the_standing_monthly_envelope() -> None:
+    """The spend rule records the envelope beside each verdict, so an entry without one is a ledger nothing can read
+    a trial's spend against; the shipped skill's stands at the owner's $50 a month."""
+    entries = tomllib.loads(LEDGER.read_text(encoding="utf-8"))["shipped"]
+    assert entries and all(entry["monthly_envelope_usd"] > 0 for entry in entries)
+    assert skill_record(load_skill()).monthly_envelope_usd == 50

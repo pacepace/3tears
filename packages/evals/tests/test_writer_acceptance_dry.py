@@ -11,7 +11,8 @@ from the control's; the minimal variant keeping a module, a note or the index's 
 withhold; the no-editor arm given a revision; ``--variant`` ignored, or a variant's readout not naming it; the pass
 asking one order; the read made without the pass; the criterion passing on
 ``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
-short or with a case it stored no page on; the readout's first table not counting the cases with two pages; a
+short or with a case it stored no page on; the readout's first table not counting the cases with two pages, or its envelope line dropping a part of the
+spend or the ledger's envelope; a
 report budget under the first turn's ceiling launched, or one under two of it launched with no warning; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
 directory; the doc's commands drifting from the script's.
 """
@@ -52,6 +53,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
 )
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill_ledger import skill_record
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
@@ -337,6 +339,22 @@ def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
     # The campaign is filed asking the acceptance's own question.
     campaign = found.result.host.storage.load_campaign(found.result.campaign_id, found.result.scope_id)
     assert campaign is not None and campaign.question == writer_acceptance.QUESTION
+
+
+def test_the_readout_states_the_runs_spend_against_the_monthly_envelope_once(
+    dry: tuple[Acceptance, list[object]],
+) -> None:
+    """The envelope beside the shipped skill's verdict is read, and disclosed once against the whole run's spend:
+    both arms and the pass, never a refusal."""
+    found, _ = dry
+    lines = list(found.readout())
+    envelope = skill_record(load_skill()).monthly_envelope_usd
+    parts = [arm.total_cost_usd for arm in found.result.arms.values()] + [found.report.cost_usd]
+    spent = sum(part for part in parts if part is not None)
+    assert spent > 0  # the scripted replies are priced, so a line that dropped a part would read short
+    named = [line for line in lines if "monthly envelope" in line]
+    assert named == [f"This run spent ${spent:.2f} of the ${envelope:.2f} monthly envelope in PROMOTIONS.toml."]
+    assert found.criterion.verdict() in lines
 
 
 def _shaped(read: WriterPromotion, *, decision: str, outcome: str, reason: str, high: float) -> WriterPromotion:

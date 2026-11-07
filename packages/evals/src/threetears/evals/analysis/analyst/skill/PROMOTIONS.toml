@@ -12,6 +12,9 @@
 #   editor   the editor's system text's digest (SkillText.digest)
 #   date     the day the entry was recorded
 #   basis    "measured", decided by a campaign, or "unmeasured", shipped without one
+#   monthly_envelope_usd  the standing monthly spend, in US dollars, that candidate trials run under in place of
+#            per-run approval (docs/judges-and-calibration.md, "The spend rule"); the acceptance readout states a
+#            run's spend against the shipped skill's envelope and never refuses on it
 #
 # A measured entry names the decision it shipped on, as the promotion read answered it:
 #
@@ -30,4 +33,5 @@ analyst = "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b"
 editor = "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
 date = 2026-10-31
 basis = "unmeasured"
+monthly_envelope_usd = 50
 reason = "baseline: shipped before the gate existed"
