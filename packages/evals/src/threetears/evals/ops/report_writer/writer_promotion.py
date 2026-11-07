@@ -567,4 +567,4 @@ def writer_promotion(
 
 #: The engine's ``writer_promotion`` action reads a decision for a host when a person asks whether to promote; the
 #: decision's literal waits for a caller (``tests/test_report_writer_exports.py``).
-__all__ = ["WriterPromotion", "writer_promotion"]
+__all__ = ["WriterPromotion", "held_out_batch_name", "writer_promotion"]
