@@ -886,7 +886,10 @@ the bet's order, whatever order or batch they ran in. A landslide over 25 cases 
 each batch a run of every arm in one campaign. After each batch the pass judges only the new pairs, carrying the
 answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
 separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
-cells a run holds in flight is one full wave. At k = N the reading is the one-batch reading, number for number.
+cells a run holds in flight is one full wave. At k = N the side-by-side reading is the one-batch reading, number for
+number; the gated readings are too when every batch run stored a page. A batch run that stored no page judged nothing,
+so it is left out of the gated readings, its pairs read side by side (a missing page losing its pair, or tying it),
+and the run says so once.
 
 | At the stop | What the run does |
 |---|---|

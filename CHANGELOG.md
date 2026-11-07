@@ -12,7 +12,8 @@ packages (bumped in lock-step).
 - Under `stop_when="separated"`, every arm launches `WriterEval(batch_size=...)` cases at a time (4 unless told), in the
   bet's order, each batch a run of every arm in the one campaign. The pass after each batch asks only the new pairs and
   keeps the answers it has. The arms stop launching once every candidate's preference separates, or at the last case. At
-  the last case the reading equals one batch of every case. `never` launches every case at once, as before.
+  the last case the side-by-side reading equals one batch of every case, and the gated readings do too when every
+  batch run stored a page. `never` launches every case at once, as before.
 - Each candidate settles at its own stop. Its gated readings and guardrails are read once, there, on the cases launched
   by then, and the page says how many.
 - An improved stop whose guardrails are not shown held goes on to the last case. Its pass says the readings had a second
@@ -39,8 +40,8 @@ packages (bumped in lock-step).
 - The promotion read accepts a case run from a batch set only as a case of the held-out set version its name gives, when
   that version lists every case of the batch. Any other one-launch set is refused as before.
 - The pass accepts an arm under several rigs only when each pair's two runs read one rig.
-- A batch that stored no page on either arm stays out of the campaign's readings. The pass reads its pairs as ties, and
-  a disclosure says so once.
+- A batch run that stored no page, on either arm or both, stays out of the campaign's gated readings. The pass reads its
+  pairs, a missing page losing its pair or tying it, and a disclosure says so once with the counts.
 - `bet_order` is the package's own shuffle over the seeded generator's bits, the same orders as before, pinned by test,
   so it no longer rides on `random.shuffle`'s algorithm.
 - The acceptance script's trial writes on Sonnet 5.5 at a $1.50 report budget (a dry run's cap is $30 unless told). It
@@ -48,9 +49,10 @@ packages (bumped in lock-step).
   prints once, before anything is bought, dry or live.
 - An unseparated stop says every look was consistent with no preference.
 
-**Hosts:** pass `batch_size` and `fewest_cases` to `WriterEval` as needed. A run that once refused a spend cap too small
-for every case now runs and stops at the spend cap. A stored pass report or stopping rule still reads, every new field
-defaulted.
+**Hosts:** every entry of `PROMOTIONS.toml` now requires `monthly_envelope_usd`; a host loading that file in its old
+shape must add it. Pass `batch_size` and `fewest_cases` to `WriterEval` as needed. A run that once refused a spend cap
+too small for every case now runs and stops at the spend cap. A stored pass report or stopping rule still reads, every
+new field defaulted.
 
 ### evals: a goal check is named by what it tests in every header and lead, its expression in the glossary
 

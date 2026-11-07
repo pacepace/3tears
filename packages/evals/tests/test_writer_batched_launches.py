@@ -664,13 +664,14 @@ async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_g
     assert len(report.outside_run_ids) == len(UNJUDGED) * len(arms)
     assert set(report.outside_run_ids).isdisjoint(await _runs(result))
     said = (
-        "4 cases, in batches that stored no page on either arm, are read side by side as ties and left out of the "
-        "gated readings, which no judge was asked of on them."
+        "4 cases stored no page on at least one arm; the 4 in a batch run that stored none are left out of the gated "
+        "readings, which no judge was asked of there, and the side-by-side reads every pair, a missing page losing it, "
+        "or tying it when both are."
     )
     assert result.disclosures.count(said) == 1
     assert (
         "The arms ran every held-out case, 1 at a time in the bet's order, so the gated readings and guardrails were "
-        "read once, on every case but the 4 that stored no page."
+        "read once, on every case but the 4 in a batch run that stored no page."
     ) in result.disclosures
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 11, CANDIDATE: 11}
     with_them, without = await _verdicts(result), await _verdicts(alone)
@@ -721,4 +722,35 @@ async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no
     await asyncio.to_thread(_witnessed, storage, await run_of(judged[1].control_result_id))
     with pytest.raises(ValidationFailedError, match="a pair compares two pages written under one rig"):
         await writer_pairwise(reading, result.campaign_id, SCOPE, candidate=CANDIDATE)
+    assert offline == []
+
+
+async def test_a_batch_run_that_stored_no_page_on_one_arm_alone_adds_no_second_setup(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """One case a batch, and the candidate writes no page on one of them while the control does: the candidate's run
+    of that batch judged nothing and records no judge. It stays out of the campaign's readings, said once with its
+    count, the control's run of the batch stays in, and the pass reads the pair as the control's, so the pass is read
+    and never refused for a second setup."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    named = {case.snapshot.id: case.name for case in read_writer_cases(cases)}
+    silent = sorted(named)[0]
+    routed = writer_turns(tmp_path / "turns", arm=CANDIDATE, skill=arms[CANDIDATE].analyst_skill, cases=named)
+    lay_recording(routed.path(WRITER, None, silent), dry_sessions(None, model=WRITER))
+
+    result = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=1, max_cost_usd=60.0).run()
+
+    assert result.pairwise_unread == {}
+    report = await _report(result)
+    (lost,) = [pair for pair in report.pairs if pair.missing is not None]
+    assert lost.missing == "candidate"
+    assert len(report.outside_run_ids) == 1 and report.outside_run_ids[0] not in await _runs(result)
+    said = (
+        "1 case stored no page on at least one arm; the 1 in a batch run that stored none is left out of the gated "
+        "readings, which no judge was asked of there, and the side-by-side reads every pair, a missing page losing it, "
+        "or tying it when both are."
+    )
+    assert result.disclosures.count(said) == 1
+    assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
     assert offline == []
