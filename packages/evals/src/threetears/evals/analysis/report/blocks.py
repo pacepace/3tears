@@ -599,9 +599,7 @@ def money_columns(
     forms = {name: money_form(amounts, intervals=spans.get(name, ())) for name, amounts in held.items()}
     return [
         {
-            key: cell.model_copy(
-                update={"decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell))}
-            )
+            key: cell.model_copy(update={"decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell))})
             if chosen(cell)
             else cell
             for key, cell in row.items()

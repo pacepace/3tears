@@ -1575,9 +1575,7 @@ def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
     if ruler.money is not None and is_money(ruler.unit):
         form = ruler.money
         drawn = value * ruler.factor
-        return TableCell(
-            value=drawn, unit=ruler.unit, decimals=form.places_of([drawn]), per_thousand=form.per_thousand
-        )
+        return TableCell(value=drawn, unit=ruler.unit, decimals=form.places_of([drawn]), per_thousand=form.per_thousand)
     return TableCell(value=value * ruler.factor, unit=ruler.unit)
 
 
