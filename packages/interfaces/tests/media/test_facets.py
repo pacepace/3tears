@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     LOCATOR_KIND_CONTAINING_PAGE,
     LOCATOR_KIND_DIRECT_FILE,
     MediaFacets,

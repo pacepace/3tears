@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import uuid7
 
-from threetears.media.contracts import ObjectStore
+from threetears.interfaces.media import ObjectStore
 from threetears.object_store import EncryptedObjectStore
 from threetears.observe import get_logger
 

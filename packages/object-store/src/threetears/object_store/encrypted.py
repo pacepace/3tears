@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from pydantic import SecretStr
 
-from threetears.media.contracts import ObjectListing, ObjectStore
+from threetears.interfaces.media import ObjectListing, ObjectStore
 
 __all__ = ["EncryptedObjectStore"]
 

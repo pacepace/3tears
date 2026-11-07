@@ -4,7 +4,7 @@ Streaming S3-compatible object store for large binary artifacts (Path-2 of
 the scope-and-objects design): pcaps, DB dumps, rendered reports, evidence.
 
 Implements the dependency-free `ObjectStore` protocol from
-`3tears-media-contracts` over any S3-compatible backend (MinIO in dev, S3 in
+`3tears-interfaces` over any S3-compatible backend (MinIO in dev, S3 in
 prod). **Streaming by contract** — uploads move through one part-size buffer
 at a time via S3 multipart; downloads yield the response body in chunks — so
 a multi-GB object never has to sit whole in a pod's memory.

@@ -76,6 +76,7 @@ from urllib.parse import urlparse
 
 from pydantic import JsonValue
 
+from threetears.interfaces.media import LOCATOR_KIND_CONTAINING_PAGE, LOCATOR_KIND_DIRECT_FILE
 from threetears.observe import get_logger
 from threetears.search.adapters._common import (
     _as_float,
@@ -185,7 +186,7 @@ SEARXNG_CATEGORIES: Final[tuple[str, ...]] = (
     "map",
 )
 
-#: the ``media-contracts`` carrier taxonomy, mapped onto SearXNG categories.
+#: the ``threetears.interfaces.media`` carrier taxonomy, mapped onto SearXNG categories.
 #: Only these three carriers have a category that means the same thing;
 #: anything else is honestly unsatisfiable rather than approximated.
 _CARRIER_CATEGORIES: Final[Mapping[str, str]] = {
@@ -194,7 +195,7 @@ _CARRIER_CATEGORIES: Final[Mapping[str, str]] = {
     "audio": "music",
 }
 
-#: SearXNG's own category, mapped back onto the ``media-contracts`` carrier
+#: SearXNG's own category, mapped back onto the ``threetears.interfaces.media`` carrier
 #: taxonomy for the ``media_category`` facet. Categories with no carrier
 #: meaning (``general``, ``it``, ``map``, ...) contribute no facet -- absence
 #: means "not reported", which is the truth.
@@ -830,7 +831,7 @@ class SearxngAdapter:
         key = criterion.key
         carrier = plan.accept(
             key,
-            _text(criterion.value, key, "a media-contracts carrier name as a non-empty string"),
+            _text(criterion.value, key, "a threetears.interfaces.media carrier name as a non-empty string"),
             consequence="the search was not scoped to a category",
         )
         if carrier is None:
@@ -1263,10 +1264,10 @@ class SearxngAdapter:
         thumbnail = raw.get("thumbnail_src") or raw.get("thumbnail")
         locators = [Locator(url=url, rel="canonical")]
         if isinstance(image_source, str) and image_source:
-            locators.append(Locator(url=image_source, rel="direct-file"))
+            locators.append(Locator(url=image_source, rel=LOCATOR_KIND_DIRECT_FILE))
         if isinstance(thumbnail, str) and thumbnail:
             locators.append(Locator(url=thumbnail, rel="thumbnail"))
-        has_bytes = any(locator.rel == "direct-file" for locator in locators)
+        has_bytes = any(locator.rel == LOCATOR_KIND_DIRECT_FILE for locator in locators)
         return Candidate(
             identity=url,
             locators=tuple(locators),
@@ -1409,7 +1410,7 @@ class SearxngAdapter:
         return tuple(scores)
 
     def _facets(self, raw: Mapping[str, object], *, has_bytes: bool) -> dict[str, JsonValue]:
-        """Carrier facets, in the ``media-contracts`` vocabulary (SR-C2/C3).
+        """Carrier facets, in the ``threetears.interfaces.media`` vocabulary (SR-C2/C3).
 
         :param raw: one provider result object
         :ptype raw: Mapping[str, object]
@@ -1423,7 +1424,7 @@ class SearxngAdapter:
         category = raw.get("category")
         if isinstance(category, str) and category in _CATEGORY_CARRIERS:
             facets[FACET_MEDIA_CATEGORY] = _CATEGORY_CARRIERS[category]
-        facets[FACET_LOCATOR_KIND] = "direct-file" if has_bytes else "containing-page"
+        facets[FACET_LOCATOR_KIND] = LOCATOR_KIND_DIRECT_FILE if has_bytes else LOCATOR_KIND_CONTAINING_PAGE
         resolution = raw.get("resolution")
         if isinstance(resolution, str) and "x" in resolution:
             width, _, height = resolution.partition("x")

@@ -50,14 +50,14 @@ CRITERION_DOMAINS_INCLUDE: Final[str] = "domains-include"
 CRITERION_DOMAINS_EXCLUDE: Final[str] = "domains-exclude"
 #: BCP 47 language tag; value is the tag string.
 CRITERION_LANGUAGE: Final[str] = "language"
-#: carrier scoping, keyed by the ``media-contracts`` carrier taxonomy
+#: carrier scoping, keyed by the ``threetears.interfaces.media`` carrier taxonomy
 #: (``MediaInfo.media_category``: "image", "audio", "video", "document", ...).
 #: A criterion, not a second tool and not a closed union (D17, SR-C1).
 CRITERION_CARRIER: Final[str] = "carrier"
 #: minimum pixel dimensions; value ``{"width": int, "height": int}``.
 CRITERION_MIN_RESOLUTION: Final[str] = "min-resolution"
 #: rights / licensing class; value is an open string (facet vocabulary
-#: pins to ``media-contracts`` when its rights facet lands -- SR-C3).
+#: pins to ``threetears.interfaces.media`` when its rights facet lands -- SR-C3).
 CRITERION_RIGHTS_CLASS: Final[str] = "rights-class"
 #: cap on returned candidates; value is a positive int. NOTE (SR-E5):
 #: for per-request-priced providers this changes what you see, not what
@@ -212,7 +212,7 @@ class Criterion(ContractModel):
 
     @classmethod
     def carrier(cls, media_category: str) -> Criterion:
-        """Scope results to one carrier, in the ``media-contracts`` taxonomy.
+        """Scope results to one carrier, in the ``threetears.interfaces.media`` taxonomy.
 
         :param media_category: carrier name per ``MediaInfo.media_category``
             (``image``, ``audio``, ``video``, ``document``, ...); the
@@ -241,7 +241,7 @@ class Criterion(ContractModel):
         """Constrain results to a rights / licensing class.
 
         :param rights: rights-class label (open vocabulary; pins to the
-            ``media-contracts`` rights facet when it lands)
+            ``threetears.interfaces.media`` rights facet when it lands)
         :ptype rights: str
         :return: the criterion
         :rtype: Criterion

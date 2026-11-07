@@ -75,9 +75,9 @@ _PERMITTED_THIRD_PARTY_ROOTS = frozenset(
 )
 
 #: Family trees the base floor names: the namespace packages on the way down, iam itself,
-#: observe, and the access-contracts leaf.
-_PERMITTED_FAMILY_MODULES = frozenset({"threetears", "threetears.access"})
-_PERMITTED_FAMILY_PREFIXES = ("threetears.iam", "threetears.observe", "threetears.access.contracts")
+#: observe, and the interfaces package.
+_PERMITTED_FAMILY_MODULES = frozenset({"threetears", "threetears.interfaces"})
+_PERMITTED_FAMILY_PREFIXES = ("threetears.iam", "threetears.observe", "threetears.interfaces.access")
 
 
 _FLOOR = ImportFloorConfig(
@@ -99,13 +99,13 @@ def test_nothing_outside_the_base_floor_is_loaded(module: str) -> None:
     run_import_floor_enforcement(_FLOOR, module)
 
 
-def test_the_contracts_leaf_is_what_stepup_loads_for_its_taxonomy() -> None:
-    """The permitted-family half is exercised: stepup reaches the leaf and not agent-acl.
+def test_the_interfaces_package_is_what_stepup_loads_for_its_taxonomy() -> None:
+    """The permitted-family half is exercised: stepup reaches the interfaces package and not agent-acl.
 
     Probed with nothing refused, since a refused agent layer could never load: with agent-acl
-    installed beside it, stepup still names the taxonomy from the leaf alone.
+    installed beside it, stepup still names the taxonomy from the interfaces package alone.
     """
     loaded = modules_loaded_by_importing("threetears.iam.stepup")
 
-    assert "threetears.access.contracts" in loaded
+    assert "threetears.interfaces.access" in loaded
     assert not any(m.startswith("threetears.agent") for m in loaded)

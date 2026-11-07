@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-object-store"
-version = "0.92.0"
+version = "0.93.0"
 description = "Streaming S3-compatible object store for large binary artifacts (Path-2)"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
-# the contract is dependency-free (media-contracts); this impl package
+# the contract is dependency-free (3tears-interfaces); this impl package
 # isolates the aiobotocore (-> botocore) S3 client tree so it
 # never leaks into the contract or its other consumers. core (``3tears``) is
 # pulled in for the secret_refs resolver used by the wiring helper -- core is
@@ -28,9 +28,9 @@ classifiers = [
 # directly rather than through aioboto3, whose last release (15.5.0, 2025-10) pins aiobotocore 2.25
 # and with it a boto3 too old for redshift-connector's eval() fix (CVE-2026-8838, needs 2.1.14).
 dependencies = [
-    "3tears>=0.92.0,<0.93.0",
-    "3tears-media-contracts>=0.92.0,<0.93.0",
-    "3tears-observe>=0.92.0,<0.93.0",
+    "3tears>=0.93.0,<0.94.0",
+    "3tears-interfaces>=0.93.0,<0.94.0",
+    "3tears-observe>=0.93.0,<0.94.0",
     "aiobotocore>=3.9",
     "cryptography>=42",  # AES-256-GCM sealing and scrypt key derivation (object_store.encrypted)
     "pydantic>=2",  # SecretStr for the sealing passphrase (object_store.encrypted)
@@ -42,7 +42,7 @@ Repository = "https://github.com/pacepace/3tears"
 
 [tool.uv.sources]
 3tears = { workspace = true }
-3tears-media-contracts = { workspace = true }
+3tears-interfaces = { workspace = true }
 3tears-observe = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

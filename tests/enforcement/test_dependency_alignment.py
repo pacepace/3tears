@@ -26,14 +26,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: packages whose hard-dependency list is an argued ruling, not an accretion.
 #:
-#: ``access-contracts``, ``media-contracts`` and ``tool-schema`` need no entry: their floor is *nothing*, which
-#: ``contract_packages`` above already states more strongly. This list is for the
+#: ``interfaces`` and ``tool-schema`` need no entry: their floor is *nothing*, which
+#: ``contract_packages`` below already states more strongly. This list is for the
 #: packages that cannot be dependency-free but whose floor was still ruled -- where
 #: "nothing" is unavailable and "these three" is the promise instead.
 _DEPENDENCY_FLOORS = (
     DependencyFloor(
         package="packages/search",
-        allowed=("3tears-media-contracts", "3tears-observe", "pydantic", "pydantic-core"),
+        allowed=("3tears-interfaces", "3tears-observe", "pydantic", "pydantic-core"),
         rationale=(
             "search-spec.md D24, matching SR-L7's permitted floor exactly. The leaf's whole "
             "value to a constrained host (samsung on a Pi; any embedded consumer) is that "
@@ -63,7 +63,7 @@ _DEPENDENCY_FLOORS = (
         package="packages/iam",
         allowed=(
             "3tears-observe",
-            "3tears-access-contracts",
+            "3tears-interfaces",
             "argon2-cffi",
             "bcrypt",
             "pyjwt",
@@ -80,7 +80,7 @@ _DEPENDENCY_FLOORS = (
             "Only dpop, CollectionAttemptLimiter and TOTP seed sealing build on core, so 3tears[security] "
             "rides the [core] extra; the NATS client rides [nats], since stores.nats_kv names it for type "
             "checking only; and agent-acl, needed for one six-member enum, is replaced by the "
-            "dependency-free access-contracts leaf that holds it. As hard dependencies they put sqlalchemy, "
+            "dependency-free interfaces package that holds it. As hard dependencies they put sqlalchemy, "
             "asyncpg, nats-py and nkeys into every install, though the base modules load none of them"
         ),
     ),
@@ -112,7 +112,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         "packages/agent/acl",
         (
             "3tears",
-            "3tears-access-contracts",
+            "3tears-interfaces",
             "3tears-observe",
             "pydantic",
             "sqlalchemy",
@@ -205,7 +205,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-agent-memory",
             "3tears-epoch",
             "3tears-langgraph",
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "3tears-nats",
             "3tears-observe",
             "3tears-search",
@@ -252,7 +252,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         "packages/backup",
         (
             "3tears",
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "3tears-object-store",
             "3tears-observe",
             "pydantic",
@@ -324,7 +324,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "3tears",
             "3tears-observe",
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "shapely",
             "mapbox-vector-tile",
         ),
@@ -333,7 +333,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         "packages/langgraph",
         (
             "3tears",
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "3tears-observe",
             "langchain",
             "langchain-core",
@@ -347,7 +347,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "packages/models",
         (
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "3tears-observe",
             "3tears-tool-schema",
             "pydantic",
@@ -372,7 +372,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         "packages/object-store",
         (
             "3tears",
-            "3tears-media-contracts",
+            "3tears-interfaces",
             "3tears-observe",
             "aiobotocore",
             "cryptography",
@@ -435,7 +435,8 @@ _CONFIG = DependencyAlignmentConfig(
     repo_root=_REPO_ROOT,
     package_globs=("packages/*", "packages/agent/*"),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_dependency_alignment_exemptions.txt",
-    contract_packages=("packages/access-contracts", "packages/media-contracts", "packages/tool-schema"),
+    # the interfaces package, and tool-schema, which keeps the same rule: stdlib and their own namespace only
+    contract_packages=("packages/interfaces", "packages/tool-schema"),
     dependency_floors=_ALL_FLOORS,
 )
 
@@ -447,8 +448,8 @@ class TestDependencyAlignment:
         """no undeclared module-top imports; no stale 3tears declarations."""
         run_dependency_alignment_enforcement(_CONFIG, walker="alignment")
 
-    def test_contracts_packages_stay_dependency_free(self) -> None:
-        """contracts packages import only stdlib + their own namespace."""
+    def test_the_interfaces_package_stays_dependency_free(self) -> None:
+        """the interfaces package (and tool-schema, under the same rule) imports only stdlib + its own namespace."""
         run_dependency_alignment_enforcement(_CONFIG, walker="contract_purity")
 
     def test_floor_pinned_packages_declare_exactly_their_ruled_floor(self) -> None:

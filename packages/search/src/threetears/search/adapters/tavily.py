@@ -85,6 +85,7 @@ from typing import Final
 
 from pydantic import JsonValue
 
+from threetears.interfaces.media import LOCATOR_KIND_CONTAINING_PAGE
 from threetears.observe import get_logger
 from threetears.search.adapters._common import (
     _as_float,
@@ -1240,7 +1241,7 @@ class TavilyAdapter:
             fidelity_available=FIDELITY_CONTENT,
             fidelity_achieved=FIDELITY_CONTENT if content is not None else FIDELITY_SNIPPET,
             content=content,
-            facets={FACET_HAS_DOWNLOADABLE_DATA: False, FACET_LOCATOR_KIND: "containing-page"},
+            facets={FACET_HAS_DOWNLOADABLE_DATA: False, FACET_LOCATOR_KIND: LOCATOR_KIND_CONTAINING_PAGE},
         )
 
     def _content(self, plan: _Plan, raw: Mapping[str, object]) -> ContentSlot | None:

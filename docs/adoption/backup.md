@@ -15,7 +15,7 @@ a security review.
 - Encrypted, grandfather-father-son (GFS) rotated backups -- keep N daily /
   weekly / monthly, prune the rest.
 - Storage-agnostic: takes an injected `ObjectStore` -- the protocol comes
-  from `3tears-media-contracts`; `3tears-object-store` is the typical
+  from `3tears-interfaces`; `3tears-object-store` is the typical
   implementation -- and streams the dump through `EncryptedObjectStore`
   (also from `object-store`), so a multi-GB dump is client-side AES-256-GCM
   encrypted and never sits whole in memory.
@@ -43,7 +43,7 @@ backups it can actually trust, not just backups that exist.
 
 ## Composes with
 
-- [`media-contracts`](media-contracts.md) -- the `ObjectStore` protocol
+- [`interfaces`](interfaces.md) -- the `ObjectStore` protocol
   this package is built against.
 - [`object-store`](object-store.md) -- the typical `ObjectStore` and
   `EncryptedObjectStore` implementation backups are written through.

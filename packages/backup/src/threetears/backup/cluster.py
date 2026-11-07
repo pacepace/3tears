@@ -50,7 +50,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID, uuid7
 
-from threetears.media.contracts import ObjectStore
+from threetears.interfaces.media import ObjectStore
 from threetears.object_store import EncryptedObjectStore
 from threetears.observe import contain, get_logger
 

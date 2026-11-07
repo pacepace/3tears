@@ -38,7 +38,7 @@ breaking and unified usage tracking without building it per provider.
 
 ## Composes with
 
-- [`media-contracts`](media-contracts.md) -- image providers implement
+- [`interfaces`](interfaces.md) -- image providers implement
   this contract so consumers don't need a provider-specific type. The
   Whisper transcription provider does *not* use this contract -- it
   returns its own `TranscriptionResult` shape.

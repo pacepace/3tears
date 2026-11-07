@@ -42,7 +42,7 @@ from typing import Protocol
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
 from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential, ProvenDoorRequest
 from threetears.nats import NatsClient, RequestError, Subjects

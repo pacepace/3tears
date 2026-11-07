@@ -6,7 +6,7 @@ step-up asks is not "is this session still valid" but "how long ago did this
 human actually prove who they are". An attacker with a stolen but live session
 passes every session check and fails this one.
 
-The category taxonomy is :class:`~threetears.access.contracts.ImpersonationCategory`,
+The category taxonomy is :class:`~threetears.interfaces.access.ImpersonationCategory`,
 imported rather than redeclared: the dependency-free leaf that agent-acl's
 impersonation deny-list reads too, and re-exports as
 ``threetears.agent.acl.ImpersonationCategory``. Both checks name one class, and taking
@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from typing import Protocol, runtime_checkable
 
-from threetears.access.contracts import ImpersonationCategory
+from threetears.interfaces.access import ImpersonationCategory
 
 __all__ = ["StepUpRequiredError", "SteppableClaims", "is_step_up_satisfied", "require_fresh_auth"]
 

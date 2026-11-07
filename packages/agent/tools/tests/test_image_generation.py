@@ -363,7 +363,7 @@ async def test_custom_description_override() -> None:
 
 
 from threetears.agent.tools import SourceImage, SourceImageContext, SourceImageRefused  # noqa: E402
-from threetears.media.contracts import GENERATION_IGNORED, GENERATION_SOURCE_USED  # noqa: E402
+from threetears.interfaces.media import GENERATION_IGNORED, GENERATION_SOURCE_USED  # noqa: E402
 
 
 class _EditingBackend:

@@ -23,7 +23,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.models.capabilities import ModelCapabilities
 
 __all__ = [
