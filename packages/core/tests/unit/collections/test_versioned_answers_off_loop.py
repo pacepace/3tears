@@ -545,3 +545,118 @@ class TestAWorkerLetsTheLoopRunBetweenSlices:
     async def test_a_small_answer_never_pauses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         storing, reading = await self._pauses_storing_then_reading(json.dumps({"small": 1}), monkeypatch)
         assert storing == [] and reading == []
+
+
+def _l1_replica(bus: FakeNatsClient) -> VersionedAnswers:
+    """a replica on ``bus`` keeping answers in its own SQLite L1."""
+    registry = CollectionRegistry()
+    backend = SQLiteBackend(db_name=f"kept-l1-{uuid.uuid4().hex}")
+    backend.initialize(MetaData())
+    registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="kept_answers")
+
+
+def _l2_replica(bus: FakeNatsClient) -> VersionedAnswers:
+    """a replica on ``bus`` keeping answers in L2 alone."""
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=None, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="kept_answers")
+
+
+async def _stored(text: str) -> tuple[FakeNatsClient, Callable[[], Awaitable[str]]]:
+    """a bus holding ``text`` as the answer to ``"q"`` at ``v1``, stored by a peer, and the compute that gave it."""
+    bus = FakeNatsClient()
+
+    async def compute() -> str:
+        return text
+
+    stored = await _l2_replica(bus).answer_with_outcome("v1", "q", compute, order=1)
+    assert stored.outcome is AnswerOutcome.COMPUTED
+    return bus, compute
+
+
+class TestALargeAnswerReadFromL2IsDecodedAndKeptOffTheLoop:
+    """reading a large answer a peer stored decodes its row and writes it into this replica's L1 on worker threads:
+    on the loop the two held it 4 ms for 12.5 MB on a laptop, and four to five times that on a CI runner (2026-11-07).
+    A small answer's row is decoded and kept on the loop, as any collection's is."""
+
+    @pytest.fixture
+    def threads(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list[int]]:
+        """the thread each answer row was decoded on, and each answer row was written into L1 on."""
+        seen: dict[str, list[int]] = {"decoded": [], "kept": []}
+        decode = VersionedAnswers.deserialize
+        upsert = SQLiteBackend.upsert
+
+        def decoding(self: VersionedAnswers, data: bytes) -> dict[str, Any]:
+            row = decode(self, data)
+            if "body" in row:
+                seen["decoded"].append(threading.get_ident())
+            return row
+
+        def keeping(self: SQLiteBackend, table: str, data: dict[str, Any], primary_key: Any = "id") -> None:
+            if "body" in data:
+                seen["kept"].append(threading.get_ident())
+            upsert(self, table, data, primary_key)
+
+        monkeypatch.setattr(VersionedAnswers, "deserialize", decoding)
+        monkeypatch.setattr(SQLiteBackend, "upsert", keeping)
+        return seen
+
+    async def test_a_large_answer_is_decoded_and_kept_on_worker_threads(self, threads: dict[str, list[int]]) -> None:
+        text = _large_answer_text()
+        bus, compute = await _stored(text)
+        reader = _l1_replica(bus)
+        threads["decoded"].clear()
+        given = await reader.answer_with_outcome("v1", "q", compute, order=1)
+        assert given.outcome is AnswerOutcome.READ and gzip.decompress(given.body) == text.encode("utf-8")
+        assert threads["decoded"] and threads["kept"], f"decoded {threads['decoded']}, kept {threads['kept']}"
+        loop = threading.get_ident()
+        assert loop not in threads["decoded"], "the large answer's row was decoded on the event loop"
+        assert loop not in threads["kept"], "the large answer's row was written into L1 on the event loop"
+        assert reader.get_row_sync(reader.key_of("v1", "q")) is not None, "the answer was not kept in L1"
+
+    async def test_a_small_answer_is_decoded_and_kept_on_the_loop(self, threads: dict[str, list[int]]) -> None:
+        bus, compute = await _stored(json.dumps({"small": 1}))
+        reader = _l1_replica(bus)
+        threads["decoded"].clear()
+        given = await reader.answer_with_outcome("v1", "q", compute, order=1)
+        assert given.outcome is AnswerOutcome.READ
+        loop = threading.get_ident()
+        assert threads["decoded"] == [loop] and threads["kept"] == [loop]
+
+
+class TestAnEvictionDuringTheOffLoopWriteLeavesNoCopy:
+    """a retirement here, or a peer's broadcast evicting the key, that lands while a large answer is being written
+    into L1 on a worker thread leaves no copy of it there: the eviction's delete can run before the write lands, so
+    the read deletes its copy again once it sees the key moved on."""
+
+    @pytest.mark.parametrize("eviction", ["retired here", "evicted by a peer's broadcast"])
+    async def test_no_copy_is_left(self, eviction: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        text = _large_answer_text()
+        bus, compute = await _stored(text)
+        reader = _l1_replica(bus)
+        writing, evicted = threading.Event(), threading.Event()
+        upsert = SQLiteBackend.upsert
+        loop = threading.get_ident()
+
+        def held(self: SQLiteBackend, table: str, data: dict[str, Any], primary_key: Any = "id") -> None:
+            if "body" in data and threading.get_ident() != loop:
+                # the eviction lands, and deletes, before this write does
+                writing.set()
+                assert evicted.wait(10), "the eviction never landed"
+            upsert(self, table, data, primary_key)
+
+        monkeypatch.setattr(SQLiteBackend, "upsert", held)
+        reading = asyncio.create_task(reader.answer_with_outcome("v1", "q", compute, order=1))
+        while not writing.is_set() and not reading.done():
+            await asyncio.sleep(0.001)
+        assert writing.is_set(), "the answer was not written into L1 off the event loop"
+        key = reader.key_of("v1", "q")
+        if eviction == "retired here":
+            assert await reader.retire_older_than(2) == 1
+        else:
+            assert reader.evict_from_cache_sync(key)
+        evicted.set()
+        given = await reading
+        assert given.outcome is AnswerOutcome.READ and gzip.decompress(given.body) == text.encode("utf-8")
+        assert reader.get_row_sync(key) is None, f"L1 still holds the answer {eviction} while it was written"

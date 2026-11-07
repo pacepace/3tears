@@ -784,6 +784,12 @@ def _unbase64(body: str | bytes) -> bytes:
     return out.getvalue()
 
 
+#: the longest row's ``body``, and L2 value, read on the event loop: a longer one is decoded, and kept in L1, on a
+#: worker thread. Decoding 12.5 MB held the loop 1.2 ms, and writing it into the SQLite L1 2.7 ms, on a laptop; four
+#: to five times that on a CI runner (2026-11-07)
+_LARGE_ROW: Final = _BASE64_TEXT_SLICE
+
+
 async def _given_body(body: str | bytes) -> bytes:
     """a row's ``body`` decoded (:func:`_unbase64`): a small one here, a large one on a worker thread, never the loop.
 
@@ -1842,6 +1848,31 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         """
         del entity_id
 
+    def _decodes_off_loop(self, raw: bytes) -> bool:
+        """whether a read decodes this L2 value on a worker thread: a large answer's row is.
+
+        :param raw: the row's L2 bytes
+        :ptype raw: bytes
+        :return: whether it is longer than :data:`_LARGE_ROW`
+        :rtype: bool
+        """
+        return len(raw) > _LARGE_ROW
+
+    def _keeps_off_loop(self, row: dict[str, Any]) -> bool:
+        """whether a read writes this row into L1 on a worker thread: a large answer's is.
+
+        An answer is a pure function of its key, so a copy written a moment after the fence was
+        checked is never a wrong answer, and one a retirement's eviction overtook while it was
+        written is deleted again (``BaseCollection``'s ``_cache_read_in_l1``).
+
+        :param row: the row
+        :ptype row: dict[str, Any]
+        :return: whether its ``body`` is longer than :data:`_LARGE_ROW`
+        :rtype: bool
+        """
+        body = row.get("body")
+        return isinstance(body, str | bytes) and len(body) > _LARGE_ROW
+
     def serialize(self, data: dict[str, Any]) -> bytes:
         """a row as L2 holds it: JSON, ``{"version": ..., "request": ..., "body": ...}``.
 
@@ -1862,7 +1893,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """a row back from L2.
 
-        Runs on the event loop. ``json.loads`` scans a large body character by character (9-10 ms at 12.5 MB),
+        Runs on the event loop for a small row and on a worker thread for a large one
+        (:meth:`_decodes_off_loop`). ``json.loads`` scans a large body character by character (9-10 ms at 12.5 MB),
         so a row as :meth:`serialize` writes it -- its base64 body last, which holds no character JSON escapes
         -- is read by its layout: the version and request through ``json``, the body taken as it stands. Anything
         else goes through ``json.loads``.

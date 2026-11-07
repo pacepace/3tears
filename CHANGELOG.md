@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ## v0.93.0 -- 2026-11-07
 
+### core: a large cached answer is decoded and kept in L1 off the event loop
+
+**Fixed (core):** a replica with an L1 that read a large answer from L2 decoded its row and wrote it into the
+SQLite L1 on the event loop: 1.2 ms and 2.7 ms for a 12.5 MB answer on a laptop, and four to five times that on
+a CI runner, where the loop ran 23 ms late on the read. `VersionedAnswers` now decodes a row longer than 1 MB on a
+worker thread, and writes it into L1 on one. An answer is a pure function of its key, so a copy that lands a moment
+after the read's fence check is never wrong; a retirement or a peer's eviction of the key that lands while the copy
+is being written is caught by a second fence check after the write, which deletes the copy again (also on a
+thread). On a laptop the loop now runs 0.5-1.6 ms late on that read, against 2.7-3.4 ms before. Smaller answers,
+and every other collection, are decoded and kept on the loop exactly as before; answers, their bytes in L1 and L2,
+and every API are unchanged.
+
 ### interfaces: one dependency-free package for the family's shared Protocols and vocabulary
 
 **Release step:** `3tears-interfaces` is a new PyPI project, so it needs a pending trusted publisher on PyPI
