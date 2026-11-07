@@ -24,7 +24,7 @@ editor's own model. ``await WriterEval(...).run()``:
    pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
    The pass judges under the eval's stopping rule (``stop_when``), declared as the eval runs, before any arm
    launches, over the side's cases (its ``max_cases``): ``separated`` stops the judge at the first case after which
-   the preference separates, either way, and the decision read there stands; ``never``, the default, reads every case.
+   the preference separates, either way; ``never``, the default, reads every case.
    Either way each look is recorded, the result says what happened in one sentence, and the launch's disclosures say
    the resolution floor: the smallest preference, held on every case, the side's cases can separate
    (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal, with the
@@ -682,7 +682,7 @@ class WriterEval:
         :ptype scope: str | None
         :param stop_when: The pairwise pass's stopping rule, declared as :meth:`run` starts, before any arm launches,
             over the side's cases: ``separated`` stops the judge at the first case after which the preference
-            separates, either way, where the decision read there stands; ``never`` reads every case.
+            separates, either way; ``never`` reads every case.
         :ptype stop_when: StopWhen
         :param prior: An earlier run on these cases, whose projection the resolution line carries when it ran the same
             case files; one over other cases is said and not carried.

@@ -320,3 +320,25 @@ def test_a_rule_lists_its_planned_cases_sorted_and_counts_them() -> None:
         StoppingRule(stop_when="never", case_ids=["b", "a"], max_cases=2)
     with pytest.raises(ValueError, match="max_cases is the 2 cases planned"):
         StoppingRule(stop_when="never", case_ids=["a", "b"], max_cases=3)
+
+
+async def test_one_case_off_the_plan_is_said_as_one() -> None:
+    host, campaign_id, _ = _campaign(prefers_the_control)
+    report, _ = await _pass(host, campaign_id, _rule("separated", cases=_CASES[:-1]))
+
+    stopping = report.stopping
+    assert stopping is not None and stopping.unplanned == _CASES[-1:]
+    assert stopping.line.endswith("1 found was not planned, and the bet holds no place for it, so it was not read.")
+
+
+async def test_under_never_a_case_off_the_plan_is_read_and_counted_alone() -> None:
+    """``never`` fixes no bet, so a case it did not plan is read, and the count prints alone: never more read than
+    planned."""
+    host, campaign_id, _ = _campaign(prefers_the_control)
+    report, _ = await _pass(host, campaign_id, _rule("never", cases=_CASES[:-1]))
+
+    stopping = report.stopping
+    assert stopping is not None and len(stopping.looks) == len(_CASES)
+    assert stopping.line.startswith(f"Read {len(_CASES)} cases under the rule declared before the first result: ")
+    assert f" of {len(_CASES) - 1} " not in stopping.line
+    assert stopping.line.endswith("1 found was not planned, read as every case is.")

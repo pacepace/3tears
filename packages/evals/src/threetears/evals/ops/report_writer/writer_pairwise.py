@@ -1011,7 +1011,13 @@ def _differs(plan: _Plan, *, read: bool) -> str:
         count = len(plan.unplanned)
         parts.append(
             f"{count} found {'was' if count == 1 else 'were'} not planned, "
-            + ("read as every case is" if read else "and the bet holds no place for them, so they were not read")
+            + (
+                "read as every case is"
+                if read
+                else "and the bet holds no place for it, so it was not read"
+                if count == 1
+                else "and the bet holds no place for them, so they were not read"
+            )
         )
     return "; ".join(parts).capitalize() + "."
 
@@ -1045,7 +1051,8 @@ def _line(
             f"Stopped at {reached} of {rule.max_cases} cases under {timed}: the judge preferred {side} on {won} of "
             f"{first.cases}, separated."
         )
-    of = f"{reached} of {rule.max_cases}"
+    # Under never no rule fixed the bet, so a count off the plan prints alone, never as more read than planned.
+    of = str(reached) if rule.stop_when == "never" and reached != rule.max_cases else f"{reached} of {rule.max_cases}"
     if first is None:
         return f"Read {of} cases under {timed}: no look up to {len(looks)} excluded no preference."
     return f"Read {of} cases under {timed}: the preference first separated at case {first.cases}."
