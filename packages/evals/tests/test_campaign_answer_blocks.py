@@ -17,6 +17,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
 
+from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
     CANDIDATE_LABEL,
@@ -101,9 +102,10 @@ async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_ou
     )
     assert opening(page) == [("verdict", lead)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
-    markdown, html = campaign_report_markdown(page), campaign_report_html(page)
+    markdown, html = campaign_report_markdown(page), unlinked(campaign_report_html(page))
     assert markdown.index(lead) < markdown.index("By aspect, pair by pair")
-    header = header_html(page)
+    # The lead's words as printed: the undecided reading it first says is linked inside it.
+    header = unlinked(header_html(page))
     assert header.index("<h1>") < header.index(lead)
     assert html.index(lead) < html.index('data-table="pairs"')
 

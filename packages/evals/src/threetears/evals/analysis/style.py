@@ -240,6 +240,10 @@ def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, st
 #: review's H7 and A7). A sentence says it whole, naming the arms (:func:`cannot_tell_apart`).
 CANNOT_TELL_APART = "cannot tell apart"
 
+#: The undecided reading where a sentence says it about its arms (``the evidence cannot tell v2 and v1 apart``,
+#: :func:`cannot_tell_apart`) or a cell in its short form: what a page links to the glossary's entry.
+CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b", re.IGNORECASE)
+
 
 def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
     """The undecided reading as a sentence says it, each arm by name and the control last: ``the evidence cannot tell
@@ -334,6 +338,10 @@ GLOSSARY: dict[str, str] = {
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
     "ran": "Every trial the arm ran, usable or not.",
+    "verdict": (
+        "What a contrast came to for the arm against the control: shown better or worse, within the margin, or the "
+        "evidence cannot tell them apart."
+    ),
     "passed": "Usable trials that met every check and cleared every judged bar.",
     "flag": (
         "Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie "
@@ -440,6 +448,7 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
 __all__ = [
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
+    "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "GLOSSARY",
     "HUMANIZE_OVERRIDES",

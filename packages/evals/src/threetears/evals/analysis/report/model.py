@@ -37,7 +37,7 @@ from typing import Literal, Self, get_args
 
 from pydantic import Field, model_validator
 
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.kernel.declaration import CampaignCall
@@ -115,6 +115,12 @@ ReportFile = Literal["html", "bundle", "markdown"]
 
 #: The columns whose cells name a reading, which the glossary may define by the name a table prints.
 _NAMING_COLUMNS = frozenset({"reading", "measure"})
+
+
+def _said_terms(block: DisclosureBlock) -> list[str]:
+    """The glossary terms a line says in a form of its own: the undecided reading in its sentence form (``the evidence
+    cannot tell v2 and v1 apart``), which the page links where it says it."""
+    return [CANNOT_TELL_APART] if CANNOT_TELL_APART_PHRASE.search(block.text) else []
 
 
 def _named_terms(block: TableBlock) -> list[str]:
@@ -220,7 +226,7 @@ class Report(EvalDocumentModel):
             found = (
                 [*(column.term for column in block.columns), *_named_terms(block)]
                 if isinstance(block, TableBlock)
-                else [block.term]
+                else [block.term, *_said_terms(block)]
                 if isinstance(block, DisclosureBlock)
                 else []
             )
@@ -496,7 +502,7 @@ class CampaignReport(EvalDocumentModel):
             found = (
                 [*(column.term for column in block.columns), *_named_terms(block)]
                 if isinstance(block, TableBlock)
-                else [block.term]
+                else [block.term, *_said_terms(block)]
                 if isinstance(block, DisclosureBlock)
                 else []
             )

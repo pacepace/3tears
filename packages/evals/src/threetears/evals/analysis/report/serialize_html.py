@@ -93,7 +93,7 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -224,7 +224,13 @@ def _first_uses(markup: str, terms: Sequence[str]) -> str:
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
     own). Each term is linked once this way; the glossary at the foot defines it."""
     by_definition = {GLOSSARY[term]: term for term in terms}
-    pending = {term: re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE) for term in terms}
+    pending = {
+        # The undecided reading is linked in its sentence form too: ``cannot tell v2 and v1 apart``.
+        term: CANNOT_TELL_APART_PHRASE
+        if term == CANNOT_TELL_APART
+        else re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE)
+        for term in terms
+    }
     opened: list[str] = []
     out: list[str] = []
     for token in _TAG.split(markup):

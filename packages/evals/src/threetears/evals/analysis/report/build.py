@@ -1997,7 +1997,7 @@ def _comparison_blocks(
             TableColumn(key="arm", header=candidates[0] if two_arms else "Value", term="arm mean"),
             TableColumn(key="change", header="Change", term="change"),
             TableColumn(key="interval", header=_interval_header(levels), term="interval"),
-            TableColumn(key="verdict", header="Verdict", term=CANNOT_TELL_APART),
+            TableColumn(key="verdict", header="Verdict", term="verdict"),
             TableColumn(key="cases", header="Cases", term="cases"),
         ]
         blocks += [
