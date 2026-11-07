@@ -125,6 +125,26 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="_HeldFiles",
+        attr_name="_dirs",
+        rationale=(
+            "each directory of this process's own memory-backed store with the files (device, inode, bytes) it "
+            "held as it took its name, so a status read counts them without walking the directory; another pod "
+            "has nothing to do with them, and a restart records afresh what the directory holds"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="_HeldFiles",
+        attr_name="_links",
+        rationale=(
+            "how many of this store's directories hold each file (by device and inode), so a hard-linked file is "
+            "counted once and its bytes go with its last directory; derived from _dirs, as local and as "
+            "short-lived"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/search/src/threetears/search/standalone.py",
         class_name="_Breakers",
         attr_name="_circuits",

@@ -332,6 +332,13 @@ and the mapping.
 claimed results, open hand-offs and how many were made, `held_bytes`, `max_bytes`, and how many versions were published, retired and refused. The store logs
 each publish, retirement and refusal.
 
+`status()` reads the store's own tallies, never the directory and never its lock, so call it from the event loop.
+Its `held_bytes`, `versions` and `handoffs_held` are what `store.held_bytes()`, `store.versions()` and
+`store.handoffs()` find by walking the directory (a file linked into several versions counted once), except for
+what is still being written: a version or hand-off counts once it is renamed into place, and a worker's result
+once it is claimed (until then its open slot shows in `slots_open`). The three walking methods block: call them on a
+thread.
+
 ## What it saves, measured
 
 `scripts/measure-shared-arrow.py` loads a spec'd set of tables into DuckDB, publishes them, and has N workers scan

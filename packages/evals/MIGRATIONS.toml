@@ -401,6 +401,14 @@ dimension's verdicts on WorldConformanceReport.for_dimension.
 """
 
 [[release]]
+version = "0.93.1"
+since = "v0.93.0"
+summary = """
+A shared-Arrow store's status reads its tallies, never the file system: no 3tears-evals name has moved or been
+removed since 0.93.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.93.0"
 since = "v0.91.4"
 summary = """
