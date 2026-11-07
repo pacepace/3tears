@@ -376,7 +376,6 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "3tears",
             "3tears-agent-acl",
-            "3tears-agent-tools",
             "3tears-epoch",
             "3tears-nats",
             "3tears-observe",

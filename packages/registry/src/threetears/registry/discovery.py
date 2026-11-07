@@ -20,8 +20,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer
+from pydantic import BaseModel, ValidationError
 
+from threetears.core.tool_wire import DiscoveryProbeRequest as DiscoverRequest
+from threetears.core.tool_wire import DiscoveryProbeToolEntry as DiscoverToolEntry
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import contain, get_logger
 from threetears.registry.catalog import CatalogEntry, CopySelection, ToolCatalog
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
+    # RE-EXPORTED, with ``DiscoverToolEntry``: the request is
+    # ``threetears.core.tool_wire.DiscoveryProbeRequest``, the class a polling pod sends, under
+    # the names this module has always published. both ends parse one class, not two copies.
     "DiscoverRequest",
     "DiscoverResponse",
     "DiscoverResultEntry",
@@ -45,56 +50,12 @@ _logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class DiscoverToolEntry(BaseModel):
-    """single pinned tool in discovery request manifest.
-
-    :param name: namespaced tool name
-    :ptype name: str
-    :param version: semver-compatible version string
-    :ptype version: str
-    """
-
-    name: str
-    version: str
-
-
-class DiscoverRequest(BaseModel):
-    """discovery request from agent.
-
-    :param agent_id: the requesting agent's id, or -- when a ToolServer polls for its own
-        readiness -- the polling server's pod-id; an agent's in-process server polls under its
-        ``{agent_id}.{instance}`` composite, which names that agent. self-asserted: it decides what
-        the requester is SHOWN, never what it may call
-    :ptype agent_id: str
-    :param tool_manifest: list of pinned tools to resolve
-    :ptype tool_manifest: list[DiscoverToolEntry]
-    :param pod_id: the requesting pod's OWN id, set by a ToolServer polling for its readiness so
-        each result reports :attr:`DiscoverResultEntry.requester_copy_status` for THIS pod's copy.
-        OMITTED from the serialized form when ``None``, so it never crosses as an explicit null
-    :ptype pod_id: str | None
-    """
-
-    agent_id: str
-    tool_manifest: list[DiscoverToolEntry]
-    pod_id: str | None = None
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_pod_id(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """drop ``pod_id`` from the serialized form when it is ``None``.
-
-        :param handler: pydantic's default serializer
-        :ptype handler: SerializerFunctionWrapHandler
-        :return: the serialized fields
-        :rtype: dict[str, Any]
-        """
-        data: dict[str, Any] = handler(self)
-        if data.get("pod_id") is None:
-            data.pop("pod_id", None)
-        return data
-
-
 class DiscoverResultEntry(BaseModel):
     """single tool result in discovery response.
+
+    the registry's full view of a result, of which the pod's
+    :class:`threetears.agent.tools.server.DiscoveryProbeResultEntry` models only the fields
+    readiness polling needs.
 
     :param name: namespaced tool name
     :ptype name: str
@@ -141,6 +102,10 @@ class DiscoverResultEntry(BaseModel):
 
 class DiscoverResponse(BaseModel):
     """discovery response sent back to requesting agent.
+
+    the registry's full view of the reply, of which the pod's
+    :class:`threetears.agent.tools.server.DiscoveryProbeResponse` models only what readiness
+    polling reads.
 
     :param agent_id: identifier of agent that requested discovery
     :ptype agent_id: str

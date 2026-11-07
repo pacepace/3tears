@@ -21,13 +21,8 @@ from uuid import UUID
 
 import pytest
 
-from threetears.agent.tools.server import (
-    FINAL_REFUSAL_CODES,
-    RegistrationManifest,
-    RegistrationResponse,
-    ToolManifestEntry,
-    refusal_is_final,
-)
+from threetears.core.tool_wire import RegistrationManifest, RegistrationResponse, ToolManifestEntry
+from threetears.agent.tools.server import FINAL_REFUSAL_CODES, refusal_is_final
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.nats import IncomingMessage, KvError, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth

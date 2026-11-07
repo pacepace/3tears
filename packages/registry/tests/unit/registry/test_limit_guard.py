@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 from prometheus_client import REGISTRY
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.auth import (

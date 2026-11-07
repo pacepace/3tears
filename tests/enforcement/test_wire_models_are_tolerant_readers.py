@@ -24,7 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: fully qualified name onto who reads it from whom.
 _WIRE_MODELS: dict[str, str] = {
     "threetears.registry.proxy.ProxyCallRequest": "the registry, from an agent",
-    "threetears.agent.tools.server.CallRequest": "a tool pod, from the registry",
+    "threetears.core.tool_wire.messages.CallRequest": "a tool pod, from the registry",
     "threetears.datasources.query_client.DatasourceQueryRequest": "the hub, from an agent or tool pod",
     "threetears.datasources.query_client.RelationFingerprintRequest": "the hub, from a tool pod",
     "threetears.datasources.query_client.RelationFingerprintResult": "a tool pod, from the hub",
