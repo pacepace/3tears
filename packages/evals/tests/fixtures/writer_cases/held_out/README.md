@@ -20,6 +20,7 @@ These are held-out acceptance cases: never dev, and never rung-5 replays.
 | toyhost | the toy host's corpus campaign | host | toyhost | 17,187 | none |
 | courierhost | the courier's planner bake-off | host | courier-planner | 9,900 | none |
 | hot-path-scaled | the hot-path `scaled` campaign, 41 runs | host | hot-path-scaled | 248,822 | none |
+| discodon-dj-character-01a1b3d4 | Discodon's campaign 01a1b3d4, "Character v2 apparatus 11-07" (see below) | host | discodon-dj-character | 49,046 | none |
 
 There is no r5. Reference input r5 is the Kairo round 2 campaign's report input, copied byte for byte. It would be rung 5's Kairo case a second time, and it would read the skill's own note on that campaign. `test_held_out_cases.py` refuses two cases that report on one campaign unless they share a group and withhold the same notes.
 
@@ -31,9 +32,20 @@ The dungeons-of-wagons cases need the clone's `src` on `PYTHONPATH`, as the expo
 
 The host cases are rebuilt from the toy host's operations fixture (`ops_support`), which the export and the test import only when they build them. Deleting the planner's fixtures breaks both. Before that deletion, freeze the host cases once and keep them, as the dungeons-of-wagons cases are kept, and drop their rebuild check.
 
+## The first case minted from a production host
+
+`discodon-dj-character-01a1b3d4` is the first case minted from a production host through the mint door (`python -m threetears.evals.harness mint`), not rebuilt from a fixture or a replay. It is kept as minted, like the dungeons-of-wagons cases: `export_held_out_cases.py` does not rebuild it.
+
+- Host: Discodon, in its devcontainer, scope `brooks`. Campaign 01a1b3d4, "Character v2 apparatus 11-07": deepseek-v4.1-flash (control) against qwen3.8-flash, ten `dj_character_v2` cases over eight strata, k=1.
+- Written report: claude-opus-5-5, $2.94. It is a draft: the editor left findings open.
+- Export: Discodon's `tools/evals_export.py` (evals/integration 281e93624+).
+- Mint: `python -m threetears.evals.harness mint ...` on evals/reset ce8f28e10.
+- Withheld: nothing. No skill note names the campaign. The mint records both `reasoned_on` entries (an `eval_analysis` and an `eval_report_doc`) as unmatched.
+- Snapshot `report-snapshot:de914e5e66bb9ac748f9e753210aff29`, group `discodon-dj-character`, stratum `host`.
+
 ## The acceptance run
 
-The acceptance script reads one `--cases` directory and none of its subdirectories. So put rung 5's eleven cases and these fourteen in one directory under `.prawduct/`, from the repository root:
+The acceptance script reads one `--cases` directory and none of its subdirectories. So put rung 5's eleven cases and these fifteen in one directory under `.prawduct/`, from the repository root:
 
 ```bash
 mkdir .prawduct/acceptance-cases
@@ -45,7 +57,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
   --budget-usd 0.75 --turns 30 --request-s 50 --cap-usd 56
 ```
 
-At 0.99, all 25 cases are held-out.
+At 0.99, all 26 cases are held-out.
 
 ### The job budget
 
