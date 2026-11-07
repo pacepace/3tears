@@ -94,6 +94,12 @@ if TYPE_CHECKING:
 #: hash, so the cut costs a reader nothing but the tail of a long value.
 _DISPLAY_LIMIT = 60
 
+#: How a frozen level with no value is displayed, and one whose value is empty: placeholders, which a reader-facing
+#: name replaces with words (``no system prompt``, :func:`~threetears.evals.analysis.arms.arm_names`). The display is
+#: what a stored variant index holds, so neither spelling ever changes.
+NO_VALUE_DISPLAY = "(none)"
+EMPTY_VALUE_DISPLAY = "(empty)"
+
 #: The suffix an open family's container lever carries, so the container and the map it expands are
 #: two names: ``gm.house_rules`` is the whole rule set as one level, ``gm.house_rules.*`` the family.
 _FAMILY_SUFFIX = ".*"
@@ -697,7 +703,7 @@ def _ordered_levels(annotation: Any) -> tuple[Any, ...] | None:
 def _level(knob: _Knob, value: Any) -> SweepableValue:
     """One field's frozen value as a level on its axis."""
     if value is None:
-        return SweepableValue.of(None, display="(none)")
+        return SweepableValue.of(None, display=NO_VALUE_DISPLAY)
     scale: Scale
     if knob.numeric and not isinstance(value, bool):
         scale = IntervalScale(value=float(value), unit=knob.interval_unit)
@@ -714,7 +720,7 @@ def _display(value: Any) -> str:
     text = value if isinstance(value, str) else canonical_json(value)
     text = " ".join(text.split())
     if not text:
-        return "(empty)"
+        return EMPTY_VALUE_DISPLAY
     return text if len(text) <= _DISPLAY_LIMIT else f"{text[: _DISPLAY_LIMIT - 1]}…"
 
 
@@ -726,4 +732,12 @@ def _field_errors(refused: ValidationError) -> str:
     )
 
 
-__all__ = ["Interval", "KindContract", "KindContractError", "Ordinal", "freeze"]
+__all__ = [
+    "EMPTY_VALUE_DISPLAY",
+    "NO_VALUE_DISPLAY",
+    "Interval",
+    "KindContract",
+    "KindContractError",
+    "Ordinal",
+    "freeze",
+]

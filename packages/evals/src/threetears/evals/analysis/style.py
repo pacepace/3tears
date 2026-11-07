@@ -163,7 +163,7 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
         named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{lever_reader_name(match['axis'])} {match['level']}" for match in pairs if match)
+        label = ", ".join(_lever_level(match["axis"], match["level"]) for match in pairs if match)
         return ArmName(label=label, control=control, levers=tuple(match["axis"] for match in pairs if match))
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
     if labelled := _LABELLED.match(level):
@@ -171,6 +171,45 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
     if "/" in level and " " not in level:
         return ArmName(label=humanize("model", level), model=level, control=control, given=False)
     return ArmName(label=level, control=control)
+
+
+def _lever_level(lever: str, level: str) -> str:
+    """One lever's level in an arm's name of several: ``<lever> <level>``, or the level alone where it already names
+    its lever (:func:`empty_level_name`, :func:`tagged_level_name`), so no name reads ``system prompt no system
+    prompt``."""
+    reader = lever_reader_name(lever)
+    tagged = level.startswith(f"{reader} ") and _TAGGED.fullmatch(level.removeprefix(f"{reader} ")) is not None
+    return level if tagged or level == empty_level_name(lever) else f"{reader} {level}"
+
+
+#: The letter :func:`tagged_level_name` puts after a lever's name.
+_TAGGED = re.compile(r"[A-Z]+")
+
+
+def empty_level_name(lever: str) -> str:
+    """What an empty level (no value, or an empty one) reads as in an arm's name: ``no <lever>`` (``no system
+    prompt``), never a placeholder such as ``(none)``.
+
+    :param lever: The lever, by id.
+    :ptype lever: str
+    :return: The level's name.
+    :rtype: str
+    """
+    return f"no {lever_reader_name(lever)}"
+
+
+def tagged_level_name(lever: str, letter: str) -> str:
+    """What a level too long to print whole reads as in an arm's name: its lever and a letter (``system prompt A``),
+    never a cut of it, which no reader tells from a cut of another.
+
+    :param lever: The lever, by id.
+    :ptype lever: str
+    :param letter: The level's letter among its lever's long levels (``A``, ``B``…).
+    :ptype letter: str
+    :return: The level's name.
+    :rtype: str
+    """
+    return f"{lever_reader_name(lever)} {letter}"
 
 
 def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
@@ -397,10 +436,12 @@ __all__ = [
     "arm_name",
     "code",
     "declared_check_name",
+    "empty_level_name",
     "humanize",
     "is_dump",
     "lever_reader_name",
     "lint_prose",
     "measure_name",
     "sentences",
+    "tagged_level_name",
 ]

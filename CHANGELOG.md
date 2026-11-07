@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign's listing leads with its report's own headline, and no arm is named by a cut prompt
+
+**Changed:** `campaigns_list` lists a report document its editor passed by that document's own headline
+(`CampaignLine.report.headline`), every figure key written out as its page prints it; a draft, a retired writer's
+analysis and a document that no longer reads are listed by code's verdict alone. Code's warnings (each bar an arm misses,
+each floor a candidate breaks) and its line on when criteria were set leave the headline for a new list beside it,
+`CampaignLine.report.caveats`. `analyses_list`'s `AnalysisLine.verdict` is unchanged: those lines, then code's verdict.
+An arm whose level is too long to print whole is no longer named by a cut of it: a person's label names it where the
+campaign declares one, else its lever and a letter (`system prompt A`, lettered by the levels' text); an empty level
+reads `no system prompt`, never `(none)`. An analyst's own caveat label prints its figure keys written out on the
+markdown and text pages, as every other field of the document does. Nothing stored changes, and no golden moves.
+
+**Hosts:** a listing's `report.headline` is now the report's own headline for a passed document, never prefixed by a
+warning; show `report.caveats` (a new list of strings, additive, empty with none) beside it to keep the warnings. An arm
+named from a long level reads `<lever> <letter>` on every page and in the listing, where it read as a cut of the level.
+
 ### evals: 26 declared names only Discodon's tests import go provisional
 
 **Changed:** the declared surface (`host-contract` and `stable`) drops from 514 names to 488. The 24 names the hold-back

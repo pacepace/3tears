@@ -7,7 +7,8 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 - **the short question** is cut at a word boundary to at most ``QUESTION_SHORT_CHARS`` characters, an ellipsis
   marking the cut, and is the question whole when it fits;
 - **the report**: ``report_state`` is ``none`` with no live analysis and ``report`` is then None; ``written`` for one
-  this build reads over the runs the campaign holds, with code's verdict as its headline and its attempt's cost;
+  this build reads over the runs the campaign holds, with a headline (a passed document's own, else code's verdict;
+  ``test_host_surfaces_listing.py`` holds which) and its attempt's cost;
   ``needs_regeneration``, with why, once the campaign holds other runs than it was written over (a run id that never
   resolved is not a move), or where its analysis does not read back together, which fails no listing or write;
 - **one read per analysis**: the frozen bundle is put back together once per line, and a write of a declared campaign

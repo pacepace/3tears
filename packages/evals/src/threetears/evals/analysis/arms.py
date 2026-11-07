@@ -13,7 +13,9 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from pydantic import Field
 
+from threetears.evals.analysis.style import empty_level_name, tagged_level_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.kernel.host.kinds import EMPTY_VALUE_DISPLAY, NO_VALUE_DISPLAY
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.base import EvalDocumentModel
@@ -50,7 +52,10 @@ class ArmLevel(EvalDocumentModel):
 # - A lever that does not apply to the arm's kind (its level is
 #   :meth:`~threetears.evals.schema.values.SweepableValue.not_this_kind`'s) is never named.
 # - An arm that differs on nothing it carries is named by its candidate kind and model.
-# - Each level is put on one line and cut in the middle past :data:`LABEL_LEVEL_CHARS` (:func:`elide_level`).
+# - Each level is put on one line. A level too long to print whole (past :data:`LABEL_LEVEL_CHARS`, or cut already
+#   by its host's display) is never printed cut: it is named by its lever and a letter, one per distinct level on that
+#   lever (``system prompt A``), since a reader cannot tell two prompts apart by a cut of each. An empty level (no
+#   value, or an empty one) reads ``no <lever>`` (``no system prompt``), never a placeholder (:func:`arm_names`).
 # - Two arms the above would name alike are told apart by their variant keys' digests (:func:`arm_names`).
 # - A cell names its rig too, exactly when its arm was measured under more than one.
 
@@ -90,6 +95,74 @@ def elide_level(display: str) -> str:
     kept = LABEL_LEVEL_CHARS - len(ELISION)
     tail = kept // 3
     return f"{text[: kept - tail]}{ELISION}{text[-tail:]}"
+
+
+#: The content an empty level carries: no value, or an empty one, by content hash.
+_EMPTY_LEVELS = frozenset(SweepableValue.of(content, display="empty").content_hash for content in (None, ""))
+
+#: The placeholders the engine displays an empty level by (:mod:`~threetears.evals.kernel.host.kinds`).
+_PLACEHOLDERS = frozenset({NO_VALUE_DISPLAY, EMPTY_VALUE_DISPLAY})
+
+
+def _empty(level: SweepableValue) -> bool:
+    """Whether a level is empty and shown by the engine's placeholder: no value, or an empty one, by its content hash,
+    displayed ``(none)`` or ``(empty)``. A host that displays an empty value its own way (``default``) keeps its
+    words: a display alone proves nothing about what a level is, and a content hash alone says nothing about what its
+    host calls it."""
+    return level.content_hash in _EMPTY_LEVELS and " ".join(level.display.split()) in _PLACEHOLDERS
+
+
+def _too_long(display: str) -> bool:
+    """Whether a level's display cannot be printed whole in an arm's name: longer than :data:`LABEL_LEVEL_CHARS` on one
+    line, or already cut by its host (ending in :data:`ELISION`)."""
+    text = " ".join(display.split())
+    return len(text) > LABEL_LEVEL_CHARS or text.endswith(ELISION)
+
+
+def _letter(place: int) -> str:
+    """The letter of the ``place``-th (from one) level a lever names by letter: ``A``…``Z``, then ``AA``."""
+    letters = ""
+    while place:
+        place, letter = divmod(place - 1, 26)
+        letters = chr(ord("A") + letter) + letters
+    return letters
+
+
+def _level_names(entries: Sequence[VariantIndexEntry]) -> dict[tuple[str, str], str]:
+    """What each level an arm can be named by reads as in its name, by ``(axis, content hash)``, read over the whole
+    index at once so one level reads alike on every arm that carries it.
+
+    An empty level (no value, or an empty one, shown by the engine's placeholder) reads ``no <lever>``
+    (:func:`~threetears.evals.analysis.style.empty_level_name`). A level too long to print whole reads as its lever and
+    a letter (:func:`~threetears.evals.analysis.style.tagged_level_name`, ``system prompt A``), the letters given to
+    the distinct long levels of that lever in the order of their text, so an arm wears one letter however an index
+    orders its arms, and two prompts never read as two cuts of themselves.
+    Every other level reads as its display on one line.
+
+    :param entries: The analysis's variant index.
+    :ptype entries: Sequence[VariantIndexEntry]
+    :return: ``(axis, content hash)`` -> what the level reads as, for every level of every described arm.
+    :rtype: dict[tuple[str, str], str]
+    """
+    named: dict[tuple[str, str], str] = {}
+    long: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        if entry.levels_unavailable is not None:
+            continue
+        for axis, level in applicable_levers(entry):
+            key = (axis, level.content_hash)
+            if _empty(level):
+                named[key] = empty_level_name(axis)
+            elif _too_long(level.display):
+                long.setdefault(axis, {})[level.content_hash] = " ".join(level.display.split())
+            else:
+                named[key] = elide_level(level.display)
+    for axis, levels in long.items():
+        # Lettered by the levels' own text, so an arm wears one letter whatever order an index lists its arms in.
+        ordered = sorted(levels, key=lambda content_hash: (levels[content_hash], content_hash))
+        for place, content_hash in enumerate(ordered, start=1):
+            named[(axis, content_hash)] = tagged_level_name(axis, _letter(place))
+    return named
 
 
 def arm_levers(entry: VariantIndexEntry | None) -> list[tuple[str, SweepableValue]]:
@@ -255,13 +328,14 @@ def writer_arms(entries: Sequence[VariantIndexEntry]) -> dict[str, object]:
 def arm_names(entries: Sequence[VariantIndexEntry]) -> dict[str, str]:
     """Name every arm of a variant index — distinct names, read over the whole index at once.
 
-    Each described arm is named by its :func:`naming_levels`, as ``axis=level`` pairs with every level
-    cut by :func:`elide_level`; an arm whose levels are unavailable is named as such, with its digest
+    Each described arm is named by its :func:`naming_levels`, as ``axis=level`` pairs, each level as
+    the module's level rule reads it (a long one by its lever and a letter, an empty one as ``no <lever>``); an arm whose
+    levels are unavailable is named as such, with its digest
     and the index's reason, because naming the version boundary turns a gap into a fact about when the
     arm ran. A label is never borrowed from a neighbouring arm.
 
-    **Distinct by construction.** Two arms can read alike: a cut can stop before the characters that
-    differ, and a host's own display can abbreviate two values to one. Every arm whose name another
+    **Distinct by construction.** Two arms can read alike: a host's own display can abbreviate two values
+    to one. Every arm whose name another
     arm shares then carries its variant key's digest as well, so no two arms of one index print the
     same name — and a reader who sees the digest knows the levels shown do not tell the arms apart.
 
@@ -272,6 +346,7 @@ def arm_names(entries: Sequence[VariantIndexEntry]) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     distinguishing = distinguishing_axes(entries)
+    words = _level_names(entries)
     names: dict[str, str] = {}
     for entry in entries:
         if entry.levels_unavailable is not None:
@@ -280,7 +355,9 @@ def arm_names(entries: Sequence[VariantIndexEntry]) -> dict[str, str]:
             continue
         levels = naming_levels(entry, distinguishing)
         names[entry.variant_key] = (
-            ", ".join(f"{level.axis_id}={elide_level(level.display)}" for level in levels) if levels else NO_LEVER_MOVED
+            ", ".join(f"{level.axis_id}={words[(level.axis_id, level.content_hash)]}" for level in levels)
+            if levels
+            else NO_LEVER_MOVED
         )
     for digest in (short_digest, lambda key: key):
         shared = {name for name in names.values() if list(names.values()).count(name) > 1}
