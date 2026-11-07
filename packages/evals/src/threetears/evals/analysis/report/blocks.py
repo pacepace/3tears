@@ -21,6 +21,9 @@ from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, 
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
+    percent_at,
+    percent_places,
+    respell_percents,
     BarRow,
     BarSegment,
     BarsChart,
@@ -446,8 +449,9 @@ class TableCell(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
-            "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); None for "
-            "none, and the number rule spells the number."
+            "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); for a "
+            "percentage, the decimals its column reads at (0, or 1 where whole percents would print two of its values "
+            "alike); None for none, and the number rule spells the number."
         ),
     )
     per_thousand: bool = Field(
@@ -535,7 +539,11 @@ class TableCell(EvalDocumentModel):
         :rtype: str
         """
         form = self._money_form()
-        return form.spell(number) if form is not None else with_unit(number, self.unit)
+        if form is not None:
+            return form.spell(number)
+        if self.decimals is not None and self.is_number and self.unit == PERCENT:
+            return percent_at(number, self.decimals)
+        return with_unit(number, self.unit)
 
     @property
     def is_number(self) -> bool:
@@ -621,6 +629,49 @@ def _cell_amounts(cell: TableCell) -> list[float | None]:
     value = cell.value
     point = float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
     return [point, cell.low, cell.high]
+
+
+def percent_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, TableCell]]:
+    """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
+    decimal for the whole column only where whole percents would print two of its values alike or an interval's two
+    ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%`` never
+    stand on one page (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07;
+    :func:`~threetears.evals.analysis.report.charts.percent_places`).
+
+    A column holding a percentage written to two decimals or more (an interval's confidence level, ``99.69%``) is a
+    level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left as
+    it is; a cell's other words stay as written.
+
+    :param rows: The table's rows, by column key.
+    :ptype rows: Sequence[Mapping[str, TableCell]]
+    :return: The rows, each column's percentages respelled at its one precision.
+    :rtype: list[dict[str, TableCell]]
+    """
+    keys = list(dict.fromkeys(key for row in rows for key in row))
+    places = {
+        key: chosen
+        for key in keys
+        if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
+    }
+    return [
+        {key: _respelled_percents(cell, places[key]) if key in places else cell for key, cell in row.items()}
+        for row in rows
+    ]
+
+
+def _said(cell: TableCell) -> str:
+    """A cell's text as it prints, without its flag."""
+    return cell.text if cell.flag is None else cell.text.removesuffix(f" ({cell.flag})")
+
+
+def _respelled_percents(cell: TableCell, places: int) -> TableCell:
+    """A cell with every percentage it states at ``places`` decimals (:func:`respell_percents`); a number held with
+    the percent unit keeps its value, glyph and status and reads at its column's precision."""
+    if cell.is_number and cell.unit == PERCENT:
+        return cell.model_copy(update={"decimals": places})
+    text = _said(cell)
+    respelled = respell_percents(text, places)
+    return cell if respelled == text else cell.model_copy(update={"value": respelled})
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:

@@ -59,7 +59,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Sequence
 
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns
+from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns, percent_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
@@ -648,7 +648,7 @@ def _table(context: ChartContext) -> Drawn:
     # The page's cost per 1,000, where a monthly volume is declared, reads as the month printed from it does.
     source = cost_basis(report_input).source
     beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
-    columns, rows = _with_intervals(columns, money_columns(rows, reconciles=beside), context.spec.level)
+    columns, rows = _with_intervals(columns, percent_columns(money_columns(rows, reconciles=beside)), context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

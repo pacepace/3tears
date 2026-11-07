@@ -44,7 +44,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, percent_columns
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.analysis.report.doc_page.build import build
@@ -621,3 +621,41 @@ def test_an_arm_is_one_tag_and_one_colour_on_the_code_page_the_aspect_page_and_t
     assert aspect_page == document, (aspect_page, document)
     # The candidates take A, B in the campaign's declared order, whatever order the scoreboard lists them in.
     assert [code[arm][0] for arm in declared] == ["P", "A", "B"][: len(declared)]
+
+
+# --- a column's percentages at one precision (finding C-15) -------------------------------------------------------
+
+
+def test_a_column_s_percentages_read_whole_unless_whole_percents_would_print_two_of_them_alike() -> None:
+    """Coordinator ruling under the owner's "do what makes sense for usability" (2026-11-07): the code page read
+    ``60%`` beside ``62.9%`` in one column. Percentages read whole, one decimal for the whole column only where whole
+    percents would print two of its values or an interval's ends alike; an exact zero reads ``0%`` in every column;
+    a level written to its own digits keeps them."""
+    rows = [
+        {"arm": TableCell(value="a"), "control": TableCell(value=60.0, unit="%"), "arm_mean": TableCell(value="62.9%")},
+        {"arm": TableCell(value="b"), "control": TableCell(value=69.6, unit="%"), "arm_mean": TableCell(value="63.2%")},
+        {"arm": TableCell(value="c"), "control": TableCell(value=0.0, unit="%"), "arm_mean": TableCell(value="0.0%")},
+    ]
+    laid = percent_columns(rows)
+    assert [row["control"].text for row in laid] == ["60%", "70%", "0%"]
+    assert [row["arm_mean"].text for row in laid] == ["62.9%", "63.2%", "0%"], "62.9 and 63.2 would both read 63%"
+    tight = percent_columns(
+        [{"interval": TableCell(value="[59.6%, 60.4%]")}, {"interval": TableCell(value="[1%, 9%]")}]
+    )
+    assert [row["interval"].text for row in tight] == ["[59.6%, 60.4%]", "[1.0%, 9.0%]"], "an interval's ends apart"
+    level = percent_columns([{"level": TableCell(value="99.69%")}, {"level": TableCell(value="97.5%")}])
+    assert [row["level"].text for row in level] == ["99.69%", "97.5%"]
+
+
+@pytest.mark.parametrize("name", sorted(_RUNGS))
+def test_no_column_of_a_rung_s_tables_mixes_whole_and_decimal_percents(rungs: dict[str, _Rung], name: str) -> None:
+    percent = re.compile(r"(?<![\w.])\d+(?:\.(\d))?%(?!\d)")
+    for table in _tables(rungs[name].page):
+        for column in table.columns:
+            found = [
+                match for row in table.rows if column.key in row for match in percent.finditer(row[column.key].text)
+            ]
+            stated = {bool(match[1]) for match in found if match[0] != "0%"}
+            assert len(stated) <= 1, (table.name, column.key, [match[0] for match in found])
+    for text in _page_texts(rungs[name]):
+        assert not ("0.0%" in text and re.search(r"(?<![\d.])0%", text)), "0.0% beside 0% on one page"
