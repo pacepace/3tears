@@ -13,6 +13,52 @@ again and compares its verdicts with its own stored read on preference, order co
 naming a served-model change as the likely cause: it tells a judge or version shift, never whether the judge is right,
 and costs about $0.67 to $1.34 a read at flash's recorded rate.
 
+### evals: the writer gate launches its cases in batches under a rule to stop, and runs under its spend cap
+
+**Added:**
+- Under `stop_when="separated"`, every arm launches `WriterEval(batch_size=...)` cases at a time (4 unless told), in the
+  bet's order, each batch a run of every arm in the one campaign. The pass after each batch asks only the new pairs and
+  keeps the answers it has. The arms stop launching once every candidate's preference separates, or at the last case. At
+  the last case the reading equals one batch of every case. `never` launches every case at once, as before.
+- Each candidate settles at its own stop. Its gated readings and guardrails are read once, there, on the cases launched
+  by then, and the page says how many.
+- An improved stop whose guardrails are not shown held goes on to the last case. Its pass says the readings had a second
+  look (`PairwiseStopping.past_the_stop`). Only a template that declares a guardrail reaches this path; the writer
+  template declares none.
+- The spend cap is a budget the run runs under. Each batch reserves its worst case (reports at `budget_usd`, judging and
+  pairs at the judge's floor) against what each part's recorded spend leaves, and its runs run under that reservation.
+  The first batch that does not fit is not launched, and the run stops at the spend cap, saying so once with the spend
+  and the reservation. Only a spend cap that cannot admit the first batch is refused, naming the smallest that would.
+  The engine checks a run's cap between cells, so cells running at the crossing finish past it (#1111).
+- `PairwiseStopping.stopped_on` says why a pass read no further: `separated`, `all_cases` or `spend_cap`.
+- `StoppingRule` records `batch_size` and `order`, the planned cases in the order the bet reads them, so a later read
+  replays that order. A rule stored without one derives it as before.
+- `WriterEval(fewest_cases=...)` takes the fewest side cases the author asks for. A side with fewer runs, and its floor
+  line says it is under them (`resolution_line(fewest=...)`): a disclosure, never a refusal.
+- `summarize_runs` (provisional) reads one arm's batches as one summary. It sums cases, results, spend and ceilings, and
+  refuses runs that differ in template, model, repeats, judge or overlays. A batched arm's summary states its part of
+  the cap as its ceiling.
+- `held_out_batch_name` names a batch's one-launch case set for the held-out set version it is cut from. A second run on
+  the same set reuses that set.
+- `WriterResult.launch_line` and `WriterPairwise.cases_read` are new, as is the pass's `outside_run_ids`.
+
+**Changed:**
+- The promotion read accepts a case run from a batch set only as a case of the held-out set version its name gives, when
+  that version lists every case of the batch. Any other one-launch set is refused as before.
+- The pass accepts an arm under several rigs only when each pair's two runs read one rig.
+- A batch that stored no page on either arm stays out of the campaign's readings. The pass reads its pairs as ties, and
+  a disclosure says so once.
+- `bet_order` is the package's own shuffle over the seeded generator's bits, the same orders as before, pinned by test,
+  so it no longer rides on `random.shuffle`'s algorithm.
+- The acceptance script's trial writes on Sonnet 5.5 at a $1.50 report budget (a dry run's cap is $30 unless told). It
+  takes `--batch-size`, and a live run under 10 held-out cases runs and says so instead of being refused. The floor line
+  prints once, before anything is bought, dry or live.
+- An unseparated stop says every look was consistent with no preference.
+
+**Hosts:** pass `batch_size` and `fewest_cases` to `WriterEval` as needed. A run that once refused a spend cap too small
+for every case now runs and stops at the spend cap. A stored pass report or stopping rule still reads, every new field
+defaulted.
+
 ### evals: a goal check is named by what it tests in every header and lead, its expression in the glossary
 
 **Changed:** every table header, reading row and lead names a goal check by the display name its template declares
@@ -324,10 +370,9 @@ its page: the smallest share, held on every case, that the gate's own test separ
 (`smallest_separable_move`), rounded up: 0.89 at 7 cases, 0.73 at 11, 0.60 at 25. Given an earlier run on the same
 case files, the line adds what that run projected would settle. It is a disclosure, never a refusal.
 
-**Changed:** every arm still runs every case before the pass, so the gated readings and guardrails stay one fixed-n
-read on every case run; the stop reads the primary alone, saves judge calls and defines the verdict's standing.
-Launching cases in batches, where the money is, is a later change. `docs/design.md` no longer says sequential
-testing stays out; `judges-and-calibration.md` gains the stopping rule and the floor.
+**Changed:** the stop reads the primary alone, and the gated readings and guardrails are one fixed-n read, at the stop
+(batched launches, below). `docs/design.md` no longer says sequential testing stays out; `judges-and-calibration.md`
+gains the stopping rule and the floor.
 
 **Hosts:** declare a rule with `WriterEval(stop_when="separated")`, or the acceptance script's `--stop-when
 separated`; carry an earlier run's projection with `WriterEval(prior=WriterPrior(case_names=..., cases_to_settle=...))`

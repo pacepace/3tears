@@ -177,6 +177,12 @@ class StoppingRule(EvalBaseModel):
         default=None,
         description="When the rule was declared, ISO-8601 with an offset; None for no time, which reads as late.",
     )
+    order: list[str] | None = Field(
+        default=None,
+        description="The planned cases in the order the bet reads them, recorded as declared, so a later read replays "
+        "that order whatever derives it then; None for a rule recorded before orders were, whose order is "
+        "bet_order(max_cases) over case_ids.",
+    )
     batch_size: int | None = Field(
         default=None,
         ge=1,
@@ -195,7 +201,17 @@ class StoppingRule(EvalBaseModel):
     def _counted(self) -> StoppingRule:
         if self.max_cases != len(self.case_ids):
             raise ValueError(f"max_cases is the {len(self.case_ids)} cases planned, not {self.max_cases}")
+        if self.order is not None and sorted(self.order) != self.case_ids:
+            raise ValueError("a stopping rule's order lists its planned cases, each once")
         return self
+
+    @property
+    def bet(self) -> list[str]:
+        """The planned cases in the order the bet reads them: the order recorded, or, for a rule that recorded none,
+        :func:`~threetears.evals.analysis.stats.bet_order` of their count over them."""
+        if self.order is not None:
+            return list(self.order)
+        return [self.case_ids[index] for index in bet_order(self.max_cases)]
 
     @field_validator("declared_at")
     @classmethod
@@ -353,6 +369,11 @@ class WriterPairwiseReport(EvalBaseModel):
         description="The stopping rule and how the pass ran against it, with each look; None in a report stored "
         "before rules were recorded.",
     )
+    outside_run_ids: list[str] = Field(
+        default_factory=list,
+        description="Runs launched for the campaign and left out of its readings (a batch that stored no page on either "
+        "arm), whose pairs this pass read as any pair.",
+    )
     calls_made: int = Field(description="Judge calls made, each ledgered under purpose judge.")
     cost_usd: float | None = Field(description="What they cost together; None when any call went unpriced.")
     cap_usd: float | None = Field(description="The out-of-run cap the calls were admitted under; None when none.")
@@ -405,6 +426,8 @@ class _Collected:
     unpaired: list[str]
     #: The earliest orderable ``scored_at`` among the paired results; None with none.
     first_result_at: str | None
+    #: The runs read beside the campaign's, left out of its readings.
+    outside: list[str]
 
 
 def _first_result_at(results: Sequence[EvalResult]) -> str | None:
@@ -468,7 +491,9 @@ def _rig_of(host: EvalHost, runs: Sequence[EvalRun], results: Sequence[EvalResul
     return rigs
 
 
-def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) -> _Collected:
+def _collect(
+    host: EvalHost, campaign_id: str, scope_id: str, candidate: str, outside: Sequence[str] = ()
+) -> _Collected:
     """Read the campaign, its arms, its results paired by case and repeat, and their pages: blocking, so off the loop.
 
     :raises NotFoundError: No campaign, a run it names is not stored, or the runs' template is not stored.
@@ -487,7 +512,15 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
             ", ".join(missing),
             remedy="restore the run, or take it off the campaign (campaign_runs_remove), then ask again",
         )
-    runs = [run for run in loaded.values() if run is not None]
+    # Runs the writer eval launched and left out of the campaign's readings (a batch that stored no page on either
+    # arm): their pairs are read here as any pair is, and they sit under no rig of the campaign's.
+    aside = {run_id: storage.load_eval_run(run_id, scope_id) for run_id in outside if run_id not in loaded}
+    if missing := [run_id for run_id, run in aside.items() if run is None]:
+        raise NotFoundError(
+            "run left out of the campaign", ", ".join(missing), remedy="restore the run, then ask again"
+        )
+    campaign_runs = [run for run in loaded.values() if run is not None]
+    runs = [*campaign_runs, *(run for run in aside.values() if run is not None)]
     refuse_unfixed_scoring_judge(runs)
     judge_model, template_id = runs[0].judge_model, runs[0].template_id
     assert judge_model is not None  # refuse_unfixed_scoring_judge refuses a run that recorded none
@@ -570,6 +603,7 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         pairs=pairs,
         unpaired=unpaired,
         first_result_at=_first_result_at(paired),
+        outside=sorted(aside),
     )
 
 
@@ -631,6 +665,7 @@ async def _prepare(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
+    outside: Sequence[str] = (),
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call
     no earlier pass (``judged``) answered.
@@ -638,7 +673,7 @@ async def _prepare(
     :raises ValidationFailedError: Anything :func:`_collect` refuses; the judge is of a writer's family; or the calls
         are priced above the cap or cannot be priced under it. All before any call.
     """
-    collected = await run_blocking(host.blocking_executor, _collect, host, campaign_id, scope_id, candidate)
+    collected = await run_blocking(host.blocking_executor, _collect, host, campaign_id, scope_id, candidate, outside)
     try:
         judge_family = [
             judge_family_check(model, collected.judge_model, model_family) for model in collected.writer_models
@@ -908,7 +943,7 @@ def _plan(rule: StoppingRule | None, case_ids: Sequence[str]) -> _Plan:
     if rule is None or rule.stop_when == "never":
         return _Plan(judged=found, bet=None, planned_n=None, absent=absent, unplanned=unplanned)
     present = set(found)
-    bet = [planned[index] for index in bet_order(rule.max_cases) if planned[index] in present]
+    bet = [case_id for case_id in rule.bet if case_id in present]
     return _Plan(judged=bet, bet=bet, planned_n=rule.max_cases, absent=absent, unplanned=unplanned)
 
 
@@ -1031,6 +1066,7 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         reliability=_reliability(cases, [pair for pair in pairs if pair.reached]),
         stopped=stopped,
         stopping=stopping,
+        outside_run_ids=collected.outside,
         calls_made=len(spends) + (0 if earlier is None else earlier.calls_made),
         cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
         cap_usd=out_of_run_cap_usd,
@@ -1175,7 +1211,7 @@ def _line(
     # Under never no rule fixed the bet, so a count off the plan prints alone, never as more read than planned.
     of = str(reached) if rule.stop_when == "never" and reached != rule.max_cases else f"{reached} of {rule.max_cases}"
     if first is None:
-        return f"Read {of} cases under {timed}: no look up to {len(looks)} excluded no preference."
+        return f"Read {of} cases under {timed}: every look up to {len(looks)} was consistent with no preference."
     if past_the_stop:
         return (
             f"Read {of} cases under {timed}: the preference first separated at case {first.cases}, and the run went "
@@ -1265,6 +1301,7 @@ async def _writer_pairwise_work(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
+    outside: Sequence[str] = (),
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -1299,6 +1336,9 @@ async def _writer_pairwise_work(
     :param out_of_budget: Why the run stopped launching at its spend cap, in one sentence, which the record carries;
         ``None`` when it did not.
     :ptype out_of_budget: str | None
+    :param outside: Runs launched for this campaign and left out of its readings (a batch that stored no page on
+        either arm), whose pairs are read as any pair is; the report names them.
+    :ptype outside: Sequence[str]
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -1325,6 +1365,7 @@ async def _writer_pairwise_work(
         past_the_stop=past_the_stop,
         launched=launched,
         out_of_budget=out_of_budget,
+        outside=outside,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -1362,6 +1403,7 @@ async def writer_pairwise(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
+    outside: Sequence[str] = (),
 ) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
@@ -1391,6 +1433,8 @@ async def writer_pairwise(
     :ptype launched: Collection[str] | None
     :param out_of_budget: Why the run stopped launching at its spend cap, which the record carries; ``None`` when not.
     :ptype out_of_budget: str | None
+    :param outside: Runs launched for this campaign and left out of its readings, whose pairs are read as any pair is.
+    :ptype outside: Sequence[str]
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -1413,6 +1457,7 @@ async def writer_pairwise(
         past_the_stop=past_the_stop,
         launched=launched,
         out_of_budget=out_of_budget,
+        outside=outside,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)

@@ -156,3 +156,20 @@ def test_the_line_carries_the_last_runs_projection_when_it_is_given() -> None:
 def test_too_few_cases_separate_nothing_and_the_line_says_so() -> None:
     assert smallest_separable_move(5, value_range=_RANGE) is None
     assert resolution_line(5) == "At 5 cases this run cannot separate any preference, even one held on every case."
+
+
+#: The bet's order for these counts, as it was taken: a Python whose generator moved them would move every bet.
+_PINNED: dict[int, tuple[int, ...]] = {
+    7: (0, 6, 4, 3, 2, 5, 1),
+    12: (5, 11, 8, 6, 9, 3, 2, 1, 0, 4, 7, 10),
+    25: (7, 16, 14, 15, 12, 6, 11, 1, 19, 0, 8, 18, 22, 4, 9, 17, 23, 24, 20, 2, 5, 3, 21, 10, 13),
+}
+
+
+@pytest.mark.parametrize("n", sorted(_PINNED))
+def test_the_bet_s_order_is_its_own_derivation_the_same_each_time_and_pinned(n: int) -> None:
+    """The order is derived by the package's own shuffle, not ``random.shuffle``: the same count gives the same order
+    each time, a permutation of its cases, and the order pinned when it was taken."""
+    first, second = bet_order(n), bet_order(n)
+    assert first == second == _PINNED[n]
+    assert sorted(first) == list(range(n))

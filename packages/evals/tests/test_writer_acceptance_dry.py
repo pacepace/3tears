@@ -240,7 +240,7 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
     dry: tuple[Acceptance, list[object]],
 ) -> None:
     """The default rule reads every case, declared as the eval starts, so before its first result; the record and
-    acceptance.json carry it, and the readout says what it did and the floor its seven cases set."""
+    acceptance.json carry it and the floor its seven cases set, and the readout says what it did."""
     found, _ = dry
     summary = found.summary()
     stopping = summary["stopping"]
@@ -255,7 +255,8 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
     )
     assert summary["resolution"] == floor
     assert floor in found.result.disclosures
-    assert stopping["line"] in summary["readout"] and floor in summary["readout"]
+    # The floor is printed once, before the launch, and acceptance.json keeps it; the readout does not repeat it.
+    assert stopping["line"] in summary["readout"] and floor not in summary["readout"]
 
 
 def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,7 +374,8 @@ ENVELOPE_LINES: Final = (
         (0.40, 0.35),
         1.25,
         True,
-        "Priced as a live run, this dry run would spend $2.00 of the $50.00 monthly envelope in PROMOTIONS.toml.",
+        "The scripted turns, priced, come to $2.00, which estimates nothing live; the monthly envelope in "
+        "PROMOTIONS.toml is $50.00.",
     ),
 )
 
@@ -483,6 +485,32 @@ def test_bounces_that_separate_either_way_void_the_acceptance(
     found = pass_criterion(read.model_copy(update={"verdicts": verdicts}), dry[0].result.arms, dry[0].report)
     assert not found.passed
     assert "bounces do not separate" in found.verdict()
+
+
+def test_a_dry_run_states_the_last_live_run_on_its_cases_beside_its_scripted_figure(
+    dry: tuple[Acceptance, list[object]], tmp_path: Path
+) -> None:
+    """A dry run's figure is its scripted turns priced, which estimates nothing live; given the record of a live run on
+    the same case files, the line states what that run spent. A record from before runs carried ``spent_usd`` is read
+    off its readout's spend table."""
+    found = _priced(dry[0], (0.40, 0.35), 1.25, dry=True)
+    line = dataclasses.replace(found, prior_spent_usd=17.02).envelope_line()
+    assert line == (
+        "The scripted turns, priced, come to $2.00, which estimates nothing live; the last recorded live run on these "
+        "cases spent $17.02 of the $50.00 monthly envelope in PROMOTIONS.toml."
+    )
+    record = tmp_path / "acceptance.json"
+    record.write_text(
+        json.dumps(
+            {
+                "readout": "| Part | Cap | Spent |\n|---|---|---|\n| a | $1 | $10.95 |\n| b | $1 | $5.67 |\n| pass | $1 | $0.40 |\n"
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert writer_acceptance.read_prior_spend(record) == pytest.approx(17.02)
+    record.write_text(json.dumps({"spent_usd": 3.5}), encoding="utf-8")
+    assert writer_acceptance.read_prior_spend(record) == 3.5
 
 
 def test_main_reads_a_case_directory_and_prints_the_readout(
@@ -622,23 +650,21 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
     assert writer_acceptance.main(["--dry", "--stop-when", "separated", "--batch-size", "3"]) == 0
     printed = capsys.readouterr().out
     assert attempts == []
-    # The dry judge's preference never separates, so the arms ran every case, and the readout says the stop saved nothing.
-    assert (
-        "The arms ran all 7 held-out cases, 3 at a time in the bet's order, so the gated readings and guardrails were "
-        "read once, on every case." in printed
+    # The dry judge's preference never separates, so the arms ran every case: the launch line says so once, the stop
+    # line counts the cases read, and no line restates either.
+    launch = (
+        "The arms ran every held-out case, 3 at a time in the bet's order, so the gated readings and guardrails were "
+        "read once, on every case."
     )
-    assert re.search(
-        r"^The run read all 7 cases, launched 3 at a time, and spent \$[0-9.]+; the stop saved nothing\.$",
-        printed,
-        re.M,
-    )
+    assert printed.count(launch) == 1
+    assert printed.count("3 at a time") == 1
+    assert len(re.findall(r"^Read 7 of 7 cases ", printed, re.M)) == 1
     found = asyncio.run(
         acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, stop_when="separated", batch_size=3)
     )
     stopping = found.report.stopping
     assert stopping is not None and stopping.rule is not None and stopping.rule.batch_size == 3
-    said = found.saved()
-    assert said is not None and said in found.summary()["readout"]
+    assert found.saved() is None, "a run that read every case saved nothing, and says nothing of a saving"
     # The same sentence for a run that stopped at case 6 of 7 after launching its first two batches: the saving is
     # this run's own spend per case, times the case it did not reach.
     stopped = stopping.model_copy(update={"stopped_at": 6, "cases_found": 6})
@@ -653,7 +679,11 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
     judged = report.cost_usd
     assert judged is not None
     saved = writing / 6 + judged / 6
-    assert dataclasses.replace(found, report=report).saved() == (
+    stopped_run = dataclasses.replace(found, report=report)
+    # A stop that saved something says where it stopped launching in its own sentence, so the launch line is left out.
+    readout = list(stopped_run.readout())
+    assert stopped_run.result.launch_line not in readout and stopped_run.saved() in readout
+    assert stopped_run.saved() == (
         f"The run stopped at case 6 of 7, after launching 6, 3 at a time, and spent ${writing + judged:.2f}; at its own "
         f"spend per case, all 7 would have cost about ${writing + judged + saved:.2f}, so the stop saved about "
         f"${saved:.2f}."

@@ -272,11 +272,33 @@ async def test_a_rule_to_read_every_case_is_todays_reading_exactly(policy: Polic
     assert stopping is not None and stopping.stopped_at is None
     assert len(stopping.looks) == len(shares) and stopping.looks[-1].p == report.whole.p
     first = stopping.first_separated_at
-    said = "no look up to" if first is None else f"first separated at case {first}"
+    said = "was consistent with no preference" if first is None else f"first separated at case {first}"
     assert stopping.line.startswith(
         f"Read {len(_CASES)} of {len(_CASES)} cases under the rule declared before the first result: "
     )
     assert said in stopping.line
+
+
+async def test_a_rule_that_recorded_its_order_is_judged_in_that_order_whatever_derives_one_now() -> None:
+    """A rule records the order its bet reads the planned cases in, so a later read replays it: here the reverse of
+    what ``bet_order`` derives today, and the judge reads the cases in the recorded order, not the derived one."""
+    host, campaign_id, judge = _campaign(prefers_the_candidate)
+    derived = _rule("separated")
+    recorded = derived.model_copy(update={"order": list(reversed(derived.bet))})
+    assert recorded.bet != derived.bet
+
+    report, _ = await _pass(host, campaign_id, recorded)
+
+    stopping = report.stopping
+    assert stopping is not None and stopping.rule == recorded
+    k = stopping.stopped_at
+    assert k is not None
+    assert [document for document, *_ in judge.calls[:: 2 * _REPEATS]] == recorded.bet[:k]
+    assert [look.case_id for look in stopping.looks] == recorded.bet[:k]
+    # A rule recorded before orders were derives the order as it always did.
+    assert derived.order is None and derived.bet == _bet(len(_CASES))
+    with pytest.raises(ValueError, match="order lists its planned cases"):
+        StoppingRule.model_validate({**derived.model_dump(), "order": derived.bet[1:]})
 
 
 async def test_the_bet_is_the_declared_one_and_cases_off_the_plan_are_said() -> None:

@@ -920,7 +920,8 @@ sentence:
 > Stopped at 7 of 25 cases under the rule declared before the first result: the judge preferred lead-first on 7 of 7,
 > separated.
 
-A run that reads every case says where it first separated, or that no look up to N excluded no preference.
+A run that reads every case says where it first separated, or that every look up to N was consistent with no
+preference.
 
 ### The resolution floor
 
