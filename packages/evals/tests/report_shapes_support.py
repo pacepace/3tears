@@ -116,9 +116,9 @@ class AspectTrials:
     floors: Sequence[DecisionClause] = ()
     bars: Sequence[BarOverride] = ()
     checks: bool = True
-    #: The two goal checks every trial is graded on, by expression: the first and the second, as ``ArmTrials`` counts
-    #: them.
-    expressions: tuple[str, str] = CHECKS
+    #: The goal checks every trial is graded on, by expression: the first and, where there is one, the second, as
+    #: ``ArmTrials`` counts them.
+    expressions: tuple[str] | tuple[str, str] = CHECKS
     #: The measures the aspect's graders list, in order (``AspectDesign.measure_order``), the first the lead reads.
     measure_order: Sequence[str] = ()
 
@@ -195,8 +195,8 @@ def _results(run: EvalRun, aspect: AspectTrials, arm: ArmTrials) -> list[EvalRes
                     k_iteration=attempt,
                     scored_at=FIRST_RUN_AT,
                     goal_state_outcomes=[
-                        GoalStateOutcome(expression=aspect.expressions[0], passed=first),
-                        GoalStateOutcome(expression=aspect.expressions[1], passed=second),
+                        GoalStateOutcome(expression=expression, passed=passed)
+                        for expression, passed in zip(aspect.expressions, (first, second), strict=False)
                     ]
                     if aspect.checks
                     else [],

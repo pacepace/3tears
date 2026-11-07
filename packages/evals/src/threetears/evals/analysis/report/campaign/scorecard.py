@@ -1341,7 +1341,7 @@ def measure_blocks(
 def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
     """A measure as the page names it on its aspect, and as every other surface names it
     (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its name on the aspect
-    (declared, else ``Goal check``), any other measure by its reader name; the pass rate as a name, capitalised as the
+    (declared, else what it tests), any other measure by its reader name; the pass rate as a name, capitalised as the
     others are (``Pass rate``)."""
     if reading.measure == _PASS_RATE:
         return reading.name[:1].upper() + reading.name[1:]
@@ -1386,20 +1386,27 @@ def _measure_matrix(
     surfaces: dict[str, DecisionSurface] = {}
     rates = _rate_measures(readings, reports, surfaces)
     counts = _rate_counts(readings, reports, rates, surfaces)
+    named = {key: _measure_header(key, readings, reports) for key in measures}
+    # Two checks on different aspects can share a name (each aspect names its own): each column then says the aspects
+    # it reads, so no two headers read alike.
+    twice = {name for name in named.values() if list(named.values()).count(name) > 1}
+    for key in measures:
+        if named[key] in twice:
+            on = dict.fromkeys(names(reading.aspect) for reading in readings.measures if reading.measure == key)
+            named[key] = f"{named[key]}, {', '.join(on)}"
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         *([TableColumn(key="arm", header="Arm")] if len(arms) > 1 else []),
         *(
             TableColumn(
                 key=f"measure:{key}",
-                header=f"{named} ({PERCENT})"
+                header=f"{named[key]} ({PERCENT})"
                 if key in rates
-                else named + _money_label(rulers[key])
+                else named[key] + _money_label(rulers[key])
                 if key in rulers
-                else named,
+                else named[key],
             )
             for key in measures
-            for named in [_measure_header(key, readings, reports)]
         ),
     ]
     rows: list[dict[str, TableCell]] = []

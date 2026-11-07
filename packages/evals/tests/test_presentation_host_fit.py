@@ -450,7 +450,7 @@ def _probe() -> TableBlock:
 
 
 def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
-    """Kairo's contrasts pin each reading by its name: its goal check reads ``Goal check`` (the owner's ruling of
+    """Kairo's contrasts pin each reading by its name: its goal check reads ``Send message calls check`` (the owner's ruling of
     2026-11-09; its expression is the glossary's), which wraps at its spaces as ``outcome (judged)`` does, so neither is
     classed. An id-like run longer than the column's cap holds on one line (:data:`_LONG_RUN`) is classed
     ``unbroken``, which the pinned column breaks anywhere, and nothing inside the cell (its code, an expression's fold,
@@ -462,9 +462,11 @@ def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kair
         for css, cell in re.findall(r'<tr[^>]*><td(?: class="([^"]*)")?[^>]*>(.*?)</td>', table)
     ]
     classed = {text: "unbroken" in css.split() for css, text in firsts}
-    assert "Goal check" in classed, "the control: the pinned column names the check"
+    assert "Send message calls check" in classed, "the control: the pinned column names the check"
     assert not [text for text in classed if "call_count(" in text], "no pinned cell prints the expression"
-    assert not classed["Goal check"] and not classed["outcome (judged)"], "a reading of words wraps at its spaces"
+    assert not classed["Send message calls check"] and not classed["outcome (judged)"], (
+        "a reading of words wraps at its spaces"
+    )
     cells = re.findall(r'<tr[^>]*><td(?: class="([^"]*)")?[^>]*>(.*?)</td>', table_html(_probe()))
     (shown,) = [html.unescape(re.sub(r"<[^>]+>", "", cell)) for css, cell in cells if "unbroken" in css.split()]
     assert _LONG_RUN in shown, "the id-like run's cell, and only it, is classed"

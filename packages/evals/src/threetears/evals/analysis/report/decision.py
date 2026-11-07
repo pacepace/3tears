@@ -668,7 +668,7 @@ def floor_readings(
     costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
     A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes its aspect's
-    names for its checks (``AnalysisContextBundle.named_checks``, a declared name else ``Goal check``) and names each
+    names for its checks (``AnalysisContextBundle.named_checks``, a declared name else what it tests) and names each
     check by them. The campaign's readings pass none, since their words are baked into what a campaign is
     fingerprinted by, which a name must never move.
 

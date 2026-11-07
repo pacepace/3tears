@@ -9,8 +9,8 @@ prints once, so a reader can read each short name back to its label.
 
 A measure is named here too, by :func:`measure_name_of`: a goal check by the display name its template declares
 (``EvalTemplate.goal_check_names``, carried on the bundle beside the catalog and never in it, so a name moves no
-reading or fingerprint), else ``Goal check``, numbered where the aspect reads several
-(``AnalysisContextBundle.named_checks``); every other measure as :func:`~threetears.evals.analysis.style.measure_name`
+reading or fingerprint), else by what it tests (``Refund amount check``,
+``AnalysisContextBundle.named_checks``); every other measure as :func:`~threetears.evals.analysis.style.measure_name`
 names it. No header or lead prints a check's expression: the page's glossary pairs each check's name with it, once
 (``CampaignReport.glossary``), so a reader can read each name back to the expression it stands for.
 """
@@ -54,7 +54,7 @@ class AspectNames:
 
     :ivar by_label: Each aspect's name, by its label, in the campaign's order.
     :ivar checks: Each aspect's check names (``AnalysisContextBundle.named_checks``: a check's expression to its
-        declared name, else ``Goal check``), by the aspect's label.
+        declared name, else what it tests), by the aspect's label.
     :ivar folds: The id of the section around each aspect's fold on the campaign's page (:func:`~threetears.evals.analysis.report.model.fold_anchor`), by the aspect's label: where a cell naming the
         aspect links.
     """
@@ -134,8 +134,8 @@ def legend(names: AspectNames) -> list[tuple[str, str]]:
 def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
     """What the page calls ``measure`` on the aspect ``bundle`` reads.
 
-    A goal check's measure by the display name the aspect's template declares for it, else ``Goal check``, numbered
-    where the aspect reads several (``AnalysisContextBundle.check_name``); any other measure by its catalog reader
+    A goal check's measure by the display name the aspect's template declares for it, else by what it tests
+    (``Refund amount check``, ``AnalysisContextBundle.check_name``); any other measure by its catalog reader
     name, else its key humanized
     (:func:`~threetears.evals.analysis.style.measure_name`).
 

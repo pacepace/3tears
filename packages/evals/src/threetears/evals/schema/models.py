@@ -1866,7 +1866,7 @@ class EvalTemplate(DurableDocumentModel):
         description=(
             "A display name for a goal check, by the check's expression as `goal_state_checks` holds it: what a page "
             f"prints for the check, at most {DECLARED_NAME_CHARS} characters, one name per check. Each key is one of this template's "
-            "goal checks. A check with no name here is printed as `Goal check`, numbered where several are unnamed, its "
+            "goal checks. A check with no name here is named by what it tests (`Refund amount check`), its "
             "expression in the page's glossary. Read by no judge, simulator "
             "or candidate, so naming a check changes nothing a run measures."
         ),

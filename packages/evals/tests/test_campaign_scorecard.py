@@ -630,7 +630,7 @@ def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_onc
 
 
 def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_that_decides_it() -> None:
-    """A18 on S1: billing's floor reads every rate, so for v4 it is decided by Goal check 1 (`reply.cites_policy`) and
+    """A18 on S1: billing's floor reads every rate, so for v4 it is decided by the Reply cites policy check and
     needs more cases as observed than v4's pass rate alone; for v3 the pass rate decides both at the margin's own points, so the two
     are one quantity and one row, saying both. The floor's counts are the aspect fold's own."""
     page = s1_change().page()
@@ -641,8 +641,8 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
         rows[("billing", "v4", "the 10-point floor holds")],
     )
     assert (row["decided_by"].text, row["observed"].text) == ("Pass rate", "31 cases, $0.22")
-    # The check by its name, never its expression (owner ruling, 2026-11-09): S1 names no check, so it is numbered.
-    assert (floor["decided_by"].text, floor["observed"].text) == ("Goal check 1", "41 cases, $0.29")
+    # The check by its name, never its expression (owner ruling, 2026-11-09): S1 names no check, so by what it tests.
+    assert (floor["decided_by"].text, floor["observed"].text) == ("Reply cites policy check", "41 cases, $0.29")
     v3 = [key for key in rows if key[:2] == ("billing", "v3")]
     assert v3 == [("billing", "v3", "no worse than the 10-point margin, and the 10-point floor holds")]
     merged = rows[v3[0]]
@@ -736,7 +736,7 @@ def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_
     )
     assert line.endswith(", corrected within the aspect's family.")
     assert line in _scorecard(page)
-    (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on Goal check 2")
+    (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on Reply total check")
     assert len(lines) == 2, "no other row and contrast part"
     assert check in _scorecard(page)
 

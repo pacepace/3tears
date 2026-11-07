@@ -208,7 +208,9 @@ def term_link(term: str, label: str, *, css: str = "") -> str:
     term the page defines itself (a goal check's name) carries :data:`CHECK_LINK_TITLE`, since its definition is a
     host's text, which no attribute carries."""
     style = f' class="{css}"' if css else ""
-    said = GLOSSARY.get(term, CHECK_LINK_TITLE)
+    if term not in GLOSSARY:
+        return f'<a{style} href="#{check_anchor(term)}" title="{escape(CHECK_LINK_TITLE)}">{label}</a>'
+    said = GLOSSARY[term]
     return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(said)}">{label}</a>'
 
 
@@ -604,6 +606,12 @@ def glossary_slug(term: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-")
 
 
+def check_anchor(name: str) -> str:
+    """A goal check's glossary entry's id: the checks' own namespace, so a declared name that is a term of art's words
+    (``Outcome``) never repeats the term's id."""
+    return f"g-check-{glossary_slug(name)}"
+
+
 def inline_html(text: str) -> str:
     """Escape ``text``, then turn its bold and code spans into markup."""
     return _CODE.sub(r"<code>\1</code>", _BOLD.sub(r"<strong>\1</strong>", escape(text)))
@@ -663,6 +671,7 @@ __all__ = [
     "chart_html",
     "code_html",
     "escape",
+    "check_anchor",
     "glossary_slug",
     "grid_html",
     "inline_html",

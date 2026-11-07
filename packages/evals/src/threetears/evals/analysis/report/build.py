@@ -3389,13 +3389,13 @@ NOT_SHOWN_TO_MEASURE = "a candidate that did nothing might pass it, so it is not
 
 def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None) -> str:
     """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not. Named by its name on the
-    aspect (``Goal check 2``, ``Goal check Total right``), never by its expression, which the glossary defines it by."""
+    aspect (``Refund amount check``; a declared name that does not say it is a check is said as one, ``Goal check
+    Total right``), never by its expression, which the glossary defines it by."""
     named = declared if declared is not None else GOAL_CHECK
-    check = named.removeprefix(GOAL_CHECK).strip()
-    check = f" {check}" if check else ""
+    check = named if re.search(r"\bcheck\b", named, re.IGNORECASE) else f"{GOAL_CHECK} {named}"
     if proof.refused is not None:
         return (
-            f"Goal check{check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
+            f"{check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
             "it. Any pass rate it has predates the rule."
         )
     notes = []
@@ -3405,7 +3405,7 @@ def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None)
         notes.append(f"{proof.stale} of {proof.runs} runs proved it under an earlier rule; relaunch to re-prove")
     tail = f" ({'; '.join(notes)})" if notes else ""
     words = CHECK_PROOF_WORDS["refuted" if proof.proof == "refuted" else "unproven"]
-    return f"Goal check{check} is {words}{tail}. {NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
+    return f"{check} is {words}{tail}. {NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
 
 
 def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:

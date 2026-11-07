@@ -381,7 +381,8 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         # Beside the terms it links, the glossary defines each goal check's name by its expression (the owner's
         # ruling of 2026-11-09), one entry per check the aspect reads.
         checks = {
-            re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") for name in report.bundle.named_checks().values()
+            "check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            for name in report.bundle.named_checks().values()
         }
         defined = re.findall(r'<dt id="g-([a-z0-9-]+)">', page)
         assert linked and linked | checks == set(defined) and len(defined) == len(set(defined))
@@ -694,7 +695,7 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     # By its name, never its expression (the owner's ruling of 2026-11-09), and no "Pass rate of" on one trial's
     # failure; the trial's record and the glossary print the expression as written, no underscores or dots stripped.
     name = report.bundle.named_checks()[expression]
-    assert re.fullmatch(r"Goal check \d+", name)
+    assert name == "Queue track calls check"
     assert f"check: {name}" in whys and not [why for why in whys if why and expression in why]
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown

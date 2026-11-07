@@ -117,10 +117,10 @@ def test_a_check_expression_is_code_and_never_humanized() -> None:
     assert humanize("dimension", expression) == expression
     nested = 'all(it.segue_text.length > 0 for it in calls("music.queue_track"))'
     assert humanize("dimension", nested) == nested
-    # A check's measure is named as a goal check, never by its expression or "Pass rate of" (owner ruling,
+    # A check's measure is named by what it tests, never by its expression or "Pass rate of" (owner ruling,
     # 2026-11-09: the expression is the glossary's); any other by its reader name.
     measure = f"goal_state:{expression}"
-    assert measure_name(measure, f"Pass rate of {expression}") == "Goal check"
+    assert measure_name(measure, f"Pass rate of {expression}") == "Queue track calls check"
     assert measure_name("failed_reply_notices", "Failed-reply notices") == "Failed-reply notices"
     assert measure_name("turn_time") == "turn time"
 

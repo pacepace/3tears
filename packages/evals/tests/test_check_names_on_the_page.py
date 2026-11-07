@@ -135,7 +135,7 @@ def _definition(check: str, on: str = "") -> str:
 _GLOSSARY_ROW = {
     "markdown": lambda name, check: f"- **{name}**: {_definition(check)}",
     "html": lambda name, check: (
-        f'<dt id="g-{re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")}">{escape(name)}</dt>'
+        f'<dt id="g-check-{re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")}">{escape(name)}</dt>'
         f"<dd>The goal check <code>{escape(check)}</code>, which code runs on every trial.</dd>"
     ),
 }
@@ -165,13 +165,15 @@ def test_a_named_check_is_printed_by_its_name_wherever_the_page_names_it(build: 
     assert not left, f"{left} printed by its expression where a name is declared"
 
 
-#: What the page calls each check its template names nothing: a goal check, numbered in the checks' sorted order.
-UNNAMED = {CHECKS[1]: "Goal check 1", CHECKS[0]: "Goal check 2"}
+#: What the page calls each check its template names nothing: what it tests, read off its expression.
+UNNAMED = {CHECKS[1]: "Reply cites policy check", CHECKS[0]: "Reply total check"}
 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])
 @pytest.mark.parametrize("build", ["s1", "s2", "s4", "measurement"])
-def test_with_no_name_each_check_is_a_numbered_goal_check_its_expression_in_the_glossary(build: str, form: str) -> None:
+def test_with_no_name_each_check_is_named_by_what_it_tests_its_expression_in_the_glossary(
+    build: str, form: str
+) -> None:
     page = _page(build, {})
     said = _rendered(page, form)
     assert not any(name in said for name in NAMES.values())
@@ -181,7 +183,7 @@ def test_with_no_name_each_check_is_a_numbered_goal_check_its_expression_in_the_
     said = _without_entries(said, form, UNNAMED)
     assert any(name in said for name in UNNAMED.values()), "the page names a check"
     left = [check for check in CHECKS if escape(check) in said or check in said]
-    assert not left, f"{left} printed by its expression, where the page names it Goal check"
+    assert not left, f"{left} printed by its expression, where the page names it by what it tests"
     assert not any(isinstance(block, TableBlock) and block.name == "check_names" for block in page.blocks)
 
 
@@ -219,7 +221,7 @@ def test_a_check_two_aspects_name_apart_has_a_glossary_entry_per_name_with_the_a
     assert glossary["Total right"] == _definition(CHECKS[0], "orders")
     assert glossary["Sum right"] == _definition(CHECKS[0], "returns")
     # The other check is named alike on both aspects, so its entry names no aspect.
-    assert glossary["Goal check"] == _definition(CHECKS[1])
+    assert glossary[UNNAMED[CHECKS[1]]] == _definition(CHECKS[1])
 
 
 def test_the_call_names_the_check_floor_it_overrides_by_the_check_s_name() -> None:

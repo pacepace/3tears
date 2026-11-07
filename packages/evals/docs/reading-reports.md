@@ -181,8 +181,7 @@ reads them against other points than the margin; where they would not, the two a
 count; its no-difference count may be another rate's.
 
 **Design & provenance** follows the Scorecard and states once what holds for the whole report:
-**Checks** (each declared check name beside the expression it stands for, with the aspects declaring it where they
-differ), **Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
+**Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
 existed by then) and **Test setup** (each aspect's own sentence, verbatim, for results with no ordered time, latency
 read under concurrency, or request settings not confirmed). Each section appears only where it has something to say.
 
@@ -285,8 +284,17 @@ reading.
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
 Glossary start folded, and a nav link lands on the folded section's heading, which the reader opens. No link on the
 page lands inside a closed fold the reader has not opened, since not every browser opens one for a link: a term lands
-on the Glossary's heading (its definition is also the link's hover text), and a case's trial id on the Trials
-heading.
+on the Glossary's heading (its definition is also the link's hover text; a goal check's name carries one fixed hover
+instead, since its definition is the host's expression), and a case's trial id on the Trials heading.
+
+**A goal check is named, never printed as its expression**, in every header, row and lead: by the display name its
+template declares (`goal_check_names`), else by what it tests, read off the expression (`state.refund.amount <= ...`
+is `Refund amount check`, `call_count("discord.send_message") >= 1 or ...` is `Send message calls check`), numbered
+only where two checks would share a name, and `Goal check` where the expression names nothing a reader can read. The
+same expression has the same name on every aspect and run. The Glossary defines each name by its expression, whole,
+once, and names the aspect where one name stands for different expressions. A report document's own tables, and the
+evidence record laid out after it, print an undeclared check's expression for now: the report writer's recorded judge
+reads that text, and it is recorded again before they change.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
@@ -332,10 +340,9 @@ heading.
   `report --trials all`) lays each one out under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open, and the row then leaves its result to the record. An
   aspect's own page (`build_code_only_report`, the quick path's `Result.report`) lays out every
-  record unless asked. A failed check is named by its declared name, else by its expression, as code
-  (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
-  `failed by the judge`. A record names a named check by its name and its expression; whatever the trial detail,
-  the campaign's **Checks** legend, under Design & provenance, pairs each declared name with its expression once. The passed trials are one closed `Passed trials` table
+  record unless asked. A failed check is named as every header names it (`check: Queue track calls check`), and a judge's
+  fail by its dimensions (`judge: tone`), else `failed by the judge`. A record names the check and its expression;
+  whatever the trial detail, the Glossary pairs each check's name with its expression once. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level

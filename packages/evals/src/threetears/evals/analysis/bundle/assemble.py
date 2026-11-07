@@ -970,7 +970,7 @@ def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate])
             names[check] = next(iter(by_template.values()))
         else:
             log.warning(
-                "eval.check_names_differ check=%r names=%s: printed as its expression until its templates name it alike",
+                "eval.check_names_differ check=%r names=%s: printed as a goal check until its templates name it alike",
                 check,
                 ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
             )

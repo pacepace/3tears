@@ -178,7 +178,7 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import code, humanize, measure_name
+from threetears.evals.analysis.style import humanize, measure_name, written_check_names
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -3166,14 +3166,10 @@ NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion
 
 
 def input_check_name(key: str, report_input: ReportInput) -> str | None:
-    """What a report document's page calls the goal check ``key`` reads on a report input: the name the input's label
-    declares, else its expression, as code.
-
-    The one door the written page names a check through (its figure keys and its charts). A code page and the evidence
-    record name an undeclared check ``Goal check``, numbered (``AnalysisContextBundle.named_checks``), its expression
-    in the glossary; the written page keeps the expression until rung 5's judge is recorded again, since the judge's
-    recorded replies read this page's text and a name here refuses them. Once re-recorded, this returns
-    :func:`~threetears.evals.analysis.style.check_names` over the input's checks instead.
+    """What a report document's page calls the goal check ``key`` reads on a report input, through the one rule its
+    tables and its evidence record both name a check by (:func:`~threetears.evals.analysis.style.written_check_names`):
+    the name the input's label declares, else, until the report writer's recorded judge is recorded again, its
+    expression, as code. The input's label for an undeclared check is its expression, which the writer reads.
 
     :param key: Any measure key.
     :ptype key: str
@@ -3185,9 +3181,13 @@ def input_check_name(key: str, report_input: ReportInput) -> str | None:
     check = goal_check_of(key)
     if check is None:
         return None
-    held = report_input.measures.get(key)
-    label = held.label if held is not None else None
-    return label if label and label != check else code(check)
+    read = {
+        expression: measure.label
+        for name, measure in report_input.measures.items()
+        if (expression := goal_check_of(name)) is not None
+    }
+    declared = {expression: label for expression, label in read.items() if label and label != expression}
+    return written_check_names([*read, check], declared)[check]
 
 
 def _measure_reader_name(key: str, report_input: ReportInput) -> str:

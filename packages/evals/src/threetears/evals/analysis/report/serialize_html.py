@@ -58,6 +58,7 @@ reader's colour-scheme setting either way.
 
 from __future__ import annotations
 
+import functools
 import html
 import re
 from dataclasses import dataclass
@@ -84,6 +85,7 @@ from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
     TRIAL_ID,
     chart_html,
+    check_anchor,
     code_html,
     escape,
     glossary_slug,
@@ -95,7 +97,7 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY, check_definition
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -140,8 +142,8 @@ def report_html(report: Report, *, static: bool = False) -> str:
     nav = [*present, *(["glossary"] if report.glossary else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
     parts += _sections(report, present, static=static)
-    parts = [_first_uses("\n".join(parts), report.glossary)]
-    parts += _glossary(report.glossary)
+    parts = [_first_uses(_check_headers("\n".join(parts), report), report)]
+    parts += _glossary(report)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
@@ -200,8 +202,8 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         parts += _aspect_fold(fold, slug, static=static)
     for section in after:
         parts += _campaign_section(report, section, static=static)
-    parts = [_first_uses("\n".join(parts), report.glossary)]
-    parts += _glossary(report.glossary)
+    parts = [_first_uses(_check_headers("\n".join(parts), report), report)]
+    parts += _glossary(report)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
@@ -221,20 +223,25 @@ _UNLINKED_IN: frozenset[str] = frozenset(
 )
 
 
-def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
+def _first_uses(markup: str, report: Report | CampaignReport) -> str:
     """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
-    own). Each term is linked once this way; the glossary at the foot defines it."""
-    definitions = dict(glossary)
+    own). Each term is linked once this way; the glossary at the foot defines it. A goal check's name is matched whole
+    and in its own case, never inside a longer one (``Goal check`` in ``Goal check 2``); a name that is a term of art's
+    words (``Outcome``) is left to the term."""
+    terms = list(report.terms)
+    of_art = {term.casefold() for term in terms}
+    checks = [name for name, _ in report.check_glossary if name.casefold() not in of_art]
     # A link's title names its term: a check's name carries one title for every check, so it is read off the link.
-    by_definition = {GLOSSARY[term]: term for term in definitions if term in GLOSSARY}
+    by_definition = {GLOSSARY[term]: term for term in terms}
     pending = {
         # The undecided reading is linked in its sentence form too: ``cannot tell v2 and v1 apart``.
         term: CANNOT_TELL_APART_PHRASE
         if term == CANNOT_TELL_APART
         else re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE)
-        for term in definitions
+        for term in terms
     }
+    pending.update({name: re.compile(rf"(?<![\w-]){re.escape(escape(name))}(?!(?:[\w-]| \d))") for name in checks})
     opened: list[str] = []
     out: list[str] = []
     for token in _TAG.split(markup):
@@ -258,6 +265,25 @@ def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
             # The question is the author's words, quoted whole: nothing is linked inside it.
             opened.append(f"{_QUOTED}{name}" if 'class="question"' in token else name)
     return "".join(out)
+
+
+def _check_headers(markup: str, report: Report | CampaignReport) -> str:
+    """``markup`` with each column header that names a goal check linked to its glossary entry: a header is where a
+    reader first meets a check's name, as a term of art's header links its term. A header naming a check reads its
+    name, then its unit in brackets or the aspects it reads after a comma; a name that is a term of art's words is
+    left to the term."""
+    of_art = {term.casefold() for term in report.terms}
+    for name, _ in report.check_glossary:
+        if name.casefold() in of_art:
+            continue
+        header = re.compile(rf"(<th\b[^>]*>)({re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?)(</th>)")
+        markup = header.sub(functools.partial(_check_header, name), markup)
+    return markup
+
+
+def _check_header(name: str, found: re.Match[str]) -> str:
+    """A matched header cell naming the check ``name``, its text linked to the check's glossary entry."""
+    return f"{found[1]}{term_link(name, found[2])}{found[3]}"
 
 
 def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
@@ -288,7 +314,7 @@ def _appendix(report: CampaignReport, static: bool) -> list[str]:
         "\n".join(_aspect_fold(fold, slug, static=static))
         for fold, slug in zip(report.aspects, report.fold_ids, strict=True)
     ]
-    glossary = _glossary(report.glossary)
+    glossary = _glossary(report)
     return [*folds, *(["\n".join(glossary)] if glossary else [])]
 
 
@@ -387,15 +413,21 @@ def _sections(
     return parts
 
 
-def _glossary(glossary: Sequence[tuple[str, str]]) -> list[str]:
-    """The glossary section, each ``(term, definition)`` of it, closed; nothing when the page defines none. A
-    definition's code span (a goal check's expression) is set as code, whole."""
-    if not glossary:
-        return []
+def _glossary(report: Report | CampaignReport) -> list[str]:
+    """The glossary section, closed: each term the page links, then each goal check's name, its expression escaped and
+    set as code, whole, under an id of the checks' own (``g-check-…``) so a declared name that is a term's words never
+    repeats a term's id; nothing when the page defines none."""
     entries = "".join(
-        f'<dt id="g-{glossary_slug(term)}">{escape(term)}</dt><dd>{code_html(definition)}</dd>'
-        for term, definition in glossary
+        f'<dt id="g-{glossary_slug(term)}">{escape(term)}</dt><dd>{escape(GLOSSARY[term])}</dd>'
+        for term in report.terms
     )
+    entries += "".join(
+        f'<dt id="{check_anchor(name)}">{escape(name)}</dt>'
+        f"<dd>{check_definition(said, span=lambda check: f'<code>{escape(check)}</code>', words=escape)}</dd>"
+        for name, said in report.check_glossary
+    )
+    if not entries:
+        return []
     return [
         '<section id="glossary">',
         *_section("glossary", SECTION_TITLES["glossary"], [f'<dl class="method glossary">{entries}</dl>'], count=None),

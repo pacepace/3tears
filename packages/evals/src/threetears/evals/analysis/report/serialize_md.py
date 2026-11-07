@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.md_parts import (
     table_lines,
 )
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
+from threetears.evals.analysis.style import GLOSSARY, check_definition
 from threetears.evals.analysis.report.verdict import cause_short
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ def report_markdown(report: Report) -> str:
         # blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
     lines += _section_lines(report, depth=2)
-    lines += _glossary_lines(report.glossary)
+    lines += _glossary_lines(report)
     return "\n".join(lines) + "\n"
 
 
@@ -89,7 +90,7 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     :rtype: str
     """
     if report.doc_page is not None:
-        record = [*_fold_lines(report), *_glossary_lines(report.glossary)] if report.doc_trials else []
+        record = [*_fold_lines(report), *_glossary_lines(report)] if report.doc_trials else []
         return doc_page_markdown(report.doc_page, record=record)
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
     lines = [f"# {one_line(report.title)}"]
@@ -106,7 +107,7 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     for section in after:
         blocks = [b for b in report.blocks if b.section == section]
         lines += ["", f"## {titles[section]}", *_folded(blocks, heading=titles[section])]
-    lines += _glossary_lines(report.glossary)
+    lines += _glossary_lines(report)
     return "\n".join(lines) + "\n"
 
 
@@ -149,15 +150,19 @@ def _section_lines(
     return lines
 
 
-def _glossary_lines(glossary: Sequence[tuple[str, str]]) -> list[str]:
-    """The glossary, each ``(term, definition)`` of it; nothing when the page defines none."""
-    if not glossary:
+def _glossary_lines(report: Report | CampaignReport) -> list[str]:
+    """The page's glossary: each term it links, then each goal check's name, its expression set as a span no backtick
+    inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; nothing when the page
+    defines none."""
+    entries = [(term, GLOSSARY[term]) for term in report.terms]
+    entries += [(name, check_definition(said, span=code_span)) for name, said in report.check_glossary]
+    if not entries:
         return []
     return [
         "",
         f"## {SECTION_TITLES['glossary']}",
         "",
-        *(f"- **{term}**: {definition}" for term, definition in glossary),
+        *(f"- **{term}**: {definition}" for term, definition in entries),
     ]
 
 
