@@ -250,7 +250,7 @@ PAIRWISE_SHARE: Final = 0.2
 #: cells a run holds in flight (four on the host this default is set for) is one full wave of each run, where one more
 #: case would add a straggler that lengthens the batch by a whole cell for one case of signal, and arms x batch stays
 #: within the runs the host admits at once (8 arms x 4 is that host's 32).
-BATCH_SIZE: Final = 4
+_BATCH_SIZE: Final = 4
 
 #: The stopping rules a writer eval may declare.
 _STOP_WHEN: frozenset[str] = frozenset(get_args(StopWhen))
@@ -679,7 +679,7 @@ class WriterEval:
         scope: str | None = None,
         stop_when: StopWhen = "never",
         prior: WriterPrior | None = None,
-        batch_size: int = BATCH_SIZE,
+        batch_size: int = _BATCH_SIZE,
         fewest_cases: int | None = None,
     ) -> None:
         """Declare the eval; nothing is read or run until :meth:`run`.
@@ -738,7 +738,7 @@ class WriterEval:
             case files; one over other cases is said and not carried.
         :ptype prior: WriterPrior | None
         :param batch_size: Under ``separated``, the cases every arm launches at a time, in the bet's order, before the
-            pass reads on (:data:`BATCH_SIZE`, which says how a host picks it); ``never`` launches every case at once.
+            pass reads on (4 unless told; a host picks it from its concurrent-cell count and its admitted-runs limit, as the constant beside the class says); ``never`` launches every case at once.
         :ptype batch_size: int
         :param fewest_cases: The fewest side cases the author asks a run to read; a side with fewer runs, and its
             resolution line says it is under them: a floor is a disclosure, never a refusal. ``None`` asks none.
@@ -1830,4 +1830,4 @@ def _results_held_elsewhere(
     return [f"{len(naming)} case(s) name example results stored only where they were frozen"]
 
 
-__all__ = ["BATCH_SIZE", "Writer", "WriterEval", "WriterPairwise", "WriterResult"]
+__all__ = ["Writer", "WriterEval", "WriterPairwise", "WriterResult"]

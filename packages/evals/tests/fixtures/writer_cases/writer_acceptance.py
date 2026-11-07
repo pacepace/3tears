@@ -98,7 +98,6 @@ from threetears.evals.analysis import EvalSummary, RunMeasureSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
-from threetears.evals.harness.writer_eval import BATCH_SIZE
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.ops import OpsHost, job_poll
@@ -995,7 +994,7 @@ async def _measured(
     variant: Variant,
     stop_when: StopWhen = "never",
     prior: WriterPrior | None = None,
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
     """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
@@ -1015,8 +1014,9 @@ async def _measured(
         store=":memory:" if store_at is None else store_at,
         stop_when=stop_when,
         prior=prior,
-        batch_size=batch_size,
         fewest_cases=MIN_LIVE_CASES,
+        # None keeps the writer eval's own batch.
+        **({} if batch_size is None else {"batch_size": batch_size}),
     ).run()
     if variant.name in result.pairwise_unread:
         raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[variant.name]}")
@@ -1052,7 +1052,7 @@ async def acceptance(
     candidate_skill: Path | None = None,
     stop_when: StopWhen = "never",
     prior: WriterPrior | None = None,
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -1065,7 +1065,7 @@ async def acceptance(
     :param candidate_skill: The candidate, a skill directory (:func:`candidate_variant`); never with ``variant``.
     :param stop_when: The pairwise pass's stopping rule, declared before any arm launches (the module docstring).
     :param prior: An earlier run on these cases (:func:`read_prior`), whose projection the resolution line carries.
-    :param batch_size: Under ``separated``, the cases the arms launch at a time (the module docstring).
+    :param batch_size: Under ``separated``, the cases the arms launch at a time; ``None`` for the writer eval's own.
     :return: What it found.
     """
     if variant is not None and candidate_skill is not None:
@@ -1188,8 +1188,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument(
         "--batch-size",
         type=_cases_at_a_time,
-        default=BATCH_SIZE,
-        help=f"under --stop-when separated, the cases the arms launch at a time; default: {BATCH_SIZE}",
+        help="under --stop-when separated, the cases the arms launch at a time; default: the writer eval's, 4",
     )
     options = parser.parse_args(list(argv))
     if options.candidate_skill is not None:
