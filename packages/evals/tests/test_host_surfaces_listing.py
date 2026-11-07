@@ -1,18 +1,21 @@
 """A host's surfaces print a campaign the way its report reads (presentation build, chunk 6; Discodon, 2026-11-07).
 
-Contracts held here (``campaigns_list``'s ``CampaignLine.report``, ``arm_names``, the report document's markdown and
-text):
+Contracts held here (``campaigns_list``'s ``CampaignLine.report``, the reader name of an arm, the report document's
+markdown and text):
 
 - **the headline**: a report document its editor passed lists its own headline, every figure key written out as its
   page prints it; a draft lists code's verdict. Code's warnings and its line on when criteria were set are listed in
-  ``caveats`` beside the headline, never inside it, and ``analyses_list``'s verdict is still those lines then that
-  verdict (Q7);
-- **no cut**: no listing line holds a cut of a prompt or of the question. An arm whose level is too long to print is
-  named by its campaign label, else by its lever and a letter (``prompt A``); the empty level reads ``no <lever>``
-  (``no system prompt``), never ``(none)``; the question prints whole, in its own field, and in no other line but
-  ``question_short``, the one field documented as cut (Q10);
+  ``caveats`` beside the headline, never inside it, and ``analyses_list``'s verdict is those lines then that verdict
+  (Q7). A document whose snapshot is gone, or that no longer reads, lists code's verdict and says to regenerate;
+- **no cut**: no listing line holds a cut of a prompt or of the question. At render time only, an arm whose level is
+  too long to print is named by its campaign label, else by its lever and its own letter tag on that page
+  (``Extractor instructions B``), which no figure key appends twice; the empty level of a text lever reads ``no
+  <lever>``, never ``(none)``, and an empty number lever keeps its placeholder; the question prints whole, in its own
+  field (Q10);
+- **frozen evidence never moves**: the labels a bundle freezes, and its fingerprint, are the ones the build before this
+  change froze for the same campaign;
 - **no raw key**: no markdown, text or listing output of the ``toyhost_doc`` capture holds a figure key in braces, the
-  analyst's own caveat labels included.
+  analyst's own caveat labels included, and a strict build refuses a label whose key does not resolve.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
@@ -36,17 +41,22 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
-from threetears.evals.analysis import assemble_campaign_bundle
-from threetears.evals.analysis.arms import ELISION, arm_names
+from threetears.evals.analysis import assemble_campaign_bundle, campaign_report, serialize_report
+from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.arms import ELISION
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
+from threetears.evals.analysis.report.figure_keys import render
+from threetears.evals.analysis.report.words import campaign_arm_tags, reader_arm_labels, reader_arm_name
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_doc_store import read_report_doc
-from threetears.evals.analysis.style import arm_name
-from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.ops import CampaignDefinition, CampaignLine, campaign_create, campaigns_list, report_read
 from threetears.evals.ops.analysis import analyses_list
-from threetears.evals.schema import SweepableValue
 
 #: The stored campaign whose report ``analysis_generate`` wrote: the hot path oracle's ``toyhost_doc`` capture.
 _CAPTURE = Path(__file__).parent / "fixtures" / "hot_path_oracle" / "inputs" / "toyhost_doc.json"
@@ -89,6 +99,11 @@ def _with_keys(stored: dict[str, Any]) -> None:
 
 def _as_draft(stored: dict[str, Any]) -> None:
     stored["ending"] = "stored_with_findings"
+
+
+def _without(doc_type: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``documents`` without the one of ``doc_type``."""
+    return [document for document in documents if document.get("doc_type") != doc_type]
 
 
 def _listed(documents: list[dict[str, Any]]) -> tuple[EvalHost, CampaignLine]:
@@ -139,13 +154,33 @@ def test_a_headline_citing_figures_is_listed_as_its_page_prints_it() -> None:
     assert f"# {line.report.headline}" in page.splitlines(), "the listing and the page write the key alike"
 
 
+def test_a_headline_whose_snapshot_is_gone_lists_code_s_verdict_and_says_to_regenerate() -> None:
+    _, line = _listed(_without("eval_report_snapshot", _edited(_with_keys)))
+    assert line.report is not None
+
+    assert line.report.headline == _CODE_VERDICT, "never the headline's braces"
+    assert line.report_state == "needs_regeneration"
+    assert line.report.why_regenerate is not None and line.report.why_regenerate.startswith(NO_LONGER_READS)
+
+
+def test_a_document_that_no_longer_reads_lists_code_s_verdict_and_says_to_regenerate() -> None:
+    _, line = _listed(_without("eval_report_doc", _captured()))
+    assert line.report is not None
+
+    assert line.report.headline == _CODE_VERDICT
+    assert line.report_state == "needs_regeneration" and line.report.why_regenerate is not None
+
+
 # --- no cut of a prompt or the question ---------------------------------------------------------------------------
 
-#: Two system prompts too long to print whole, which part only in their middle.
+#: Two prompts too long to print whole, which part only in their middle.
 _PROMPTS = tuple(
     f"Read every invoice line {times} and quote the vendor's own words for each total you extract today"
     for times in ("twice", "once")
 )
+
+#: A campaign's id, as each campaign below is stored.
+_PROMPTS_CAMPAIGN = "7b0e2c55-5d0f-4c8e-9a3c-1f2e3d4c5b6c"
 
 
 def _batch(label: str, instructions: str | None) -> Any:
@@ -160,54 +195,38 @@ def _batch(label: str, instructions: str | None) -> Any:
     return run if instructions is None else run.model_copy(update={"overlays": {"instructions": instructions}})
 
 
-def _prompt_campaign(*, labelled: bool) -> tuple[EvalHost, CampaignLine]:
-    """A campaign whose arms differ by their extractor instructions alone: none, and each of :data:`_PROMPTS`; with
-    ``labelled``, the first long prompt's arm declares the label ``read twice``. Its report is stored code-only."""
+def _prompt_host(question: str = "") -> tuple[EvalHost, list[Any]]:
+    """A host holding a campaign whose arms differ by their extractor instructions alone: each of :data:`_PROMPTS`,
+    and none (an empty level, which the engine displays ``(none)``)."""
     profile = toyhost_profile()
     host = toyhost_host(profile=profile)
-    runs = [_batch("plain", None), _batch("twice", _PROMPTS[0]), _batch("once", _PROMPTS[1])]
+    runs = [_batch("twice", _PROMPTS[0]), _batch("once", _PROMPTS[1]), _batch("plain", None)]
     for run in runs:
         host.storage.save_eval_run(run)
         for result in toyhost_measurements(
             run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
         ):
             host.storage.save_eval_result(result)
-    question = f"Which of these instructions keeps the totals right? {_PROMPTS[0]}"
-    campaign = toyhost_campaign_of_one_aspect(
-        id="7b0e2c55-5d0f-4c8e-9a3c-1f2e3d4c5b6c",
-        scope_id=TOYHOST_SCOPE,
-        name="instructions",
-        subject_id=TOYHOST_SUBJECT.subject_id,
-        subject_kind="extractor_config",
-        behavior="extract_invoice_fields",
-        template_id="",
-        run_ids=[run.id for run in runs],
-        design=toyhost_aspect_design(),
-        question=question,
-        created_by="test:fixture",
-    )
-    host.storage.save_campaign(campaign)
-    if labelled:
-        definition = CampaignDefinition(
-            name="instructions, labelled",
+    host.storage.save_campaign(
+        toyhost_campaign_of_one_aspect(
+            id=_PROMPTS_CAMPAIGN,
+            scope_id=TOYHOST_SCOPE,
+            name="instructions",
             subject_id=TOYHOST_SUBJECT.subject_id,
+            subject_kind="extractor_config",
             behavior="extract_invoice_fields",
+            template_id="",
+            run_ids=[run.id for run in runs],
+            design=toyhost_aspect_design(),
             question=question,
-            arms=[
-                {"label": "plain", "role": "control", "from_run_ids": [runs[0].id]},
-                {"label": "read twice", "from_run_ids": [runs[1].id]},
-            ],
-            aspects=[
-                {
-                    "label": "extract_invoice_fields",
-                    "run_ids": [run.id for run in runs],
-                    "design": toyhost_aspect_design().model_dump(mode="json"),
-                }
-            ],
+            created_by="test:fixture",
         )
-        campaign_id = campaign_create(host, definition, TOYHOST_SCOPE, created_by="test:fixture").id
-    else:
-        campaign_id = campaign.id
+    )
+    return host, runs
+
+
+def _analysed(host: EvalHost, campaign_id: str) -> CampaignLine:
+    """``campaign_id``'s line once a code-only analysis is stored over its bundle."""
     bundle = assemble_campaign_bundle(host, campaign_id, TOYHOST_SCOPE)
     host.storage.save_analysis(
         make_analysis(
@@ -219,61 +238,119 @@ def _prompt_campaign(*, labelled: bool) -> tuple[EvalHost, CampaignLine]:
         )
     )
     (line,) = [one for one in campaigns_list(host, TOYHOST_SCOPE).campaigns if one.id == campaign_id]
-    return host, line
+    return line
+
+
+#: What the build before render-time naming (0d801dcc0) froze for :func:`_prompt_host`'s campaign: its arms' labels
+#: and its fingerprint, taken on that build. Render-time naming leaves both as they were.
+_FROZEN_LABELS = [
+    "Read every invoice line twice an…endor's own wo…",
+    "Read every invoice line once and…ndor's own wor…",
+    "(none)",
+]
+_FROZEN_FINGERPRINT = "v3:2742f149003a50d9f5bfb1af67dff6fdd763a4ec893af71a5aa0e1b5960649f7"
+
+
+def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None:
+    host, _ = _prompt_host()
+    bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+
+    assert [arm.label for arm in bundle.arms] == _FROZEN_LABELS
+    assert bundle.fingerprint() == _FROZEN_FINGERPRINT
 
 
 def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:
-    _, line = _prompt_campaign(labelled=False)
+    question = f"Which of these instructions keeps the totals right? {_PROMPTS[0]}"
+    host, _ = _prompt_host(question)
+    line = _analysed(host, _PROMPTS_CAMPAIGN)
     assert line.report is not None and line.report.caveats, "the arms are named in the caveats"
 
     for printed in _lines(line):
         assert ELISION not in printed, printed
-        assert "(none)" not in printed and "(empty)" not in printed, printed
+        assert "(none)" not in printed, printed
         assert not any(prompt[:20] in printed for prompt in _PROMPTS), printed
-    named = " ".join(line.report.caveats)
-    assert all(arm in named for arm in ("no extractor instructions", "extractor instructions A")), named
-    assert line.question.endswith(_PROMPTS[0]), "the question prints whole, in its own field"
+    assert line.title == (
+        "Extractor instructions C vs Extractor instructions B vs no extractor instructions · extract_invoice_fields "
+        "(instructions)"
+    )
+    assert line.question == question, "the question prints whole, in its own field"
+
+
+def test_a_cut_level_is_named_by_its_lever_and_the_arm_s_own_tag_on_every_code_page_and_the_listing() -> None:
+    host, _ = _prompt_host()
+    bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+    tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    names = reader_arm_labels(bundle, tags)
+    page = serialize_report(campaign_report(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE), "markdown")
+    line = _analysed(host, _PROMPTS_CAMPAIGN)
+    assert line.report is not None
+
+    lettered = {key: name for key, name in names.items() if name.startswith("Extractor instructions ")}
+    assert len(lettered) == 2 and all(name.endswith(f" {tags[key]}") for key, name in lettered.items())
+    assert ELISION not in page and "(none)" not in page
+    for name in [*lettered.values(), "no extractor instructions"]:
+        assert name in page and name in " ".join(line.report.caveats), name
+
+
+def test_a_cut_level_on_the_document_page_wears_its_tag_once() -> None:
+    host, _ = _prompt_host()
+    built = report_input(assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE))
+    arms = fact_arms(built)
+    written = render(" vs ".join(f"{{arm:{arm.id}}}" for arm in built.arms), built, {arm.id: arm.name for arm in arms})
+
+    assert [arm.id for arm in built.arms] == _FROZEN_LABELS, "the report input keeps the frozen names"
+    lettered = [arm for arm in arms if arm.name.startswith("Extractor instructions ")]
+    assert len(lettered) == 2 and all(arm.name.endswith(f" {arm.tag}") for arm in lettered)
+    for arm in lettered:
+        assert arm.name in written and f"{arm.name} ({arm.tag})" not in written, written
+    assert ELISION not in written and "no extractor instructions (" in written
 
 
 def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
-    _, line = _prompt_campaign(labelled=True)
+    host, runs = _prompt_host()
+    definition = CampaignDefinition(
+        name="instructions, labelled",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior="extract_invoice_fields",
+        question="Which instructions keep the totals right?",
+        arms=[
+            {"label": "plain", "role": "control", "from_run_ids": [runs[2].id]},
+            {"label": "read twice", "from_run_ids": [runs[0].id]},
+        ],
+        aspects=[
+            {
+                "label": "extract_invoice_fields",
+                "run_ids": [run.id for run in runs],
+                "design": toyhost_aspect_design().model_dump(mode="json"),
+            }
+        ],
+    )
+    line = _analysed(host, campaign_create(host, definition, TOYHOST_SCOPE, created_by="test:fixture").id)
     assert line.report is not None
 
     for printed in _lines(line):
         assert ELISION not in printed, printed
     assert (
         line.report.headline
-        == "Declared question: nothing separated extractor instructions A or read twice from plain."
+        == "Declared question: nothing separated Extractor instructions A or read twice from plain."
     )
-    assert "Adopting extractor instructions A overrides the bar it misses on extract_invoice_fields." in (
+    assert "Adopting Extractor instructions A overrides the bar it misses on extract_invoice_fields." in (
         line.report.caveats
     ), "the arm no one labelled wears one letter in the headline and its caveats"
 
 
-def _entry(**levers: SweepableValue) -> VariantIndexEntry:
-    return VariantIndexEntry(variant_key=compute_variant_key(levers), levers=levers)
+def test_an_empty_text_level_reads_no_lever_and_an_empty_number_keeps_its_placeholder() -> None:
+    text = frozenset({"system_prompt"})
 
-
-def test_an_empty_level_reads_no_system_prompt_and_a_long_one_its_lever_and_a_letter() -> None:
-    empty, first, second = index = [
-        _entry(system_prompt=SweepableValue.of(None, display="(none)")),
-        _entry(system_prompt=SweepableValue.of(_PROMPTS[0], display=_PROMPTS[0])),
-        _entry(system_prompt=SweepableValue.of(_PROMPTS[1], display=_PROMPTS[1])),
-    ]
-    named = {key: arm_name(name).label for key, name in arm_names(index).items()}
-    assert named == {
-        empty.variant_key: "no system prompt",
-        first.variant_key: "system prompt B",
-        second.variant_key: "system prompt A",
-    }, "lettered by the levels' text, so an index's order moves no letter"
-    assert arm_names(list(reversed(index))) == arm_names(index)
-
-    blank, long = index = [
-        _entry(prompt=SweepableValue.of("", display="(empty)")),
-        _entry(prompt=SweepableValue.of(_PROMPTS[0], display=_PROMPTS[0][:30] + ELISION)),
-    ]
-    named = {key: arm_name(name).label for key, name in arm_names(index).items()}
-    assert named == {blank.variant_key: "no prompt", long.variant_key: "prompt A"}, "a host's own cut is a cut too"
+    assert reader_arm_name("(none)", {"system_prompt": "(none)"}, "A", text=text) == "no system prompt"
+    assert reader_arm_name("(none)", {"temperature": "(none)"}, "A", text=text) == "(none)"
+    shown = _PROMPTS[0][:59] + ELISION  # as the engine displays a long level, which a name then cuts again
+    cut = _FROZEN_LABELS[0]
+    assert reader_arm_name(cut, {"system_prompt": shown}, "B", text=text) == "System prompt B"
+    assert reader_arm_name(f"{cut} (arm 0123456789ab)", {"system_prompt": shown}, "C", text=text) == (
+        "System prompt C"
+    ), "the tag tells two cut alike apart, so the digest goes"
+    assert reader_arm_name("v2", {"system_prompt": shown}, "B", text=text) == "v2", "a given name is as given"
 
 
 # --- no raw figure key ---------------------------------------------------------------------------------------------
@@ -294,3 +371,17 @@ def test_no_markdown_text_or_listing_output_of_the_toyhost_doc_capture_holds_a_r
         for surface, output in outputs.items():
             assert not _RAW_KEY.findall(output), (surface, _RAW_KEY.findall(output))
     assert "- Only 12 cases. only if more cases split them" in doc_page_text(page), "an analyst's label is written out"
+
+
+def test_a_strict_build_refuses_an_analyst_label_whose_key_does_not_resolve() -> None:
+    documents = _edited(_with_keys)
+    host = toyhost_from(documents)
+    stored = _report_doc(documents)
+    snapshot = read_report_doc(host.storage, str(stored["id"]), TOYHOST_SCOPE).snapshot
+    doc = copy.deepcopy(stored["doc"])
+    doc["confidence"]["caveats"][-1]["label"] = "Only {no.such_key} cases"
+    unresolved = ReportDoc.model_validate(doc)
+
+    with pytest.raises(UnresolvableReference):
+        build(unresolved, frozen_input(snapshot), strict=True)
+    assert "Only — cases" in doc_page_text(build(unresolved, frozen_input(snapshot), strict=False))

@@ -39,7 +39,12 @@ from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleIn
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
-from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names, printed_arm_labels
+from threetears.evals.analysis.report.words import (
+    campaign_arm_tags,
+    declared_arm_names,
+    reader_arm_labels,
+    reader_arms,
+)
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
@@ -1060,10 +1065,12 @@ def _campaign_page(
     """
     # Every arm by the name every page prints it by (a computed lever name capitalised, a given label as written):
     # the folds and the campaign's own readings alike, the readings the bundle froze left as read.
-    printed = printed_arm_labels(bundle)
+    # A computed name holding a cut level or a placeholder is read by the arm's tag here, at render time, so the folds
+    # and the readings name it alike and its letter is its tag on every chart of the page.
+    tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    printed = reader_arm_labels(bundle, tags)
     readings = bundle.readings.relabelled(printed)
     labels = readings.arm_labels()
-    tags = campaign_arm_tags(bundle.aspects, readings.control)
     declared = declared_arm_names(bundle.arms)
     writer = analysis_writer(analysis) if analysis is not None else None
     checked = fingerprints or {}
@@ -1090,7 +1097,7 @@ def _campaign_page(
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
-        arms=bundle.arms,
+        arms=reader_arms(bundle, tags),
     )
     if analysis is None:
         return page

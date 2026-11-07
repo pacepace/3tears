@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import ARM_TEMPLATE, Figure, NamedKind, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, render, resolve, written_arm
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
@@ -329,7 +329,7 @@ class _Labels:
         )
         if not arms:
             return CAVEAT_REPEATED.format(label=label, count=count)
-        written = ", ".join(ARM_TEMPLATE.format(name=arm.name, tag=arm.tag) for arm in arms)
+        written = ", ".join(written_arm(arm.name, arm.tag) for arm in arms)
         return CAVEAT_REPEATED_ON.format(label=label, count=count, arms=written)
 
     def _arms_named(self, caveat_id: str) -> list[str]:

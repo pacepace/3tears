@@ -38,6 +38,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.phase_log import charged, phase_logged
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
+from threetears.evals.analysis.report.words import campaign_arm_tags, reader_arms
 from threetears.evals.analysis.report_doc_store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
@@ -187,7 +188,8 @@ class CampaignLineReport(EvalBaseModel):
     why_regenerate: str | None = Field(
         description=(
             "Why the report needs regeneration (report_state needs_regeneration): this build cannot read it, it is a "
-            "report plan, or the campaign holds other runs than it was written over. None when it is written."
+            "report plan, its document's snapshot no longer reads, or the campaign holds other runs than it was "
+            "written over. None when it is written."
         )
     )
     generated_at: str
@@ -712,6 +714,12 @@ def _frozen(analysis: EvalAnalysis) -> _Frozen:
         )
 
 
+def _reader_arms(frozen: CampaignBundle) -> list[CampaignArm]:
+    """The frozen bundle's arms as its page names them, for print only
+    (:func:`~threetears.evals.analysis.report.words.reader_arms`, tagged as the page tags them)."""
+    return reader_arms(frozen, campaign_arm_tags(frozen.aspects, frozen.readings.control))
+
+
 def _named_arm(
     variant_key: str | None, label: str | None, campaign: EvalCampaign, frozen: CampaignBundle | None
 ) -> str | None:
@@ -721,12 +729,12 @@ def _named_arm(
     The arm is found by its variant key, which is what a call or a recommendation decided: among the campaign's
     declared arms, then among the arms its report resolved (the frozen bundle's, each of whose keys names it). Only
     where no key matches is it found by its label."""
-    given = {arm.label for arm in frozen.declaration.arms} if frozen is not None else None
     held: list[tuple[CampaignArm, frozenset[str], Collection[str] | None]] = [
         (arm, frozenset({arm.variant_key}), None) for arm in campaign.arms
     ]
     if frozen is not None:
-        held += [(arm, frozen.arm_keys(arm), given) for arm in frozen.arms]
+        given = {arm.label for arm in frozen.declaration.arms}
+        held += [(arm, frozen.arm_keys(arm), given) for arm in _reader_arms(frozen)]
     found = next(((arm, names) for arm, keys, names in held if variant_key is not None and variant_key in keys), None)
     found = found or next(((arm, names) for arm, _, names in held if label is not None and arm.label == label), None)
     if found is None:
@@ -867,7 +875,10 @@ def _with_report(
     warnings and timing caveats are listed beside it, never in it."""
     reading = _analysis_reading(host, analysis, campaign, read)
     listed = reading.line
+    headline, unread = _headline(host, reading)
     why = listed.needs_regeneration
+    if why is None and unread is not None:
+        why = f"{NO_LONGER_READS} ({unread})"
     if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
     attempt = next(
@@ -880,7 +891,7 @@ def _with_report(
     )
     report = CampaignLineReport(
         analysis_id=analysis.id,
-        headline=_headline(host, reading),
+        headline=headline,
         caveats=reading.lead.caveats if reading.lead is not None else [],
         why_regenerate=why,
         generated_at=listed.generated_at,
@@ -893,26 +904,31 @@ def _with_report(
         update={
             "report_state": "written" if why is None else "needs_regeneration",
             "report": report,
-            "outcome_short": _outcome(read.bundle.readings, read.bundle.arms) if read.bundle is not None else None,
+            "outcome_short": (
+                _outcome(read.bundle.readings, _reader_arms(read.bundle)) if read.bundle is not None else None
+            ),
             "verdict_short": line.verdict_short or _recommended(analysis, campaign, read.bundle),
         }
     )
 
 
-def _headline(host: EvalHost, reading: _AnalysisReading) -> str:
-    """What a listed report says in one line: its stored document's headline, every figure key written out
+def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | None]:
+    """What a listed report says in one line, and why its document no longer reads where it was found not to.
+
+    Its stored document's headline, every figure key written out
     (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), where the document reads, its editor passed
     it and the frozen bundle reads; else code's verdict alone, or the regenerate line where the bundle does not read.
-    A headline whose snapshot no longer reads is listed by code's verdict, never by its braces. Blocking."""
+    A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why is returned,
+    so the line says to regenerate as the report read does. Blocking."""
     code = reading.lead.verdict if reading.lead is not None else reading.line.verdict
     if reading.doc is None or reading.doc.draft or reading.lead is None:
-        return code
+        return code, None
     try:
-        return stored_headline(host.storage, reading.doc)
-    except RefusedInput:
-        # NOSILENT: the report read lays this document out code-only with the one regenerate line, so its listing
-        # reads code's verdict as its page does.
-        return code
+        return stored_headline(host.storage, reading.doc), None
+    except RefusedInput as unread:
+        # NOSILENT: the line lists code's verdict and says to regenerate (why_regenerate), as the report read lays this
+        # document out code-only with the one regenerate line.
+        return code, unread.fault
 
 
 def _runs_title(campaign: EvalCampaign, runs: Sequence[EvalRun]) -> str:
@@ -947,7 +963,7 @@ def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle |
         return _runs_title(campaign, runs)
     return declared_title(
         campaign.name,
-        frozen.arms,
+        _reader_arms(frozen),
         [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
         given={arm.label for arm in frozen.declaration.arms},
     )
@@ -1249,7 +1265,7 @@ def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampai
         return _stored_title(host, stored) if stored is not None else f"Campaign {analysis.campaign_id}"
     return declared_title(
         frozen.name,
-        frozen.arms,
+        _reader_arms(frozen),
         [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects],
         given={arm.label for arm in frozen.declaration.arms},
     )
@@ -1286,7 +1302,7 @@ def _analysis_reading(
             lead = analysis_lead(analysis, bundle=read.bundle)
         except RefusedInput as unreadable:
             needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
-    verdict = " ".join([*lead.caveats, lead.verdict]) if lead is not None else ""
+    verdict = lead.line() if lead is not None else ""
     if needs_regeneration is not None:
         lead, verdict = None, f"Needs regeneration: {needs_regeneration}"
     unread: str | None = None

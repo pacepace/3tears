@@ -18,13 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import (
-    ARM_TEMPLATE,
     Figure,
     FigureKind,
     Scale,
     format_figure,
-    printed_arm_name,
+    page_arm_names,
     resolve,
+    written_arm,
 )
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import Contrast, ReportInput
@@ -91,13 +91,12 @@ def _whole(figure: Figure) -> int | float | tuple[float, float] | str:
 
 
 def _arm_written(report_input: ReportInput, arm_id: str) -> str:
-    """An arm as the page writes ``{arm:<id>}`` with no computed short names: its short name, else its alias, else its
-    id, then its letter tag."""
+    """An arm as the page writes ``{arm:<id>}`` with no computed short names: its name on the page
+    (:func:`~threetears.evals.analysis.report.figure_keys.page_arm_names`), then its letter tag, once."""
     arms = report_input.arms
-    arm = next(held for held in arms if held.id == arm_id)
     control = next((held.id for held in arms if held.role == "control"), None)
     tag = arm_tags([held.id for held in arms], control)[arm_id]
-    return ARM_TEMPLATE.format(name=printed_arm_name(arm), tag=tag)
+    return written_arm(page_arm_names(report_input)[arm_id], tag)
 
 
 def cite(key: str, report_input: ReportInput) -> CitedFigure:

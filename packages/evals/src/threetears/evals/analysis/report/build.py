@@ -139,8 +139,9 @@ from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
     arm_tags,
     comparison_words,
+    campaign_arm_tags,
     guardrail_words,
-    printed_arm_labels,
+    reader_arm_labels,
     reading_heading,
     reading_name,
 )
@@ -369,6 +370,15 @@ class AnalysisLead(NamedTuple):
     caveats: list[str]
     verdict: str
 
+    def line(self) -> str:
+        """The caveats, then the verdict, as one line: what :func:`analysis_verdict` and an analysis's listed verdict
+        read.
+
+        :return: The line.
+        :rtype: str
+        """
+        return " ".join([*self.caveats, self.verdict])
+
 
 def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> AnalysisLead:
     """The verdict a stored analysis is listed by, and its caveats beside it, both written by code over what was frozen
@@ -378,10 +388,10 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
     the page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
     frozen with it, without the writer's why beside them; then the page's one caveat line on when its criteria were
     set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never a line per
-    criterion. The verdict of an analysis of one aspect is the verdict line that aspect's page opens with, over its
-    frozen bundle, each arm a person named by its label as the page names it and every other arm by its levers
-    (:func:`~threetears.evals.analysis.arms.arm_names`: a level too long to print by its lever and a letter, an empty
-    one as ``no <lever>``). An analysis of several aspects is listed by its campaign's verdict, as the campaign's page
+    criterion. Every arm is named as the campaign's page names it
+    (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`): its label, else its computed name, a level too
+    long to print by its lever and the arm's tag, an empty text level as ``no <lever>``. The verdict of an analysis of
+    one aspect is the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed by its campaign's verdict, as the campaign's page
     reads it: what code read on each aspect, in the campaign's order
     (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
 
@@ -395,16 +405,18 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
-    readings = campaign.readings
+    # Every arm by the name the campaign's page prints it by, read at render time (its label, else its computed name,
+    # a cut level by its lever and tag): the frozen readings are relabelled for print only.
+    labels = reader_arm_labels(campaign, campaign_arm_tags(campaign.aspects, campaign.readings.control))
+    readings = campaign.readings.relabelled(labels)
     names = AspectNames.of(campaign.aspects)
     caveats = [*campaign_warnings(readings, names), *timing_caveats(campaign.aspects)]
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
         aspect = campaign.aspects[0]
-        printed = printed_arm_labels(campaign)
-        given = {key: printed[key] for arm in campaign.declaration.arms for key in campaign.arm_keys(arm)}
-        verdict = verdict_line(aspect, _namer(_arm_names(aspect, labels=given)), case_name=_case_namer(aspect)).text
+        named = _namer(_arm_names(aspect, labels=readings.arm_labels()))
+        verdict = verdict_line(aspect, named, case_name=_case_namer(aspect)).text
     return AnalysisLead(caveats=caveats, verdict=verdict)
 
 
@@ -422,8 +434,7 @@ def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = 
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
-    lead = analysis_lead(analysis, bundle=bundle)
-    return " ".join([*lead.caveats, lead.verdict])
+    return analysis_lead(analysis, bundle=bundle).line()
 
 
 def _page(

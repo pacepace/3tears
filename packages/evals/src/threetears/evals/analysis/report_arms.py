@@ -3,14 +3,14 @@
 The analyst's document page, its blocks and the editor's gaps read the arms one way (:func:`fact_arms`): the control
 takes the ink-gray slot (-1) and the tag ``P``; each candidate takes the next series colour and letter in the input's
 order (GENERATOR §5.2, §6.1); and each is named as the page prints it
-(:func:`~threetears.evals.analysis.report.figure_keys.printed_arm_name`).
+(:func:`~threetears.evals.analysis.report.figure_keys.page_arm_names`: a cut level by its lever and tag).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.report.figure_keys import printed_arm_name
+from threetears.evals.analysis.report.figure_keys import page_arm_names
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import ReportInput
 
@@ -40,12 +40,13 @@ def fact_arms(report_input: ReportInput) -> tuple[FactArm, ...]:
     """
     control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
     tags = arm_tags([arm.id for arm in report_input.arms], control)
+    names = page_arm_names(report_input)
     slots = iter(range(len(report_input.arms)))
     return tuple(
         FactArm(
             id=arm.id,
             tag=tags[arm.id],
-            name=printed_arm_name(arm),
+            name=names[arm.id],
             role=arm.role,
             color_slot=-1 if arm.id == control else next(slots),
         )

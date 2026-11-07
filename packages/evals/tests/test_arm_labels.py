@@ -10,9 +10,8 @@ difference, so the rule is:
   measured under more than one;
 - a lever that does not apply to the arm's kind (the engine's "not a run of this kind" level) is never
   named;
-- no level is printed cut: one too long to print whole is named by its lever and a letter, one per distinct level
-  (``opening A``), and an empty one reads ``no <lever>`` (Q10, 2026-11-07); two arms a host's display would name alike
-  are told apart by their digests, so no two arms ever print the same name;
+- every level is cut alike, wherever the name is printed — and two arms the cut would name alike are
+  told apart by their digests, so no two arms ever print the same name;
 - no report dumps an arm's whole lever set: it names the arm by its difference, and the bundle beside it carries the
   rest;
 - where a chart has no room for an arm's name it prints the arm's short name (GENERATOR.md §6.1): the campaign's
@@ -205,12 +204,15 @@ class TestNoTwoArmsShareAName:
         assert cut.startswith("first line x") and cut.endswith("the end of it")
         assert elide_level("short  value\n") == "short value"
 
-    def test_levels_a_cut_would_name_alike_are_named_by_their_lever_and_a_letter(self) -> None:
+    def test_arms_the_cut_would_name_alike_are_told_apart_by_their_digests(self) -> None:
         first, second = index = [_entry(**_SHARED, opening=_value(text)) for text in _PARTING_IN_THE_MIDDLE]
         assert elide_level(_PARTING_IN_THE_MIDDLE[0]) == elide_level(_PARTING_IN_THE_MIDDLE[1])
         names = arm_names(index)
-        assert names == {first.variant_key: "opening=opening A", second.variant_key: "opening=opening B"}
-        assert not any(ELISION in name for name in names.values())
+        assert names[first.variant_key] != names[second.variant_key]
+        for entry in (first, second):
+            assert names[entry.variant_key] == (
+                f"opening={elide_level(_PARTING_IN_THE_MIDDLE[0])} (arm {short_digest(entry.variant_key)})"
+            )
 
     def test_two_values_a_host_displayed_alike_are_told_apart_too(self) -> None:
         index = [_entry(prompt=_value(text, display="a prompt")) for text in ("one", "two")]
@@ -219,12 +221,12 @@ class TestNoTwoArmsShareAName:
             name.startswith("prompt=a prompt (arm ") for name in names.values()
         )
 
-    def test_levels_named_by_letter_carry_no_digest(self) -> None:
-        """The digest marks levels that do not tell arms apart, and a letter tells two long levels apart."""
+    def test_arms_the_cut_keeps_apart_carry_no_digest(self) -> None:
+        """The digest marks levels that do not tell arms apart, so it appears only where they do not."""
         texts = [_PARTING_IN_THE_MIDDLE[0] + suffix for suffix in (" — rev 1", " — rev 2")]
         index = [_entry(**_SHARED, opening=_value(text)) for text in texts]
         names = arm_names(index)
-        assert sorted(names.values()) == ["opening=opening A", "opening=opening B"]
+        assert sorted(names.values()) == sorted(f"opening={elide_level(text)}" for text in texts)
         assert not any("(arm " in name for name in names.values())
 
     def test_a_cell_adds_its_rig_and_an_arm_the_index_lacks_says_so(self) -> None:
@@ -366,8 +368,8 @@ class TestArmsDifferingOnOneLeverAreNamedByIt:
 class TestTheCutNeverMergesTwoArms:
     def test_the_two_arms_are_named_apart_in_every_output(self, cut_alike: Report) -> None:
         arms = _arm_column(cut_alike, "scoreboard")
-        assert sorted(arms) == ["extractor instructions A", "extractor instructions B"]
-        assert not any(ELISION in arm for arm in arms)
+        assert len(arms) == 2 and len(set(arms)) == 2
+        assert all(arm.startswith("extractor.instructions=") and ELISION in arm and " (arm " in arm for arm in arms)
         _assert_every_output_prints(cut_alike, set(arms))
 
 

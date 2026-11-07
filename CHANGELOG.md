@@ -12,15 +12,22 @@ packages (bumped in lock-step).
 (`CampaignLine.report.headline`), every figure key written out as its page prints it; a draft, a retired writer's
 analysis and a document that no longer reads are listed by code's verdict alone. Code's warnings (each bar an arm misses,
 each floor a candidate breaks) and its line on when criteria were set leave the headline for a new list beside it,
-`CampaignLine.report.caveats`. `analyses_list`'s `AnalysisLine.verdict` is unchanged: those lines, then code's verdict.
-An arm whose level is too long to print whole is no longer named by a cut of it: a person's label names it where the
-campaign declares one, else its lever and a letter (`system prompt A`, lettered by the levels' text); an empty level
-reads `no system prompt`, never `(none)`. An analyst's own caveat label prints its figure keys written out on the
-markdown and text pages, as every other field of the document does. Nothing stored changes, and no golden moves.
+`CampaignLine.report.caveats`. A document whose snapshot no longer reads is listed by code's verdict and as needing
+regeneration. At render time only, every code-written surface (the campaign and aspect pages, the report document's
+page, the listing) names an arm as the campaign's page does: its label where a person gave one; a computed name
+holding a level too long to print by its lever and the arm's own letter tag on that page (`Extractor instructions B`),
+which a figure key does not tag twice; the empty level of a text lever as `no system prompt`, never `(none)` (an empty
+number lever, such as a default temperature, keeps its placeholder). An analyst's own caveat label prints its figure
+keys written out, and a strict build refuses one that does not resolve. Nothing stored changes: a bundle's frozen
+labels, its fingerprint and census order, and a report snapshot's input are as before. No golden moves. Each page's
+letter is that page's tag; the code page and the document page still tag arms in their own orders until one tag rule
+serves both.
 
-**Hosts:** a listing's `report.headline` is now the report's own headline for a passed document, never prefixed by a
-warning; show `report.caveats` (a new list of strings, additive, empty with none) beside it to keep the warnings. An arm
-named from a long level reads `<lever> <letter>` on every page and in the listing, where it read as a cut of the level.
+**Hosts:** `report.headline` of a passed document is now its own headline, never prefixed by a warning. A host that
+showed `headline` must show `report.caveats` (new, additive, a list of strings, empty with none) beside it to keep
+the warnings. `AnalysisLine.verdict` keeps its shape (the caveats, then code's verdict). `AnalysisLine.verdict` and
+code's headline name a declared arm by its label, and every computed name follows the page. Recorded in
+`MIGRATIONS.toml`.
 
 ### evals: 26 declared names only Discodon's tests import go provisional
 

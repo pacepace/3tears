@@ -124,7 +124,7 @@ from threetears.evals.analysis.report.cost_unit import (
     priced_in_part,
 )
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
-from threetears.evals.analysis.report.words import arm_tags
+from threetears.evals.analysis.report.words import arm_tags, reader_arm_name, text_levers
 from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
@@ -227,6 +227,22 @@ _WHOLE_DOLLARS_FROM = 10.0
 INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
 ARM_TEMPLATE = "{name} ({tag})"
+
+
+def written_arm(name: str, tag: str) -> str:
+    """An arm as prose writes it: its name, then its letter tag (:data:`ARM_TEMPLATE`, ``v2 (A)``). A name that ends in
+    its own tag already (a cut level named by its lever and tag, ``system prompt B``) is not tagged twice.
+
+    :param name: The arm's name on the page.
+    :ptype name: str
+    :param tag: Its letter tag.
+    :ptype tag: str
+    :return: The arm, written.
+    :rtype: str
+    """
+    return name if name.endswith(f" {tag}") else ARM_TEMPLATE.format(name=name, tag=tag)
+
+
 #: How a count from zero to twenty reads as a word (the ``words`` filter), in order; a translation replaces them here.
 _COUNT_WORDS: tuple[str, ...] = (
     "zero",
@@ -3216,6 +3232,27 @@ def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
         kind: {identifier: reader_name(kind, identifier, report_input) for identifier in dict.fromkeys(held)}
         for kind, held in ids.items()
         if held
+    }
+
+
+def page_arm_names(report_input: ReportInput) -> dict[str, str]:
+    """The name a page prints for each arm, read at render time: its declared short name, else its alias read by
+    :func:`~threetears.evals.analysis.report.words.reader_arm_name` with its tag (a cut level by its lever and tag,
+    ``system prompt B``; an empty text level ``no system prompt``), else its id. The input itself is never renamed:
+    a snapshot's id is its content's digest.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Arm id -> its name on the page.
+    :rtype: dict[str, str]
+    """
+    arms = report_input.arms
+    control = next((arm.id for arm in arms if arm.role == "control"), None)
+    tags = arm_tags([arm.id for arm in arms], control)
+    text = text_levers(arm.settings for arm in arms)
+    return {
+        arm.id: arm.short_name or reader_arm_name(arm.name or arm.id, arm.settings, tags[arm.id], text=text)
+        for arm in arms
     }
 
 
@@ -6848,6 +6885,7 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
     """
     control = _control(report_input)
     tags = arm_tags([arm.id for arm in report_input.arms], control.id if control else None)
+    page: dict[str, str] | None = None
     pieces: list[str] = []
     at = 0
     for key in keys_in(text):
@@ -6857,9 +6895,10 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
         figure = resolve(key.path, report_input)
         if figure.kind == "arm":
             arm = _arm(report_input, str(figure.value))
-            written = ARM_TEMPLATE.format(
-                name=arm.short_name or arm_names.get(arm.id) or arm.name or arm.id, tag=tags[arm.id]
-            )
+            if page is None:
+                page = page_arm_names(report_input)
+            name = arm.short_name or arm_names.get(arm.id) or page[arm.id]
+            written = written_arm(name, tags[arm.id])
         else:
             written = format_figure(figure, key.filters)
         pieces.extend((text[at:start], written))
@@ -7437,7 +7476,9 @@ __all__ = [
     "parse_key",
     "pooled_figures",
     "price_frontier",
+    "page_arm_names",
     "printed_arm_name",
+    "written_arm",
     "reader_name",
     "reader_names",
     "render",

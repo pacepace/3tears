@@ -95,7 +95,7 @@ if TYPE_CHECKING:
 _DISPLAY_LIMIT = 60
 
 #: How a frozen level with no value is displayed, and one whose value is empty: placeholders, which a reader-facing
-#: name replaces with words (``no system prompt``, :func:`~threetears.evals.analysis.arms.arm_names`). The display is
+#: name replaces with words (``no system prompt``, :func:`~threetears.evals.analysis.report.words.reader_arm_name`). The display is
 #: what a stored variant index holds, so neither spelling ever changes.
 NO_VALUE_DISPLAY = "(none)"
 EMPTY_VALUE_DISPLAY = "(empty)"
