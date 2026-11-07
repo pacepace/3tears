@@ -57,7 +57,7 @@ Each kind uses the subset its table lists. The same idea has the same name in ev
 | `color` | string | A token name (`"--s1"`, `"--ink-2"`, `"--seq-2"`), checked against `^--[a-z][a-z0-9-]*$`. Arm identity: the same color for an arm on every chart. |
 | `strong` / `muted` | boolean | On a row or point: bold label and note / faded mark. |
 | `tip` | string[] | Tooltip lines; the first is set in bold. Each kind has a default when omitted. |
-| `note` | string | Text printed at a bar's end or a forest row's right edge; falls back to the formatted value when it would not fit. A forest prints every row's note where all of them fit, else every row's value, so its end labels read alike. |
+| `note` | string | Text printed at a bar's end or a forest row's right edge; falls back to the formatted value when it would not fit. A forest prints every row's note where every row has one, wrapped at its spaces where it does not fit, else every row's value, so its end labels read alike and never read coarser than the note. |
 | `zero_label` | string | On a change chart (`forest`, `bars`, `diverging_bars`): what zero is, the control's name (`P · September`), printed at the top of the zero line on a line of its own. |
 | `short_label` | string | Used when `label` does not fit the label column. |
 | `tag` | string | On a bar row: an arm's letter tag, drawn in a square of the row's `color` between the label and the bar. Where neither `label` nor `short_label` fits, the tag stands alone. |

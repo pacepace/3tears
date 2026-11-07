@@ -138,12 +138,13 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
     headers, rows = chart.values_table()
-    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4.
-    assert headers == ["Arm", "Cost per 1,000 replies ($)", "Interval ($)", "Pass rate (%)", "Interval (%)"]
-    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies ($)"  # type: ignore[index]
+    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4. Each cost carries its
+    # dollar sign as the scoreboard writes it (P17), so the head names the count alone.
+    assert headers == ["Arm", "Cost per 1,000 replies", "Interval", "Pass rate (%)", "Interval (%)"]
+    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
     # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
-    assert (rows[0][1], rows[0][2], rows[1][1]) == ("4.00", "[3.60, 4.40]", "0.80"), rows
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "[$3.60, $4.40]", "$0.80"), rows
     assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
 
 

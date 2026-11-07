@@ -420,18 +420,21 @@ class Result:
         :return: The text.
         :rtype: str
         """
-        if full:
-            return "\n\n".join(
-                [*(summary.render() for summary in self.arms.values()), campaign_report_markdown(self.page)]
-            )
-        one_arm = len(self.arms) == 1
-        lines = [self._verdict_line()]
         # Every arm's total in one form, the page's for its test costs (plain dollars to two significant figures), and
         # every role's share of one in another.
         totals = money_ruler((summary.total_cost_usd for summary in self.arms.values()), per=0)
         roles = money_ruler(
             (role.cost_usd for summary in self.arms.values() for role in summary.spend if role.counted), per=0
         )
+        if full:
+            return "\n\n".join(
+                [
+                    *(self._full_summary(summary, totals, roles) for summary in self.arms.values()),
+                    campaign_report_markdown(self.page),
+                ]
+            )
+        one_arm = len(self.arms) == 1
+        lines = [self._verdict_line()]
         if one_arm:
             # One arm's verdict is how its cases came out, and how far its judge can be trusted is read with it.
             lines += self.calibration_lines()
@@ -543,6 +546,43 @@ class Result:
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
+
+    def _full_summary(self, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
+        """An arm's whole summary as the full print writes it: the run summary's lines
+        (:meth:`~threetears.evals.analysis.summary.EvalSummary.render`), each figure in the form the quiet print and
+        the page state it (the review's P43, A4): a measure, its strata's included, under the page's name, a rate in
+        percent with its count of trials; each label's precision and recall in percent with their intervals; a judged
+        dimension as the quiet print says it; every amount of spend in the form of its set, a total as the page's test
+        cost. Every other line is the summary's own."""
+        said: dict[str, str] = {}
+        said.update(zip(summary.label_lines, (_label_text(statistics) for statistics in summary.labels), strict=True))
+        said.update(
+            zip(summary.dimension_lines, (_dimension_text(dimension) for dimension in summary.judged), strict=True)
+        )
+        if summary.total_spend_text is not None and summary.total_cost_usd is not None:
+            said[summary.total_spend_text] = f"total spend: {totals.spell(summary.total_cost_usd)}, the results' cost"
+        spent = {role.role: role.cost_usd for role in summary.spend if role.cost_usd is not None}
+        lines = []
+        for line in summary.render().splitlines():
+            body = line.lstrip()
+            indent = line[: len(line) - len(body)]
+            if body in said:
+                body = said[body]
+            elif (measured := _FULL_MEASURE.fullmatch(body)) is not None:
+                body = self._full_measure(measured)
+            elif (role := _ROLE_SPEND.fullmatch(body)) is not None and role["role"] in spent:
+                body = f"{role['role']} spend: {roles.spell(spent[role['role']])}{role['rest']}"
+            lines.append(indent + body)
+        return "\n".join(lines)
+
+    def _full_measure(self, measured: re.Match[str]) -> str:
+        """A run summary's measure line as the full print writes it: under the page's name, a rate in percent with its
+        count of trials, any other measure with its trials named (:func:`_measured_text`)."""
+        name = measured["name"]
+        descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
+        rate = not measured["unit"] and (name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor))
+        mean = float(measured["mean"]) if rate else 0.0
+        return f"{self._printed_name(name)}{_measured_text(measured['said'], mean, int(measured['n']), rate=rate)}"
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
@@ -910,6 +950,15 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
 _MEASURE_LINE = re.compile(
     r"^: mean (?P<mean>\S+) \(n=(?P<n>\d+), min (?P<low>[^,]+), max (?P<high>[^,)]+)(?P<rest>[^)]*)\)(?P<tail>.*)$"
 )
+
+
+#: A run summary's measure line, its name and what follows it: a measure carried by some result, with its mean.
+_FULL_MEASURE = re.compile(
+    r"^(?P<name>[^\s:]+(?: [^\s:]+)*?)(?P<said>: mean (?P<mean>-?[\d.]+)(?P<unit>[^\s(]*(?: [^\s(]+)?) \(n=(?P<n>\d+), .*)$"
+)
+
+#: A run summary's spend line for one role: ``candidate spend: $0.00175 over 40 call(s)``.
+_ROLE_SPEND = re.compile(r"^(?P<role>[\w-]+) spend: [<>]? ?\$[\d.,]+(?P<rest> over .*)$")
 
 
 def _measured_text(said: str, mean: float | None, n: int, *, rate: bool) -> str:

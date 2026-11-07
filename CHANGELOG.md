@@ -18,10 +18,11 @@ interval's ends alike (`$0.045 [$0.045, $0.045]` reads `$0.0451 [$0.0448, $0.045
 precision) reads in percent beside it with its count (`90 (81 of 90 trials, 30 cases)` under `Accuracy (%)`, which read
 `0.9`). The line under a table of interval glyphs states the data's own ends in the cells' form, a rate's within 0 to
 100 and every span with its unit (`Each column drawn from -1.5 to 25.9 pts and from $0.031 to $0.10`, which read
-`-2.835 to 27.26` and `$0.00002043 to $0.00002371`); each glyph's title reads as its cells do, and a glyph under a
-margin ticks the margin's two ends beside its zero tick. A change chart against the control names its zero line with
-the control (`P · September`, the kit data's new `zero_label` on `forest`, `bars` and `diverging_bars`); a forest's end
-labels read alike, every row's note or every row's value. A campaign's cost/quality scatter draws each arm's two
+`-2.835 to 27.26` and `$0.00002043 to $0.00002371`); each glyph's title reads as its cells do, a score's or a count's ends read to two
+significant figures (`-0.31 to 0.12`), and a glyph under a margin runs its track past the margin's ends and ticks
+them beside its zero tick. A forest's end label is its note, wrapped where it does not fit, never the axis's coarser
+number. A change chart against the control names its zero line with
+the control (`P · September`, the kit data's new `zero_label` on `forest`, `bars` and `diverging_bars`). A campaign's cost/quality scatter draws each arm's two
 intervals as whiskers (the kit's new `x_lo`, `x_hi`, `y_lo`, `y_hi` and the scatter's `level`) and sets both axes to
 the data, its ticks in the chart's money form. One arm carries one tag and one colour on the code page, every aspect's
 page and the report document's page: the campaign's declared arms first (`campaign_arm_tags` takes `arms` and
@@ -35,7 +36,14 @@ by its file name, never its path, and spells each arm's total spend as the page'
 updates its match. The report JSON's money cells carry `decimals` as before and never `per_thousand` (a cell stored with
 it still reads as stored, and the kit still draws a stored `usdpk` format). `ChartBlock` gains an optional `level`
 (the cost/quality chart's interval level), and the kit's chart data gains `zero_label` and the scatter points'
-interval ends; nothing stored changes shape.
+interval ends; nothing stored changes shape. An arm's letter tag and colour now follow the campaign's declared arm
+order on every page, so a page rendered after this change can tag and colour an arm differently from one rendered before
+it (Kairo's `A` and `B` swap on its code page); a host that shows or caches tags (a listing) reads them anew.
+`money_form` lost its `marked=` keyword and gained `intervals=`; `money_columns` lost `marked=`; `money_ruler` gained
+`intervals=`; `campaign_arm_tags` gained `arms=` and `label_of=`. A figure key spelling a cost per reply under a cent
+with `usd` now carries its count (`+$0.49 per 1,000 replies`, which read `+$0.49/1000`). The cost/quality chart's
+values table writes each cost with its dollar sign under `Cost per 1,000 replies`, and the full print
+(`render(full=True)`) writes its figures as the quiet print does.
 
 ### evals: one result, one sentence: the undecided reading says what it means, on every surface
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -20,8 +21,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, Tabl
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
-from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
+from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema.hashing import round_floats
 
 #: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
@@ -313,14 +315,16 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
 
 @dataclass(frozen=True)
 class _Scale:
-    """One glyph scale: the track's ends, which are the data's own (the glyph's inset keeps a mark off the edge), the
-    unit its spans are read in (a cell's own, else the one its column's header names), and a cell of the scale, which
+    """One glyph scale: the data's ends, which the line under the table states; the track's, the data's own but run a
+    little past a declared margin so its ticks sit inside the track (the glyph's inset keeps a mark off the edge); the
+    unit its spans are read in (a cell's own, else the one its column's header names); and a cell of the scale, which
     spells a number as the column's cells do (its money form)."""
 
     low: float
     high: float
     unit: str
     cell: TableCell
+    track: tuple[float, float]
 
     def spell(self, number: float) -> str:
         """A number on the scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``."""
@@ -333,16 +337,38 @@ class _Scale:
         return self.unit == PERCENT or is_money(self.unit) or not self.unit
 
     def span(self) -> str:
-        """The scale's ends, its unit once: ``-7.8 to 35.4 pts``, ``83.9% to 100%``, ``$0.031 to $0.10``."""
-        if self._on_number():
+        """The scale's ends, its unit once: ``-7.8 to 35.4 pts``, ``83.9% to 100%``, ``$0.031 to $0.10``; a score or a
+        count to two significant figures (``-0.31 to 0.12``, ``-0.0069 to 0.0025 notices``), one more only where two
+        would print its ends alike (the review's P45)."""
+        if self.cell.unit and (self.unit == PERCENT or is_money(self.unit)):
             return f"{self.spell(self.low)} to {self.spell(self.high)}"
-        return f"{number_in(self.low, self.unit)} to {number_in(self.high, self.unit)} {self.unit}"
+        if self.unit in (PERCENT, POINTS):
+            ends = f"{number_in(self.low, self.unit)} to {number_in(self.high, self.unit)}"
+            return (
+                f"{self.spell(self.low)} to {self.spell(self.high)}" if self.unit == PERCENT else f"{ends} {self.unit}"
+            )
+        low, high = _two_figures(self.low, self.high)
+        return f"{low} to {high}" + (f" {self.unit}" if self.unit else "")
 
     def interval(self, low: float, high: float) -> str:
         """An interval on the scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``."""
         if self._on_number():
             return f"[{self.spell(low)}, {self.spell(high)}]"
         return f"[{number_in(low, self.unit)}, {number_in(high, self.unit)}] {self.unit}"
+
+
+def _two_figures(low: float, high: float) -> tuple[str, str]:
+    """A scale's two ends rounded to the decimals that give the smaller end two significant figures (none from ten up),
+    one more only where two would print the ends alike, each then spelled by the number rule."""
+    stated = [abs(end) for end in (low, high) if end != 0]
+    if not stated:
+        return "0", "0"
+    decimals = max(0, 1 - math.floor(math.log10(min(stated))))
+    spelled = (format_number(round(low, decimals)), format_number(round(high, decimals)))
+    if spelled[0] == spelled[1] and low != high:
+        decimals += 1
+        spelled = (format_number(round(low, decimals)), format_number(round(high, decimals)))
+    return spelled
 
 
 #: The unit a column's header names in its closing parentheses (``v2 (pts)``, ``Pass rate (%)``), which a cell
@@ -356,6 +382,10 @@ def _read_unit(cell: TableCell, header: str) -> str:
         return cell.unit
     named = _HEADER_UNIT.search(header)
     return named.group(1) if named is not None else ""
+
+
+#: How far past a declared margin a glyph's track runs, as a multiple of the margin.
+_PAST_MARGIN = 1.15
 
 
 def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
@@ -373,6 +403,7 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
     """
     headers = {column.key: column.header for column in block.columns}
     ends: dict[tuple[str, str], list[float]] = {}
+    margins: dict[tuple[str, str], float] = {}
     first: dict[tuple[str, str], TableCell] = {}
     for row in block.rows:
         for key, cell in row.items():
@@ -383,6 +414,7 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
             held += [cell.low, cell.high, float(cell.value)]  # type: ignore[arg-type]
             if cell.margin is not None:
                 held += [-cell.margin, cell.margin, 0.0]
+                margins[key, cell.unit] = max(margins.get((key, cell.unit), 0.0), cell.margin)
             if cell.zero_line:
                 held.append(0.0)
     units = {group: _read_unit(cell, headers.get(group[0], "")) for group, cell in first.items()}
@@ -392,8 +424,10 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
         return ("", unit) if block.shared_scale and not is_money(unit) else group
 
     by_scale: dict[tuple[str, str], list[float]] = {}
+    margin_of: dict[tuple[str, str], float] = {}
     for group, figures in ends.items():
         by_scale.setdefault(pooled(group), []).extend(figures)
+        margin_of[pooled(group)] = max(margin_of.get(pooled(group), 0.0), margins.get(group, 0.0))
     scales: dict[tuple[str, str], _Scale] = {}
     for group in ends:
         figures = by_scale[pooled(group)]
@@ -404,7 +438,10 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
             # One figure alone: a track either side of it, so its mark is drawn where it is.
             pad = abs(low) * 0.05 or 1.0
             low, high = low - pad, high + pad
-        scales[group] = _Scale(low=low, high=high, unit=units[group], cell=first[group])
+        # A declared margin's ends sit inside the track, so its ticks and its band never fill it edge to edge.
+        margin = margin_of.get(pooled(group), 0.0) * _PAST_MARGIN
+        track = (min(low, -margin), max(high, margin))
+        scales[group] = _Scale(low=low, high=high, unit=units[group], cell=first[group], track=track)
     return scales
 
 
@@ -422,7 +459,7 @@ def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale]) -> 
         cell.low,
         cell.high,
         unit=cell.unit,
-        scale=(scale.low, scale.high),
+        scale=scale.track,
         margin=cell.margin,
         said=said,
     )

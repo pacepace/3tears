@@ -975,7 +975,8 @@ class ChartBlock(_Block):
             floor=0.0,
             ceiling=100.0,
         )
-        unit = f" ({unit_label(self.unit)})" if self.unit else ""
+        # Its ticks carry the dollar sign, so the title names the count alone; any other unit is named in it.
+        unit = f" ({self.unit})" if self.unit and not is_money(self.unit) else ""
         tagged = all(point.tag is not None for point in self.points)
         drawn = self.level is not None
         points = [
@@ -1039,21 +1040,21 @@ class ChartBlock(_Block):
             # On the chart's own scale, per 1,000 replies, and saying so, so the table beside the figure (or in its
             # place where no script runs) reads what the axis does; each figure's interval follows it, as the pass
             # rate's does.
-            cost = f" ({unit_label(self.unit)})" if self.unit else ""
+            # Money carries its sign on every cell, as the scoreboard writes it ($1.89), its count in the head; any
+            # other unit is named once in the head.
+            money = is_money(self.unit)
+            cost = f" ({self.unit})" if self.unit and not money else ""
             spelled, scale, per, _ = self._cost_drawn()
 
-            def bare(amount: float) -> str:
-                # The head carries the sign, so a cell reads the number alone: money in the chart's one form.
-                return (
-                    spelled(amount).replace("$", "", 1) if is_money(self.unit) else number_in(amount * scale, self.unit)
-                )
+            def said(amount: float) -> str:
+                return spelled(amount) if money else number_in(amount * scale, self.unit)
 
             headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
             return headers, [
                 [
                     point.arm,
-                    bare(point.cost),
-                    f"[{bare(point.cost_low)}, {bare(point.cost_high)}]",
+                    said(point.cost),
+                    f"[{said(point.cost_low)}, {said(point.cost_high)}]",
                     interval_value_text(point.pass_rate, PERCENT),
                     interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]

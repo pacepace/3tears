@@ -232,9 +232,19 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
 
 // ---------- forest plot: change against a control, with interval and an optional margin ----------
 // rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?, zeroLabel?}
-// every row's end label is its note where every note fits the margin, else every row's value alone, so the labels read alike
+// every row's end label is its note where every row has one, else its value, so the labels read alike; a note too wide
+// for the margin wraps at its spaces, never cut to a coarser number than it states
 function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
-  const m={l:lw,r:narrow?60:96,t:opt.zeroLabel?36:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const m={l:lw,r:narrow?60:96,t:opt.zeroLabel?36:22,b:24};
+  // every row's end label is its note where every row has one: wrapped at its spaces, two lines at most (the figure
+  // with its unit, then the words), the margin widened to its widest line up to a third of the chart, never a coarser
+  // number than the note states
+  const noted=rows.every(r=>r.note!=null);
+  const kWrap=(t,room)=>{const lines=[];let cur="";for(const wd of String(t).split(" ")){const nx=cur?cur+" "+wd:wd;
+    if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+    if(lines.length>2){const wds=String(t).split(" ");return [wds.slice(0,2).join(" "),wds.slice(2).join(" ")];}return lines;};
+  if(noted){const widest=Math.max(...rows.map(r=>Math.max(...kWrap(r.note,m.r-10).map(l=>l.length*6.4))));if(widest>m.r-10)m.r=Math.min(w*.32,widest+14);}
+  let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
   const zl=opt.zeroLabel&&d0<=0&&0<=d1?opt.zeroLabel:null;if(opt.zeroLabel&&!zl)m.t-=14;
   const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?w-m.r-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
   const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);
@@ -244,7 +254,6 @@ function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.ma
   S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
   if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   if(zl){S("line",{x1:x(0),x2:x(0),y1:4,y2:m.t-4,class:"axis",style:"stroke-width:1.5"},s);const e=x(0)>w*.6;S("text",{x:e?x(0)-4:x(0)+4,y:12,"text-anchor":e?"end":"start",class:"tick",text:zl},s);}
-  const noted=rows.every(r=>r.note!=null&&r.note.length*6.4<=m.r-10);
   let y0=m.t+(rows.some(r=>r.group)?14:0);
   rows.forEach((r,i)=>{if(r.group&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group},s);}
     const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const cl=v=>x(Math.max(d0,Math.min(d1,v)));
@@ -252,7 +261,8 @@ function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.ma
     S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
     S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
-    const nt=noted?r.note:opt.fmt(r.value);S("text",{x:w-m.r+8,y:cy+4,class:r.strong?"lbl-strong":"tick",text:nt},g);
+    const nl=noted?kWrap(r.note,m.r-10):[opt.fmt(r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
+    nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
     hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`]));});
   return s;}
 

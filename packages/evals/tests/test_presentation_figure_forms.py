@@ -11,7 +11,10 @@ and on the toy shapes:
 - for every chart kind a page draws and every grid table, the scale line's money is the cells' form;
 - every per-reply cost reads per 1,000 replies in its header or axis, and every total reads plain dollars;
 - no interval prints two equal ends unless its stored ends are equal;
-- a figure keyed once prints at one precision in chart label, values table and print;
+- a figure prints at one precision in its chart label, its values table and the print: a forest's end label is its
+  note, never the axis's coarser format; the cost chart's cells, tips and axis read one money form; the full print
+  states every figure as the quiet print and the page do (a writer page's forest values table still reads four
+  figures: changing it moves rung 5's recorded judge evidence, which waits on a re-recording);
 - a change chart names its zero;
 - the interval glyph draws a zero and a margin tick;
 - the same arm has the same tag letter and colour on the code page, the aspect page and the document page, for a
@@ -42,6 +45,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
+from threetears.evals.analysis.report.chart_svg import chart_drawing
 from threetears.evals.analysis.report.html_parts import KIT_JS, grid_html
 from threetears.evals.analysis.report.parts.look import arm_token
 from threetears.evals.analysis.report.svg import interval_glyph_svg
@@ -300,9 +304,12 @@ def test_the_cost_chart_s_tips_and_values_table_print_a_cost_alike_and_its_axes_
     assert data["level"] == "95%"
     headers, rows = chart.values_table()
     for point, row in zip(points, rows, strict=True):
+        # P17: every cost carries its dollar sign, as the scoreboard writes it, its count in the head.
         tip_cost = point["tip"][1]
-        assert tip_cost.startswith(f"${row[1]} [${row[2].strip('[]').split(', ')[0]}, "), (tip_cost, row)
-    assert headers[1] == "Cost per 1,000 replies ($)"
+        assert tip_cost.startswith(f"{row[1]} {row[2]} "), (tip_cost, row)
+        assert row[1].startswith("$") and re.fullmatch(r"\[\$[\d.,]+, \$[\d.,]+\]", row[2]), row
+    assert headers[1:3] == ["Cost per 1,000 replies", "Interval"]
+    assert data["x_title"] == "Cost per 1,000 replies"
 
 
 # --- charts that read cold -----------------------------------------------------------------------------------------------
@@ -329,6 +336,80 @@ def test_the_interval_glyph_draws_a_zero_tick_and_a_tick_at_each_end_of_its_marg
     assert drawn.count('class="viz-margin"') == 2
     crossing = interval_glyph_svg(3.0, -2.0, 8.0, unit="", scale=(-2.0, 8.0))
     assert crossing.count('class="viz-zero"') == 1 and 'class="viz-margin"' not in crossing
+
+
+def test_a_margin_s_ticks_sit_strictly_inside_the_glyph_s_track() -> None:
+    """Kairo's ±15-point margin over data from -10.8 to 1.1: the track runs past the margin's ends, so its two ticks
+    and its band sit inside it and the zero tick stands apart from them; the line under the table states the data's
+    and the margin's own ends."""
+    block = TableBlock(
+        section="scorecard",
+        name="scorecard",
+        title="By aspect",
+        shared_scale=True,
+        columns=[{"key": "aspect", "header": "Aspect"}, {"key": "arm:b", "header": "B (pts)"}],  # type: ignore[list-item]
+        order="aspect by aspect",
+        rows=[
+            {
+                "aspect": TableCell(value="character"),
+                "arm:b": TableCell(value=-7.6, low=-10.8, high=1.1, margin=15.0, zero_line=True),
+            }
+        ],
+        total_rows=1,
+    )
+    drawn = grid_html(block)
+    track = re.search(r'class="viz-track" x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)"', drawn)
+    ticks = [float(x) for x in re.findall(r'class="viz-margin" x1="([\d.]+)"', drawn)]
+    assert track is not None and len(ticks) == 2
+    start, end = float(track.group(1)), float(track.group(2))
+    assert all(start < tick < end for tick in ticks), (start, ticks, end)
+    (zero,) = [float(x) for x in re.findall(r'class="viz-zero" x1="([\d.]+)"', drawn)]
+    assert ticks[0] < zero < ticks[1]
+    assert '<p class="axis">Each column drawn from -15 to 15 pts</p>' in drawn
+
+
+def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: str) -> None:
+    """P34: a note too wide for the margin (``-3 pts not separated``) once fell back to the axis's whole-number format
+    (``-3``, ``-8`` beside ``-7.6`` in the prose). The end label is the note, wrapped at its spaces where it does not
+    fit, on the drawn page (the kit) and on the static one."""
+    block = ChartBlock(
+        section="memo",
+        chart="forest",
+        title="t",
+        data={  # type: ignore[arg-type]
+            "rows": [
+                {"label": "A", "value": -7.581, "lo": -12.85, "hi": -1.804, "note": "-7.6 pts worse"},
+                {"label": "B", "value": -3.01, "lo": -7.392, "hi": 2.64, "note": "-3.0 pts not separated"},
+            ],
+            "domain": [-16, 4],
+            "fmt": "+num:0",
+            "level": "99.69%",
+        },
+    )
+    drawn = chart_drawing(block)
+    assert drawn is not None
+    labels = [
+        " ".join(re.findall(r"<tspan[^>]*>([^<]*)</tspan>", spans))
+        for spans in re.findall(r"<text[^>]*>((?:<tspan[^>]*>[^<]*</tspan>)+)</text>", drawn)
+    ]
+    # Each end label is its whole note, on two lines at most where it does not fit.
+    assert "-7.6 pts worse" in labels and "-3.0 pts not separated" in labels, labels
+    assert all(len(re.findall(r"<tspan", spans)) <= 2 for spans in re.findall(r"<text[^>]*>(.*?)</text>", drawn))
+    assert not {"-8", "-3"} & set(labels), "an end label fell back to the axis's whole numbers"
+    assert "kWrap(r.note," in KIT_JS, "the kit wraps a forest's note rather than falling back to its format"
+
+
+def test_the_full_print_states_its_figures_as_the_quiet_print_and_the_page_do(rungs: dict[str, _Rung]) -> None:
+    """P43, A4: the full print (``render(full=True)``) wrote ``mean 0.8333``, ``95% CI 0.5687-1`` and a total of
+    ``$0.00413`` beside the page's ``$0.0041``. It writes every figure as the quiet print does."""
+    rung = rungs["rung3"]
+    full = rung.result.render(full=True)
+    quiet = str(rung.result)
+    for line in quiet.splitlines():
+        if line.startswith("  total spend: ") or line.strip().startswith(("CAD:", "Accuracy:", "Number score:")):
+            assert line.strip() in full, line
+    assert not re.search(r"(?<!\$)\b0\.\d{4}\b|CI \d|: mean 0\.|\$0\.00\d{3}\b", full.split("\n# ")[0])
+    assert "Test cost | v1 $0.0041; v2 $0.0063" in full and "  total spend: $0.0041, the results' cost" in full
 
 
 def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:

@@ -300,7 +300,9 @@ def build_code_only_report(
     :param arm_tags: The letter tag each arm carries across the campaign's page, by variant key
         (:func:`~threetears.evals.analysis.report.words.campaign_arm_tags`), so an arm this aspect shares with others
         is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
-        does a map that leaves out an arm of this page.
+        does a map that leaves out an arm of this page: in the order the aspect's variant index lists them, since an
+        aspect's bundle does not carry its campaign's declared order, so a caller showing the page beside its
+        campaign's passes the campaign's tags.
     :ptype arm_tags: Mapping[str, str] | None
     :param arm_short_names: The short names the campaign's arms declare, by variant key
         (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in

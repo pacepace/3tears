@@ -190,10 +190,15 @@ def test_every_key_of_a_money_family_reads_in_its_sets_one_form(
     figures = _arms(held, family)
     if not figures:
         pytest.skip(f"{name} states no {family}")
-    factor = 1000.0 if filters == ("usd_per_1k",) and next(iter(figures.values())).scale == "usd" else 1.0
+    first = next(iter(figures.values()))
+    under = min((abs(float(f.value)) for f in figures.values() if isinstance(f.value, float) and f.value), default=1)
+    # A family that counts something and holds an amount under a cent reads per 1,000 of it with ``usd`` too, its count
+    # said with the amount (Q4): as ``usd_per_1k`` reads it.
+    counted = filters == ("usd_per_1k",) or (bool(first.per) and under < CENT and filters in ((), ("usd",)))
+    factor = 1000.0 if counted and first.scale == "usd" else 1.0
     values = {arm: float(figure.value) * factor for arm, figure in figures.items() if isinstance(figure.value, float)}
     form = money_form(values.values())
-    if filters == ("usd_per_1k",) and min((abs(value) for value in values.values() if value), default=1) < CENT:
+    if counted and min((abs(value) for value in values.values() if value), default=1) < CENT:
         # Per 1,000 a family under a cent moves its ruler to per 1,000,000, the mark never stacked on it.
         values = {arm: value * 1000 for arm, value in values.items()}
         form = money_form(values.values())
@@ -413,10 +418,20 @@ def test_a_money_change_reads_in_its_amounts_form_to_its_intervals_precision(nam
             continue
         means = [float(stat.mean) for stat in measure.per_arm.values() if stat.mean is not None]
         low, high = (float(end) for end in contrast.interval)
-        form = money_form(means).for_changes([float(contrast.delta)], [high - low])
-        text = format_figure(resolve(f"contrast.{contrast.arm}.{contrast.measure}.delta", held))
-        assert text == form.spell(float(contrast.delta), signed=True)
-        assert form.decimals <= max(2, 1 - math.floor(math.log10((high - low) * (1000 if form.per_thousand else 1))))
+        figure = resolve(f"contrast.{contrast.arm}.{contrast.measure}.delta", held)
+        text = format_figure(figure)
+        if figure.per and min(abs(mean) for mean in means if mean) < CENT:
+            # Money per something under a cent reads per 1,000 of it with its count (Q4), on its amounts' ruler.
+            own = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}[measure.unit]
+            ruler = money_ruler(means, per=own, start=1000).for_changes([float(contrast.delta)], [high - low])
+            assert text == f"{ruler.spell(float(contrast.delta), signed=True)} {ruler.words(figure.per)}"
+            form = ruler.form
+            width = (high - low) * ruler.scale
+        else:
+            form = money_form(means).for_changes([float(contrast.delta)], [high - low])
+            assert text == form.spell(float(contrast.delta), signed=True)
+            width = high - low
+        assert form.decimals <= max(2, 1 - math.floor(math.log10(width)))
         checked += 1
     if not checked:
         pytest.skip(f"{name} holds no money contrast with an interval")
@@ -439,7 +454,13 @@ def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> Non
     text = format_figure(resolve(f"cost.gap.{first}.{second}.per_1k", held), ("usd",))
     # A gap takes its precision from its own size, in the form (the scale) of the costs it compares (#993).
     gap = costs[first] - costs[second]
-    assert text == form.for_changes([gap]).spell(gap, signed=True)
+    figure = resolve(f"cost.gap.{first}.{second}.per_1k", held)
+    if figure.per and min(abs(cost) for cost in costs.values() if cost) < CENT:
+        # Money per something under a cent reads per 1,000 more of it with its count (Q4), on its amounts' ruler.
+        ruler = money_ruler(costs.values(), per=1000, start=1000).for_changes([gap])
+        assert text == f"{ruler.spell(gap, signed=True)} {ruler.words(figure.per)}"
+    else:
+        assert text == form.for_changes([gap]).spell(gap, signed=True)
 
 
 # --- the monthly figure reconciles -------------------------------------------------------------------------------
