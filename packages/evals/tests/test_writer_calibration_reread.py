@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
     stored_record,
 )
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
 from threetears.evals.ops.report_writer.preference import preference_rubric
 
 #: The scripted judge's name, as the anchor rows record the judge asked.
@@ -203,6 +204,6 @@ def test_the_cost_printed_before_a_live_reread_is_the_stored_records_own_cost_pe
     assert "42 calls" in cost_note(record, judge=SMOKE_JUDGE, k=1) and "$0.67" in cost_note(
         record, judge=SMOKE_JUDGE, k=1
     )
-    assert cost_note(record, judge="claude-haiku-5-5", k=2).endswith("the stored record holds no cost per call for it.")
+    assert cost_note(record, judge=SMOKE_WRITER, k=2).endswith("the stored record holds no cost per call for it.")
     # A record a reread wrote keeps each trial's cost.
     assert cost_note(stored, judge=_JUDGE, k=1).endswith("about $0.42 at the $0.0100 a call the stored record spent.")
