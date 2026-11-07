@@ -56,7 +56,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid7
 
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger, traced

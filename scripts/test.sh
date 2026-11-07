@@ -63,5 +63,32 @@ else
     # four workers, one package per worker (the root conftest marks each test with its package's
     # xdist group). a single-package run above stays serial. pass `-n 0` to run serially, e.g.
     # under a debugger.
-    uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    if [ -n "$local_only" ]; then
+        # the caller selects with -m or sets an environment gate: run exactly what was asked
+        uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    else
+        # the event loop's wall-clock tests run apart and serially, as scripts/ci-unit-tests.sh runs
+        # them: beside four busy workers the kernel preempts the thread holding the interpreter lock,
+        # and a bound on the code becomes a bound on the machine. a --junit-xml report path gets a
+        # second file for the serial run, so the parallel run's report is not overwritten.
+        TIMING_ARGS=()
+        for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
+            case "$arg" in
+                --junit-xml=*) TIMING_ARGS+=("${arg%.xml}.loop_timing.xml") ;;
+                *) TIMING_ARGS+=("$arg") ;;
+            esac
+        done
+        status=0
+        uv run pytest packages/ tests/ -m "not integration and not loop_timing" -n 4 --dist loadgroup \
+            ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || status=$?
+        timing=0
+        uv run pytest packages/ tests/ -m "loop_timing and not integration" -n 0 \
+            ${TIMING_ARGS+"${TIMING_ARGS[@]}"} || timing=$?
+        # 5 = nothing collected
+        [ "$timing" -eq 5 ] && timing=0
+        if [ "$status" -ne 0 ] || [ "$timing" -ne 0 ]; then
+            echo "test.sh: parallel run exit ${status}, serial loop_timing run exit ${timing}" >&2
+            exit 1
+        fi
+    fi
 fi

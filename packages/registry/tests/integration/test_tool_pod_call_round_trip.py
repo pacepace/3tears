@@ -41,8 +41,8 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
-from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.tools.server import CallRequest
+from threetears.core.tool_wire import CallContext
+from threetears.core.tool_wire import CallRequest
 from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.security import (
     PLATFORM_CUSTOMER_SENTINEL,

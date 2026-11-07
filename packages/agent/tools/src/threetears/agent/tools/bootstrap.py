@@ -50,11 +50,13 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
+from prometheus_client.metrics_core import Metric
 from sqlalchemy import MetaData
 from threetears.core.backends import BrokerGenerationSource
 from threetears.core.collections import bind_collections_bucket
@@ -361,6 +363,87 @@ async def build_tool_pod_collection_stack(
     return registry
 
 
+#: the suffixes each metric type adds to its family name in the exposition output. a counter
+#: ``x`` prints ``x_total`` and ``x_created``, so a gauge named ``x_total`` clashes with it even
+#: though the family names differ.
+_PRINTED_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "counter": ("_total", "_created"),
+    "histogram": ("_bucket", "_count", "_sum", "_created"),
+    "gaugehistogram": ("_bucket", "_gcount", "_gsum"),
+    "summary": ("", "_count", "_sum", "_created"),
+    "info": ("_info",),
+}
+
+
+def _printed_names(family: Metric) -> set[str]:
+    """every name a family can print in the exposition output, sampled or not.
+
+    :param family: the metric family
+    :ptype family: Metric
+    :return: the family name, its type's suffixed names, and its samples' names
+    :rtype: set[str]
+    """
+    names = {family.name + suffix for suffix in _PRINTED_SUFFIXES.get(family.type, ("",))}
+    names.add(family.name)
+    names.update(sample.name for sample in family.samples)
+    return names
+
+
+class _FirstFamilyWins:
+    """a collector yielding every family of several registries, each family name once.
+
+    the first registry to yield a name keeps it; a later family of that name is left out and
+    logged the first time it is seen. the exposition format allows one family per name, and a
+    scrape carrying two is rejected whole, which would hide every metric the pod serves.
+    """
+
+    def __init__(self, registries: Sequence[CollectorRegistry], *, service_name: str) -> None:
+        """hold the registries in precedence order.
+
+        :param registries: the registries to serve, first wins a name clash
+        :ptype registries: Sequence[CollectorRegistry]
+        :param service_name: the pod's service name, for the clash log line
+        :ptype service_name: str
+        """
+        self._registries = tuple(registries)
+        self._service_name = service_name
+        self._reported: set[str] = set()
+
+    def collect(self) -> Iterator[Metric]:
+        """yield each registry's families in order, skipping a name already yielded.
+
+        :return: an iterator over the merged families
+        :rtype: Iterator[Metric]
+        """
+        served: set[str] = set()
+        for registry in self._registries:
+            for family in registry.collect():
+                printed = _printed_names(family)
+                if printed & served:
+                    self._report_clash(family.name)
+                    continue
+                served |= printed
+                yield family
+
+    def _report_clash(self, name: str) -> None:
+        """log a left-out family once per name, so a clash is visible without a line per scrape.
+
+        :param name: the family name served twice
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        if name in self._reported:
+            return
+        self._reported.add(name)
+        log.warning(
+            "metric family %s is served twice by %s; the later copy is left out of /metrics",
+            name,
+            self._service_name,
+            extra={"extra_data": {"service": self._service_name, "metric": name}},
+        )
+
+
 class ToolServerBootstrap:
     """canonical tool-pod lifecycle: logging, signals, serve loop.
 
@@ -398,6 +481,7 @@ class ToolServerBootstrap:
         collection_tables: "MetaData | None" = None,
         version: str | None = None,
         extra_health_checks: Sequence[HealthCheck] = (),
+        extra_metric_registries: Sequence[CollectorRegistry] = (),
     ) -> None:
         """initialize bootstrap with service identity and log level.
 
@@ -439,10 +523,20 @@ class ToolServerBootstrap:
             ``?format=json`` body ambiguous; a collision is a :class:`ToolPodConfigError` raised
             before the pod serves. empty -> the bootstrap's checks alone
         :ptype extra_health_checks: Sequence[HealthCheck]
+        :param extra_metric_registries: the pod's OWN prometheus registries, served on the health
+            server's ``/metrics`` after the tool server's metrics, so one port and one scrape carry
+            both. a pod recording through :mod:`threetears.observe.metrics` passes
+            ``prometheus_client.REGISTRY``. read at every scrape, so a metric created after the
+            pod starts is served from the next scrape on. a family whose name the tool server's
+            registry, or an earlier registry here, already serves is left out of the scrape and
+            logged once, because one name twice makes Prometheus reject the whole scrape. empty
+            -> ``/metrics`` serves the tool server's metrics alone
+        :ptype extra_metric_registries: Sequence[CollectorRegistry]
         """
         self._service_name = service_name
         self._version = version
         self._extra_health_checks: tuple[HealthCheck, ...] = tuple(extra_health_checks)
+        self._extra_metric_registries: tuple[CollectorRegistry, ...] = tuple(extra_metric_registries)
         self._log_level = log_level
         self._collection_tables = collection_tables
         self._collection_registry: CollectionRegistry | None = None
@@ -987,8 +1081,8 @@ class ToolServerBootstrap:
             # serve the pod's in-flight-requests gauge on /metrics so KEDA's
             # prometheus scaler can autoscale the tool-pod Deployment on
             # aggregate in-flight call load through the one HTTP listener the
-            # pod already runs for /healthz.
-            metrics_provider=server.render_metrics,
+            # pod already runs for /healthz. a pod's own registries ride the same route.
+            metrics_provider=self._metrics_provider(server),
             checks=checks,
         )
         try:
@@ -1005,6 +1099,28 @@ class ToolServerBootstrap:
             )
             return None
         return health_server
+
+    def _metrics_provider(self, server: ToolServer) -> Callable[[], tuple[str, bytes]]:
+        """the health server's ``/metrics`` renderer: the tool server's metrics, then the pod's.
+
+        :param server: the built tool server
+        :ptype server: ToolServer
+        :return: a zero-arg callable returning ``(content_type, body)``
+        :rtype: Callable[[], tuple[str, bytes]]
+        """
+        if not self._extra_metric_registries:
+            return server.render_metrics
+        sources: list[CollectorRegistry] = []
+        if server.metrics_registry is not None:
+            sources.append(server.metrics_registry)
+        sources.extend(self._extra_metric_registries)
+        merged = CollectorRegistry(auto_describe=False)
+        merged.register(_FirstFamilyWins(sources, service_name=self._service_name))
+
+        def render() -> tuple[str, bytes]:
+            return CONTENT_TYPE_LATEST, generate_latest(merged)
+
+        return render
 
     def _refuse_colliding_health_checks(self, builtin: list[HealthCheck]) -> None:
         """refuse a contributed check whose name is already taken.

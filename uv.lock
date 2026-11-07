@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -11,44 +11,46 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-evals = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+langchain-openrouter = "2026-09-22T05:00:00Z"
+3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-tool-schema = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-access-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-evals = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 claude-agent-sdk = "2026-09-30T20:00:00Z"
-langchain-openrouter = "2026-09-22T05:00:00Z"
+3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
 members = [
     "3tears",
+    "3tears-access-contracts",
     "3tears-agent-acl",
     "3tears-agent-audit",
     "3tears-agent-identity",
@@ -215,11 +217,17 @@ requires-dist = [
 provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
 
 [[package]]
+name = "3tears-access-contracts"
+version = "0.92.0"
+source = { editable = "packages/access-contracts" }
+
+[[package]]
 name = "3tears-agent-acl"
 version = "0.92.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-access-contracts" },
     { name = "3tears-observe" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
@@ -234,6 +242,7 @@ follow = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-access-contracts", editable = "packages/access-contracts" },
     { name = "3tears-epoch", marker = "extra == 'follow'", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'follow'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
@@ -822,9 +831,7 @@ name = "3tears-iam"
 version = "0.92.0"
 source = { editable = "packages/iam" }
 dependencies = [
-    { name = "3tears", extra = ["security"] },
-    { name = "3tears-agent-acl" },
-    { name = "3tears-nats", extra = ["client"] },
+    { name = "3tears-access-contracts" },
     { name = "3tears-observe" },
     { name = "argon2-cffi" },
     { name = "bcrypt" },
@@ -837,6 +844,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+core = [
+    { name = "3tears", extra = ["security"] },
+]
+nats = [
+    { name = "3tears-nats", extra = ["client"] },
+]
 saml = [
     { name = "defusedxml" },
     { name = "pysaml2" },
@@ -847,9 +860,9 @@ webauthn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", extras = ["security"], editable = "packages/core" },
-    { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
+    { name = "3tears", extras = ["security"], marker = "extra == 'core'", editable = "packages/core" },
+    { name = "3tears-access-contracts", editable = "packages/access-contracts" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "bcrypt", specifier = ">=5.0.0" },
@@ -863,7 +876,7 @@ requires-dist = [
     { name = "pysaml2", marker = "extra == 'saml'", specifier = ">=7.5.0" },
     { name = "webauthn", marker = "extra == 'webauthn'", specifier = ">=3.0" },
 ]
-provides-extras = ["saml", "webauthn"]
+provides-extras = ["core", "nats", "saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"
@@ -1118,7 +1131,6 @@ source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
-    { name = "3tears-agent-tools" },
     { name = "3tears-epoch" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
@@ -1132,7 +1144,6 @@ dependencies = [
 requires-dist = [
     { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-epoch", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },

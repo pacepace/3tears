@@ -10,6 +10,11 @@ fence and L3 as the record behind it.
 The name moved with the state. A wave-2 adopter reading ``NatsKv`` in the old name would reason
 about ephemerality, a bucket TTL and a broker restart, and every one of those conclusions is now
 wrong in the direction that matters: it would under-trust a counter that is in fact durable.
+
+**Requires the ``core`` extra** (``3tears-iam[core]``), whose collections and counters hold the
+counts. Without it, importing this module raises an :class:`ImportError` naming the extra. The
+:class:`~threetears.iam.stores.base.AttemptLimiter` Protocol and the in-memory limiter need
+nothing beyond the base install.
 """
 
 from __future__ import annotations
@@ -17,11 +22,19 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.coordination import WindowedCounter, WindowState
-
+from threetears.iam._core_extra import core_extra_missing
 from threetears.iam.stores.base import AttemptWindow
+
+try:
+    from threetears.core.coordination import WindowedCounter
+except ModuleNotFoundError as _exc:
+    raise core_extra_missing(_exc, needed_by="threetears.iam.stores.attempt_limiter") from _exc
+
+if TYPE_CHECKING:
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.coordination import WindowState
 
 __all__ = ["CollectionAttemptLimiter"]
 

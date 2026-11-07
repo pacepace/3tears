@@ -108,6 +108,21 @@ in the RFC discussion, not in a mechanical extraction. Revisit after
 Phase 2: lazy `__init__`s remove the *import-time* half of the pain for
 free, which may be all these consumers need.
 
+**Update (2026-10-25): the registry half is done, in core rather than a
+contracts leaf.** The registration, call and heartbeat envelopes left
+`server.py`, `CallContext` and `bind_log_context` left
+`context_envelope.py`, and `RestAffordance` and its neighbours left
+`http_operation.py`. All now live in `threetears.core.tool_wire`, which
+both the pod and the registry depend on, and each old module re-exports
+its names under their old paths. `3tears-registry` no longer
+depends on `3tears-agent-tools`, and a test in the registry
+(`test_import_cost.py`) holds it there. The home follows
+`core.http_cache`, promoted when a second consumer arrived and neither
+package could import the other, rather than a new leaf: a leaf that
+depends on core is a leaf in name only, and costs a lockstep package
+and a publisher. The workspace half (`ToolContextManager`'s memory
+coupling) is unchanged.
+
 ## Decision 3 — Phase 2 (de-eager `__init__`s): own PR, with this checklist
 
 Phase 2 proceeds (priority order: `agent-tools`, `agent-memory`, `core`)

@@ -27,7 +27,8 @@ during an incident.
   k-anonymity breach screening.
 - **OAuth2 and OIDC** -- RFC 7636 PKCE (S256 only, never `plain`), OIDC
   discovery and `id_token` verification, and a GitHub client for the one major
-  provider that is not an OIDC IdP.
+  provider that is not an OIDC IdP: the redirect flow with optional PKCE, and the
+  RFC 8628 device flow for a CLI on a machine with no browser.
 - **SAML** -- service-provider metadata resolution and assertion identity
   extraction, behind an extra so nobody inherits `xmlsec1` for free.
 - **Session tokens** -- one claim vocabulary over EdDSA or HS256, with the
@@ -52,7 +53,9 @@ about persistence in every way that matters -- one is NATS-RPC-native over a
 multi-tenant Postgres schema, the other a FastAPI app with its own control
 plane -- and unifying that would have produced an abstraction neither could
 use. State therefore sits behind narrow Protocols, with a NATS-KV
-implementation supplied for the common case and an in-memory one for tests.
+implementation supplied for the common case and an in-memory one for tests and
+for a single-process service (one event loop; state lost on restart; expired
+entries swept on write, with an optional cap).
 
 **The one shared serialisable surface is where "fails closed" is false.**
 Cross-repo RPC payloads are normally declared independently on each side, since
@@ -76,12 +79,14 @@ it broke when saying so would build an oracle. Errors carry structural reasons
 only -- never token strings, key material, or credentials -- so they are safe to
 log at a verification boundary.
 
-**Builds on core rather than beside it.** `jwk_thumbprint`, `build_jwks`,
-`generate_signing_keypair`, `ReplayGuard`, and `seal`/`open_secret` already
-exist in `threetears.core.security`; the sensitive-action taxonomy already
-exists in `threetears.agent.acl`. This package imports all of them. Two of
-those had been copied by hand into a downstream repo precisely because no
-import path connected them -- this package is that path.
+**Builds on core rather than beside it.** `jwk_thumbprint`, the proof-freshness
+rules, `ReplayGuard`, `WindowedCounter` and `seal`/`open_secret` already exist in
+`threetears.core`; the three modules that need them use core's own, behind the
+`core` extra, so a consumer doing only sign-in and sessions installs no core. The
+sensitive-action taxonomy comes from [`access-contracts`](access-contracts.md), the
+dependency-free leaf agent-acl's deny-list reads too, rather than from agent-acl
+itself. Two of those had been copied by hand into a downstream repo precisely
+because no import path connected them -- this package is that path.
 
 ## When to adopt
 
@@ -105,7 +110,17 @@ principals, connection records, an admin surface -- that is an application built
 ## Install
 
 ```bash
-pip install 3tears-iam
+pip install 3tears-iam             # sign-in, OIDC, sessions, TOTP, client IPs, the store Protocols
+pip install '3tears-iam[core]'      # adds dpop, CollectionAttemptLimiter and TOTP seed sealing
+pip install '3tears-iam[nats]'      # adds the NATS client the stores.nats_kv stores run over
 pip install '3tears-iam[saml]'      # adds pysaml2; needs the xmlsec1 system binary
 pip install '3tears-iam[webauthn]'  # adds passkey support
 ```
+
+The base install brings no core, NATS client, agent layer or Postgres driver. Three
+modules build on core and need the `core` extra: `dpop`, `stores.attempt_limiter`
+(`CollectionAttemptLimiter`) and TOTP's `seal_seed`/`unseal_seed` (and
+`totp.DecryptionError`). Without it they raise an `ImportError` naming
+`3tears-iam[core]`. The rest of `totp` -- seed generation, verification and backup
+codes -- runs on the base install. A service using the shipped KV stores and
+`CollectionAttemptLimiter` installs `3tears-iam[core,nats]`.

@@ -502,3 +502,46 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
                 f"the loop ran {late * 1000:.1f} ms late while a large answer was {name}, "
                 f"{floor * 1000:.1f} ms beside plain Python as long"
             )
+
+
+class TestAWorkerLetsTheLoopRunBetweenSlices:
+    """a worker encoding or decoding a large answer pauses between its slices, for longer than zero, so the event
+    loop's thread takes the interpreter lock then rather than a switch interval later; a small answer never pauses,
+    and either way the answer given is exactly the one stored."""
+
+    @staticmethod
+    def _replica(bus: FakeNatsClient, *, l1: bool = False) -> VersionedAnswers:
+        registry = CollectionRegistry()
+        backend: Any = None
+        if l1:
+            backend = SQLiteBackend(db_name=f"pauses-l1-{uuid.uuid4().hex}")
+            backend.initialize(MetaData())
+        registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="pauses_answers")
+
+    async def _pauses_storing_then_reading(self, text: str, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
+        bus = FakeNatsClient()
+        writer, reader = self._replica(bus), self._replica(bus, l1=True)
+
+        async def compute() -> str:
+            return text
+
+        pauses: list[float] = []
+        monkeypatch.setattr(time, "sleep", pauses.append)
+        stored = await writer.answer_with_outcome("v1", "q", compute, order=1)
+        storing, pauses[:] = list(pauses), []
+        read = await reader.answer_with_outcome("v1", "q", compute, order=1)
+        assert stored.outcome is AnswerOutcome.COMPUTED and read.outcome is AnswerOutcome.READ
+        assert gzip.decompress(stored.body) == gzip.decompress(read.body) == text.encode("utf-8")
+        return storing, list(pauses)
+
+    async def test_a_large_answer_pauses_between_slices_when_stored_and_when_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storing, reading = await self._pauses_storing_then_reading(_large_answer_text(), monkeypatch)
+        assert storing and reading, f"stored with {len(storing)} pauses, read with {len(reading)}"
+        assert all(pause > 0 for pause in storing + reading), "a zero sleep hands the lock back to the worker"
+
+    async def test_a_small_answer_never_pauses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        storing, reading = await self._pauses_storing_then_reading(json.dumps({"small": 1}), monkeypatch)
+        assert storing == [] and reading == []
