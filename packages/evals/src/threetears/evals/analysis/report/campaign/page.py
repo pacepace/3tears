@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.campaign_title import arms_line, declared_arm_names
+from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
@@ -180,7 +180,7 @@ def build_campaign_report(
     folds = [
         CampaignAspectFold(
             aspect=aspect.label,
-            name=names(aspect.label),
+            name=_fold_heading(aspect, names, _title(campaign)),
             shows=aspect_shows(readings, aspect.label),
             # What the campaign states once for every aspect, its fold does not say again.
             report=for_the_campaign(reports[aspect.label], alone=folds_alone),
@@ -288,6 +288,18 @@ def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
     ]
 
 
+#: The heading of an aspect's fold where the aspect is called by the page's own name (one aspect, the quick path's).
+_EVIDENCE_HEADING = "Evidence"
+
+
+def _fold_heading(aspect: Aspect, names: AspectNames, title: str) -> str:
+    """An aspect fold's heading: its full label, which a declared short name stands in for everywhere else; an
+    engine-given label by the name the page calls the aspect; and a fold named as the page is, its evidence, so no
+    heading prints twice."""
+    heading = aspect.label if aspect.short_name is not None else names(aspect.label)
+    return _EVIDENCE_HEADING if heading == title else heading
+
+
 def _title(campaign: EvalCampaign) -> str:
     """The page's heading: the campaign's name, which says what the campaign is; what it compares and on what is the
     line under it (:func:`_arms_blocks`), so the heading never stacks names."""
@@ -302,7 +314,7 @@ def _arms_blocks(
     title names it), else over the arms the readings name, each by its label. Nothing where the name says it all."""
     aspects = [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
     if arms is not None:
-        control, candidates = declared_arm_names(arms, given={arm.label for arm in campaign.arms})
+        control, candidates = title_arm_names(arms, given={arm.label for arm in campaign.arms})
     else:
         control = [readings.control_label] if readings.control is not None else []
         candidates = [label for key, label in readings.arm_labels().items() if key != readings.control]

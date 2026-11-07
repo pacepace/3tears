@@ -6,7 +6,7 @@ Contracts held here (``threetears.evals.analysis.campaign_title``, ``threetears.
 
 - **one title**: the title of a frozen bundle's arms equals the title of the campaign declaring them;
 - **the report's head** is the campaign's name, which the title the analysis is listed by qualifies with: the page's
-  `<title>` (a page heads with the name and never stacks names, presentation build chunk 4; a document's first line is
+  `<title>` (a page heads with the name and never stacks names; a document's first line is
   its headline, the title line of the campaign page is covered by test_campaign_first_screen).
 """
 

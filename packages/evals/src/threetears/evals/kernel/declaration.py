@@ -938,7 +938,8 @@ def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | N
     The one statement of the rule: the campaign's uniqueness check and every page part
     (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it. A label the engine gave
     (:data:`ENGINE_ASPECT_LABELS`) with no short name gives way to the campaign's name where the caller has it, so no
-    page heads a section, a fold or a title with the engine's word for the work.
+    page heads a section, a fold or a title with the engine's word for the work. A name cut at its cap or written as a
+    question is no name for an aspect, so the label stands beside one.
 
     :param label: The aspect's label.
     :ptype label: str
@@ -951,7 +952,8 @@ def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | N
     """
     if short_name is not None:
         return short_name
-    if campaign and label in ENGINE_ASPECT_LABELS:
+    # Only a whole name that names the campaign: never one cut at the cap (``…``) or one that asks a question.
+    if campaign and label in ENGINE_ASPECT_LABELS and not campaign.rstrip().endswith(("…", "?")):
         return campaign
     return label
 

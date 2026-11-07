@@ -27,6 +27,7 @@ import pytest
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import DisclosureBlock, Report, report_html, report_markdown
 from threetears.evals.analysis.report.model import FIRST_SCREEN
+from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.g2_support import JUDGE, g2_report
 
 #: Words that would make a judge's calibration state read as something that broke.
@@ -62,7 +63,7 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
 
 
 #: The first screen's opening lines, golden: the heading is the campaign's name (re-pinned from the arms-and-measure
-#: title, presentation build chunk 4: a page heads with its name and never stacks names), then each arm named once
+#: title: a page heads with its name and never stacks names), then each arm named once
 #: with the control marked, the date and the design.
 TITLE = "Kairo queue discipline"
 ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
@@ -128,7 +129,7 @@ def test_the_scoreboard_is_a_bare_table_of_counts(g2: Report) -> None:
 @pytest.mark.parametrize("door", ["html", "markdown"])
 def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, door: str) -> None:
     # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
-    page = report_html(g2) if door == "html" else report_markdown(g2)
+    page = unlinked(report_html(g2)) if door == "html" else report_markdown(g2)
     assert (
         "No contrast can resolve: a side has 1 usable case; a difference is tested only from 5 independent cases."
         in page

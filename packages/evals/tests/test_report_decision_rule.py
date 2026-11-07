@@ -326,7 +326,7 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
     markdown = report_markdown(report)
     assert markdown.count(FLOORS_WARN_ONLY) == 1
     decision = markdown.split("\n## Floors\n", 1)[1].split("\n## ", 1)[0]
-    # The aspect as the page names it: one the engine labelled by the campaign's name (presentation build, chunk 4).
+    # The aspect as the page names it: one the engine labelled by the campaign's name.
     named = aspect_name(report.bundle, campaign=report.source.campaign_name)
     assert decision.index(f"**Floors on {named}**") < decision.index(FLOORS_WARN_ONLY)
     assert "unclear: 4 cases are too few for the interval that would show the cost either way" in decision

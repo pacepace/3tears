@@ -151,12 +151,16 @@ SECTION_TITLES: dict[str, str] = {
     "glossary": "Glossary",
 }
 
+#: An aspect fold's section headings where its campaign's page heads a section of the same name at its foot, so no
+#: heading prints twice on one page: the fold's methods are the aspect's.
+FOLD_SECTION_TITLES: dict[str, str] = {"methods": "Aspect methods"}
+
 #: The sections the first screen is made of: a campaign's answer and warnings are on it too.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
 
-#: The report-wide caveats a page sets apart as a flag, by the id each carries: when the criteria were set, which
-#: changes how every reading is read. Every other report-wide caveat is a plain line under it.
-FLAGGED_CAVEATS: frozenset[str] = frozenset({"caveat-late", "caveat-untimed"})
+#: The report-wide caveat a page sets apart as its one flag, by the id it carries: criteria set after their results
+#: existed, which changes how every reading is read. Every other report-wide caveat is a plain line under it.
+FLAGGED_CAVEATS: frozenset[str] = frozenset({"caveat-late"})
 
 
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
@@ -1194,6 +1198,7 @@ ReportBlock = Annotated[TableBlock | ChartBlock | TrialBlock | DisclosureBlock, 
 __all__ = [
     "FIRST_SCREEN",
     "FLAGGED_CAVEATS",
+    "FOLD_SECTION_TITLES",
     "FOLDED_SECTIONS",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",

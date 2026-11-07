@@ -72,7 +72,7 @@ class TestTheToyAnalysisSerializesTwoWays:
         markdown = report_markdown(report)
         lines = markdown.splitlines()
 
-        # The heading is the campaign's name (presentation build, chunk 4); the declared question is quoted whole on its
+        # The heading is the campaign's name; the declared question is quoted whole on its
         # own line under it, then the arms and the aspect; who wrote the analysis is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
@@ -128,7 +128,7 @@ class TestTheToyReportsContent:
         rows = {str(row["item"]): str(row["value"]) for row in table.values()}
         assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
         # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's: in
-        # a cell of its own, never in a sentence (presentation build, chunk 4).
+        # a cell of its own, never in a sentence.
         assert analysis.aspects[0].bundle_fingerprint in rows["Fingerprint"]
         assert generation.bundle_fingerprint not in rows["Fingerprint"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.

@@ -26,6 +26,7 @@ from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
+from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.ladder_support import (
     EXAMPLES,
     count_calls,
@@ -175,7 +176,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
     assert bold == [f"**{_LEAD}**", f"**{warning}**"]
-    html = campaign_report_html(result.page)
+    html = unlinked(campaign_report_html(result.page))
     assert (
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
         and 'role="alert"' not in html[: html.index("</header>")]

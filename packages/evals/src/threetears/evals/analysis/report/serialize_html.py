@@ -56,16 +56,18 @@ fixed, so a brand colour can never make a fail look like a pass.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
     FLAGGED_CAVEATS,
+    FOLD_SECTION_TITLES,
     FOLDED_SECTIONS,
     SECTION_TITLES,
     ChartBlock,
@@ -136,6 +138,7 @@ def report_html(report: Report, *, static: bool = False) -> str:
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
     parts += _sections(report, present, static=static)
+    parts = [_first_uses("\n".join(parts), report.terms)]
     parts += _glossary(report.terms)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
@@ -195,9 +198,77 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         parts += _aspect_fold(fold, slug, static=static)
     for section in after:
         parts += _campaign_section(report, section, static=static)
+    parts = [_first_uses("\n".join(parts), report.terms)]
     parts += _glossary(report.terms)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
+
+
+#: A start or end tag in the page's markup, and its element's name.
+_TAG = re.compile(r"(<[^>]*>)")
+_TAG_NAME = re.compile(r"</?\s*([a-zA-Z][a-zA-Z0-9]*)")
+_TITLE = re.compile(r'\btitle="([^"]*)"')
+
+#: Where a glossary term is never linked: inside a link, code a reader copies, a heading, a fold's summary, a table
+#: (a header links its own term where it names one, and a cell links only where it says), the navigation, a chart,
+#: the head of the page, or the declared question (``_QUOTED``, the author's words).
+_QUOTED = "quoted:"
+_UNLINKED_IN: frozenset[str] = frozenset(
+    {"a", "code", "pre", "summary", "h1", "h2", "h3", "h4", "h5", "h6", "th", "td", "nav", "svg", "script", "style"}
+    | {"title", f"{_QUOTED}p"}
+)
+
+
+def _first_uses(markup: str, terms: Sequence[str]) -> str:
+    """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
+    time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
+    own). Each term is linked once this way; the glossary at the foot defines it."""
+    by_definition = {GLOSSARY[term]: term for term in terms}
+    pending = {term: re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE) for term in terms}
+    opened: list[str] = []
+    out: list[str] = []
+    for token in _TAG.split(markup):
+        if not token.startswith("<"):
+            if token and pending and not any(name in _UNLINKED_IN for name in opened):
+                token = _linked_once(token, pending)
+            out.append(token)
+            continue
+        out.append(token)
+        found = _TAG_NAME.match(token)
+        if found is None:
+            continue
+        name = found.group(1).lower()
+        if token.startswith("</"):
+            while opened and opened.pop().removeprefix(_QUOTED) != name:
+                pass
+            continue
+        if name == "a" and (title := _TITLE.search(token)) is not None:
+            pending.pop(by_definition.get(html.unescape(title.group(1)), ""), None)
+        if name not in _VOID_ELEMENTS and not token.endswith("/>"):
+            # The question is the author's words, quoted whole: nothing is linked inside it.
+            opened.append(f"{_QUOTED}{name}" if 'class="question"' in token else name)
+    return "".join(out)
+
+
+def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
+    """``text`` with the first use of each pending term in it linked, the longest first where two start alike; each
+    term linked is no longer pending."""
+    found = sorted(
+        (
+            (match.start(), -len(match.group(0)), match.end(), term)
+            for term, pattern in pending.items()
+            if (match := pattern.search(text)) is not None
+        ),
+    )
+    said: list[str] = []
+    at = 0
+    for start, _, end, term in found:
+        if start < at:
+            continue
+        said += [text[at:start], term_link(term, text[start:end])]
+        pending.pop(term)
+        at = end
+    return "".join([*said, text[at:]])
 
 
 def _appendix(report: CampaignReport, static: bool) -> list[str]:
@@ -252,7 +323,7 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[s
     head = fold.head
     body = [
         *(_block(block, index, static=static) for index, block in enumerate(head)),
-        *_sections(report, _present_sections(report), static=static),
+        *_sections(report, _present_sections(report), static=static, renamed=FOLD_SECTION_TITLES),
     ]
     prefix = f"a-{slug}--"
     inner = _prefixed("\n".join(body), prefix)
@@ -290,7 +361,9 @@ def _present_sections(report: Report) -> list[str]:
     return [section for section in sections if any(block.section == section for block in report.blocks)]
 
 
-def _sections(report: Report, present: Sequence[str], *, static: bool) -> list[str]:
+def _sections(
+    report: Report, present: Sequence[str], *, static: bool, renamed: Mapping[str, str] | None = None
+) -> list[str]:
     """Each section after the first screen, in a ``<section>`` of its id."""
     titles = report.section_titles
     parts: list[str] = []
@@ -298,7 +371,8 @@ def _sections(report: Report, present: Sequence[str], *, static: bool) -> list[s
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
         body = _folded(blocks, static=static, heading=titles[section])
-        parts.extend(_section(section, titles[section], body, count=_section_count(section, blocks)))
+        title = (renamed or {}).get(section, titles[section])
+        parts.extend(_section(section, title, body, count=_section_count(section, blocks)))
         parts.append("</section>")
     return parts
 

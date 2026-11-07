@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from threetears.evals.analysis.report.model import ReportBlock
 from threetears.evals.analysis.style import StyleViolation, lint_prose
 
-__all__ = ["Absence", "absence_violations", "lint_page"]
+__all__ = ["Absence", "absence_violations", "lint_page", "unlinked"]
 
 #: A line quoting something whole, as the declared question does under the title: data, not prose.
 _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
@@ -118,3 +118,19 @@ def absence_violations(blocks: Iterable[ReportBlock]) -> list[Absence]:
             continue
         found += [Absence(text, match.group(0)) for match in _ABSENCE.finditer(_CODE_SPAN.sub("", text))]
     return found
+
+
+#: A link the page puts on a glossary term where its prose first uses it: a bare ``<a>`` holding the term's words.
+_FIRST_USE_LINK = re.compile(r'<a href="#[^"]*" title="[^"]*">([^<]*)</a>')
+
+
+def unlinked(page: str) -> str:
+    """A rendered HTML page with each glossary term's first-use link unwrapped to its words, so a test reads a line's
+    words as the page prints them whatever terms it first uses.
+
+    :param page: The page's HTML.
+    :ptype page: str
+    :return: The page, those links unwrapped.
+    :rtype: str
+    """
+    return _FIRST_USE_LINK.sub(r"\1", page)

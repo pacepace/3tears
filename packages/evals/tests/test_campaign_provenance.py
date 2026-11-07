@@ -82,7 +82,7 @@ def _criteria(page: CampaignReport) -> list[tuple[str, str, str]]:
 
 def _one(aspect: str, what: str = "The aspect, control and margin") -> str:
     """The one line a page says where criteria on ``aspect`` alone were set late, the aspect named and what was set
-    late named first (presentation build, chunk 4: the line names what was set late)."""
+    late named first (the line names what was set late)."""
     if " and " not in what and "," not in what:
         return f"{what} on {aspect} was set after the results there existed, so it was not fixed in advance."
     return f"{what} on {aspect} were set after the results there existed, so they were not fixed in advance."
@@ -105,7 +105,7 @@ async def test_an_aspect_set_after_its_readings_reads_as_asked_and_its_timing_is
     first = first_screen_markdown(page)
     said = _timing(page)
     assert said == [_one("late")]
-    # Criteria set at one time on one aspect share a row (the host's iframe pass, finding 7).
+    # Criteria set at one time on one aspect share a row.
     assert _criteria(page) == [
         ("aspect; control; margin", "1 Jan 2099", "late"),
     ], "billing was set in time, so the row names the aspect it holds on"
@@ -311,7 +311,7 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     assert [violation for line in caveats for violation in lint_prose(line)] == []
     setup = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "test_setup")
     # The detail is each aspect's own sentence, its execution mode's id left out and its launch setting as code
-    # (presentation build, chunk 4: no ids or key=value in prose), with the arms the latency holds for where not
+    # (no ids or key=value in prose), with the arms the latency holds for where not
     # every arm.
     first = shape.readings.arm_labels()[next(iter(shape.bundles.values())).scoreboard[0].variant_key]
     several = len(shape.arms) > 1

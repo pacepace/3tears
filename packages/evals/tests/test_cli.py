@@ -125,8 +125,7 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     title = out.splitlines()[0]
-    # The page is headed by the campaign's name, what it compares the line under what the page is (presentation
-    # build, chunk 4).
+    # The page is headed by the campaign's name, what it compares the line under what the page is.
     assert title == f"# {campaign.name}"
     lines = out.splitlines()
     assert lines[1:3] == ["Exploratory comparison.", ""] and "planner-lite" in lines[3] and " vs " in lines[3]

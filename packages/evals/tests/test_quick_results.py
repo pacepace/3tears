@@ -31,6 +31,7 @@ from typing import Any, Self
 
 import pytest
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Judge, Result, World, grader
 from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
@@ -665,8 +666,14 @@ async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_fi
     (row,) = result.page.readings.readings
     assert (row.reading, row.margin, row.confirmatory) == (reading, None, True)
     page = campaign_report_markdown(result.page)
-    # The aspect the quick path labelled `classify` is called by the campaign's name (presentation build, chunk 4).
-    (cells,) = [line for line in page.splitlines() if line.startswith(f"| {result.page.aspects[0].heading} | v2 |")]
+    # The aspect the quick path labelled `classify` is called by the campaign's name.
+    (cells,) = [
+        line
+        for line in page.splitlines()
+        if line.startswith(
+            f"| {aspect_name(result.page.aspects[0].report.bundle, campaign=result.page.campaign_name)} | v2 |"
+        )
+    ]
     assert cells.endswith(f"| {words} |")
     assert "no worse than the margin" not in page and "No margin was declared" not in page
 

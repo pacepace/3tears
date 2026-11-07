@@ -46,7 +46,7 @@ _SCORECARD: dict[str, tuple[str, str, str]] = {
     "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),
 }
 
-#: The title a change over billing and tone heads its page with: its name (presentation build, chunk 4); what it
+#: The title a change over billing and tone heads its page with: its name; what it
 #: compares and on what is the arms line under the question.
 _TITLE = "support queue"
 _ARMS = "production vs v2 · billing, tone"

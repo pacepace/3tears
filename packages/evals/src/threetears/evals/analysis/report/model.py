@@ -37,6 +37,7 @@ from typing import Literal, Self, get_args
 
 from pydantic import Field, model_validator
 
+from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.kernel.declaration import CampaignCall
@@ -110,6 +111,30 @@ class ReportSource(EvalDocumentModel):
 
 #: The files :meth:`Report.write` writes, by role.
 ReportFile = Literal["html", "bundle", "markdown"]
+
+
+#: The columns whose cells name a reading, which the glossary may define by the name a table prints.
+_NAMING_COLUMNS = frozenset({"reading", "measure"})
+
+
+def _named_terms(block: TableBlock) -> list[str]:
+    """The glossary terms a table names as words of its own: a header (its unit in brackets aside) or a reading's name
+    in a column of readings, that is a term (``Measuring spend, all roles``), so a page that prints one defines it.
+
+    :param block: The table.
+    :ptype block: TableBlock
+    :return: The terms, in the order the table names them, each once.
+    :rtype: list[str]
+    """
+    by_words = {term.casefold(): term for term in GLOSSARY}
+    named = [column.header.split(" (")[0] for column in block.columns]
+    named += [
+        str(row[column.key].value).split(" (")[0]
+        for row in block.rows
+        for column in block.columns
+        if column.key in _NAMING_COLUMNS and column.key in row and isinstance(row[column.key].value, str)
+    ]
+    return list(dict.fromkeys(by_words[words.casefold()] for words in named if words.casefold() in by_words))
 
 
 class Report(EvalDocumentModel):
@@ -188,11 +213,12 @@ class Report(EvalDocumentModel):
 
     @property
     def terms(self) -> list[str]:
-        """Every glossary term the page links, in the order first linked — what its glossary defines."""
+        """Every glossary term the page links, in the order first linked — what its glossary defines: each a block
+        links, and each a table names as a header or a reading (:func:`_named_terms`)."""
         linked: list[str] = []
         for block in self.blocks:
             found = (
-                [column.term for column in block.columns]
+                [*(column.term for column in block.columns), *_named_terms(block)]
                 if isinstance(block, TableBlock)
                 else [block.term]
                 if isinstance(block, DisclosureBlock)
@@ -468,7 +494,7 @@ class CampaignReport(EvalDocumentModel):
         linked: list[str] = []
         for block in self.blocks:
             found = (
-                [column.term for column in block.columns]
+                [*(column.term for column in block.columns), *_named_terms(block)]
                 if isinstance(block, TableBlock)
                 else [block.term]
                 if isinstance(block, DisclosureBlock)

@@ -188,7 +188,7 @@ class TestNoMargin:
         assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
         advice = _no_margin_advice(comparison)
-        # Said in words, never as a call (presentation build, chunk 4: no cell prints `grader(`).
+        # Said in words, never as a call (no cell prints `grader(`).
         assert advice["Correct score"].startswith("a margin on its grader")
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"

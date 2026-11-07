@@ -280,6 +280,10 @@ GLOSSARY: dict[str, str] = {
     "failed by check": "A trial that broke a rule code checks, such as a required tool call.",
     "failed by judge": "A trial the judge model scored below the bar on some dimension.",
     "cost per reply": "What production would spend per reply on the models the arm runs, as its runs were routed.",
+    "measuring spend, all roles": (
+        "What measuring a trial cost: every call billed, the judge's and any simulated user's included, not what "
+        "production would spend."
+    ),
     "cost per 1,000 replies": (
         "What production would spend on 1,000 replies on the models the arm runs, as its runs were routed."
     ),

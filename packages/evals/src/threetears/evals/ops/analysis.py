@@ -168,9 +168,11 @@ class CampaignLineReport(EvalBaseModel):
     analysis_id: str
     headline: str = Field(
         description=(
-            "What the report says, in one line. A draft is listed by its own headline, every figure key written out as "
-            "its page prints it, marked `Draft: ` (DRAFT_HEADLINE); any other report by code's verdict line over the "
-            "evidence it was written from (AnalysisLine.verdict), as is a draft whose document no longer reads."
+            "What the report says, in one line. A report document is listed by its own headline, every figure key "
+            "written out as its page prints it, a draft's marked `Draft: ` (DRAFT_HEADLINE); a retired writer's "
+            "analysis, a document that no longer reads or a report with no document is listed by code's verdict over "
+            "the evidence it was written from (AnalysisLine.verdict), never a writer's words; one this build cannot "
+            "read by its regenerate line. Never a warning: those are caveats."
         )
     )
     why_regenerate: str | None = Field(

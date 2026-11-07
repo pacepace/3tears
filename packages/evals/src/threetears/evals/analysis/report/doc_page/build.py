@@ -80,7 +80,15 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import ARM_TEMPLATE, Figure, NamedKind, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    ARM_TEMPLATE,
+    Figure,
+    NamedKind,
+    format_figure,
+    is_figure_key,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
@@ -103,7 +111,7 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
@@ -454,8 +462,36 @@ def _explore(doc: ReportDoc, reader: _Reader) -> TableBlock | None:
 #: An engine key in an editor's finding, as the editor quoted it: a dotted figure path, in backticks or not, and the
 #: value it was read at where the editor wrote one (``settle.margin.<aspect>.<arm>.cases_needed_80 = 62``).
 _FINDING_KEY = re.compile(
-    r"`?(?P<key>[a-z_][\w-]*(?:\.[\w-]+(?:\.[\w-]+)*)+?)`?(?:\s*=\s*`?(?P<value>-?\d[\d.,]*\d|-?\d)`?)?(?![\w-])"
+    r"`?(?P<key>[a-z_][\w-]*(?:\.[\w<>*-]+)+)`?(?:\s*=\s*`?(?P<value>-?\d[\d.,]*\d|-?\d)`?)?(?![\w-])"
 )
+
+#: A figure key's last word as a sentence says it, where the key names no figure on this input (an editor's
+#: placeholder, ``<arm>``): the settle sizes by what they buy, any other by its words.
+_STATISTIC_WORDS = {
+    "cases_needed": "the cases that settle it half the time",
+    "cases_needed_80": "the cases that settle it four times in five",
+    "cases_needed_two_sided": "the cases a two-sided interval needs half the time",
+    "cases_needed_two_sided_80": "the cases a two-sided interval needs four times in five",
+    "trials_needed": "the trials that settle it half the time",
+    "trials_needed_80": "the trials that settle it four times in five",
+    "n": "the count",
+}
+
+#: A figure key's words that name its place in the grammar, not what it is about.
+_PLACE_WORDS = frozenset({"overall", "criteria", "margin", "settle", "measure", "compare", "cost", "reading", "task"})
+
+
+def _key_words(path: str) -> str:
+    """A figure key that names no figure on this input, in words: what it measures and of what, never its path."""
+    *subject, statistic = path.split(".")
+    named = [
+        "an arm" if word.startswith("<") else measure_name(word)[:1].lower() + measure_name(word)[1:]
+        for word in subject[1:]
+        if word not in _PLACE_WORDS and word != "*"
+    ]
+    said = _STATISTIC_WORDS.get(statistic, statistic.replace("_", " "))
+    return f"{said} ({', '.join(named)})" if named else said
+
 
 #: A claim's id in an editor's finding (``c2``), which the page names by its place.
 _CLAIM_ID = re.compile(r"\b(?P<id>c\d+)\b")
@@ -468,14 +504,13 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
 
     def figure(match: re.Match[str]) -> str:
         key = match.group("key").rstrip(".")
+        tail = match.group(0)[len(match.group(0).rstrip(".")) :]
         try:
-            return (
-                render(f"{{{key}}}", reader.report_input, reader.arm_names)
-                + match.group(0)[len(match.group(0).rstrip(".")) :]
-            )
+            return render(f"{{{key}}}", reader.report_input, reader.arm_names) + tail
         except UnresolvableReference:
-            # NOSILENT: not a figure key on this input (a version, a model id): the editor's words stand.
-            return match.group(0)
+            # NOSILENT: a figure key's form that names no figure here (an editor's placeholder) reads in words; any
+            # other dotted word (a version, a model id) is the editor's and stands.
+            return _key_words(key) + tail if is_figure_key(key) else match.group(0)
 
     def claim(match: re.Match[str]) -> str:
         place = places.get(match.group("id"))

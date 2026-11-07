@@ -31,7 +31,7 @@ __all__ = [
     "TITLE_ASPECTS",
     "arms_line",
     "campaign_title",
-    "declared_arm_names",
+    "title_arm_names",
     "declared_title",
     "named_title",
     "report_input_title",
@@ -63,7 +63,7 @@ def campaign_title(
     :rtype: str
     """
     arms = _title_arms(campaign, candidate_models, variants=variants, judges=judges)
-    named = [name for names in declared_arm_names(campaign.arms) for name in names] if campaign.arms else []
+    named = [name for names in title_arm_names(campaign.arms) for name in names] if campaign.arms else []
     return _once(campaign.name, arms, named, _title_measure(campaign))
 
 
@@ -94,7 +94,7 @@ def declared_title(
     :return: The title.
     :rtype: str
     """
-    control, candidates = declared_arm_names(arms, given)
+    control, candidates = title_arm_names(arms, given)
     return named_title(name, control=control, candidates=candidates, aspects=aspects)
 
 
@@ -187,9 +187,7 @@ def _once(name: str, arms: str, named: Sequence[str], measure: str) -> str:
     return f"{arms} · {measure} ({name})"
 
 
-def declared_arm_names(
-    arms: Sequence[CampaignArm], given: Collection[str] | None = None
-) -> tuple[list[str], list[str]]:
+def title_arm_names(arms: Sequence[CampaignArm], given: Collection[str] | None = None) -> tuple[list[str], list[str]]:
     """The arms as a title names them (:func:`title_arm_name`), the control apart from the candidates.
 
     :param arms: The arms, as a reader reads them.
@@ -225,7 +223,7 @@ def title_arm_name(arm: CampaignArm, given: Collection[str] | None = None) -> st
 
 def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:
     if campaign.arms:
-        return _arms_phrase(*declared_arm_names(campaign.arms))
+        return _arms_phrase(*title_arm_names(campaign.arms))
     candidates = [model.rsplit("/", 1)[-1] for model in candidate_models]
     if judges:
         return (

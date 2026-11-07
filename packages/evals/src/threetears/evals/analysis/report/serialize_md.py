@@ -22,11 +22,12 @@ results.
 from __future__ import annotations
 
 import html
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
+    FOLD_SECTION_TITLES,
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
@@ -121,7 +122,7 @@ def _fold_lines(report: CampaignReport) -> list[str]:
         own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
-        lines += _section_lines(fold.report, depth=3, prefix=prefix)
+        lines += _section_lines(fold.report, depth=3, prefix=prefix, renamed=FOLD_SECTION_TITLES)
         lines += ["", "</details>"]
     return lines
 
@@ -132,7 +133,9 @@ def _opened(shows: str) -> str:
     return shows[:1].upper() + shows[1:] if shows.startswith("the ") else shows
 
 
-def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]:
+def _section_lines(
+    report: Report, *, depth: int, prefix: str = "", renamed: Mapping[str, str] | None = None
+) -> list[str]:
     """Each section after the first screen under a heading of ``depth``, its trials' ids prefixed with ``prefix``."""
     titles = report.section_titles
     lines: list[str] = []
@@ -142,7 +145,7 @@ def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]
         blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
         if not blocks:
             continue
-        lines += ["", f"{'#' * depth} {titles[section]}"]
+        lines += ["", f"{'#' * depth} {(renamed or {}).get(section, titles[section])}"]
         lines += _folded(blocks, prefix=prefix, heading=titles[section])
     return lines
 

@@ -593,10 +593,9 @@ async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campa
 
 
 #: The one line a page says where criteria on the eval's aspect were set once its results existed: what was set late,
-#: on the aspect the quick path labelled ``classify``, which the page calls by the campaign's name.
+#: on the aspect the quick path labelled ``classify``, which keeps its label beside a campaign name cut at its cap.
 _SET_LATE = (
-    "The aspect and control on keywords vs crash_first… were set after the results there existed, so they were not "
-    "fixed in advance."
+    "The aspect and control on classify were set after the results there existed, so they were not fixed in advance."
 )
 
 

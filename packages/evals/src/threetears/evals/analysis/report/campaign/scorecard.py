@@ -484,7 +484,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
         TableColumn(key="change", header="Change (pts)", term="change"),
         TableColumn(key="interval", header="Interval (pts)", term="interval"),
         TableColumn(key="margin", header="Margin (pts)", term="margin"),
-        TableColumn(key="reading", header="Reading", term="reading"),
+        TableColumn(key="reading", header="Reading"),
     ]
     rows = []
     for row in readings.readings:

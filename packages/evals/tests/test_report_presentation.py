@@ -70,13 +70,15 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
     assert lines[0] == "# G2: can the cheaper model replace production?"
     assert lines[1] == f'"{G2_QUESTION}"'
+    # The heading is a question, which names no aspect, so the arms line names it.
     assert lines[3] == (
-        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · classify · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
     assert '<p class="floor"' not in report_html(report)
     # The Decision section opens on the aspect's floors.
-    assert "\n## Floors\n\n**Floors on G2: can the cheaper model replace production?**\n" in report_markdown(report)
+    # A campaign name that asks a question is no name for an aspect: the label stands.
+    assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
     assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
     # The page prints a cost, and its provider routing is said in the methods, not here: on the first screen the cost
     # is what it costs (owner reading, 2026-11-06), so the scoreboard follows the verdict.
@@ -516,7 +518,7 @@ async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passe
     assert [row["result"] for row in passed.values()] == [
         f"`{trial.result_id}`" for trial in report.bundle.trials if trial.state == "passed"
     ]
-    # The cases table's links: every trial of the case, in its ids' own order (presentation build, chunk 4, P28: a row
+    # The cases table's links: every trial of the case, in its ids' own order (a row
     # reads T1 T2 T3 on every replay; which failed is the marks' to say).
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
     for row in cases.values():

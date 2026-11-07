@@ -1,27 +1,30 @@
-"""Each name once, each term defined where it is first used, each heading once, and one order on every replay
-(presentation build, chunk 4).
+"""Each name once, each term defined where it is first used, each heading once, and one order on every replay.
 
 The review's A3 term clause holds a page to terms defined before use and one name per thing. Held here on the
-ladder's replayed rungs (offline, no key), the stored report documents and the listing:
+ladder's replayed rungs (offline, no key), the Kairo capture, the stored report documents and the listing:
 
 - no page heading names an arm twice: a page heads with the campaign's name, its arms the line under it, and a
-  listing's title names each part once (P10, the host's finding 6a);
-- no prose line a page prints is a ``key=value`` (P20), read through :func:`~threetears.evals.analysis.style.lint_prose`;
-- every glossary term a page defines is linked from the page, and a header naming a term links it the first time it
-  is named (P21, P22); the judged scale is stated once, in the glossary;
-- no heading is printed twice: a table in a section of its own name is titled by the section (P23);
-- a case row's trial ids are in their own order, and two replays of one recording lay the cases out byte for byte
-  alike (P28);
-- a report document's masthead dates in the one form every page dates in, and names its aspect once (P42, P37);
-- no review finding prints an engine key or a claim's id (the host's written-report finding 9);
+  listing's title names each part once;
+- no prose line a page prints is a ``key=value``, read through :func:`~threetears.evals.analysis.style.lint_prose`,
+  and a list of unchecked settings prints once, for the arms it covers;
+- every glossary term a page defines is linked where the page first uses it in its prose, or by a header
+  before that; the first screen's judge line links the judged scale, which the glossary states once;
+- no heading is printed twice: a table in a section of its own name is titled by the section, and an aspect's fold
+  heads its methods apart from the page's;
+- a case row's trial ids are in their own order, and two replays of one recording agree on every case;
+- a measurement's fold opens on its count; a lever run at one level, or too thinly, is said in words; how a reading
+  takes a margin is said in words; a page with no analysis says how one is written;
+- a report document's masthead dates in the one form every page dates in, and names its aspect once;
+- no review finding prints an engine key, dotted or with its value, or a claim's id;
 - a settle table says which side of its line today's estimate is on in a sentence, never the enum's word;
-- a draft is listed by its own headline, marked a draft, and no listing line holds a cut question (finding 14).
+- a draft is listed by its own headline, marked a draft, and no listing line holds a cut question.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import html
 import json
 import re
@@ -32,6 +35,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.doc_writer_support import (
     TOY_DOC,
     FakeAnalystClient,
@@ -51,6 +55,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.analyst.settle import SETTLES_WORDS
+from threetears.evals.analysis.report.build import NO_ANALYSIS
 from threetears.evals.analysis.campaign_title import arms_line, named_title
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build
@@ -58,7 +63,8 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import masthead_parts
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report.figure_keys import render
+from threetears.evals.analysis.report.doc_page.model import DocFinding
+from threetears.evals.analysis.report.figure_keys import is_figure_key, render
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     DisclosureBlock,
@@ -209,42 +215,89 @@ def test_no_prose_line_on_a_page_is_a_key_and_its_value(rungs: dict[str, _Rung],
 # --- glossary ------------------------------------------------------------------------------------------------------
 
 
-#: A header cell as the page writes it: its text, linked or not, and the term its link defines (by its title).
-_HEADER = re.compile(r"<th[^>]*>(?P<inner>.*?)</th>", re.DOTALL)
+#: A tag in the page's markup, and the elements a glossary term is never linked inside (a link, code, a heading, a
+#: fold's summary, a table, the navigation, a chart, the head, the quoted question).
+_TAG = re.compile(r"(<[^>]*>)")
+_TAG_NAME = re.compile(r"</?\s*([a-zA-Z][a-zA-Z0-9]*)")
 _LINK_TITLE = re.compile(r'<a[^>]*title="(?P<title>[^"]*)"[^>]*>')
-_TAG = re.compile(r"<[^>]+>")
+_UNREAD = frozenset(
+    {"a", "code", "pre", "summary", "h1", "h2", "h3", "h4", "h5", "h6", "th", "td", "nav", "svg", "script", "style"}
+    | {"title", "question"}
+)
+_VOID = frozenset({"meta", "br", "hr", "img", "input", "link", "wbr"})
 
 
-def _terms_by_definition() -> dict[str, str]:
-    return {html.escape(definition): term for term, definition in GLOSSARY.items()}
+def _first_uses(page: str) -> dict[str, str]:
+    """Each glossary term the page defines, by how the page first meets it: ``linked`` where a link to it comes
+    before or at its first use in text a reader reads, ``bare`` where its words stand unlinked first, ``unused``
+    where its words never stand in such text."""
+    body, _, glossary = page.partition('<section id="glossary">')
+    defined = [html.unescape(term) for term in re.findall(r'<dt id="g-[^"]*">([^<]*)</dt>', glossary)]
+    by_definition = {GLOSSARY[term]: term for term in defined}
+    seen: dict[str, str] = {}
+    opened: list[str] = []
+    for token in _TAG.split(body):
+        if token.startswith("<"):
+            found = _TAG_NAME.match(token)
+            if found is None:
+                continue
+            name = found.group(1).lower()
+            if token.startswith("</"):
+                while opened and opened.pop() not in (name, "question" if name == "p" else name):
+                    pass
+                continue
+            if name == "a" and (title := _LINK_TITLE.match(token)) is not None:
+                term = by_definition.get(html.unescape(title.group("title")))
+                if term is not None:
+                    seen.setdefault(term, "linked")
+            if name not in _VOID and not token.endswith("/>"):
+                # The declared question is the author's words, quoted whole and never linked.
+                opened.append("question" if 'class="question"' in token else name)
+            continue
+        if any(name in _UNREAD for name in opened):
+            continue
+        text = html.unescape(token)
+        for term in defined:
+            if term not in seen and re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text, re.IGNORECASE):
+                seen[term] = "bare"
+    return {term: seen.get(term, "unused") for term in defined}
 
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))
-def test_every_glossary_term_on_a_page_is_linked_and_a_header_links_it_where_first_named(
-    rungs: dict[str, _Rung], name: str
-) -> None:
-    page = rungs[name].html
-    body, _, glossary = page.partition('<section id="glossary">')
-    defined = re.findall(r'<dt id="g-[^"]*">([^<]*)</dt>', glossary)
-    assert defined, "the page has a glossary"
-    by_definition = _terms_by_definition()
-    linked = {by_definition[title] for title in _LINK_TITLE.findall(body) if title in by_definition}
-    assert {html.unescape(term) for term in defined} <= linked, "a term the glossary defines is linked from the page"
-    first: dict[str, bool] = {}
-    for header in _HEADER.finditer(body):
-        inner = header.group("inner")
-        text = html.unescape(_TAG.sub("", inner)).strip().casefold()
-        term = next((term for term in GLOSSARY if term.casefold() == text), None)
-        if term is not None and term not in first:
-            titles = [html.unescape(title) for title in _LINK_TITLE.findall(inner)]
-            first[term] = GLOSSARY[term] in titles
-    assert all(first.values()), {term: ok for term, ok in first.items() if not ok}
-    # A header naming a cost per reply links the term in the words the header says.
-    for header in _HEADER.finditer(body):
-        inner = header.group("inner")
-        text = html.unescape(_TAG.sub("", inner)).strip()
-        if text.startswith("Cost per "):
-            assert GLOSSARY[text.casefold()] in [html.unescape(title) for title in _LINK_TITLE.findall(inner)], text
+def test_every_glossary_term_on_a_page_is_linked_at_its_first_use(rungs: dict[str, _Rung], name: str) -> None:
+    uses = _first_uses(rungs[name].html)
+    assert uses, "the page has a glossary"
+    assert [term for term, use in uses.items() if use == "bare"] == []
+    # The terms the page itself uses in prose, the undecided reading among them, are linked where first read.
+    if name == "rung3":
+        for term in ("interval", "margin", "cannot tell apart", "guardrail"):
+            assert uses.get(term) == "linked", (term, uses.get(term))
+
+
+@functools.cache
+def _kairo() -> Report:
+    """Kairo round 2's aspect page, from the committed capture."""
+    (aspect,) = kairo_bundle().aspects
+    return build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00")
+
+
+def test_the_kairo_page_links_every_term_at_its_first_use() -> None:
+    assert [term for term, use in _first_uses(report_html(_kairo())).items() if use == "bare"] == []
+
+
+def test_the_first_screen_s_judge_line_links_the_judged_scale(rungs: dict[str, _Rung]) -> None:
+    page = rungs["rung2"].html
+    header = page[page.index("<header>") : page.index("</header>")]
+    (line,) = re.findall(r'<p[^>]*id="caveat-judge"[^>]*>.*?</p>', header, flags=re.DOTALL)
+    assert f'title="{html.escape(GLOSSARY["judged score"])}"' in line
+
+
+@pytest.mark.parametrize("name", ["rung2", "rung3"])
+def test_a_measure_a_table_names_by_its_reader_name_is_defined(rungs: dict[str, _Rung], name: str) -> None:
+    page = rungs[name].page
+    assert "Measuring spend, all roles" in rungs[name].markdown
+    assert "measuring spend, all roles" in page.terms
+    assert f"- **measuring spend, all roles**: {GLOSSARY['measuring spend, all roles']}" in rungs[name].markdown
 
 
 def test_the_judged_scale_is_stated_once_in_the_glossary(rungs: dict[str, _Rung]) -> None:
@@ -259,6 +312,9 @@ def test_the_judged_scale_is_stated_once_in_the_glossary(rungs: dict[str, _Rung]
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))
 def test_no_heading_is_printed_twice(rungs: dict[str, _Rung], name: str) -> None:
+    # One page of one aspect heads each section once: its fold heads its methods as the aspect's.
+    headings = [line.lstrip("#").strip() for line in rungs[name].markdown.splitlines() if re.match(r"^#{1,6} ", line)]
+    assert len(headings) == len(set(headings)), [heading for heading in headings if headings.count(heading) > 1]
     pages = [rungs[name].markdown, report_markdown(rungs[name].page.aspects[0].report)]
     for page in pages:
         heading: str | None = None
@@ -364,9 +420,12 @@ def test_no_review_finding_prints_an_engine_key_or_a_claim_s_id() -> None:
     findings = [*(ReportFinding.model_validate(finding) for finding in held), planted]
     page = build(doc, report_input, strict=False, findings=findings, draft=True)
     claim_ids = {claim.id for claim in doc.claims}
-    for finding in page.findings:
+    for finding in [*page.findings, *_recorded_findings()]:
         assert not [v for v in lint_prose(finding.said) if v.rule == "key_value"], finding.said
-        assert not re.search(r"\b[a-z_][\w-]*\.[\w.-]+\s*=", finding.said), finding.said
+        # No dotted engine key, with its value or without: a key that names no figure here reads in words.
+        assert not [
+            word for word in re.findall(r"[a-z_][\w<>*-]*(?:\.[\w<>*-]+)+", finding.said) if is_figure_key(word)
+        ], finding.said
         assert not any(
             re.search(rf"\b{re.escape(claim)}\b", finding.said) for claim in claim_ids if re.fullmatch(r"c\d+", claim)
         ), finding.said
@@ -376,6 +435,24 @@ def test_no_review_finding_prints_an_engine_key_or_a_claim_s_id() -> None:
         assert f"{key} = 62" not in form
     # The editor and the judge read the finding as it was written, so a recorded review keeps its key.
     assert f"{key} = 62" in doc_page_text(page)
+
+
+def _recorded_findings() -> list[DocFinding]:
+    """Every review finding the stored prototype 5 records leave open, as each page prints it."""
+    shown: list[DocFinding] = []
+    for record_path in sorted(REPORT_DOCS.glob("prototype5/*/record.json")):
+        name = f"prototype5/{record_path.parent.name}"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        try:
+            report_input = _input(name)
+        except KeyError:
+            # This record's snapshot is not among the committed ones; the others carry its kinds of finding.
+            continue
+        findings = [ReportFinding.model_validate(finding) for finding in record["findings"]]
+        page = build(ReportDoc.model_validate(record["doc"]), report_input, strict=False, findings=findings)
+        shown += page.findings
+    assert any("settle." in finding.finding for finding in shown), "a recorded finding quotes a settle key"
+    return shown
 
 
 def _resolves(key: str, report_input: ReportInput) -> bool:
@@ -492,3 +569,67 @@ def test_a_trial_s_world_state_is_counted_and_folded_never_printed_open(rungs: d
     assert markdown.count('"catalog"') == markdown.count("'s world state</summary>")
     for said in (markdown, written):
         assert "result_get" not in said
+
+
+# --- words for what a page cannot test, and how it was made ---------------------------------------------------------
+
+
+def test_a_list_of_unchecked_settings_prints_once_for_the_arms_it_covers() -> None:
+    page = report_markdown(_kairo())
+    (sentence,) = [line for line in page.splitlines() if line.startswith("A per-reply cost is what production")]
+    assert sentence.count("left unchecked whether") == 1 and "every arm left unchecked whether" in sentence
+    # Each arm's own move follows, one short clause each, its setting said as words.
+    assert "arm September set model to deepseek/deepseek-v4.1-flash" in sentence
+    assert "=" not in sentence
+
+
+def test_a_measurement_s_fold_opens_on_its_count_never_a_bare_word(rungs: dict[str, _Rung]) -> None:
+    for name in ("rung1", "rung2"):
+        (fold,) = rungs[name].page.aspects
+        assert re.fullmatch(r".+ passed \d+ of \d+ trials on \d+ cases", fold.shows), fold.shows
+        assert f"## {fold.heading}\n\n{fold.shows}.\n" in rungs[name].markdown
+
+
+def test_a_lever_run_at_one_level_or_too_thinly_is_said_in_words(rungs: dict[str, _Rung]) -> None:
+    report = rungs["rung3"].report
+    said = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
+    assert "One model ran, so this page says nothing of changing the model." in said
+    assert not any("unswept" in text or "Lever " in text for text in said)
+    bundle = report.bundle
+    thin = bundle.model_copy(
+        update={"coverage": [row.model_copy(update={"status": "thin"}) for row in bundle.coverage]}
+    )
+    rebuilt = build_code_only_report(thin, assembled_at="2026-11-07T00:00:00+00:00")
+    texts = [block.text for block in rebuilt.blocks if isinstance(block, DisclosureBlock)]
+    assert "Each model ran too few repeats to read what changing the model does." in texts
+
+
+def _no_margin(report: Report) -> dict[str, str]:
+    (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "no_margin"]
+    return {row["reading"].text: row["declare"].text for row in table.rows}
+
+
+def test_how_a_reading_takes_a_margin_is_said_in_words(rungs: dict[str, _Rung]) -> None:
+    rung3 = _no_margin(rungs["rung3"].report)
+    assert rung3["Due score"] == "a margin on its grader"
+    assert rung3["Accuracy"] == "a margin on the classifier's field's grader, on every arm's run"
+    assert rung3["Production cost"] == "cannot: the engine owns its description"
+    # A goal check takes its margin on the check; a graded reading with no declared range is told to declare one.
+    assert "a margin on its check" in _no_margin(_kairo()).values()
+    bundle = rungs["rung3"].report.bundle
+    catalog = {
+        name: described.model_copy(update={"family": "mechanical", "value_range": None}) if name == "due" else described
+        for name, described in bundle.measure_catalog.items()
+    }
+    ranged = build_code_only_report(
+        bundle.model_copy(update={"measure_catalog": catalog}), assembled_at="2026-11-07T00:00:00+00:00"
+    )
+    assert _no_margin(ranged)["Due score"] == "a margin on its grader, with the range its values take"
+    for advice in (*rung3.values(), *_no_margin(_kairo()).values()):
+        assert "grader(" not in advice and "margin=" not in advice
+
+
+def test_a_page_with_no_analysis_says_how_one_is_written(rungs: dict[str, _Rung]) -> None:
+    assert NO_ANALYSIS == "none written yet; generating an analysis writes one from this same evidence"
+    assert f"| Analysis | {NO_ANALYSIS} |" in rungs["rung3"].markdown
+    assert "analysis_generate" not in rungs["rung3"].markdown

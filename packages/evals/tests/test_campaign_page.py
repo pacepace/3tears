@@ -182,7 +182,8 @@ async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> N
         tone.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
     )
     page = build_campaign_report(tone.campaign, read, {"tone": report})
-    fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
+    # The fold's heading: the aspect's name, or its evidence where the aspect is named as the page is.
+    fold = campaign_report_markdown(page).split(f"\n## {page.aspects[0].heading}", 1)[1]
     assert "| ALPHA |" in fold and "| alpha |" not in fold
 
 

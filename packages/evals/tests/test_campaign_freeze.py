@@ -367,7 +367,7 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
         if isinstance(block, TableBlock) and block.name == "criteria_set"
     ]
     guard_rows = [row for row in table.values() if "guardrail" in str(row["criterion"])]
-    # Set at one time on the same aspect, the bar and the guardrail's margin share a row (presentation build, chunk 4).
+    # Set at one time on the same aspect, the bar and the guardrail's margin share a row.
     (row,) = guard_rows
     assert row["criterion"].split("; ")[-1] == "guardrail margin on tone"
     assert (row["set_on"], row["aspects"]) == ("15 Mar 2026", bundle.aspect)

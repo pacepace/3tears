@@ -3702,29 +3702,42 @@ def _verdict_order_sentence(bundle: AnalysisContextBundle) -> str | None:
 
 
 def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """Say, per arm, what its runs set away from the subject's production configuration; None when nothing moved."""
-    # Arms that moved alike are said once, together: the same list of settings never prints twice.
-    alike: dict[str, list[str]] = {}
-    qualified = False
-    for variant_key, pooled in sorted(bundle.arm_production_footings.items()):
+    """Say what the arms' runs set away from the subject's production configuration; None when nothing moved.
+
+    The settings left unchecked are said once for the arms that share them (``every arm`` where all do), so a long
+    list never prints once per arm; then each arm's own moves in one short clause each."""
+    unchecked_by: dict[tuple[str, ...], list[str]] = {}
+    own: list[str] = []
+    arms_held = sorted(bundle.arm_production_footings.items())
+    for variant_key, pooled in arms_held:
         footings = list(pooled.runs.values())
         moved = sorted({f"{name} to {level}" for f in footings if f is not None for name, level in f.moved.items()})
-        unchecked = sorted({name for f in footings if f is not None for name in f.unchecked})
+        unchecked = tuple(sorted({name for f in footings if f is not None for name in f.unchecked}))
         unread = sum(1 for f in footings if f is None)
+        if unchecked:
+            unchecked_by.setdefault(unchecked, []).append(arm(variant_key))
         said = [
             *([f"set {', '.join(moved)}"] if moved else []),
-            *([f"left unchecked whether {', '.join(unchecked)} is production's"] if unchecked else []),
             *([f"{unread} run(s) nobody checked"] if unread else []),
         ]
-        qualified = qualified or bool(said)
-        alike.setdefault("; ".join(said) or "moved nothing off production", []).append(arm(variant_key))
-    if not qualified:
+        if said:
+            own.append(f"arm {arm(variant_key)} {' and '.join(said)}")
+    if not unchecked_by and not own:
         return None
-    parts = [f"{'arm' if len(arms) == 1 else 'arms'} {_listed_words(arms)} {words}" for words, arms in alike.items()]
+    parts = [
+        f"{'every arm' if len(names) == len(arms_held) and len(names) > 1 else _arm_words(names)} left unchecked "
+        f"whether {', '.join(unchecked)} is production's"
+        for unchecked, names in unchecked_by.items()
+    ]
     return (
         "A per-reply cost is what production would spend only where its arm's runs moved nothing off the subject's "
-        "production configuration: " + "; ".join(parts) + "."
+        "production configuration: " + "; ".join([*parts, *own]) + "."
     )
+
+
+def _arm_words(names: Sequence[str]) -> str:
+    """``arm a`` or ``arms a and b``."""
+    return f"{'arm' if len(names) == 1 else 'arms'} {_listed_words(names)}"
 
 
 def _listed_words(names: Sequence[str]) -> str:

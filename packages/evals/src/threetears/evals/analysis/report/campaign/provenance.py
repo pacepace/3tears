@@ -262,6 +262,8 @@ def caveat_blocks(
             source=_CAVEAT_SOURCES[kind],
             text=line,
             anchor=_CAVEAT_ANCHORS[kind],
+            # The judged scale is one click from the first screen: the judge's line links its glossary entry.
+            term="judged score" if kind == "judge" else None,
         )
         for kind, line in _lines(bundles, names)
     ]

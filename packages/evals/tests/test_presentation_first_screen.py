@@ -40,7 +40,7 @@ from threetears.evals.quick.files import load_evals
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_shapes_support import s4_change
-from packages.evals.tests.style_support import absence_violations
+from packages.evals.tests.style_support import absence_violations, unlinked
 
 
 @dataclass(frozen=True)
@@ -175,7 +175,7 @@ def test_rung_2_s_first_screen_carries_its_judge_caveat_and_its_detail_one_step_
     page = rungs["rung2"].page
     (caveat,) = [block for block in _said(page.blocks) if block.anchor == "caveat-judge"]
     assert caveat.section == "warnings"
-    # The aspect the quick path labelled `score` is called by the campaign's name (presentation build, chunk 4).
+    # The aspect the quick path labelled `score` is called by the campaign's name.
     assert caveat.text == "Judged scores on replies are directional until people's labels calibrate the judge."
     (setup,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "test_setup"]
     (row,) = [row for row in setup.rows if row["setup"].text == "judge scores directional"]
@@ -207,8 +207,8 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
         block for block in computed.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
     ]
     index = computed.blocks.index(code_lead)
-    # Where code's lead stood, directly after the question line and the arms line under it (presentation build,
-    # chunk 4), the caller's block stands, as given, its tone kept.
+    # Where code's lead stood, directly after the question line and the arms line under it, the caller's block
+    # stands, as given, its tone kept.
     assert supplied.blocks[index] == given and [block.source for block in supplied.blocks[index - 2 : index]] == [
         "basis",
         "arms",
@@ -219,7 +219,7 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
     # Rendered in code's tone, the page differs only by the lead's words: every other byte is the same.
     alike = given.model_copy(update={"tone": code_lead.tone})
     same_tone = build_campaign_report(shape.campaign, shape.readings, shape.reports, lead=[alike])
-    for render in (campaign_report_markdown, campaign_report_html):
+    for render in (campaign_report_markdown, lambda page: unlinked(campaign_report_html(page))):
         before = render(computed)
         after = render(same_tone)
         assert before.count(code_lead.text) == 1 and after.count(given.text) == 1

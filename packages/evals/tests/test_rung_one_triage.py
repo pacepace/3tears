@@ -126,8 +126,9 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert " · " in arm
     # The Scorecard names the one arm as the eval does, never `control`: one arm is measured, so its matrix has no
     # Arm column and its title names the arm, and every folded row under it names the arm.
-    # The aspect the engine labelled `classify` is called by the campaign's name (presentation build, chunk 4).
-    above = lines[: lines.index("## emails")]
+    # The aspect the engine labelled `classify` is called by the campaign's name, and its fold, named as the page
+    # is, heads as its evidence.
+    above = lines[: lines.index("## Evidence")]
     assert "**triage by aspect**" in above and not any("control" in line for line in above)
     matrix, *rows = [line for line in above if line.startswith("| emails |")]
     # The pass rate carries the count it is computed over beside it (presentation build, chunk 1).
