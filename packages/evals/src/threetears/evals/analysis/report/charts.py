@@ -332,7 +332,8 @@ _CELL_PERCENT = re.compile(r"(?<![\w.])([+\-−]?)(\d+(?:\.\d+)?)%")
 
 def percent_places(texts: Iterable[str]) -> int | None:
     """The decimals one column's percentages read at: none, so whole percents (``60%``); one where whole percents
-    would print two of its values alike, an interval's two ends among them (``62.9%`` beside ``63.2%``). None for a
+    would print two of its values alike, an interval's two ends among them (``62.9%`` beside ``63.2%``), or where a
+    value printed at a half (``90.5%``) cannot decide its whole percent. None for a
     column that states no percentage, or one written to two decimals or more (a confidence level, ``99.69%``), which
     keeps its digits (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07).
 
@@ -344,6 +345,10 @@ def percent_places(texts: Iterable[str]) -> int | None:
     found = [match for text in texts for match in _CELL_PERCENT.finditer(text)]
     if not found or any(len(match[2].partition(".")[2]) > 1 for match in found):
         return None
+    if any(match[2].endswith(".5") for match in found):
+        # A percentage printed to one decimal at a half (90.5%) cannot say which whole percent it rounds to (its value
+        # may be 90.48%), so the column keeps its decimal rather than print a rounding the digits cannot decide.
+        return 1
     stated = {float(match[2]) for match in found}
     return 0 if len({percent_at(value, 0) for value in stated}) == len(stated) else 1
 
@@ -390,7 +395,7 @@ def _percents_by_column(table: list[list[str]]) -> list[list[str]]:
     return table
 
 
-def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
+def even_precision(rows: Sequence[Sequence[str]], *, percents: bool = True) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
@@ -409,10 +414,14 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
 
     :param rows: The table's rows of cells.
     :ptype rows: Sequence[Sequence[str]]
+    :param percents: Whether each column's percentages are set to its one precision first; a table of what an
+        analysis computes prints each as its key reads it, and keeps them.
+    :ptype percents: bool
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
-    table = _percents_by_column(_money_by_column([list(row) for row in rows]))
+    table = _money_by_column([list(row) for row in rows])
+    table = _percents_by_column(table) if percents else table
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):

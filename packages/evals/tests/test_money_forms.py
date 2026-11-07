@@ -213,6 +213,10 @@ def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_su
     assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
     assert [form.spell(amount) for amount in (14.5, 120.0, 1208.0)] == ["$14.50", "$120.00", "$1,208.00"]
     assert money_form([9.5, 120.0]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    # From $1 to under $10 a rate reads in cents, as a total does: dollars and cents is how a reader expects money of
+    # that size, never "$1.9" (coordinator ruling on Discodon's host pass, 2026-11-07).
+    one_to_ten = money_form([1.9, 5.12, 0.02], rate=True)
+    assert [one_to_ten.spell(amount) for amount in (1.9, 5.12, 0.02, -1.43)] == ["$1.90", "$5.12", "$0.020", "-$1.43"]
     # A rate of $10 or more reads in whole dollars at two figures (Q3): "$75 [$73, $77]", never "$74.89".
     rate = money_form([74.89, 6.014], rate=True)
     assert [rate.spell(amount) for amount in (74.89, 73.13, 76.65, 6.014, 140.0)] == [

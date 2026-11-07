@@ -660,8 +660,10 @@ def percent_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, T
 
 
 def _said(cell: TableCell) -> str:
-    """A cell's text as it prints, without its flag."""
-    return cell.text if cell.flag is None else cell.text.removesuffix(f" ({cell.flag})")
+    """A cell's text as it prints, without its flag: its number in its unit, or its value."""
+    return (
+        cell.amount(float(cell.value)) if cell.unit and isinstance(cell.value, int | float) else render_cell(cell.value)
+    )
 
 
 def _respelled_percents(cell: TableCell, places: int) -> TableCell:

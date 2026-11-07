@@ -627,6 +627,10 @@ def _filled(columns: list[TableColumn], rows: list[_Row], *, keep: set[str]) -> 
     return kept, [{column.key: row[column.key] for column in kept if column.key in row} for row in rows]
 
 
+#: The sources whose rows an analysis computes, each figure printed as its key reads it (compare, settle, levers).
+_AS_KEYED = frozenset({"compare", "settle", "levers"})
+
+
 def _table(context: ChartContext) -> Drawn:
     reader, keys = _SOURCES[context.query.source]
     measured: _Laid = []
@@ -648,7 +652,11 @@ def _table(context: ChartContext) -> Drawn:
     # The page's cost per 1,000, where a monthly volume is declared, reads as the month printed from it does.
     source = cost_basis(report_input).source
     beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
-    columns, rows = _with_intervals(columns, percent_columns(money_columns(rows, reconciles=beside)), context.spec.level)
+    money = money_columns(rows, reconciles=beside)
+    # A table of what an analysis computes prints each figure as its key reads it (this module's docstring), so the
+    # prose citing it reads alike; every other table reads its percentages at one precision per column.
+    laid = money if context.query.source in _AS_KEYED else percent_columns(money)
+    columns, rows = _with_intervals(columns, laid, context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

@@ -315,7 +315,9 @@ class TestTheReportCarriesStrata:
 
         headers = [column.header for column in table.columns]
         assert headers == ["Arm", "Reading", "All cases", "lookalike", "plain", NO_STRATUM]
-        # A share on 0–1 reads as a percent to one decimal, its spread beside it on the same scale.
+        # A share on 0–1 reads as a percent, whole where its column keeps its values apart and to one decimal where
+        # one sits at a half (87.5%, C-15), its spread beside
+        # it on the same scale.
         # The classifier's accuracy is its trials' label match: one row, named Accuracy, never a second "Label
         # matched" row with the same figure.
         accuracy = _row(table, "sonnet", "Accuracy")
@@ -323,7 +325,7 @@ class TestTheReportCarriesStrata:
         assert not [row for row in table.values() if row["reading"] == "Label matched"]
         # A rate over fewer cases than one is estimated on is stated as a count, never as a rate or an interval.
         assert accuracy[_column(table, "lookalike")] == "1 of 3 (n=3)"
-        assert accuracy[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
+        assert accuracy[_column(table, "plain")] == "100% [76%, 100%] (n=12)"
 
     def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
@@ -350,7 +352,7 @@ class TestTheReportCarriesStrata:
         assert matrix[_column(table, "plain")] == "NONE → NONE: 12 (n=12)"
         recall = _row(table, "sonnet", "Recall of NONE")
         assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
-        assert recall[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
+        assert recall[_column(table, "plain")] == "100% [76%, 100%] (n=12)"
         assert _row(table, "sonnet", "conversation tone (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
 
     def test_a_money_measure_s_spread_reads_in_its_mean_s_form(self) -> None:

@@ -99,6 +99,21 @@ a host's world state: it is `TrialBlock.world`, its parts' names `world_parts` (
 listing title, the late line's words, a judge's methods line, the Methods `Bundle` row, a fold's heading or a
 rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
 
+### evals: a column's percentages read whole, one amount reads one way on a page, and undecided arms share one clause
+
+**Changed:** a table's column of percentages reads in whole percents (`60%`, `63%`), one decimal for the whole column
+only where whole percents would print two of its values or an interval's ends alike, or a value at a half cannot
+decide its whole percent (`87.5%`); an exact zero reads `0%`, so `0.0%` and `0%` never stand on one page; a confidence
+level keeps its digits (`99.69%`), and a table an analysis computes (compare, settle, levers) prints each figure as its
+key reads it. `spell_dollars` and `dollars_text` spell an amount alone in the money form, two significant figures and
+cents from ten cents up (`$0.020`, which read `$0.0200`), so a written page's byline reads as its table does. An
+aspect's line names its undecided arms in one clause (`the evidence cannot tell v2, v3 or v4 apart from production`),
+then its decided ones. Money from $1 to under $10 reads in cents, total or rate (`$1.90`, never `$1.9`).
+
+**Hosts:** a host calling `dollars_text` reads amounts under ten cents to two significant figures (`$0.012`, which
+read `$0.0123`). A percent `TableCell` may now carry `decimals` (0 or 1), its column's precision; `even_precision`
+gains `percents=`; `percent_columns`, `percent_places`, `percent_at` and `respell_percents` are new.
+
 ### evals: money reads two significant figures per amount, and an undecided reading says "cannot tell apart" everywhere
 
 **Changed:** owner rulings Q2 and Q3 (2026-11-07). A chart's note, a Change table, the corrected-comparisons verdict,
