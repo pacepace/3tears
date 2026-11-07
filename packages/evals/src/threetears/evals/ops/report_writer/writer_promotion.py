@@ -27,6 +27,13 @@ A primary that does not separate states how many held-out cases like these would
 own projection (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, which the campaign report's ``To show
 the floors hold`` reads): a size to plan the next campaign at, never a reason to read this one again.
 
+**A pass that stopped early.** A pass judging under a declared stopping rule
+(:class:`~threetears.evals.ops.report_writer.writer_pairwise.StoppingRule`) may stop once its preference separates;
+each look is a prefix of one bet fixed for the rule's planned cases, so the primary holds its level at the stop. Every
+arm ran every case before the pass began, so the gated readings and guardrails are read as always, once, on every case
+run: one fixed-n read at a pre-set N, the same the campaign's page reads. The read says what the pass did in one
+sentence (``stopping_line``).
+
 **Generic over levers.** The candidate is an arm, and what it changed is read off the arms' recorded lever maps, so a
 model, an effort or a host's own lever is decided as a skill text is.
 
@@ -127,6 +134,11 @@ class WriterPromotion(EvalBaseModel):
         description="The candidate's corrected verdicts, each reading's, in page order: gated on regression only."
     )
     cases: int = Field(description="The held-out cases the campaign's runs ran.")
+    stopping_line: str | None = Field(
+        default=None,
+        description="What the pass did against its stopping rule, in one sentence; None when no pass was read or its "
+        "report records none.",
+    )
     case_sets: list[CaseSetRef] = Field(description="The held-out case sets the runs named.")
     cost_usd: float | None = Field(description="What the candidate's trials cost; None when none was priced.")
     control_cost_usd: float | None = Field(description="What the control's trials cost; None when none was priced.")
@@ -495,6 +507,7 @@ def writer_promotion(
         cases_to_settle=settle,
         verdicts=verdicts,
         cases=cases,
+        stopping_line=None if report is None or report.stopping is None else report.stopping.line,
         case_sets=case_sets,
         cost_usd=sum(costs["candidate"]) if costs["candidate"] else None,
         control_cost_usd=sum(costs["control"]) if costs["control"] else None,

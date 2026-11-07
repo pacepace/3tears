@@ -41,6 +41,14 @@ Commands::
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --variant minimal
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --candidate-skill <dir>
 
+**The stopping rule.** ``--stop-when separated`` declares, before any arm launches, that the pairwise judge stops at
+the first case after which its preference separates, either way, over a bet fixed for the held-out cases as declared.
+Every arm still runs every case first, so the gated readings and guardrails are read once, on every case, and the stop
+saves judge calls only. ``never``, the default, reads every case, as before. The rule is in the pass's record and
+``acceptance.json``, the readout says what happened in one sentence, and before a live launch the script prints the
+resolution floor: the smallest preference, held on every case, the held-out cases can separate. ``--prior`` names an
+earlier run's ``acceptance.json``; when it ran the same case files, the line adds what it projected would settle.
+
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
 of its prompt. Nothing is sent and the verdict carries no signal. The live run is the owner's to approve. It reads
@@ -101,7 +109,12 @@ from threetears.evals.ops.report_writer.writer_contract import (
     SHOULD_FIX_OPEN_MEASURE,
     EffortWord,
 )
-from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
+from threetears.evals.ops.report_writer.writer_pairwise import (
+    StopWhen,
+    WriterPairwiseReport,
+    WriterPrior,
+    resolution_line,
+)
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.schema.turns import TurnReply, TurnText
 
@@ -785,6 +798,9 @@ class Acceptance:
             yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
         yield ""
         yield self.read.readout
+        if self.read.stopping_line is not None:
+            yield ""
+            yield self.read.stopping_line
         yield ""
         yield self.read.why
         yield ""
@@ -852,6 +868,9 @@ class Acceptance:
             },
             "revisions": {SHIPPED: MOST_REVISIONS, self.variant.name: self.variant.revisions},
             "pass_job": self.read.pairwise_job,
+            "stopping": None if self.report.stopping is None else self.report.stopping.model_dump(mode="json"),
+            "cases": list(self.result.cases),
+            "resolution": self.result.resolution,
             "pairwise": self.report.model_dump(mode="json"),
             "promotion": self.read.model_dump(mode="json"),
             "criterion": {
@@ -948,6 +967,8 @@ async def _measured(
     held_out_fraction: float,
     cap_usd: float,
     variant: Variant,
+    stop_when: StopWhen = "never",
+    prior: WriterPrior | None = None,
 ) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
     """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
@@ -965,6 +986,8 @@ async def _measured(
         request_s=request_s,
         writer_provider=WRITER_PROVIDER,
         store=":memory:" if store_at is None else store_at,
+        stop_when=stop_when,
+        prior=prior,
     ).run()
     if variant.name in result.pairwise_unread:
         raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[variant.name]}")
@@ -998,6 +1021,8 @@ async def acceptance(
     held_out_fraction: float = HELD_OUT_FRACTION,
     variant: str | None = None,
     candidate_skill: Path | None = None,
+    stop_when: StopWhen = "never",
+    prior: WriterPrior | None = None,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -1008,6 +1033,8 @@ async def acceptance(
     :param variant: The candidate, by its name in :data:`VARIANTS`; the hollow variant when neither it nor
         ``candidate_skill`` is named.
     :param candidate_skill: The candidate, a skill directory (:func:`candidate_variant`); never with ``variant``.
+    :param stop_when: The pairwise pass's stopping rule, declared before any arm launches (the module docstring).
+    :param prior: An earlier run on these cases (:func:`read_prior`), whose projection the resolution line carries.
     :return: What it found.
     """
     if variant is not None and candidate_skill is not None:
@@ -1046,6 +1073,8 @@ async def acceptance(
                 held_out_fraction=held_out_fraction,
                 cap_usd=cap_usd,
                 variant=chosen,
+                stop_when=stop_when,
+                prior=prior,
             )
         finally:
             await scoring.aclose()
@@ -1064,6 +1093,20 @@ async def acceptance(
         editor_model=editor_model,
         variant=chosen,
     )
+
+
+def read_prior(path: Path) -> WriterPrior:
+    """An earlier run's ``acceptance.json`` as the resolution line reads it: the case files it ran and its projection.
+
+    A record from before runs named their cases names none, so it matches no run and its projection is not carried,
+    which the line says.
+
+    :param path: The earlier run's ``acceptance.json``.
+    :return: The prior run.
+    """
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    settle = summary.get("promotion", {}).get("cases_to_settle")
+    return WriterPrior(case_names=frozenset(summary.get("cases", [])), cases_to_settle=settle)
 
 
 def _amount(text: str) -> float:
@@ -1094,6 +1137,15 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--request-s", type=_amount, default=REQUEST_S, help="the ceiling for one writer request")
     parser.add_argument("--held-out-fraction", type=float, default=HELD_OUT_FRACTION, help="groups on held-out")
     parser.add_argument("--out", type=Path, help="where a live run's recordings, store and result go")
+    parser.add_argument(
+        "--stop-when",
+        choices=["separated", "never"],
+        default="never",
+        help="the pairwise judge's stopping rule, declared before any arm launches; default: never, every case read",
+    )
+    parser.add_argument(
+        "--prior", type=Path, help="an earlier run's acceptance.json, whose projection the floor carries"
+    )
     options = parser.parse_args(list(argv))
     if options.candidate_skill is not None:
         candidate_variant(options.candidate_skill)  # refused by name before anything is made or sent
@@ -1102,8 +1154,11 @@ def main(argv: Sequence[str]) -> int:
             parser.error("a live run names --cap-usd and --out")
         refuse_too_few_cases(options.cases, options.held_out_fraction)
         refuse_missing_keys(options.judge)
+        # Said before anything is bought: what this many held-out cases can show, never a refusal.
+        print(resolution_line(held_out_cases(options.cases, options.held_out_fraction)), file=sys.stderr)
         # Made before anything is sent, so a directory already there refuses the run rather than its result.
         options.out.mkdir(parents=True, exist_ok=False)
+    prior = None if options.prior is None else read_prior(options.prior)
     found = asyncio.run(
         acceptance(
             dry=options.dry,
@@ -1120,6 +1175,8 @@ def main(argv: Sequence[str]) -> int:
             held_out_fraction=options.held_out_fraction,
             variant=options.variant,
             candidate_skill=options.candidate_skill,
+            stop_when="separated" if options.stop_when == "separated" else "never",
+            prior=prior,
         )
     )
     summary = found.summary()

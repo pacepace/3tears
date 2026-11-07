@@ -858,7 +858,65 @@ The last row is there because a draft's page carries its open editor findings, a
 without them. A verdict the finished-only reading does not repeat may be that.
 
 **Spend.** Every call, parse retries included, is priced and admitted against the host's out-of-run cap before the
-first is sent, under purpose `judge`. A pass the cap cannot cover is refused with nothing spent.
+first is sent, under purpose `judge`. A pass the cap cannot cover is refused with nothing spent. A pass that stops
+early sends fewer calls than it admitted.
+
+### The stopping rule
+
+A writer eval may give its pass a rule, declared as the eval starts, before any arm launches, over the side's cases
+(`WriterEval(stop_when=...)`; the acceptance script's `--stop-when`):
+
+| `stop_when` | What the pass does |
+|---|---|
+| `separated` | Judges the planned cases one at a time and stops at the first after which the preference separates, either way, on the 5 cases a rate needs. |
+| `never` | Judges every case, the fixed-n reading exactly as with no rule. The default. |
+
+The rule records the planned case ids, the held-out set as declared, and N, their count. A set that grows later
+leaves that run's cases as they were; the next run declares its own. Cases the pass finds that the rule did not plan,
+or planned cases it does not find, are said on the page, never refused.
+
+**Why a stop keeps its level.** The planned cases fix the bet before the first: the order they are read in
+(`bet_order(N)` over their sorted ids) and every stake (tuned to N). Each look over the first k is then a prefix of
+one bet, and Ville's inequality bounds the chance it ever crosses, so a stop at any k, on any rule, holds α. At
+k = N, with every planned case read, the reading is the fixed-n one, number for number. Without a fixed N, a look at
+k and one at k + 1 were two bets, and stopping at the first that separated was optional stopping. Cases are judged in
+the bet's order, whatever order or batch they ran in. A landslide over 25 cases first separates at case 7.
+
+**What the stop does today.** Every arm still runs every case before the pass starts, so the gated readings and
+guardrails are read as always, once, on every case run: one fixed-n read at a pre-set N, the same one the campaign's
+page reads. The stop reads the primary alone. It saves judge calls (about $0.40 a run) and defines the verdict's
+standing; the money is in launching cases in batches, which is not built yet. Once it is, the fixed-n readings will be
+read once at the stop, on the cases launched.
+
+**A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
+verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.
+
+**What is recorded.** The pass's report carries the rule, the cases it stopped at, the first case that separated,
+and the preference after each case (its p and interval), for a running chart. The page says what happened in one
+sentence:
+
+> Stopped at 7 of 25 cases under the rule declared before the first result: the judge preferred lead-first on 7 of 7,
+> separated.
+
+A run that reads every case says where it first separated, or that no look up to N excluded no preference.
+
+### The resolution floor
+
+Before a writer eval launches, and on its page, it states the smallest preference its held-out cases can separate:
+the share, held on every case, at which the pass's own test separates at N cases. It is the bounded test inverted,
+not a normal approximation, and it is a floor: a preference that varies across cases needs more. The figures are
+rounded up, as the line prints them, so none claims a share the test would not separate.
+
+| Cases | Smallest separable share |
+|---|---|
+| 7 | 0.89 |
+| 11 | 0.73 |
+| 25 | 0.60 |
+
+Given an earlier run on the same case files (`WriterEval(prior=WriterPrior(...))`; the acceptance script's
+`--prior acceptance.json`), the line adds what that run's read projected would settle its primary: "At 11 cases this
+run can separate only a preference of 73% or more, held on every case; the last run on these cases projected 43 to
+settle." An earlier run over other cases is said and not carried. It is a disclosure and never a refusal.
 
 ### The promotion rule
 
@@ -872,6 +930,8 @@ only, since a family that wide cannot separate on a small held-out set.
 | keep | The primary reads regressed, a gated reading reads regressed (on too few cases too), or a guardrail is breached. |
 | undecided | Anything else: the primary not separated, improved on too few cases, untested, void or not read; or a guardrail not shown held. |
 
+A pass its rule stopped is read as any other: its primary at the stop, the gated readings and guardrails on every
+case run.
 Undecided never promotes, and a read with no pass named never promotes. A primary that does not separate states the
 held-out cases like these that would settle it: a size for the next campaign, never a reason to read this one again.
 The read refuses a pass over another campaign, candidate, control, judge or criterion, or over results the campaign no

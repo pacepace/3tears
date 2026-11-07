@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer gate's pairwise judge may stop once its preference separates, and every run states its floor
+
+**Added:** the bounded test takes `planned_n`, the cases its bet is fixed for before the first: its order
+(`bet_order(N)`) and every stake are set by N, so a reading over the first k cases is a prefix of one bet and holds α
+at any stop. At k = N it equals the fixed-n reading exactly; without `planned_n` nothing changes. A writer eval
+declares a stopping rule as it starts, before any arm launches: `stop_when="separated"` judges the planned cases (the
+held-out ids, recorded on the rule) in the bet's order and stops at the first after which the preference separates,
+either way. `"never"`, the default, is the reading before this change exactly, the same as a pass given no rule. A
+rule declared after the arms' first result, or with no time, keeps its verdict and says so; cases found off the plan
+are said, never refused. The pass's report records the rule, where it stopped and the preference after each case (p
+and interval), and one sentence the page prints. Every writer eval states its resolution floor before launch and on
+its page: the smallest share, held on every case, that the gate's own test separates at its cases
+(`smallest_separable_move`), rounded up: 0.89 at 7 cases, 0.73 at 11, 0.60 at 25. Given an earlier run on the same
+case files, the line adds what that run projected would settle. It is a disclosure, never a refusal.
+
+**Changed:** every arm still runs every case before the pass, so the gated readings and guardrails stay one fixed-n
+read on every case run; the stop reads the primary alone, saves judge calls and defines the verdict's standing.
+Launching cases in batches, where the money is, is a later change. `docs/design.md` no longer says sequential
+testing stays out; `judges-and-calibration.md` gains the stopping rule and the floor.
+
+**Hosts:** declare a rule with `WriterEval(stop_when="separated")`, or the acceptance script's `--stop-when
+separated`; carry an earlier run's projection with `WriterEval(prior=WriterPrior(case_names=..., cases_to_settle=...))`
+or `--prior <acceptance.json>`. `WriterResult` gains `cases` and `resolution`, `WriterPromotion` gains
+`stopping_line`, and the pass's job result gains `stopping` and each pair `reached`, all defaulted, so a stored report
+still reads; no schema'd document changes, so no schema minor moves. The `writer_pairwise` engine action takes no rule
+and reads every case, as `never` does. `threetears.evals.harness` exports `StopWhen` and `WriterPrior`, provisional.
+
 ### evals: a campaign's first screen says what the page is: a lead on every page, its rates with their counts
 
 **Changed:** every code-written campaign page opens on a lead, not only one where a guardrail warns: a comparison on its

@@ -14,6 +14,8 @@ analyst and its editor that write a campaign's page. An eval file imports its na
   export of a campaign's documents, for a host that may only read its store, withholding the notes the
   :class:`ReasonedOn` documents lead to and recording why in the case's :class:`CaseMint` (one :class:`WithheldNote`
   per note).
+- :data:`StopWhen` is the pairwise pass's stopping rule a writer eval declares (``stop_when``), and a
+  :class:`WriterPrior` an earlier run on the same cases, whose projection its resolution line carries.
 
 Six modules build it, each for one part of a writer eval:
 
@@ -57,6 +59,7 @@ from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterPairw
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
+from threetears.evals.ops.report_writer.writer_pairwise import StopWhen, WriterPrior
 
 __all__ = [
     "AnalystSkill",
@@ -64,6 +67,7 @@ __all__ = [
     "MintedWriterCase",
     "ReasonedOn",
     "SkillText",
+    "StopWhen",
     "WithheldNote",
     "Writer",
     "WriterCaseFile",
@@ -71,6 +75,7 @@ __all__ = [
     "WriterEval",
     "WriterJudge",
     "WriterPairwise",
+    "WriterPrior",
     "WriterResult",
     "WriterSide",
     "WriterSplit",
