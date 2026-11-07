@@ -34,9 +34,11 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.stats import bet_order
 from threetears.evals.harness import Writer, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
+from threetears.evals.kernel import EvalStorage
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
+from threetears.evals.storage import SqliteDocumentStore
 
 #: The writer every arm names.
 WRITER: Final = "report-writer-candidate"
@@ -103,25 +105,6 @@ def _lay(tmp_path: Path, arms: dict[str, Writer]) -> Path:
     return cases
 
 
-# parity-with: threetears.evals.harness.writer_host.WriterJudge
-class FakeMarkedJudge(FakeScoringJudge):
-    """The scripted judge, preferring outright, on every side-by-side call, the page carrying :data:`MARK` (or, with
-    ``marked=False``, the page without it), wherever it sits; every other dimension it scores as its parent does."""
-
-    def __init__(self, *, marked: bool) -> None:
-        super().__init__(JUDGE)
-        self.marked = marked
-
-    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
-        if f'"{preference_rubric().name}"' not in system:
-            return await super().generate(system=system, user=user, response_format=response_format)
-        self.calls.append(preference_rubric().name)
-        in_b = user.find(MARK) > user.index("=== Report B ===")
-        score = 5 if in_b == self.marked else 1
-        answer = json.dumps({"reasoning": "read the pair", "criteria_scores": {preference_rubric().name: score}})
-        return ScoredReply(answer, model=self.model_name, served_model=self.model_name)
-
-
 #: What a stored id looks like inside a prompt: the judge's reading never turns on one.
 _IDS: Final = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -137,6 +120,26 @@ class FakeSplitJudge(FakeScoringJudge):
         self.calls.append(match[1])
         score = 1 + int(hashlib.sha256(_IDS.sub("", user).encode()).hexdigest(), 16) % 5
         answer = json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: score}})
+        return ScoredReply(answer, model=self.model_name, served_model=self.model_name)
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeMarkedJudge(FakeSplitJudge):
+    """The scripted judge, preferring outright, on every side-by-side call, the page carrying :data:`MARK` (or, with
+    ``marked=False``, the page without it), wherever it sits; every other dimension it scores as its parent does, from
+    its prompt."""
+
+    def __init__(self, *, marked: bool) -> None:
+        super().__init__(JUDGE)
+        self.marked = marked
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
+        if f'"{preference_rubric().name}"' not in system:
+            return await super().generate(system=system, user=user, response_format=response_format)
+        self.calls.append(preference_rubric().name)
+        in_b = user.find(MARK) > user.index("=== Report B ===")
+        score = 5 if in_b == self.marked else 1
+        answer = json.dumps({"reasoning": "read the pair", "criteria_scores": {preference_rubric().name: score}})
         return ScoredReply(answer, model=self.model_name, served_model=self.model_name)
 
 
@@ -156,6 +159,15 @@ def _eval(tmp_path: Path, cases: Path, arms: dict[str, Writer], **overrides: Any
     return WriterEval(cases, **{**arguments, **overrides})
 
 
+def _guarded(store: Path) -> None:
+    """Make the first judged dimension of the scope's writer template a guardrail (the boundary axis). Blocking."""
+    storage = EvalStorage(SqliteDocumentStore(store))
+    template = storage.load_template_by_name("report writer", SCOPE)
+    assert template is not None
+    first, *rest = template.rubric
+    storage.save_template(template.model_copy(update={"rubric": [first.model_copy(update={"axis": "boundary"}), *rest]}))
+
+
 async def _report(result: WriterResult) -> WriterPairwiseReport:
     status = await job_poll(OpsHost.reading(result.host), result.pairwise[CANDIDATE].job_id, result.scope_id)
     return WriterPairwiseReport.model_validate(status.result)
@@ -163,7 +175,7 @@ async def _report(result: WriterResult) -> WriterPairwiseReport:
 
 async def _runs(result: WriterResult) -> list[str]:
     """The runs the result's campaign holds."""
-    campaign = await asyncio.to_thread(result.host.storage.load_campaign, result.campaign_id, SCOPE)
+    campaign = await asyncio.to_thread(result.host.storage.load_campaign, result.campaign_id, result.scope_id)
     assert campaign is not None
     return list(campaign.run_ids)
 
@@ -205,4 +217,97 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
     # The pass asked the six cases up to the stop, each in both orders, once.
     assert report.calls_made == 2 * LANDSLIDE_AT == judge.calls.count(preference_rubric().name)
     assert "across 6 held-out cases" in result.page.model_dump_json()
+    assert offline == []
+
+
+async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_case_reads(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """A mixed preference never separates, so the arms launch all seven cases, three at a time; the reading at the cap
+    is the one the same cases read when every case launches at once, bit for bit, and no pair is asked twice."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    batched_judge, whole_judge = FakeSplitJudge(JUDGE), FakeSplitJudge(JUDGE)
+
+    batched = await _eval(tmp_path, cases, arms, judge=batched_judge).run()
+    whole = await _eval(
+        tmp_path, cases, arms, judge=whole_judge, batch_size=CASES, store=tmp_path / "whole.sqlite", scope="whole"
+    ).run()
+
+    stepped, at_once = await _report(batched), await _report(whole)
+    assert stepped.stopping is not None and stepped.stopping.rule is not None
+    assert stepped.stopping.stopped_at is None and stepped.stopping.cases_found == CASES
+    assert stepped.whole.verdict.outcome == "not_separated"
+    assert len(await _runs(batched)) == 3 * len(arms) and len(await _runs(whole)) == len(arms)
+    assert stepped.whole.model_dump() == at_once.whole.model_dump()
+    assert stepped.finished_only.model_dump() == at_once.finished_only.model_dump()
+    # Each store mints its own case ids, in the same order, so the cases and looks are compared by everything else.
+    assert at_once.stopping is not None
+    assert [case.model_dump(exclude={"case_id"}) for case in stepped.cases] == [
+        case.model_dump(exclude={"case_id"}) for case in at_once.cases
+    ]
+    assert [look.model_dump(exclude={"case_id"}) for look in stepped.stopping.looks] == [
+        look.model_dump(exclude={"case_id"}) for look in at_once.stopping.looks
+    ]
+    # Each pair was asked once in each order, across the three batches' passes.
+    asked = preference_rubric().name
+    assert batched_judge.calls.count(asked) == whole_judge.calls.count(asked) == 2 * CASES == stepped.calls_made
+    assert {arm: summary.n_cases for arm, summary in batched.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
+    said = (
+        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, so the gated readings and "
+        "guardrails were read once, on every case."
+    )
+    assert said in batched.disclosures
+    assert batched.decisions == whole.decisions
+    assert offline == []
+
+
+async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_the_cap_and_says_so(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """The judge prefers the candidate's page on every case, so the preference separates improved at case 6; on the six
+    cases run by then its guardrail, a judged dimension the scope's template reads as one, is not shown held, so the
+    run launches the last case and reads the gated readings and guardrails a second time, and says so."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    # The scope's template, made by a first run, then given a guardrail as a host may: its first judged dimension
+    # read on the boundary axis, so it is decided on its own, held only when its interval clears no change.
+    await _eval(tmp_path, cases, arms, stop_when="never").run()
+    await asyncio.to_thread(_guarded, tmp_path / "evals.sqlite")
+
+    result = await _eval(tmp_path, cases, arms, judge=FakeMarkedJudge(marked=True)).run()
+
+    assert "1 of 1 guardrails are not shown held" in result.promotion_why[CANDIDATE]
+
+    report = await _report(result)
+    stopping = report.stopping
+    assert stopping is not None
+    assert stopping.first_separated_at == LANDSLIDE_AT and stopping.stopped_at is None, result.promotion_why
+    assert stopping.past_the_stop and stopping.cases_found == CASES
+    assert report.whole.cases == CASES and report.whole.verdict.outcome == "improved"
+    assert "had a second look" in stopping.line
+    assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
+    said = (
+        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, so the gated readings and "
+        "guardrails were read on every case."
+    )
+    assert said in result.disclosures
+    assert f"pairwise pass of {CANDIDATE}: {stopping.line}" in result.render()
+    assert offline == []
+
+
+async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_so(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """Fewer side cases than the eval asks for is a disclosure, never a refusal: the run goes ahead, and the floor's
+    line, first among the launch's disclosures after any budget warning, says it is under them."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+
+    result = await _eval(tmp_path, cases, arms, stop_when="never", fewest_cases=10).run()
+
+    line = "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on every case."
+    assert result.resolution == line and line in result.disclosures
+    assert all(summary.status == "completed" for summary in result.arms.values())
+    assert result.pairwise_unread == {}
     assert offline == []
