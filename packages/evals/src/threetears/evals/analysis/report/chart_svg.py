@@ -531,6 +531,45 @@ def _ref_box(label: _RefLabel, y: float) -> tuple[float, float, float, float, fl
     return (start, y - 10, start + label.width, y + 3 + (len(label.lines) - 1) * 13, 10.0)
 
 
+#: How much wider than :func:`_text_width`'s estimate a strong label is drawn in the fallback face a host's frame
+#: resolves (DejaVu Sans measures ``Meets both gates`` at 118.3 px, bold at 12 px, against an estimate of 111.4).
+_FALLBACK_MARGIN = 1.08
+
+
+def _region_label(
+    lx: float, ly: float, text: str, room: float, budget: tuple[float, float, float, float, float] | None
+) -> tuple[str, tuple[float, float, float, float, float]]:
+    """A gate scatter's region label inside its region, as the kit's ``kScatter`` places it: wrapped at its spaces
+    where the region (``room`` px) is narrower than its text, and moved under the budget's label (its box, ``budget``)
+    where the two would share a row; the budget's label keeps its own row. Its markup and its box.
+    """
+
+    def width(t: str) -> float:
+        return _text_width(t, 12, strong=True) * _FALLBACK_MARGIN
+
+    lines: list[str] = []
+    current = ""
+    for word in text.split(" "):
+        joined = f"{current} {word}" if current else word
+        if current and width(joined) > room:
+            lines.append(current)
+            current = word
+        else:
+            current = joined
+    lines.append(current)
+    widest = max(width(line) for line in lines)
+    below = ly + 3 + (len(lines) - 1) * 14
+    if budget is not None and lx < budget[2] and lx + widest > budget[0] and ly - 10 < budget[3] and below > budget[1]:
+        ly = budget[3] + 14
+    style = "fill:var(--good);font-weight:600"
+    if len(lines) == 1:
+        markup = _text(lx, ly, lines[0], "lbl", style=style)
+    else:
+        spans = "".join(_el("tspan", {"x": lx, "dy": 14 if i else 0}, _escape(line)) for i, line in enumerate(lines))
+        markup = _el("text", {"x": lx, "y": ly, "text-anchor": "start", "class": "lbl", "style": style}, spans)
+    return markup, (lx, ly - 10, lx + widest, ly + 3 + (len(lines) - 1) * 14, 10.0)
+
+
 def _need[T](value: T | None, name: str) -> T:
     """A field the kit refuses to draw without, which the chart's model has already required.
 
@@ -1001,8 +1040,10 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
         )
         region = getattr(d, "region_label", None)
         if region:
-            out.append(_text(x(ax) + 8, y(by) + 16, region, "lbl", style="fill:var(--good);font-weight:600"))
-            obstacles.append((x(ax) + 8, y(by) + 6, x(ax) + 8 + len(region) * 6.6, y(by) + 19, 10.0))
+            budget = _ref_box(_ref_label(x(x_ref.value), x_ref.label, ml, w - mr), mt + 12) if x_ref.label else None
+            region_text, region_box = _region_label(x(ax) + 8, y(by) + 16, region, x(bx) - x(ax) - 16, budget)
+            out.append(region_text)
+            obstacles.append(region_box)
     price = d.price_line
     if price is not None:
         p = price.value

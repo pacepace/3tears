@@ -300,7 +300,16 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
   if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
     S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
-    if(d.region_label){S("text",{x:x(ax)+8,y:y(by)+16,class:"lbl",style:"fill:var(--good);font-weight:600",text:d.region_label},s);obs.push([x(ax)+8,y(by)+6,x(ax)+8+d.region_label.length*6.6,y(by)+19]);}}
+    // the region's label inside it: wrapped at its spaces where the region is narrower than its measured text, and
+    // moved under the budget's label where their boxes would share a row; the budget's label keeps its own row
+    if(d.region_label){const lx=x(ax)+8,RW=t=>textW(t,12,600),room=x(bx)-x(ax)-16,ls=[];let cur="";
+      for(const wd of d.region_label.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&RW(nx)>room){ls.push(cur);cur=wd;}else cur=nx;}ls.push(cur);
+      const lw=Math.max(...ls.map(RW)),xr=d.x_reference.label?kRefBox(kRefLabel(x(d.x_reference.value),d.x_reference.label,m.l,w-m.r),m.t+12):null;
+      let ly=y(by)+16;if(xr&&lx<xr[2]&&lx+lw>xr[0]&&ly-10<xr[3]&&ly+3+(ls.length-1)*14>xr[1])ly=xr[3]+14;
+      const st="fill:var(--good);font-weight:600";
+      if(ls.length===1)S("text",{x:lx,y:ly,class:"lbl",style:st,text:ls[0]},s);
+      else{const t=S("text",{x:lx,y:ly,class:"lbl",style:st},s);ls.forEach((l,i)=>S("tspan",{x:lx,dy:i?14:0,text:l},t));}
+      obs.push([lx,ly-10,lx+lw,ly+3+(ls.length-1)*14]);}}
   if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
     S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--good-wash)"},s);}
   for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}

@@ -399,6 +399,53 @@ def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: 
     assert "kWrap(r.note," in KIT_JS, "the kit wraps a forest's note rather than falling back to its format"
 
 
+def test_a_gate_scatter_s_region_label_never_shares_a_row_with_the_budget_s_label() -> None:
+    """A5: at 390 px the r3 page drew ``Meets both gates`` across the latency budget's label, both on the chart's top
+    row, the region narrower than its label. Where the region is narrower than its label, the label wraps inside it,
+    or sits under the budget's label, which keeps its own row; on the static page and in the kit alike."""
+    block = ChartBlock(
+        section="memo",
+        chart="gate_scatter",
+        title="t",
+        data={  # type: ignore[arg-type]
+            "points": [{"x": 184.0, "y": 90.7, "id": "a"}, {"x": 420.0, "y": 89.8, "id": "b"}],
+            "x_domain": [56.0, 1627.5],
+            "y_domain": [77.0, 95.0],
+            "x_fmt": "ms",
+            "y_fmt": "pct",
+            "x_log": True,
+            "reference": {"value": 90.0, "label": "Overall accuracy gate, at least 90%", "kind": "floor"},
+            "x_reference": {"value": 250.0, "label": "Latency budget (p95) gate, at most 250 ms", "kind": "budget"},
+            "region_label": "Meets both gates",
+        },
+    )
+    drawn = chart_drawing(block)
+    assert drawn is not None
+    svgs = re.findall(r"<svg[^>]*>.*?</svg>", drawn, flags=re.DOTALL)
+    assert len(svgs) == 3, "the static page draws the chart at three widths"
+    for svg in svgs:
+        region = re.search(r'<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)"[^>]*fill:var\(--good-wash\)', svg)
+        assert region is not None
+        left, room = float(region.group(1)), float(region.group(2)) - 16
+        label = re.search(r'<text x="[\d.]+" y="([\d.]+)"[^>]*class="lbl"[^>]*>(.*?)</text>', svg)
+        assert label is not None
+        lines = re.findall(r"<tspan[^>]*>([^<]*)</tspan>", label.group(2)) or [label.group(2)]
+        assert " ".join(lines) == "Meets both gates"
+        budget = re.search(r'<text x="([\d.]+)" y="([\d.]+)" text-anchor="start" class="tick">(.*?)</text>', svg)
+        assert budget is not None and "Latency budget" in budget.group(3)
+        budget_rows = len(re.findall(r"<tspan", budget.group(3))) or 1
+        budget_bottom = float(budget.group(2)) + 3 + (budget_rows - 1) * 13
+        # Either every line fits the region (the bold fallback face's 7.44 px a character), ending left of the
+        # budget's label, or the label starts under the budget label's last row.
+        fits = all(len(line) * 7.44 <= room for line in lines) and left + 8 + max(map(len, lines)) * 7.44 < float(
+            budget.group(1)
+        )
+        assert fits or float(label.group(1)) - 10 >= budget_bottom, (svg[:200], lines)
+    narrow = svgs[0]
+    assert narrow.count("<tspan") > 0 and "Meets both</tspan>" in narrow, "at its narrowest the region label wraps"
+    assert "RW(nx)>room" in KIT_JS and "ly=xr[3]+14" in KIT_JS, "the kit wraps and moves the region label alike"
+
+
 def test_the_full_print_states_its_figures_as_the_quiet_print_and_the_page_do(rungs: dict[str, _Rung]) -> None:
     """P43, A4: the full print (``render(full=True)``) wrote ``mean 0.8333``, ``95% CI 0.5687-1`` and a total of
     ``$0.00413`` beside the page's ``$0.0041``. It writes every figure as the quiet print does."""
