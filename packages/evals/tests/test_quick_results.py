@@ -531,7 +531,7 @@ async def test_with_no_classifier_a_comparison_leads_on_its_first_grader() -> No
 
 def _worded(rows: list[dict[str, Any]], *, joined: str = "; ") -> str:
     """Rows as the verdict line words them: each measure as the page heads its verdict, a cost without its unit."""
-    return joined.join(f"{str(row['reading']).split(' ($/', 1)[0]}: {row['verdict']}" for row in rows)
+    return joined.join(f"{str(row['reading']).split(', per ', 1)[0]}: {row['verdict']}" for row in rows)
 
 
 async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() -> None:

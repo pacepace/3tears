@@ -41,9 +41,10 @@ KIT_JS = files("threetears.evals.analysis.report").joinpath("kit", "kit.js").rea
 _HTML_OPEN = '<html lang="en">'
 
 #: The page's own structures the kit has no class for, from the kit's tokens (no colour or face of its own): the first
-#: screen, the sticky section links, the folds and their summaries, a table's title and its numeric, prose and glyph
-#: columns, a chart's frame, the verdict line's tone, a trial's record and the code-written lines. A column header
-#: keeps the case it was declared in, since a header can be an arm's name or a check's expression. The one measure of
+#: screen, the sticky section links (painted over every table's pinned cells, which their frame isolates), the folds
+#: and their summaries, a table's title and its numeric, prose and glyph columns, a chart's frame, the verdict line's
+#: tone, a trial's record and the code-written lines. A column header keeps the case it was declared in, since a header
+#: can be an arm's name or a check's expression. The one measure of
 #: its own is prose's 78ch cap: the page's measure test caps a line in characters, and 78ch at the body size is about
 #: the kit's 44rem column, so prose set smaller still keeps a readable length. Nothing may widen the page at phone
 #: width: a long unbroken token in prose (a dotted metric path) wraps, and a cell grid too narrow for its labels scrolls
@@ -73,7 +74,7 @@ article > header > h1 { max-width: var(--col); }
 .facts, .order, .count, .trial-links { font-size: var(--t-sm); color: var(--muted); }
 .axis { font-size: var(--t-xs); color: var(--muted); }
 a.term { font-size: var(--t-xs); color: var(--muted); text-decoration: underline dotted; }
-nav { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
+nav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
   font-size: var(--t-sm); background: var(--bg); border-bottom: 1px solid var(--line); }
 nav a { color: var(--ink-2); text-decoration: none; }
 nav a:hover { color: var(--accent); }
@@ -260,8 +261,11 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
         else _column_class(block, column.key)
         for column in block.columns
     }
+    pinned = {column.key for column in block.columns[: 2 if block.key_columns == 2 else 1]}
     head = "".join(
-        f'<th scope="col"{classes[column.key]}>{_header(column.header, column.term)}</th>' for column in block.columns
+        f'<th scope="col"{_pinned_class(classes[column.key], column.header, column.key in pinned)}>'
+        f"{_header(column.header, column.term)}</th>"
+        for column in block.columns
     )
     body = []
     for position, row in enumerate(block.rows):
@@ -292,7 +296,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             else:
                 css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
-            cells.append(f"<td{anchor}{css}>{text}</td>")
+            cells.append(f"<td{anchor}{_pinned_class(css, cell.text, column.key in pinned)}>{text}</td>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -480,6 +484,37 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], _Scale]) -> str
     return f'<p class="axis">{" · ".join(lines)}</p>'
 
 
+#: The longest run a pinned cell holds without a place to wrap (a space, or after a hyphen or a slash) that its floor
+#: still holds whole: a longer one (an expression, a digest, a snake_case key) is id-like.
+_UNBROKEN_CHARS = 14
+
+#: The places a pinned cell's words wrap at: a space, or after a hyphen or a slash (``deepseek-v4.1-flash``).
+_WRAP_AT = re.compile(r"\s+|(?<=[-/])")
+
+
+def _unbroken(text: str) -> bool:
+    """Whether ``text`` holds a run longer than :data:`_UNBROKEN_CHARS` with no place to wrap: an id-like cell (an
+    expression, a digest, a key), which a pinned column breaks anywhere rather than be held wider than its cap. Any
+    other cell wraps at its spaces and after its hyphens, never inside a word.
+
+    :param text: The cell's text, as served.
+    :ptype text: str
+    :return: Whether the cell is id-like.
+    :rtype: bool
+    """
+    return any(len(run) > _UNBROKEN_CHARS for run in _WRAP_AT.split(text))
+
+
+def _pinned_class(css: str, text: str, pinned: bool) -> str:
+    """A cell's class attribute (``css``, as built), with ``unbroken`` added where the cell is in a pinned column and
+    id-like (:func:`_unbroken`): the one cell the stylesheet lets a pinned column break anywhere."""
+    if not pinned or not _unbroken(text):
+        return css
+    if not css:
+        return ' class="unbroken"'
+    return css[:-1] + ' unbroken"'
+
+
 def _column_class(block: TableBlock, key: str) -> str:
     """The class attribute a column's cells share: ``num`` for a column of numbers, with ``key`` on the scoreboard's
     passed column, the one a reader weighs first; empty for a column of words.
@@ -520,14 +555,18 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     Without ``figcaption`` the figure carries no visible title, for a figure whose heading the page writes beside it
     (a section's headline); its table keeps the title as its caption, for a screen reader."""
     headers, rows = block.values_table()
-    head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
+    head = "".join(
+        f'<th scope="col"{_pinned_class("", header, at == 0)}>{escape(header)}</th>'
+        for at, header in enumerate(headers)
+    )
     # A cell of words wraps at a measure, as a table block's does (:data:`_PROSE_CELL`), so a long label or reason never
-    # widens the table past what its frame can scroll to.
+    # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere.
     body = "".join(
         "<tr>"
         + "".join(
-            f'<td class="wrap">{escape(cell)}</td>' if len(cell) >= _PROSE_CELL else f"<td>{escape(cell)}</td>"
-            for cell in row
+            f"<td{_pinned_class(' class="wrap"' if len(cell) >= _PROSE_CELL else '', cell, at == 0)}>"
+            f"{escape(cell)}</td>"
+            for at, cell in enumerate(row)
         )
         + "</tr>"
         for row in rows

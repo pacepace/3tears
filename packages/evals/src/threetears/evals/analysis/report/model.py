@@ -31,6 +31,7 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, Self, get_args
@@ -124,8 +125,14 @@ def _said_terms(block: DisclosureBlock) -> list[str]:
     return [CANNOT_TELL_APART] if CANNOT_TELL_APART_PHRASE.search(block.text) else []
 
 
+#: The count a money measure's name is drawn per, after it and a comma (``Production cost, per 1,000 replies``): not
+#: part of the name a glossary term matches.
+_PER_COUNT = re.compile(r", per [\d,]+ \w+$")
+
+
 def _named_terms(block: TableBlock) -> list[str]:
-    """The glossary terms a table names as words of its own: a header (its unit in brackets aside) or a reading's name
+    """The glossary terms a table names as words of its own: a header (its unit in brackets, or the count it is drawn
+    per, aside) or a reading's name
     in a column of readings, that is a term (``Measuring spend, all roles``), so a page that prints one defines it.
 
     :param block: The table.
@@ -134,9 +141,9 @@ def _named_terms(block: TableBlock) -> list[str]:
     :rtype: list[str]
     """
     by_words = {term.casefold(): term for term in GLOSSARY}
-    named = [column.header.split(" (")[0] for column in block.columns]
+    named = [_PER_COUNT.sub("", column.header.split(" (")[0]) for column in block.columns]
     named += [
-        str(row[column.key].value).split(" (")[0]
+        _PER_COUNT.sub("", str(row[column.key].value).split(" (")[0])
         for row in block.rows
         for column in block.columns
         if column.key in _NAMING_COLUMNS and column.key in row and isinstance(row[column.key].value, str)

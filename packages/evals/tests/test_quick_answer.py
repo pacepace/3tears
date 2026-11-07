@@ -132,7 +132,7 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
     assert not {reading for reading in by_reading if reading.startswith("Measuring spend")}
     # Priced under a cent per reply on both arms, so the reading is headed per 1,000 replies.
-    cost = by_reading["Production cost ($/1,000 replies)"]
+    cost = by_reading["Production cost, per 1,000 replies"]
     # Two arms: the candidate's figure heads its own column, by its name.
     assert next(column.header for column in tables["comparisons"].columns if column.key == "arm") == "cheaper"
     assert cost["verdict"] == "cheaper better than dearer (lower is better)"

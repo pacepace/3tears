@@ -30,6 +30,7 @@ from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, RateDrop
 
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.report_shapes_support import COST_BAR
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
@@ -107,6 +108,36 @@ async def page_of(
         for label, evidence in bundles.items()
     }
     return build_campaign_report(campaign, read, reports, call=call)
+
+
+def kairo_page() -> CampaignReport:
+    """Kairo round 2's campaign page over its committed bundle, as the campaign declared itself then: three arms on one
+    aspect, read code-only."""
+    bundle = kairo_bundle()
+    declared = bundle.declaration
+    campaign = EvalCampaign.model_validate(
+        {
+            "id": bundle.campaign_id,
+            "scope_id": bundle.scope_id,
+            "name": bundle.name,
+            "subject_id": bundle.subject_id,
+            "subject_kind": bundle.subject_kind,
+            "behavior": bundle.behavior,
+            "created_by": declared.declared_by or "unknown",
+            "question": declared.question,
+            "declared_at": declared.declared_at,
+            "declared_by": declared.declared_by or "",
+            "arms": list(declared.arms),
+            "aspects": list(declared.aspects),
+            "floors": list(declared.floors),
+        }
+    )
+    labels = bundle.readings.arm_labels()
+    reports = {
+        aspect.aspect: build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels)
+        for aspect in bundle.aspects
+    }
+    return build_campaign_report(campaign, bundle.readings, reports)
 
 
 def opening(page: CampaignReport) -> list[tuple[str, str]]:

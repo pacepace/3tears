@@ -41,7 +41,6 @@ from threetears.evals.kernel.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money, number_in
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
-from threetears.evals.analysis.report.figures import PER_MILLION_LABEL, PER_THOUSAND_LABEL
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -1566,8 +1565,9 @@ _PER_THOUSAND_REPLIES = 1000
 
 
 def _money_label(ruler: MoneyRuler) -> str:
-    """What a money measure's header adds for the count its figures are drawn per: `` ($/1,000 replies)``."""
-    return f" {PER_MILLION_LABEL if ruler.counted == 1_000_000 else PER_THOUSAND_LABEL}"
+    """What a money measure's name adds for the count its figures are drawn per, as every page spells it after the
+    name: ``, per 1,000 replies`` (:meth:`MoneyRuler.words`)."""
+    return f", {ruler.words('replies')}"
 
 
 def _money_cell(value: float | None, interval: tuple[float, float] | None, ruler: MoneyRuler) -> TableCell:

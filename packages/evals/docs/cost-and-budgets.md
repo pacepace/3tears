@@ -405,7 +405,7 @@ refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `prog
 spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Money reads
 one way per set: a column, an axis or a family of figures is spelled in one form throughout, and where any amount in
 it is too small for cents the whole set reads per 1,000 replies, which the heading says (`Cost per 1,000 replies`,
-`Production cost ($/1,000 replies)`). A difference takes the form of the amounts it compares, to the places its
+`Production cost, per 1,000 replies`). A difference takes the form of the amounts it compares, to the places its
 interval supports.
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the

@@ -1675,7 +1675,10 @@ IBM Plex is used where the reader has it installed, else the system's faces.
 
 **Width.** Every table fits a 688 px frame or scrolls inside its own frame. A shadow at an edge shows there is more,
 and the first column stays in view while you scroll. A table whose rows are told apart by two columns (By stratum,
-and the contrasts over two or more candidates) keeps both in view.
+and the contrasts over two or more candidates) keeps both in view. A pinned column is never narrower than its floor
+(8rem, or 30% of the frame where that is less) nor wider than about a third of the frame, and wraps at its words; only
+an id-like cell (an expression, a digest) breaks anywhere. The page's own section links stay above every table as it
+scrolls beneath them, and under 700 px the headings are a step smaller.
 
 ## The engine's prompts: shipped defaults, optional overrides
 

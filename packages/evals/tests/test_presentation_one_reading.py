@@ -26,7 +26,6 @@ import pytest
 
 from threetears.evals.analysis import (
     GLOSSARY,
-    build_campaign_report,
     build_code_only_report,
     campaign_report_html,
     campaign_report_markdown,
@@ -45,13 +44,14 @@ from threetears.evals.analysis.report.words import (
     reader_arm_labels,
     reading_verb,
 )
-from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.parts.words import reading_words
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 
 from packages.evals.tests.analyst_support import shape_bundle
+from packages.evals.tests.campaign_page_support import kairo_page
 from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
@@ -173,40 +173,11 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
     assert f'title="{escape(GLOSSARY[CANNOT_TELL_APART])}"' in header
 
 
-def _kairo_page() -> CampaignReport:
-    """Kairo round 2's campaign page over its committed bundle, as the campaign declared itself then."""
-    bundle = kairo_bundle()
-    declared = bundle.declaration
-    campaign = EvalCampaign.model_validate(
-        {
-            "id": bundle.campaign_id,
-            "scope_id": bundle.scope_id,
-            "name": bundle.name,
-            "subject_id": bundle.subject_id,
-            "subject_kind": bundle.subject_kind,
-            "behavior": bundle.behavior,
-            "created_by": declared.declared_by or "unknown",
-            "question": declared.question,
-            "declared_at": declared.declared_at,
-            "declared_by": declared.declared_by or "",
-            "arms": list(declared.arms),
-            "aspects": list(declared.aspects),
-            "floors": list(declared.floors),
-        }
-    )
-    labels = bundle.readings.arm_labels()
-    reports = {
-        aspect.aspect: build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels)
-        for aspect in bundle.aspects
-    }
-    return build_campaign_report(campaign, bundle.readings, reports)
-
-
 def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_the_control() -> None:
     """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead opens on the
     reading in the scorecard cell's own term, as 1017's does, then says it lies below September, September the
     subject of its own count."""
-    page = _kairo_page()
+    page = kairo_page()
     (lead,) = _said(page.blocks, "verdict", "answer")
     assert lead.text == (
         "Pass rate: qwen3.8-flash against September no worse than the margin, though below September. Of 897 trials, "
@@ -460,7 +431,7 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
 def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -> None:
     # Every table header and reading cell, and every line code writes, names it one way; a trial's record quotes the
     # judge's own rubric, keyed by the dimension, as stored.
-    page = _kairo_page()
+    page = kairo_page()
     said: list[str] = []
     for report in [fold.report for fold in page.aspects]:
         for block in [*page.blocks, *report.blocks]:
@@ -480,7 +451,7 @@ def test_kairo_s_leads_name_every_arm_by_the_name_its_pages_print() -> None:
     bundle = kairo_bundle()
     page_names = reader_arm_labels(bundle, campaign_arm_tags(bundle.aspects, bundle.readings.control))
     listed_names = reader_arm_labels(bundle, input_arm_tags(bundle))
-    (lead,) = _said(_kairo_page().blocks, "verdict", "answer")
+    (lead,) = _said(kairo_page().blocks, "verdict", "answer")
     stored = make_analysis(
         campaign_id=bundle.campaign_id,
         scope_id=bundle.scope_id,
@@ -511,3 +482,38 @@ def test_the_code_page_and_the_document_page_tag_every_arm_alike(capture: str) -
     assert len(set(code.values())) == len(bundle.arms) >= 1
     assert code == listed
     assert all(listed[key] == doc[bundle.label_of(key)] for key in listed), (listed, doc)
+
+
+# --- the host's re-shoot (0.93): the pill's undecided reading, one per-1,000 spelling ------------------------------------
+
+
+def test_a_status_pill_says_an_undecided_reading_in_the_glossary_s_phrase() -> None:
+    """A gate matrix's or options table's pill for a reading whose interval crosses zero: the glossary's phrase,
+    never "Not separated". (A chart's note and the corrected-comparisons verdict on a written page keep the retired
+    words until rung 5's judge is recorded again: the text it replays against prints both.)"""
+    assert reading_words("", None) == CANNOT_TELL_APART.capitalize()
+    assert reading_words("", True) == f"{CANNOT_TELL_APART.capitalize()}, within margin"
+    assert not _RETIRED.search(reading_words("", False))
+
+
+def test_a_per_reply_cost_reads_one_spelling_wherever_a_code_page_names_it(rungs: dict[str, _Surfaces]) -> None:
+    """Production, 0.93: By stratum and a code-only scorecard named a reading ``Measuring spend, all roles ($/1,000
+    replies)`` beside a written page's ``Production cost, per 1,000 replies``. Every page now names the measure, then
+    the count it is drawn per: ``<name>, per 1,000 replies``."""
+    page = kairo_page()
+    surfaces = {
+        "kairo.md": campaign_report_markdown(page),
+        "kairo.html": campaign_report_html(page),
+        **{
+            f"{rung} {surface}": text for rung in ("rung2", "rung3") for surface, text in _rendered(rungs[rung]).items()
+        },
+    }
+    for surface, text in surfaces.items():
+        assert "$/1,000" not in text, surface
+    # Kairo's contrasts and By stratum name each reading so; rung 2's one-arm scorecard heads its columns and names its
+    # measures so.
+    for name in ("Measuring spend, all roles", "Production cost"):
+        assert f"| {name}, per 1,000 replies |" in surfaces["kairo.md"], name
+    scorecard = surfaces["rung2 campaign.md"].split("## Scorecard", 1)[1].split("## Design", 1)[0]
+    for name in ("Measuring spend, all roles", "Production cost"):
+        assert f"| {name}, per 1,000 replies |" in scorecard, name

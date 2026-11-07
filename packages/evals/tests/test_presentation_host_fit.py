@@ -1,7 +1,8 @@
 """A report page fits the host that frames it.
 
 The host shows the page verbatim in a sandboxed ``srcdoc`` frame, 1104 px wide at a 1440 window and 688 px at 1024.
-Held here, on the page as served (no browser runs on the pool, so the page's structure and its stylesheet are read):
+Held here, on the page as served (no browser runs on the pool, so the page's structure and its stylesheet are read),
+and, where headless Chromium launches (the ``integration`` marker), on the page as drawn at both frames:
 
 - **Tables fit a 688 px frame, or say they scroll.** Every table sits in its own ``.tbl`` frame, which scrolls
   sideways with a shadow at an edge while more lies past it and its first column in view; the To settle table leads
@@ -20,16 +21,25 @@ Held here, on the page as served (no browser runs on the pool, so the page's str
   stamp ``data-theme`` and an inline ``style``.
 - **A written report's masthead and cards.** A count of one reads singular (``vs 1 candidate``), and the card grid
   leaves no empty cell beside a short card.
+- **A pinned column is never crushed.** It holds a floor as well as its cap, and wraps at its words; only an id-like
+  cell (an expression, a digest: classed ``unbroken``) breaks anywhere. Drawn, no pinned cell is under its floor and
+  no word in one breaks across lines but an id-like cell's, and ``scripts/check.py`` fails a page where one is.
+- **The nav paints over the tables.** Each table frame isolates its cells' stacking, so the sticky nav covers a pinned
+  cell scrolled beneath it.
+- **Headings fit the host's narrow frame.** Under 700 px they are a step smaller and tighter: a headline holds three
+  lines at 688 px.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -64,12 +74,13 @@ from threetears.evals.schema import EvalResult, EvalTestCase
 from threetears.evals.storage import InMemoryDocumentStore
 
 from packages.evals.tests.analyst_support import fixture_inputs
-from packages.evals.tests.campaign_page_support import page_of
+from packages.evals.tests.campaign_page_support import kairo_page, page_of
 from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.page_contract_support import links, parsed
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
+from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked, rendered
 
 #: The narrowest frame the host gives the page, and the page's side gutters and its table frame's border.
 FRAME_PX = 688
@@ -366,20 +377,40 @@ def test_a_scrolling_frame_shows_its_overflow_and_keeps_its_first_column_in_view
     assert header.declarations()["white-space"] == "normal", "a header wraps rather than widen its column"
 
 
-def test_a_pinned_first_column_wraps_within_a_third_of_the_frame() -> None:
+#: A pinned column's floor and cap, as the stylesheet writes them: ``min(<rem>rem,<vw>vw)``.
+_SPAN = re.compile(r"min\((\d+)rem,(\d+)vw\)")
+
+
+def _px(value: str, frame: int = FRAME_PX) -> float:
+    """A pinned column's floor or cap in px in a frame ``frame`` px wide (the root size 16 px)."""
+    span = _SPAN.fullmatch(value.replace(" ", ""))
+    assert span is not None, value
+    return min(int(span.group(1)) * 16, int(span.group(2)) * frame / 100)
+
+
+def test_a_pinned_first_column_wraps_at_its_words_between_a_floor_and_a_third_of_the_frame() -> None:
     """A long label in the first column (an example's ``T44 · case · stratum · arm · judged · repeat 1``) wraps within
-    its cap instead of filling the frame, so the columns past it can be scrolled to at 390 and 688 px."""
+    its cap instead of filling the frame, so the columns past it can be scrolled to at 390 and 688 px; and the columns
+    past it never crush it below its floor (production, 0.93: "Reading" set ``Rea/din/g``, an aspect's name one
+    letter a line). It wraps at its spaces, never inside a word: only an id-like cell breaks anywhere."""
     rules = _rules(_style(_served()["campaign"]))
     (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
     pinned = first.declarations()
-    assert pinned["white-space"] == "normal" and pinned["overflow-wrap"] == "anywhere"
-    # No wrapping cell's own floor (``td.wrap``'s min-width) holds it wider than its cap.
-    assert pinned["min-width"] == "0"
+    assert pinned["white-space"] == "normal"
+    assert (pinned["overflow-wrap"], pinned["word-break"], pinned["hyphens"]) == ("normal", "normal", "manual")
     # An arm's chip in it wraps too, rather than run over the column beside it.
     (chip,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child .armchip"]
     assert chip.declarations()["white-space"] == "normal"
-    cap = re.fullmatch(r"min\((\d+)rem,(\d+)vw\)", pinned["max-width"].replace(" ", ""))
-    assert cap is not None and int(cap.group(1)) * 16 <= 0.4 * FRAME_PX and int(cap.group(2)) <= 40, pinned
+    cap, floor = _px(pinned["max-width"]), _px(pinned["min-width"])
+    span = _SPAN.fullmatch(pinned["max-width"].replace(" ", ""))
+    assert span is not None and cap <= 0.4 * FRAME_PX and int(span.group(2)) <= 40, pinned
+    # The floor holds a word of the page's own (``Question``, ``qwen3.8-flash``) whole, at 390 px too.
+    assert 6 * 16 <= floor <= cap and _px(pinned["min-width"], 390) >= 100, pinned
+    (unbroken,) = [rule for rule in rules if ".unbroken" in rule.selector]
+    assert unbroken.declarations() == {"overflow-wrap": "anywhere"}
+    assert unbroken.selector == ".tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken", (
+        "only a pinned column breaks an id-like cell anywhere; a column that scrolls keeps its header whole"
+    )
 
 
 @cache
@@ -398,21 +429,27 @@ def _framed(page: str, name: str) -> tuple[str, str]:
 
 def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
     """Kairo's contrasts pin a reading named by its expression (``call_count("discord.send_message") >= 1 or …``),
-    a run longer than the column's cap holds on one line. The pinned cell breaks it anywhere, and nothing inside the
-    cell (its code, the expression's fold, its summary) holds it whole, so it never runs over the column beside it."""
+    a run longer than the column's cap holds on one line. The serializer classes that cell ``unbroken``, which the
+    pinned column breaks anywhere, and nothing inside the cell (its code, the expression's fold, its summary) holds it
+    whole, so it never runs over the column beside it. A reading of words (``outcome (judged)``) is not classed: it
+    wraps at its spaces."""
     page = _kairo_page()
     _frame, table = _framed(page, "comparisons")
     firsts = [
-        html.unescape(re.sub(r"<[^>]+>", "", cell)) for cell in re.findall(r"<tr[^>]*><td[^>]*>(.*?)</td>", table)
+        (css, html.unescape(re.sub(r"<[^>]+>", "", cell)))
+        for css, cell in re.findall(r'<tr[^>]*><td(?: class="([^"]*)")?[^>]*>(.*?)</td>', table)
     ]
-    unbroken = max((run for text in firsts for run in text.split()), key=len)
+    unbroken = max((run for _css, text in firsts for run in text.split()), key=len)
     assert 'call_count("discord.send_message")' in unbroken, "the control: the pinned column holds the expression"
+    classed = {text: "unbroken" in css.split() for css, text in firsts}
+    assert all(classed[text] for text in classed if unbroken in text), "the expression's cell is id-like"
+    assert not classed["outcome (judged)"], "a reading of words wraps at its spaces"
     rules = _rules(_style(page))
     (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
     pinned = first.declarations()
-    cap = re.fullmatch(r"min\((\d+)rem,\d+vw\)", pinned["max-width"])
-    assert cap is not None and _cell_px(unbroken, header=False) > int(cap.group(1)) * 16, "it is wider than the cap"
-    assert pinned["overflow-wrap"] == "anywhere", "break-word leaves the run's min-content whole"
+    assert _cell_px(unbroken, header=False) > _px(pinned["max-width"]), "it is wider than the cap"
+    (anywhere,) = [rule for rule in rules if ".unbroken" in rule.selector]
+    assert anywhere.declarations()["overflow-wrap"] == "anywhere", "break-word leaves the run's min-content whole"
     inside = [rule for rule in rules if re.search(r"\b(code|summary|expr)\b", rule.selector)]
     assert inside, "the control: the page styles code and the expression's fold"
     for rule in inside:
@@ -656,9 +693,12 @@ def test_a_table_told_apart_by_two_columns_keeps_both_in_view_on_the_kairo_captu
     assert held.declarations()["width"] == held.declarations()["min-width"] == cap, "the first column is its cap"
     (second,) = [rule for rule in rules if rule.selector == ".tbl.keys-2 :is(th,td):nth-child(2)"]
     pinned = second.declarations()
+    # The second pins where the first ends: the first's width, its floor and its cap are one value.
     assert (pinned["position"], pinned["left"]) == ("sticky", cap)
     assert pinned["background"].startswith("var("), "a pinned column is opaque, or the scrolled cells show through"
-    assert pinned["overflow-wrap"] == "anywhere" and pinned["min-width"] == "0"
+    # It wraps at its words between a floor and its cap, as the first column does.
+    assert (pinned["overflow-wrap"], pinned["word-break"], pinned["hyphens"]) == ("normal", "normal", "manual")
+    assert 6 * 16 <= _px(pinned["min-width"]) <= _px(pinned["max-width"]), pinned
     # Both pinned columns together leave most of a 688 px frame to the columns that scroll.
     widths = [re.fullmatch(r"min\((\d+)rem,\d+vw\)", value) for value in (cap, pinned["max-width"])]
     assert all(widths) and sum(int(match.group(1)) * 16 for match in widths if match) <= 0.6 * FRAME_PX
@@ -704,3 +744,172 @@ def test_a_written_report_s_evidence_record_lays_its_tables_out_as_the_campaign_
     assert 'data-table="comparisons"' in record
     contrasts = record.split('data-table="comparisons"', 1)[1].split("</tr>", 1)[0]
     assert re.findall(r"<th[^>]*>(?:<a[^>]*>)?([^<]+)", contrasts)[0] == "Reading"
+
+
+# =============================================================================
+# Drawn: pinned columns hold their floor, the nav paints over the tables, headings fit a host's frame
+# =============================================================================
+
+#: The two frames a host gives the page: 688 px at a 1024 px window, 1104 px at 1440.
+FRAMES = (688, 1104)
+
+#: Each pinned cell of the named tables, drawn: its text, its width, its floor (computed min-width), whether it is
+#: id-like, and each word of it (split at its spaces, a hyphen or a slash kept on the word before) the browser drew
+#: across more than one line.
+_PINNED_PROBE = """(names) => {
+  const out = [];
+  for (const name of names) {
+    const block = document.querySelector(`[data-table="${name}"]`);
+    if (!block) { out.push({table: name, missing: true}); continue; }
+    for (let e = block; e; e = e.parentElement) if (e.tagName === 'DETAILS') e.open = true;
+    const frame = block.querySelector('.tbl');
+    const keys = frame.classList.contains('keys-2') ? 2 : 1;
+    for (const row of frame.querySelectorAll('tr')) {
+      for (const cell of [...row.children].slice(0, keys)) {
+        const style = getComputedStyle(cell), broken = [];
+        const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+        for (let node = walk.nextNode(); node; node = walk.nextNode())
+          for (const word of node.data.matchAll(/[^\\s\\-\\/]+[\\-\\/]?/g)) {
+            const range = document.createRange();
+            range.setStart(node, word.index); range.setEnd(node, word.index + word[0].length);
+            const tops = new Set([...range.getClientRects()].filter(r => r.width).map(r => Math.round(r.top)));
+            if (tops.size > 1) broken.push(word[0]);
+          }
+        out.push({table: name, text: cell.textContent.trim(), width: cell.getBoundingClientRect().width,
+                  floor: parseFloat(style.minWidth), sticky: style.position === 'sticky',
+                  unbroken: cell.classList.contains('unbroken'), broken});
+      }
+    }
+  }
+  return out;
+}"""
+
+
+def _browser() -> None:
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+
+
+@cache
+def _kairo_campaign_html() -> str:
+    """Kairo's campaign page, code-only: its scorecard pins the aspect's name."""
+    return campaign_report_html(kairo_page())
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", FRAMES)
+def test_a_pinned_column_holds_its_floor_and_wraps_only_at_its_words_on_kairo_s_contrasts_and_scorecard(
+    width: int, tmp_path: Path
+) -> None:
+    """Production, 0.93, in the host's frame: the Contrasts' "Reading" drew ``Rea/din/g``, the statistics'
+    "Question" ``Q/u/e/s/ti/o/n``, and a code-only scorecard's aspect name one letter a line at 1104 px as well as
+    688, while the table measured as fitting its frame. Drawn here at both frames: every pinned cell is at least its
+    floor wide, and no word in one breaks across lines unless the cell is id-like."""
+    _browser()
+    pages = {
+        "aspect": (_kairo_page(), ("comparisons", "comparison_statistics")),
+        "campaign": (_kairo_campaign_html(), ("scorecard",)),
+    }
+    for name, (page, tables) in pages.items():
+        path = tmp_path / f"{name}.html"
+        path.write_text(page, encoding="utf-8")
+        cells, errors = rendered(path, f"() => ({_PINNED_PROBE})({json.dumps(list(tables))})", width=width)
+        assert not errors, errors
+        assert not [cell for cell in cells if cell.get("missing")], cells
+        assert all(cell["sticky"] for cell in cells), "the control: every key column is pinned"
+        texts = {cell["text"] for cell in cells}
+        assert {"Reading", "Question"} <= texts or name == "campaign", texts
+        assert "character adherence (v2)" in texts or name == "aspect", "the control: the scorecard pins the aspect"
+        for cell in cells:
+            assert cell["width"] >= cell["floor"] - 0.5 and cell["floor"] >= 96, (name, width, cell)
+            assert cell["unbroken"] or not cell["broken"], (name, width, cell)
+        assert any(cell["unbroken"] for cell in cells) or name == "campaign", "the control: an expression is pinned"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", FRAMES)
+def test_the_section_nav_paints_over_a_pinned_cell_scrolled_beneath_it(width: int, tmp_path: Path) -> None:
+    """Production, 0.93: the code-only page's sticky nav drew under the scorecard's pinned Aspect column ("…ecard").
+    Each table frame isolates its cells' stacking, so the nav, above the frame, paints over every cell beneath it."""
+    _browser()
+    path = tmp_path / "campaign.html"
+    path.write_text(_kairo_campaign_html(), encoding="utf-8")
+    probe = """() => {
+      const nav = document.querySelector('nav'), hits = [];
+      if (getComputedStyle(nav).position !== 'sticky') return null;
+      for (const cell of document.querySelectorAll('.tbl thead tr > :first-child')) {
+        if (!cell.offsetParent) continue;
+        window.scrollTo(0, scrollY + cell.getBoundingClientRect().top - nav.getBoundingClientRect().height / 2);
+        const box = nav.getBoundingClientRect(), r = cell.getBoundingClientRect();
+        // a table near the page's end cannot be scrolled up to the nav
+        if (r.top >= box.bottom || r.bottom <= box.top) continue;
+        const y = (Math.max(box.top, r.top) + Math.min(box.bottom, r.bottom)) / 2;
+        const hit = document.elementFromPoint(r.left + 6, y);
+        hits.push({cell: cell.textContent.trim(), onNav: !!hit && nav.contains(hit)});
+      }
+      return hits;
+    }"""
+    hits, errors = rendered(path, probe, width=width)
+    assert not errors, errors
+    assert hits is not None and len(hits) >= 5, f"the control: pinned header cells scrolled beneath the nav: {hits}"
+    assert all(hit["onNav"] for hit in hits), [hit["cell"] for hit in hits if not hit["onNav"]]
+
+
+def test_the_nav_stacks_above_every_table_frame_s_pinned_cells() -> None:
+    """Read as rules, for the pool (no browser): a table frame isolates its stacking, so a pinned cell's z-index
+    ranks it only within its own frame, and the nav is positioned above the page's other content."""
+    rules = _rules(_style(_served()["campaign"]))
+    (frame,) = [rule for rule in rules if rule.selector == ".tbl" and not rule.at]
+    assert frame.declarations()["isolation"] == "isolate"
+    (nav,) = [rule for rule in rules if rule.selector == "nav" and not rule.at]
+    assert nav.declarations()["position"] == "sticky" and int(nav.declarations()["z-index"]) >= 1
+
+
+def test_a_frame_under_700_px_sets_its_headings_a_step_smaller() -> None:
+    """Production, 0.93: the written report's headline ran five lines at 688 px, in the 36 px hero size. Under 700 px
+    the headings are a step smaller and tighter."""
+    rules = _rules(_style(_served()["doc"]))
+    (h1,) = [rule for rule in rules if rule.selector == "h1" and not rule.at]
+    assert h1.declarations()["font-size"] == "var(--t-hero)", "the control: a wide frame's headline is the hero size"
+    small = {rule.selector: rule.declarations() for rule in rules if rule.at == "@media (max-width:700px)"}
+    assert set(small) >= {"h1", "h2", "h3"}, small
+    assert float(small["h1"]["font-size"].removesuffix("rem")) <= 1.5 and float(small["h1"]["line-height"]) <= 1.25
+    assert float(small["h2"]["font-size"].removesuffix("rem")) <= 1.25
+
+
+@pytest.mark.integration
+def test_the_written_headline_takes_a_third_fewer_lines_at_688_px(tmp_path: Path) -> None:
+    """Kairo's 148-character headline, drawn in a host's 688 px frame: four lines at 24 px, where the hero size took
+    six."""
+    _browser()
+    path = tmp_path / "doc.html"
+    path.write_text(_served()["doc"], encoding="utf-8")
+    probe = """() => { const h = document.querySelector('h1'), s = getComputedStyle(h), size = s.fontSize;
+      const lines = () => Math.round(h.getBoundingClientRect().height / parseFloat(getComputedStyle(h).lineHeight));
+      const drawn = lines(); h.style.fontSize = 'var(--t-hero)'; h.style.lineHeight = '1.12';
+      return {size, drawn, hero: lines()}; }"""
+    drawn, errors = rendered(path, probe, width=FRAME_PX)
+    assert not errors, errors
+    assert drawn["size"] == "24px" and drawn["drawn"] <= 4 and drawn["drawn"] <= drawn["hero"] * 2 / 3, drawn
+
+
+@pytest.mark.integration
+def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp_path: Path) -> None:
+    """``scripts/check.py`` passes Kairo's pages, and fails the same campaign page with its pinned column let shrink
+    to nothing (the 0.93 stylesheet's ``min-width:0; overflow-wrap:anywhere``): a table "fits" only where no pinned
+    cell is under its floor and no word in one breaks but an id-like cell's."""
+    _browser()
+    good = tmp_path / "good.html"
+    good.write_text(_kairo_campaign_html(), encoding="utf-8")
+    checked, runs = render_checked(good, tmp_path / "shots")
+    assert checked.returncode == 0 and len(runs) == 6, checked.stdout + checked.stderr
+    crushed = tmp_path / "crushed.html"
+    crushed.write_text(
+        _kairo_campaign_html().replace(
+            "</style>", ".tbl :is(th,td):first-child{min-width:0!important;overflow-wrap:anywhere!important}</style>", 1
+        ),
+        encoding="utf-8",
+    )
+    checked, runs = render_checked(crushed, tmp_path / "shots")
+    assert checked.returncode == 1 and "crushed:" in checked.stdout, checked.stdout

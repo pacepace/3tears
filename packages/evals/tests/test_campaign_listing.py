@@ -16,10 +16,11 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 - **the name** is held to ``CAMPAIGN_NAME_CHARS`` when written, the refusal saying the detail goes in the question or
   description; renaming moves no fingerprint;
 - **verdict_short** is code's: ``Keep``/``Adopt`` and the arm from the recorded call, else from the report's
-  recommendation, ``No call`` for a report recommending none, None with neither; the arm found by its variant key and
-  printed as the title prints it;
+  recommendation (a draft's marked ``Draft: ``, as its headline is), ``No call`` for a report recommending none, None
+  with neither; the arm found by its variant key and printed as the title prints it;
 - **outcome_short** is code's, read off the report's frozen readings and distinct from the decision: the answer
-  leads (a change: which candidate improved, else none did; a choice: which arm leads; a measurement: measured;
+  leads (a change: which candidate improved, else ``Cannot tell apart`` where a reading is undecided and none is
+  shown worse, else none did; a choice: which arm leads; a measurement: measured;
   `No readings yet` for no rows) and the floors the answer's arms broke and the bars they miss only qualify it, floor
   first, counted past a length; a warning on an arm the answer does not name changes nothing; None with no report;
 - **the title** is code's: the arms (declared, else the runs' candidate models; judges counted, with a report or
@@ -473,7 +474,12 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
         return _line(campaigns_list(host, TOYHOST_SCOPE).campaigns, campaign_id).outcome_short
 
     assert read("change") == "No readings yet"
-    assert read("change", readings=[_change_row(aspect, *two, "unclear")]) == "No candidate improved"
+    # Nothing separated is an open question, never a decided no (the host's re-shoot, 0.93): the glossary's phrase.
+    assert read("change", readings=[_change_row(aspect, *two, "unclear")]) == "Cannot tell apart"
+    open_and_held = [_change_row(aspect, *two, "within_margin"), _change_row(aspect, *third, "unclear")]
+    assert read("change", readings=open_and_held) == "Cannot tell apart"
+    open_and_worse = [_change_row(aspect, *two, "worse"), _change_row(aspect, *third, "unclear")]
+    assert read("change", readings=open_and_worse) == "No candidate improved", "a candidate shown worse is decided"
     assert read("change", readings=[_change_row(aspect, *two, "worse")]) == "No candidate improved"
     assert read("change", readings=[_change_row(aspect, *two, "within_margin")]) == "No candidate improved"
     assert read("change", readings=[_change_row(aspect, *two, "better")]) == "fast improved"

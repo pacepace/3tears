@@ -66,7 +66,7 @@ from threetears.evals.analysis.campaign_title import (
     declared_title,
     title_arm_name,
 )
-from threetears.evals.analysis.style import arm_name
+from threetears.evals.analysis.style import CANNOT_TELL_APART, arm_name
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
@@ -261,8 +261,9 @@ class CampaignLine(EvalBaseModel):
         description=(
             "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
             "<arm>` for the control and `Adopt <arm>` for a candidate; else from the one arm its report document "
-            "recommends (`EvalAnalysis.recommended_variant_key`), the same way; `No call` for a report recommending no "
-            "arm or more than one; None with neither a call nor a report. report.headline is the long form."
+            "recommends (`EvalAnalysis.recommended_variant_key`), the same way, a draft's marked `Draft: ` as its "
+            "headline is (`Draft: Keep <arm>`); `No call` for a report recommending no arm or more than one; None "
+            "with neither a call nor a report. report.headline is the long form."
         ),
     )
     outcome_short: str | None = Field(
@@ -271,9 +272,10 @@ class CampaignLine(EvalBaseModel):
             "What the evidence says in a few words, read by code off its report's frozen readings and never from the "
             "writer's prose or by cutting the headline; distinct from verdict_short, which is the decision. Arms are "
             "named by their short names (else labels). The answer leads and a warning only qualifies it. A change: "
-            "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `No candidate "
-            "improved`, whether the candidates are equal, undecided or worse. A choice: `<arm> ahead` where one "
-            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
+            "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `Cannot tell "
+            "apart` where some candidate's reading is undecided and none is shown worse, else `No candidate "
+            "improved` (a candidate shown worse, or every one shown within its margin). A choice: `<arm> ahead` "
+            "where one arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
             "tell apart` where the evidence tells no pair apart. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
             "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
             "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
@@ -758,6 +760,11 @@ def _decided(call: CampaignCall, campaign: EvalCampaign, frozen: CampaignBundle 
     return _named_arm(call.variant_key, call.arm, campaign, frozen) or f"Adopt {arm_name(call.arm).label}"
 
 
+#: The undecided reading as a listing line says it: the glossary's phrase
+#: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), capitalised.
+_UNDECIDED = CANNOT_TELL_APART.capitalize()
+
+
 def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
     """What the readings show in a few words (:attr:`CampaignLine.outcome_short`), from their structure alone: the
     answer first, then the warnings of the arms the answer names as a qualifier, never in its place."""
@@ -809,12 +816,14 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
         }
         if len(leaders := ahead - behind) == 1:
             return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
-        return "Arms differ" if ahead else "Cannot tell apart"
+        return "Arms differ" if ahead else _UNDECIDED
     if not readings.readings:
         return "No readings yet"
     better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))
     if not better:
-        return "No candidate improved"
+        # Nothing separated is an open question, never "no candidate improved": that reads as a decided no.
+        shown = {row.reading for row in readings.readings}
+        return _UNDECIDED if "unclear" in shown and "worse" not in shown else "No candidate improved"
     answer = f"{named(better[0])} improved" if len(better) == 1 else f"{len(better)} candidates improved"
     return qualified(answer, set(better))
 
@@ -917,9 +926,16 @@ def _with_report(
             "outcome_short": (
                 _outcome(read.bundle.readings, _reader_arms(read.bundle)) if read.bundle is not None else None
             ),
-            "verdict_short": line.verdict_short or _recommended(analysis, campaign, read.bundle),
+            "verdict_short": line.verdict_short or _drafted(_recommended(analysis, campaign, read.bundle), report),
         }
     )
+
+
+def _drafted(verdict: str, report: CampaignLineReport) -> str:
+    """A report's short verdict as the listing row leads with it: a draft's marked as its headline is
+    (:data:`DRAFT_HEADLINE`), so no row reads a draft's recommendation as a report its editor passed. A recorded call is
+    the person's, never marked."""
+    return DRAFT_HEADLINE.format(headline=verdict) if report.draft else verdict
 
 
 def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | None]:

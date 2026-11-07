@@ -523,6 +523,9 @@ async def test_a_draft_is_listed_by_its_own_headline_marked_a_draft() -> None:
     ]
     assert line.report is not None and line.report.draft
     assert line.report.headline == f"Draft: {TOY_DOC['headline']}"
+    # The row leads with the short verdict (the host's re-shoot, 0.93), so it is marked as the headline is.
+    assert line.verdict_short is not None and line.verdict_short.startswith("Draft: "), line.verdict_short
+    assert line.verdict_short.removeprefix("Draft: ").split(" ", 1)[0] in {"Keep", "Adopt", "No"}, line.verdict_short
 
 
 def _declared_aspect(campaign: EvalCampaign) -> dict[str, Any]:

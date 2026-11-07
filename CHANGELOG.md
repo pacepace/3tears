@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report page fits a host's frame without crushing its key column
+
+**Fixed:** a table's pinned key column holds a floor (8rem, or 30% of the frame) as well as its cap, and wraps at its
+words, never inside one: production's 0.93 frame drew `Rea/din/g`, `Q/u/e/s/ti/o/n` and a code-only scorecard's aspect
+name one letter a line, at 1104 px as well as 688, while the table measured as fitting. Only an id-like cell (an
+expression, a digest, a run longer than the floor holds) is classed `unbroken` and breaks anywhere; the second pinned
+column of a two-key table pins where the first ends and has a floor of its own. Each table frame isolates its cells'
+stacking, so the sticky section links paint over a pinned cell scrolled beneath them. Under 700 px the headings are a
+step smaller and tighter (a 148-character headline takes four lines at 688 px, where it took six). `scripts/check.py`
+fails a pinned cell under its floor, a word in one broken across lines (but an id-like cell's) and a pinned cell
+painted over the nav. A per-reply cost's name on a code page reads `Production cost, per 1,000 replies`, as a report
+document's page spells it, where it read `Production cost ($/1,000 replies)`. A gate matrix's or options table's pill
+for an undecided reading reads `Cannot tell apart`; a chart's note and the corrected-comparisons verdict on a written
+page still read `not separated` until rung 5's judge is recorded again, since the text it replays against prints both.
+
+**Hosts:** `CampaignLine.outcome_short` reads `Cannot tell apart` where no candidate is shown better, some reading is
+undecided and none is shown worse (it read `No candidate improved`, which a reader took for a decided no);
+`CampaignLine.verdict_short` read off a draft report is marked `Draft: ` as its headline is (`Draft: Keep <arm>`). A
+host pinning either, a scorecard's money header or a reading name updates its match; see MIGRATIONS. Nothing stored
+changes.
+
 ### evals: each name once, each term defined, each heading once, one order on every replay
 
 **Changed:** a code page, an aspect page and a report document's page head with the campaign's name (its `<title>`
