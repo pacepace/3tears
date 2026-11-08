@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.l2_first import L2_FIRST
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy
+from threetears.core.entities.base import BaseEntity
 from threetears.core.collections.write_marks import (
     WRITE_MARK_TRIGGER,
     WriteMarkReconciler,
@@ -71,7 +74,13 @@ class _Queue:
             self._locked = False
             return [{"released": True}]
         if "pg_trigger" in query:
-            return [{"table_schema": schema, "table_name": table} for schema, table in self.missing]
+            # the catalogue read names the tables it asks about, as the real statement filters on them
+            named = set(args[0]) if "ANY($1::text[])" in query else None
+            return [
+                {"table_schema": schema, "table_name": table}
+                for schema, table in self.missing
+                if named is None or table in named
+            ]
         if "count(*)" in query:
             return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
         limit, failed = int(args[0]), set(args[1])
@@ -138,6 +147,40 @@ async def test_each_marked_table_is_advanced_once_and_its_marks_deleted() -> Non
     assert sorted(source.advanced) == ["groups", "revocations"]
     assert queue.marks == {}
     assert (done.applied, done.behind) == (4, False)
+
+
+class _ElectionResults(BaseCollection[BaseEntity]):
+    """an L2-first table: its epoch is advanced before its row reaches L3."""
+
+    l2_first = L2_FIRST
+
+    @property
+    def table_name(self) -> str:
+        return "election_results"
+
+
+async def test_an_l2_first_tables_marks_are_deleted_without_a_whole_table_advance() -> None:
+    queue = _Queue(["election_results", "groups", "election_results"])
+    source = _Generations()
+
+    done = await _reconciler(queue, source).run_pass()
+
+    assert _ElectionResults.l2_first is L2_FIRST
+    assert source.advanced == ["groups"], "an L2-first write's epoch named its rows before L3 had it"
+    assert queue.marks == {}
+    assert done.applied == 3
+
+
+async def test_an_l2_first_table_gets_no_trigger() -> None:
+    queue = _Queue([], missing=[("platform", "election_results"), ("platform", "groups")])
+
+    created = await install_write_mark_triggers(
+        queue,  # type: ignore[arg-type]
+        marks_schema="platform",
+        tables=("election_results", "groups"),
+    )
+
+    assert created == ["platform.groups"]
 
 
 async def test_a_table_that_cannot_be_advanced_keeps_its_marks_for_the_next_pass() -> None:

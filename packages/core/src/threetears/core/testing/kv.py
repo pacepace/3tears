@@ -413,6 +413,15 @@ class FakeKvBucket:
         _ = self.stored_messages
         return self._stored_bytes
 
+    async def held_bytes(self) -> int:
+        """the bytes the bucket holds, as :meth:`threetears.nats.NatsKvBucket.held_bytes` reads them.
+
+        :return: :attr:`stored_bytes`
+        :rtype: int
+        """
+        await _YieldOnce()
+        return self.stored_bytes
+
     def _notify(self, update: KvKeyUpdate) -> None:
         """hand one new message to every open watch of its key.
 

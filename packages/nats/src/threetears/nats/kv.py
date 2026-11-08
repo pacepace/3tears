@@ -2416,6 +2416,23 @@ class NatsKvBucket:
             return None
         return True
 
+    async def held_bytes(self) -> int:
+        """how many bytes the bucket's backing stream holds now, read fresh from the server.
+
+        What a bounded bucket counts against its ``max_bytes``: a caller divides one by the other to
+        see how close the bucket is to refusing writes.
+
+        :return: the bytes held
+        :rtype: int
+        :raises KvError: on transport failure
+        """
+        js = self._client.jetstream_context()
+        stream = kv_stream_name(self._full_name)
+        info: StreamInfo = await self._run_op(
+            lambda: js.stream_info(stream), passthrough=(), failure=f"KV stream info failed: bucket={self._full_name}"
+        )
+        return int(info.state.bytes)
+
     async def date_created(self) -> datetime:
         """when the bucket's backing stream was created, read fresh from the server.
 

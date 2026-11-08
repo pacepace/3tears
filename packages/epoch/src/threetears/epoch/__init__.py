@@ -40,6 +40,7 @@ from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
 from threetears.epoch.generation import (
     DEFAULT_EPOCH_CHANGE_RETENTION,
     EPOCH_CHANGES_BUCKET,
+    EPOCH_CHANGES_FILL_WARN_RATIO,
     EpochChangeRetention,
     EpochGenerationReader,
     EpochGenerationSource,
@@ -78,6 +79,7 @@ __all__ = [
     "EpochClient",
     "DEFAULT_EPOCH_CHANGE_RETENTION",
     "EPOCH_CHANGES_BUCKET",
+    "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",

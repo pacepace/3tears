@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -64,6 +64,7 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.backends.schema_sql import (
     PGVECTOR_TYPES,
+    build_select_column_list,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
@@ -76,6 +77,7 @@ from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, 
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
+from threetears.core.keyset import keyset_pages
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
@@ -2065,6 +2067,32 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
+
+    def l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
+        """every row of the table, in key order, a page per statement, read-coerced as :meth:`fetch_from_store` reads one.
+
+        :param page_size: rows per page; ``page_size + 1`` must not pass the transport's cap
+        :ptype page_size: int
+        :return: the pages
+        :rtype: AsyncIterator[list[dict[str, Any]]]
+        :raises NotImplementedError: when the collection has no L3 pool
+        """
+        pool = self.l3_pool
+        if pool is None:
+            raise NotImplementedError(f"{type(self).__name__} has no L3 to read its rows from")
+        schema = self.schema
+        pages = keyset_pages(
+            pool,
+            f"SELECT {build_select_column_list(schema)} FROM {schema.name}",  # noqa: S608 - the declared schema
+            list(schema.pk_columns),
+            page_size=page_size,
+        )
+
+        async def coerced() -> AsyncIterator[list[dict[str, Any]]]:
+            async for page in pages:
+                yield [_coerce_row_fn(schema, row) for row in page]
+
+        return coerced()
 
     async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
         """fetch one row on a caller's open transaction, through the :class:`DurableStore` seam.

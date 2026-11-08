@@ -39,12 +39,13 @@ from threetears.core.collections.epoch_change import (
     read_epoch_change,
 )
 from threetears.core.collections.generation import split_generation_token
+from threetears.core.collections.l2_first import L2LostError
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.nats.errors import KvBucketNotFoundError, KvError
 from threetears.nats.kv import KvDeclaring
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, gauge
 from uuid_utils import uuid7
 
 from threetears.epoch.client import _EPOCH_BUCKET, _key_for
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_EPOCH_CHANGE_RETENTION",
     "EPOCH_CHANGES_BUCKET",
+    "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",
@@ -78,6 +80,33 @@ _CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
 EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 
 _LEGAL_KEY_TOKEN: Final = re.compile(r"^[A-Za-z0-9_-]+$")
+
+#: the fraction of its byte bound the epoch change log may hold before it is warned on. The log refuses
+#: a record past its bound, and a refused record fails the write that made it, so the warning has to
+#: come while there is still room: at three quarters, an operator has a quarter of the bound's worth
+#: of writes to raise it or find what is filling it. Alert on ``threetears_epoch_changes_fill_ratio``
+#: above this.
+EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
+
+_CHANGES_FILL = gauge(
+    "threetears_epoch_changes_fill_ratio",
+    description=(
+        "how full the epoch change log is, as a fraction of its byte bound; it refuses records past 1.0, "
+        "failing their writes, so alert above 0.75"
+    ),
+)
+_CHANGES_FILL_WARNED = counter(
+    "threetears_epoch_changes_fill_warnings_total",
+    description="measurements of the epoch change log above its warn ratio",
+)
+
+
+@runtime_checkable
+class _Measurable(Protocol):
+    """a bucket that can say how many bytes it holds; the real bucket and the shipped in-memory one can."""
+
+    async def held_bytes(self) -> int: ...
+
 
 _CHANGES_REFUSED = counter(
     "collection_epoch_change_refused_total",
@@ -239,6 +268,22 @@ class EpochGenerationSource:
             could not be stored
         """
         token = await self.advance(table_name)
+        await self._store_change(table_name, token, rows)
+        return token
+
+    async def _store_change(self, table_name: str, token: str, rows: Sequence[ChangedRow] | None) -> None:
+        """store the change record of the advance that wrote ``token``.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation the advance wrote
+        :ptype token: str
+        :param rows: the rows it covered; ``None`` for the whole table
+        :ptype rows: Sequence[ChangedRow] | None
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the log refused it
+        """
         key = epoch_change_kv_key(table_name, token)
         try:
             bucket = await self._changes()
@@ -253,7 +298,6 @@ class EpochGenerationSource:
             raise GenerationUnavailableError(
                 f"the change of {table_name!r} at {token!r} could not be stored: {exc}"
             ) from exc
-        return token
 
     async def _bucket(self) -> KvBucketLike:
         """the epoch bucket, opened with no bucket-wide expiry so generations never lapse on a timer.
@@ -262,6 +306,133 @@ class EpochGenerationSource:
         :rtype: KvBucketLike
         """
         return await self._nats.kv_bucket(name=_EPOCH_BUCKET, ttl=None)
+
+    async def read(self, table_name: str) -> str | None:
+        """the table's current write generation, or ``None`` when the bucket holds none; never mints one.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :return: the generation token, or ``None``
+        :rtype: str | None
+        :raises GenerationUnavailableError: when the bucket cannot be read, or holds no generation
+        """
+        key = generation_kv_key(table_name)
+        try:
+            raw = await (await self._bucket()).get(key=key)
+        except KvError as exc:
+            raise GenerationUnavailableError(f"write generation for {table_name!r} could not be read: {exc}") from exc
+        if raw is None:
+            return None
+        _parse(table_name, raw)
+        return raw.decode("utf-8")
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        """the change record of the advance that wrote ``token``, or ``None`` when the log does not hold it.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation that advance wrote
+        :ptype token: str
+        :return: the record, or ``None``
+        :rtype: EpochChange | None
+        :raises GenerationUnavailableError: when the log cannot be read, or holds another epoch's record
+        """
+        key = epoch_change_kv_key(table_name, token)
+        try:
+            raw = await (await self._changes()).get(key=key)
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"the change of {table_name!r} at {token!r} could not be read: {exc}"
+            ) from exc
+        return None if raw is None else read_epoch_change(raw, table_name, token)
+
+    async def advance_continuing(self, table_name: str, rows: Sequence[ChangedRow]) -> str:
+        """advance an existing generation once and store ``rows`` as its change: an L2-first commit.
+
+        :meth:`advance_with_change`, except that a table with no generation is refused rather than given
+        a new incarnation: an L2-first table has no generation only when NATS lost it, and an epoch begun
+        under a new incarnation is one no pod could follow from its mark, nor the refiller continue.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param rows: the rows the write changed
+        :ptype rows: Sequence[ChangedRow]
+        :return: the generation token the advance wrote
+        :rtype: str
+        :raises L2LostError: when the table has no generation
+        :raises GenerationUnavailableError: when the generation could not be advanced or its change stored
+        """
+        token = await self._advance(table_name, mint=False)
+        await self._store_change(table_name, token, rows)
+        return token
+
+    async def restore_generation(self, table_name: str, token: str | None) -> bool:
+        """put a table's generation back where the bucket holds none: the refiller's step after L2 is lost.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation to put back; ``None`` mints a fresh incarnation at count zero
+        :ptype token: str | None
+        :return: whether this call created it; ``False`` when a generation was already there
+        :rtype: bool
+        :raises GenerationUnavailableError: when the bucket cannot be written
+        """
+        value = token if token is not None else f"{uuid7()}:0"
+        try:
+            created = await (await self._bucket()).create(key=generation_kv_key(table_name), value=value.encode())
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {table_name!r} could not be restored: {exc}"
+            ) from exc
+        return created is not None
+
+    async def restore_change(self, change: EpochChange) -> bool:
+        """put one epoch's change record back where the log holds none for it.
+
+        :param change: the record, as the L3 epoch log kept it
+        :ptype change: EpochChange
+        :return: whether this call created it
+        :rtype: bool
+        :raises GenerationUnavailableError: when the log cannot be written
+        """
+        key = epoch_change_kv_key(change.table, change.token)
+        try:
+            created = await (await self._changes()).create(key=key, value=change.model_dump_json().encode("utf-8"))
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"the change of {change.table!r} at {change.token!r} could not be restored: {exc}"
+            ) from exc
+        return created is not None
+
+    async def observe_change_log_fill(self) -> float | None:
+        """measure how full the epoch change log is, set the gauge, and warn above the warn ratio.
+
+        :return: the fraction of its byte bound the log holds; ``None`` when the log has no bound, or
+            the bucket cannot say what it holds
+        :rtype: float | None
+        """
+        bound = self._change_retention.max_bytes
+        try:
+            bucket = await self._changes()
+            if bound <= 0 or not isinstance(bucket, _Measurable):
+                return None
+            held = await bucket.held_bytes()
+        except (KvError, GenerationUnavailableError) as exc:
+            log.warning(
+                "the epoch change log could not be measured",
+                extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
+            )
+            return None
+        ratio = held / bound
+        _CHANGES_FILL.set(ratio)
+        if ratio >= EPOCH_CHANGES_FILL_WARN_RATIO:
+            _CHANGES_FILL_WARNED.inc()
+            log.warning(
+                "the epoch change log is nearly full; past its bound it refuses records and fails their writes. "
+                "Raise its max_bytes, or find what writes so many epochs",
+                extra={"extra_data": {"held_bytes": held, "max_bytes": bound, "fill_ratio": round(ratio, 3)}},
+            )
+        return ratio
 
     async def current(self, table_name: str) -> str:
         """the table's current write generation, minting its first incarnation when there is none.
@@ -304,11 +475,30 @@ class EpochGenerationSource:
         :raises GenerationUnavailableError: when the generation cannot be advanced within the retry
             budget, or the store is unreachable
         """
+        return await self._advance(table_name, mint=True)
+
+    async def _advance(self, table_name: str, *, mint: bool) -> str:
+        """move the table's write generation on by one, minting a first incarnation only when ``mint``.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :param mint: whether a table with no generation starts a new incarnation
+        :ptype mint: bool
+        :return: the generation token this advance wrote
+        :rtype: str
+        :raises L2LostError: when the table has no generation and ``mint`` is ``False``
+        :raises GenerationUnavailableError: when the generation cannot be advanced
+        """
         key = generation_kv_key(table_name)
         try:
             bucket = await self._bucket()
             for _ in range(_MAX_CAS_ATTEMPTS):
                 entry = await bucket.get_entry(key=key)
+                if entry is None and not mint:
+                    raise L2LostError(
+                        f"write generation for {table_name!r} is not in L2 (lost with NATS, or not yet put back "
+                        f"by the refiller); an L2-first write cannot commit until it is"
+                    )
                 if entry is None:
                     # no generation yet (never read, or emptied): a new incarnation already
                     # invalidates every absence recorded under an old one, so starting at 1 is enough.

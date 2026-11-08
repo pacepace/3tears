@@ -8,6 +8,34 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch, nats: an L2-first collection commits its writes in NATS, and L3 is saved from there
+
+**Added (core):** `BaseCollection.l2_first`. A collection that declares `L2_FIRST` (or
+`L2First(wait_for_l3=False, refetchable_from=...)`) commits a save or delete in NATS: the row lands in L2 at its
+key's revision and the epoch's change record naming the key lands in the change log
+(`EpochChange.rows[].l3_pending`). By default the caller then waits for L3: an L3 refusal is the caller's error,
+and the L2 write is withdrawn (its prior value put back) and announced by one more epoch. A collection that does not
+wait returns at the commit. Pods never read L3 for it: a miss is an absence while L2 holds the table complete, and
+`L2LostError` while it does not. Without an L2 client the same collection writes straight to L3. Declared, not yet
+the default: the default changes once every writing principal holds the epoch grants and a worker runs.
+
+**Added (core):** `threetears.core.collections.l2_first`: `L3Saver` (makes L3 match L2 for every epoch after each
+table's saved position; idempotent; an L3 refusal of a write that did not wait is an ERROR counted on
+`threetears_l2_first_l3_refused_total`), `L2Refiller` (after NATS loses data, puts rows, the newest epoch records
+and the generation back from L3, under the old incarnation, so pods catch up through the normal epoch path),
+`run_l2_first_worker`, `l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`,
+`epoch_log_ddl`), `CollectionRegistry.set_epoch_log` and `registered_tables`, `SchemaBackedCollection.l3_pages`,
+and `tables_written_l2_first`. The write-mark reconciler deletes a mark on an L2-first table without a whole-table
+advance, and the trigger install skips such tables.
+
+**Added (epoch):** `EpochGenerationSource.read`, `change`, `advance_continuing` (never mints an incarnation),
+`restore_generation`, `restore_change` and `observe_change_log_fill`, which sets
+`threetears_epoch_changes_fill_ratio` and warns at `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75).
+
+**Added (nats):** `NatsKvBucket.held_bytes` (and `FakeKvBucket.held_bytes`).
+
+Operations: [docs/l2-first-operations.md](docs/l2-first-operations.md).
+
 ### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
 
 **Added (nats):** `KvFullError` (a bucket's `max_bytes`, or the account's storage limit: JetStream 10077 "maximum

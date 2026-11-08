@@ -60,11 +60,14 @@ class ChangedRow(BaseModel):
         as :attr:`CacheInvalidationMessage.l2_current_scope`; ``None`` for an unfenced write
     :ivar columns: the declared invalidation columns' values from the row the write saw, as
         :attr:`CacheInvalidationMessage.columns`; ``None`` when none are declared or none was seen
+    :ivar l3_pending: the write committed in L2 first (:mod:`threetears.core.collections.l2_first`), so
+        L3 is made to match L2 for this row after the commit; ``False`` for a write L3 took first
     """
 
     ids: list[str]
     l2_current_scope: str | None = None
     columns: dict[str, str | None] | None = None
+    l3_pending: bool = False
 
 
 class EpochChange(BaseModel):

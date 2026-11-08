@@ -32,6 +32,7 @@ from threetears.observe.metrics import counter, gauge
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
     from threetears.core.collections.generation import GenerationSource
+    from threetears.core.collections.l2_first import EpochLogStore
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
@@ -251,6 +252,7 @@ class CollectionRegistry:
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
         self._write_marks_schema: str | None = None
+        self._epoch_log: EpochLogStore | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
@@ -515,6 +517,37 @@ class CollectionRegistry:
     def get_collection(self, table_name: str) -> Any | None:
         """Look up a registered collection by table name."""
         return self._collections.get(table_name)
+
+    def registered_tables(self) -> tuple[str, ...]:
+        """the table of every collection registered here.
+
+        :return: the table names, in registration order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(self._collections)
+
+    def set_epoch_log(self, log: EpochLogStore | None) -> None:
+        """wire the L3 epoch log an L2-first collection's waiting writes save their epoch records to.
+
+        A waiting write (:class:`~threetears.core.collections.l2_first.L2First`) saves its row and its
+        epoch's record to L3 before it returns, so the refiller can put the epoch history back after NATS
+        loses it. A process that commits L2-first writes wires it; a pod that only reads does not.
+
+        :param log: the L3 epoch log, or ``None`` to unwire it
+        :ptype log: EpochLogStore | None
+        :return: nothing
+        :rtype: None
+        """
+        self._epoch_log = log
+
+    @property
+    def epoch_log(self) -> EpochLogStore | None:
+        """the L3 epoch log wired here, or ``None``.
+
+        :return: the log
+        :rtype: EpochLogStore | None
+        """
+        return self._epoch_log
 
     def get_l1_backend(self, table_name: str) -> Any:
         """Get L1 backend for a collection (override or default)."""

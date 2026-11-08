@@ -53,10 +53,12 @@ __all__ = [
     "WriteGenerationDeclaration",
     "announce_unheard_writes",
     "note_generation_class",
+    "note_l2_first_class",
     "source_reads",
     "split_generation_token",
     "table_named_by_class",
     "tables_with_write_generation",
+    "tables_written_l2_first",
 ]
 
 
@@ -767,3 +769,33 @@ def tables_with_write_generation() -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
+
+
+#: every collection class defined in this process that commits its writes in NATS first
+#: (``BaseCollection.l2_first``), appended by :func:`note_l2_first_class`.
+_L2_FIRST_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+
+
+def note_l2_first_class(cls: type) -> None:
+    """record a collection class that commits its writes in NATS first.
+
+    :param cls: the collection class
+    :ptype cls: type
+    :return: nothing
+    :rtype: None
+    """
+    _L2_FIRST_CLASSES.add(cls)
+
+
+def tables_written_l2_first() -> frozenset[str]:
+    """every table whose writes commit in NATS first, by the classes defined here.
+
+    Such a table's epoch is advanced, naming its rows, before its row reaches L3; an L3 write of it
+    (the writer's own, or the saver's) is already covered. So the write-mark reconciler deletes a mark
+    on one without advancing it again, which it would do as a change to the whole table, and the
+    trigger install leaves such a table without one.
+
+    :return: the table names
+    :rtype: frozenset[str]
+    """
+    return frozenset(name for name in map(table_named_by_class, list(_L2_FIRST_CLASSES)) if name is not None)
