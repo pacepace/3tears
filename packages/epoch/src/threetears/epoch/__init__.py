@@ -48,8 +48,12 @@ from threetears.epoch.generation import (
 from threetears.epoch.generation_tick import (
     DEFAULT_BROADCAST_GRACE,
     GenerationWatcher,
+    QuietPass,
+    QuietReader,
     follow_generation_key,
     generation_catchup_tick,
+    quiet_marks_tick,
+    quiet_pass_interval,
 )
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
 from threetears.epoch.table_follow import (
@@ -85,6 +89,10 @@ __all__ = [
     "follow_tables",
     "generation_catchup_tick",
     "generation_kv_key",
+    "QuietPass",
+    "QuietReader",
+    "quiet_marks_tick",
+    "quiet_pass_interval",
     "EpochListener",
     "PoolLike",
     "TableFollower",

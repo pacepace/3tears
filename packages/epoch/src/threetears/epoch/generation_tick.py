@@ -33,23 +33,37 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Final, Protocol
+from typing import Final, Protocol, runtime_checkable
 
-from threetears.core.collections.epoch_change import EpochChangeReader
-from threetears.core.collections.generation import GenerationVerdict
+from threetears.core.collections.epoch_change import (
+    EPOCH_CHANGE_MAX_AGE,
+    EpochChange,
+    EpochChangeReader,
+    EpochLogExtent,
+    EpochQuiet,
+    EpochWalk,
+)
+from threetears.core.collections.generation import GenerationVerdict, split_generation_token
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter
 
 from threetears.epoch.generation import EpochGenerationReader
 
 __all__ = [
     "DEFAULT_BROADCAST_GRACE",
     "GenerationWatcher",
+    "QuietPass",
+    "QuietReader",
     "follow_generation_key",
     "generation_catchup_tick",
+    "quiet_marks_tick",
+    "quiet_pass_interval",
 ]
 
 log = get_logger(__name__)
@@ -228,3 +242,216 @@ async def follow_generation_key(
                     "an epoch's change record could not be read; behind on the table until the next generation",
                     extra={"extra_data": {"table": table_name, "error": str(exc)}},
                 )
+
+
+#: how many quiet passes a follower runs per retention window of the change log: a quiet table's mark is
+#: moved several times before retention could take the epoch after it, so one late or failed pass is
+#: never the one that lets it age out
+_QUIET_PASSES_PER_RETENTION: Final = 4
+
+_QUIET_MOVED = counter(
+    "collection_epoch_quiet_marks_moved_total",
+    description=(
+        "times a follower's quiet pass moved a table's mark to the change log's head because the log held "
+        "nothing of the table after it, so a quiet table never ages out of retention"
+    ),
+    label_names=("table",),
+)
+
+
+@runtime_checkable
+class QuietReader(EpochChangeReader, Protocol):
+    """what the quiet pass reads: the log's state and every table's newest epoch, in one pass.
+
+    :class:`~threetears.epoch.generation.EpochGenerationReader` is one.
+    """
+
+    async def newest_epochs(self, tables: Sequence[str]) -> tuple[ChangeLogState | None, dict[str, int]]:
+        """the log's state, then each table's newest epoch's sequence (``0`` for none).
+
+        :param tables: the tables
+        :ptype tables: Sequence[str]
+        :return: the state (``None`` when the broker holds no log) and each table's newest
+        :rtype: tuple[ChangeLogState | None, dict[str, int]]
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class QuietPass:
+    """what one quiet pass did.
+
+    :ivar moved: tables whose mark it moved to the log's head, the log holding nothing of them after it
+    :ivar walked: tables the log held an epoch of after the mark, caught up through the ordinary walk
+    :ivar behind: tables the registry is behind on after the pass
+    :ivar interval: how long until the next pass: the log's retention over :data:`_QUIET_PASSES_PER_RETENTION`
+    """
+
+    moved: tuple[str, ...]
+    walked: tuple[str, ...]
+    behind: tuple[str, ...]
+    interval: timedelta
+
+
+def quiet_pass_interval(state: ChangeLogState | None) -> timedelta:
+    """how long a follower waits between quiet passes: well inside the change log's retention.
+
+    The log's own declared retention (``max_age``) over :data:`_QUIET_PASSES_PER_RETENTION`; where the log
+    does not say, the retention a source declares by default (:data:`EPOCH_CHANGE_MAX_AGE`).
+
+    :param state: the log's state, or ``None``
+    :ptype state: ChangeLogState | None
+    :return: the interval
+    :rtype: timedelta
+    """
+    retention = state.max_age if state is not None and state.max_age else EPOCH_CHANGE_MAX_AGE
+    return retention / _QUIET_PASSES_PER_RETENTION
+
+
+class _QuietSnapshot:
+    """the change log as one quiet pass read it: a vouch for each quiet table from one batch read.
+
+    The judgement a catch-up runs asks the log what it can vouch for after a mark
+    (:meth:`~threetears.core.collections.epoch_change.EpochLogExtent.quiet_after`); here that is answered
+    from the pass's one read of the state and each table's newest epoch, instead of two reads per table.
+    Every other read goes to the reader.
+    """
+
+    def __init__(self, reader: QuietReader, state: ChangeLogState, newest: dict[str, int]) -> None:
+        """capture the pass's read; no I/O.
+
+        :param reader: the reader the pass read through
+        :ptype reader: QuietReader
+        :param state: the log's state, read first
+        :ptype state: ChangeLogState
+        :param newest: each table's newest epoch, read after
+        :ptype newest: dict[str, int]
+        :return: nothing
+        :rtype: None
+        """
+        self._reader = reader
+        self._state = state
+        self._newest = newest
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        """the record of one epoch, through the reader."""
+        return await self._reader.change(table_name, token)
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """the table's epochs after a mark, through the reader."""
+        return await self._reader.changes_after(table_name, after, upto)
+
+    async def continues(self, incarnation: str) -> tuple[str, int | None] | None:
+        """the lost log a restored one continues, through the reader when it can say."""
+        if isinstance(self._reader, EpochLogExtent):
+            return await self._reader.continues(incarnation)
+        return None
+
+    async def quiet_after(self, table_name: str, mark: str) -> EpochQuiet:
+        """what the pass's read vouches for of ``table_name`` after ``mark``.
+
+        The state was read before the table's newest epoch, so an epoch appended between the two is seen
+        as the table's newest and the table is not vouched quiet; one appended after both lies past the
+        state's head, and so past where the mark moves.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param mark: the follower's mark
+        :ptype mark: str
+        :return: how far the mark may move, and whether the log has aged past it
+        :rtype: EpochQuiet
+        """
+        parts = split_generation_token(mark)
+        state = self._state
+        if parts is None or parts[0] != state.incarnation:
+            return EpochQuiet(through=None)
+        aged_out = state.first_seq > parts[1] + 1 and state.last_seq > parts[1]
+        quiet = self._newest.get(table_name, 0) <= parts[1] and state.last_seq > parts[1]
+        return EpochQuiet(through=f"{state.incarnation}:{state.last_seq}" if quiet else None, aged_out=aged_out)
+
+
+async def quiet_marks_tick(
+    registry: CollectionRegistry, reader: QuietReader, tables: Sequence[str] | None = None
+) -> QuietPass:
+    """move every quiet table's mark to the change log's head, and catch up every table that is not quiet.
+
+    One pass per registry, never one per table: the log's state and every followed table's newest epoch
+    are read in one batch from NATS -- never from L3 -- and each table is judged against them. A table
+    the log holds nothing of after its mark has its mark moved to the log's head, so it stays inside the
+    log's retention however long it stays quiet, and is never later judged ``aged_out`` for a stretch in
+    which nothing happened to it. A table the log holds an epoch of after its mark goes through the
+    ordinary walk and apply (``CollectionRegistry.catch_up_generation``), so a mark never moves past a
+    change it has not applied. A table kept in L2 (``L2_WRITE_GENERATION``) is not in the log, and is left
+    to its own catch-up.
+
+    Run it every :func:`quiet_pass_interval` (``QuietPass.interval``); :class:`~threetears.epoch.table_follow
+    .TableFollower` does, for the tables it watches.
+
+    :param registry: the registry whose followed tables the pass judges
+    :ptype registry: CollectionRegistry
+    :param reader: reads the change log
+    :ptype reader: QuietReader
+    :param tables: the followed tables to judge; ``None`` judges every table the registry follows
+    :ptype tables: Sequence[str] | None
+    :return: what the pass did
+    :rtype: QuietPass
+    :raises GenerationUnavailableError: when the log cannot be read; nothing is moved
+    :raises Exception: the first failure other than an unreadable record, after every table was tried
+    """
+    followed = registry.generation_marks.followed
+    judged = [
+        table
+        for table in (followed if tables is None else [each for each in tables if each in followed])
+        if not registry.generation_kept_in_l2(table)
+    ]
+    state, newest = await reader.newest_epochs(judged)
+    if state is None:
+        return QuietPass(moved=(), walked=(), behind=(), interval=quiet_pass_interval(None))
+    snapshot = _QuietSnapshot(reader, state, newest)
+    marks = registry.generation_marks
+    moved: list[str] = []
+    walked: list[str] = []
+    first_error: BaseException | None = None
+    for table in judged:
+        before = marks.recorded(table)
+        token = f"{state.incarnation}:{newest.get(table, 0)}"
+        try:
+            verdict = await registry.catch_up_generation(table, token, changes=snapshot)
+        except GenerationUnavailableError as exc:
+            # NOSILENT: the registry recorded itself behind on the table and logged it; the next pass reads again
+            log.warning(
+                "a quiet pass could not read an epoch's change record; the table is left behind until the next pass",
+                extra={"extra_data": {"table": table, "error": str(exc)}},
+            )
+            continue
+        # prawduct:allow prawduct/broad-except -- one table's failure must not abandon the rest of the pass; re-raised below
+        except Exception as exc:  # noqa: BLE001
+            contain(
+                exc, log=log, what="a quiet pass failed for a table; continuing with the rest", extra={"table": table}
+            )
+            first_error = first_error or exc
+            continue
+        after = marks.recorded(table)
+        if verdict is GenerationVerdict.MISSED:
+            walked.append(table)
+        elif after != before and before is not None:
+            moved.append(table)
+            _QUIET_MOVED.labels(table=table).inc()
+    behind = tuple(table for table in judged if registry.behind_on(table))
+    result = QuietPass(moved=tuple(moved), walked=tuple(walked), behind=behind, interval=quiet_pass_interval(state))
+    log.info(
+        "quiet pass over the followed tables",
+        extra={
+            "extra_data": {
+                "tables": len(judged),
+                "moved": len(result.moved),
+                "walked": list(result.walked),
+                "behind": list(result.behind),
+                "next_in_seconds": result.interval.total_seconds(),
+            }
+        },
+    )
+    if first_error is not None:
+        raise first_error
+    return result
