@@ -732,8 +732,8 @@ class L2Refiller:
         restored = await self._epochs.restore_epochs(changes)
         log.warning(
             "the epoch change log was put back from the L3 epoch log at its old sequences. A follower catches up "
-            "from it on an L2-first table; on any table whose lost epochs L3 does not hold (every table that is "
-            "not L2-first) it is behind (record_lost) until it restarts",
+            "from it only where its walk holds no filler (an epoch L3 did not hold, of any table); where it does, "
+            "it is behind (record_lost) until it restarts",
             extra={"extra_data": {"records": len(changes), "incarnation": incarnation, "restored": restored}},
         )
 

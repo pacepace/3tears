@@ -1449,9 +1449,11 @@ fetch epochs `mine+1 .. head`, apply each.
   derived caches included, logs at error once, and counts `collection_epoch_behind_total` /
   `collection_epoch_tables_behind` until the epoch is applied. No cache is withdrawn and no read
   falls through to another tier for it. The L2-first refiller puts a lost log back from the L3 epoch
-  log at its old sequences, so a follower of an L2-first table catches up; an epoch L3 does not hold
-  (every table that is not L2-first) is a filler, and a follower whose walk spans one stays behind
-  (`record_lost`) until it restarts (a first sight).
+  log at its old sequences. An epoch L3 does not hold (every epoch of a table that is not L2-first) is
+  a filler, and a follower whose walk spans one -- of any table, an L2-first one included -- stays
+  behind (`record_lost`) until it restarts (a first sight). Open: per-table restore coverage, so an
+  L2-first follower can walk past another table's filler, and the restored log's tail (sequences
+  after the newest record L3 held are reused).
 - A commit whose rows would make a record past 256 KiB is recorded as several consecutive keyed
   records, its epoch the last; never as the whole table. Pods, the registry, the hub and the gateway
   are granted `{ns}-epoch-changes` beside `{ns}-epochs`.
