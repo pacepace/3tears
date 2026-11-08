@@ -1,6 +1,7 @@
 # The image testament's runners run the unit suite in (see .testament.toml). It holds only the
 # toolchain: the workspace venv is built by the manifest's setup step, from the tree under test.
-FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
+# uv by digest too (the multi-arch index): a tag can be pushed again, and the copied binary with it.
+FROM ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c AS uv
 
 # Pinned to one patch by digest (the multi-arch index, so every runner architecture resolves it).
 # A floating `python:3.14-slim` moves the stdlib under the tests at each image rebuild: when it
