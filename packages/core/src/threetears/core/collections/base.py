@@ -22,7 +22,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -1873,6 +1873,31 @@ class BaseCollection(ABC, Generic[EntityT]):
         if raw is None:
             return None
         return read_epoch_change(raw, table_name, token)
+
+    async def watch_l2_write_generation(self) -> AsyncIterator[str | None]:
+        """this L2-kept table's write generation as it stands, then each value it takes, until the caller stops.
+
+        Pushed through the bucket's key watch on the generation key, so a replica follows the table by
+        each advance rather than by a timed pass (``threetears.epoch.follow_l2_kept_tables``).
+
+        :return: the generation tokens, in order; ``None`` when the key was deleted
+        :rtype: AsyncIterator[str | None]
+        :raises GenerationUnavailableError: when the bucket cannot be opened or cannot watch the key
+        """
+        try:
+            kv = await self._ensure_kv()
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {self.table_name!r} could not be watched: {exc}"
+            ) from exc
+        watch_key = getattr(kv, "watch_key", None)
+        if kv is None or watch_key is None:
+            raise GenerationUnavailableError(f"write generation for {self.table_name!r} has no key to watch")
+        # sender-posture: own-consumer -- a generation counts only through the KV key watch, which takes an update only with its own consumer's ack reply
+        async with aclosing(watch_key(key=self._l2_generation_key())) as updates:
+            async for update in updates:
+                value = update.value
+                yield None if value is None else value.decode("utf-8", errors="replace")
 
     async def l2_write_generation(self) -> str | None:
         """this table's write generation as L2 holds it, for the pass that judges a follower's mark.

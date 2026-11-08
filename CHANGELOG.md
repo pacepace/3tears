@@ -28,6 +28,31 @@ failure and nothing counted them.
 **Added (core):** every collection key read is counted on `threetears_tier_reads_total{table, tier}`, beside the
 once-a-minute INFO line, so a table whose reads keep reaching L2 or L3 can be alerted on.
 
+### core, epoch, nats: the epoch is the change log's sequence -- no counter, so concurrent writers never contend
+
+**Changed (epoch, nats):** an epoch is now the sequence the change log's stream gives its record. The log,
+`{ns}-epoch-changes` (`EPOCH_CHANGES_BUCKET`), is one memory stream shaped as a KV bucket (so a pod's bucket grant
+reads it) whose every key keeps its history: `threetears.nats.NatsChangeLog`, bound by `NatsClient.change_log`. An
+advance appends ONE record under the table's key with a `Nats-Msg-Id`, so a retried append records once. The
+per-table counter key in `{ns}-epochs` and its compare-and-swap are gone: at 32 concurrent writers the bench
+(`scripts/measure-epoch-write-cost.py`, PR #1122) measured 3.6 lost compare-and-swaps per write and saves committed
+without an advance; with the log there is nothing to lose. A token is `{incarnation}:{sequence}`, the incarnation the
+log's own (stream metadata), kept when the log is restored.
+
+**Changed (core):** a table's sequences are not one apart, so a follower catches up by walking the table's records
+after its mark (`EpochChangeReader.changes_after`, returning an `EpochWalk`) rather than by counting. A walk the log
+cannot vouch for -- its oldest record is newer than the mark, or the log is absent or of another incarnation -- leaves
+the follower behind. `GenerationMarks.heard_in_full` and `advance_to` replace `unaccounted`; a derived cache that
+stamps with the registry's mark is told when it moves (`register_derived_cache(on_caught_up=...)`).
+
+**Added (epoch):** `EpochGenerationSource.advance_continuing` (an L2-first commit: never declares the log, raises
+`threetears.core.exceptions.L2LostError` when it is absent), `restore_epochs` (the refiller's put-back: the log is
+created at the oldest record's sequence under its incarnation and every record keeps its number), and
+`observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.8). `ChangedRow.value` carries a
+row's stored bytes for a record that is the commit. `follow_l2_kept_tables` follows `L2_WRITE_GENERATION` tables by
+their generation keys (`BaseCollection.watch_l2_write_generation`); the registry's timed "no catch-up pass" warning
+(`L2_CATCH_UP_OVERDUE`) is removed. `TableTemplateCollection` declares a write generation.
+
 ### core, epoch: an epoch is its change set, and a missed broadcast corrects only the rows it missed
 
 **Changed (core, epoch):** a pod that misses a cache-invalidation broadcast no longer drops the table. Each advance

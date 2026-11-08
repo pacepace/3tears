@@ -57,6 +57,7 @@ from threetears.epoch.table_follow import (
     MAX_WATCH_RESTART_DELAY,
     TableFollower,
     WatchHealth,
+    follow_l2_kept_tables,
     follow_tables,
 )
 from threetears.epoch.tick import catchup_tick
@@ -85,5 +86,6 @@ __all__ = [
     "EpochListener",
     "PoolLike",
     "TableFollower",
+    "follow_l2_kept_tables",
     "WatchHealth",
 ]

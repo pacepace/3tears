@@ -27,9 +27,10 @@ import functools
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Final
+from typing import Any, Final
 
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, EpochWalk, walk_by_count
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.observe import contain, get_logger
 
@@ -41,6 +42,7 @@ __all__ = [
     "MAX_WATCH_RESTART_DELAY",
     "TableFollower",
     "WatchHealth",
+    "follow_l2_kept_tables",
     "follow_tables",
 ]
 
@@ -130,6 +132,22 @@ class _ObservedWatcher:
         if isinstance(self._inner, EpochChangeReader):
             return await self._inner.change(table_name, token)
         return None
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """the epochs of a table since a mark, read through the watcher this wraps when it reads them.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param after: the mark
+        :ptype after: str
+        :param upto: the generation read
+        :ptype upto: str
+        :return: the walk; an incomplete empty one when the wrapped watcher reads none
+        :rtype: EpochWalk
+        """
+        if isinstance(self._inner, EpochChangeReader):
+            return await self._inner.changes_after(table_name, after, upto)
+        return EpochWalk(changes=(), complete=False, first_missing=upto)
 
 
 class TableFollower:
@@ -389,3 +407,118 @@ def follow_tables(
     )
     follower.start()
     return follower
+
+
+class _L2KeptGenerations:
+    """watches, and reads the epochs of, the tables a registry keeps in L2 alone, through their collections.
+
+    A table kept in L2 (``L2_WRITE_GENERATION``) keeps its generation, and each epoch's change record,
+    beside its rows in the owner's scope. This hands a :class:`TableFollower` that table's generation key
+    watch and its records, so a replica catches the table up on each advance pushed to it -- never on a
+    timed pass.
+
+    :param registry: the registry holding the collections
+    :ptype registry: CollectionRegistry
+    """
+
+    def __init__(self, registry: CollectionRegistry) -> None:
+        """capture the registry; no I/O.
+
+        :param registry: the registry holding the collections
+        :ptype registry: CollectionRegistry
+        :return: nothing
+        :rtype: None
+        """
+        self._registry = registry
+
+    def _collection(self, table_name: str) -> Any:
+        """the collection the registry holds for ``table_name``, which keeps its generation in L2.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the collection
+        :rtype: Any
+        :raises GenerationUnavailableError: when the registry holds none that keeps it in L2
+        """
+        collection = self._registry.get_collection(table_name)
+        if collection is None or not self._registry.generation_kept_in_l2(table_name):
+            raise GenerationUnavailableError(f"{table_name!r} is no table this registry keeps in L2")
+        return collection
+
+    async def watch(self, table_name: str) -> AsyncGenerator[str | None]:
+        """the table's generation as it stands, then each value it takes.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the generations
+        :rtype: AsyncGenerator[str | None]
+        :raises GenerationUnavailableError: when the generation key cannot be watched
+        """
+        generations = self._collection(table_name).watch_l2_write_generation()
+        try:
+            async for token in generations:
+                yield token
+        finally:
+            await generations.aclose()
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        """the change record of one epoch of the table, from beside its generation in L2.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the epoch
+        :ptype token: str
+        :return: the record, or ``None`` when L2 does not hold it
+        :rtype: EpochChange | None
+        """
+        record: EpochChange | None = await self._collection(table_name).l2_epoch_change(table_name, token)
+        return record
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """the table's epochs since a mark: an L2-kept table numbers them one apart.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param after: the mark
+        :ptype after: str
+        :param upto: the generation read
+        :ptype upto: str
+        :return: the walk
+        :rtype: EpochWalk
+        """
+        return await walk_by_count(self, table_name, after, upto)
+
+
+def follow_l2_kept_tables(
+    registry: CollectionRegistry,
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> TableFollower:
+    """follow every table ``registry`` keeps in L2 by watching its generation key, and return the follower, started.
+
+    The event-driven catch-up for ``L2_WRITE_GENERATION`` tables: each advance is pushed and its missed
+    epochs applied as it lands, so no timed pass is needed. Register the collections first, and stop the
+    follower before the registry's invalidation listener.
+
+    :param registry: the registry holding the collections, whose listener hears their rows
+    :ptype registry: CollectionRegistry
+    :param grace: how long a watch waits for an advance's rows before walking its epochs
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the running follower
+    :rtype: TableFollower
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+    return follow_tables(
+        registry,
+        _L2KeptGenerations(registry),
+        registry.l2_kept_tables(),
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )

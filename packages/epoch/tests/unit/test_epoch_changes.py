@@ -31,11 +31,11 @@ from threetears.core.collections import (
     CollectionRegistry,
     announce_unheard_writes,
 )
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, advance_recording, epoch_change_record
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, advance_recording
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.core.testing.kv import FakeChangeLog, FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
     EpochChangeRetention,
@@ -160,14 +160,12 @@ async def _member_id(collection: _Members, entity_id: str) -> str | None:
     return None if row is None else str(row["member_id"])
 
 
-async def _changes(bus: FakeNatsClient) -> FakeKvBucket:
-    return await bus.kv_bucket(name=EPOCH_CHANGES_BUCKET)
+def _log(bus: FakeNatsClient) -> FakeChangeLog:
+    return bus.change_log(EPOCH_CHANGES_BUCKET)
 
 
-def _record_key(token: str) -> str:
-    """the change log key of the table's epoch at ``token``: ``{table}.{incarnation}.{count}``."""
-    incarnation, _, count = token.rpartition(":")
-    return f"{_TABLE}.{incarnation}.{count}"
+def _seq(token: str) -> int:
+    return int(token.rpartition(":")[2])
 
 
 async def _two_pods(bus: _Lossy) -> tuple[_Members, _Pod, _Members]:
@@ -225,36 +223,39 @@ class TestALostInvalidationCorrectsOnlyTheStaleKey:
 
 
 class TestAMissingRecordLeavesThePodBehindAndServing:
-    async def test_behind_until_the_record_is_back_then_caught_up(self, bus: _Lossy) -> None:
+    async def test_behind_while_aged_out_then_caught_up_once_the_log_is_restored(self, bus: _Lossy) -> None:
         writing, follower, reading = await _two_pods(bus)
+        reader = EpochGenerationReader(bus)
         bus.deaf = True
         await _save(writing, "m1", "edsger")
+        first = await reader.read(_TABLE)
+        await _save(writing, "m2", "barbara")
+        second = await reader.read(_TABLE)
         bus.deaf = False
-        token = await EpochGenerationReader(bus).read(_TABLE)
-        assert token is not None
-        key = _record_key(token)
-        bucket = await _changes(bus)
-        held = await bucket.get(key=key)
-        assert held is not None
-        await bucket.delete(key=key)
+        assert first is not None and second is not None
+        records = [await reader.change(_TABLE, first), await reader.change(_TABLE, second)]
+        assert all(record is not None for record in records)
+        # retention takes the oldest records first; a follower whose mark is older cannot vouch for them
+        _log(bus).age_out(_seq(first))
 
         assert await follower.tick() == 0
         assert follower.registry.behind_on(_TABLE)
         assert reading.exists_in_cache_sync("m1"), "behind is never a drop: the pod serves what it holds"
-        assert reading.exists_in_cache_sync("m2")
         assert await _member_id(reading, "m1") == "ada"
+        assert await _member_id(reading, "m2") == "barbara", "the epoch the log still holds was applied"
         follower.registry.watched_by(_TABLE, lambda: True)
         assert follower.registry.tables_trusted([_TABLE]), "behind is said, never a cache withdrawn"
 
-        await bucket.put(key=key, value=held)
+        # the broker loses the log, and the refiller puts it back from L3 at its old sequences
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_epochs([record for record in records if record is not None])
         assert await follower.tick() == 1
         assert not follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m1") == "edsger"
-        assert reading.exists_in_cache_sync("m2")
 
     async def test_a_replaced_generation_is_behind_not_a_drop(self, bus: _Lossy) -> None:
         writing, follower, reading = await _two_pods(bus)
-        (await bus.kv_bucket(name="epochs")).wipe()
+        _log(bus).vanish()
         await _save(writing, "m1", "edsger")
         await follower.tick()
         assert follower.registry.behind_on(_TABLE)
@@ -269,12 +270,8 @@ class TestAnEpochWhoseKeysAreUnknown:
         bus.deaf = True
         await _save(writing, "m1", "edsger")
         bus.deaf = False
-        token = await EpochGenerationReader(bus).read(_TABLE)
-        assert token is not None
-        # what a broker stores for a commit that named no rows
-        await (await _changes(bus)).put(
-            key=_record_key(token), value=epoch_change_record(_TABLE, token, None, keys_unknown=True)
-        )
+        # and what a broker records for a commit that named no rows
+        await EpochGenerationSource(bus).advance(_TABLE)
         with caplog.at_level(logging.ERROR):
             await follower.tick()
         assert follower.registry.behind_on(_TABLE)
@@ -353,7 +350,7 @@ class TestAHoleHoldsOnlyTheMark:
         await _save(writing, "m2", "barbara")
         bus.deaf = False
         assert first is not None
-        await (await _changes(bus)).delete(key=_record_key(first))
+        _log(bus).age_out(_seq(first))
         await follower.tick()
         assert follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m2") == "barbara", "the epoch after the hole was applied"
@@ -378,10 +375,11 @@ class TestBehindIsSaidOnce:
         writing, follower, _ = await _two_pods(bus)
         bus.deaf = True
         await _save(writing, "m1", "edsger")
-        bus.deaf = False
         token = await EpochGenerationReader(bus).read(_TABLE)
+        await _save(writing, "m2", "barbara")
+        bus.deaf = False
         assert token is not None
-        await (await _changes(bus)).delete(key=_record_key(token))
+        _log(bus).age_out(_seq(token))
         with caplog.at_level(logging.ERROR):
             for _ in range(3):
                 await follower.tick()
@@ -394,10 +392,9 @@ class TestTheLogRefusesPastItsCap:
     async def test_a_full_log_refuses_the_record_loudly(self, bus: _Lossy) -> None:
         source = EpochGenerationSource(bus, change_retention=EpochChangeRetention(max_bytes=600))
         await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])
-        with pytest.raises(GenerationUnavailableError, match="could not be stored"):
+        with pytest.raises(GenerationUnavailableError, match="could not be appended"):
             for each in range(20):
                 await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"row-{each}" * 8])])
-        changes = await _changes(bus)
-        assert changes.max_bytes == 600
-        assert changes.storage == "memory"
-        assert changes.keys(), "the records already written were kept, not evicted"
+        assert _log(bus).max_bytes == 600
+        state = await _log(bus).state()
+        assert state is not None and state.first_seq == 1, "the records already written were kept, not evicted"

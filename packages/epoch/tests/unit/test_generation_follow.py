@@ -45,8 +45,9 @@ from threetears.core.collections import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.core.testing.kv import FakeChangeLog, FakeNatsClient
 from threetears.epoch import (
+    EPOCH_CHANGES_BUCKET,
     EpochGenerationReader,
     EpochGenerationSource,
     follow_generation_key,
@@ -217,20 +218,28 @@ async def _member_id(collection: _Rows, entity_id: str) -> str | None:
     return None if row is None else str(row["member_id"])
 
 
-async def _epochs(bus: FakeNatsClient) -> FakeKvBucket:
-    return await bus.kv_bucket(name="epochs")
+def _log(bus: FakeNatsClient) -> FakeChangeLog:
+    return bus.change_log(EPOCH_CHANGES_BUCKET)
 
 
-async def _count(bus: FakeNatsClient, table: str) -> int | None:
-    """the table's advance count as the bucket holds it, or ``None`` when it holds no generation."""
-    raw = await (await _epochs(bus)).get(key=generation_kv_key(table))
-    return None if raw is None else int(raw.decode().rpartition(":")[2])
+async def _advances(bus: FakeNatsClient, table: str) -> int:
+    """how many epochs the change log holds for the table."""
+    count, seq = 0, 0
+    while (entry := await _log(bus).next_after(generation_kv_key(table), seq)) is not None:
+        count, seq = count + 1, entry.seq
+    return count
 
 
 async def _never_written(bus: FakeNatsClient, table: str) -> bool:
-    """whether the epoch bucket has never had any message for the table's generation key."""
-    _, revision = await (await _epochs(bus)).get_latest(key=generation_kv_key(table))
-    return revision == 0
+    """whether the change log has never held an epoch of the table."""
+    state = await _log(bus).state()
+    return state is None or await _log(bus).last(generation_kv_key(table)) is None
+
+
+async def _log_is_empty(bus: FakeNatsClient) -> bool:
+    """whether nothing at all was ever appended to the change log."""
+    state = await _log(bus).state()
+    return state is None or state.last_seq == 0
 
 
 class _Conn:
@@ -280,25 +289,27 @@ class TestAdvanceSaysWhatItWrote:
 
 
 class TestAReaderNeverWrites:
-    async def test_a_table_with_no_generation_reads_as_none_and_stays_unwritten(self, bus: _Lossy) -> None:
-        await _epochs(bus)  # the hub declared the bucket; the reader only binds it
+    async def test_a_table_with_no_epoch_reads_at_zero_and_stays_unwritten(self, bus: _Lossy) -> None:
+        source = EpochGenerationSource(bus)
+        await source.current(_OTHER)  # the hub declared the log; the reader only binds it
         reader = EpochGenerationReader(bus)
-        assert await reader.read(_TABLE) is None
+        token = await reader.read(_TABLE)
+        assert token is not None and token.endswith(":0")
         assert await _never_written(bus, _TABLE)
 
     async def test_it_reads_what_a_source_wrote(self, bus: _Lossy) -> None:
         token = await EpochGenerationSource(bus).advance(_TABLE)
         assert await EpochGenerationReader(bus).read(_TABLE) == token
 
-    async def test_it_binds_the_bucket_and_does_not_create_it(self, bus: _Lossy) -> None:
-        with pytest.raises(GenerationUnavailableError):
-            await EpochGenerationReader(bus).read(_TABLE)
-        assert not bus.bucket_exists("epochs")
+    async def test_it_binds_the_log_and_does_not_create_it(self, bus: _Lossy) -> None:
+        assert await EpochGenerationReader(bus).read(_TABLE) is None
+        assert await _log(bus).state() is None
 
-    async def test_a_value_that_is_not_a_generation_is_unavailable(self, bus: _Lossy) -> None:
-        await (await _epochs(bus)).put(key=generation_kv_key(_TABLE), value=b"not-a-generation")
+    async def test_a_record_that_is_not_a_change_is_unavailable(self, bus: _Lossy) -> None:
+        before = await EpochGenerationSource(bus).current(_TABLE)
+        seq = await _log(bus).append(generation_kv_key(_TABLE), b"not-a-change", msg_id="m1")
         with pytest.raises(GenerationUnavailableError):
-            await EpochGenerationReader(bus).read(_TABLE)
+            await EpochGenerationReader(bus).change(_TABLE, f"{before.rpartition(':')[0]}:{seq}")
 
 
 class TestAMissedBroadcastIsCaughtByOnePass:
@@ -356,7 +367,7 @@ class TestAReplacedBucketLeavesThePodBehind:
         await _save(writing, "m1", "ada")
         assert await _member_id(reading, "m1") == "ada"
 
-        (await _epochs(bus)).wipe()
+        _log(bus).vanish()
         bus.deaf = True
         await _save(writing, "m1", "grace")
         bus.deaf = False
@@ -369,14 +380,14 @@ class TestAReplacedBucketLeavesThePodBehind:
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "m1", "ada")
         assert await _member_id(reading, "m1") == "ada"
-        (await _epochs(bus)).wipe()
+        _log(bus).vanish()
         assert await follower.tick() == 0
         assert follower.registry.behind_on(_TABLE)
         assert reading.exists_in_cache_sync("m1")
 
     async def test_hearing_every_row_under_the_new_incarnation_does_not_excuse_the_old_ones(self, bus: _Lossy) -> None:
         _, writing, follower, _ = await _two_pods(bus)
-        (await _epochs(bus)).wipe()
+        _log(bus).vanish()
         await _save(writing, "m1")
         assert await follower.tick() == 0
         assert follower.registry.behind_on(_TABLE)
@@ -390,7 +401,7 @@ class TestWhatPutsNothingInTheEpochBucket:
         await members.invalidate_cache_many(["m1", "m2"])
         await members.delete("m1")
         assert await _never_written(bus, _TABLE)
-        assert (await _epochs(bus)).keys() == ()
+        assert await _log_is_empty(bus)
 
     async def test_a_switched_on_collection_built_with_no_l2(self, bus: _Lossy) -> None:
         pod = _Pod(bus, scope="writer")
@@ -399,7 +410,7 @@ class TestWhatPutsNothingInTheEpochBucket:
         await members.invalidate_cache_many(["m1", "m2"])
         await members.delete("m1")
         assert await _never_written(bus, _TABLE)
-        assert (await _epochs(bus)).keys() == ()
+        assert await _log_is_empty(bus)
 
     async def test_a_table_that_is_not_switched_on(self, bus: _Lossy) -> None:
         pod = _Pod(bus, scope="writer")
@@ -410,7 +421,7 @@ class TestWhatPutsNothingInTheEpochBucket:
             transaction.enroll(members, "m1")
         await members.delete("m1")
         assert await _never_written(bus, _TABLE)
-        assert (await _epochs(bus)).keys() == ()
+        assert await _log_is_empty(bus)
 
 
 class TestOneCommitIsOneAdvance:
@@ -420,7 +431,7 @@ class TestOneCommitIsOneAdvance:
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "kept", "ada")
         assert await _member_id(reading, "kept") == "ada"
-        before = await _count(bus, _TABLE)
+        before = await _advances(bus, _TABLE)
         assert before is not None
 
         conn = _Conn()
@@ -428,7 +439,7 @@ class TestOneCommitIsOneAdvance:
             for index in range(6):
                 await writing.save_entity(writing.create({"id": f"m{index}", "member_id": "grace"}), conn=conn)
 
-        assert await _count(bus, _TABLE) == before + 1
+        assert await _advances(bus, _TABLE) == before + 1
         assert await follower.tick() == 0
         assert reading.exists_in_cache_sync("kept")
 
@@ -476,8 +487,8 @@ class TestOneCommitIsOneAdvance:
         assert await flush_pending(buffer, pod.registry) == 8
 
         assert (len(rows), len(other_rows)) == (5, 3)
-        assert await _count(bus, _TABLE) == 1
-        assert await _count(bus, _OTHER) == 1
+        assert await _advances(bus, _TABLE) == 1
+        assert await _advances(bus, _OTHER) == 1
 
     async def test_a_follower_that_hears_a_flush_does_not_drop(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
@@ -506,11 +517,11 @@ class TestAGenerationThatCannotBeReadIsNotAReset:
         assert await _member_id(reading, "m1") == "ada"
         mark = follower.registry.generation_marks.recorded(_TABLE)
         assert mark is not None
-        bucket = await _epochs(bus)
+        bucket = _log(bus)
 
-        bucket.become_unreachable(KvError("broker unreachable"))
+        bucket.unreachable = KvError("broker unreachable")
         assert await follower.tick() == 0
-        bucket.become_reachable()
+        bucket.unreachable = None
 
         assert reading.exists_in_cache_sync("m1")
         assert follower.registry.generation_marks.recorded(_TABLE) == mark
@@ -527,12 +538,12 @@ class TestAGenerationThatCannotBeReadIsNotAReset:
         bus.deaf = True
         await _save(writing, "m1", "grace")
         bus.deaf = False
-        bucket = await _epochs(bus)
+        bucket = _log(bus)
 
-        bucket.become_unreachable(KvError("broker unreachable"))
+        bucket.unreachable = KvError("broker unreachable")
         assert await follower.tick() == 0
         assert await _member_id(reading, "m1") == "ada"
-        bucket.become_reachable()
+        bucket.unreachable = None
 
         assert await follower.tick() == 1
         assert await _member_id(reading, "m1") == "grace"
@@ -603,7 +614,7 @@ class TestADerivedCacheIsEvictedRowByRow:
         _, _, follower, _ = await _two_pods(bus)
         cache = _PersonCache(follower.registry, ("ada",))
         follower.registry.watched_by(_TABLE, lambda: True)
-        (await _epochs(bus)).wipe()
+        _log(bus).vanish()
         assert await follower.tick() == 0
         assert follower.registry.behind_on(_TABLE)
         assert cache.emptied == 0
@@ -613,8 +624,8 @@ class TestADerivedCacheIsEvictedRowByRow:
     async def test_an_unreadable_generation_empties_nothing(self, bus: _Lossy) -> None:
         _, _, follower, _ = await _two_pods(bus)
         cache = _PersonCache(follower.registry, ("ada",))
-        bucket = await _epochs(bus)
-        bucket.become_unreachable(KvError("broker unreachable"))
+        bucket = _log(bus)
+        bucket.unreachable = KvError("broker unreachable")
         assert await follower.tick() == 0
         assert cache.entries == {"ada": "access-of-ada"}
         assert cache.emptied == 0
@@ -686,7 +697,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
             await _until(lambda: marks.recorded(_TABLE) is not None)
             first = marks.recorded(_TABLE)
             assert await _member_id(reading, "seed") == "ada"
-            (await _epochs(bus)).wipe()
+            _log(bus).vanish()
             bus.deaf = True
             await _save(writing, "seed", "grace")
             bus.deaf = False

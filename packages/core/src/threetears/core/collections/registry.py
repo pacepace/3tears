@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid7
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, EpochWalk, walk_by_count
 from threetears.core.collections.generation import (
     GenerationMarks,
     GenerationVerdict,
@@ -187,6 +186,20 @@ class _L2KeptChanges:
         record: EpochChange | None = await self.collection.l2_epoch_change(table_name, token)
         return record
 
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """the table's epochs after ``after`` up to ``upto``: an L2-kept table numbers them one apart.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param after: the mark
+        :ptype after: str
+        :param upto: the generation read
+        :ptype upto: str
+        :return: the walk
+        :rtype: EpochWalk
+        """
+        return await walk_by_count(self, table_name, after, upto)
+
 
 @dataclass(frozen=True, slots=True)
 class DerivedCacheRegistration:
@@ -196,10 +209,14 @@ class DerivedCacheRegistration:
         process's own writes -- to evict exactly the entries that row reaches
     :ivar on_table_dropped: called when the table is dropped in this process because the reach of
         a change is unknown; the cache drops every entry derived from the table
+    :ivar on_caught_up: called when this registry's mark for the table moves after a catch-up: every
+        epoch up to it is applied here, so a cache that stamps what it derives with the mark may take
+        it; ``None`` for a cache that keeps no stamp
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
+    on_caught_up: Callable[[], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -221,11 +238,6 @@ def _write_generation_kind(collection: Any) -> str:
     if isinstance(declared, NoWriteGeneration):
         return "opted_out"
     return "undeclared"
-
-
-#: how long a registry follows a table whose generation is kept in L2 with no catch-up pass judging it
-#: before it says so (and again each time as long), unless the registry is told otherwise
-L2_CATCH_UP_OVERDUE: Final = timedelta(minutes=2)
 
 
 class CollectionRegistry:
@@ -279,8 +291,6 @@ class CollectionRegistry:
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
         self._l2_caught_up_at: float | None = None
         #: how long a followed L2-kept table may go unjudged before the registry warns
-        self.l2_catch_up_overdue: timedelta = L2_CATCH_UP_OVERDUE
-        self._l2_overdue_check: asyncio.TimerHandle | None = None
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -446,11 +456,10 @@ class CollectionRegistry:
                 )
         self._collections[table] = collection
         if getattr(collection, "keeps_write_generation_in_l2", False) is True:
-            # its generation is in L2 beside its rows, read by catch_up_l2_generations: following it is
-            # what makes this registry count the table's broadcasts and its own advances, and a pass the
-            # host never schedules is said (_arm_l2_overdue_check)
+            # its generation is in L2 beside its rows, watched (threetears.epoch.follow_l2_kept_tables) or
+            # read on demand (catch_up_l2_generations): following it is what makes this registry count
+            # the table's broadcasts and its own advances
             self.follow_generation(table)
-            self._arm_l2_overdue_check()
         if l1_backend or l2_client or l3_pool:
             self._overrides[table] = {}
             if l1_backend:
@@ -667,7 +676,7 @@ class CollectionRegistry:
             if verdict is GenerationVerdict.MISSED and not self.behind_on(table_name):
                 caught_up += 1
         if judged:
-            # a pass that could read no generation judged nothing, and leaves the overdue warning to say so
+            # a pass that could read no generation judged nothing, and does not count as run
             self._l2_caught_up_at = time.monotonic()
         return caught_up
 
@@ -682,56 +691,13 @@ class CollectionRegistry:
             return None
         return timedelta(seconds=time.monotonic() - self._l2_caught_up_at)
 
-    def _l2_kept_tables(self) -> list[str]:
-        """the followed tables whose generation is kept in L2.
+    def l2_kept_tables(self) -> tuple[str, ...]:
+        """the followed tables whose generation is kept in L2, for a host that watches each one.
 
         :return: their names
-        :rtype: list[str]
+        :rtype: tuple[str, ...]
         """
-        return [table for table in self._generation_marks.followed if self.generation_kept_in_l2(table)]
-
-    def _arm_l2_overdue_check(self) -> None:
-        """once a table whose generation is kept in L2 is followed, check on the running loop that a pass judges it.
-
-        Following counts broadcasts; only a pass acts on one missed. A host that schedules none would keep
-        a missed write's stale rows in L1 for good and never hear of it, so the registry warns, each
-        :attr:`l2_catch_up_overdue`, while no pass has run within that time. Armed when such a table is
-        registered on a running loop, and again when the invalidation listener starts.
-
-        :return: nothing
-        :rtype: None
-        """
-        if self._l2_overdue_check is not None or not self._l2_kept_tables():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # NOSILENT: no loop yet (a registry built before the process serves); start_invalidation_listener arms it
-            return
-        self._l2_overdue_check = loop.call_later(self.l2_catch_up_overdue.total_seconds(), self._check_l2_overdue)
-
-    def _check_l2_overdue(self) -> None:
-        """warn when no catch-up pass has judged the L2-kept tables within the bound, then check again later.
-
-        :return: nothing
-        :rtype: None
-        """
-        self._l2_overdue_check = None
-        age = self.l2_catch_up_age
-        if age is None or age > self.l2_catch_up_overdue:
-            log.warning(
-                "tables whose write generation is kept in L2 are followed and no catch-up pass has judged them; "
-                "a missed broadcast leaves their stale rows in L1. Schedule catch_up_l2_generations or "
-                "threetears.epoch.generation_catchup_tick",
-                extra={
-                    "extra_data": {
-                        "tables": self._l2_kept_tables(),
-                        "last_pass_seconds_ago": None if age is None else round(age.total_seconds(), 1),
-                        "overdue_after_seconds": self.l2_catch_up_overdue.total_seconds(),
-                    }
-                },
-            )
-        self._arm_l2_overdue_check()
+        return tuple(table for table in self._generation_marks.followed if self.generation_kept_in_l2(table))
 
     def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.
@@ -828,7 +794,8 @@ class CollectionRegistry:
         - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read, the head.
           A follower starts before it serves the table, so it holds nothing older; nothing is re-read.
         - :attr:`~GenerationVerdict.MISSED`: each unheard epoch's record is applied and the mark moves.
-          A record L2 does not hold holds the mark there, while the epochs after it are still applied:
+          The epochs are read by walking the table's records after the mark (``changes_after``). A
+          record L2 does not hold holds the mark there, while the epochs after it are still applied:
           the registry is behind on the table, keeps serving what it holds, logs and counts it once,
           and the next judgement reads the missing record again.
         - :attr:`~GenerationVerdict.REPLACED`: the generation's store was replaced, so the epochs
@@ -842,7 +809,8 @@ class CollectionRegistry:
         :param changes: reads each epoch's change record from L2; ``None`` when this registry has no
             reader, so every unheard epoch leaves it behind
         :ptype changes: EpochChangeReader | None
-        :return: the verdict before catching up
+        :return: the verdict before catching up; :attr:`~GenerationVerdict.CURRENT` too when every epoch
+            since the mark had been heard in full, so nothing was applied
         :rtype: GenerationVerdict
         :raises KeyError: when ``table_name`` is not followed
         :raises GenerationUnavailableError: when a record cannot be read; nothing after it is applied
@@ -869,37 +837,57 @@ class CollectionRegistry:
                 detail={"read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
-        hole: tuple[str, str] | None = None
-        for epoch in marks.unaccounted(table_name, token):
+        assert token is not None  # narrow: a MISSED verdict reads a generation
+        recorded = marks.recorded(table_name)
+        after = recorded if recorded is not None else f"{token.rpartition(':')[0]}:0"
+        if changes is None:
+            incarnation, _, count = after.rpartition(":")
+            walk = EpochWalk(changes=(), complete=False, first_missing=f"{incarnation}:{int(count) + 1}")
+        else:
             try:
-                change = None if changes is None else await changes.change(table_name, epoch)
+                walk = await changes.changes_after(table_name, after, token)
             except GenerationUnavailableError as exc:
-                self._fall_behind(table_name, reason="record_unreadable", detail={"epoch": epoch, "error": str(exc)})
+                self._fall_behind(table_name, reason="record_unreadable", detail={"after": after, "error": str(exc)})
                 raise
-            if change is None or change.keys_unknown:
-                # one hole holds the mark, never the epochs after it: they are applied, and wait as
-                # heard until the hole's record can be read. A record whose writer named no rows is a
-                # hole no later read fills; it is told apart in the log and the counter.
-                hole = hole or (epoch, "record_missing" if change is None else "keys_unknown")
+        # one hole holds the mark, never the epochs after it: they are applied, and the next walk skips
+        # them as heard. A record whose writer named no rows is a hole no later read fills; it is told
+        # apart in the log and the counter from a record the log does not hold.
+        hole: tuple[str, str] | None = None if walk.complete else (walk.first_missing or token, "record_missing")
+        reached: str | None = None
+        applied_any = False
+        for change in walk.changes:
+            if change.keys_unknown:
+                hole = hole or (change.token, "keys_unknown")
+                continue
+            if hole is None:
+                reached = change.token
+            if marks.heard_in_full(table_name, change.token):
                 continue
             if change.whole_table:
                 # the mark moves first, so a cache derived from the table that re-bases on the drop
                 # starts from this epoch rather than distrusting the one it is already at
-                marks.applied(table_name, epoch)
+                marks.applied(table_name, change.token)
                 await self.apply_epoch_change(change)
             else:
                 await self.apply_epoch_change(change)
-                marks.applied(table_name, epoch)
+                marks.applied(table_name, change.token)
+            applied_any = True
             _epochs_applied().labels(table=table_name).inc()
         if hole is not None:
+            if reached is not None:
+                marks.advance_to(table_name, reached)
+                self._tell_caught_up(table_name)
             self._fall_behind(
                 table_name,
                 reason=hole[1],
                 detail={"epoch": hole[0], "read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
+        marks.advance_to(table_name, token)
+        self._tell_caught_up(table_name)
         self._caught_up(table_name)
-        return verdict
+        # every epoch since the mark was heard in full: the broadcasts had already done the catching up
+        return verdict if applied_any else GenerationVerdict.CURRENT
 
     async def apply_epoch_change(self, change: EpochChange) -> None:
         """apply one epoch's change here, exactly as hearing each of its row broadcasts would.
@@ -963,6 +951,18 @@ class CollectionRegistry:
             extra={"extra_data": {"table": table_name, "reason": reason, **detail}},
         )
 
+    def _tell_caught_up(self, table_name: str) -> None:
+        """tell every cache derived from ``table_name`` that this registry's mark for it moved.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        """
+        for registration in tuple(self._derived_caches.get(table_name, ())):
+            if registration.on_caught_up is not None:
+                registration.on_caught_up()
+
     def _caught_up(self, table_name: str) -> None:
         """record that ``table_name`` is caught up to the generation last judged.
 
@@ -1021,6 +1021,7 @@ class CollectionRegistry:
         *,
         on_row: Callable[[CacheInvalidationMessage], None],
         on_table_dropped: Callable[[], None],
+        on_caught_up: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1048,10 +1049,15 @@ class CollectionRegistry:
         :ptype on_row: Callable[[CacheInvalidationMessage], None]
         :param on_table_dropped: drops every entry derived from the table
         :ptype on_table_dropped: Callable[[], None]
+        :param on_caught_up: told when the registry's mark for the table moves after a catch-up, so a
+            cache stamping what it derives with the mark takes the new one; ``None`` for none
+        :ptype on_caught_up: Callable[[], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
-        registration = DerivedCacheRegistration(on_row=on_row, on_table_dropped=on_table_dropped)
+        registration = DerivedCacheRegistration(
+            on_row=on_row, on_table_dropped=on_table_dropped, on_caught_up=on_caught_up
+        )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)
 
@@ -1184,7 +1190,6 @@ class CollectionRegistry:
         :raises SubscribeError: if the underlying subscribe fails to
             register (transport / config error)
         """
-        self._arm_l2_overdue_check()
         if self._invalidation_subscription is not None:
             log.debug(
                 "Invalidation listener already running",
@@ -1409,10 +1414,6 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        if self._l2_overdue_check is not None:
-            # the process is shutting down; a restarted listener arms the check again
-            self._l2_overdue_check.cancel()
-            self._l2_overdue_check = None
         subscription = self._invalidation_subscription
         nats_client = self._nats_client
         if subscription is None or nats_client is None:
