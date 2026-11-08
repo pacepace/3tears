@@ -1,7 +1,7 @@
 """Rung 5, ``examples/5-writer/``: the report writer evaluated as the thing under test, replayed with no key.
 
 The rung's recordings (14 reports on ``claude-sonnet-5-5`` recorded 2026-11-03, and the flash judge and its pairwise
-pass recorded again 2026-11-07 over the pages as the package now prints them) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
+pass recorded again 2026-11-08 over the pages as the package now prints them) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
 ``writer.py`` stays short and reaches the engine through public roots; ``python -m threetears.evals writer.py``
 replays the shipped recordings with no key, every turn and judge call served from them and none left unasked, and
 prints the judge's preference and the promotion read. In a copy with its recordings stripped, the door refuses,
@@ -119,8 +119,8 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
     # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
-    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
-    assert "2026-11-07, at head `c588012f3`" in readme
+    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.55" in readme
+    assert "2026-11-08, at head `9045d4910`" in readme
     assert "Not recorded" not in readme
 
 
@@ -133,8 +133,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
     # The pairwise preference, the primary reading: lead-first's share, which the evidence cannot tell from shipped's
     # at 7 cases (the glossary's words, owner ruling Q2), a row with columns; the pass's spend in the money form.
-    assert "| lead-first | every pair | cannot tell apart | 52 | 4 | -67 to 70 |" in lines
-    assert "| lead-first | 71% (5 of 7) | 16 | 0 | 2,969 | $0.14 of $1.95 |" in lines
+    assert "| lead-first | every pair | cannot tell apart | 61 | 21 | -47 to 89 |" in lines
+    assert "| lead-first | 86% (6 of 7) | 11 | 0 | 113 | $0.14 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
@@ -155,9 +155,9 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # What the page compares and on what is the line under the question (presentation chunk 4), then the answer.
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
-        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over "
-        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 "
-        "cases would settle it.**"
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; if the share stayed "
+        "near 61%, roughly 100 cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
     # No surface of the page prints the retired words (owner ruling Q2).

@@ -206,10 +206,10 @@ A case's side is its split group's, and `held_out_fraction=0.35` puts 7 of the 1
 promotion is read. `tests/fixtures/writer_cases/export_writer_cases.py` wrote the files; a ladder case is frozen
 once, since a rung run again is new evidence with a new snapshot id.
 
-It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages,
-recorded on 2026-11-03 for $7.56. The read is `Undecided`: the judge preferred lead-first's pages (a share of 0.68),
-but 7 held-out cases do not separate it. [`recordings/README.md`](5-writer/recordings/README.md) holds the one command
-that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
+It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages.
+The read is `Undecided`: the judge preferred lead-first's pages (a share of 61%), but 7 held-out cases do not separate
+it. [`recordings/README.md`](5-writer/recordings/README.md) says when each recording was made and what it cost, and
+holds the one command that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
 [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator) walks it.
 
 ## Running them
