@@ -7,7 +7,7 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
 
 - :class:`PageForms` is built once per page, before any part is assembled: :meth:`PageForms.of` for a written page
   (a report input), :meth:`PageForms.of_campaign` for a campaign's code page (its readings and its aspects' pages).
-  It holds one :class:`MeasureForm` per measure the page can state, and keeps a ledger (:class:`Issued`) of every text
+  It holds one :class:`MeasureForm` per measure the page can state, and keeps a ledger (:class:`_Issued`) of every text
   it hands out, by measure and role, which is what a test reads to hold one figure to one text across surfaces.
 - A figure knows its set by its measure key plus its role: :meth:`PageForms.level`, :meth:`PageForms.change`,
   :meth:`PageForms.interval`; on a code page also :meth:`PageForms.drawn_level` (a level already in percent),
@@ -16,7 +16,7 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
   :meth:`PageForms.p`, :meth:`PageForms.effect`, :meth:`PageForms.confidence`, :meth:`PageForms.declared`,
   :meth:`PageForms.share`, :meth:`PageForms.multiple`, :meth:`PageForms.money_total`; on a code page also
   :meth:`PageForms.confidence_share`. A pass^k (:meth:`PageForms.pass_k`) is its measure's, by key and kind.
-- Each returns a :class:`Printed` (or a :class:`PrintedInterval`): the value and its decided text, with the parts a
+- Each returns a :class:`Printed` (or a :class:`_PrintedInterval`): the value and its decided text, with the parts a
   renderer may lay out apart.
 
 **Today's decisions, relocated, not rewritten.** Until the policy flip every form here reproduces what the page
@@ -82,15 +82,10 @@ from threetears.evals.kernel.numbers import (
 
 __all__ = [
     "EVEN_SHARE",
-    "Issued",
     "MeasureForm",
-    "MeasureKind",
     "PageForms",
-    "PageKind",
     "PreferenceShares",
     "Printed",
-    "PrintedInterval",
-    "ReadsAs",
     "Role",
 ]
 
@@ -101,12 +96,12 @@ if TYPE_CHECKING:
 
 #: How a measure's figures read: a rate in percent (its changes in points), a judged score on the 1–5 rubric, money,
 #: or any other measured unit (a count per trial, a time).
-ReadsAs = Literal["rate", "score", "money", "measured"]
+_ReadsAs = Literal["rate", "score", "money", "measured"]
 
 #: Which family a measure's figures come from, as a contrast names it: ``measure``, ``judged``, or ``trial`` (how each
 #: trial ended, the pass rate); None where a contrast names none, which every decision reads as a measure's own. Free
 #: text, as the report input stores it.
-MeasureKind = str | None
+_MeasureKind = str | None
 
 #: What a figure is to its measure, or which fixed form a figure that is no measurement takes.
 Role = Literal[
@@ -134,7 +129,7 @@ Role = Literal[
 
 #: Which page a set of forms is for: a written page (a report input), a campaign's code page, or an off-page surface
 #: (a command line's lines, a lens's text, the rung-5 page's side-by-side figures), which states no page's measure.
-PageKind = Literal["written", "code", "off"]
+_PageKind = Literal["written", "code", "off"]
 
 #: The most decimals a measured figure on the scorecard is stated to, before its column's precision is applied.
 _MEASURED_PLACES = 4
@@ -168,7 +163,7 @@ class Printed:
 
 
 @dataclass(frozen=True)
-class PrintedInterval:
+class _PrintedInterval:
     """An interval as decided: its two ends and its text, with each end's text apart.
 
     :ivar low: The low end as given.
@@ -195,7 +190,7 @@ class PrintedInterval:
 
 
 @dataclass(frozen=True)
-class Issued:
+class _Issued:
     """One text a page's forms handed out: what the ledger holds.
 
     :ivar measure: The measure's key; empty for a figure that is no measurement.
@@ -206,7 +201,7 @@ class Issued:
     """
 
     measure: str
-    kind: MeasureKind
+    kind: _MeasureKind
     role: Role
     value: float | tuple[float, float] | None
     text: str
@@ -295,8 +290,8 @@ class MeasureForm:
     """
 
     key: str
-    kind: MeasureKind
-    reads_as: ReadsAs
+    kind: _MeasureKind
+    reads_as: _ReadsAs
     unit: str
     change_unit: str
     factor: float
@@ -317,15 +312,15 @@ class PageForms:
     """Every form one page prints, decided once before the page is assembled, and the ledger of every text handed out.
 
     :param page: Which page the forms are for.
-    :ptype page: PageKind
+    :ptype page: _PageKind
     :param measures: Each measure's form, by its key and kind.
-    :ptype measures: Mapping[tuple[str, MeasureKind], MeasureForm]
+    :ptype measures: Mapping[tuple[str, _MeasureKind], MeasureForm]
     """
 
-    def __init__(self, page: PageKind, measures: Mapping[tuple[str, MeasureKind], MeasureForm]) -> None:
+    def __init__(self, page: _PageKind, measures: Mapping[tuple[str, _MeasureKind], MeasureForm]) -> None:
         self.page = page
         self._measures = dict(measures)
-        self._issued: list[Issued] = []
+        self._issued: list[_Issued] = []
 
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
@@ -339,7 +334,7 @@ class PageForms:
         :return: The page's forms.
         :rtype: PageForms
         """
-        kinds: dict[tuple[str, MeasureKind], None] = {}
+        kinds: dict[tuple[str, _MeasureKind], None] = {}
         for key in report_input.measures:
             kinds[key, "measure"] = None
         for key in report_input.judged:
@@ -384,7 +379,7 @@ class PageForms:
         :return: The page's forms.
         :rtype: PageForms
         """
-        measures: dict[tuple[str, MeasureKind], MeasureForm] = {}
+        measures: dict[tuple[str, _MeasureKind], MeasureForm] = {}
         if readings.readings or readings.pairs:
             # A change's readings and a choice's pairs hold the pass rate's changes and intervals in points already,
             # and its levels as shares; the scorecard prints both at a point's one decimal.
@@ -409,13 +404,13 @@ class PageForms:
 
     # --- measures ----------------------------------------------------------------------------------------------------
 
-    def measure(self, key: str, *, kind: MeasureKind = "measure") -> MeasureForm:
+    def measure(self, key: str, *, kind: _MeasureKind = "measure") -> MeasureForm:
         """One measure's form.
 
         :param key: The measure's key.
         :ptype key: str
         :param kind: The measure's kind; None reads as ``measure``, as every decision reads it.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: Its form.
         :rtype: MeasureForm
         :raises KeyError: The page states no figure of that measure.
@@ -427,7 +422,7 @@ class PageForms:
         """Every measure's form, in the order the page's input holds them."""
         return tuple(self._measures.values())
 
-    def level(self, key: str, value: float | None, *, kind: MeasureKind = "measure", alone: bool = False) -> Printed:
+    def level(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
         """A level of a measure (an arm's mean, a slice's), in its measure's form.
 
         :param key: The measure's key.
@@ -435,7 +430,7 @@ class PageForms:
         :param value: The level as given; None for none.
         :ptype value: float | None
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :param alone: Whether the level is printed by itself (a chart's note, a key no table prints), which today reads
             by the lone figure rule rather than at its set's decimals.
         :ptype alone: bool
@@ -452,7 +447,7 @@ class PageForms:
         return self._code_issue(form, "level", value, _code_scaled(form, value), alone=alone)
 
     def drawn_level(
-        self, key: str, value: float | None, *, kind: MeasureKind = "measure", alone: bool = False
+        self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False
     ) -> Printed:
         """A level of a measure given as the code page draws it (a rate already in percent: a change's baseline, the
         mean of its cases' shares), in its measure's form. A level computed in percent is rounded as computed, never
@@ -463,7 +458,7 @@ class PageForms:
         :param value: The level as drawn; None for none.
         :ptype value: float | None
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :param alone: Whether the level is stated by itself in words (``from v1's 86.7%``), which today spells a rate
             at its form's decimals from the level as drawn, not from the cell's rounded number.
         :ptype alone: bool
@@ -484,7 +479,7 @@ class PageForms:
             )
         return self._code_issue(form, "level", value, value)
 
-    def change(self, key: str, value: float | None, *, kind: MeasureKind = "measure", alone: bool = False) -> Printed:
+    def change(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
         """A change of a measure (an arm less the control), signed, in its measure's form.
 
         :param key: The measure's key.
@@ -492,7 +487,7 @@ class PageForms:
         :param value: The change as given; None for none.
         :ptype value: float | None
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :param alone: Whether the change is printed by itself, which today reads by the lone figure rule.
         :ptype alone: bool
         :return: The change.
@@ -514,7 +509,7 @@ class PageForms:
             )
         return self._issue(form.key, form.kind, "change", value, text, _digits_of(text, unit), unit)
 
-    def half_width(self, key: str, value: float, *, kind: MeasureKind = "measure") -> Printed:
+    def half_width(self, key: str, value: float, *, kind: _MeasureKind = "measure") -> Printed:
         """How far a change's interval reaches either side of the change (a comparison's half-width, each arm's own),
         unsigned, in its measure's change unit at the changes' decimals: a code page's precision table.
 
@@ -523,7 +518,7 @@ class PageForms:
         :param value: The half-width as given.
         :ptype value: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The half-width.
         :rtype: Printed
         :raises ValueError: The forms are a written page's, which states no half-width.
@@ -547,8 +542,8 @@ class PageForms:
         )
 
     def interval(
-        self, key: str, low: float, high: float, *, kind: MeasureKind = "measure", change: bool = False
-    ) -> PrintedInterval:
+        self, key: str, low: float, high: float, *, kind: _MeasureKind = "measure", change: bool = False
+    ) -> _PrintedInterval:
         """An interval on a level or a change of a measure, both ends in its measure's form.
 
         :param key: The measure's key.
@@ -558,11 +553,11 @@ class PageForms:
         :param high: The high end as given.
         :ptype high: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :param change: Whether the interval is on a change (its ends signed).
         :ptype change: bool
         :return: The interval.
-        :rtype: PrintedInterval
+        :rtype: _PrintedInterval
         """
         form = self.measure(key, kind=kind)
         if self.page == "written":
@@ -572,8 +567,8 @@ class PageForms:
             low_text, high_text, text = _code_interval(form, low, high, change=change)
         unit = form.change_unit if change else form.unit
         low_digits, high_digits = _digits_of(low_text, unit), _digits_of(high_text, unit)
-        self._issued.append(Issued(form.key, form.kind, "interval", (low, high), text))
-        return PrintedInterval(
+        self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), text))
+        return _PrintedInterval(
             low=low,
             high=high,
             text=text,
@@ -586,8 +581,8 @@ class PageForms:
         )
 
     def bracketed(
-        self, key: str, value: float | None, low: float, high: float, *, kind: MeasureKind = "measure"
-    ) -> tuple[Printed, PrintedInterval]:
+        self, key: str, value: float | None, low: float, high: float, *, kind: _MeasureKind = "measure"
+    ) -> tuple[Printed, _PrintedInterval]:
         """A level and its interval as one code page cell states them, the interval drawn beside the level: money's
         level and both ends in one form, its decimals chosen over all three (one figure finer where the ends would
         read alike); any other measure's level and interval each in its measure's form, as :meth:`level` and
@@ -602,9 +597,9 @@ class PageForms:
         :param high: The interval's high end as given.
         :ptype high: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The level and the interval.
-        :rtype: tuple[Printed, PrintedInterval]
+        :rtype: tuple[Printed, _PrintedInterval]
         :raises ValueError: The forms are a written page's, whose cells draw no interval beside a level this way.
         """
         form = self.measure(key, kind=kind)
@@ -621,9 +616,9 @@ class PageForms:
         )
         low_text, high_text = cell.amount(drawn_low), cell.amount(drawn_high)
         joined = f"[{low_text}, {high_text}]"
-        self._issued.append(Issued(form.key, form.kind, "interval", (low, high), joined))
+        self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), joined))
         low_digits, high_digits = _digits_of(low_text, MONEY), _digits_of(high_text, MONEY)
-        interval = PrintedInterval(
+        interval = _PrintedInterval(
             low=low,
             high=high,
             text=joined,
@@ -636,7 +631,7 @@ class PageForms:
         )
         return level, interval
 
-    def sizes(self, key: str, low: float, high: float, *, kind: MeasureKind = "measure") -> PrintedInterval:
+    def sizes(self, key: str, low: float, high: float, *, kind: _MeasureKind = "measure") -> _PrintedInterval:
         """A change's interval as a code page's sentence sizes it (``between 3.5 and 7.9 points worse``): each end's
         size unsigned, both at one precision, the changes' decimals or finer where those would print a non-zero end as
         zero or both ends alike (:func:`~threetears.evals.kernel.numbers.ends_places`).
@@ -648,9 +643,9 @@ class PageForms:
         :param high: The high end as given.
         :ptype high: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The interval, each end's text its size.
-        :rtype: PrintedInterval
+        :rtype: _PrintedInterval
         :raises ValueError: The forms are a written page's, whose sentences size an interval by their own keys.
         """
         form = self.measure(key, kind=kind)
@@ -664,10 +659,10 @@ class PageForms:
         # A sentence states each end's size apart (``between 3.5 and 7.9 points worse``), never the two joined, so
         # each is issued apart: the interval, by its ends, and the text the sentence prints of each.
         self._issued += [
-            Issued(form.key, form.kind, "interval", (low, high), low_text),
-            Issued(form.key, form.kind, "interval", (low, high), high_text),
+            _Issued(form.key, form.kind, "interval", (low, high), low_text),
+            _Issued(form.key, form.kind, "interval", (low, high), high_text),
         ]
-        return PrintedInterval(
+        return _PrintedInterval(
             low=low,
             high=high,
             text=text,
@@ -679,7 +674,7 @@ class PageForms:
             digits=text,
         )
 
-    def stated_interval(self, key: str, low: float, high: float, *, kind: MeasureKind = "measure") -> PrintedInterval:
+    def stated_interval(self, key: str, low: float, high: float, *, kind: _MeasureKind = "measure") -> _PrintedInterval:
         """An interval as a code page's folded table of every measure states it, ``[low, high]``: each end as the fold
         states a value, by the lone figure rule at its cell's precision (a rate in percent to a decimal, any other
         measure to four decimals).
@@ -691,9 +686,9 @@ class PageForms:
         :param high: The high end as given.
         :ptype high: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The interval.
-        :rtype: PrintedInterval
+        :rtype: _PrintedInterval
         :raises ValueError: The forms are a written page's, which has no such fold.
         """
         form = self.measure(key, kind=kind)
@@ -703,9 +698,9 @@ class PageForms:
             _joined(format_number(_code_held(form, _code_scaled(form, end))), form.unit) for end in (low, high)
         )
         text = f"[{low_text}, {high_text}]"
-        self._issued.append(Issued(form.key, form.kind, "interval", (low, high), text))
+        self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, form.unit), _digits_of(high_text, form.unit)
-        return PrintedInterval(
+        return _PrintedInterval(
             low=low,
             high=high,
             text=text,
@@ -719,7 +714,7 @@ class PageForms:
 
     # --- decisions that print nothing --------------------------------------------------------------------------------
 
-    def drawn_held(self, key: str, value: float, *, kind: MeasureKind = "measure") -> float:
+    def drawn_held(self, key: str, value: float, *, kind: _MeasureKind = "measure") -> float:
         """The number a code page's cell would hold for a level given as drawn (:meth:`drawn_level`), for a decision
         that compares levels at the precision they read at (whether two baselines read alike) and prints nothing, so
         nothing is issued.
@@ -729,7 +724,7 @@ class PageForms:
         :param value: The level as drawn.
         :ptype value: float
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The number.
         :rtype: float
         """
@@ -843,7 +838,7 @@ class PageForms:
         text = f"{value:.0%}"
         return self._issue("", "", "share", value, text, text.removesuffix(PERCENT), PERCENT, held=round(100 * value))
 
-    def pass_k(self, key: str, value: float | None, *, kind: MeasureKind = "measure") -> Printed:
+    def pass_k(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
         """A pass^k of a measure (the chance a case passes every one of k runs, 0 to 1), in percent to a decimal, as a
         code page's depth tables hold one today; the column's rule then spells it. It is recorded under its measure,
         which today's form does not read, and a page that states no other figure of the measure (a measurement's
@@ -854,7 +849,7 @@ class PageForms:
         :param value: The pass^k, as a share; None for none.
         :ptype value: float | None
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The pass^k.
         :rtype: Printed
         """
@@ -901,7 +896,7 @@ class PageForms:
         signed: bool = False,
         money: bool = False,
         measure: str = "",
-        kind: MeasureKind = None,
+        kind: _MeasureKind = None,
     ) -> Printed:
         """A figure an off-page surface states by itself, as it prints one today: by the lone figure rule, a change
         signed, money with its ``$`` on the number inside its sign or bound (``-$1.23``, ``< $0.000001``). Of a
@@ -917,7 +912,7 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The figure.
         :rtype: Printed
         :raises ValueError: Both ``signed`` and ``money``: the lone figure rule spells no signed money.
@@ -928,7 +923,7 @@ class PageForms:
         unit = MONEY if money else ""
         return self._issue(*_keyed(measure, kind), "lone", value, text, _digits_of(text, unit), unit)
 
-    def reading(self, value: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def reading(self, value: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A reading an off-page table or line states at a fixed two decimals whatever its measure, as each prints one
         today. Of a measure: an arm's mean in the rung-5 readings table. Of none: a judge's kappa and its lower bound
         in the quick print, which say how far the judge agrees with people, not what the eval measured.
@@ -938,14 +933,14 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The reading.
         :rtype: Printed
         """
         text = f"{value:.{_READING_PLACES}f}"
         return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
 
-    def echoed(self, value: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def echoed(self, value: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A value an author declared, echoed back in a refusal or an error as Python's general format writes it
         (``0``, ``1``, ``0.5``): the form the declaration is read in, so the message names what was written. Of a
         measure: an end of the range a grader declared its scores in.
@@ -955,14 +950,14 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The value.
         :rtype: Printed
         """
         text = f"{value:g}"
         return self._issue(*_keyed(measure, kind), "echoed", value, text, text, "")
 
-    def hits(self, rate: float, n: int, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def hits(self, rate: float, n: int, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """How many of ``n`` trials a rate counts, recovered whole from the rate (``75`` of 90 at 0.8333), as the quick
         print states it beside the rate: its digits bare. Always of a measure's rate, a measure's or a pass/fail
         judged dimension's.
@@ -974,7 +969,7 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The count.
         :rtype: Printed
         """
@@ -982,7 +977,7 @@ class PageForms:
         return self._issue(*_keyed(measure, kind), "hits", rate, text, text, "")
 
     def money_set(
-        self, amounts: Iterable[float | None], *, measure: str = "", kind: MeasureKind = None
+        self, amounts: Iterable[float | None], *, measure: str = "", kind: _MeasureKind = None
     ) -> tuple[Printed, ...]:
         """Amounts of money read as one set, in one money form
         (:func:`~threetears.evals.kernel.numbers.money_form`). Of none today: a pairwise pass's spend beside the part it
@@ -993,7 +988,7 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: Each amount, in the order given.
         :rtype: tuple[Printed, ...]
         """
@@ -1001,7 +996,7 @@ class PageForms:
         form = money_form(held)
         return tuple(self._money(amount, form.spell(amount), measure, kind) for amount in held)
 
-    def money_on(self, ruler: MoneyRuler, amount: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def money_on(self, ruler: MoneyRuler, amount: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """An amount of money on a ruler a surface laid over its set, in the ruler's one form. Of none today: every
         arm's total spend, every role's.
 
@@ -1012,13 +1007,13 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The amount.
         :rtype: Printed
         """
         return self._money(amount, ruler.spell(amount), measure, kind)
 
-    def check(self, value: float | None, *, measure: str = "", kind: MeasureKind = None) -> float | None:
+    def check(self, value: float | None, *, measure: str = "", kind: _MeasureKind = None) -> float | None:
         """A judge's-check figure, a part from 0 to 1 or a lean of parts, in percent or points (x 100), at the fewest
         decimals that keep its sign (:func:`_places` of it alone): the number the rung-5 checks table's cell holds,
         which its serializer spells by the one rule. Of none today: order consistency and the first-slot lean say how
@@ -1029,7 +1024,7 @@ class PageForms:
         :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The figure in percent or points, at its decimals; None for none.
         :rtype: float | None
         """
@@ -1069,7 +1064,7 @@ class PageForms:
         self._issue("", "", "preference", share, shares.share_text(candidate), shares.share_text(candidate), PERCENT)
         return shares
 
-    def _money(self, amount: float | None, text: str, measure: str, kind: MeasureKind) -> Printed:
+    def _money(self, amount: float | None, text: str, measure: str, kind: _MeasureKind) -> Printed:
         return self._issue(*_keyed(measure, kind), "money", amount, text, _digits_of(text, MONEY), MONEY)
 
     # --- a chart's forms: today's, each chart deciding over its own drawn values -----------------------------------
@@ -1084,7 +1079,7 @@ class PageForms:
 
     @overload
     def chart_quantity(
-        self, unit: str, values: Sequence[float] = (), *, change: bool = False, measure: str, kind: MeasureKind
+        self, unit: str, values: Sequence[float] = (), *, change: bool = False, measure: str, kind: _MeasureKind
     ) -> Quantity: ...
 
     def chart_quantity(
@@ -1094,7 +1089,7 @@ class PageForms:
         *,
         change: bool = False,
         measure: str = "",
-        kind: MeasureKind = None,
+        kind: _MeasureKind = None,
     ) -> Quantity:
         """How a chart draws a quantity in ``unit`` (:func:`~threetears.evals.analysis.report.parts.look.quantity`):
         its factor, the kit's format, its unit, and money's one form from the values it draws.
@@ -1110,7 +1105,7 @@ class PageForms:
             format), whose ledger key is ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The quantity.
         :rtype: Quantity
         """
@@ -1121,7 +1116,7 @@ class PageForms:
 
     @overload
     def chart_quantity_of(
-        self, unit: str, figures: Iterable[float], *, change: bool = False, measure: str, kind: MeasureKind
+        self, unit: str, figures: Iterable[float], *, change: bool = False, measure: str, kind: _MeasureKind
     ) -> Quantity: ...
 
     def chart_quantity_of(
@@ -1131,7 +1126,7 @@ class PageForms:
         *,
         change: bool = False,
         measure: str = "",
-        kind: MeasureKind = None,
+        kind: _MeasureKind = None,
     ) -> Quantity:
         """How a chart draws a quantity in ``unit`` from the figures it draws as the input states them, before any
         factor (:func:`~threetears.evals.analysis.report.parts.look.quantity_of`).
@@ -1146,7 +1141,7 @@ class PageForms:
             ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The quantity.
         :rtype: Quantity
         """
@@ -1178,7 +1173,7 @@ class PageForms:
         widths: Iterable[float] = (),
         *,
         measure: str,
-        kind: MeasureKind,
+        kind: _MeasureKind,
     ) -> Quantity: ...
 
     def chart_changes(
@@ -1188,7 +1183,7 @@ class PageForms:
         widths: Iterable[float] = (),
         *,
         measure: str = "",
-        kind: MeasureKind = None,
+        kind: _MeasureKind = None,
     ) -> Quantity:
         """How a chart draws changes between money amounts: on the amounts' ruler, in the changes' own form
         (:func:`~threetears.evals.analysis.report.parts.look.in_change_form`).
@@ -1203,7 +1198,7 @@ class PageForms:
             ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The changes' quantity.
         :rtype: Quantity
         """
@@ -1213,9 +1208,9 @@ class PageForms:
     def chart_note(self, value: float, drawn: Quantity) -> Printed: ...
 
     @overload
-    def chart_note(self, value: float, drawn: Quantity, *, measure: str, kind: MeasureKind) -> Printed: ...
+    def chart_note(self, value: float, drawn: Quantity, *, measure: str, kind: _MeasureKind) -> Printed: ...
 
-    def chart_note(self, value: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def chart_note(self, value: float, drawn: Quantity, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A drawn value as a chart's note, tooltip or line label writes it, by its quantity's rule
         (:func:`~threetears.evals.analysis.report.parts.look.figure_text`): a change where its quantity draws changes,
         a level otherwise, as the ledger records it.
@@ -1229,7 +1224,7 @@ class PageForms:
             ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The value.
         :rtype: Printed
         """
@@ -1240,9 +1235,9 @@ class PageForms:
     def chart_level(self, value: float, drawn: Quantity) -> Printed: ...
 
     @overload
-    def chart_level(self, value: float, drawn: Quantity, *, measure: str, kind: MeasureKind) -> Printed: ...
+    def chart_level(self, value: float, drawn: Quantity, *, measure: str, kind: _MeasureKind) -> Printed: ...
 
-    def chart_level(self, value: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+    def chart_level(self, value: float, drawn: Quantity, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A level (not a change) on a change chart, unsigned in its quantity's unit: money in its ruler's form at no
         fewer decimals than the chart's ticks, so a tooltip's two levels differ by its bar; any other unit by its
         quantity's rule.
@@ -1255,7 +1250,7 @@ class PageForms:
             ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The level.
         :rtype: Printed
         """
@@ -1268,16 +1263,16 @@ class PageForms:
         return self._chart_issue(measure, kind, "level", value, text, drawn.unit)
 
     @overload
-    def chart_interval(self, low: float, high: float, drawn: Quantity) -> PrintedInterval: ...
+    def chart_interval(self, low: float, high: float, drawn: Quantity) -> _PrintedInterval: ...
 
     @overload
     def chart_interval(
-        self, low: float, high: float, drawn: Quantity, *, measure: str, kind: MeasureKind
-    ) -> PrintedInterval: ...
+        self, low: float, high: float, drawn: Quantity, *, measure: str, kind: _MeasureKind
+    ) -> _PrintedInterval: ...
 
     def chart_interval(
-        self, low: float, high: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None
-    ) -> PrintedInterval:
+        self, low: float, high: float, drawn: Quantity, *, measure: str = "", kind: _MeasureKind = None
+    ) -> _PrintedInterval:
         """An interval as a chart's tooltip writes it, ``low to high``, each end by its quantity's rule
         (:func:`~threetears.evals.analysis.report.parts.charting.interval_words`).
 
@@ -1291,15 +1286,15 @@ class PageForms:
             whose ledger key is ``("", "")``.
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :return: The interval.
-        :rtype: PrintedInterval
+        :rtype: _PrintedInterval
         """
         low_text, high_text = figure_text(low, drawn), figure_text(high, drawn)
         text = interval_words(low, high, drawn)
-        self._issued.append(Issued(*_keyed(measure, kind), "interval", (low, high), text))
+        self._issued.append(_Issued(*_keyed(measure, kind), "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, drawn.unit), _digits_of(high_text, drawn.unit)
-        return PrintedInterval(
+        return _PrintedInterval(
             low=low,
             high=high,
             text=text,
@@ -1360,28 +1355,28 @@ class PageForms:
         text = f"{amount} {ruler.words(line.per)}"
         return self._issue(*key, "declared", threshold, text, _digits_of(amount, MONEY), MONEY)
 
-    def _chart_issue(self, measure: str, kind: MeasureKind, role: Role, value: float, text: str, unit: str) -> Printed:
+    def _chart_issue(self, measure: str, kind: _MeasureKind, role: Role, value: float, text: str, unit: str) -> Printed:
         """A chart's figure recorded under its measure and role, or under ``("", "")`` where it is of no measure."""
         return self._issue(*_keyed(measure, kind), role, value, text, _digits_of(text, unit), unit)
 
     # --- the ledger --------------------------------------------------------------------------------------------------
 
     @property
-    def ledger(self) -> tuple[Issued, ...]:
+    def ledger(self) -> tuple[_Issued, ...]:
         """Every text handed out, in the order it was."""
         return tuple(self._issued)
 
-    def issued(self, key: str, *, kind: MeasureKind = "measure", role: Role | None = None) -> tuple[Issued, ...]:
+    def issued(self, key: str, *, kind: _MeasureKind = "measure", role: Role | None = None) -> tuple[_Issued, ...]:
         """The texts handed out for one measure, optionally of one role.
 
         :param key: The measure's key.
         :ptype key: str
         :param kind: The measure's kind.
-        :ptype kind: MeasureKind
+        :ptype kind: _MeasureKind
         :param role: The role; None for every role.
         :ptype role: Role | None
         :return: The entries, in the order they were handed out.
-        :rtype: tuple[Issued, ...]
+        :rtype: tuple[_Issued, ...]
         """
         return tuple(
             entry
@@ -1392,7 +1387,7 @@ class PageForms:
     def _issue(
         self,
         key: str,
-        kind: MeasureKind,
+        kind: _MeasureKind,
         role: Role,
         value: float | None,
         text: str,
@@ -1402,7 +1397,7 @@ class PageForms:
         held: float | None = None,
         decimals: int | None = None,
     ) -> Printed:
-        self._issued.append(Issued(key, kind, role, value, text))
+        self._issued.append(_Issued(key, kind, role, value, text))
         return Printed(value=value, text=text, digits=digits, unit=unit, held=held, decimals=decimals)
 
     def _code_issue(
@@ -1488,13 +1483,13 @@ def _digits_of(text: str, unit: str) -> str:
     return text.removesuffix(unit).rstrip() if text.endswith(unit) else text
 
 
-def _interval_join(page: PageKind, low: str, high: str) -> str:
+def _interval_join(page: _PageKind, low: str, high: str) -> str:
     """Two ends joined as the page joins an interval: ``low to high`` on a written page, ``[low, high]`` on a code
     page's scorecard."""
     return f"[{low}, {high}]" if page == "code" else f"{low} to {high}"
 
 
-def _keyed(measure: str, kind: MeasureKind) -> tuple[str, str]:
+def _keyed(measure: str, kind: _MeasureKind) -> tuple[str, str]:
     """The key an off-page or a chart's figure is held under in the ledger: its measure and kind, or neither for a
     figure of no measure, as the fixed forms are held."""
     return (measure, _measure_kind(kind)) if measure else ("", "")
@@ -1511,7 +1506,7 @@ def _counts_passes(report_input: ReportInput) -> bool:
     )
 
 
-def _measure_kind(kind: MeasureKind) -> str:
+def _measure_kind(kind: _MeasureKind) -> str:
     """A measure's kind as its forms are keyed: a contrast that names none is a measure's own, as every decision reads
     it, so one measure never takes two forms."""
     return "measure" if kind is None else kind
@@ -1685,13 +1680,13 @@ def _change_ends(low: float, high: float, places: int, unit: str, *, span: float
     return _at_decimals(low, at, unit, signed=True), _at_decimals(high, at, unit, signed=True)
 
 
-def _written_form(report_input: ReportInput, key: str, kind: MeasureKind) -> MeasureForm:
+def _written_form(report_input: ReportInput, key: str, kind: _MeasureKind) -> MeasureForm:
     """One measure's form on a written page, from the Full results' decisions; a measure's own kind is None there."""
     stated: str | None = None if kind == "measure" else kind
     levels = _level_quantity(report_input, key, kind=stated)
     held = [c for c in report_input.contrasts if (c.measure, _measure_kind(c.kind)) == (key, kind)]
     changes = _change_quantity(report_input, key, kind, held)
-    reads_as: ReadsAs = (
+    reads_as: _ReadsAs = (
         "money"
         if levels.unit == MONEY
         else "rate"

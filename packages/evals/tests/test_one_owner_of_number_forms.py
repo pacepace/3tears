@@ -1282,7 +1282,7 @@ class TestAWrapperIsAPrimitive:
 
     def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self):
         """``PageForms``, its constructors, its methods and the values it hands out decide nothing at the call."""
-        assert not _FORMS_CALLABLES & {"PageForms", "MeasureForm", "Printed", "PrintedInterval", "Issued", "of"}
+        assert not _FORMS_CALLABLES & {"PageForms", "MeasureForm", "Printed", "of"}
         source = (
             "page = PageForms.of(report_input)\n"
             "codes = PageForms.of_campaign(readings, reports)\n"

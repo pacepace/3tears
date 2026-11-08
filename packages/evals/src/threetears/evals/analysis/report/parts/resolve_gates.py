@@ -892,7 +892,7 @@ def _cost_measure(report_input: ReportInput) -> tuple[str, str]:
     scoreboard's cost per reply; neither where the input states no cost."""
     source = cost_basis(report_input).source
     if source == _SCOREBOARD_COST:
-        return _REPLY_COST, "scoreboard"
+        return _REPLY_COST, "measure"
     return (source, "measure") if source else ("", "")
 
 

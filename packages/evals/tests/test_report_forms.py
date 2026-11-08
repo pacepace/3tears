@@ -33,7 +33,7 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns, percent_columns
-from threetears.evals.analysis.report.forms import Issued, PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.charting import interval_level
@@ -464,9 +464,9 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
 _RESPELLED_ROLES = frozenset({"half_width", "pass_k", "share"})
 
 
-def _respelled(forms: PageForms, entry: Issued) -> bool:
-    """Whether ``blocks.percent_columns`` respells an issued figure on a code page after its cell is built, by its
-    measure and role, until C3e:
+def _respelled(forms: PageForms, entry) -> bool:
+    """Whether ``blocks.percent_columns`` respells an issued figure (an entry of ``forms.ledger``) on a code page
+    after its cell is built, by its measure and role, until C3e:
 
     - :data:`_RESPELLED_ROLES`, each under a head naming its unit;
     - a rate's interval: a pass rate's under ``Interval (pts)``, respelled at a point's decimal, and a measure's
