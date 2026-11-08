@@ -16,9 +16,9 @@ This page is for whoever wires, runs and watches it. The design is in the module
 
 | What | Value |
 |---|---|
-| Change-log keys | `{tenant}.{table}.e` (`threetears.core.tenancy.epoch_change_key`): `s-{schema}` for an agent-schema table, `v-{value}` for a platform table's declared tenant column (a digest `h-...` when the value is not one subject token), `_all` for a platform-wide table, a whole-table change, a keys-unknown change, or an undeclared table |
+| Change-log keys | `{tenant}.{table}.e` (`threetears.core.tenancy.epoch_change_key`): `s-{schema}` for an agent-schema table, `v-{value}` for a platform table's declared tenant column (a digest `h-...` when the value is not one subject token), `_all` for a platform-wide table, a platform table's whole-table or keys-unknown change, or an undeclared table. An agent-schema table's whole-table or keys-unknown change goes under its schema's `s-` key, named by the writer (`advance_with_change(tenant=...)`) and by the truncate and file-load notes |
 | Tenancy | declared on the collection or its `TableSchema` (`tenancy = TENANT_BY_SCHEMA`, `tenant_column("customer_id")`, `no_tenant(reason)`); never guessed. The collection census (`find_census_problems`, run by the framework's and every consumer's `test_one_class_per_table` gate) fails on a concrete class with no declaration. At runtime an undeclared table still goes on `_all`, so nothing is lost, with one WARNING per table (`collection class declares no tenancy`) and `threetears_collection_tenancy_undeclared_records_total{table}` per record |
-| Who reads what | a platform service (hub, registry, gateway) reads every tenant (`EpochGenerationReader(nc)`, the wildcard `*.{table}.e`). A pod reads its tenants: `EpochGenerationReader(nc, tenants=[...])`, `_all` always included, under the grants its host names (`build_permissions(epoch_change_grants=...)`) |
+| Who reads what | a platform service (hub, registry, gateway) reads every tenant (`EpochGenerationReader(nc)`, the wildcard `*.{table}.e`). A pod reads by each table's declared tenancy: `EpochGenerationReader(nc, tenants=PodTenants(schema=..., customer=...))` reads a schema table under `s-{its schema}` only, a platform table with a tenant column under `v-{its customer}` and `_all`, any other under `_all`: exactly the keys the grants its host names cover (`build_permissions(epoch_change_grants=...)`). `PodTenants` is the only form a pod's reader takes |
 | Row values | `ChangedRow.value` (an L2-first commit's row) rides under its tenant's key, so it is readable only by whoever may read that tenant, as in the collections bucket |
 | Note tables | `threetears_change_notes_0`, `_1`, `_2` in the platform schema: one current, one previous, one emptied and waiting |
 | Ring row | `threetears_change_note_ring` (one row; only the keeper writes it, once per switch; no save reads it) |
@@ -56,9 +56,18 @@ This page is for whoever wires, runs and watches it. The design is in the module
 
 Every record is keyed by tenant first (see the facts table). A writer splits one commit's rows by tenant: each
 row's `ChangedRow.tenant`, named by the collection from its declared tenant column, or by the writer that knows
-the row's schema (the hub's broker, for an agent-schema table). A whole-table or keys-unknown change goes on
-`_all`, carrying no row. The change notes carry the same tenant, from the trigger (the row's schema, or its
-tenant column, by the same token rule), so a restore puts each tenant's records back under its own key.
+the row's schema (the hub's broker, for an agent-schema table). A whole-table or keys-unknown change carries no
+row: an agent-schema table's goes under the schema the writer names (it belongs to that schema alone), a
+platform table's on `_all`. The change notes carry the same tenant, from the trigger (the row's schema, or its
+tenant column, by the same token rule; a truncate or file load of a schema table notes its schema), so a restore
+puts each tenant's records back under its own key. The write-mark reconciler advances a whole-table change of a
+schema table under each schema holding it when the notes cannot name one. A record of a schema table that names
+no schema still goes on `_all`, where no pod reads that table, and is said once per table and counted
+(`threetears_epoch_change_schema_record_untenanted_total{table}`).
+
+A pod's reader picks each table's keys from the table's declared tenancy (`PodTenants.keys_for`), so the pod
+asks only for the keys its grant names; a key outside the grant would be refused by the broker and the read
+would wait to its deadline.
 
 A follower keeps one mark per table, and walks each key it may read after it, merged by the log's sequence.
 Detection is the same per key as it was per table: the log's first sequence (`aged_out`) and its incarnation
@@ -73,7 +82,10 @@ What a pod's host grants (`EpochChangeGrant`):
   it is its own);
 - for each platform table its role already reads (from the same source that grants it those rows): the table
   for its customer, `EpochChangeGrant(tenant=value_tenant(<customer id>), table=<table>)`, and for `_all`,
-  `EpochChangeGrant(tenant=ALL_TENANTS, table=<table>)`. Never a customer's or `_all`'s whole prefix.
+  `EpochChangeGrant(tenant=ALL_TENANTS, table=<table>)`. Never a customer's or `_all`'s whole prefix;
+- for a tool pod, each agent table it was granted (`agent_table_grants`):
+  `EpochChangeGrant(tenant=schema_tenant(<that agent's schema>), table=<table>)`, which its owner stack reads
+  with `PodTenants(schema=<that agent's schema>)`.
 
 A host that names no grants (`epoch_change_grants=None`) keeps the pod's read of the whole log: the expand step
 of the rollout, until the host names them.

@@ -906,6 +906,11 @@ class FakeChangeLog:
         self.unreachable: Exception | None = None
         #: a test sets it to fail appends: called with each msg_id, it returns the error to raise, or None
         self.refuse_append: Callable[[str], Exception | None] | None = None
+        #: a test sets it to the subject patterns a pod's grant names (``s-x.>``, ``_all.groups.e``): a read of
+        #: any other key is refused as the broker refuses a subject the grant does not cover. ``None`` grants all
+        self.granted_reads: tuple[str, ...] | None = None
+        #: every key or filter read, in order, for a test that asserts what a reader asked for
+        self.read_keys: list[str] = []
 
     @property
     def bucket(self) -> str:
@@ -1070,6 +1075,7 @@ class FakeChangeLog:
         :return: the record, or ``None``
         :rtype: ChangeLogEntry | None
         """
+        self._granted(key)
         self._present_or_raise()
         return next((entry for entry in reversed(self._entries) if _subject_matches(key, entry.key)), None)
 
@@ -1094,6 +1100,7 @@ class FakeChangeLog:
         :return: the record, or ``None``
         :rtype: ChangeLogEntry | None
         """
+        self._granted(key)
         self._present_or_raise()
         return next((entry for entry in self._entries if _subject_matches(key, entry.key) and entry.seq > seq), None)
 
@@ -1109,8 +1116,22 @@ class FakeChangeLog:
         :return: the records, in order
         :rtype: list[ChangeLogEntry]
         """
+        self._granted(key)
         self._present_or_raise()
         return [entry for entry in self._entries if seq < entry.seq <= upto and _subject_matches(key, entry.key)]
+
+    def _granted(self, key: str) -> None:
+        """record a read of ``key`` and refuse it when the test's grant does not cover it.
+
+        :param key: the key or filter read
+        :ptype key: str
+        :return: None
+        :rtype: None
+        :raises KvError: when :attr:`granted_reads` is set and no pattern of it covers ``key``
+        """
+        self.read_keys.append(key)
+        if self.granted_reads is not None and not any(_subject_matches(grant, key) for grant in self.granted_reads):
+            raise KvError(f"permissions violation for subject $KV.{self._bucket}.{key}")
 
     def _present_or_raise(self) -> None:
         """raise as the real log does when it is absent or unreachable.
@@ -1130,6 +1151,7 @@ class FakeChangeLog:
         :return: the records as key updates
         :rtype: AsyncGenerator[KvKeyUpdate]
         """
+        self._granted(key)
         queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
         self._watchers.setdefault(key, []).append(queue)
         try:

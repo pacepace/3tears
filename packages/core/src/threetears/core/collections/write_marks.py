@@ -54,7 +54,7 @@ from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.change_notes import NotedRows, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, advance_recording
-from threetears.core.collections.generation import GenerationSource, tables_written_l2_first
+from threetears.core.collections.generation import GenerationSource, tables_written_l2_first, tenancy_of_table
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -67,6 +67,7 @@ from threetears.core.ddl.write_marks import (
     write_marks_ddl,
 )
 from threetears.core.sql_fragments import quote_identifier
+from threetears.core.tenancy import schema_tenant
 
 __all__ = [
     "INSTALL_LOCK_POLICY",
@@ -497,26 +498,28 @@ class WriteMarkReconciler:
             )
         return MarkPass(applied=applied, advanced=tuple(sorted(advanced)), failed=tuple(sorted(failed)), behind=behind)
 
-    async def _rows_of(self, table: str, since: Any) -> list[ChangedRow] | None:
+    async def _rows_of(self, table: str, since: Any) -> tuple[list[ChangedRow] | None, tuple[str | None, ...]]:
         """the rows the marked writes changed, from the change notes they left; ``None`` for the whole table.
 
         A mark names its table, not its rows, but every committed write to a noted table also left a note of
         its keys. The epoch names those rows, so followers evict them rather than dropping the table. It names
         the whole table only when a note does (a truncate, a file load) or the notes cannot say: said at
-        WARNING and counted, by why, on ``collection_write_marks_whole_table_total``.
+        WARNING and counted, by why, on ``collection_write_marks_whole_table_total``. A whole-table change of
+        an agent-schema table goes under each schema it may be in (:meth:`_whole_tenants`), never ``_all``,
+        which no pod reads such a table under.
 
         :param table: the marked table
         :ptype table: str
         :param since: the oldest mark's time
         :ptype since: Any
-        :return: the rows, or ``None`` for a whole-table epoch
-        :rtype: list[ChangedRow] | None
+        :return: the rows, or ``None`` for a whole-table epoch; and the whole-table records' tenants
+        :rtype: tuple[list[ChangedRow] | None, tuple[str | None, ...]]
         """
         noted = await noted_rows_since(
             self._pool, notes_schema=self._notes_schema, table=table, since=since, cap=_MAX_NOTED_ROWS
         )
         if isinstance(noted, NotedRows) and not noted.whole_table:
-            return list(noted.rows)
+            return list(noted.rows), ()
         reason = "whole_note" if isinstance(noted, NotedRows) else noted
         _WHOLE_TABLE.labels(table=table, reason=reason).inc()
         if reason != "whole_note":
@@ -525,7 +528,31 @@ class WriteMarkReconciler:
                 "their rows, so every follower drops the table",
                 extra={"extra_data": {"table": table, "reason": reason}},
             )
-        return None
+        return None, await self._whole_tenants(table, noted)
+
+    async def _whole_tenants(self, table: str, noted: NotedRows | str) -> tuple[str | None, ...]:
+        """the tenants a whole-table advance of ``table`` goes under.
+
+        The whole-table notes' own tenants when there are some; otherwise, for an agent-schema table, every
+        schema holding the table (the mark names no schema), and ``_all`` for any other table.
+
+        :param table: the table
+        :ptype table: str
+        :param noted: what the notes said
+        :ptype noted: NotedRows | str
+        :return: the tenants, ``None`` for ``_all``
+        :rtype: tuple[str | None, ...]
+        """
+        if isinstance(noted, NotedRows) and noted.whole_tenants:
+            return noted.whole_tenants
+        if tenancy_of_table(table).kind != "schema":
+            return (None,)
+        rows = await self._pool.fetch(
+            "SELECT table_schema::text AS table_schema FROM information_schema.tables WHERE table_name = $1 "
+            "ORDER BY table_schema",
+            table,
+        )
+        return tuple(schema_tenant(str(row["table_schema"])) for row in rows) or (None,)
 
     async def _advance(self, page: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
         """advance, once each, every table the page marks.
@@ -546,7 +573,11 @@ class WriteMarkReconciler:
                 continue
             try:
                 since = min(row["date_created"] for row in page if str(row["table_name"]) == table)
-                await advance_recording(self._source, table, await self._rows_of(table, since))
+                rows, whole_tenants = await self._rows_of(table, since)
+                if rows is not None:
+                    await advance_recording(self._source, table, rows)
+                for tenant in whole_tenants:
+                    await advance_recording(self._source, table, None, tenant=tenant)
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)

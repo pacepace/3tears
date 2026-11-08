@@ -119,6 +119,7 @@ from threetears.core.ddl.change_notes import (
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
+    legacy_truncate_trigger_drop_sql,
     RING_TABLE,
     change_notes_ddl,
     inexact_note_columns,
@@ -829,6 +830,9 @@ class ChangeNoteKeeper:
                 )
             )
         row, truncate = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
+        if NOTE_TRUNCATE_TRIGGER in install.triggers:
+            # a table given its triggers before a truncate's note named its tenant ran the shared function
+            await conn.execute(legacy_truncate_trigger_drop_sql(table_schema=install.table_schema, table=each.table))
         for name, statement in ((NOTE_TRIGGER, row), (NOTE_TRUNCATE_TRIGGER, truncate)):
             if name in install.triggers:
                 await conn.execute(statement)
@@ -1518,23 +1522,28 @@ class _StreamedChanges:
     async def _stream(self) -> AsyncIterator[NotedChange]:
         async with self._pool.acquire() as conn, conn.transaction():
             whole = sorted(
-                str(row["table_name"])
-                for row in await conn.fetch(
-                    f"SELECT DISTINCT table_name FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
-                    "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
-                    self._since,
-                )
+                (
+                    (str(row["table_name"]), None if row["tenant"] is None else str(row["tenant"]))
+                    for row in await conn.fetch(
+                        f"SELECT DISTINCT table_name, tenant FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
+                        "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
+                        self._since,
+                    )
+                ),
+                key=lambda pair: (pair[0], pair[1] or ""),
             )
-            for noted in whole:
+            for noted, tenant in whole:
                 self.tables += 1
-                # a whole-table change spans tenants: it goes on _all, carrying no row
-                yield NotedChange(table=noted, whole_table=True)
+                # a whole-table change carries no row: under its schema for a schema table, else on _all
+                yield NotedChange(table=noted, tenant=tenant, whole_table=True)
+            # a row its tenant's whole-table change (or the table's _all one) already covers is not named again
             cursor = conn.cursor(
                 f"SELECT DISTINCT table_name, tenant, key_text, keys, columns FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
                 "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
-                "AND NOT (n.table_name = ANY($2::text[])) ORDER BY table_name, tenant",
+                f"AND NOT EXISTS (SELECT 1 FROM {self._coverage} w WHERE w.key_text IS NULL "
+                "AND w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant) "
+                "AND ($1::timestamptz IS NULL OR w.noted_at >= $1)) ORDER BY table_name, tenant",
                 self._since,
-                whole,
                 prefetch=_RESTORE_PAGE,
             )
             group: tuple[str, str | None] | None = None
@@ -1583,10 +1592,12 @@ class NotedRows:
 
     :ivar rows: each distinct row the notes name, with its invalidation columns; empty for a whole-table note
     :ivar whole_table: a note of the whole table (a truncate, a file load) is among them
+    :ivar whole_tenants: each such note's tenant, ``None`` for ``_all``
     """
 
     rows: tuple[ChangedRow, ...] = ()
     whole_table: bool = False
+    whole_tenants: tuple[str | None, ...] = ()
 
 
 async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
@@ -1640,8 +1651,10 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     )
     if not notes:
         return "no_notes"
-    if any(note["key_text"] is None for note in notes):
-        return NotedRows(whole_table=True)
+    whole = [note for note in notes if note["key_text"] is None]
+    if whole:
+        tenants = dict.fromkeys(None if note["tenant"] is None else str(note["tenant"]) for note in whole)
+        return NotedRows(whole_table=True, whole_tenants=tuple(tenants))
     if len(notes) > cap:
         return "too_many_rows"
     rows = {

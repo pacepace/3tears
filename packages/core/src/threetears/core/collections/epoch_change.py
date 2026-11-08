@@ -274,7 +274,12 @@ class _EpochChangeWriter(Protocol):
     """a generation source that records each advance's change as it makes it."""
 
     async def advance_with_change(
-        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
     ) -> str | None:
         """advance the table's generation once and store what the advance covered.
 
@@ -285,6 +290,9 @@ class _EpochChangeWriter(Protocol):
         :param keys_unknown: the writer named no rows and did not change the whole table; the record
             says so and a follower that missed it is behind for that epoch. Requires ``rows=None``
         :ptype keys_unknown: bool
+        :param tenant: the write's tenant, from a writer that knows it: a rowless record's key, and that of
+            any row naming none; ``None`` for ``_all``
+        :ptype tenant: str | None
         :return: the generation token the advance wrote, as :meth:`GenerationSource.advance`
         :rtype: str | None
         :raises GenerationUnavailableError: when the generation could not be advanced, or its
@@ -310,7 +318,12 @@ def check_change_form(rows: Sequence[ChangedRow] | None, *, keys_unknown: bool) 
 
 
 async def advance_recording(
-    source: GenerationSource, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    source: GenerationSource,
+    table_name: str,
+    rows: Sequence[ChangedRow] | None,
+    *,
+    keys_unknown: bool = False,
+    tenant: str | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -326,6 +339,9 @@ async def advance_recording(
     :ptype rows: Sequence[ChangedRow] | None
     :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
     :ptype keys_unknown: bool
+    :param tenant: the write's tenant, from a writer that knows it (the schema it wrote in): a rowless
+        record's key, and that of any row naming none; ``None`` for ``_all``
+    :ptype tenant: str | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -333,7 +349,9 @@ async def advance_recording(
     """
     check_change_form(rows, keys_unknown=keys_unknown)
     if isinstance(source, _EpochChangeWriter):
-        return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown)
+        if tenant is None:
+            return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown)
+        return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, tenant=tenant)
     return await source.advance(table_name)
 
 

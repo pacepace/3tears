@@ -1,29 +1,69 @@
-"""the epoch change log keyed by tenant: a follower reads only its own tenants' keys and ``_all``.
+"""the epoch change log keyed by tenant: a pod reads each table under the keys its declared tenancy names.
 
 What these hold, on the in-memory log (the live NATS behaviour is pinned in
 ``tests/integration/test_change_log_live.py``):
 
-- a write's rows go under each row's tenant key, and a whole-table or keys-unknown change under ``_all``;
-- a follower of tenant A walks A's records and ``_all``'s, never B's, and B's writes never make it behind;
-- every tenant's follower applies an ``_all`` record;
+- a write's rows go under each row's tenant key; a platform table's whole-table or keys-unknown change under
+  ``_all``, and an agent-schema table's under the schema the writer names;
+- a pod of customer A walks a platform table's A records and ``_all``'s, never B's, and B's writes never make
+  it behind; every customer's pod applies an ``_all`` record;
+- a pod reading its own schema's table asks for its own schema's key and nothing else (a fake that refuses
+  every subject its grant does not name proves it), and sees a truncate of its own schema, never another's;
+- a tool pod's owner stack reads an agent's table under that agent's schema key;
+- a reader is given a pod's PodTenants, never a list of tenants;
 - a record retention took from a follower's own key leaves it behind (``aged_out``), as per table before;
 - a platform reader (no tenants) reads every tenant through the wildcard;
-- the restore puts each tenant's notes back under its own key.
+- the restore puts each tenant's notes, whole-table ones too, back under its own key.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from threetears.core.collections import BaseCollection
 from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.tenancy import ALL_TENANTS, epoch_change_key, schema_tenant, value_tenant
+from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.tenancy import (
+    ALL_TENANTS,
+    TENANT_BY_SCHEMA,
+    PodTenants,
+    epoch_change_key,
+    schema_tenant,
+    tenant_column,
+    value_tenant,
+)
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource
 
-_TABLE = "widgets"
+_TABLE = "tenancy_test_widgets"
+_OWN_TABLE = "tenancy_test_notebook"
 _A = value_tenant("customer-a")
 _B = value_tenant("customer-b")
+_POD_A = PodTenants(schema="agent_a", customer="customer-a")
+_POD_B = PodTenants(schema="agent_b", customer="customer-b")
+
+
+class _Widgets(BaseCollection[Any]):
+    """a platform table with a customer column: declared here so a pod's reader reads it by its declaration."""
+
+    tenancy = tenant_column("customer_id")
+
+    @property
+    def table_name(self) -> str:
+        return _TABLE
+
+
+class _Notebook(BaseCollection[Any]):
+    """an agent-schema table: every agent has its own."""
+
+    tenancy = TENANT_BY_SCHEMA
+
+    @property
+    def table_name(self) -> str:
+        return _OWN_TABLE
 
 
 def _row(key: str, tenant: str | None) -> ChangedRow:
@@ -65,8 +105,8 @@ class TestAFollowerReadsOnlyItsTenants:
         await source.advance_with_change(_TABLE, None)
         await source.advance_with_change(_TABLE, [_row("a2", _A)])
 
-        assert await _ids_after(EpochGenerationReader(bus, tenants=[_A]), start) == ["a1", "a2", "*"]
-        assert await _ids_after(EpochGenerationReader(bus, tenants=[_B]), start) == ["b1", "*"]
+        assert await _ids_after(EpochGenerationReader(bus, tenants=_POD_A), start) == ["a1", "a2", "*"]
+        assert await _ids_after(EpochGenerationReader(bus, tenants=_POD_B), start) == ["b1", "*"]
         assert sorted(await _ids_after(EpochGenerationReader(bus), start)) == ["*", "a1", "a2", "b1"], (
             "a platform reader reads every tenant through the wildcard"
         )
@@ -75,7 +115,7 @@ class TestAFollowerReadsOnlyItsTenants:
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus)
         await source.start_log()
-        reader = EpochGenerationReader(bus, tenants=[_A])
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
         follower = CollectionRegistry()
         follower.follow_generation(_TABLE)
         await follower.catch_up_generation(_TABLE, await reader.read(_TABLE), changes=reader)
@@ -94,8 +134,9 @@ class TestAFollowerReadsOnlyItsTenants:
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus)
         await source.start_log()
-        followers = {tenant: CollectionRegistry() for tenant in (_A, _B, schema_tenant("agent_x"))}
-        readers = {tenant: EpochGenerationReader(bus, tenants=[tenant]) for tenant in followers}
+        pods = {"a": _POD_A, "b": _POD_B, "none": PodTenants(schema="agent_x")}
+        followers = {name: CollectionRegistry() for name in pods}
+        readers = {name: EpochGenerationReader(bus, tenants=pod) for name, pod in pods.items()}
         for tenant, registry in followers.items():
             registry.follow_generation(_TABLE)
             await registry.catch_up_generation(_TABLE, await readers[tenant].read(_TABLE), changes=readers[tenant])
@@ -110,7 +151,7 @@ class TestAFollowerReadsOnlyItsTenants:
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus)
         await source.start_log()
-        reader = EpochGenerationReader(bus, tenants=[_A])
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
         mark = await reader.read(_TABLE)
         assert mark is not None
         lost = await source.advance_with_change(_TABLE, [_row("a1", _A)])
@@ -142,8 +183,27 @@ class TestARestorePutsEachTenantBack:
             covered_from=0,
         )
         start = f"{restored}:0"
-        assert await _ids_after(EpochGenerationReader(bus, tenants=[_A]), start) == ["a1", "*"]
-        assert await _ids_after(EpochGenerationReader(bus, tenants=[_B]), start) == ["b1", "*"]
+        assert await _ids_after(EpochGenerationReader(bus, tenants=_POD_A), start) == ["a1", "*"]
+        assert await _ids_after(EpochGenerationReader(bus, tenants=_POD_B), start) == ["b1", "*"]
+
+    async def test_a_schema_tables_whole_table_note_goes_back_under_its_schema(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        lost = (await source.log_state()).incarnation  # type: ignore[union-attr]
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+        restored = await source.begin_restore(lost)
+        assert restored is not None
+        own = schema_tenant("agent_a")
+        await source.finish_restore(
+            [NotedChange(table=_OWN_TABLE, tenant=own, whole_table=True)],
+            incarnation=restored,
+            lost=lost,
+            covered_from=0,
+        )
+        start = f"{restored}:0"
+        assert await _ids_after_table(EpochGenerationReader(bus, tenants=_POD_A), _OWN_TABLE, start) == ["*"]
+        assert await EpochGenerationReader(bus, tenants=_POD_B).read(_OWN_TABLE) == start
 
 
 @pytest.mark.parametrize("value", ["customer-a", "3f7c1c1e-0000-4000-8000-000000000001", "a b/c", "x" * 200])
@@ -151,3 +211,73 @@ def test_a_tenant_token_is_one_subject_token(value: str) -> None:
     token = value_tenant(value)
     assert "." not in token and " " not in token and len(token) <= 64
     assert epoch_change_key(_TABLE, token).split(".")[0] == token
+
+
+class TestAPodReadsItsOwnSchemaTableUnderItsOwnKeyOnly:
+    async def test_it_asks_for_no_subject_but_its_own_schemas(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await source.advance_with_change(_OWN_TABLE, [_row("n1", schema_tenant("agent_a"))])
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        # the pod's grant, as its host builds it: its own schema whole, a platform table per customer and _all
+        log.granted_reads = (
+            f"{schema_tenant('agent_a')}.>",
+            epoch_change_key(_TABLE, _A),
+            epoch_change_key(_TABLE, None),
+        )
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
+        start = f"{(await source.log_state()).incarnation}:0"  # type: ignore[union-attr]
+        assert await _ids_after_table(reader, _OWN_TABLE, start) == ["n1"]
+        assert set(log.read_keys) == {epoch_change_key(_OWN_TABLE, schema_tenant("agent_a"))}
+        log.read_keys.clear()
+        await reader.read(_TABLE)
+        assert set(log.read_keys) == {epoch_change_key(_TABLE, _A), epoch_change_key(_TABLE, None)}
+
+    async def test_a_truncate_in_one_schema_is_seen_by_its_pod_and_not_by_anothers(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        mine, theirs = EpochGenerationReader(bus, tenants=_POD_A), EpochGenerationReader(bus, tenants=_POD_B)
+        before_mine, before_theirs = await mine.read(_OWN_TABLE), await theirs.read(_OWN_TABLE)
+        truncate = await source.advance_with_change(_OWN_TABLE, None, tenant=schema_tenant("agent_a"))
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        assert [entry.key for entry in await log.records_after(f"*.{_OWN_TABLE}.e", 0, 100)] == [
+            epoch_change_key(_OWN_TABLE, schema_tenant("agent_a"))
+        ], "a schema table's truncate goes under its schema, never _all"
+        assert await mine.read(_OWN_TABLE) == truncate
+        assert before_mine is not None and await _ids_after_table(mine, _OWN_TABLE, before_mine) == ["*"]
+        assert await theirs.read(_OWN_TABLE) == before_theirs, "another agent's pod never sees it"
+
+    async def test_a_tool_pods_owner_stack_reads_the_agents_schema_key(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        owner = schema_tenant("agent_owner")
+        token = await source.advance_with_change(_OWN_TABLE, [_row("n1", owner)])
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        # a tool pod granted that agent's one table (agent_table_grants), and no customer of its own
+        log.granted_reads = (epoch_change_key(_OWN_TABLE, owner),)
+        reader = EpochGenerationReader(bus, tenants=PodTenants(schema="agent_owner"))
+        assert await reader.read(_OWN_TABLE) == token
+        assert set(log.read_keys) == {epoch_change_key(_OWN_TABLE, owner)}
+
+    async def test_a_pod_with_no_schema_cannot_read_a_schema_table(self) -> None:
+        bus = FakeNatsClient()
+        await EpochGenerationSource(bus).start_log()
+        with pytest.raises(GenerationUnavailableError, match="reads no schema"):
+            await EpochGenerationReader(bus, tenants=PodTenants(customer="customer-a")).read(_OWN_TABLE)
+
+    def test_a_list_of_tenants_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="PodTenants"):
+            EpochGenerationReader(FakeNatsClient(), tenants=[_A])  # type: ignore[arg-type]
+
+
+async def _ids_after_table(reader: EpochGenerationReader, table: str, after: str) -> list[str]:
+    head = await reader.read(table)
+    assert head is not None
+    walk = await reader.changes_after(table, after, head)
+    assert walk.complete, walk
+    return [row.ids[0] for change in walk.changes for row in change.rows] + [
+        "*" for change in walk.changes if change.whole_table
+    ]

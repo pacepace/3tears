@@ -35,12 +35,21 @@ from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 from threetears.core.data.store import DataStore
-from threetears.core.ddl.change_notes import NOTE_SLOT_SETTING, RING_TABLE, note_table
+from threetears.core.ddl.change_notes import (
+    NOTE_SLOT_SETTING,
+    NOTE_TRIGGER,
+    NOTE_TRUNCATE_TRIGGER,
+    RING_TABLE,
+    note_table,
+)
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
 from threetears.epoch import EpochGenerationSource
 
 pytestmark = pytest.mark.integration
+
+#: the shared truncate trigger an install before a whole-table note named its tenant gave each table
+_LEGACY_TRUNCATE_TRIGGER = "threetears_change_note_truncate"
 
 #: long enough that a copy read in a test stays valid (half of it) while the test acts, short enough to wait out
 _FENCE = timedelta(seconds=4)
@@ -380,7 +389,8 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
                 table,
             )
         }
-        assert {"threetears_change_note", "threetears_change_note_truncate"} <= triggers
+        assert {NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER} <= triggers
+        assert _LEGACY_TRUNCATE_TRIGGER not in triggers
         await pool.execute(f"INSERT INTO {table} VALUES ('first', 'o')")
         assert [list(note["keys"]) for note in await _notes(pool, schema, 0)] == [["first"]], (
             "its first write left a note"

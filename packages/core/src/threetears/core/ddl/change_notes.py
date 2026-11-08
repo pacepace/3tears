@@ -57,6 +57,7 @@ __all__ = [
     "slot_max_age",
     "note_table",
     "note_trigger_sql",
+    "legacy_truncate_trigger_drop_sql",
     "trigger_function_body",
     "trigger_function_sql",
 ]
@@ -94,12 +95,14 @@ NOTE_PUT_FUNCTION: Final = _RING_FUNCTION
 #: the function a whole-table note is written through, once per transaction and table
 _WHOLE_FUNCTION: Final = "threetears_change_note_whole"
 
-#: the function a table's ``TRUNCATE`` trigger calls: a truncate changes the whole table
-_TRUNCATE_FUNCTION: Final = "threetears_change_note_truncate"
-
-#: the row trigger on every noted table, and its statement trigger for ``TRUNCATE``
+#: the row trigger on every noted table, and its statement trigger for ``TRUNCATE``; both run the table's own
+#: function, which names the tenant of a whole-table note by the table's declaration
 NOTE_TRIGGER: Final = "threetears_change_note"
-NOTE_TRUNCATE_TRIGGER: Final = "threetears_change_note_truncate"
+NOTE_TRUNCATE_TRIGGER: Final = "threetears_change_note_truncate_table"
+
+#: the ``TRUNCATE`` trigger an install before the tenant of a whole-table note was named gave a table: it ran a
+#: shared function that put every truncate on ``_all``. Dropped where the table's own trigger is created
+_LEGACY_TRUNCATE_TRIGGER: Final = "threetears_change_note_truncate"
 
 #: each table's own trigger function is this prefix and a digest of its schema and name
 _TABLE_FUNCTION_PREFIX: Final = "threetears_note_"
@@ -223,7 +226,6 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "ON CONFLICT (id) DO NOTHING",
         _put_function_sql(schema),
         _whole_function_sql(schema),
-        _truncate_function_sql(schema),
     )
 
 
@@ -298,35 +300,15 @@ def _whole_function_sql(schema: str) -> str:
     owner = quote_identifier(schema)
     return (
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_WHOLE_FUNCTION)}("
-        "noted_relation OID, noted_table TEXT) RETURNS void LANGUAGE plpgsql AS $whole$\n"
+        "noted_relation OID, noted_table TEXT, noted_tenant TEXT) RETURNS void LANGUAGE plpgsql AS $whole$\n"
         "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
         "  IF current_setting('threetears.noted_whole_' || noted_relation::text, true) = '1' THEN\n"
         "    RETURN;\n"
         "  END IF;\n"
         "  PERFORM set_config('threetears.noted_whole_' || noted_relation::text, '1', true);\n"
-        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(noted_table, NULL, NULL, NULL);\n"
+        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(noted_table, NULL, NULL, noted_tenant);\n"
         "END\n"
         "$whole$"
-    )
-
-
-def _truncate_function_sql(schema: str) -> str:
-    """the function a table's ``TRUNCATE`` trigger calls: one whole-table note.
-
-    :param schema: the schema holding the ring
-    :ptype schema: str
-    :return: the ``CREATE OR REPLACE FUNCTION`` statement
-    :rtype: str
-    """
-    owner = quote_identifier(schema)
-    return (
-        f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_TRUNCATE_FUNCTION)}() "
-        "RETURNS trigger LANGUAGE plpgsql AS $truncate$\n"
-        "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
-        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(TG_TABLE_NAME, NULL, NULL, NULL);\n"
-        "  RETURN NULL;\n"
-        "END\n"
-        "$truncate$"
     )
 
 
@@ -442,10 +424,17 @@ def trigger_function_body(
     watched = [*keys, *(column for column in columns if column not in keys)]
     old_row = ", ".join(_row_terms("OLD", watched))
     new_row = ", ".join(_row_terms("NEW", watched))
+    # a whole-table note's tenant: the schema, for a schema table; ``_all`` (NULL) for a platform table, whose
+    # truncate or load spans customers
+    whole_tenant = tenant_sql(tenancy, "NEW") if tenancy is not None and tenancy.kind == "schema" else "NULL"
     return (
         "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
+        "  IF TG_OP = 'TRUNCATE' THEN\n"
+        f"    PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(TG_TABLE_NAME, NULL, NULL, {whole_tenant});\n"
+        "    RETURN NULL;\n"
+        "  END IF;\n"
         f"  IF current_setting('{NOTE_WHOLE_SETTING}', true) = '1' THEN\n"
-        f"    PERFORM {owner}.{quote_identifier(_WHOLE_FUNCTION)}(TG_RELID, TG_TABLE_NAME);\n"
+        f"    PERFORM {owner}.{quote_identifier(_WHOLE_FUNCTION)}(TG_RELID, TG_TABLE_NAME, {whole_tenant});\n"
         "    RETURN NULL;\n"
         "  END IF;\n"
         "  IF TG_OP <> 'DELETE' THEN\n"
@@ -513,5 +502,19 @@ def note_trigger_sql(*, notes_schema: str, table_schema: str, table: str) -> tup
         f"CREATE TRIGGER {quote_identifier(NOTE_TRIGGER)} AFTER INSERT OR UPDATE OR DELETE ON {target} "
         f"FOR EACH ROW EXECUTE FUNCTION {function}()",
         f"CREATE TRIGGER {quote_identifier(NOTE_TRUNCATE_TRIGGER)} AFTER TRUNCATE ON {target} "
-        f"FOR EACH STATEMENT EXECUTE FUNCTION {owner}.{quote_identifier(_TRUNCATE_FUNCTION)}()",
+        f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()",
     )
+
+
+def legacy_truncate_trigger_drop_sql(*, table_schema: str, table: str) -> str:
+    """the statement that drops a table's shared ``TRUNCATE`` trigger an earlier install gave it, run before its own is created.
+
+    :param table_schema: the table's schema
+    :ptype table_schema: str
+    :param table: the table
+    :ptype table: str
+    :return: the ``DROP TRIGGER IF EXISTS`` statement
+    :rtype: str
+    """
+    target = f"{quote_identifier(table_schema)}.{quote_identifier(table)}"
+    return f"DROP TRIGGER IF EXISTS {quote_identifier(_LEGACY_TRUNCATE_TRIGGER)} ON {target}"

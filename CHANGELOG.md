@@ -25,6 +25,18 @@ restore and the write-mark reconciler key by it. `build_permissions(epoch_change
 narrows an agent or tool pod's read to its own schema and, per platform table its role reads, its customer and
 `_all`; `None` keeps the whole-log read (the expand step). The collection census reports each class's tenancy.
 
+**Changed (epoch, core):** a pod reads by each table's declared tenancy. `EpochGenerationReader(tenants=...)`
+takes a pod's `PodTenants(schema=..., customer=...)` only (a list is refused): a schema table is read under
+`s-{schema}` alone, a platform table with a tenant column under `v-{customer}` and `_all`, any other under
+`_all`, exactly the keys its grant names. An agent-schema table's whole-table and keys-unknown changes go under
+its schema, never `_all`: `advance_with_change(..., tenant=...)` / `advance_recording(..., tenant=...)` name it,
+the truncate and file-load notes carry it (each table's own trigger function now runs its `TRUNCATE` trigger,
+`threetears_change_note_truncate_table`; the install drops the old shared one), the restore puts whole-table
+notes back per tenant, and the write-mark reconciler advances such a table under each schema holding it when
+the notes cannot say. `tenancy_of_table(table)` answers a table's declaration. A schema-table record that names
+no schema is said and counted (`threetears_epoch_change_schema_record_untenanted_total{table}`).
+`FakeChangeLog.granted_reads` refuses a read outside a test's grant, and `read_keys` lists what was read.
+
 **Added (enforcement, core):** tenancy is declared, never guessed. The collection census fails on any concrete
 collection class with no tenancy declaration (the framework's own and a consumer's, through the shared
 `find_census_problems`), and on `no_tenant` without a reason; every framework class now declares one. At runtime

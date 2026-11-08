@@ -17,9 +17,14 @@ guessed:
 - :func:`no_tenant`: a platform-wide table, with the reason: one ``_all`` key every follower reads.
 
 A class that declares none is :data:`TENANCY_UNDECLARED`: its records go on ``_all``, which is correct
-for every follower but isolates nothing; the collection census lists it. A whole-table change (a
-truncate, a file load) or one whose keys are unknown always goes on ``_all``: it spans tenants, and
-carries no row.
+for every follower but isolates nothing; the collection census fails on it. A whole-table change (a
+truncate, a file load) or one whose keys are unknown carries no row: in an agent schema it belongs to that
+schema alone and goes under its ``s-`` key, named by the writer that knows the schema; on a platform table
+it spans customers and goes on ``_all``.
+
+**A pod reads by each table's declaration** (:class:`PodTenants`): a schema table under its own schema's key
+only, a platform table under its customer's key and ``_all``, so the keys it reads are exactly the keys its
+grant names, with no second table list to drift from the declarations.
 
 **Detection is unchanged.** A follower walks each key it may read after its one mark per table, merged by
 the log's sequence; the token is still the log's global sequence. An interior record of a live log cannot
@@ -40,6 +45,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ALL_TENANTS",
+    "PodTenants",
     "TENANCY_UNDECLARED",
     "TENANT_BY_SCHEMA",
     "Tenancy",
@@ -163,6 +169,41 @@ def value_tenant(value: str) -> str:
     :rtype: str
     """
     return _token("v", value)
+
+
+@dataclass(frozen=True, slots=True)
+class PodTenants:
+    """the tenants an agent or tool pod reads in the change log: the only shape a pod's reader takes.
+
+    Which keys a table is read under follows the table's declared tenancy (:meth:`keys_for`), the same
+    declaration its writer keys the records by and its host builds the pod's grant from.
+
+    :ivar schema: the namespace schema the pod reads as its own (an agent's ``agent_<hex>``; for a tool
+        pod's owner stack, the owning agent's), or ``None`` when it reads no schema table
+    :ivar customer: the customer the pod belongs to, or ``None`` for a pod of no one customer (it reads a
+        platform table's ``_all`` records only)
+    """
+
+    schema: str | None = None
+    customer: str | None = None
+
+    def keys_for(self, tenancy: Tenancy) -> tuple[str, ...]:
+        """the tenants a table of ``tenancy`` is read under.
+
+        :param tenancy: the table's declaration
+        :ptype tenancy: Tenancy
+        :return: the tenant tokens: ``s-{schema}`` for a schema table; ``v-{customer}`` and ``_all`` for a
+            table with a tenant column; ``_all`` for every other
+        :rtype: tuple[str, ...]
+        :raises ValueError: for a schema table, when the pod reads no schema of its own
+        """
+        if tenancy.kind == "schema":
+            if self.schema is None:
+                raise ValueError("a pod that reads no schema of its own reads no schema table's records")
+            return (schema_tenant(self.schema),)
+        if tenancy.kind == "column" and self.customer is not None:
+            return (value_tenant(self.customer), ALL_TENANTS)
+        return (ALL_TENANTS,)
 
 
 def _row_tenant(tenancy: Tenancy, columns: Mapping[str, str | None] | None) -> str | None:

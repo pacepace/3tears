@@ -57,12 +57,14 @@ __all__ = [
     "note_generation_class",
     "primary_key_of_table",
     "note_l2_first_class",
+    "note_tenancy_class",
     "noted_tables",
     "source_reads",
     "split_generation_token",
     "table_named_by_class",
     "tables_with_write_generation",
     "tables_written_l2_first",
+    "tenancy_of_table",
 ]
 
 
@@ -853,6 +855,43 @@ def tables_written_l2_first() -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return frozenset(name for name in map(table_named_by_class, list(_L2_FIRST_CLASSES)) if name is not None)
+
+
+#: every collection class defined in this process that declares a tenancy, appended by
+#: :func:`note_tenancy_class` and read by :func:`tenancy_of_table`.
+_TENANCY_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+
+
+def note_tenancy_class(cls: type) -> None:
+    """record a collection class that declares its table's tenancy.
+
+    :param cls: the collection class
+    :ptype cls: type
+    :return: nothing
+    :rtype: None
+    """
+    _TENANCY_CLASSES.add(cls)
+
+
+def tenancy_of_table(table_name: str) -> Tenancy:
+    """the tenancy the classes defined here declare for ``table_name``.
+
+    What a pod's change-log reader picks a table's keys by (:class:`~threetears.core.tenancy.PodTenants`),
+    and what a writer that knows the schema it wrote in names a rowless change's tenant by: the same
+    declaration the table's records are keyed by.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: the first declaration found; :data:`~threetears.core.tenancy.TENANCY_UNDECLARED` when no class
+        defined here names the table with one
+    :rtype: Tenancy
+    """
+    for cls in list(_TENANCY_CLASSES):
+        if table_named_by_class(cls) == table_name:
+            tenancy = getattr(cls, "tenancy", None)
+            if isinstance(tenancy, Tenancy):
+                return tenancy
+    return TENANCY_UNDECLARED
 
 
 @dataclass(frozen=True, slots=True)

@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
 from threetears.core.tenancy import (
-    ALL_TENANTS,
+    PodTenants,
     epoch_change_filter,
     epoch_change_key,
     split_epoch_change_key,
@@ -60,7 +60,7 @@ from threetears.core.collections.epoch_change import (
     read_epoch_change_body,
     read_logged_epoch_change,
 )
-from threetears.core.collections.generation import split_generation_token
+from threetears.core.collections.generation import split_generation_token, tenancy_of_table
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError, RestoreTooLargeError
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
@@ -109,6 +109,36 @@ def _changes_refused() -> Any:
         "collection_epoch_change_refused_total",
         description="epoch change records the change log refused (full, absent, unreachable) after a committed write",
         label_names=("table",),
+    )
+
+
+#: schema tables whose record with no tenant was already said: one WARNING per table per process
+_UNTENANTED_SAID: set[str] = set()
+
+
+def _note_untenanted(table_name: str) -> None:
+    """say and count a record of an agent-schema table that names no schema: it goes on ``_all``, which no pod
+    reads that table under (:class:`~threetears.core.tenancy.PodTenants`), so its pods miss it.
+
+    :param table_name: the table
+    :ptype table_name: str
+    """
+    if tenancy_of_table(table_name).kind != "schema":
+        return
+    counter(
+        "threetears_epoch_change_schema_record_untenanted_total",
+        description=(
+            "records of an agent-schema table appended with no schema tenant, so on _all, where no pod reads the "
+            "table: its pods miss them. The writer must name the schema (advance_with_change(tenant=...))"
+        ),
+        label_names=("table",),
+    ).labels(table=table_name).inc()
+    if table_name in _UNTENANTED_SAID:
+        return
+    _UNTENANTED_SAID.add(table_name)
+    log.warning(
+        "an agent-schema table's change record names no schema; it goes on _all, where its pods do not read it",
+        extra={"extra_data": {"table": table_name}},
     )
 
 
@@ -217,24 +247,49 @@ def _token(incarnation: str, seq: int) -> str:
 class _ChangeLogReading:
     """what a source and a reader share: reading the change log, never declaring it.
 
-    A reader built with ``tenants`` reads only those tenants' keys and ``_all`` (a pod, whose grant names
-    them); one built without reads every tenant through the wildcard (a platform service). Either way a
-    table's records are merged by the log's sequence, and its generation is the newest of them.
+    A reader built with a pod's :class:`~threetears.core.tenancy.PodTenants` reads each table under the keys
+    its declared tenancy names (:meth:`~threetears.core.tenancy.PodTenants.keys_for`), which are exactly the
+    keys the pod's grant names; one built without reads every tenant through the wildcard (a platform
+    service). Either way a table's records are merged by the log's sequence, and its generation is the
+    newest of them.
     """
 
-    def __init__(self, nats_client: Any, *, tenants: Sequence[str] | None = None) -> None:
+    def __init__(self, nats_client: Any, *, tenants: PodTenants | None = None) -> None:
         """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: a connected client that binds change logs
         :ptype nats_client: Any
-        :param tenants: the tenant tokens this process may read, ``_all`` always among them; ``None``
-            reads every tenant
-        :ptype tenants: Sequence[str] | None
+        :param tenants: the pod's tenants; ``None`` reads every tenant
+        :ptype tenants: PodTenants | None
         :return: nothing
         :rtype: None
+        :raises TypeError: when ``tenants`` is anything but a :class:`~threetears.core.tenancy.PodTenants`
         """
+        if tenants is not None and not isinstance(tenants, PodTenants):
+            raise TypeError(f"a pod's reader takes its PodTenants, never a list of tenants; got {tenants!r}")
         self._nats = nats_client
-        self._tenants = None if tenants is None else tuple(dict.fromkeys((*tenants, ALL_TENANTS)))
+        self._tenants = tenants
+        self._tenants_of: dict[str, tuple[str, ...]] = {}
+
+    def _table_tenants(self, pod: PodTenants, table_name: str) -> tuple[str, ...]:
+        """the tenants this pod reads ``table_name`` under, by the table's declared tenancy.
+
+        :param pod: this reader's tenants
+        :ptype pod: PodTenants
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the tenant tokens
+        :rtype: tuple[str, ...]
+        :raises GenerationUnavailableError: when the table is a schema table and the pod reads no schema
+        """
+        tenants = self._tenants_of.get(table_name)
+        if tenants is None:
+            try:
+                tenants = pod.keys_for(tenancy_of_table(table_name))
+            except ValueError as exc:
+                raise GenerationUnavailableError(f"{table_name!r} cannot be read by this pod: {exc}") from exc
+            self._tenants_of[table_name] = tenants
+        return tenants
 
     def _keys(self, table_name: str) -> tuple[str, ...]:
         """the keys (or the one wildcard filter) this reader reads ``table_name``'s records under.
@@ -243,10 +298,11 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the keys
         :rtype: tuple[str, ...]
+        :raises GenerationUnavailableError: when this pod cannot read the table at all
         """
         if self._tenants is None:
             return (epoch_change_filter(table_name),)
-        return tuple(epoch_change_key(table_name, tenant) for tenant in self._tenants)
+        return tuple(epoch_change_key(table_name, tenant) for tenant in self._table_tenants(self._tenants, table_name))
 
     def _readable(self, table_name: str, key: str) -> bool:
         """whether ``key`` is one of ``table_name``'s record keys this reader may read.
@@ -262,7 +318,7 @@ class _ChangeLogReading:
         mine = split_epoch_change_key(epoch_change_key(table_name, None))
         if split is None or mine is None or split[1] != mine[1]:
             return False
-        return self._tenants is None or split[0] in self._tenants
+        return self._tenants is None or split[0] in self._table_tenants(self._tenants, table_name)
 
     async def _newest(self, table_name: str) -> ChangeLogEntry | None:
         """the newest record of ``table_name`` among the keys this reader reads.
@@ -768,7 +824,12 @@ class EpochGenerationSource(_ChangeLogReading):
         return await self.advance_with_change(table_name, None, keys_unknown=True)
 
     async def advance_with_change(
-        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -784,31 +845,39 @@ class EpochGenerationSource(_ChangeLogReading):
         :param keys_unknown: the writer named no rows and did not change the whole table (a broker
             advancing for a commit that sent no ``changed_rows``); requires ``rows=None``
         :ptype keys_unknown: bool
+        :param tenant: the tenant of the write, from a writer that knows it (a broker, the schema it ran the
+            statement in): a whole-table or keys-unknown record's key, and that of any row naming none.
+            ``None`` puts such a record on ``_all``, as a platform table's must be
+        :ptype tenant: str | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
         :raises ValueError: when ``keys_unknown`` is set with rows, before anything is appended
         """
         check_change_form(rows, keys_unknown=keys_unknown)
-        # each tenant's rows under its own key (whole-table and keys-unknown records under ``_all``)
+        if tenant is not None and rows:
+            rows = [row if row.tenant is not None else row.model_copy(update={"tenant": tenant}) for row in rows]
+        # each tenant's rows under its own key; a rowless record under the write's tenant, else ``_all``
         bodies: list[tuple[str | None, bytes]]
         if rows is None or not rows:
-            bodies = [(None, epoch_change_body(table_name, rows, keys_unknown=keys_unknown))]
+            bodies = [(tenant, epoch_change_body(table_name, rows, keys_unknown=keys_unknown))]
         else:
             bodies = [
                 (tenant, epoch_change_body(table_name, run))
                 for tenant, group in _by_tenant(rows)
                 for run in changed_row_runs(table_name, group)
             ]
+        if any(owner is None for owner, _ in bodies):
+            _note_untenanted(table_name)
         state = self._declared or await self._declare()
         seq = 0
-        for tenant, body in bodies:
+        for owner, body in bodies:
             try:
-                seq = await self._append(table_name, body, tenant)
+                seq = await self._append(table_name, body, owner)
             except KvBucketNotFoundError:
                 state = await self._declare()
                 try:
-                    seq = await self._append(table_name, body, tenant)
+                    seq = await self._append(table_name, body, owner)
                 except KvBucketNotFoundError as exc:
                     raise GenerationUnavailableError(
                         f"the epoch change log vanished as {table_name!r} advanced"
@@ -1044,18 +1113,16 @@ class EpochGenerationReader(_ChangeLogReading):
     with, and "no generation yet" is itself something its mark records.
     """
 
-    def __init__(
-        self, nats_client: Any, *, create_if_missing: bool = False, tenants: Sequence[str] | None = None
-    ) -> None:
+    def __init__(self, nats_client: Any, *, create_if_missing: bool = False, tenants: PodTenants | None = None) -> None:
         """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: connected client able to bind the change log
         :ptype nats_client: Any
         :param create_if_missing: kept for the callers that pass it; a reader never creates the log
         :ptype create_if_missing: bool
-        :param tenants: the tenant tokens this process's grant lets it read (``_all`` always among them);
-            ``None`` reads every tenant, for a platform service
-        :ptype tenants: Sequence[str] | None
+        :param tenants: an agent or tool pod's tenants, each table read under the keys its declared tenancy
+            names; ``None`` reads every tenant, for a platform service
+        :ptype tenants: PodTenants | None
         :return: nothing
         :rtype: None
         """

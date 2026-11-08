@@ -65,6 +65,7 @@ from threetears.core.collections.generation import (
     WriteGenerationDeclaration,
     note_generation_class,
     note_l2_first_class,
+    note_tenancy_class,
     source_reads,
     split_generation_token,
     table_named_by_class,
@@ -842,6 +843,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             note_l2_first_class(cls)
         if isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None:
             note_generation_class(cls)
+        if cls.tenancy.kind != "undeclared":
+            note_tenancy_class(cls)
 
     @classmethod
     def _refuse_unsound_l2_first(cls) -> None:

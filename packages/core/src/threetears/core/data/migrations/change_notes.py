@@ -23,6 +23,7 @@ from threetears.core.ddl.change_notes import (
     NOTE_PUT_FUNCTION,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
+    legacy_truncate_trigger_drop_sql,
     inexact_note_columns,
     note_function_name,
     note_trigger_sql,
@@ -136,6 +137,9 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
                 )
             )
         row, truncate = note_trigger_sql(notes_schema=notes_schema, table_schema=here, table=table)
+        if NOTE_TRUNCATE_TRIGGER in missing:
+            # a table given its triggers before a truncate's note named its tenant ran the shared function
+            await store.execute(legacy_truncate_trigger_drop_sql(table_schema=here, table=table))
         for name, statement in ((NOTE_TRIGGER, row), (NOTE_TRUNCATE_TRIGGER, truncate)):
             if name in missing:
                 await store.execute(statement)

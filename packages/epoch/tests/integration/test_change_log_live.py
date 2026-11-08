@@ -24,7 +24,8 @@ from contextlib import asynccontextmanager
 import pytest
 
 from threetears.core.collections.change_notes import NotedChange
-from threetears.core.tenancy import value_tenant
+from threetears.agent.acl.collections import GroupMemberCollection
+from threetears.core.tenancy import PodTenants, value_tenant
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import RestoreTooLargeError, GenerationUnavailableError, L2LostError
 from threetears.epoch import (
@@ -194,7 +195,9 @@ async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_
         whole = await source.advance_with_change(_TABLE, None)
         newest_a = await source.advance_with_change(_TABLE, [ChangedRow(ids=["a2"], tenant=a)])
 
-        mine = EpochGenerationReader(nc, tenants=[a])
+        # group_members is a platform table with a customer column: a pod reads it under its customer and _all
+        assert GroupMemberCollection.tenancy.kind == "column"
+        mine = EpochGenerationReader(nc, tenants=PodTenants(customer="tenant-a"))
         head = await mine.read(_TABLE)
         assert head == newest_a
         walk = await mine.changes_after(_TABLE, start, head)
@@ -209,7 +212,7 @@ async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_
         walk = await everyone.changes_after(_TABLE, start, newest_a)
         assert len(walk.changes) == 4, "a platform reader reads every tenant through the wildcard"
 
-        theirs = EpochGenerationReader(nc, tenants=[b])
+        theirs = EpochGenerationReader(nc, tenants=PodTenants(customer="tenant-b"))
         assert await theirs.read(_TABLE) == newest_a.rpartition(":")[0] + ":" + whole.rpartition(":")[2], (
             "tenant b's newest is the _all record"
         )

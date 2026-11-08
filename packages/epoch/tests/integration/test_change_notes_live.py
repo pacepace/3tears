@@ -36,18 +36,23 @@ from sqlalchemy import MetaData
 
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
+from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
 from threetears.core.collections.epoch_change import ChangedRow
-from threetears.core.collections.generation import NotedTable
+from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
 from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.change_notes import NOTE_RING_SIZE, note_table
+from threetears.core.ddl.change_notes import (
+    NOTE_RING_SIZE,
+    NOTE_TRUNCATE_TRIGGER,
+    note_function_name,
+    note_table,
+)
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
+from threetears.core.tenancy import TENANT_BY_SCHEMA, PodTenants, schema_tenant, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -60,6 +65,9 @@ from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.errors import KvError
 
 pytestmark = pytest.mark.integration
+
+#: the shared truncate trigger an install before a whole-table note named its tenant gave each table
+_LEGACY_TRUNCATE_TRIGGER = "threetears_change_note_truncate"
 
 #: a fence well beyond any statement these tests run, and short enough for a test to pass several
 _FENCE = timedelta(milliseconds=300)
@@ -799,15 +807,26 @@ class TestANoteCarriesItsTenant:
         state = await source.log_state()
         assert state is not None and state.continues == lost
 
-        async def ids(tenant: str) -> list[str]:
-            reader = EpochGenerationReader(bus, tenants=[tenant])
+        class _Owned(BaseCollection[Any]):
+            """the ring's table, declared so a pod's reader reads it by its owner column."""
+
+            tenancy = tenant_column("owner")
+
+            @property
+            def table_name(self) -> str:
+                return table
+
+        assert tenancy_of_table(table) == _Owned.tenancy
+
+        async def ids(owner: str) -> list[str]:
+            reader = EpochGenerationReader(bus, tenants=PodTenants(customer=owner))
             head = await reader.read(table)
             assert head is not None
             walk = await reader.changes_after(table, f"{restored}:0", head)
             return sorted(row.ids[0] for change in walk.changes for row in change.rows)
 
-        assert await ids(value_tenant("ada")) == ["r1", "r3"], "ada's row and the tenant-less row on _all"
-        assert await ids(value_tenant(long_owner)) == ["r2", "r3"]
+        assert await ids("ada") == ["r1", "r3"], "ada's row and the tenant-less row on _all"
+        assert await ids(long_owner) == ["r2", "r3"]
 
     async def test_a_schema_tenant_is_the_rows_schema(self, ring: tuple[asyncpg.Pool, str, str]) -> None:
         pool, schema, table = ring
@@ -818,3 +837,34 @@ class TestANoteCarriesItsTenant:
         current = (await keeper.ring()).current
         [tenant] = [note["tenant"] for note in await pool.fetch(f"SELECT tenant FROM {schema}.{note_table(current)}")]
         assert tenant == schema_tenant(schema)
+        # a truncate of a schema table belongs to that schema alone: its whole-table note says so
+        await pool.execute(f"TRUNCATE {table}")
+        whole = [
+            note["tenant"]
+            for note in await pool.fetch(f"SELECT tenant FROM {schema}.{note_table(current)} WHERE key_text IS NULL")
+        ]
+        assert whole == [schema_tenant(schema)]
+
+    async def test_an_install_replaces_the_shared_truncate_trigger_with_the_tables_own(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE)
+        await keeper.install()
+        noted = [NotedTable(table=table, keys=("id",), tenancy=TENANT_BY_SCHEMA)]
+        await keeper.install_triggers(noted)
+        # a table given its triggers by an install before a truncate's note named its tenant
+        function = f"{schema}.{note_function_name(schema, table)}"
+        await pool.execute(f"DROP TRIGGER {NOTE_TRUNCATE_TRIGGER} ON {table}")
+        await pool.execute(
+            f"CREATE TRIGGER {_LEGACY_TRUNCATE_TRIGGER} AFTER TRUNCATE ON {table} FOR EACH STATEMENT "
+            f"EXECUTE FUNCTION {function}()"
+        )
+        await keeper.install_triggers(noted)
+        triggers = {
+            str(row["tgname"])
+            for row in await pool.fetch(
+                "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relname = $1", table
+            )
+        }
+        assert NOTE_TRUNCATE_TRIGGER in triggers and _LEGACY_TRUNCATE_TRIGGER not in triggers
