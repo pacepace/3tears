@@ -94,13 +94,32 @@ not separable from noise. During an emptying on Postgres the overlapping saves s
 1 and rose to an 18.8 ms p99 (40 ms max) in run 2 at eight writers: `TRUNCATE` invalidates every session's
 cached plan of the note function, so each replans once.
 
-**YugabyteDB 2026.1.0.0-b118 (local `yugabyted`): not measured to the end.** The YB tserver crashed with
-SIGSEGV during the noted run at eight writers, and a probe with no notes and no triggers at all -- eight
-writers inserting into one table while a loop `TRUNCATE`s another -- crashed it four times in two minutes.
-The crash follows `TRUNCATE` deleting the old tablet under concurrent writes; it is in that YB build, not in
-the note path. The one noted YB row that finished: 1 writer, p50 4.31 ms, p99 11.06 ms against 3.18 / 6.25 ms
-declared; 8 writers declared: 4.09 / 19.16 ms. Re-run on the YB version production runs before relying on
-emptying by `TRUNCATE` there.
+**YugabyteDB 2026.1.0.0-b118 (local `yugabyted`): crashes on `TRUNCATE` under writes.** The tserver
+SIGSEGVed during the noted run at eight writers, and a probe with no notes and no triggers at all -- eight
+writers inserting into one table while a loop `TRUNCATE`s another -- crashed it four times in two minutes. The
+same probe on **2026.1.3.0** ran 84 truncates with no error and no crash. Production must run a YB that passes
+the probe before the keeper empties a note table there.
+
+YugabyteDB 2026.1.3.0 (local `yugabyted`, one node), same machine, two runs:
+
+| run | writers | variant | p50 ms | p99 ms | writes/s | switches | emptied | saves during an emptying | their p99 ms | their max ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | declared | 3.42 | 5.96 | 276 | - | - | - | - | - |
+| 1 | 1 | declared+notes | 4.18 | 9.01 | 222 | 4 | 4 | 151 | 9.01 | 9.83 |
+| 1 | 8 | declared | 6.89 | 13.11 | 1068 | - | - | - | - | - |
+| 1 | 8 | declared+notes | 8.70 | 20.18 | 821 | 4 | 4 | 1275 | 20.51 | 46.34 |
+| 1 | 32 | declared | 23.00 | 79.19 | 1185 | - | - | - | - | - |
+| 1 | 32 | declared+notes | 27.12 | 72.56 | 1018 | 1 | 1 | 4335 | 78.95 | 151.36 |
+| 2 | 8 | declared | 7.00 | 14.63 | 1066 | - | - | - | - | - |
+| 2 | 8 | declared+notes | 9.06 | 17.01 | 817 | 2 | 2 | 2310 | 16.76 | 27.56 |
+| 2 | 32 | declared | 21.47 | 49.55 | 1304 | - | - | - | - | - |
+| 2 | 32 | declared+notes | 26.76 | 77.51 | 1013 | 2 | 2 | 1430 | 58.14 | 83.30 |
+
+On YB the note costs about 0.8 ms p50 at one writer, 2 ms at eight and 4 to 5 ms at 32: it grows with
+writers, unlike on Postgres, and throughput drops 20 to 23 %. Each noted statement makes two extra
+distributed operations, the note insert and the read of the one-row ring table, every writer's read landing
+on that one tablet. The emptying itself does not stand out: the saves that overlapped an emptying had a p99
+at or below the run's.
 
 **These are from before the change log (pre-#1121): the advance was a compare-and-swap on a per-table
 counter key.** That path is gone, so the CAS columns and the conclusion below describe what the change
