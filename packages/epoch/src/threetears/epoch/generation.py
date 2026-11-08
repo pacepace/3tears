@@ -436,7 +436,7 @@ class EpochGenerationReader:
         admits. The first value yielded is the key's latest, so a watcher that starts, or restarts
         after the broker did, needs no separate read; a key that has never been written yields
         nothing until it is. A value that is not a generation is yielded as it is: it compares
-        unequal to every mark, which is what makes a follower drop the table for it.
+        unequal to every mark, which leaves a follower behind on the table.
 
         Close it by stopping iteration.
 

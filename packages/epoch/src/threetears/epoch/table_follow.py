@@ -1,8 +1,8 @@
 """follow tables' write generations, one supervised key watch per table, for as long as a process runs.
 
 A registry that follows a table keeps a mark of the generations it has heard every row of, and
-drops the table -- its rows, its scans, every cache derived from it -- when the epoch bucket shows
-an advance it did not hear (epoch-task-06). :func:`~threetears.epoch.generation_tick.follow_generation_key`
+applies the change record of each advance the epoch bucket shows it did not hear -- evicting exactly
+those rows from its L1, its scans and every cache derived from the table (epoch-task-06). :func:`~threetears.epoch.generation_tick.follow_generation_key`
 is one such watch; it ends when its connection closes and fails when the bucket cannot be reached,
 and a table left followed with no watch has nothing to judge its mark.
 

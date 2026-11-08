@@ -47,7 +47,14 @@ past its `max_bytes` (`discard: new`) and the write that advanced raises `Genera
 
 **Changed (core):** a write whose reach is the whole table (a truncate, a file load, `announce_unheard_writes`, the
 write-mark reconciler) records the whole table as its change, and a follower applies it as a table invalidation,
-because that is the change. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
+because that is the change, and so is a commit whose rows would make a record past
+`EPOCH_CHANGE_MAX_RECORD_BYTES` (256 KiB). Records are built and checked by `epoch_change_record` and
+`read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table reads
+the process's own L2 entries through L3 once, and a table first seen with no generation follows the first
+incarnation minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
+
+**Added (nats):** every principal granted the epoch bucket is granted `{ns}-epoch-changes` with the same
+capability: pods and the registry read it, the hub and the gateway write it.
 
 ## v0.94.0 -- 2026-11-07
 
