@@ -1,0 +1,6 @@
+# epoch-discipline allowlist, rule ttl-safety-net: today's violations, each with the fix that removes it.
+# <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
+# Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
+packages/core/src/threetears/core/collections/base.py :: BaseCollection._save_to_l2 :: put(ttl=) :: 1 :: drop the per-entry L2 lifetime once every write publishes its epoch (epoch PR2, L2-first commit path)
+packages/core/src/threetears/core/coordination/tables.py :: CoordinationRevocationsCollection :: negative_cache_max_age= :: 1 :: evict negative revocation entries from the revocation write's epoch change set instead of an age
+packages/nats/src/threetears/nats/persisted_copy.py :: PersistedCopyBucket._declare_once :: ensure_kv_bucket(ttl=) :: 1 :: the persisted copy is kept by epochs; drop its bucket ttl once its writer announces each change

@@ -8,6 +8,21 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### enforcement: five epoch-discipline gates, each with a list that only shrinks
+
+**Added (enforcement):** `threetears.enforcement.epoch_discipline`, five static gates that hold every collection to
+epochs (an epoch is its change set: the writer names the rows it changed). `whole-drop`: nothing drops, clears or
+reloads a whole table, scope or L1 copy outside the whole-table epoch apply. `l2-swallow`: an `except` catching a
+KV, object-store or JetStream error re-raises or calls `degrade_l2`. `ttl-safety-net`: no `ttl`/`max_age` on a cache
+or bucket stands in for an epoch; an expiry that is the data's own lifetime takes a waiver with its reason.
+`epoch-bypass`: no raw `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/`COPY`, backend bulk write or collection L2 put outside
+the collection write path, a `bypassing_write` block or an `announce_change`. `whole-reread`: no whole-table
+`SELECT` from L3, and no L3 read in a function named for rebuilding, recovering, reloading or warming.
+`epoch_discipline_findings(config, rule)` runs one gate against a repo's per-rule allowlist, each line pinned by
+count and tagged with its fix, and its waiver file: a new site fails, and so does a line whose site shrank or went.
+`epoch_violation_counts(config)` measures a repo before it adopts the gates. 3tears runs all five
+(`tests/enforcement/test_epoch_discipline.py`) with today's violations listed.
+
 ### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
 
 **Added (nats):** `KvFullError` (a bucket's `max_bytes`, or the account's storage limit: JetStream 10077 "maximum

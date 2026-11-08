@@ -1,0 +1,11 @@
+# epoch-discipline allowlist, rule whole-reread: today's violations, each with the fix that removes it.
+# <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
+# Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
+packages/agent/acl/src/threetears/agent/acl/collections.py :: RoleCollection.list_all :: SELECT roles :: 1 :: serve roles from the collection's L1 copy kept by epochs; no whole-table SELECT per call
+packages/core/src/threetears/core/collections/complete_copy.py :: CompleteCopy._warm :: recovery read copy_table :: 1 :: warm from the L2 epoch log (catch up mine+1..head); L3 refills L2 only when L2 lost the records
+packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._rebuild_beside_write :: recovery read _read_scope :: 1 :: retire ScopedSnapshot for keyed collections (11-08 direction); a lost chunk refetches that chunk, never the scope
+packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._rebuild_scopes :: recovery read _read_and_publish :: 1 :: retire ScopedSnapshot for keyed collections (11-08 direction); a lost chunk refetches that chunk, never the scope
+packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._retained_whole :: recovery read _read_table :: 2 :: retire ScopedSnapshot for keyed collections (11-08 direction); a lost chunk refetches that chunk, never the scope
+packages/core/src/threetears/core/collections/shared_snapshot.py :: _scopes :: SELECT {} :: 1 :: list scopes from the epoch change log's scope index instead of a whole-table SELECT
+packages/mcp/src/threetears/mcp/rbac.py :: McpToolGrantCollection.load_all_grants :: SELECT mcp_tool_grants :: 1 :: serve grants from McpToolGrantCollection keyed reads, kept current by epochs, not a whole reload
+packages/mcp/src/threetears/mcp/rbac.py :: McpToolGrantCollection.load_all_grants :: recovery read fetch :: 1 :: serve grants from McpToolGrantCollection keyed reads, kept current by epochs, not a whole reload
