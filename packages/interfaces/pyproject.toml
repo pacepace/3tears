@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-interfaces"
-version = "0.94.0"
+version = "0.95.0"
 description = "Dependency-free Protocols and shared vocabulary for the 3tears family"
 readme = "README.md"
 requires-python = ">=3.14"
