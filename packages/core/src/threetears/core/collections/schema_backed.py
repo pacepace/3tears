@@ -73,6 +73,7 @@ from threetears.core.backends.schema_sql import (
 )
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
@@ -873,6 +874,9 @@ class TableSchema:
     # the one declaration: the migration package that creates the table renders the trigger from it,
     # and the collection class reads its switch from it.
     write_generation: WriteGenerationDeclaration = WRITE_GENERATION_UNDECLARED
+    # which tenant the table's change records belong to (threetears.core.tenancy); the
+    # collection class reads it from here, as it reads write_generation
+    tenancy: Tenancy = TENANCY_UNDECLARED
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)

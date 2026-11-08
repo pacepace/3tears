@@ -18,11 +18,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from contextlib import aclosing
 from contextlib import asynccontextmanager
 
 import pytest
 
 from threetears.core.collections.change_notes import NotedChange
+from threetears.core.tenancy import value_tenant
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import RestoreTooLargeError, GenerationUnavailableError, L2LostError
 from threetears.epoch import (
@@ -180,3 +182,37 @@ async def test_a_full_log_refuses_and_its_fill_is_measured(nats_container: str) 
                 await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"row-{index}" * 4])])
         fill = await source.observe_change_log_fill()
         assert fill is not None and fill > 0.8
+
+
+async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_container: str) -> None:
+    async with _client(nats_container) as nc:
+        source = EpochGenerationSource(nc)
+        start = await source.current(_TABLE)
+        a, b = value_tenant("tenant-a"), value_tenant("tenant-b")
+        await source.advance_with_change(_TABLE, [ChangedRow(ids=["a1"], tenant=a)])
+        await source.advance_with_change(_TABLE, [ChangedRow(ids=["b1"], tenant=b)])
+        whole = await source.advance_with_change(_TABLE, None)
+        newest_a = await source.advance_with_change(_TABLE, [ChangedRow(ids=["a2"], tenant=a)])
+
+        mine = EpochGenerationReader(nc, tenants=[a])
+        head = await mine.read(_TABLE)
+        assert head == newest_a
+        walk = await mine.changes_after(_TABLE, start, head)
+        assert walk.complete
+        assert [(c.whole_table, [r.ids[0] for r in c.rows]) for c in walk.changes] == [
+            (False, ["a1"]),
+            (True, []),
+            (False, ["a2"]),
+        ], "its own records and _all's, through filtered consumers; never tenant b's"
+
+        everyone = EpochGenerationReader(nc)
+        walk = await everyone.changes_after(_TABLE, start, newest_a)
+        assert len(walk.changes) == 4, "a platform reader reads every tenant through the wildcard"
+
+        theirs = EpochGenerationReader(nc, tenants=[b])
+        assert await theirs.read(_TABLE) == newest_a.rpartition(":")[0] + ":" + whole.rpartition(":")[2], (
+            "tenant b's newest is the _all record"
+        )
+        async with aclosing(mine.watch(_TABLE)) as tokens:
+            first = await asyncio.wait_for(anext(tokens), timeout=10)
+            assert first in {newest_a, whole}

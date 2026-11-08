@@ -265,11 +265,14 @@ class NotedChange:
     :ivar rows: each distinct row its notes name, with the invalidation columns they carry
     :ivar whole_table: a note of the whole table (a truncate, a file load) is among them; :attr:`rows`
         is then empty, since the whole-table record covers every row
+    :ivar tenant: the tenant the rows belong to (:mod:`threetears.core.tenancy`), whose key the
+        record is restored under; ``None`` for ``_all``
     """
 
     table: str
     rows: tuple[ChangedRow, ...] = ()
     whole_table: bool = False
+    tenant: str | None = None
 
 
 @runtime_checkable
@@ -763,11 +766,14 @@ class ChangeNoteKeeper:
         work: list[_Install] = []
         for schema, table in present:
             each = noted[table]
-            refused = inexact_note_columns(types.get((schema, table), {}), (*each.keys, *each.columns))
+            tenant_columns = (each.tenancy.column,) if each.tenancy.column else ()
+            refused = inexact_note_columns(types.get((schema, table), {}), (*each.keys, *each.columns, *tenant_columns))
             if refused:
                 self._refuse(schema, table, refused)
                 continue
-            wanted = trigger_function_body(notes_schema=self._schema, keys=each.keys, columns=each.columns)
+            wanted = trigger_function_body(
+                notes_schema=self._schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
+            )
             stale = bodies.get(note_function_name(schema, table)) != wanted
             missing = tuple(
                 name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (schema, table, name) not in triggers
@@ -819,6 +825,7 @@ class ChangeNoteKeeper:
                     table=each.table,
                     keys=each.keys,
                     columns=each.columns,
+                    tenancy=each.tenancy,
                 )
             )
         row, truncate = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
@@ -1268,7 +1275,7 @@ class ChangeNoteKeeper:
         :return: a parenthesized ``UNION ALL``
         :rtype: str
         """
-        columns = "table_name, key_text, keys, columns, noted_at"
+        columns = "table_name, key_text, keys, columns, tenant, noted_at"
         return (
             f"(SELECT {columns} FROM {self._ring_table(ring.current)} "  # noqa: S608 - trusted identifiers
             f"UNION ALL SELECT {columns} FROM {self._ring_table(ring.previous)})"
@@ -1520,43 +1527,53 @@ class _StreamedChanges:
             )
             for noted in whole:
                 self.tables += 1
+                # a whole-table change spans tenants: it goes on _all, carrying no row
                 yield NotedChange(table=noted, whole_table=True)
             cursor = conn.cursor(
-                f"SELECT DISTINCT table_name, key_text, keys, columns FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
+                f"SELECT DISTINCT table_name, tenant, key_text, keys, columns FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
                 "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
-                "AND NOT (n.table_name = ANY($2::text[])) ORDER BY table_name",
+                "AND NOT (n.table_name = ANY($2::text[])) ORDER BY table_name, tenant",
                 self._since,
                 whole,
                 prefetch=_RESTORE_PAGE,
             )
-            table: str | None = None
+            group: tuple[str, str | None] | None = None
             rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None] = {}
             async for note in cursor:
                 name = str(note["table_name"])
-                if table is not None and (name != table or len(rows) >= _RESTORE_CHUNK_ROWS):
-                    yield _change(table, rows)
+                tenant = None if note["tenant"] is None else str(note["tenant"])
+                if group is not None and (group != (name, tenant) or len(rows) >= _RESTORE_CHUNK_ROWS):
+                    yield _change(group[0], rows, group[1])
                     rows = {}
-                if name != table:
+                if group is None or group[0] != name:
                     self.tables += 1
-                    table = name
+                group = (name, tenant)
                 rows[(tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]))] = None
-            if table is not None and rows:
-                yield _change(table, rows)
+            if group is not None and rows:
+                yield _change(group[0], rows, group[1])
 
 
-def _change(table: str, rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None]) -> NotedChange:
-    """one table's folded rows as a change.
+def _change(
+    table: str, rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None], tenant: str | None
+) -> NotedChange:
+    """one table's folded rows of one tenant as a change.
 
     :param table: the table
     :ptype table: str
     :param rows: each distinct row: its keys and its invalidation columns
     :ptype rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None]
+    :param tenant: the rows' tenant, ``None`` for ``_all``
+    :ptype tenant: str | None
     :return: the change
     :rtype: NotedChange
     """
     return NotedChange(
         table=table,
-        rows=tuple(ChangedRow(ids=list(ids), columns=dict(columns) if columns else None) for ids, columns in rows),
+        tenant=tenant,
+        rows=tuple(
+            ChangedRow(ids=list(ids), columns=dict(columns) if columns else None, tenant=tenant)
+            for ids, columns in rows
+        ),
     )
 
 
@@ -1614,12 +1631,12 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     current = int(ring["current_ring"])
     tables = (current, (current - 1) % NOTE_RING_SIZE)
     coverage = " UNION ALL ".join(
-        f"SELECT keys, columns, key_text FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
+        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
         "WHERE table_name = $1 AND noted_at >= $2"
         for index in tables
     )
     notes = await pool.fetch(
-        f"SELECT DISTINCT key_text, keys, columns FROM ({coverage}) n LIMIT $3", table, reach, cap + 1
+        f"SELECT DISTINCT key_text, keys, columns, tenant FROM ({coverage}) n LIMIT $3", table, reach, cap + 1
     )
     if not notes:
         return "no_notes"
@@ -1627,8 +1644,17 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
         return NotedRows(whole_table=True)
     if len(notes) > cap:
         return "too_many_rows"
-    rows = {(tuple(str(key) for key in note["keys"]), _columns_of(note["columns"])): None for note in notes}
-    return NotedRows(rows=tuple(ChangedRow(ids=list(ids), columns=dict(cols) if cols else None) for ids, cols in rows))
+    rows = {
+        (tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]), note["tenant"]): None for note in notes
+    }
+    return NotedRows(
+        rows=tuple(
+            ChangedRow(
+                ids=list(ids), columns=dict(cols) if cols else None, tenant=None if tenant is None else str(tenant)
+            )
+            for ids, cols, tenant in rows
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)

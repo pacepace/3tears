@@ -139,6 +139,26 @@ def _declaration(cls: type) -> tuple[str, str | None]:
     return "invalid", None
 
 
+def _tenancy_of(cls: type) -> dict[str, str | None]:
+    """which tenant a class's change records belong to, as the census reports it.
+
+    ``tenancy`` is ``schema``, ``column`` (with ``tenant_column``), ``none`` (with ``tenancy_reason``) or
+    ``undeclared``: a table whose records go on the change log's ``_all`` key, isolating nothing.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :return: ``tenancy``, ``tenant_column`` and ``tenancy_reason``
+    :rtype: dict[str, str | None]
+    """
+    declared = getattr(cls, "tenancy", None)
+    kind = getattr(declared, "kind", None)
+    return {
+        "tenancy": kind if isinstance(kind, str) else "invalid",
+        "tenant_column": getattr(declared, "column", None),
+        "tenancy_reason": getattr(declared, "reason", None),
+    }
+
+
 def _defined_by(cls: type, name: str) -> type:
     """the class in ``cls``'s MRO whose body defines ``name``.
 
@@ -242,6 +262,7 @@ def census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
                 ),
                 "framework": cls.__module__ not in modules,
                 "transaction_read_gap": _transaction_read_gap(cls),
+                **_tenancy_of(cls),
             }
         )
     return {

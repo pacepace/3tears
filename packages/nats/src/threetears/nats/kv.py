@@ -2463,6 +2463,7 @@ class NatsKvBucket:
         key: str,
         heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
         retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+        token_wildcards: bool = False,
     ) -> AsyncGenerator[KvKeyUpdate]:
         """the key's latest message, then every later one, until the caller stops iterating.
 
@@ -2502,7 +2503,8 @@ class NatsKvBucket:
             when five consumers in a row (:data:`_KEY_WATCH_MAX_UNSEQUENCED`) each ended on a message
             whose stream sequence could not be read -- each replacement waits ``retry`` first
         """
-        if not key or any(char in _KEY_WATCH_FORBIDDEN for char in key):
+        forbidden = _KEY_WATCH_FORBIDDEN - {"*"} if token_wildcards else _KEY_WATCH_FORBIDDEN
+        if not key or any(char in forbidden for char in key):
             raise ValueError(f"watch_key needs one literal key, got {key!r}")
         subject = f"$KV.{self._full_name}.{key}"
         stream = kv_stream_name(self._full_name)
@@ -2925,6 +2927,7 @@ class _KeyWatchConsumer:
         retry: timedelta,
         op_timeout_seconds: float,
         absence: _StreamAbsence,
+        start_seq: int | None = None,
     ) -> _KeyWatchConsumer | None:
         """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
 
@@ -2950,6 +2953,9 @@ class _KeyWatchConsumer:
         :ptype op_timeout_seconds: float
         :param absence: the watch's record of its bucket being absent, kept across its creates
         :ptype absence: _StreamAbsence
+        :param start_seq: deliver every message from this stream sequence on, instead of each subject's
+            latest; for a bounded read of a key's records after a mark
+        :ptype start_seq: int | None
         :return: the consumer, or ``None`` when it could not be created
         :rtype: _KeyWatchConsumer | None
         :raises KvError: when the NATS connection is closed
@@ -2965,7 +2971,8 @@ class _KeyWatchConsumer:
             name=name,
             deliver_subject=inbox,
             filter_subject=subject,
-            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT if start_seq is None else DeliverPolicy.BY_START_SEQUENCE,
+            opt_start_seq=start_seq,
             ack_policy=AckPolicy.NONE,
             idle_heartbeat=heartbeat.total_seconds(),
             inactive_threshold=_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS,
@@ -3817,6 +3824,61 @@ class NatsChangeLog:
         """
         bucket = await self._client.kv_bucket(name=self._name, ttl=None, create_if_missing=False)
         # sender-posture: own-consumer -- a record counts only through the KV key watch, which takes an update only with its own consumer's ack reply
-        async with aclosing(bucket.watch_key(key=key)) as updates:
+        async with aclosing(bucket.watch_key(key=key, token_wildcards="*" in key)) as updates:
             async for update in updates:
                 yield update
+
+    async def records_after(self, key: str, seq: int, upto: int) -> list[ChangeLogEntry]:
+        """every record under ``key`` (a key, or a filter with ``*`` tokens) after ``seq`` and up to ``upto``.
+
+        Read through a NAMED push consumer whose filter rides in its create subject, delivering from
+        ``seq + 1``: the one read shape a grant narrowed to some keys admits (a message get by sequence
+        names its subject only in the request body, where no grant can narrow it). Bounded: it stops at the
+        last message the consumer held when created, or at ``upto``.
+
+        :param key: the key or filter
+        :ptype key: str
+        :param seq: the sequence to read past
+        :ptype seq: int
+        :param upto: the last sequence wanted
+        :ptype upto: int
+        :return: the records, in sequence order
+        :rtype: list[ChangeLogEntry]
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the records cannot be read
+        """
+        if upto <= seq:
+            return []
+        subject = self._subject(key)
+        absence = _StreamAbsence(subject=subject, stream=self._stream)
+        consumer = await _KeyWatchConsumer.open(
+            client=self._client,
+            stream=self._stream,
+            subject=subject,
+            heartbeat=DEFAULT_KEY_WATCH_HEARTBEAT,
+            retry=DEFAULT_KEY_WATCH_RETRY,
+            op_timeout_seconds=_CHANGE_LOG_OP_TIMEOUT_SECONDS,
+            absence=absence,
+            start_seq=seq + 1,
+        )
+        if consumer is None:
+            if await self.state() is None:
+                raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket)
+            raise KvError(f"change log {self._stream} records after {seq} on {key} could not be read")
+        records: list[ChangeLogEntry] = []
+        try:
+            wanted = consumer.pending
+            if wanted:
+                prefix = f"$KV.{self._bucket}."
+                async with aclosing(consumer.updates(key=None, key_prefix=prefix)) as updates:
+                    async for update in updates:
+                        if update.revision > upto:
+                            break
+                        records.append(ChangeLogEntry(seq=update.revision, key=update.key, value=update.value or b""))
+                        if len(records) >= wanted:
+                            break
+                if len(records) < wanted and (not records or records[-1].seq < upto):
+                    raise KvError(f"change log {self._stream}: the read of {key} after {seq} ended early")
+        finally:
+            await consumer.close()
+        return records

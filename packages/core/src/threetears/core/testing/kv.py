@@ -450,6 +450,7 @@ class FakeKvBucket:
         key: str,
         heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
         retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+        token_wildcards: bool = False,
     ) -> AsyncGenerator[KvKeyUpdate]:
         """the key's latest message, then every later write or delete of it, until iteration stops.
 
@@ -467,7 +468,7 @@ class FakeKvBucket:
         :rtype: AsyncGenerator[KvKeyUpdate]
         :raises ValueError: when ``key`` is empty or not literal, as the real watch refuses it
         """
-        del heartbeat, retry
+        del heartbeat, retry, token_wildcards
         if not key or any(char in "*> \t\r\n" for char in key):
             raise ValueError(f"watch_key needs one literal key, got {key!r}")
         await self._arrive()
@@ -855,6 +856,25 @@ class FakeKvBucket:
         return self._write(key, value, ttl)
 
 
+def _subject_matches(pattern: str, key: str) -> bool:
+    """whether ``key`` matches the subject filter ``pattern``, as the broker matches: ``*`` one token, ``>`` the rest.
+
+    :param pattern: the filter, or a literal key
+    :ptype pattern: str
+    :param key: the key
+    :ptype key: str
+    :return: whether it matches
+    :rtype: bool
+    """
+    wanted, given = pattern.split("."), key.split(".")
+    for index, token in enumerate(wanted):
+        if token == ">":
+            return len(given) > index
+        if index >= len(given) or (token != "*" and token != given[index]):
+            return False
+    return len(given) == len(wanted)
+
+
 # parity-with: threetears.nats.kv.NatsChangeLog
 class FakeChangeLog:
     """in-memory stand-in for :class:`threetears.nats.NatsChangeLog`: one stream, every key's history kept.
@@ -1035,8 +1055,10 @@ class FakeChangeLog:
         self._entries.append(ChangeLogEntry(seq=seq, key=key, value=value))
         self._bytes += size
         self._seen_ids[msg_id] = seq
-        for queue in self._watchers.get(key, []):
-            queue.put_nowait(KvKeyUpdate(key=key, value=value, revision=seq))
+        for watched, queues in self._watchers.items():
+            if _subject_matches(watched, key):
+                for queue in queues:
+                    queue.put_nowait(KvKeyUpdate(key=key, value=value, revision=seq))
         await _YieldOnce()
         return seq
 
@@ -1049,7 +1071,7 @@ class FakeChangeLog:
         :rtype: ChangeLogEntry | None
         """
         self._present_or_raise()
-        return next((entry for entry in reversed(self._entries) if entry.key == key), None)
+        return next((entry for entry in reversed(self._entries) if _subject_matches(key, entry.key)), None)
 
     async def at(self, seq: int) -> ChangeLogEntry | None:
         """the record at ``seq``.
@@ -1073,7 +1095,22 @@ class FakeChangeLog:
         :rtype: ChangeLogEntry | None
         """
         self._present_or_raise()
-        return next((entry for entry in self._entries if entry.key == key and entry.seq > seq), None)
+        return next((entry for entry in self._entries if _subject_matches(key, entry.key) and entry.seq > seq), None)
+
+    async def records_after(self, key: str, seq: int, upto: int) -> list[ChangeLogEntry]:
+        """every record under ``key`` (or a filter) after ``seq`` and up to ``upto``.
+
+        :param key: the key or filter
+        :ptype key: str
+        :param seq: the sequence to read past
+        :ptype seq: int
+        :param upto: the last sequence wanted
+        :ptype upto: int
+        :return: the records, in order
+        :rtype: list[ChangeLogEntry]
+        """
+        self._present_or_raise()
+        return [entry for entry in self._entries if seq < entry.seq <= upto and _subject_matches(key, entry.key)]
 
     def _present_or_raise(self) -> None:
         """raise as the real log does when it is absent or unreachable.

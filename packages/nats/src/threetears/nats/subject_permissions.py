@@ -76,6 +76,7 @@ __all__ = [
     "TOOL_POD_POINTERS_BUCKET_SUFFIX",
     "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
+    "EpochChangeGrant",
     "AgentTableGrant",
     "JsCapability",
     "JsResource",
@@ -877,6 +878,78 @@ class AgentBucketGrant:
         return coordination_bucket_name(self.owner_scope, self.suffix, ns=ns)
 
 
+@dataclass(frozen=True, slots=True)
+class EpochChangeGrant:
+    """one tenant's change records a pod may read in ``{ns}-epoch-changes``: its own schema's, or one table's.
+
+    The change log keys every record ``{tenant}.{table}.e`` (:mod:`threetears.core.tenancy`). A pod reads
+    the records of its OWN agent schema whole (every table in it is its own), and, for each platform table
+    its role already reads, that table's records of its customer and of ``_all``: never a customer's or
+    ``_all``'s whole prefix, which would name platform tables the role cannot read. The host derives the
+    tables from the same source that grants the role its reads of those tables' rows.
+
+    :param tenant: the tenant token (``threetears.core.tenancy.schema_tenant`` /
+        ``value_tenant`` / ``ALL_TENANTS``); one subject token
+    :ptype tenant: str
+    :param table: the one table covered; ``None`` for every table of the tenant, which only an agent's own
+        schema tenant (``s-...``) may be granted
+    :ptype table: str | None
+    """
+
+    tenant: str
+    table: str | None = None
+
+    def __post_init__(self) -> None:
+        """refuse a tenant or table that is not one subject token, and a whole prefix that is not a schema's.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: on a malformed token, or ``table=None`` for a tenant that is not a schema
+        """
+        if not KV_KEY_SCOPE_GRAMMAR.match(self.tenant):
+            raise ValueError(f"an epoch change grant's tenant is one subject token; got {self.tenant!r}")
+        if self.table is None and not self.tenant.startswith("s-"):
+            raise ValueError(
+                f"only an agent's own schema tenant is granted whole; {self.tenant!r} is granted table by table, "
+                "for the tables the role already reads"
+            )
+        if self.table is not None and not KV_KEY_SCOPE_GRAMMAR.match(self.table):
+            raise ValueError(f"an epoch change grant's table is one subject token; got {self.table!r}")
+
+
+def _epoch_change_resources(ns: str, grants: Sequence[EpochChangeGrant] | None) -> tuple[JsResource, ...]:
+    """the change-log grants of one pod: each tenant's keys it may read, never the whole log.
+
+    ``None`` keeps the pre-tenant grant of the whole log, READ ONLY, for a host that does not yet name its
+    pods' tenants (an expand step: a host on this release names them).
+
+    :param ns: the subject namespace prefix
+    :ptype ns: str
+    :param grants: the pod's tenants and tables, or ``None``
+    :ptype grants: Sequence[EpochChangeGrant] | None
+    :return: the resources
+    :rtype: tuple[JsResource, ...]
+    """
+    bucket = f"{ns}-epoch-changes"
+    if grants is None:
+        return (JsResource.kv_bucket_keys(bucket, writable=False),)
+    resources: list[JsResource] = []
+    for grant in dict.fromkeys(grants):
+        if grant.table is None:
+            # the agent's own schema: every table in it is its own; reads and named consumers on {tenant}.>
+            resources.append(JsResource.kv_owner_keys(bucket, scope=grant.tenant, writable=False))
+            continue
+        # one table: its newest record by the direct get on {tenant}.{table}.>, and its walk and watch by a
+        # named consumer filtered on exactly its key, {tenant}.{table}.e (threetears.core.tenancy.epoch_change_key)
+        resources.append(JsResource.kv_table(bucket, scope=grant.tenant, table=grant.table, writable=False))
+        resources.append(
+            JsResource.stream_consumer(
+                kv_stream_name(bucket), filter_subject=f"$KV.{bucket}.{grant.tenant}.{grant.table}.e"
+            )
+        )
+    return tuple(resources)
+
+
 def kv_bucket_names(permissions: PrincipalPermissions) -> tuple[str, ...]:
     """the KV bucket names one principal declares, in declaration order.
 
@@ -1270,6 +1343,7 @@ def build_permissions(
     agent_table_grants: Sequence[AgentTableGrant] | None = None,
     agent_bucket_grants: Sequence[AgentBucketGrant] | None = None,
     object_store: bool = False,
+    epoch_change_grants: Sequence[EpochChangeGrant] | None = None,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
 
@@ -1322,6 +1396,12 @@ def build_permissions(
         pointer bucket and the two hub requests that declare and retire them. Only a
         :attr:`Principal.TOOL_POD` may hold it.
     :ptype object_store: bool
+    :param epoch_change_grants: the tenants (and, for a platform table, the tables) of the epoch change log
+        an agent or tool pod may read (:class:`EpochChangeGrant`): its own schema whole, and each platform
+        table it already reads for its customer and for ``_all``. ``None`` keeps the whole log readable, for a
+        host that does not yet name them. Ignored for every other principal: the platform services read
+        every tenant
+    :ptype epoch_change_grants: Sequence[EpochChangeGrant] | None
     :return: the resolved permissions
     :rtype: PrincipalPermissions
     :raises ValueError: when ``object_store`` is asked for another principal, when a required id for the principal is missing, when a declared
@@ -1342,7 +1422,26 @@ def build_permissions(
     )
     if object_store:
         permissions = _with_object_store(permissions, pod_id=_require(pod_id, name="pod_id", principal=principal))
+    if epoch_change_grants is not None and principal in (Principal.AGENT_POD, Principal.TOOL_POD):
+        permissions = _with_epoch_change_grants(permissions, epoch_change_grants)
     return permissions
+
+
+def _with_epoch_change_grants(
+    permissions: PrincipalPermissions, grants: Sequence[EpochChangeGrant]
+) -> PrincipalPermissions:
+    """``permissions`` with its whole-log read of the epoch change log replaced by its tenants' keys.
+
+    :param permissions: a pod's resolved permissions
+    :ptype permissions: PrincipalPermissions
+    :param grants: the pod's tenants and tables
+    :ptype grants: Sequence[EpochChangeGrant]
+    :return: the permissions
+    :rtype: PrincipalPermissions
+    """
+    bucket = f"{_ns()}-epoch-changes"
+    kept = tuple(resource for resource in permissions.js_resources if resource.name != bucket)
+    return dataclasses.replace(permissions, js_resources=(*kept, *_epoch_change_resources(_ns(), grants)))
 
 
 def _with_object_store(permissions: PrincipalPermissions, *, pod_id: str) -> PrincipalPermissions:
@@ -1744,7 +1843,8 @@ def _agent_pod(
             # fleet sequences its caches by. No platform pod process opens it today; the grant is
             # the read a pod-side listener's catch-up needs, and nothing more.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
-            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone. The
+            # whole log until the host names the pod's tenants (``build_permissions(epoch_change_grants=...)``)
             JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the agent-config HOT CACHE. The hub's ``agents`` table is the source of an agent's config and
             # the hub fills this bucket from it; the pod reads and watches its OWN key and writes
@@ -2045,7 +2145,8 @@ def _tool_pod(
             # today: ``KV_KEY_READ`` names one key that is one subject token, and a generation key
             # is four; and its read is the direct get, which this bucket is not declared for.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
-            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone. The
+            # whole log until the host names the pod's tenants (``build_permissions(epoch_change_grants=...)``)
             JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
             # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
@@ -2148,7 +2249,8 @@ def _registry(
             # advances every generation. The whole bucket, for the reason the tool pod's grant
             # gives: nothing narrower can name a four-token key.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
-            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone. The
+            # whole log until the host names the pod's tenants (``build_permissions(epoch_change_grants=...)``)
             JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
             # publishes each agent's reply, so it needs the JetStream control-plane grant for this

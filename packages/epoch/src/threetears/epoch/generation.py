@@ -42,6 +42,12 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
+from threetears.core.tenancy import (
+    ALL_TENANTS,
+    epoch_change_filter,
+    epoch_change_key,
+    split_epoch_change_key,
+)
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
@@ -58,12 +64,10 @@ from threetears.core.collections.generation import split_generation_token
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError, RestoreTooLargeError
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
-from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 from uuid_utils import uuid7
 
-from threetears.epoch.client import _key_for
 
 if TYPE_CHECKING:
     from threetears.nats.kv_watch import KvKeyUpdate
@@ -141,17 +145,20 @@ class EpochChangeRetention:
 _DEFAULT_EPOCH_CHANGE_RETENTION: Final = EpochChangeRetention()
 
 
-def generation_kv_key(table_name: str) -> str:
-    """the key under which ``table_name``'s epochs are appended: the table's subject in the epoch family.
+def generation_kv_key(table_name: str, tenant: str | None = None) -> str:
+    """the key under which ``table_name``'s epochs for ``tenant`` are appended: ``{tenant}.{table}.e``.
 
-    The one derivation the source, the reader and a grant for either use.
+    The one derivation the source, the reader and a grant for either use
+    (:func:`threetears.core.tenancy.epoch_change_key`).
 
     :param table_name: the collection's table
     :ptype table_name: str
+    :param tenant: the tenant token; ``None`` for ``_all``
+    :ptype tenant: str | None
     :return: the key
     :rtype: str
     """
-    return _key_for(Subjects.collection_generation_epoch(table_name))
+    return epoch_change_key(table_name, tenant)
 
 
 @runtime_checkable
@@ -182,6 +189,8 @@ class _ChangeLogLike(Protocol):
 
     async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None: ...
 
+    async def records_after(self, key: str, seq: int, upto: int) -> list[ChangeLogEntry]: ...
+
     def watch(self, key: str) -> AsyncGenerator[KvKeyUpdate]: ...
 
 
@@ -206,17 +215,84 @@ def _token(incarnation: str, seq: int) -> str:
 
 
 class _ChangeLogReading:
-    """what a source and a reader share: reading the change log, never declaring it."""
+    """what a source and a reader share: reading the change log, never declaring it.
 
-    def __init__(self, nats_client: Any) -> None:
-        """capture the client; no I/O.
+    A reader built with ``tenants`` reads only those tenants' keys and ``_all`` (a pod, whose grant names
+    them); one built without reads every tenant through the wildcard (a platform service). Either way a
+    table's records are merged by the log's sequence, and its generation is the newest of them.
+    """
+
+    def __init__(self, nats_client: Any, *, tenants: Sequence[str] | None = None) -> None:
+        """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: a connected client that binds change logs
         :ptype nats_client: Any
+        :param tenants: the tenant tokens this process may read, ``_all`` always among them; ``None``
+            reads every tenant
+        :ptype tenants: Sequence[str] | None
         :return: nothing
         :rtype: None
         """
         self._nats = nats_client
+        self._tenants = None if tenants is None else tuple(dict.fromkeys((*tenants, ALL_TENANTS)))
+
+    def _keys(self, table_name: str) -> tuple[str, ...]:
+        """the keys (or the one wildcard filter) this reader reads ``table_name``'s records under.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the keys
+        :rtype: tuple[str, ...]
+        """
+        if self._tenants is None:
+            return (epoch_change_filter(table_name),)
+        return tuple(epoch_change_key(table_name, tenant) for tenant in self._tenants)
+
+    def _readable(self, table_name: str, key: str) -> bool:
+        """whether ``key`` is one of ``table_name``'s record keys this reader may read.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param key: a record's key
+        :ptype key: str
+        :return: whether it is
+        :rtype: bool
+        """
+        split = split_epoch_change_key(key)
+        mine = split_epoch_change_key(epoch_change_key(table_name, None))
+        if split is None or mine is None or split[1] != mine[1]:
+            return False
+        return self._tenants is None or split[0] in self._tenants
+
+    async def _newest(self, table_name: str) -> ChangeLogEntry | None:
+        """the newest record of ``table_name`` among the keys this reader reads.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the record, or ``None`` when it has none
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the log is absent
+        :raises KvError: when the log cannot be read
+        """
+        entries = await asyncio.gather(*(self._log().last(key) for key in self._keys(table_name)))
+        held = [entry for entry in entries if entry is not None]
+        return max(held, key=lambda entry: entry.seq) if held else None
+
+    async def _next(self, table_name: str, seq: int) -> ChangeLogEntry | None:
+        """the first record of ``table_name`` after ``seq`` among the keys this reader reads.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param seq: the sequence to look past
+        :ptype seq: int
+        :return: the record, or ``None``
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the log is absent
+        :raises KvError: when the log cannot be read
+        """
+        entries = await asyncio.gather(*(self._log().next_after(key, seq) for key in self._keys(table_name)))
+        held = [entry for entry in entries if entry is not None]
+        return min(held, key=lambda entry: entry.seq) if held else None
 
     def _log(self) -> _ChangeLogLike:
         """the change log, bound through the client.
@@ -277,7 +353,7 @@ class _ChangeLogReading:
         if state is None or not tables:
             return state, {}
         try:
-            newest = await asyncio.gather(*(self._log().last(generation_kv_key(table)) for table in tables))
+            newest = await asyncio.gather(*(self._newest(table) for table in tables))
         except KvBucketNotFoundError:
             # NOSILENT: the log went between the reads: as absent as before the first
             return None, {}
@@ -301,7 +377,7 @@ class _ChangeLogReading:
         if state is None:
             return None
         try:
-            newest = await self._log().last(generation_kv_key(table_name))
+            newest = await self._newest(table_name)
         except KvBucketNotFoundError:
             # NOSILENT: the log went between the two reads: as absent as before the first
             return None
@@ -337,9 +413,9 @@ class _ChangeLogReading:
             ) from exc
         if entry is None:
             return None
-        if entry.key != generation_kv_key(table_name):
+        if not self._readable(table_name, entry.key):
             raise GenerationUnavailableError(
-                f"the epoch {token!r} is {entry.key!r}'s, not {table_name!r}'s: a token from another table"
+                f"the epoch {token!r} is {entry.key!r}'s, not one of {table_name!r}'s keys this reader reads"
             )
         return read_epoch_change_body(entry.value, table_name, token)
 
@@ -366,24 +442,24 @@ class _ChangeLogReading:
         state = await self._state()
         if low is None or high is None or state is None or low[0] != state.incarnation or high[0] != low[0]:
             return EpochWalk(changes=(), complete=False, first_missing=upto)
-        key = generation_kv_key(table_name)
         complete = state.first_seq <= low[1] + 1
         # the epochs after the mark are gone from the front of the log: retention took them
         reason = "record_missing" if complete else "aged_out"
         changes: list[EpochChange] = []
         seq = low[1]
         try:
-            while True:
-                entry = await self._log().next_after(key, seq)
-                if entry is None or entry.seq > high[1]:
-                    break
-                seq = entry.seq
-                changes.append(read_epoch_change_body(entry.value, table_name, _token(state.incarnation, seq)))
+            # each key this reader reads, read through its own filtered consumer, merged by the log's sequence
+            walked = await asyncio.gather(
+                *(self._log().records_after(key, low[1], high[1]) for key in self._keys(table_name))
+            )
         except KvBucketNotFoundError:
-            # NOSILENT: the log went mid-walk; what was read is applied, and the follower is behind
-            return EpochWalk(changes=tuple(changes), complete=False, first_missing=_token(state.incarnation, seq + 1))
+            # NOSILENT: the log went mid-walk; nothing read is trusted, and the follower is behind
+            return EpochWalk(changes=(), complete=False, first_missing=_token(state.incarnation, low[1] + 1))
         except KvError as exc:
             raise GenerationUnavailableError(f"the epochs of {table_name!r} could not be read: {exc}") from exc
+        for entry in sorted((entry for entries in walked for entry in entries), key=lambda entry: entry.seq):
+            seq = entry.seq
+            changes.append(read_epoch_change_body(entry.value, table_name, _token(state.incarnation, seq)))
         if seq < high[1]:
             # the generation read is past the newest record the walk found: that record is gone
             complete = False
@@ -425,7 +501,7 @@ class _ChangeLogReading:
             return EpochQuiet(through=None)
         aged_out = state.first_seq > parts[1] + 1 and state.last_seq > parts[1]
         try:
-            newest = await self._log().last(generation_kv_key(table_name))
+            newest = await self._newest(table_name)
         except KvBucketNotFoundError:
             # NOSILENT: the log went between the reads; nothing is vouched for, and the next judgement reads again
             return EpochQuiet(through=None)
@@ -451,12 +527,67 @@ class _ChangeLogReading:
         state = await self._state()
         if state is None:
             raise GenerationUnavailableError(f"write generation for {table_name!r} could not be watched: no log")
-        async with aclosing(self._log().watch(generation_kv_key(table_name))) as updates:
+        async with aclosing(self._watch_keys(table_name)) as updates:
             async for update in updates:
                 # the incarnation is read with each push: a log lost and declared again numbers from
                 # one under a new one, and a push read against the old would look already applied
                 now = await self._state()
                 yield None if now is None else _token(now.incarnation, update.revision)
+
+    async def _watch_keys(self, table_name: str) -> AsyncGenerator[KvKeyUpdate]:
+        """every key this reader reads of ``table_name``, watched together: each one's newest, then each later.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the updates, as each key's watch delivers them
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        """
+        keys = self._keys(table_name)
+        if len(keys) == 1:
+            async with aclosing(self._log().watch(keys[0])) as updates:
+                async for update in updates:
+                    yield update
+            return
+        queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
+
+        async def pump(key: str) -> None:
+            async with aclosing(self._log().watch(key)) as updates:
+                async for update in updates:
+                    await queue.put(update)
+
+        pumps = {asyncio.create_task(pump(key), name=f"epoch-watch-{key}") for key in keys}
+        try:
+            while True:
+                getter = asyncio.ensure_future(queue.get())
+                done, _ = await asyncio.wait({getter, *pumps}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield getter.result()
+                    continue
+                getter.cancel()
+                for task in done:
+                    # a key's watch ended: its error is this watch's, raised here
+                    task.result()
+                    pumps.discard(task)
+                if not pumps:
+                    return
+        finally:
+            for task in pumps:
+                task.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+
+
+def _by_tenant(rows: Sequence[ChangedRow]) -> list[tuple[str | None, list[ChangedRow]]]:
+    """``rows`` grouped by tenant, in the order each tenant first appears.
+
+    :param rows: the rows
+    :ptype rows: Sequence[ChangedRow]
+    :return: ``(tenant, rows)`` per tenant
+    :rtype: list[tuple[str | None, list[ChangedRow]]]
+    """
+    groups: dict[str | None, list[ChangedRow]] = {}
+    for row in rows:
+        groups.setdefault(row.tenant, []).append(row)
+    return list(groups.items())
 
 
 def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]:
@@ -475,7 +606,7 @@ def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]
             bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
         else:
             continue
-        records.extend((generation_kv_key(change.table), body) for body in bodies)
+        records.extend((generation_kv_key(change.table, change.tenant), body) for body in bodies)
     return records
 
 
@@ -659,19 +790,25 @@ class EpochGenerationSource(_ChangeLogReading):
         :raises ValueError: when ``keys_unknown`` is set with rows, before anything is appended
         """
         check_change_form(rows, keys_unknown=keys_unknown)
+        # each tenant's rows under its own key (whole-table and keys-unknown records under ``_all``)
+        bodies: list[tuple[str | None, bytes]]
         if rows is None or not rows:
-            bodies = [epoch_change_body(table_name, rows, keys_unknown=keys_unknown)]
+            bodies = [(None, epoch_change_body(table_name, rows, keys_unknown=keys_unknown))]
         else:
-            bodies = [epoch_change_body(table_name, run) for run in changed_row_runs(table_name, rows)]
+            bodies = [
+                (tenant, epoch_change_body(table_name, run))
+                for tenant, group in _by_tenant(rows)
+                for run in changed_row_runs(table_name, group)
+            ]
         state = self._declared or await self._declare()
         seq = 0
-        for body in bodies:
+        for tenant, body in bodies:
             try:
-                seq = await self._append(table_name, body)
+                seq = await self._append(table_name, body, tenant)
             except KvBucketNotFoundError:
                 state = await self._declare()
                 try:
-                    seq = await self._append(table_name, body)
+                    seq = await self._append(table_name, body, tenant)
                 except KvBucketNotFoundError as exc:
                     raise GenerationUnavailableError(
                         f"the epoch change log vanished as {table_name!r} advanced"
@@ -705,29 +842,35 @@ class EpochGenerationSource(_ChangeLogReading):
         :raises L2LostError: when the log is absent
         :raises GenerationUnavailableError: when the append failed otherwise
         """
+        groups = _by_tenant(rows)
+        if len(groups) > 1:
+            raise ValueError(f"an L2-first commit of {table_name!r} is one record, so it names one tenant's rows")
+        tenant = groups[0][0] if groups else None
         state = await self._state()
         if state is None:
             raise L2LostError(f"the epoch change log is absent; {table_name!r}'s write does not commit")
         try:
-            seq = await self._append(table_name, epoch_change_body(table_name, list(rows)))
+            seq = await self._append(table_name, epoch_change_body(table_name, list(rows)), tenant)
         except KvBucketNotFoundError as exc:
             raise L2LostError(f"the epoch change log went; {table_name!r}'s write does not commit") from exc
         return _token(state.incarnation, seq)
 
-    async def _append(self, table_name: str, body: bytes) -> int:
-        """append one epoch's body under the table's key, and say its sequence.
+    async def _append(self, table_name: str, body: bytes, tenant: str | None) -> int:
+        """append one epoch's body under the table's key for ``tenant``, and say its sequence.
 
         :param table_name: the table
         :ptype table_name: str
         :param body: the stored change
         :ptype body: bytes
+        :param tenant: the tenant token; ``None`` for ``_all``
+        :ptype tenant: str | None
         :return: the sequence
         :rtype: int
         :raises KvBucketNotFoundError: when the log is absent
         :raises GenerationUnavailableError: when the log refused it or could not be reached
         """
         try:
-            return await self._log().append(generation_kv_key(table_name), body, msg_id=str(uuid7()))
+            return await self._log().append(generation_kv_key(table_name, tenant), body, msg_id=str(uuid7()))
         except KvBucketNotFoundError:
             raise
         except KvError as exc:
@@ -901,15 +1044,20 @@ class EpochGenerationReader(_ChangeLogReading):
     with, and "no generation yet" is itself something its mark records.
     """
 
-    def __init__(self, nats_client: Any, *, create_if_missing: bool = False) -> None:
-        """capture the client; no I/O.
+    def __init__(
+        self, nats_client: Any, *, create_if_missing: bool = False, tenants: Sequence[str] | None = None
+    ) -> None:
+        """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: connected client able to bind the change log
         :ptype nats_client: Any
         :param create_if_missing: kept for the callers that pass it; a reader never creates the log
         :ptype create_if_missing: bool
+        :param tenants: the tenant tokens this process's grant lets it read (``_all`` always among them);
+            ``None`` reads every tenant, for a platform service
+        :ptype tenants: Sequence[str] | None
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client)
+        super().__init__(nats_client, tenants=tenants)
         self._create_if_missing = create_if_missing

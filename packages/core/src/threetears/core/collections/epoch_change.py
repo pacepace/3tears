@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from threetears.core.exceptions import GenerationUnavailableError
 
@@ -84,6 +84,8 @@ class ChangedRow(BaseModel):
     :ivar l2_revision: the revision of the row's L2 key the committing writer read before its commit. The
         saver applies :attr:`value` only while the key is still at it: a writer that died after its commit
         left it there, and any write applied since moved it on
+    :ivar tenant: the tenant the row belongs to (:mod:`threetears.core.tenancy`), whose key the
+        record is appended under; ``None`` for ``_all``. Not stored in the record: its key carries it
     """
 
     model_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
@@ -94,6 +96,7 @@ class ChangedRow(BaseModel):
     l3_pending: bool = False
     value: bytes | None = None
     l2_revision: int | None = None
+    tenant: str | None = Field(default=None, exclude=True)
 
 
 class EpochChange(BaseModel):

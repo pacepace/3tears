@@ -54,6 +54,7 @@ from threetears.core.collections.delete_cascade import (
     read_delete_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
     WRITE_GENERATION_UNDECLARED,
@@ -694,6 +695,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: what the row was. A write that saw no row (an eviction naming only a key) carries none.
     invalidation_columns: ClassVar[tuple[str, ...]] = ()
 
+    #: which tenant this table's change records belong to (:mod:`threetears.core.tenancy`):
+    #: an agent-schema table's schema, a platform table's declared tenant column, or none (platform-wide,
+    #: with its reason). A tenant column joins :attr:`invalidation_columns`, so every record and change
+    #: note carries it. Undeclared, records go on ``_all`` and the collection census lists the table.
+    tenancy: ClassVar[Tenancy] = TENANCY_UNDECLARED
+
     #: Each foreign key that points at this table with ``ON DELETE CASCADE`` or ``ON DELETE SET
     #: NULL``. The database rewrites those rows where no collection sees it, and nothing in L1
     #: ages, so :meth:`delete` reads the rows each one will reach before deleting and invalidates
@@ -748,6 +755,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         ):
             # whichever the schema declares -- switched on, kept in L2, or opted out with its reason
             cls.write_generation = described
+        declared_tenancy = getattr(schema, "tenancy", None)
+        if isinstance(declared_tenancy, Tenancy) and cls.tenancy.kind == "undeclared":
+            cls.tenancy = declared_tenancy
+        if not isinstance(cls.tenancy, Tenancy):
+            raise TypeError(f"{cls.__name__}.tenancy must be a Tenancy; got {cls.tenancy!r}")
+        if cls.tenancy.column is not None and cls.tenancy.column not in cls.invalidation_columns:
+            # the tenant column rides with every changed row, so its record and its note name the tenant
+            cls.invalidation_columns = (*cls.invalidation_columns, cls.tenancy.column)
         if not isinstance(
             cls.write_generation, WriteGeneration | L2WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration
         ):
@@ -1704,7 +1719,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if source is None:
             return None
         try:
-            token = await advance_recording(source, self.table_name, changed)
+            token = await advance_recording(source, self.table_name, self._with_tenants(changed))
             if token is None:
                 # a source that advanced nothing (a pod whose broker names no generation for the
                 # table). A switched-on table may write on regardless; an absence cache may not,
@@ -1734,6 +1749,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             and registry is not None
             and registry.generation_source is not None
         )
+
+    def _with_tenants(self, changed: Sequence[ChangedRow] | None) -> Sequence[ChangedRow] | None:
+        """``changed`` with each row's tenant named from this table's declared tenancy (:func:`rows_with_tenants`).
+
+        :param changed: the rows, or ``None`` for the whole table
+        :ptype changed: Sequence[ChangedRow] | None
+        :return: the rows, each with its tenant
+        :rtype: Sequence[ChangedRow] | None
+        """
+        return rows_with_tenants(self.tenancy, changed)
 
     async def _bump_generation(self, changed: Sequence[ChangedRow] | None) -> _Bump:
         """advance this table's write generation once, for one commit that changed ``changed``.
@@ -1785,7 +1810,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         covered = await self._marks_before_advance(registry)
         rows = 1 if changed is None else len(changed)
         try:
-            token = await advance_recording(source, self.table_name, changed)
+            token = await advance_recording(source, self.table_name, self._with_tenants(changed))
         except GenerationNotCommittedError as exc:
             # the commit did not land (a rolled-back transaction settling): nothing to advance
             log.info(

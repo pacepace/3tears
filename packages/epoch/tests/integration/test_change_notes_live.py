@@ -47,6 +47,7 @@ from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import NOTE_RING_SIZE, note_table
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -762,3 +763,58 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
         assert (await last()).whole_table
         said = [r.__dict__["extra_data"] for r in caplog.records if "advanced as the whole table" in r.getMessage()]
         assert said == [{"table": table, "reason": "not_covered"}]
+
+
+class TestANoteCarriesItsTenant:
+    async def test_the_trigger_names_the_tenant_as_the_records_do_and_the_restore_keys_by_it(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+        await source.start_log()
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0))
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",), tenancy=tenant_column("owner"))])
+        await keeper.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        await keeper.run_pass()
+        long_owner = "a b/" + "x" * 80
+        await pool.execute(
+            f"INSERT INTO {table} VALUES ('r1', 'ada', '1'), ('r2', $1, '1'), ('r3', NULL, '1')", long_owner
+        )
+        current = (await keeper.ring()).current
+        tenants = {
+            list(note["keys"])[0]: note["tenant"]
+            for note in await pool.fetch(f"SELECT keys, tenant FROM {schema}.{note_table(current)}")
+        }
+        assert tenants == {"r1": value_tenant("ada"), "r2": value_tenant(long_owner), "r3": None}, (
+            "the SQL token rule is the Python one, a long or unsafe value digested the same way"
+        )
+
+        lost = (await source.log_state()).incarnation  # type: ignore[union-attr]
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+        restored = (await keeper.run_pass()).restored
+        assert restored is not None
+        state = await source.log_state()
+        assert state is not None and state.continues == lost
+
+        async def ids(tenant: str) -> list[str]:
+            reader = EpochGenerationReader(bus, tenants=[tenant])
+            head = await reader.read(table)
+            assert head is not None
+            walk = await reader.changes_after(table, f"{restored}:0", head)
+            return sorted(row.ids[0] for change in walk.changes for row in change.rows)
+
+        assert await ids(value_tenant("ada")) == ["r1", "r3"], "ada's row and the tenant-less row on _all"
+        assert await ids(value_tenant(long_owner)) == ["r2", "r3"]
+
+    async def test_a_schema_tenant_is_the_rows_schema(self, ring: tuple[asyncpg.Pool, str, str]) -> None:
+        pool, schema, table = ring
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE)
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",), tenancy=TENANT_BY_SCHEMA)])
+        await pool.execute(f"INSERT INTO {table} VALUES ('s1', 'o', '1')")
+        current = (await keeper.ring()).current
+        [tenant] = [note["tenant"] for note in await pool.fetch(f"SELECT tenant FROM {schema}.{note_table(current)}")]
+        assert tenant == schema_tenant(schema)

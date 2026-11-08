@@ -33,6 +33,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.collections.epoch_change import advance_recording
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.exceptions import GenerationUnavailableError
 
 if TYPE_CHECKING:
@@ -861,11 +862,14 @@ class NotedTable:
     :ivar table: the table
     :ivar keys: its primary-key columns, in declared order
     :ivar columns: its declared invalidation columns, which a note carries as a row broadcast does
+    :ivar tenancy: which tenant its rows belong to (:mod:`threetears.core.tenancy`), whose token each note
+        carries
     """
 
     table: str
     keys: tuple[str, ...]
     columns: tuple[str, ...] = ()
+    tenancy: Tenancy = TENANCY_UNDECLARED
 
 
 def _declared_key(cls: type) -> tuple[str, ...] | None:
@@ -899,18 +903,27 @@ def noted_tables() -> tuple[NotedTable, ...]:
     """
     keys_of: dict[str, set[tuple[str, ...]]] = {}
     columns_of: dict[str, dict[str, None]] = {}
+    tenancy_of: dict[str, Tenancy] = {}
     for cls in [*list(_GENERATION_CLASSES), *list(_L2_FIRST_CLASSES)]:
         name = table_named_by_class(cls)
         keys = _declared_key(cls)
         if name is None or keys is None:
             continue
         keys_of.setdefault(name, set()).add(keys)
+        tenancy = getattr(cls, "tenancy", None)
+        if isinstance(tenancy, Tenancy) and tenancy.kind != "undeclared":
+            tenancy_of.setdefault(name, tenancy)
         declared = getattr(cls, "invalidation_columns", ())
         for column in declared if isinstance(declared, tuple) else ():
             if isinstance(column, str):
                 columns_of.setdefault(name, {})[column] = None
     return tuple(
-        NotedTable(table=name, keys=next(iter(keys)), columns=tuple(columns_of.get(name, {})))
+        NotedTable(
+            table=name,
+            keys=next(iter(keys)),
+            columns=tuple(columns_of.get(name, {})),
+            tenancy=tenancy_of.get(name, TENANCY_UNDECLARED),
+        )
         for name, keys in sorted(keys_of.items())
         if len(keys) == 1
     )

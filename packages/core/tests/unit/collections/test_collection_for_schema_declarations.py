@@ -11,6 +11,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
     NoWriteGeneration,
@@ -18,6 +20,8 @@ from threetears.core.collections.generation import (
     tables_with_write_generation,
 )
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
+from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.tenancy import TENANCY_UNDECLARED, no_tenant, rows_with_tenants, tenant_column, value_tenant
 from threetears.enforcement.collection_census.census import census
 
 
@@ -77,3 +81,29 @@ def test_a_census_of_a_consumer_s_modules_counts_its_factory_built_classes(tmp_p
     [record] = [record for record in found["classes"] if record["table"] == "consumer_votes"]
     assert record["name"].startswith("consumer_reports_census.tables.")
     assert (record["declaration"], record["reason"]) == ("opted_out", "reloaded whole every night")
+    assert record["tenancy"] == "undeclared", "a table that declares no tenancy is classified, and listed"
+
+
+def test_a_tenant_column_rides_with_every_changed_row_and_names_its_tenant() -> None:
+    schema = TableSchema(
+        name="factory_tenanted",
+        primary_key="id",
+        columns=[Column("id", STRING_TYPE), Column("customer_id", STRING_TYPE)],
+        write_generation=WRITE_GENERATION,
+        tenancy=tenant_column("customer_id"),
+    )
+    built = collection_for_schema(schema)
+    assert built.tenancy == tenant_column("customer_id")
+    assert "customer_id" in built.invalidation_columns, "so every record and note carries it"
+    stamped = rows_with_tenants(
+        built.tenancy, [ChangedRow(ids=["1"], columns={"customer_id": "c-9"}), ChangedRow(ids=["2"], tenant="s-x")]
+    )
+    assert stamped is not None
+    assert [row.tenant for row in stamped] == [value_tenant("c-9"), "s-x"], "a tenant its writer named is kept"
+    assert rows_with_tenants(built.tenancy, None) is None, "a whole-table change names no tenant: _all"
+
+
+def test_a_platform_wide_table_says_why_and_an_undeclared_one_is_undeclared() -> None:
+    with pytest.raises(ValueError, match="reason"):
+        no_tenant(" ")
+    assert collection_for_schema(_schema("factory_untenanted", WRITE_GENERATION)).tenancy == TENANCY_UNDECLARED

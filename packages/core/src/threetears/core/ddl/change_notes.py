@@ -38,6 +38,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Final
 
+from threetears.core.tenancy import Tenancy
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -59,6 +60,10 @@ __all__ = [
     "trigger_function_body",
     "trigger_function_sql",
 ]
+
+#: the SQL form of :mod:`threetears.core.tenancy`'s token rule, so a note's tenant and a record's agree
+_TOKEN_SQL: Final = "^[A-Za-z0-9_-]{1,62}$"
+_DIGEST_SQL: Final = 24
 
 #: how many note tables the ring keeps: the current one, the previous one, and one emptied and waiting
 NOTE_RING_SIZE: Final = 3
@@ -175,6 +180,8 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         # the keys joined by chr(31), the scrub's lookup: led by the (key_text, table_name) index
         "key_text TEXT, "
         "columns JSONB, "
+        # the tenant the row belongs to (threetears.core.tenancy); NULL for _all
+        "tenant TEXT, "
         # the clock at the insert, not the transaction's start: a late note is told by it
         "noted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), "
         # TRUE when the writer had no valid cached slot and read the ring row; NULL (stored as nothing) otherwise
@@ -241,12 +248,14 @@ def _put_function_sql(schema: str) -> str:
         keyword = "IF" if index == 0 else "ELSIF"
         inserts.append(
             f"  {keyword} ring = {index} THEN\n"
-            f"    INSERT INTO {table} (table_name, keys, key_text, columns, ring_read) "
-            "VALUES (noted_table, noted_keys, array_to_string(noted_keys, chr(31)), noted_columns, read_ring);\n"
+            f"    INSERT INTO {table} (table_name, keys, key_text, columns, tenant, ring_read) "
+            "VALUES (noted_table, noted_keys, array_to_string(noted_keys, chr(31)), noted_columns, noted_tenant, "
+            "read_ring);\n"
         )
     return (  # one line: plpgsql source; each interpolated piece is a fixed name or pattern this module builds
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_RING_FUNCTION)}("
-        "noted_table TEXT, noted_keys TEXT[], noted_columns JSONB) RETURNS void LANGUAGE plpgsql AS $put$\n"
+        "noted_table TEXT, noted_keys TEXT[], noted_columns JSONB, noted_tenant TEXT) "
+        "RETURNS void LANGUAGE plpgsql AS $put$\n"
         "DECLARE\n"
         "  ring SMALLINT;\n"
         "  cached TEXT;\n"
@@ -295,7 +304,7 @@ def _whole_function_sql(schema: str) -> str:
         "    RETURN;\n"
         "  END IF;\n"
         "  PERFORM set_config('threetears.noted_whole_' || noted_relation::text, '1', true);\n"
-        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(noted_table, NULL, NULL);\n"
+        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(noted_table, NULL, NULL, NULL);\n"
         "END\n"
         "$whole$"
     )
@@ -314,7 +323,7 @@ def _truncate_function_sql(schema: str) -> str:
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_TRUNCATE_FUNCTION)}() "
         "RETURNS trigger LANGUAGE plpgsql AS $truncate$\n"
         "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
-        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(TG_TABLE_NAME, NULL, NULL);\n"
+        f"  PERFORM {owner}.{quote_identifier(_RING_FUNCTION)}(TG_TABLE_NAME, NULL, NULL, NULL);\n"
         "  RETURN NULL;\n"
         "END\n"
         "$truncate$"
@@ -348,7 +357,37 @@ def _row_terms(prefix: str, columns: Sequence[str]) -> list[str]:
     return [f"{prefix}.{quote_identifier(column)}::text" for column in columns]
 
 
-def _put_statement(notes_schema: str, prefix: str, keys: Sequence[str], columns: Sequence[str]) -> str:
+def tenant_sql(tenancy: Tenancy | None, prefix: str) -> str:
+    """the SQL of the ``NEW`` or ``OLD`` row's tenant token, as :mod:`threetears.core.tenancy`
+    derives it: the row's schema, or its tenant column's value; ``NULL`` (``_all``) for a table with none.
+
+    :param tenancy: the table's declaration
+    :ptype tenancy: Tenancy | None
+    :param prefix: ``NEW`` or ``OLD``
+    :ptype prefix: str
+    :return: the expression
+    :rtype: str
+    """
+    if tenancy is None or tenancy.kind not in ("schema", "column"):
+        return "NULL"
+    kind, value = (
+        ("s", "TG_TABLE_SCHEMA::text")
+        if tenancy.kind == "schema"
+        else (
+            "v",
+            f"{prefix}.{quote_identifier(str(tenancy.column))}::text",
+        )
+    )
+    return (
+        f"(CASE WHEN {value} IS NULL THEN NULL WHEN ('{kind}-' || {value}) ~ '{_TOKEN_SQL}' "
+        f"THEN '{kind}-' || {value} ELSE 'h-' || left(encode(sha256(convert_to({value}, 'UTF8')), 'hex'), "
+        f"{_DIGEST_SQL}) END)"
+    )
+
+
+def _put_statement(
+    notes_schema: str, prefix: str, keys: Sequence[str], columns: Sequence[str], tenancy: Tenancy | None = None
+) -> str:
     """the statement that notes the ``NEW`` or ``OLD`` row.
 
     :param notes_schema: the schema holding the ring
@@ -359,6 +398,8 @@ def _put_statement(notes_schema: str, prefix: str, keys: Sequence[str], columns:
     :ptype keys: Sequence[str]
     :param columns: the declared invalidation columns
     :ptype columns: Sequence[str]
+    :param tenancy: the table's tenancy, whose token the note carries
+    :ptype tenancy: Tenancy | None
     :return: the ``PERFORM`` statement
     :rtype: str
     """
@@ -366,11 +407,13 @@ def _put_statement(notes_schema: str, prefix: str, keys: Sequence[str], columns:
     carried = f"jsonb_build_object({named})" if columns else "NULL"
     return (
         f"PERFORM {quote_identifier(notes_schema)}.{quote_identifier(_RING_FUNCTION)}"
-        f"(TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys))}], {carried});"
+        f"(TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys))}], {carried}, {tenant_sql(tenancy, prefix)});"
     )
 
 
-def trigger_function_body(*, notes_schema: str, keys: Sequence[str], columns: Sequence[str]) -> str:
+def trigger_function_body(
+    *, notes_schema: str, keys: Sequence[str], columns: Sequence[str], tenancy: Tenancy | None = None
+) -> str:
     """the body of one table's trigger function, as the catalogue keeps it (``pg_proc.prosrc``).
 
     The row's key and invalidation columns are named in the function, so a note reads exactly those
@@ -385,6 +428,8 @@ def trigger_function_body(*, notes_schema: str, keys: Sequence[str], columns: Se
     :ptype keys: Sequence[str]
     :param columns: the declared invalidation columns
     :ptype columns: Sequence[str]
+    :param tenancy: the table's tenancy, whose token each note carries
+    :ptype tenancy: Tenancy | None
     :return: the body
     :rtype: str
     :raises ValueError: when no key column is named, or a column name holds a quote
@@ -404,10 +449,10 @@ def trigger_function_body(*, notes_schema: str, keys: Sequence[str], columns: Se
         "    RETURN NULL;\n"
         "  END IF;\n"
         "  IF TG_OP <> 'DELETE' THEN\n"
-        f"    {_put_statement(notes_schema, 'NEW', keys, columns)}\n"
+        f"    {_put_statement(notes_schema, 'NEW', keys, columns, tenancy)}\n"
         "  END IF;\n"
         f"  IF TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND ROW({old_row}) IS DISTINCT FROM ROW({new_row})) THEN\n"
-        f"    {_put_statement(notes_schema, 'OLD', keys, columns)}\n"
+        f"    {_put_statement(notes_schema, 'OLD', keys, columns, tenancy)}\n"
         "  END IF;\n"
         "  RETURN NULL;\n"
         "END\n"
@@ -415,7 +460,13 @@ def trigger_function_body(*, notes_schema: str, keys: Sequence[str], columns: Se
 
 
 def trigger_function_sql(
-    *, notes_schema: str, table_schema: str, table: str, keys: Sequence[str], columns: Sequence[str]
+    *,
+    notes_schema: str,
+    table_schema: str,
+    table: str,
+    keys: Sequence[str],
+    columns: Sequence[str],
+    tenancy: Tenancy | None = None,
 ) -> str:
     """the statement that creates, or replaces, one table's trigger function (:func:`trigger_function_body`).
 
@@ -429,12 +480,14 @@ def trigger_function_sql(
     :ptype keys: Sequence[str]
     :param columns: the declared invalidation columns
     :ptype columns: Sequence[str]
+    :param tenancy: the table's tenancy, whose token each note carries
+    :ptype tenancy: Tenancy | None
     :return: the ``CREATE OR REPLACE FUNCTION`` statement
     :rtype: str
     :raises ValueError: when no key column is named, or a column name holds a quote
     """
     owner = quote_identifier(notes_schema)
-    body = trigger_function_body(notes_schema=notes_schema, keys=keys, columns=columns)
+    body = trigger_function_body(notes_schema=notes_schema, keys=keys, columns=columns, tenancy=tenancy)
     return (
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(note_function_name(table_schema, table))}() "
         f"RETURNS trigger LANGUAGE plpgsql AS $note${body}$note$"

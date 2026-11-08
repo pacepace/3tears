@@ -522,7 +522,7 @@ class TestTheDeclaration:
 class TestTheChangeLogWarnsBeforeItFills:
     async def test_the_fill_ratio_is_measured_and_warned_on(self, caplog: pytest.LogCaptureFixture) -> None:
         bus = FakeNatsClient()
-        source = EpochGenerationSource(bus, change_retention=EpochChangeRetention(max_bytes=3200))
+        source = EpochGenerationSource(bus, change_retention=EpochChangeRetention(max_bytes=3000))
         for each in range(17):
             await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"row-{each:04d}"])])
         with caplog.at_level(logging.WARNING):
