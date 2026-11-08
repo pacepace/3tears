@@ -65,9 +65,15 @@ class ChangedRow(BaseModel):
         as :attr:`CacheInvalidationMessage.l2_current_scope`; ``None`` for an unfenced write
     :ivar columns: the declared invalidation columns' values from the row the write saw, as
         :attr:`CacheInvalidationMessage.columns`; ``None`` when none are declared or none was seen
+    :ivar l3_pending: the write committed in L2 first (:mod:`threetears.core.collections.l2_first`), so
+        L3 is made to match L2 for this row after the commit; ``False`` for a write L3 took first. With
+        :attr:`value` ``None`` it is a delete
     :ivar value: the row's stored bytes, as the write put them in L2, for an epoch that is the write's
         commit (an L2-first collection): the row is applied to L2 from here, and a saver puts back any
         row L2 is missing before it saves to L3. ``None`` where the record only names the row
+    :ivar l2_revision: the revision of the row's L2 key the committing writer read before its commit. The
+        saver applies :attr:`value` only while the key is still at it: a writer that died after its commit
+        left it there, and any write applied since moved it on
     """
 
     model_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
@@ -75,7 +81,9 @@ class ChangedRow(BaseModel):
     ids: list[str]
     l2_current_scope: str | None = None
     columns: dict[str, str | None] | None = None
+    l3_pending: bool = False
     value: bytes | None = None
+    l2_revision: int | None = None
 
 
 class EpochChange(BaseModel):

@@ -121,6 +121,13 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "l2_cas_mutate": "a compare-and-set on one L2 cache entry the writer holds; no SQL read",
     "announce_flushed": "publishes that a write reached L3; returns nothing",
     "aclose": "shuts the collection down; reads nothing",
+    "carry_to_l3": "the L2-first saver's write of one committed key from L2 to L3; returns no row",
+    "refill_l2_from_l3": "the refiller's put-back of the table into L2 after NATS lost it; returns a count, no row",
+    "l2_complete": "reads the refiller's mark that L2 holds the table; reads no row",
+    "mark_l2_complete": "writes the refiller's mark; reads no row",
+    "read_l2_first_state": "reads one L2-first bookkeeping key (saver position, settled mark); reads no row",
+    "write_l2_first_state": "writes one L2-first bookkeeping key; reads no row",
+    "drop_l2_first_state": "removes one L2-first bookkeeping key; reads no row",
 }
 
 _CLASSES = list(FILTERED)
