@@ -7,9 +7,11 @@ beside it. Anything that
 shows a reader a number imports it from here, and nothing here imports anything of the engine's.
 It lives in ``kernel``, the package both ``run`` and ``analysis`` may import, so a launch's refusal spells its
 figures by the same rule as a report; ``threetears.evals.analysis`` re-exports its public names.
-Over the trees listed in ``_SPELLING_TREES`` in ``tests/test_numbers.py``,
-that is checked from the source by that test, which names each deliberate fixed spelling it allows — such as a
-probability, pass^k, a percentage — and flags every other format spec that chooses digits.
+Over the whole package and the kit's script, that is checked from the source by
+``tests/test_one_owner_of_number_forms.py``: every site outside this module and ``analysis/report/forms.py`` that
+decides a figure's form is listed there, the list only shrinks, and the report trees (``_SPELLING_TREES`` there) are
+held to the stricter rule, which names each deliberate fixed spelling it allows (a share's percentage, an SVG
+coordinate) and flags every other format spec that chooses digits.
 
 A browser renderer that restates this rule pins itself to the same cases this package's tests read,
 ``tests/fixtures/number-format-cases.json``.
@@ -581,6 +583,64 @@ _WRITTEN_PLACES = 6
 
 #: :data:`WRITTEN_FROM` as the bound a smaller value reads as.
 _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"
+
+
+def round_half_even(value: float, places: int) -> str:
+    """A finite value's digits at ``places`` decimals (none below zero), rounded half to even: the one rounding a
+    decided figure goes through. It rounds the value as stored, as Python's float formatting does and as every set
+    spelling here does (:func:`spell_at`), so ``0.125`` reads ``0.12`` and ``2.675``, stored a hair under its
+    spelling, reads ``2.67``. A value that rounds to zero carries no sign: ``-0.0`` would claim a direction the digits
+    do not show.
+
+    :param value: The value, finite.
+    :ptype value: float
+    :param places: The decimals.
+    :ptype places: int
+    :return: Its digits, signed where it is negative and does not round to zero.
+    :rtype: str
+    """
+    text = f"{value:.{max(0, places)}f}"
+    return text.removeprefix("-") if float(text) == 0 else text
+
+
+#: The least p-value written as its digits (APA): one under it reads as the bound ``< 0.001``.
+P_WRITTEN_FROM = 0.001
+
+#: The p-value from which two decimals are written, three below it (APA, 7th ed., §6.36).
+P_TWO_PLACES_FROM = 0.1
+
+#: The decimals an effect size or a correlation reads at.
+EFFECT_PLACES = 2
+
+
+def spell_p(p: float | None) -> str:
+    """A p-value as APA writes it: ``< 0.001`` under a thousandth (an exact zero included, which no test reads), three
+    decimals below 0.1 (``0.003``), two from it up (``0.50``, ``1.00``).
+
+    :param p: The p-value, or ``None`` when there is none.
+    :ptype p: float | None
+    :return: Its text; :data:`ABSENT` for ``None``, NaN or an infinity.
+    :rtype: str
+    """
+    if p is None or not math.isfinite(p):
+        return ABSENT
+    if p < P_WRITTEN_FROM:
+        return f"< {P_WRITTEN_FROM}"
+    return round_half_even(p, 2 if p >= P_TWO_PLACES_FROM else 3)
+
+
+def spell_effect(value: float | None) -> str:
+    """An effect size or a correlation (a Hedges' g, a pairing r) at :data:`EFFECT_PLACES` decimals, its sign kept:
+    ``0.08``, ``-0.19``.
+
+    :param value: The effect, or ``None`` when there is none.
+    :ptype value: float | None
+    :return: Its text; :data:`ABSENT` for ``None``, NaN or an infinity.
+    :rtype: str
+    """
+    if value is None or not math.isfinite(value):
+        return ABSENT
+    return round_half_even(value, EFFECT_PLACES)
 
 
 def format_signed(value: float | None) -> str:

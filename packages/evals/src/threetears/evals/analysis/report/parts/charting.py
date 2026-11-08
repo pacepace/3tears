@@ -82,6 +82,7 @@ from threetears.evals.analysis.report.figure_keys import (
     held_means,
     input_check_name,
     resolve,
+    rubric_score,
 )
 from threetears.evals.kernel.numbers import format_number, spell_at, spell_count
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
@@ -137,6 +138,7 @@ __all__ = [
     "figure_interval",
     "figure_stat",
     "figure_unit",
+    "is_rubric_score",
     "interval_level",
     "interval_words",
     "measure_words",
@@ -334,6 +336,24 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
     if judged is not None:
         return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
     return ""
+
+
+def is_rubric_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
+    """Whether a figure is a judged score on the 1–5 rubric (:func:`~threetears.evals.analysis.report.figure_keys.
+    rubric_score`), not a share, nor a figure an input calls ordinal but holds off the scale.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure's or judged dimension's key.
+    :ptype key: str
+    :param kind: A contrast's kind where the key is one's; None for a measure's.
+    :ptype kind: str | None
+    :return: Whether it is a 1–5 score.
+    :rtype: bool
+    """
+    return (
+        kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
+    )
 
 
 def measure_words(report_input: ReportInput, key: str, *, kind: str | None = None, prose: bool = False) -> str:

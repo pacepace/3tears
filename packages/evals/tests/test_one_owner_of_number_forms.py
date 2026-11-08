@@ -10,7 +10,9 @@ This test keeps that migration honest:
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
   (``kernel/numbers.py`` and ``analysis/report/forms.py``), and in ``kit.js`` the digit primitives and the named
   formats used outside ``K_FMTS`` / ``fmt``. A package function that returns what a site produced is a primitive
-  too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called.
+  too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. So is a public
+  free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and role, is the
+  migrated route.
 * **The ratchet** compares the walk with ``fixtures/number_form_sites.txt``, keyed by (module, enclosing qualname,
   form) with a count. A moved line keeps its entry; a new site in the same function, or in a new one, fails. An entry
   that overstates its count, or names nothing, also fails, so every migration cuts the file and the list only
@@ -80,9 +82,6 @@ _SET_HELPER_PREFIXES = ("percent_", "respell_", "quantity")
 #: where an effect is read, and ``build._at``, which links a cell to a finding.
 _PRIVATE_SET_HELPERS = frozenset(
     {
-        ("threetears/evals/analysis/report/parts/full_results.py", "_at"),
-        ("threetears/evals/analysis/report/parts/full_results.py", "_level_places"),
-        ("threetears/evals/analysis/report/parts/full_results.py", "_change_places"),
         ("threetears/evals/analysis/report/campaign/scorecard.py", "_one_precision"),
         ("threetears/evals/analysis/report/figure_keys.py", "_one_precision"),
         ("threetears/evals/harness/writer_eval.py", "_places"),
@@ -225,7 +224,27 @@ def _rule_primitives() -> tuple[frozenset[str], frozenset[str]]:
 _RULE_CALLABLES, _RULE_METHODS = _rule_primitives()
 
 
-_BASE_PRIMITIVES = _RULE_CALLABLES | _SET_HELPERS
+def _forms_primitives(root: Path = _SOURCE_ROOT) -> frozenset[str]:
+    """The public module-level functions of ``forms.py``: a decision relocated there and called as a free function
+    (``at_decimals``, ``level_decimals``) is still decided where it is called, so its caller is a site. Only
+    :class:`PageForms`, built once per page and asked by measure and role, is the migrated route: its classes (the
+    page's forms and the value types it hands out) and their methods are not primitives. None before ``forms.py``
+    exists.
+    """
+    path = root / _FORMS
+    if not path.exists():
+        return frozenset()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return frozenset(
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+    )
+
+
+_FORMS_CALLABLES = _forms_primitives()
+
+_BASE_PRIMITIVES = _RULE_CALLABLES | _SET_HELPERS | _FORMS_CALLABLES
 
 #: Every method name of a builtin value. A wrapper method named like one (``format``, ``count``) is still a site
 #: through ``self``, but an attribute call by that name alone is not taken to reach it.
@@ -1120,9 +1139,9 @@ class TestTheWalkSeesEveryPythonForm:
         assert _forms(_python_sites(source)) == [("Look.text.inner", "round()", "round(v)")]
 
     def test_a_private_helper_is_a_site_only_in_the_module_that_decides_with_it(self):
-        deciding = "threetears/evals/analysis/report/parts/full_results.py"
-        assert _forms(_python_sites("_at(v, 1, u)", deciding)) == [("<module>", "_at()", "_at(v, 1, u)")]
-        assert _python_sites("_at(v, 1, u)", "threetears/evals/analysis/report/build.py") == []
+        deciding = "threetears/evals/harness/writer_eval.py"
+        assert _forms(_python_sites("_places(vs)", deciding)) == [("<module>", "_places()", "_places(vs)")]
+        assert _python_sites("_places(vs)", "threetears/evals/analysis/report/build.py") == []
 
     @pytest.mark.parametrize(
         "source",
@@ -1226,6 +1245,33 @@ class TestAWrapperIsAPrimitive:
         sites = _python_sites(source, _CHART_SVG)
         assert [(site.qualname, site.form) for site in sites] == [("_faded", "f-string spec")]
         assert _ratcheted(sites) == []
+
+    def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self):
+        """A decision moved into ``forms.py`` and called from a surface is decided where it is called, so a module
+        that reroutes through one never reaches zero entries by the move alone."""
+        assert {"at_decimals", "level_decimals", "change_decimals", "measured_decimals"} <= _FORMS_CALLABLES
+        assert _forms(_python_sites("at_decimals(v, 2, '%')")) == [
+            ("<module>", "at_decimals()", "at_decimals(v, 2, '%')")
+        ]
+        assert _forms(_python_sites("forms.level_decimals(r, k, d)")) == [
+            ("<module>", "level_decimals()", "forms.level_decimals(r, k, d)")
+        ]
+
+    def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self):
+        """``PageForms``, its constructors, its methods and the values it hands out decide nothing at the call."""
+        assert not _FORMS_CALLABLES & {"PageForms", "MeasureForm", "Printed", "PrintedInterval", "Issued", "of"}
+        source = (
+            "page = PageForms.of(report_input)\n"
+            "codes = PageForms.of_campaign(readings, reports)\n"
+            "a = page.level(key, v).text\n"
+            "b = page.change(key, v, kind=kind).digits\n"
+            "c = page.interval(key, lo, hi, change=True).text\n"
+            "d = page.measure(key).level_decimals\n"
+        )
+        assert _python_sites(source) == []
+
+    def test_forms_primitives_are_none_before_forms_exists(self, tmp_path):
+        assert _forms_primitives(tmp_path) == frozenset()
 
     def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path):
         """``forms.py`` is an owner before it exists: the walk and the report trees both pass over it."""
