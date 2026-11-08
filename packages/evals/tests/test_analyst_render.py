@@ -776,8 +776,9 @@ def _spread(values: list[float]) -> bool:
 
 
 def test_bars_over_a_magnitude_spanning_more_than_ten_times_draw_on_a_log_axis_and_say_so() -> None:
-    """One rule, read off the figures: a magnitude whose bars span more than ten times is drawn on a log axis, a
-    caption says so, and bars that do not stay linear."""
+    """One rule, read off the figures: a magnitude whose bars span more than ten times is drawn on a log axis (as dots,
+    since a bar's length from a log axis's low end measures nothing), a caption says the axis is logarithmic, and bars
+    that do not stay linear."""
     seen: set[bool] = set()
     for held in _inputs().values():
         for key, measure in held.measures.items():
@@ -790,7 +791,7 @@ def test_bars_over_a_magnitude_spanning_more_than_ten_times_draw_on_a_log_axis_a
                 drawn = block_render(held, block_kind="bars", query=_query("measures", measures=[key]))
             except RefusedInput:
                 continue
-            logged = any("log scale" in note for note in drawn.notes)
+            logged = any("logarithmic" in note for note in drawn.notes)
             assert logged == _spread([float(stat.mean) for stat in stats if stat.mean is not None]), key
             seen.add(logged)
     held = _inputs()["r1"]
@@ -802,7 +803,7 @@ def test_bars_over_a_magnitude_spanning_more_than_ten_times_draw_on_a_log_axis_a
     ]
     if costs:
         drawn = block_render(held, block_kind="bars", query=_query("tasks", measures=["cost_per_1k"]))
-        logged = any("log scale" in note for note in drawn.notes)
+        logged = any("logarithmic" in note for note in drawn.notes)
         assert logged == _spread(costs)
         seen.add(logged)
     assert seen == {True, False}, "the control: some fixture's bars span more than ten times and some do not"

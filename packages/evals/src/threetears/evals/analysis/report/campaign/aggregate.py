@@ -137,16 +137,22 @@ def aggregate_blocks(
             point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm], declared.get(arm.arm))) is not None
         ]
         if len(points) >= 2:
-            blocks.append(
-                ChartBlock(
-                    section="scorecard",
-                    chart="cost_quality",
-                    title=f"Cost and pass rate, {_ACROSS}" if len(readings.aspects) > 1 else "Cost and pass rate",
-                    unit=MONEY,
-                    level=f"{format_number(round(aggregate.level * 100, 2))}%",
-                    points=points,
-                )
+            level = f"{format_number(round(aggregate.level * 100, 2))}%"
+            chart = ChartBlock(
+                section="scorecard",
+                chart="cost_quality",
+                title="Pass rate and cost",
+                unit=MONEY,
+                level=level,
+                points=points,
             )
+            # The title says what is compared and in what unit: the count each cost is per as the chart's own axis
+            # states it, from the block's one money ruler, never a count chosen here.
+            drawn = chart.kit_chart()
+            per = str(drawn[1].get("x_title") or "").removeprefix("Cost ") if drawn is not None else ""
+            measured = f"Pass rate and cost {per}, each arm, {level} intervals"
+            title = f"{measured}, {_ACROSS}" if len(readings.aspects) > 1 else measured
+            blocks.append(chart.model_copy(update={"title": title}))
         lines += [line for arm in aggregate.arms for line in _chart_withheld_lines(arm, names)]
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in lines]
     if len(readings.aspects) > 1 and (row or blocks):

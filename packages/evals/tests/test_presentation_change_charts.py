@@ -230,11 +230,13 @@ def test_a_factor_label_is_never_cut_so_two_rows_read_alike() -> None:
 
 
 def test_the_margin_band_is_named_and_the_family_level_said() -> None:
-    """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why."""
-    drawn, notes = _one("prototype5/kairo", "contrasts")
+    """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why: its head
+    says what the family's intervals hold at together, "99.7% intervals (95% across 16 comparisons)"."""
+    drawn, _ = _one("prototype5/kairo", "contrasts")
     assert isinstance(drawn.data, ForestChart) and drawn.data.reference is not None
     assert drawn.data.reference.label == "margin -15 pts; shaded: no worse than the margin"
-    assert "Each interval is at 99.69%, so the 16 comparisons corrected together hold at 95% at once." in notes
+    assert drawn.data.level == "99.7% (95% across 16 comparisons)"
+    assert "99.7% intervals (95% across 16 comparisons)" in _drawn_texts(drawn)
 
 
 @pytest.fixture(scope="module")

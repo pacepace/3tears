@@ -25,13 +25,15 @@ strip per arm holds every measure, so its measures must share one unit, each dra
 **range_bars** draw each latency from its p50 to its p95: a group per task (or per measure, over measures), a row per
 arm; a figure holding only its p95 is drawn as its end mark alone, which a caption names. The line is the stored one,
 else the one p95 criterion read where the chart reads it, and a bar ending past its budget is hollow, its tooltip
-saying so. A legend names the arms, in the page's order. Measures in more than one unit are refused: the bars share
+saying so. Each bar is labelled beside it by its arm's tag and name, in the page's order, with no legend to decode,
+and the chart's head says what a bar spans (p50 to p95). Measures in more than one unit are refused: the bars share
 one axis, on which measures drawn alike (a share beside a percent) are each drawn at their own scale.
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
 a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report_gates.gate_check`, in the task
-a panel draws) is hollow. Each axis carries its criterion's line
+a panel draws) is hollow, and its key says so; every point carries its arm's tag, its label where it has no other.
+Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
 caption says. A config takes its first factor's colour, which a legend names
 (:func:`~threetears.evals.analysis.report.parts.charting.factor_token`); a panel of more than eight points labels
@@ -55,7 +57,6 @@ from threetears.evals.analysis.report.charts import (
     DotIntervalChart,
     DotIntervalPanel,
     DotIntervalRow,
-    LegendItem,
     RangeBarsChart,
     RangeGroup,
     RangeRow,
@@ -76,6 +77,7 @@ from threetears.evals.analysis.report.parts.charting import (
     drawn_keys,
     factor_legend,
     factor_token,
+    with_hollow_key,
     figure_interval,
     figure_unit,
     interval_words,
@@ -259,7 +261,8 @@ def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
         )
         for title, dots in grouped.items()
     ]
-    return strips, context.level, drawn.notes, True
+    # The level as the diverging chart states it: a family's corrected level in its plain form, as the head prints it.
+    return strips, data.level or context.level, drawn.notes, True
 
 
 def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
@@ -703,14 +706,7 @@ def _range_bars(context: ChartContext) -> Drawn:
         *([line.value] if line is not None else []),
     ]
     domain = context.spec.domain or magnitude_domain(ends)
-    drawn_arms = dict.fromkeys(arm for *_, bars in groups for arm, _ in bars if arm in context.look.arms)
-    legend = [
-        LegendItem(label=look.name, color=look.token, mark=look.shape)
-        for look in (context.look.arm(arm) for arm in context.look.ordered(drawn_arms))
-    ]
-    data = RangeBarsChart(
-        groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line, legend=legend or None
-    )
+    data = RangeBarsChart(groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line)
     notes = (NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
     money = [(key, quantities[key]) for key in dict.fromkeys(key for _, _, key, _ in groups)]
     return money_drawn(context, data, notes, money=money)
@@ -851,6 +847,7 @@ def _scatter(context: ChartContext) -> Drawn:
                     color=colour or (look.token if look is not None else None),
                     shape=look.shape if look is not None and colour is None else None,
                     hollow=True if fails else None,
+                    tag=look.tag if look is not None else None,
                     tip=[
                         _arm_name(context, point.arm),
                         f"{money_words(context.report_input, x_key, x_drawn)} {figure_text(x_value, x_drawn)}"
@@ -885,22 +882,27 @@ def _scatter(context: ChartContext) -> Drawn:
                 ),
                 "frontier": True,
                 "emphasis": context.emphasis,
-                "legend": factor_legend(context.report_input, (point.arm for point in points)) if configs else None,
                 **part,
             }
         )
 
+    def keyed(data: ScatterChart) -> ScatterChart:
+        """The chart with its legend: a config's colours, then what a hollow mark is, where one is drawn."""
+        drawn = [*(data.points or []), *(point for panel in data.panels or [] for point in panel.points or [])]
+        legend = factor_legend(context.report_input, (point.arm for point in points)) if configs else None
+        return data.model_copy(update={"legend": with_hollow_key(legend, drawn)})
+
     notes = (LOG_X_NOTE,) if x_log else ()
     if len(tasks) == 1:
         y_line, x_line = lines(tasks[0])
-        data = chart(points=drawn_points(tasks[0]), reference=y_line, x_reference=x_line)
+        data = keyed(chart(points=drawn_points(tasks[0]), reference=y_line, x_reference=x_line))
         return money_drawn(context, data, notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
     panels = []
     for task in tasks:
         y_line, x_line = lines(task)
         title = next((slice_name(context, item) for item in context.report_input.tasks if item.id == task), task or "")
         panels.append(ScatterPanel(title=title, points=drawn_points(task), reference=y_line, x_reference=x_line))
-    return money_drawn(context, chart(panels=panels), notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
+    return money_drawn(context, keyed(chart(panels=panels)), notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
 
 
 #: The kinds this module resolves.

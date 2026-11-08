@@ -100,12 +100,12 @@ from threetears.evals.analysis.report.parts.words import (
     BASIS_NOTE,
     BETTER_WORDS,
     CASES_MEAN_TEMPLATE,
+    FAMILY_LEVEL_TEMPLATE,
     COMPARE_NARROW_NOTE,
     COMPARE_NESTED_TEMPLATE,
     COMPARE_STATED_COUNT,
     COMPARE_UNSTATED_COUNT,
     COMPARE_NOTE,
-    FAMILY_LEVEL_NOTE,
     FROM_LEVEL_TEMPLATE,
     GROUP_LEVEL_TEMPLATE,
     HUMAN_PREF_NOTE,
@@ -1144,21 +1144,29 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
         yield reference.value
 
 
-def _family_note(context: ChartContext) -> tuple[str, ...]:
-    """What a forest of contrasts corrected together says its level means: each interval's level, and that the
-    family's intervals hold together at its own; none where the chart's level is not one family's corrected level."""
+def _family_level(context: ChartContext) -> str:
+    """A forest's level as its head prints it: where its contrasts are one family corrected together at the chart's
+    level, that level to one decimal and what the family holds at together, ``99.7% (95% across 16 comparisons)``
+    (the kit prints ``99.7% intervals (95% across 16 comparisons)``); the chart's level as it is otherwise."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
     if len(families) != 1:
-        return ()
+        return context.level
     (family,) = families
     corrected = (family.correction or "").strip().lower() not in ("", "none")
     if not corrected or not family.family_size or family.family_size < 2 or family.alpha is None:
-        return ()
+        return context.level
     if family.level != context.level:
-        return ()
+        return context.level
     joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
-    return (FAMILY_LEVEL_NOTE.format(level=context.level, size=family.family_size, joint=joint),)
+    stated = context.level.removesuffix("%")
+    try:
+        at = round(float(stated), 1)
+    except ValueError:
+        return context.level
+    # A level a tenth short of 100 keeps its own digits: rounded, it would read as no interval at all.
+    level = context.level if at >= 100 else f"{format_number(at)}%"
+    return FAMILY_LEVEL_TEMPLATE.format(level=level, joint=joint, size=family.family_size)
 
 
 def _forest(context: ChartContext) -> Drawn:
@@ -1171,7 +1179,6 @@ def _forest(context: ChartContext) -> Drawn:
         changes, drawn = _reading_changes(context)
     elif source == "contrasts":
         changes, drawn, notes = _contrast_changes(context)
-        notes = (*notes, *_family_note(context))
     else:
         raise context.refuse("a forest draws readings or contrasts")
     if not context.level:
@@ -1187,7 +1194,7 @@ def _forest(context: ChartContext) -> Drawn:
         rows=[_forest_row(change, context) for change in changes],
         domain=(domain[0], domain[1]),
         fmt=drawn.fmt,
-        level=context.level,
+        level=_family_level(context) if source == "contrasts" else context.level,
         reference=reference,
         zero_label=zero,
         better=_better(context),
@@ -1278,7 +1285,8 @@ def _diverging(context: ChartContext) -> Drawn:
         for change in changes:
             by_aspect.setdefault(change.panel or "", []).append(change)
         panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_aspect.items()]
-    level = context.level
+    # Contrasts corrected together print the family's level in the head, as a forest of them does.
+    level = _family_level(context) if source == "contrasts" else context.level
     if dots:
         if not any(change.interval is not None for change in changes):
             level = ""

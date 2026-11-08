@@ -130,11 +130,13 @@ def _drawn(block: ChartBlock) -> tuple[str, dict[str, Any]]:
 
 
 def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> None:
+    """Each bar is its arm's trials as shares, 0 to 100%, so arms with unequal trials read alike; its note the share
+    passed and its counts, its tooltip every count."""
     kind, data = _drawn(_bar_chart())
-    assert kind == "bars" and data["fmt"] == "int" and data["domain"] == [0, 12]
+    assert kind == "bars" and data["fmt"] == "pct" and data["domain"] == [0, 100]
     first, second = data["rows"]
-    assert [segment["value"] for segment in first["segments"]] == [6, 2, 3, 1]
-    assert first["label"] == "model=a (control)" and first["note"] == "12 trials"
+    assert [segment["value"] for segment in first["segments"]] == [50, 2 / 12 * 100, 25, 1 / 12 * 100]
+    assert first["label"] == "model=a (control)" and first["note"] == "50% passed · 6 of 12"
     # The census is in each row's tooltip as words, so no count is read off a length or a colour alone.
     assert first["tip"] == [
         "model=a (control)",
@@ -145,7 +147,7 @@ def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> No
         "lost: setup fault 1",
     ]
     # Passed is drawn in ink, never the status green, so green on a page means a status pill alone (owner ruling O1).
-    assert second["segments"] == [{"value": 12, "color": "--ink-2"}]
+    assert second["segments"] == [{"value": 100, "color": "--ink-2"}]
 
 
 def test_every_outcome_count_is_in_the_chart_s_table() -> None:

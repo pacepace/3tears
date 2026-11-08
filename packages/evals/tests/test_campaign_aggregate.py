@@ -236,7 +236,7 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
         assert point.pass_rate == pytest.approx(100 * entry.passed / entry.usable)
         assert point.cost == pytest.approx(entry.reply_cost_usd or math.nan)
         assert point.pass_rate_low <= point.pass_rate <= point.pass_rate_high
-    assert chart.title == "Cost and pass rate" and chart.unit == "usd"
+    assert chart.title == "Pass rate and cost per 1,000 replies, each arm, 95% intervals" and chart.unit == "usd"
     # One aspect: the matrix carries no row across aspects, and nothing says how aspects are weighed.
     assert EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in _matrix(page).rows}
     assert WEIGHTING_LINE not in _lines(page)
@@ -245,7 +245,8 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     assert [point["label"] for point in drawn[1]["points"]] == ["alpha", "beta", "gamma"]  # type: ignore[index,union-attr]
     html = campaign_report_html(page)
     assert '<figure class="fig" data-figure="cost_quality">' in html and 'data-kind="scatter_frontier"' in html
-    assert '<div class="tbl chart-values"><table><caption>Cost and pass rate</caption>' in html
+    caption = "<caption>Pass rate and cost per 1,000 replies, each arm, 95% intervals</caption>"
+    assert f'<div class="tbl chart-values"><table>{caption}' in html
     markdown = campaign_report_markdown(page)
     # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.00, in
     # the one form beta's $0.80 needs (#993), as the scoreboard reads it.
@@ -256,7 +257,7 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
 def test_s1_draws_every_arm_across_its_aspects() -> None:
     page = s1_change().page()
     (chart,) = _charts(page)
-    assert chart.title == "Cost and pass rate, all aspects (equal weight)"
+    assert chart.title == "Pass rate and cost per 1,000 replies, each arm, 95% intervals, all aspects (equal weight)"
     assert [(point.arm, round(point.pass_rate, 1)) for point in chart.points] == [
         ("production", 46.7),
         ("v2", 48.3),

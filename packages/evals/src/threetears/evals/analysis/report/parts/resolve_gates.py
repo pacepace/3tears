@@ -37,12 +37,11 @@ configs     on the query's measures), then  named by its levels        it reads.
 
 **gate_scatter** draws each arm (each config) at the figures the two gates read, the gates' own statistics (a p95
 for a latency budget), with both gates' lines and the region meeting both shaded and named; a point that fails the
-gate check is hollow. Its axes are the two measures the query names, else the two the gates read; the one a gate
-reads as a floor is up. A config's point takes its first factor's colour, which a legend names, and a path joins the
-points along a factor: the first factor after the colouring one with more than two levels, else the last factor, one
-path per combination of the other factors' levels, in the colouring factor's colour (models by a reasoning budget
-by retries: a path per model and retry setting, along the budget). Over tasks it panels by task, each panel
-at that task's gates. An x axis whose values span more than ten times is drawn on a log scale, which a caption says
+gate check is hollow, and its key says so; every point carries its arm's tag, its label where it has no other. Its
+axes are the two measures the query names, else the two the gates read; the one a gate reads as a floor is up. A
+config's point takes its first factor's colour, which a legend names. No line joins one model's configs: the input
+does not say a factor's levels are ordered, and a line over unordered categories draws a trend that is not there
+(GENERATOR §5.1). Over tasks it panels by task, each panel at that task's gates. An x axis whose values span more than ten times is drawn on a log scale, which a caption says
 (GENERATOR §5.2).
 
 **lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the rest,
@@ -78,7 +77,6 @@ from threetears.evals.analysis.report.charts import (
     LatticeCell,
     LatticeChart,
     LatticeRow,
-    ScatterPath,
     ScatterPoint,
 )
 from threetears.evals.analysis.report.cost_unit import priced_in_part, per_count, per_noun
@@ -92,6 +90,7 @@ from threetears.evals.analysis.report.parts.charting import (
     count_text,
     criterion_label,
     factor_legend,
+    with_hollow_key,
     factor_token,
     figure_stat,
     figure_unit,
@@ -682,32 +681,8 @@ def _scatter_point(context: ChartContext, point: _Point, axes: tuple[_Axis, _Axi
         shape=shape,
         hollow=True if point.check.status == "fail" else None,
         tip=[*tip, *_check_lines(point.check)],
+        tag=context.look.arm(point.arm).tag if point.arm in context.look.arms else None,
     )
-
-
-def _paths(context: ChartContext, drawn_ids: set[str]) -> list[ScatterPath] | None:
-    """One path per combination of the other factors' levels, along the first factor after the colouring (first) one
-    with more than two levels, else the last, each in its colouring level's colour (this module's gate scatter)."""
-    report_input = context.report_input
-    factors = report_input.factors
-    if context.query.source != "configs" or len(factors) < 2:
-        return None
-    colouring, others = factors[0], factors[1:]
-    along = next((factor for factor in others if len(factor.levels) > 2), others[-1])
-    rest = [factor for factor in factors if factor.id != along.id]
-    by_levels = {tuple(sorted(config.levels.items())): config.arm for config in report_input.configs}
-    paths: list[ScatterPath] = []
-    for combination in product(*(factor.levels for factor in rest)):
-        fixed = {factor.id: level.id for factor, level in zip(rest, combination, strict=True)}
-        ids = []
-        for level in along.levels:
-            arm = by_levels.get(tuple(sorted({**fixed, along.id: level.id}.items())))
-            if arm is not None and arm in drawn_ids:
-                ids.append(arm)
-        if len(ids) >= 2:
-            place = [one.id for one in colouring.levels].index(fixed[colouring.id])
-            paths.append(ScatterPath(ids=ids, color=series_token(place)))
-    return paths or None
 
 
 def _gate_scatter(context: ChartContext) -> Drawn:
@@ -760,6 +735,7 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         [_scatter_point(context, point, (x_axis, y_axis), count) for point in panel.points] for panel in panels
     ]
     arms = [point.arm for panel in panels for point in panel.points]
+    legend = factor_legend(context.report_input, arms) if context.query.source == "configs" else None
     common: dict[str, object] = {
         "x_domain": (x_domain[0], x_domain[1]),
         "y_domain": (y_domain[0], y_domain[1]),
@@ -769,15 +745,14 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         "x_title": x_axis.title,
         "y_title": y_axis.title,
         "emphasis": context.emphasis,
-        "legend": factor_legend(context.report_input, arms) if context.query.source == "configs" else None,
+        "legend": with_hollow_key(legend, (point for points in drawn_points for point in points)),
     }
     notes = (LOG_AXIS_NOTE.format(axis=x_axis.title),) if x_log else ()
     data: GateScatterChart
     if len(panels) == 1:
         only = panels[0]
         whole = {"points": drawn_points[0], "reference": only.y_line, "x_reference": only.x_line}
-        paths = _paths(context, {point.arm for point in only.points})
-        data = GateScatterChart.model_validate({**common, **whole, "region_label": REGION_LABEL, "paths": paths})
+        data = GateScatterChart.model_validate({**common, **whole, "region_label": REGION_LABEL})
     else:
         gate_panels = [
             GateScatterPanel(title=panel.title, points=points, reference=panel.y_line, x_reference=panel.x_line)

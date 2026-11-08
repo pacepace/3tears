@@ -188,8 +188,9 @@ class MoneyRuler:
         """A label naming the money (a measure's name, a column's head) with the drawn count in it: the count the
         label states for its own unit (``own``: 1,000 in ``Cost per 1k calls``) replaced by the drawn one (``Cost per
         1,000,000 calls``), or, where the label states none (money per reply, whose label names no count), the drawn
-        count's words after it (``Cost per reply, per 1,000 replies``). Never two counts: unchanged where the drawn
-        count is the label's own, and for a total.
+        count's words after it (``Cost per reply, per 1,000 replies``). Never two counts, and one spelling of a count
+        on every page: where the drawn count is the label's own it is written as a page writes it (``Cost per 1,000
+        calls``, never ``1k``); a label that states no count reads as it is there, as does a total.
 
         :param label: The label as the input or the page writes it.
         :ptype label: str
@@ -200,9 +201,9 @@ class MoneyRuler:
         :return: The label with the drawn count.
         :rtype: str
         """
-        if not self.counted or self.counted == own:
+        if not self.counted:
             return label
-        if own == 1 and noun:
+        if own == 1 and noun and self.counted != own:
             # Money per one of what it counts states its count as ``per reply``: the drawn count replaces it.
             single = re.search(rf"(?<!\w){re.escape(per_one(noun))}(?!\w)", label, re.I)
             if single is not None:
@@ -216,6 +217,8 @@ class MoneyRuler:
             )
             if found is not None:
                 return label[: found.start()] + self.words(noun) + label[found.end() :]
+        if self.counted == own:
+            return label
         return f"{label}, {self.words(noun)}"
 
     def for_changes(self, changes: Iterable[float | None], widths: Iterable[float | None] = ()) -> MoneyRuler:

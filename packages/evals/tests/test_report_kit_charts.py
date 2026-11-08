@@ -424,10 +424,12 @@ def test_a_cost_axis_at_a_real_reply_cost_draws_distinct_ticks_none_reading_as_z
     assert all(re.search(r"[1-9]", tick) for tick in ticks[1:]), ticks
 
 
-#: Each drawn row of the page's bar chart: the label the kit drew and the tag beside it.
+#: Each drawn row of the page's bar chart: the label the kit drew, its lines joined by a space, and the tag beside it.
 _BAR_LABELS = """() => [...document.querySelectorAll('div.chart[data-kind="bars"] svg g')]
   .filter(g => g.querySelector('rect[data-tip]'))
-  .map(g => ({label: g.querySelector('text').textContent, tag: (g.querySelector('text.tag') || {}).textContent || null}))"""
+  .map(g => {const t = g.querySelector('text'), spans = [...t.querySelectorAll('tspan')];
+    return {label: spans.length ? spans.map(s => s.textContent).join(' ') : t.textContent,
+            tag: (g.querySelector('text.tag') || {}).textContent || null};})"""
 
 
 @pytest.mark.integration
@@ -436,7 +438,8 @@ def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outco
     tmp_path: Path, width: int
 ) -> None:
     """Three arms named alike up to their reasoning level: at 1200 and at 390 px each drawn row reads apart from the
-    others, by its short name or, where that does not fit, its tag alone; none is cut to a shared prefix."""
+    others, by its whole name (on one line or two) or its short name, never its tag alone; none is cut to a shared
+    prefix."""
     reason = chromium_unavailable()
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
@@ -455,7 +458,73 @@ def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outco
     assert [row["tag"] for row in drawn] == ["P", "A", "B"]
     assert len({(row["label"], row["tag"]) for row in drawn}) == 3
     assert not any("…" in row["label"] for row in drawn), drawn
-    assert all(row["label"] in {"", arm, short} for row, (arm, _, short) in zip(drawn, arms, strict=True)), drawn
+    assert all(row["label"] in {arm, short} for row, (arm, _, short) in zip(drawn, arms, strict=True)), drawn
+
+
+#: Each text the page's line chart draws, its lines joined by a space.
+_LINE_TEXTS = """() => [...document.querySelectorAll('div.chart[data-kind="lines"] svg text')]
+  .map(t => {const spans = [...t.querySelectorAll('tspan')];
+    return spans.length ? spans.map(s => s.textContent).join(' ') : t.textContent;})"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", [1200, 390])
+def test_a_line_charts_end_labels_wrap_and_are_never_cut(tmp_path: Path, width: int) -> None:
+    """Two series named longer than a phone's margin holds on one line: at 1200 and at 390 px the kit draws each end
+    label whole, wrapped at its spaces, and cuts none."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    names = ["Brisk-S · reasoning high · 1 retry", "Atlas-M · reasoning low · no retry"]
+    data = {
+        "categories": ["v1", "v2", "v3"],
+        "series": [{"name": names[0], "values": [90, 92, 95]}, {"name": names[1], "values": [85, 86, 88]}],
+        "domain": [80, 100],
+        "fmt": "pct",
+    }
+    page = tmp_path / "lines.html"
+    block = {"kind": "chart", "section": "memo", "chart": "lines", "title": "Pass rate by version", "data": data}
+    page.write_text(report_page([block]), encoding="utf-8")
+    drawn, errors = rendered(page, _LINE_TEXTS, width=width)
+    assert errors == []
+    assert all(name in drawn for name in names), drawn
+    assert not any("…" in text for text in drawn), drawn
+
+
+#: The line chart's drawing height and the bottom of each end label's box, in its own px.
+_LINE_FIT = """() => {const svg = document.querySelector('div.chart[data-kind="lines"] svg');
+  return {height: svg.viewBox.baseVal.height,
+          bottoms: [...svg.querySelectorAll('text.lbl, text.lbl-strong')].map(t => {const b = t.getBBox(); return b.y + b.height;})};}"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", [1200, 390])
+def test_a_short_line_charts_wrapped_end_labels_all_sit_inside_its_drawing(tmp_path: Path, width: int) -> None:
+    """A short line chart whose three long series end close together: the kit grows the drawing until every wrapped
+    end label's box sits inside it, so none is clipped at its foot."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    names = [
+        "Brisk-S · reasoning high · 1 retry",
+        "Atlas-M · reasoning low · no retry",
+        "Nano-XS · reasoning off · 1 retry",
+    ]
+    data = {
+        "categories": ["v1", "v2"],
+        "series": [{"name": name, "values": [90, value]} for name, value in zip(names, (95, 94.5, 94), strict=True)],
+        "domain": [80, 100],
+        "fmt": "pct",
+        "height": 120,
+    }
+    page = tmp_path / "short-lines.html"
+    block = {"kind": "chart", "section": "memo", "chart": "lines", "title": "Pass rate by version", "data": data}
+    page.write_text(report_page([block]), encoding="utf-8")
+    drawn, errors = rendered(page, _LINE_FIT, width=width)
+    assert errors == []
+    assert len(drawn["bottoms"]) == len(names), drawn
+    assert drawn["height"] > 120, "the labels wrap past the stated height, so the growth is reached"
+    assert max(drawn["bottoms"]) <= drawn["height"], drawn
 
 
 #: The kit's arm naming over a control and thirty candidates: each arm's tag, in order.

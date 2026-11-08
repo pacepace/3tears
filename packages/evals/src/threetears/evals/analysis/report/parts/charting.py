@@ -70,7 +70,7 @@ from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
+from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, input_check_name, resolve
 from threetears.evals.kernel.numbers import spell_count
@@ -131,6 +131,7 @@ __all__ = [
     "stat_value",
     "unit_quantities",
     "unit_refusal",
+    "with_hollow_key",
 ]
 
 #: The z a 95% interval spans either side, which the descriptive rule reads a change against (GENERATOR §5.2).
@@ -1218,6 +1219,26 @@ def factor_legend(report_input: ReportInput, arms: Iterable[str]) -> list[Legend
         if place in shown
     ]
     return items or None
+
+
+#: What a scatter's hollow mark means, in its key: the point fails a gate.
+_HOLLOW_KEY = "Hollow: fails a gate"
+
+
+def with_hollow_key(legend: list[LegendItem] | None, points: Iterable[ScatterPoint]) -> list[LegendItem] | None:
+    """A scatter's legend with one line saying what a hollow mark is, where some point is drawn hollow (it fails a
+    gate), so hollow is never a mark a reader must guess at; the legend as it is where none is.
+
+    :param legend: The chart's legend, if it has one.
+    :ptype legend: list[LegendItem] | None
+    :param points: Every point it draws, over every panel.
+    :ptype points: Iterable[ScatterPoint]
+    :return: The legend.
+    :rtype: list[LegendItem] | None
+    """
+    if not any(point.hollow for point in points):
+        return legend
+    return [*(legend or []), LegendItem(label=_HOLLOW_KEY, color="--ink-2", mark="circle", hollow=True)]
 
 
 #: The most points a scatter labels every one of (this module's scatter labels).

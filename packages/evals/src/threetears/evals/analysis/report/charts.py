@@ -606,6 +606,17 @@ def _reference_row(reference: ChartReference | None, spec: str, width: int) -> l
     return [[name, _formatted(spec, reference.value), *([""] * (width - 2))]]
 
 
+#: An interval level with a gloss after it in parentheses: ``99.7% (95% across 16 comparisons)``.
+_GLOSSED_LEVEL = re.compile(r"^(\S+) (\(.+\))$")
+
+
+def _interval_head(level: str | None) -> str:
+    """A values table's interval column head: ``95% interval``; a glossed level keeps its gloss last, as the chart's
+    head does (``99.7% interval (95% across 16 comparisons)``)."""
+    glossed = _GLOSSED_LEVEL.fullmatch(level or "")
+    return f"{glossed[1]} interval {glossed[2]}" if glossed else f"{level} interval"
+
+
 def _need_level(level: str | None, intervals: bool) -> None:
     """Refuse intervals drawn without their level: the kit prints "<level> intervals" on every such chart."""
     if intervals and not level:
@@ -679,7 +690,11 @@ class _BarsFields(_Kind):
     fmt: Fmt | None = Field(default=None, description="The values' format.")
     tick_fmt: Fmt | None = Field(default=None, description="The axis labels' format, where it differs.")
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
-    log: bool | None = Field(default=None, description="A log value axis, the bars drawn from its low end.")
+    log: bool | None = Field(
+        default=None,
+        description="A log value axis, every row drawn on it as a dot, never a bar: a bar's length from a log axis's "
+        "low end measures nothing.",
+    )
     reference: ChartReference | None = Field(default=None, description="A floor, budget or no-preference point.")
     zero_label: str | None = Field(
         default=None,
@@ -690,8 +705,8 @@ class _BarsFields(_Kind):
     better: Literal["right", "left"] | tuple[str, str] | None = Field(default=None, description=_BETTER_WORDS)
     dots: bool | None = Field(
         default=None,
-        description="Changes drawn as dots with their intervals, not bars: a row with no interval an open mark, each "
-        "note at the right edge.",
+        description="Rows drawn as dots with their intervals, not bars (changes, and every row on a log axis): a row "
+        "with no interval an open mark, each note at the right edge.",
     )
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
@@ -722,7 +737,7 @@ class _BarsFields(_Kind):
             "Row",
             "Value",
             *(["Parts"] if stacked else []),
-            *([f"{self.level} interval"] if intervals else []),
+            *([_interval_head(self.level)] if intervals else []),
             *(["Note"] if notes else []),
         ]
         body: list[list[str]] = []
@@ -811,7 +826,7 @@ class ForestChart(_Drawable):
             *(["Group"] if grouped else []),
             "Row",
             "Change",
-            f"{self.level} interval",
+            _interval_head(self.level),
             *(["Note"] if notes else []),
         ]
         body = [
@@ -900,6 +915,11 @@ class ScatterPoint(_KitModel):
     hollow: bool | None = Field(default=None, description="A hollow mark (a failure).")
     muted: bool | None = Field(default=None, description="A faded mark.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    tag: str | None = Field(
+        default=None,
+        description="The arm's letter tag: the point's label where it has none of its own (a crowded chart, a phone), "
+        "so its colour is never the only thing that names it.",
+    )
 
 
 class ScatterPath(_KitModel):
@@ -981,7 +1001,9 @@ def _point_name(point: ScatterPoint) -> str:
     """A scatter point as its table row names it: its drawn label, else its tooltip's first line (the bold one, which
     names the point), else its id; a crowded chart draws no label, and its table still names each point for a
     reader, never by an internal id while a name is held."""
-    return point.label or point.narrow_label or (point.tip[0] if point.tip else None) or point.id or ""
+    name = point.label or point.narrow_label or (point.tip[0] if point.tip else None) or point.id or ""
+    # Its tag first where it has one, as its mark is labelled with it, so the table reads the drawn tag's arm.
+    return name if name == point.tag else _tagged(point.tag, name)
 
 
 class ScatterPanel(_ScatterFields, _PanelText):
@@ -1076,7 +1098,7 @@ class _DotIntervalFields(_Kind):
             for row, text in zip(rows, said, strict=True)
         ]
         notes = any(kept)
-        headers = ["Row", "Value", *([f"{self.level} interval"] if self.level else []), *(["Note"] if notes else [])]
+        headers = ["Row", "Value", *([_interval_head(self.level)] if self.level else []), *(["Note"] if notes else [])]
         body = [
             [
                 row.label,
