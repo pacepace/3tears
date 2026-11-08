@@ -153,7 +153,7 @@ cp packages/evals/examples/5-writer/cases/*.json.gz \
 uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
   --cases .prawduct/acceptance-cases --out .prawduct/acceptance-run \
   --held-out-fraction 0.99 --writer claude-sonnet-5-5 --effort medium \
-  --budget-usd 0.75 --turns 30 --request-s 40 --cap-usd 71
+  --budget-usd 1.50 --turns 30 --request-s 40 --cap-usd 131
 ```
 
 At 0.99, all 32 cases are held-out.
@@ -180,13 +180,13 @@ Before launch, each arm's reports and its judge calls, each priced at its ceilin
 
 | Item | Figure |
 |---|---|
-| Cap | $71.00 |
-| Pairwise pass, a fifth | $14.20 |
-| Each arm, two fifths | $28.40 |
-| Reports, 32 × $0.75 | $24.00 |
+| Cap | $131.00 |
+| Pairwise pass, a fifth | $26.20 |
+| Each arm, two fifths | $52.40 |
+| Reports, 32 × $1.50 | $48.00 |
 | Judge calls, 32 cases × 7 rubric items × 2 attempts | 448 |
 | Each call at its ceiling, 2,048 tokens in and 2,048 out | $0.009216 |
 | Judge calls at their ceiling | $4.13 |
-| Reports and judging | $28.13 |
+| Reports and judging | $52.13 |
 
-$28.13 fits the arm's $28.40: the cap splits into a fifth for the pairwise pass and two fifths for each of the two arms (2 × $28.40 + $14.20 = $71.00). The previous $60 cap leaves $24.00 per arm and refuses 32 cases at $0.75; the smallest cap that fits is $70.33 (two fifths of it is $28.13), so $71 is the smallest whole dollar. The judge's rates are those rung 5's recordings imply for gemini-3.8-flash: $0.75 per million tokens in, $3.75 per million out.
+$52.13 fits the arm's $52.40: the cap splits into a fifth for the pairwise pass and two fifths for each of the two arms (2 × $52.40 + $26.20 = $131.00). The smallest cap that fits is $130.33 (two fifths of it is $52.13), so $131 is the smallest whole dollar. The report budget is $1.50 and not $0.75 because the acceptance script's launch warning, from recorded Sonnet 5.5 runs, finds that at $0.75 only 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and at $1.50 99 of 100 (the script's own default); the Anthropic writer's reports are most of the cap ($96 of $131 across both arms). The judge's rates are those rung 5's recordings imply for gemini-3.8-flash: $0.75 per million tokens in, $3.75 per million out.
