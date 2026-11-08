@@ -1249,7 +1249,7 @@ class TestAWrapperIsAPrimitive:
     def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self):
         """A decision moved into ``forms.py`` and called from a surface is decided where it is called, so a module
         that reroutes through one never reaches zero entries by the move alone."""
-        assert {"at_decimals", "level_decimals", "change_decimals", "measured_decimals"} <= _FORMS_CALLABLES
+        assert {"at_decimals", "level_decimals", "change_decimals", "change_span"} <= _FORMS_CALLABLES
         assert _forms(_python_sites("at_decimals(v, 2, '%')")) == [
             ("<module>", "at_decimals()", "at_decimals(v, 2, '%')")
         ]

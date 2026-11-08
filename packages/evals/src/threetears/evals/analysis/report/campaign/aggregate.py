@@ -43,8 +43,8 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
     TableCell,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.numbers import format_number
 
 __all__ = ["EQUAL_WEIGHT_ROW", "aggregate_blocks", "equal_weight_cells"]
 
@@ -70,7 +70,8 @@ def equal_weight_cells(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
 ) -> dict[str, TableCell]:
     """Each arm's cell in the scorecard's :data:`EQUAL_WEIGHT_ROW`, by its variant key: the figure, its interval drawn
-    beside it, in its column's unit; a withheld figure is a dash marked as withheld.
+    beside it, in its column's unit, as read (the scorecard holds it as the page's forms hold the matrix's own cells);
+    a withheld figure is a dash marked as withheld.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -93,7 +94,7 @@ def equal_weight_cells(
 
 
 def aggregate_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, forms: PageForms
 ) -> list[ReportBlock]:
     """The cost/quality chart where it is drawn, a line per figure withheld from the row or the chart, and the
     weighting once in the methods.
@@ -104,6 +105,8 @@ def aggregate_blocks(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The blocks; none for a measurement, or where neither the row nor the chart is laid out.
     :rtype: list[ReportBlock]
     """
@@ -137,7 +140,7 @@ def aggregate_blocks(
             point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm], declared.get(arm.arm))) is not None
         ]
         if len(points) >= 2:
-            level = f"{format_number(round(aggregate.level * 100, 2))}%"
+            level = forms.confidence_share(aggregate.level).text
             chart = ChartBlock(
                 section="scorecard",
                 chart="cost_quality",
@@ -184,12 +187,12 @@ def _row_figure(arm: ArmAggregate) -> tuple[AggregateFigure, str]:
 
 
 def _cell(figure: AggregateFigure, unit: str) -> TableCell:
-    """One figure as the row's cell: rounded as the matrix's own cells are, its interval drawn beside it, a change
-    against zero; a withheld one a dash marked as withheld."""
+    """One figure as the row's cell, as read: its interval drawn beside it, a change against zero; a withheld one a dash
+    marked as withheld."""
     if figure.value is None or figure.interval is None:
         return TableCell(value=None, flag=_WITHHELD)
     low, high = figure.interval
-    return TableCell(value=round(figure.value, 1), unit=unit, low=low, high=high, zero_line=unit == POINTS)
+    return TableCell(value=figure.value, unit=unit, low=low, high=high, zero_line=unit == POINTS)
 
 
 def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:

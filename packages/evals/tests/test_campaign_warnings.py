@@ -23,6 +23,7 @@ from threetears.evals.analysis.report.campaign.names import AspectNames
 
 from threetears.evals.analysis.report.campaign.scorecard import READING_WORDS
 from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.analysis.report.campaign_page import build_campaign_report, campaign_warnings
 from threetears.evals.analysis.report.model import (
@@ -170,7 +171,8 @@ def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
         for label, report in shape.reports.items()
     }
     names = AspectNames.of(report.bundle for report in reports.values())
-    (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names)
+    forms = PageForms.of_campaign(shape.readings, reports)
+    (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names, forms=forms)
     assert isinstance(line, DisclosureBlock) and line.section == "warnings"
     assert line.text == (
         "v2 may do worse than production on the reply polite (judged) guardrail on billing and the reply on brand "
