@@ -207,27 +207,22 @@ class L2FirstEpochs(Protocol):
         """
         ...
 
-    async def restore_generation(self, table_name: str, token: str | None) -> bool:
-        """put the table's generation back, only where the store holds none.
+    async def restore_epochs(self, table_name: str, head: str | None, changes: Sequence[EpochChange]) -> bool:
+        """put a table's epoch history back after NATS lost it, only where the store holds none.
+
+        The records keep their epochs, oldest first, and the head becomes ``head``: a pod whose mark is
+        within them catches up by applying them, as after any missed broadcast. One call, so a store that
+        numbers epochs itself (a stream's sequence) can be created at the first restored one.
 
         :param table_name: the table
         :ptype table_name: str
-        :param token: the generation to put back; ``None`` mints a fresh incarnation at count zero
-        :ptype token: str | None
-        :return: whether this call created it
+        :param head: the epoch to resume at; ``None`` starts a fresh incarnation at count zero
+        :ptype head: str | None
+        :param changes: the newest records the L3 epoch log keeps, oldest first, ending at ``head``
+        :ptype changes: Sequence[EpochChange]
+        :return: whether this call put the history back; ``False`` when the store already held one
         :rtype: bool
         :raises GenerationUnavailableError: when the store cannot be written
-        """
-        ...
-
-    async def restore_change(self, change: EpochChange) -> bool:
-        """put one epoch's change record back into the log, only where the log holds none for it.
-
-        :param change: the record, as the L3 epoch log kept it
-        :ptype change: EpochChange
-        :return: whether this call created it
-        :rtype: bool
-        :raises GenerationUnavailableError: when the log cannot be written
         """
         ...
 
@@ -711,9 +706,9 @@ class L2Refiller:
         records = 0
         if head is None:
             logged = await self._log.head(table)
-            if logged is not None:
-                records = await self._restore_records(table, logged)
-            await self._epochs.restore_generation(table, logged)
+            changes = [] if logged is None else await self._newest_records(table, logged)
+            await self._epochs.restore_epochs(table, logged, changes)
+            records = len(changes)
             head = await self._epochs.read(table)
         if head is not None and await collection.read_l2_first_state("saved") is None:
             await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
@@ -725,26 +720,24 @@ class L2Refiller:
         )
         return True
 
-    async def _restore_records(self, table: str, logged: str) -> int:
-        """put the newest epoch records of the table back into the change log.
+    async def _newest_records(self, table: str, logged: str) -> list[EpochChange]:
+        """the newest epoch records of the table the L3 epoch log keeps, oldest first.
 
         :param table: the table
         :ptype table: str
         :param logged: the newest epoch the L3 epoch log holds
         :ptype logged: str
-        :return: how many records were put back
-        :rtype: int
+        :return: at most :data:`_RESTORED_RECORDS` records, ending at ``logged``
+        :rtype: list[EpochChange]
         """
         incarnation, top = _parts(table, logged)
         after = f"{incarnation}:{max(0, top - _RESTORED_RECORDS)}"
-        restored = 0
+        found: list[EpochChange] = []
         while True:
             page = await self._log.since(table, after, limit=_RESTORE_PAGE_RECORDS)
-            for change in page:
-                if await self._epochs.restore_change(change):
-                    restored += 1
+            found.extend(page)
             if len(page) < _RESTORE_PAGE_RECORDS:
-                return restored
+                return found
             after = page[-1].token
 
 

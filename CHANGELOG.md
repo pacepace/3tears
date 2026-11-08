@@ -29,7 +29,7 @@ and `tables_written_l2_first`. The write-mark reconciler deletes a mark on an L2
 advance, and the trigger install skips such tables.
 
 **Added (epoch):** `EpochGenerationSource.read`, `change`, `advance_continuing` (never mints an incarnation),
-`restore_generation`, `restore_change` and `observe_change_log_fill`, which sets
+`restore_epochs` and `observe_change_log_fill`, which sets
 `threetears_epoch_changes_fill_ratio` and warns at `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75).
 
 **Added (nats):** `NatsKvBucket.held_bytes` (and `FakeKvBucket.held_bytes`).

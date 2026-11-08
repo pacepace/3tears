@@ -366,42 +366,31 @@ class EpochGenerationSource:
         await self._store_change(table_name, token, rows)
         return token
 
-    async def restore_generation(self, table_name: str, token: str | None) -> bool:
-        """put a table's generation back where the bucket holds none: the refiller's step after L2 is lost.
+    async def restore_epochs(self, table_name: str, head: str | None, changes: Sequence[EpochChange]) -> bool:
+        """put a table's epoch history back after NATS lost it, only where the bucket holds no generation.
+
+        Each record is created where the log holds none for its epoch, then the generation itself, last,
+        so a writer (which refuses a table with no generation) commits nothing before the history is back.
 
         :param table_name: the table
         :ptype table_name: str
-        :param token: the generation to put back; ``None`` mints a fresh incarnation at count zero
-        :ptype token: str | None
-        :return: whether this call created it; ``False`` when a generation was already there
+        :param head: the generation to resume at; ``None`` mints a fresh incarnation at count zero
+        :ptype head: str | None
+        :param changes: the records to put back, oldest first
+        :ptype changes: Sequence[EpochChange]
+        :return: whether this call created the generation; ``False`` when one was already there
         :rtype: bool
-        :raises GenerationUnavailableError: when the bucket cannot be written
+        :raises GenerationUnavailableError: when the bucket or the log cannot be written
         """
-        value = token if token is not None else f"{uuid7()}:0"
         try:
+            log_bucket = await self._changes()
+            for change in changes:
+                key = epoch_change_kv_key(change.table, change.token)
+                await log_bucket.create(key=key, value=change.model_dump_json().encode("utf-8"))
+            value = head if head is not None else f"{uuid7()}:0"
             created = await (await self._bucket()).create(key=generation_kv_key(table_name), value=value.encode())
         except KvError as exc:
-            raise GenerationUnavailableError(
-                f"write generation for {table_name!r} could not be restored: {exc}"
-            ) from exc
-        return created is not None
-
-    async def restore_change(self, change: EpochChange) -> bool:
-        """put one epoch's change record back where the log holds none for it.
-
-        :param change: the record, as the L3 epoch log kept it
-        :ptype change: EpochChange
-        :return: whether this call created it
-        :rtype: bool
-        :raises GenerationUnavailableError: when the log cannot be written
-        """
-        key = epoch_change_kv_key(change.table, change.token)
-        try:
-            created = await (await self._changes()).create(key=key, value=change.model_dump_json().encode("utf-8"))
-        except KvError as exc:
-            raise GenerationUnavailableError(
-                f"the change of {change.table!r} at {change.token!r} could not be restored: {exc}"
-            ) from exc
+            raise GenerationUnavailableError(f"the epochs of {table_name!r} could not be restored: {exc}") from exc
         return created is not None
 
     async def observe_change_log_fill(self) -> float | None:
