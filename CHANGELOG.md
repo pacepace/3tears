@@ -8,6 +8,23 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch, nats: the epoch change log keyed by tenant
+
+**Changed (epoch, core, nats):** every change record is keyed `{tenant}.{table}.e`
+(`threetears.core.tenancy`), so a pod reads only its tenants' records, and `ChangedRow.value` is readable only
+within its tenant. A table declares its tenancy (`BaseCollection.tenancy` / `TableSchema.tenancy`:
+`TENANT_BY_SCHEMA`, `tenant_column(...)`, `no_tenant(reason)`); a tenant column joins the invalidation columns;
+an undeclared table, a whole-table change and a keys-unknown change go on `_all`, which every follower reads.
+`ChangedRow.tenant` names a row's tenant (not stored in the record; the key carries it). The writer appends
+each tenant's rows under its key; `EpochGenerationReader(tenants=[...])` reads those keys and `_all`, merged by
+the log's sequence, through named consumers filtered on the keys (`NatsChangeLog.records_after`) and direct
+gets by subject, never a message get by sequence; a reader with no tenants reads every tenant by wildcard.
+Detection is unchanged per key: first sequence and incarnation, one mark per table. The change notes carry
+the tenant (the trigger takes it from the row's schema or its tenant column, by the same token rule), and the
+restore and the write-mark reconciler key by it. `build_permissions(epoch_change_grants=[EpochChangeGrant(...)])`
+narrows an agent or tool pod's read to its own schema and, per platform table its role reads, its customer and
+`_all`; `None` keeps the whole-log read (the expand step). The collection census reports each class's tenancy.
+
 ### core, epoch: the keeper streams its restore, the reconciler names rows, writers follow a restored log
 
 **Changed (core):** the write-mark reconciler records a row-level epoch for a missed write: it reads the marked

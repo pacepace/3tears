@@ -16,6 +16,10 @@ This page is for whoever wires, runs and watches it. The design is in the module
 
 | What | Value |
 |---|---|
+| Change-log keys | `{tenant}.{table}.e` (`threetears.core.tenancy.epoch_change_key`): `s-{schema}` for an agent-schema table, `v-{value}` for a platform table's declared tenant column (a digest `h-...` when the value is not one subject token), `_all` for a platform-wide table, a whole-table change, a keys-unknown change, or an undeclared table |
+| Tenancy | declared on the collection or its `TableSchema` (`tenancy = TENANT_BY_SCHEMA`, `tenant_column("customer_id")`, `no_tenant(reason)`); never guessed. The collection census reports each class's `tenancy`; `undeclared` tables go on `_all` and isolate nothing |
+| Who reads what | a platform service (hub, registry, gateway) reads every tenant (`EpochGenerationReader(nc)`, the wildcard `*.{table}.e`). A pod reads its tenants: `EpochGenerationReader(nc, tenants=[...])`, `_all` always included, under the grants its host names (`build_permissions(epoch_change_grants=...)`) |
+| Row values | `ChangedRow.value` (an L2-first commit's row) rides under its tenant's key, so it is readable only by whoever may read that tenant, as in the collections bucket |
 | Note tables | `threetears_change_notes_0`, `_1`, `_2` in the platform schema: one current, one previous, one emptied and waiting |
 | Ring row | `threetears_change_note_ring` (one row; only the keeper writes it, once per switch; no save reads it) |
 | Cached slot | each writing process: `ChangeNoteSlot(notes_schema=...)`, carried on every pool connection as the session setting `threetears.change_note_slot` (`"<slot>:<valid until>"`, database clock) |
@@ -47,6 +51,32 @@ This page is for whoever wires, runs and watches it. The design is in the module
 | L2-first refills | `threetears_l2_first_refills_total{table}`, with a WARNING per refill |
 | Change log fill | `threetears_epoch_changes_fill_ratio`, warn at `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75) |
 | New env vars or settings | none in 3tears; see "What the hub adds" |
+
+## Tenants: who reads which change records
+
+Every record is keyed by tenant first (see the facts table). A writer splits one commit's rows by tenant: each
+row's `ChangedRow.tenant`, named by the collection from its declared tenant column, or by the writer that knows
+the row's schema (the hub's broker, for an agent-schema table). A whole-table or keys-unknown change goes on
+`_all`, carrying no row. The change notes carry the same tenant, from the trigger (the row's schema, or its
+tenant column, by the same token rule), so a restore puts each tenant's records back under its own key.
+
+A follower keeps one mark per table, and walks each key it may read after it, merged by the log's sequence.
+Detection is the same per key as it was per table: the log's first sequence (`aged_out`) and its incarnation
+(`replaced`, `record_lost`). An interior record of a live log cannot vanish: the stream denies deletes and
+refuses a full append. A pod's walk and watch use named consumers filtered on its keys (and its newest record a
+direct get by subject), so its grant can name exactly those keys; it holds no message get by sequence on this
+log.
+
+What a pod's host grants (`EpochChangeGrant`):
+
+- its own agent schema, whole: `EpochChangeGrant(tenant=schema_tenant(<its schema>))` (`s-...`, every table in
+  it is its own);
+- for each platform table its role already reads (from the same source that grants it those rows): the table
+  for its customer, `EpochChangeGrant(tenant=value_tenant(<customer id>), table=<table>)`, and for `_all`,
+  `EpochChangeGrant(tenant=ALL_TENANTS, table=<table>)`. Never a customer's or `_all`'s whole prefix.
+
+A host that names no grants (`epoch_change_grants=None`) keeps the pod's read of the whole log: the expand step
+of the rollout, until the host names them.
 
 ## Wire every process that writes
 
