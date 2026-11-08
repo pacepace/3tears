@@ -2,13 +2,11 @@
 """Measure what declaring a write generation (an epoch) costs a collection's ``save_entity``.
 
 The question this answers: can every collection declare ``write_generation = WRITE_GENERATION``,
-or is the per-write cost too high? A declared table pays, on every committed write, one
-compare-and-swap on the table's key in the epoch bucket (``EpochGenerationSource.advance``), one
-put of the epoch's change record (``advance_with_change``), and -- where the registry names a
-write-marks schema, as the hub's does -- a trigger insert in the write's own transaction plus a
-read and a delete of the marks the advance covered. Every writer of a table advances the SAME
-key, so concurrent writers contend on it: a lost compare-and-swap is retried after up to 20 ms of
-jitter, which is where the tail comes from.
+or is the per-write cost too high? A declared table pays, on every committed write, one append of
+the epoch's change record to the change log (``EpochGenerationSource.advance_with_change``: the
+stream's sequence is the epoch, so concurrent writers never contend for a counter), and -- where
+the registry names a write-marks schema, as the hub's does -- a trigger insert in the write's own
+transaction plus a read and a delete of the marks the advance covered.
 
 Three variants, each over its own table, all on the SAME broker, database and machine:
 
@@ -26,7 +24,7 @@ only where the platform makes them contend. A pod writing through the hub's L3 b
 broker's advance inside its request round trip; this measures that advance directly.
 
 What to read from the output: p50 and p99 per variant at each writer count, the aggregate
-throughput, and the compare-and-swap losses per write -- the declared rows over the undeclared
+throughput, and the append's own p50/p99 with its failures -- the declared rows over the undeclared
 row at the same writer count are the cost.
 
 Run against a live broker and database::
@@ -46,6 +44,7 @@ import multiprocessing
 import statistics
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from multiprocessing.synchronize import Barrier
 from typing import Any
@@ -56,10 +55,12 @@ from sqlalchemy import MetaData
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
+from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.collections.write_marks import install_write_mark_triggers, write_marks_ddl
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.epoch import EpochGenerationSource
 from threetears.nats import NatsClient, set_default_namespace
 
@@ -103,49 +104,31 @@ def _collection_class(variant: str) -> type[Any]:
 
 
 class _Tally:
-    """compare-and-swap outcomes on the epoch bucket, counted in one writer process."""
+    """the epoch appends one writer process made, timed through the source's public advance."""
 
     def __init__(self) -> None:
-        self.losses = 0
-        self.wins = 0
-
-
-class _CountingBucket:
-    """the epoch bucket, counting each compare-and-swap it refuses; everything else passes through."""
-
-    def __init__(self, inner: Any, tally: _Tally) -> None:
-        self._inner = inner
-        self._tally = tally
-
-    async def create(self, *, key: str, value: bytes, **kwargs: Any) -> Any:
-        written = await self._inner.create(key=key, value=value, **kwargs)
-        self._count(written)
-        return written
-
-    async def update(self, *, key: str, value: bytes, revision: int, **kwargs: Any) -> Any:
-        written = await self._inner.update(key=key, value=value, revision=revision, **kwargs)
-        self._count(written)
-        return written
-
-    def _count(self, written: Any) -> None:
-        if written is None:
-            self._tally.losses += 1
-        else:
-            self._tally.wins += 1
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+        self.samples_ms: list[float] = []
+        self.failures = 0
 
 
 class _CountingSource(EpochGenerationSource):
-    """the shipped epoch source, over a bucket that counts lost compare-and-swaps. Measurement only."""
+    """the shipped epoch source, timing each advance it makes. Measurement only."""
 
     def __init__(self, nats_client: Any, tally: _Tally) -> None:
         super().__init__(nats_client)
         self._tally = tally
 
-    async def _bucket(self) -> Any:
-        return _CountingBucket(await super()._bucket(), self._tally)
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
+        began = time.perf_counter()
+        try:
+            return await super().advance_with_change(table_name, rows, keys_unknown=keys_unknown)
+        except GenerationUnavailableError:
+            self._tally.failures += 1
+            raise
+        finally:
+            self._tally.samples_ms.append((time.perf_counter() - began) * 1000)
 
 
 @dataclass(frozen=True)
@@ -168,8 +151,8 @@ class _Result:
     samples_ms: list[float]
     started: float
     finished: float
-    cas_losses: int
-    cas_wins: int
+    advance_ms: list[float]
+    advance_failures: int
     failures: int
 
 
@@ -204,7 +187,8 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
 
             for n in range(_WARMUP):
                 await rows.save_entity(rows.create({"id": f"warm-{job.writer}-{n}", "n": n, "payload": _PAYLOAD}))
-            tally.losses = tally.wins = 0
+            tally.samples_ms.clear()
+            tally.failures = 0
             await asyncio.to_thread(barrier.wait)
 
             samples: list[float] = []
@@ -215,14 +199,14 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
                 began = time.perf_counter()
                 try:
                     await rows.save_entity(entity)
-                # a save whose advance ran out of compare-and-swap rounds raises after its row committed;
-                # that is a result to count, not a crash
+                # a save whose epoch could not be appended raises after its row committed; that is a
+                # result to count, not a crash
                 # prawduct:allow prawduct/broad-except -- counted as a failed save in the table this prints
                 except Exception:  # noqa: BLE001
                     failures += 1
                 samples.append((time.perf_counter() - began) * 1000)
             finished = time.perf_counter()
-            return _Result(samples, started, finished, tally.losses, tally.wins, failures)
+            return _Result(samples, started, finished, list(tally.samples_ms), tally.failures, failures)
     finally:
         await pool.close()
 
@@ -290,8 +274,7 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
         process.join()
     samples = sorted(s for r in collected for s in r.samples_ms)
     wall = max(r.finished for r in collected) - min(r.started for r in collected)
-    advances = sum(r.cas_wins for r in collected)
-    losses = sum(r.cas_losses for r in collected)
+    advances = sorted(a for r in collected for a in r.advance_ms)
     return {
         "variant": variant,
         "writers": writers,
@@ -299,8 +282,10 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
         "p50": statistics.median(samples),
         "p99": samples[min(len(samples) - 1, int(len(samples) * 0.99))],
         "per_sec": len(samples) / wall if wall > 0 else 0.0,
-        "losses_per_write": losses / len(samples),
-        "advances": advances,
+        "advance_p50": statistics.median(advances) if advances else 0.0,
+        "advance_p99": advances[min(len(advances) - 1, int(len(advances) * 0.99))] if advances else 0.0,
+        "advances": len(advances),
+        "advance_failures": sum(r.advance_failures for r in collected),
         "failures": sum(r.failures for r in collected),
     }
 
@@ -320,13 +305,15 @@ def _measure(nats_url: str, db_url: str, writer_counts: list[int], rounds: int) 
             print(f"  done: {variant} x{writers} p50={row['p50']:.2f}ms p99={row['p99']:.2f}ms", flush=True)
 
     print(
-        "\n| writers | variant | writes | p50 ms | p99 ms | writes/s | CAS losses/write | advances | failed |\n"
-        "|---|---|---|---|---|---|---|---|---|"
+        "\n| writers | variant | writes | p50 ms | p99 ms | writes/s | append p50 ms | append p99 ms | advances "
+        "| append failed | failed |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|"
     )
     for r in rows:
         print(
             f"| {r['writers']} | {r['variant']} | {r['writes']} | {r['p50']:.2f} | {r['p99']:.2f} | "
-            f"{r['per_sec']:.0f} | {r['losses_per_write']:.3f} | {r['advances']} | {r['failures']} |"
+            f"{r['per_sec']:.0f} | {r['advance_p50']:.2f} | {r['advance_p99']:.2f} | {r['advances']} | "
+            f"{r['advance_failures']} | {r['failures']} |"
         )
     print(f"\n{rounds} saves per writer after {_WARMUP} warm-up saves; one broker, one database, same machine.\n")
 

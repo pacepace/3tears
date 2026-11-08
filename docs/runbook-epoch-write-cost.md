@@ -8,7 +8,7 @@ writes slower.
 ## When to run it
 
 - Before deciding to switch a busy table on, or to make `WRITE_GENERATION` the default.
-- After any change to `EpochGenerationSource.advance` / `advance_with_change`, the epoch change log, the
+- After any change to `EpochGenerationSource.advance_with_change`, the epoch change log, the
   write-mark trigger, or the collection write path (`BaseCollection._bump_generation` and its callers).
 - Before a release that changes any of those, on the release candidate's commit. Name the commit with
   the numbers: a result counts only for the commit it ran on.
@@ -39,28 +39,36 @@ the same table, so they contend only where the platform makes them.
 | variant | what a save does beyond the row write |
 |---|---|
 | `undeclared` | nothing (today's default) |
-| `declared` | one compare-and-swap on the table's key in the epoch bucket, and one put of the epoch's change record |
+| `declared` | one append of the epoch's change record to the change log (its stream sequence is the epoch; there is no counter to contend for) |
 | `declared+marks` | the same, plus the write-mark trigger's insert in the write's transaction and the read and delete of the marks the advance covered: the hub's production shape |
+
+The script times each append through the source's public `advance_with_change`, so its append columns
+measure the shipped path.
 
 ## How to read the result
 
 The output is one markdown table:
 
 - **p50 / p99 ms** per save. Compare each declared row with the `undeclared` row at the same writer count.
-- **writes/s**, all writers together. A declared table's throughput is bounded by the one key every
-  writer advances, however many writers there are.
-- **CAS losses/write**: compare-and-swaps the epoch bucket refused per save. Each loss waits up to
-  20 ms of jitter and retries. Near 0 means no contention; above 1 means the epoch key is the bottleneck.
-- **failed**: saves whose advance ran out of its 30 compare-and-swap rounds. Its row **committed** and the
-  save raised, so a follower that missed the broadcast is behind on the table. Any value above 0 is a
-  correctness problem, not only a speed one.
+- **writes/s**, all writers together.
+- **append p50 / p99 ms**: the epoch append alone, inside each declared save. It should stay flat as
+  writers grow: appends do not contend. A p99 that climbs with writers points at the broker, not the table.
+- **advances**: appends made; one per declared save.
+- **append failed** / **failed**: appends the log refused, and saves that raised. A refused append's row
+  **committed** and the save raised, so a follower that missed the broadcast cannot apply it. Any value
+  above 0 is a correctness problem, not only a speed one.
 
-Rule of thumb for a decision: declaring is cheap for a table where the `failed` column stays 0 and CAS
-losses stay under 1 per write at the most concurrent writers that table really has. Count writers per
-table, not per pod: on the platform every agent pod's write to a table is advanced by the hub's broker,
-so the hub's concurrent commits to one table are the writers.
+Rule of thumb for a decision: declaring is cheap for a table where both failure columns stay 0 and the
+declared p99 stays within a few milliseconds of the undeclared p99 at the most concurrent writers that
+table really has. Count writers per table, not per pod: on the platform every agent pod's write to a
+table is advanced by the hub's broker, so the hub's concurrent commits to one table are the writers.
 
 ## Recorded results
+
+**These are from before the change log (pre-#1121): the advance was a compare-and-swap on a per-table
+counter key.** That path is gone, so the CAS columns and the conclusion below describe what the change
+log replaced. They are kept as the baseline it was built against. Re-run on the release commit for the
+change log's numbers, and record them here with that commit.
 
 Apple M4 (10 cores), Docker Desktop, `postgres:17-alpine`, `nats:2.14.2-alpine`, 200 saves per writer.
 Run on 36d876a79 with nothing else on the machine. The write path is the same at e9e9503dc
@@ -84,5 +92,6 @@ What it says: one writer pays about +1 ms (declared) to +2 ms (with marks) per s
 concurrent writers on one table, the single epoch key is the limit: a declared table tops out near
 450 to 550 saves/s, against 1,700 to 1,900 undeclared. p99 rises about 12x at 8 writers and 7x at 32,
 and at 32 writers some saves exhaust their compare-and-swap rounds and raise after their row committed.
-Declaring every collection is cheap for tables with few concurrent writers. For a table with tens of
-concurrent writers it is not acceptable with today's per-commit compare-and-swap.
+Declaring every collection was cheap for tables with few concurrent writers; for a table with tens of
+concurrent writers it was not acceptable with the per-commit compare-and-swap. That is why the change
+log appends instead: the measurement that decides the default is the re-run above.
