@@ -8,6 +8,26 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
+
+**Added (nats):** `KvFullError` (a bucket's `max_bytes`, or the account's storage limit: JetStream 10077 "maximum
+bytes exceeded", 10047, 10028, 10002), `KvStoreExhaustedError` (the server out of storage: 10023) and
+`KvValueTooLargeError` (the broker's `max_payload`, or the stream's `max_msg_size`: 10054), each a `KvError`, raised
+from every KV operation. Before, all of them were a plain `KvError`, and a full bucket read like a broker outage.
+None of them is retried through a re-open any more: the server answers the same after one. `KvError` also carries
+`server_error_code`, the JetStream code when the server answered with the refusal, `None` when it did not answer.
+
+**Added (core):** `threetears.core.collections.l2_degrade.degrade_l2`, which every L2 fall-through in
+`BaseCollection` now calls: the reads, the writes, the deletes, the seed from L3, the reads before a save or a
+reload, and the read after a compare-and-swap. It counts each failure on
+`threetears_l2_degraded_total{table, op, reason}` (`reason` one of `full`, `exhausted`, `too_large`, `transport`,
+`other`), logs at most one WARNING a minute per table, operation and reason (with how many it held back), and
+raises where L2 is the collection's only store (`l2_is_the_store`). Before, each site wrote its own WARNING per
+failure and nothing counted them.
+
+**Added (core):** every collection key read is counted on `threetears_tier_reads_total{table, tier}`, beside the
+once-a-minute INFO line, so a table whose reads keep reaching L2 or L3 can be alerted on.
+
 ### core, epoch: an epoch is its change set, and a missed broadcast corrects only the rows it missed
 
 **Changed (core, epoch):** a pod that misses a cache-invalidation broadcast no longer drops the table. Each advance

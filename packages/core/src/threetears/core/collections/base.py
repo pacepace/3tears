@@ -60,6 +60,7 @@ from threetears.core.collections.generation import (
     table_named_by_class,
     tables_with_write_generation,
 )
+from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
     L2Order,
@@ -2795,19 +2796,15 @@ class BaseCollection(ABC, Generic[EntityT]):
             # that was made and then evicted in between.
             raw, latest = await kv.get_latest(key=key)
         except KvError as exc:
-            if self.l2_is_the_store:
-                # no durable tier to fall back to: an unreadable store is not an absent row, and
-                # answering None here would let a caller act on "gone" during an outage.
-                raise
-            log.warning(
-                "L2 cache read failed",
-                extra={
-                    "extra_data": {
-                        "entity_id": str(entity_id),
-                        "table": self.table_name,
-                        "error": str(exc),
-                    },
-                },
+            # where L2 is the store this raises: no durable tier to fall back to, so an unreadable
+            # store is not an absent row, and answering None would let a caller act on "gone".
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="get",
+                what="L2 cache read failed; the read goes to L3",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
             return empty
         revision = latest
@@ -2942,21 +2939,21 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 await kv.put(key=key, value=value, ttl=lifetime)
         except KvError as exc:
+            refused: L2WriteRefusedError | None = None
             if self.l2_is_the_store:
                 self._evict_l1(entity_id)
-                raise L2WriteRefusedError(
+                refused = L2WriteRefusedError(
                     f"{self.table_name} row {entity_id!s} was not saved: L2 is this collection's only store "
                     f"and refused the write ({type(exc).__name__}: {exc})"
-                ) from exc
-            log.warning(
-                "L2 cache write failed",
-                extra={
-                    "extra_data": {
-                        "entity_id": str(entity_id),
-                        "table": self.table_name,
-                        "error": str(exc),
-                    },
-                },
+                )
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="put",
+                what="L2 cache write failed; the next read goes to L3",
+                l2_is_the_store=self.l2_is_the_store,
+                refused_as=refused,
+                entity_id=entity_id,
             )
             return False
         return True
@@ -3014,20 +3011,19 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return False
             return await kv.delete(key=self.l2_key(entity_id))
         except KvError as exc:
-            if self.l2_is_the_store:
-                raise L2WriteRefusedError(
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="delete",
+                what="L2 cache delete failed",
+                l2_is_the_store=self.l2_is_the_store,
+                refused_as=L2WriteRefusedError(
                     f"{self.table_name} row {entity_id!s} was not deleted: L2 is this collection's only store "
                     f"and refused the delete ({type(exc).__name__}: {exc})"
-                ) from exc
-            log.warning(
-                "L2 cache delete failed",
-                extra={
-                    "extra_data": {
-                        "entity_id": str(entity_id),
-                        "table": self.table_name,
-                        "error": str(exc),
-                    },
-                },
+                )
+                if self.l2_is_the_store
+                else None,
+                entity_id=entity_id,
             )
             return False
 
@@ -3085,15 +3081,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return False
             return await kv.delete(key=key)
         except KvError as exc:
-            log.warning(
-                "L2 cache eviction failed",
-                extra={
-                    "extra_data": {
-                        "entity_id": str(entity_id),
-                        "table": self.table_name,
-                        "error": str(exc),
-                    },
-                },
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="evict",
+                what="L2 cache eviction failed",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
             return False
 
@@ -3190,9 +3184,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                 _, latest = await kv.get_latest(key=self.l2_key(entity_id))
                 moved = latest != revision
         except KvError as exc:
-            log.warning(
-                "L2 read after replacing a distrusted entry failed; the key stays distrusted",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="get",
+                what="L2 read after replacing a distrusted entry failed; the key stays distrusted",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
         return moved
 
@@ -3280,9 +3278,13 @@ class BaseCollection(ABC, Generic[EntityT]):
             if kv is not None:
                 await kv.delete(key=self.l2_key(entity_id), revision=revision)
         except KvError as exc:
-            log.warning(
-                "L2 delete of an entry L3 no longer holds failed; the next read asks L3 again",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="delete",
+                what="L2 delete of an entry L3 no longer holds failed; the next read asks L3 again",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
 
     def drop_cached_table(self) -> int:
@@ -3355,9 +3357,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                 timed = {} if lifetime is None else {"ttl": lifetime}
                 superseded = await kv.update(key=key, value=payload, revision=revision, **timed) is None
         except KvError as exc:
-            log.warning(
-                "L2 seed from L3 failed; the next read asks L3 again",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="seed",
+                what="L2 seed from L3 failed; the next read asks L3 again",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
         if superseded:
             log.debug(
@@ -4249,9 +4255,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                     before = _L2BeforeWrite(fenced=True, revision=revision)
             except KvError as exc:
                 before = _L2BeforeWrite(fenced=True, revision=None)
-                log.warning(
-                    "L2 read before a save failed; the saved row is not cached and the next read goes to L3",
-                    extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+                degrade_l2(
+                    exc,
+                    table=self.table_name,
+                    op="get",
+                    what="L2 read before a save failed; the saved row is not cached and the next read goes to L3",
+                    l2_is_the_store=self.l2_is_the_store,
+                    entity_id=entity_id,
                 )
         return before
 
@@ -4333,9 +4343,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                     await kv.update(key=self.l2_key(entity_id), value=payload, revision=revision, **timed) is not None
                 )
         except KvError as exc:
-            log.warning(
-                "L2 write after a save failed; the key is dropped and the next read goes to L3",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="put",
+                what="L2 write after a save failed; the key is dropped and the next read goes to L3",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
         if not written:
             # the key may hold a row older than the one L3 now has; a delete is always correct,
@@ -4430,9 +4444,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                 raw, revision = await kv.get_latest(key=self.l2_key(entity_id))
                 result = (raw is not None, revision)
         except KvError as exc:
-            log.warning(
-                "L2 read before a reload failed; the reload leaves L2 as it is",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="get",
+                what="L2 read before a reload failed; the reload leaves L2 as it is",
+                l2_is_the_store=self.l2_is_the_store,
+                entity_id=entity_id,
             )
         return result
 
@@ -4963,15 +4981,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             if kv is not None:
                 current = await kv.get_entry(key=key) == (payload, won_revision)
         except KvError as exc:
-            log.warning(
-                "L2 read after a compare-and-swap failed; its row is not cached in L1 and the next read goes to L2",
-                extra={
-                    "extra_data": {
-                        "entity_id": str(entity_id),  # convert at border: log extra_data field
-                        "table": self.table_name,
-                        "error": str(exc),
-                    }
-                },
+            # never raised, even where L2 is the store: the swap already won and persisted, so the
+            # mutation must not read as failed, and an empty L1 sends the next read to L2 itself.
+            degrade_l2(
+                exc,
+                table=self.table_name,
+                op="get",
+                what="L2 read after a compare-and-swap failed; its row is not cached in L1 and the next read goes to L2",
+                entity_id=entity_id,
             )
         return current
 

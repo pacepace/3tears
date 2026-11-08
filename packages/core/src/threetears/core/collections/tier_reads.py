@@ -6,6 +6,9 @@ L1, and a table whose reads keep reaching L2 or L3 is one whose cache is being l
 never filled. These counters make that visible per table, cheaply: one dictionary increment per read,
 under a lock, since reads also run on worker threads.
 
+:func:`record_tier_read` also counts each read on ``threetears_tier_reads_total{table, tier}``, so a table
+whose reads keep reaching L2 or L3 is a query and an alert rather than a grep through the INFO lines.
+
 :func:`_log_tier_reads` writes the counts since it was last called as one INFO line, when any read happened,
 and starts them again; :func:`_log_tier_reads_every` does that on a timer.
 
@@ -30,6 +33,7 @@ from typing import Final
 
 from threetears.observe import get_logger
 from threetears.observe.background import cancel_and_wait
+from threetears.observe.metrics import counter
 
 __all__ = ["ReadTier", "hold_tier_reads_timer", "record_tier_read", "release_tier_reads_timer", "tier_reads_total"]
 
@@ -57,6 +61,11 @@ _counts: Counter[tuple[str, str]] = Counter()
 _totals: Counter[tuple[str, str]] = Counter()
 _lock = threading.Lock()
 
+#: the counter's name and help. Fetched where it is incremented, never held at import: a module that a
+#: test re-imports would otherwise register the same name in the process's registry a second time.
+_READS_NAME: Final = "threetears_tier_reads_total"
+_READS_HELP: Final = "collection key reads, by table and the tier that answered (l1, l2, l3)"
+
 
 def record_tier_read(table: str, tier: ReadTier) -> None:
     """count one key read of ``table`` answered by ``tier``.
@@ -71,6 +80,9 @@ def record_tier_read(table: str, tier: ReadTier) -> None:
     with _lock:
         _counts[(table, tier.value)] += 1
         _totals[(table, tier.value)] += 1
+    counter(_READS_NAME, description=_READS_HELP, label_names=("table", "tier")).labels(
+        table=table, tier=tier.value
+    ).inc()
 
 
 def _by_table(counts: Counter[tuple[str, str]]) -> dict[str, dict[str, int]]:
