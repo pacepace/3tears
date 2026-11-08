@@ -345,6 +345,9 @@ class Figure:
     :func:`format_figure` prints after the amount, so no key states a smaller total bare. Nor does ``places``: the
     decimals the page's tables print a plain figure at, a judged score's two and a measure's
     set's (:func:`figure_places`), so a key reads its figure as the table beside it does; None for the number rule.
+    Nor does ``measure``: the measure or judged dimension a figure is of where its path names it by another id (a
+    criterion's figure, named by the criterion), so the figure reads at that measure's set as its table prints it; empty
+    where the path names the measure itself, or names none.
     """
 
     path: str
@@ -363,6 +366,7 @@ class Figure:
     total: bool = field(default=False, compare=False, repr=False)
     reconciles: bool = field(default=False, compare=False, repr=False)
     places: int | None = field(default=None, compare=False, repr=False)
+    measure: str = field(default="", compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -1533,13 +1537,21 @@ def _criterion_figure_field(
     threshold = float(criterion.threshold)
     scale, unit = _scale_of(report_input, criterion.measure, (threshold,))
     if field == "value":
-        return _number(path, figure.value, "the criterion's figure", scale, unit=unit)
+        # The criterion's figure is a level of the measure it reads, so it carries that measure: the path names it by
+        # the criterion's id alone.
+        read = _number(path, figure.value, "the criterion's figure", scale, unit=unit)
+        return replace(read, measure=criterion.measure)
     if field in ("low", "high"):
         end = _end(path, figure.ci, field, "the figure's interval")
-        read = _number(path, end, f"the figure's interval's {field} end", scale, unit=unit)
+        read = replace(
+            _number(path, end, f"the figure's interval's {field} end", scale, unit=unit), measure=criterion.measure
+        )
         return replace(read, derived=True) if figure.derived else read
     gap = figure.value - threshold if criterion.direction == "higher_is_better" else threshold - figure.value
-    return _gap_figure(report_input, path, criterion.measure, threshold, gap, "the figure's gap from the threshold")
+    # A gap is a difference on the measure the criterion reads, so it reads at that measure's changes' set; it is not
+    # marked a change, which would sign it (``+99 ms``), and the page prints it unsigned today.
+    read = _gap_figure(report_input, path, criterion.measure, threshold, gap, "the figure's gap from the threshold")
+    return replace(read, measure=criterion.measure)
 
 
 def _criterion_arm(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -3430,10 +3442,14 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
         )
     scale, unit = _scale_of(report_input, found.measure or "", (found.line,))
     if field == "value":
-        return _number(path, found.value, "the weakest margin's figure", scale, unit=unit)
+        # A criterion's figure is a level of the measure it reads, as its own key's is (:func:`_criterion_figure_field`).
+        read = _number(path, found.value, "the weakest margin's figure", scale, unit=unit)
+        return replace(read, measure=found.measure or "")
     if field == "threshold":
         return _number(path, found.line, "the weakest margin's threshold", scale, unit=unit)
-    return _gap_figure(report_input, path, found.measure or "", found.line, found.gap, "the weakest margin")
+    # The margin is the criterion's gap, so it reads as ``criteria.<id>.<arm>.gap`` does, at its measure's changes' set.
+    read = _gap_figure(report_input, path, found.measure or "", found.line, found.gap, "the weakest margin")
+    return replace(read, measure=found.measure or "")
 
 
 # --- the families --------------------------------------------------------------------------------------------------
@@ -4129,7 +4145,10 @@ def _settle_line(
     if field == "distance" and in_points:
         return _number(path, distance, "the figure's distance from the line", "points", change=True)
     if field == "distance":
-        return _apart(report_input, path, key, distance, "the figure's distance from the line", change=True)
+        # A distance is a change on ``key``, which a criterion's path names only by the criterion: it carries the measure
+        # so it reads at that measure's changes' set, as the criterion's own gap does.
+        apart = _apart(report_input, path, key, distance, "the figure's distance from the line", change=True)
+        return replace(apart, measure=key)
     if field == "level":
         return _sided_level(path, spread.level, 1)
     if field == "wrong_side":
@@ -6433,20 +6452,24 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
 
 
 def _plain_places(reading: _Reading, figure: Figure, report_input: ReportInput) -> int | None:
-    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names at, where the
-    figure is one the tables print (:func:`_tabled`): a judged score's two, a measure's its set's
+    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names (or its
+    figure carries, :attr:`Figure.measure`) at, where the figure is one the tables print (:func:`_tabled`): a judged
+    score's two, a measure's its set's
     (:func:`figure_places`), as the Full results print them. Every other statistic (an adjusted p, a pairing r, a
     count of repeats) keeps its own form, the number rule's; so does a key naming neither."""
     statistics = [
         value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if isinstance(slot, _Statistic)
     ]
-    if not _tabled(figure, statistics[-1] if statistics else None):
+    statistic = statistics[-1] if statistics else None
+    if not _tabled(figure, statistic):
         return None
-    for value in reading.values:
+    # A criterion's gap is a difference on its measure, read at the set of that measure's changes.
+    change = figure.change or (bool(figure.measure) and statistic in _CRITERION_GAPS)
+    for value in (figure.measure,) if figure.measure else reading.values:
         if rubric_score(report_input, value):
             return SCORE_PLACES
         if value in report_input.measures:
-            return figure_places(report_input, value, change=figure.change)
+            return figure_places(report_input, value, change=change)
     return None
 
 
@@ -6455,16 +6478,23 @@ def _tabled(figure: Figure, statistic: str | None) -> bool:
     table's precision. Decided by what the figure is, not by how its family spells it: a change of any family, its
     interval and that interval's ends (each resolver marks them :attr:`Figure.change`, whether its family spells the
     change ``delta``, ``difference``, ``effect``, ``change`` or ``vs_control``); any interval; and a level, which every
-    family spells ``mean``, with its interval's two ends, or a key naming no statistic, which reads its family's own
-    figure. No other statistic is the table's figure: an adjusted p of 0.0031 is never a score to two decimals, nor a
-    half-width or a standard error a change."""
+    family but a criterion's spells ``mean``, with its interval's two ends, or a key naming no statistic, which reads
+    its family's own figure; a criterion's figure is the level of the measure it reads (:attr:`Figure.measure`), which
+    its family spells ``value``, and its ``gap`` (the weakest margin's ``margin``) a difference on that measure. No
+    other statistic is the table's figure: an adjusted p of 0.0031 is never a score to two decimals, nor a half-width
+    or a standard error a change."""
     if figure.change or figure.kind == "interval" or statistic is None:
         return True
-    return statistic in _LEVEL_FIGURES
+    return statistic in _LEVEL_FIGURES or (bool(figure.measure) and statistic in (_CRITERION_LEVEL, *_CRITERION_GAPS))
 
 
 #: How every family spells a level the tables print and its interval's two ends.
 _LEVEL_FIGURES = frozenset({"mean", "low", "high"})
+
+#: How the criteria families spell the level of the measure a criterion reads, and how they and the weakest margin
+#: spell its gap from the threshold.
+_CRITERION_LEVEL = "value"
+_CRITERION_GAPS = frozenset({"gap", "margin"})
 
 
 def figure_places(
