@@ -1557,6 +1557,7 @@ async def _campaign_export(host: OpsHost, caller: Caller, params: CampaignExport
             paged=True,
             after_doc_type=params.export_after_doc_type,
             after_document_id=params.export_after_document_id,
+            max_bytes=host.campaign_export_max_bytes,
         ),
     )
 
@@ -3062,8 +3063,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "under its page.byte_ceiling bytes of them and carrying the profile and manifest whole: its text "
                 "names the call that reads the next (export_after_doc_type with export_after_document_id). Pages are not a "
                 "snapshot: when a page's manifest.closure_keys_digest is not the first page's, the campaign moved "
-                "between calls, so read it again from the first page. Every page call reads the whole closure: export "
-                "a very large campaign once, with python -m threetears.evals.harness export. Write the "
+                "between calls, so read it again from the first page. Every page call reads the whole closure, so a "
+                "closure past the host's ceiling (OpsHost.campaign_export_max_bytes) is refused, naming the bytes "
+                "reached: export it once, with python -m threetears.evals.harness export. Write the "
                 "pages' documents, joined, as documents.json, the profile as profile.json and the manifest as "
                 "manifest.json, and mint a held-out writer case from them with python -m threetears.evals.harness "
                 "mint."

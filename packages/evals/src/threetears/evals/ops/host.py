@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import Final
 
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.job_timeout import default_job_timeout
@@ -103,6 +104,10 @@ def _placed_nowhere(run: EvalRun) -> dict[str, WorldPlacement]:
     return {}
 
 
+#: The ``campaign_export`` action's ceiling a host that sets none holds (:attr:`OpsHost.campaign_export_max_bytes`).
+_EXPORT_MAX_BYTES: Final = 16_000_000
+
+
 @dataclass(frozen=True, kw_only=True)
 class OpsHost:
     """The host the operations, and the actions over them, work in.
@@ -114,6 +119,13 @@ class OpsHost:
     :ivar seed_corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``), which a case
         rename reads so a rename never changes how definition drift finds the case; ``None`` for a host that
         seeds no template cases.
+    :ivar campaign_export_max_bytes: The most characters of canonical JSON (sorted keys, no whitespace, ASCII) the
+        documents one ``campaign_export`` action call keeps may total before it is refused, counted as the closure is
+        read, a chunk of documents at a time. Characters, not heap: decoded, a document takes about 3 to 5 times its
+        JSON on the heap (3.3 to 4.8 measured on the package's fixtures), and a refused call holds the ceiling and one
+        chunk, so size it at a tenth of the serving process's headroom or less. The default, 16,000,000, holds about
+        80 MB at its peak. A campaign past it is exported in a process of its own (``python -m
+        threetears.evals.harness export``, or :func:`~threetears.evals.ops.campaign_export`), which holds no ceiling.
     :ivar model_family: The host's reading of a model's family (the vendor that trained it, such as ``anthropic``), by
         the id a launch names it by, or ``None`` for a model it cannot place. Read where a judge is held to another
         family than the model whose output it scores (``writer_pairwise``); ``None`` for a host that places no
@@ -124,9 +136,19 @@ class OpsHost:
     generation: AnalysisGeneration | None = None
     seed_corpus: Callable[[str], SeedCorpus] | None = None
     model_family: Callable[[str], str | None] | None = None
+    campaign_export_max_bytes: int = _EXPORT_MAX_BYTES
+
+    def __post_init__(self) -> None:
+        """Refuse a ceiling no export could pass under.
+
+        :raises ValueError: ``campaign_export_max_bytes`` is not a positive integer.
+        """
+        ceiling = self.campaign_export_max_bytes
+        if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling <= 0:
+            raise ValueError(f"OpsHost.campaign_export_max_bytes must be a positive integer; got {ceiling!r}")
 
     @classmethod
-    def reading(cls, eval_host: EvalHost) -> OpsHost:
+    def reading(cls, eval_host: EvalHost, *, campaign_export_max_bytes: int = _EXPORT_MAX_BYTES) -> OpsHost:
         """The host an eval host's runs are read through, and nothing launched: what serving ``as_host(...)`` needs.
 
         Its launching host declares no kind, so a launch is refused by name, and it generates no analysis. Every read
@@ -134,6 +156,9 @@ class OpsHost:
 
         :param eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
         :ptype eval_host: EvalHost
+        :param campaign_export_max_bytes: The ``campaign_export`` action's ceiling
+            (:attr:`campaign_export_max_bytes`).
+        :ptype campaign_export_max_bytes: int
         :return: The host.
         :rtype: OpsHost
         """
@@ -148,7 +173,7 @@ class OpsHost:
             # A world's placement is stamped on a launched run, and nothing launches here.
             world_placements=None if eval_host.profile.world is None else _placed_nowhere,
         )
-        return cls(launch=launch)
+        return cls(launch=launch, campaign_export_max_bytes=campaign_export_max_bytes)
 
     @property
     def eval_host(self) -> EvalHost:

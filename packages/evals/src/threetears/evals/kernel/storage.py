@@ -3411,7 +3411,14 @@ class EvalStorage:
     # =========================================================================
 
     def stored_documents(
-        self, doc_type: str, scope_id: str, /, *, ids: Sequence[str] | None = None, **field_eq: Any
+        self,
+        doc_type: str,
+        scope_id: str,
+        /,
+        *,
+        ids: Sequence[str] | None = None,
+        exclude: Sequence[str] = (),
+        **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """The engine's documents of one type in a scope, verbatim as the store returns them, never hydrated.
 
@@ -3426,6 +3433,10 @@ class EvalStorage:
         :ptype scope_id: str
         :param ids: The ids to read; ``None`` to read by ``field_eq``.
         :ptype ids: Sequence[str] | None
+        :param exclude: Dotted paths the store leaves out of every document it returns, as
+            :meth:`DocumentStore.by_doc_type` drops them before a document is shipped: for a read of ids alone, ahead
+            of reading the documents themselves a few at a time. Empty, the default, returns each whole.
+        :ptype exclude: Sequence[str]
         :param field_eq: Scalar fields every document returned holds, as :meth:`DocumentStore.by_doc_type` compares
             them; given with ``ids``, refused.
         :ptype field_eq: Any
@@ -3439,8 +3450,8 @@ class EvalStorage:
         if ids is not None:
             if field_eq:
                 raise ValueError("stored_documents reads by ids or by fields, not both")
-            return self._store.get_many(doc_type, list(ids), scope_id) if ids else []
-        return self._store.by_doc_type(doc_type, scope_id, **field_eq)
+            return self._store.get_many(doc_type, list(ids), scope_id, exclude=exclude) if ids else []
+        return self._store.by_doc_type(doc_type, scope_id, exclude=exclude, **field_eq)
 
     # =========================================================================
     # Operator action — nuke all eval data

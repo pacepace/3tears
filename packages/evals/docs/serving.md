@@ -761,6 +761,22 @@ The pages bound a response for a client, not the read: every page call reads, so
 so reading a campaign of many pages costs about as many whole reads. Export a large campaign (hundreds of megabytes,
 most of it traces) once, through the command line or the function below, each of which reads the closure once.
 
+So the action is bounded. While it gathers the closure it counts each document it keeps as canonical JSON (sorted
+keys, no whitespace, ASCII, so its characters and its bytes as text), and it refuses the moment the total passes the
+host's ceiling, naming the bytes reached and the ceiling. No read returns more than 16 whole documents: a read by a
+field fetches the matching ids first, the store leaving out every other field the type's model declares, then the
+documents 16 at a time, each 16 counted before the next is read. So a refused call holds at most the ceiling and 16
+documents. Two things sit outside the count: the three whole-type scans (rubric dims, launches and judge profiles,
+small types read whole and filtered), and a field a stored document carries that its model does not declare, which
+the read of ids cannot leave out.
+
+The ceiling counts JSON, not heap. Decoded, a document takes about 3 to 5 times its JSON on the heap (3.3 to 4.8
+times, measured with `tracemalloc` over the package's fixture campaigns), so a call at the default 16,000,000 holds
+about 80 MB at its peak. Set `OpsHost(campaign_export_max_bytes=...)`, or `OpsHost.reading(eval_host,
+campaign_export_max_bytes=...)` for a host serving a reading host, at a tenth of the serving process's headroom or
+less. A campaign past it is exported in a process of its own with `python -m threetears.evals.harness export`, or
+`campaign_export(...)` in code; neither holds a ceiling.
+
 Pages are not a snapshot either. A write between two page calls can drop a document from the join or leave the
 manifest disagreeing with the joined documents. Every page's manifest carries `closure_documents` and
 `closure_keys_digest` (the sha256 of the closure's sorted `(doc_type, id)` keys): compare each page's with the first

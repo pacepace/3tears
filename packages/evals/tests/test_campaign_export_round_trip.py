@@ -13,6 +13,7 @@ Discodon's code.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -24,10 +25,11 @@ from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import HOS
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import FROZEN_AT, FROZEN_BY, PACKAGE
 from packages.evals.tests.hot_path_support import campaign_id_of, courierhost_from
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.harness.__main__ import main
 from threetears.evals.kernel.host import EvalHost, HostProfile
-from threetears.evals.ops import campaign_export
+from threetears.evals.ops import OpsHost, campaign_export
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 
 #: The courier's capture: every document of its planner bake-off, as stored.
@@ -263,3 +265,23 @@ def test_an_empty_out_directory_is_filled_and_one_holding_other_files_is_refused
     assert main(_export_args(busy, host=host, scope=COURIER_SCOPE, campaign=campaign)) == EXIT_REFUSED
     assert f"--out {busy} already holds other files" in capsys.readouterr().err
     assert [path.name for path in busy.iterdir()] == ["notes.txt"]
+
+
+async def test_the_command_line_exports_a_closure_past_the_actions_ceiling(tmp_path: Path) -> None:
+    """The action refuses what its host's ceiling does not hold; the command line, reading once in its own process,
+    exports the same campaign whole."""
+    host = await asyncio.to_thread(courier_export_host)
+    ceilinged = dataclasses.replace(OpsHost.reading(host), campaign_export_max_bytes=10_000)
+    campaign = _courier_campaign()
+    (evals, _admin) = eval_catalogue().mount_all(standard_tools("evals"))
+    refused = await evals.call(
+        {"action": "campaign_export", "campaign_id": campaign},
+        host=ceilinged,
+        caller=Caller(scope_id=COURIER_SCOPE, identity="agent:test"),
+    )
+    assert refused.is_error and "export ceiling of 10,000 bytes" in refused.text
+
+    out = tmp_path / "export"
+    args = _export_args(out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=campaign)
+    assert await asyncio.to_thread(main, args) == EXIT_OK
+    assert len((out / "documents.json").read_bytes()) > ceilinged.campaign_export_max_bytes
