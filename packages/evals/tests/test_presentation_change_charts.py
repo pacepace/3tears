@@ -38,9 +38,12 @@ from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_doc_support import REPORT_DOCS, snapshot_of
 from threetears.evals.analysis.report import ChartBlock, DotIntervalChart
 from threetears.evals.analysis.report.chart_svg import chart_drawing
+from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
+from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.harness import WriterResult
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -239,6 +242,56 @@ def test_the_margin_band_is_named_and_the_family_level_said() -> None:
     assert drawn.data.reference.label == "margin -15.0 pts; shaded: no worse than the margin"
     assert drawn.data.level == "99.7% (95% across 16 comparisons)"
     assert "99.7% intervals (95% across 16 comparisons)" in _drawn_texts(drawn)
+
+
+def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
+    """Kairo's page built on ``held``: the level each contrasts forest's head prints, and each Full results contrast
+    row's."""
+    record = _record("prototype5/kairo")
+    page = build(
+        ReportDoc.model_validate(record["doc"]),
+        held,
+        strict=True,
+        findings=[ReportFinding.model_validate(finding) for finding in record.get("findings", [])],
+        draft=record["ending"] == "stored_with_findings",
+    )
+    heads = {
+        evidence.chart.chart.data.level
+        for claim in page.claims
+        for evidence in claim.evidence
+        if evidence.chart is not None
+        and isinstance(evidence.chart.chart, ChartBlock)
+        and isinstance(evidence.chart.chart.data, ForestChart)
+        and evidence.chart.chart.data.level
+    }
+    (contrasts,) = [
+        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "contrasts"
+    ]
+    return heads, {row["level"].text for row in contrasts.rows}
+
+
+@pytest.mark.parametrize(
+    ("stored", "read"),
+    [
+        ("99.69%", "99.7% (95% across 16 comparisons)"),
+        ("99.95%", "99.95% (95% across 16 comparisons)"),
+        ("99.951%", "99.95% (95% across 16 comparisons)"),
+    ],
+)
+def test_a_family_level_reads_alike_in_a_chart_head_and_in_full_results(stored: str, read: str) -> None:
+    """The chart head and the Full results table each formatted the family's level, by two rules, so one level could
+    read two ways on one page (``99.951%`` in the head, ``99.95%`` in the table). One function reads it for both, and a
+    level under 100 never reads ``100%``."""
+    held = _input("prototype5/kairo")
+    if stored != held.contrast_families[0].level:
+        held = held.model_copy(
+            update={
+                "contrasts": [contrast.model_copy(update={"level": stored}) for contrast in held.contrasts],
+                "contrast_families": [family.model_copy(update={"level": stored}) for family in held.contrast_families],
+            }
+        )
+    heads, rows = _levels_read(held)
+    assert heads == rows == {read}, (heads, rows)
 
 
 @pytest.fixture(scope="module")

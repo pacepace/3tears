@@ -410,6 +410,34 @@ def test_a_family_level_under_100_never_reads_100() -> None:
     assert {row["level"].text for row in contrasts.rows} == {"99.95% (95% across 16 comparisons)"}
 
 
+def test_a_change_reads_at_its_table_s_precision_however_its_family_spells_it() -> None:
+    """Only a contrast's ``delta`` took the table's precision, by name: ``compare.<a>.<b>.<score>.overall.difference``
+    read ``-0.2129`` beside its own interval ``-0.31 to -0.12``, and a stratum's ``vs_control`` ``+0.09524`` beside its
+    mean ``4.76``. A change takes it by what it is, in every family; a half-width and an adjusted p keep their own."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+
+    def said(key: str) -> str:
+        return format_figure(resolve(key, held))
+
+    compare = "compare.qwen3.8-flash.September.__outcome__.overall"
+    assert [said(f"{compare}.{field}") for field in ("difference", "interval", "low", "high")] == [
+        "-0.21",
+        "-0.31 to -0.12",
+        "-0.31",
+        "-0.12",
+    ]
+    notices = "compare.1017.September.failed_reply_notices.overall"
+    assert (said(f"{notices}.difference"), said(f"{notices}.interval")) == (
+        "-0.0022 notices",
+        "-0.0069 notices to +0.0025 notices",
+    )
+    stratum = "strata.taste.1017.__outcome__"
+    assert (said(f"{stratum}.mean"), said(f"{stratum}.vs_control")) == ("4.76", "+0.10")
+    assert said("strata.music_tech.qwen3.8-flash.__outcome__.vs_control") == "0.00"
+    assert said(f"{compare}.half_width") == "0.09358"
+    assert said(f"{compare}.level") == "99.69%"
+
+
 def test_a_program_s_row_says_no_variation_where_the_page_does() -> None:
     """A program's contrast row printed an interval where the page's row said ``no variation``."""
     cases = [{"n": index} for index in range(12)]

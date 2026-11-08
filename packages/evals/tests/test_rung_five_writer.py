@@ -119,8 +119,8 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
     # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
-    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.55" in readme
-    assert "2026-11-08, over the change-chart pass on head `66ef19443`" in readme
+    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
+    assert "2026-11-08, over the number-forms pass on head `b9164e5ec`" in readme
     assert "Not recorded" not in readme
 
 
@@ -132,16 +132,16 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     lines = printed.splitlines()
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
     # The pairwise preference, the primary reading: lead-first's share beside shipped's and the interval on it, all on
-    # the share scale, which the evidence cannot tell from even at 7 cases (the glossary's words, owner ruling Q2),
-    # void because its two orders agreed on too few cases, a row with columns; the pass's spend in the money form,
-    # and no size to settle a void reading.
-    assert "| lead-first | every pair | cannot tell apart (void) | 43 | 57 | 13 to 79 |" in lines
-    assert "| lead-first | 43% (3 of 7) | 29 | 0 | — | $0.14 of $1.95 |" in lines
+    # the share scale, which the evidence cannot tell from even at 7 cases (the glossary's words, owner ruling Q2), a
+    # row with columns; its two orders agreed on 6 of 7 cases, so the pass gives the held-out cases that would settle
+    # it at the share it read, and its spend in the money form.
+    assert "| lead-first | every pair | cannot tell apart | 52 | 48 | 15 to 89 |" in lines
+    assert "| lead-first | 86% (6 of 7) | 9 | 0 | 3,115 | $0.14 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
-        "promotion of lead-first: Undecided: order consistency below 0.7 (3 of 7 cases scored in both orders picked "
-        "the same side), so the primary reading is void, and only an improved primary reading promotes."
+        "promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped "
+        "apart, and only an improved primary reading promotes."
     )
     # Every arm replayed whole: nothing recorded now, and no recorded turn left unasked.
     assert "shipped: writer turns replayed from" in printed and "lead-first: writer turns replayed from" in printed
@@ -157,9 +157,9 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # What the page compares and on what is the line under the question (presentation chunk 4), then the answer.
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
-        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 43% of its preference over "
-        "shipped (50% is even), but its two reading orders disagreed too often for that to count: order consistency "
-        "below 0.7 (3 of 7 cases scored in both orders picked the same side).**"
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 "
+        "cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
     # No surface of the page prints the retired words (owner ruling Q2).

@@ -1587,7 +1587,8 @@ def _matrix(columns: Sequence[str], rows: Sequence[tuple[str, Sequence[_Cell]]],
     heads = [_wrap_all(column, room) for column in columns]
     names = [_wrap_all(label, label_room) for label in labels]
     head_h = 22.0 + (max((len(lines) for lines in heads), default=1) - 1) * 13
-    cell_h = max(44.0 if any_sub else 34.0, *(13.0 * len(lines) + 8 for lines in names))
+    # A list, so a matrix with no rows (which the heatmaps' models accept) draws its heading row alone.
+    cell_h = max([44.0 if any_sub else 34.0, *(13.0 * len(lines) + 8 for lines in names)])
     h = head_h + len(rows) * (cell_h + gap)
     out: list[str] = []
     for j, (column, lines) in enumerate(zip(columns, heads, strict=True)):

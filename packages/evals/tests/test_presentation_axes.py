@@ -49,16 +49,19 @@ from packages.evals.tests.report_shapes_support import s1_change, s2_choice
 from threetears.evals.analysis import build_campaign_report
 from threetears.evals.analysis.report import ChartBlock
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.chart_svg import chart_drawing
+from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, chart_drawing
 from threetears.evals.analysis.report.charts import (
     BarsChart,
     ChartColumn,
+    ConfusionChart,
+    DiffHeatmapChart,
     DotIntervalChart,
     DotIntervalRow,
     ForestChart,
     GateScatterChart,
     HeatmapCell,
     HeatmapChart,
+    HeatmapPanel,
     HeatmapRow,
     LineSeries,
     LinesChart,
@@ -307,6 +310,52 @@ def test_a_static_matrixs_headings_and_row_labels_wrap_and_are_never_cut() -> No
         assert all(column in texts for column in columns), (width, texts)
         assert all(name in texts for name in _LONG_NAMES), (width, texts)
         assert not any("…" in text for text in texts), (width, texts)
+
+
+_EMPTY_MATRICES = [
+    ChartBlock(
+        section="memo",
+        chart="heatmap",
+        title="Pass rate by task",
+        data=HeatmapChart(columns=[ChartColumn(label="Single lookup")], rows=[], domain=(80, 100), fmt="pct"),
+    ),
+    ChartBlock(
+        section="memo",
+        chart="diff_heatmap",
+        title="Change by task",
+        data=DiffHeatmapChart(columns=[ChartColumn(label="Single lookup")], rows=[], fmt="+num:1"),
+    ),
+    ChartBlock(
+        section="memo",
+        chart="heatmap",
+        title="Pass rate by task, per model",
+        data=HeatmapChart(
+            columns=[ChartColumn(label="Single lookup")],
+            domain=(80, 100),
+            fmt="pct",
+            panels=[HeatmapPanel(title="Brisk-S", rows=[])],
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("block", _EMPTY_MATRICES, ids=["heatmap", "diff_heatmap", "heatmap_panel"])
+def test_a_heatmap_with_no_rows_is_shown_as_its_table(block: ChartBlock) -> None:
+    """Both heatmaps accept an empty list of rows, which a matrix cannot be sized from: the chart, or the panel, is
+    shown as its table, never drawn."""
+    drawing = chart_drawing(block)
+    assert drawing is None or ("<svg" not in drawing and AS_TABLE_NOTE in drawing), drawing
+
+
+def test_a_matrix_with_no_rows_draws_its_frame() -> None:
+    """The static matrix sized its rows by ``max`` over a float and each row label's lines, which raised ``TypeError``
+    on a matrix with none. A confusion matrix of no classes (its model holds no ``rows`` for the no-row guard) reaches
+    it: it draws an empty frame at every width."""
+    block = ChartBlock(
+        section="memo", chart="confusion", title="Errors by class", data=ConfusionChart(labels=[], matrix=[])
+    )
+    drawn = _svgs(block)
+    assert [width for width, _ in drawn] and all(not _texts(svg) for _, svg in drawn)
 
 
 # --- scatters ---------------------------------------------------------------------------------------------------------

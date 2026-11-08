@@ -81,6 +81,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
     held_means,
+    interval_level,
     money_words,
     stat_value,
 )
@@ -99,7 +100,6 @@ from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,
-    FAMILY_LEVEL_TEMPLATE,
     FIGURES_BY_ASPECT_ORDER,
     FIGURES_TABLE_ORDER,
     FULL_RESULTS_HEADERS,
@@ -520,40 +520,14 @@ def _score_named(name: str) -> str:
 
 
 def _level(report_input: ReportInput, contrast: Contrast) -> str | None:
-    """A comparison's interval level as a reader reads it: its own, else its family's (the family on its aspect), to
-    one decimal at most (``99.7%``, never ``99.69%``), and, where its family corrects its comparisons together, what
-    the family holds at once (``99.7% (95% across 16 comparisons)``)."""
+    """A comparison's interval level as every surface reads it (:func:`interval_level`): its own, else its family's
+    (the family on its aspect)."""
     family = next(
         (family for family in report_input.contrast_families if family.aspect == contrast.aspect and family.level),
         None,
     )
     level = contrast.level or (family.level if family is not None else None)
-    if not level:
-        return None
-    shown = _readable_level(level)
-    corrected = family is not None and (family.correction or "").strip().lower() not in ("", "none")
-    if family is None or not corrected or not family.family_size or family.family_size < 2 or family.alpha is None:
-        return shown
-    if family.level != level:
-        return shown
-    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
-    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
-
-
-def _readable_level(level: str) -> str:
-    """A level as stored (``99.69%``) to one decimal (``99.7%``), more only where one would round a level under 100 to
-    ``100%`` (``99.95%`` stays ``99.95%``), which no interval holds at; one that is no percentage, as stored."""
-    number = level.strip().removesuffix("%")
-    try:
-        value = float(number)
-    except ValueError:
-        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
-        return level
-    places = 1
-    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
-        places += 1
-    text = spell_at(value, places)
-    return f"{text.rstrip('0').rstrip('.')}%"
+    return interval_level(level, family) if level else None
 
 
 def _verdict(contrast: Contrast) -> TableCell:

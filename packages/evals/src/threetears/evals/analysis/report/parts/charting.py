@@ -47,6 +47,9 @@ retired planned page) are here, once:
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
+- **An interval's level** (:func:`interval_level`): one form wherever it prints, a chart's head and a table's cell
+  alike: to one decimal (``99.7%``), more only where one would round a level under 100 to ``100%``, and, where its
+  family corrects its comparisons together, what the family holds at once (``99.7% (95% across 16 comparisons)``).
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
@@ -73,7 +76,7 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, input_check_name, resolve
-from threetears.evals.kernel.numbers import spell_count
+from threetears.evals.kernel.numbers import format_number, spell_at, spell_count
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
@@ -82,12 +85,22 @@ from threetears.evals.analysis.report.parts.words import (
     COMPUTED_REPEATS_NOTE,
     CRITERION_LINE_TEMPLATE,
     CRITERION_LINE_WHERE,
+    FAMILY_LEVEL_TEMPLATE,
     LINE_TEMPLATES,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
     MONEY_DRAWN_NOTE,
 )
-from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, ReportInput, Stat, Stratum, Task
+from threetears.evals.analysis.report_input import (
+    Cell,
+    Contrast,
+    ContrastFamily,
+    Criterion,
+    ReportInput,
+    Stat,
+    Stratum,
+    Task,
+)
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
@@ -117,6 +130,7 @@ __all__ = [
     "figure_interval",
     "figure_stat",
     "figure_unit",
+    "interval_level",
     "interval_words",
     "measure_words",
     "misses_line",
@@ -731,6 +745,44 @@ def separated(change: float, spreads: Sequence[float | None]) -> bool | None:
     if any(one is None for one in spreads):
         return None
     return abs(change) > math.hypot(*(one for one in spreads if one is not None))
+
+
+def interval_level(level: str, family: ContrastFamily | None) -> str:
+    """An interval's level as every surface prints it, a chart's head and a table's cell alike: to one decimal
+    (``99.69%`` reads ``99.7%``), more only where one would round a level under 100 to ``100%``, which no interval holds
+    at (``99.95%`` stays ``99.95%``); a level stored in words, as stored. Where ``family`` corrects its comparisons
+    together at this level, what the family holds at once follows (``99.7% (95% across 16 comparisons)``), so a reader
+    never meets a bare ``99.69%``.
+
+    :param level: The level as the input states it (``99.69%``).
+    :ptype level: str
+    :param family: The contrast family the interval belongs to, or None.
+    :ptype family: ContrastFamily | None
+    :return: The level's words.
+    :rtype: str
+    """
+    shown = _readable_level(level)
+    if family is None or family.level != level or family.alpha is None:
+        return shown
+    corrected = (family.correction or "").strip().lower() not in ("", "none")
+    if not corrected or not family.family_size or family.family_size < 2:
+        return shown
+    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
+    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
+
+
+def _readable_level(level: str) -> str:
+    number = level.strip().removesuffix("%")
+    try:
+        value = float(number)
+    except ValueError:
+        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
+        return level
+    places = 1
+    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
+        places += 1
+    text = spell_at(value, places)
+    return f"{text.rstrip('0').rstrip('.')}%"
 
 
 def interval_words(low: float, high: float, drawn: Quantity) -> str:

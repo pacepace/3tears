@@ -6428,16 +6428,14 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
 
 
 def _plain_places(reading: _Reading, figure: Figure, report_input: ReportInput) -> int | None:
-    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names at, for the
-    statistics the tables print (:data:`_TABLED`), or for a key naming none, which reads its family's own figure: a
-    judged score's two, a measure's its set's
+    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names at, where the
+    figure is one the tables print (:func:`_tabled`): a judged score's two, a measure's its set's
     (:func:`figure_places`), as the Full results print them. Every other statistic (an adjusted p, a pairing r, a
     count of repeats) keeps its own form, the number rule's; so does a key naming neither."""
     statistics = [
         value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if isinstance(slot, _Statistic)
     ]
-    # A key naming no statistic reads its family's own figure (a dimension's mean), which the table prints.
-    if statistics and statistics[-1] not in _TABLED:
+    if not _tabled(figure, statistics[-1] if statistics else None):
         return None
     for value in reading.values:
         if rubric_score(report_input, value):
@@ -6447,16 +6445,28 @@ def _plain_places(reading: _Reading, figure: Figure, report_input: ReportInput) 
     return None
 
 
-#: The statistics the page's tables print of a measure or a judged score, which a key reading one reads at the table's
-#: precision: a mean, a contrast's delta, its interval and that interval's two ends. No other statistic is the
-#: table's figure: an adjusted p of 0.0031 is never a score to two decimals.
-_TABLED = frozenset({"mean", "delta", "interval", "low", "high"})
+def _tabled(figure: Figure, statistic: str | None) -> bool:
+    """Whether a figure is one the page's tables print of a measure or a judged score, so a key reading it reads at the
+    table's precision. Decided by what the figure is, not by how its family spells it: a change of any family, its
+    interval and that interval's ends (each resolver marks them :attr:`Figure.change`, whether its family spells the
+    change ``delta``, ``difference``, ``effect``, ``change`` or ``vs_control``); any interval; and a level, which every
+    family spells ``mean``, with its interval's two ends, or a key naming no statistic, which reads its family's own
+    figure. No other statistic is the table's figure: an adjusted p of 0.0031 is never a score to two decimals, nor a
+    half-width or a standard error a change."""
+    if figure.change or figure.kind == "interval" or statistic is None:
+        return True
+    return statistic in _LEVEL_FIGURES
+
+
+#: How every family spells a level the tables print and its interval's two ends.
+_LEVEL_FIGURES = frozenset({"mean", "low", "high"})
 
 
 def figure_places(report_input: ReportInput, key: str, *, change: bool = False) -> int | None:
     """The decimals every plain figure of a measure reads at in the page's tables (owner rulings O4 and O5): two
     significant figures of the least of its set, its levels (every mean the input holds of it) or its changes (every
-    corrected comparison's), each a set of its own; a judged score's two. None for a key that is neither.
+    corrected comparison's), each a set of its own; a judged score's two. None for a key that is neither, or a measure
+    the input holds no figure of in that set.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -6471,13 +6481,17 @@ def figure_places(report_input: ReportInput, key: str, *, change: bool = False) 
         return SCORE_PLACES
     if key in report_input.judged or key not in report_input.measures:
         return None
-    if change:
-        return set_places(
+    held = (
+        [
             float(contrast.delta)
             for contrast in report_input.contrasts
             if contrast.measure == key and contrast.kind != "judged" and contrast.delta is not None
-        )
-    return set_places(_measure_means(report_input, key))
+        ]
+        if change
+        else _measure_means(report_input, key)
+    )
+    # A measure the input holds no such figure of has no set: its figure keeps the number rule, never zero decimals.
+    return set_places(held) if held else None
 
 
 #: A judged score's rubric scale (``ordinal``): the two decimals and the ``(1–5)`` a page prints it with.

@@ -76,6 +76,7 @@ from threetears.evals.analysis.report.parts.charting import (
     figure_stat,
     figure_unit,
     held_means,
+    interval_level,
     interval_words,
     measure_words,
     money_words,
@@ -100,7 +101,6 @@ from threetears.evals.analysis.report.parts.words import (
     BASIS_NOTE,
     BETTER_WORDS,
     CASES_MEAN_TEMPLATE,
-    FAMILY_LEVEL_TEMPLATE,
     COMPARE_NARROW_NOTE,
     COMPARE_NESTED_TEMPLATE,
     COMPARE_STATED_COUNT,
@@ -1145,28 +1145,12 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
 
 
 def _family_level(context: ChartContext) -> str:
-    """A forest's level as its head prints it: where its contrasts are one family corrected together at the chart's
-    level, that level to one decimal and what the family holds at together, ``99.7% (95% across 16 comparisons)``
-    (the kit prints ``99.7% intervals (95% across 16 comparisons)``); the chart's level as it is otherwise."""
+    """A forest's level as its head prints it (:func:`interval_level`, the form a table's cell prints it in): where its
+    contrasts are one family's, corrected together at the chart's level, that level and what the family holds at
+    together, ``99.7% (95% across 16 comparisons)`` (the kit prints ``99.7% intervals (95% across 16 comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
-    if len(families) != 1:
-        return context.level
-    (family,) = families
-    corrected = (family.correction or "").strip().lower() not in ("", "none")
-    if not corrected or not family.family_size or family.family_size < 2 or family.alpha is None:
-        return context.level
-    if family.level != context.level:
-        return context.level
-    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
-    stated = context.level.removesuffix("%")
-    try:
-        at = round(float(stated), 1)
-    except ValueError:
-        return context.level
-    # A level a tenth short of 100 keeps its own digits: rounded, it would read as no interval at all.
-    level = context.level if at >= 100 else f"{format_number(at)}%"
-    return FAMILY_LEVEL_TEMPLATE.format(level=level, joint=joint, size=family.family_size)
+    return interval_level(context.level, families[0] if len(families) == 1 else None)
 
 
 def _forest(context: ChartContext) -> Drawn:
