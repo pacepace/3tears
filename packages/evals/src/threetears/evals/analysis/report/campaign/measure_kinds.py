@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     # The module that defines a page loads the parts that read these, so the type is named for the checker alone.
     from threetears.evals.analysis.report.model import Report
 
-__all__ = ["measure_described", "measure_summary", "money_rulers", "rate_measures", "shown_measures"]
+__all__ = ["measure_summary", "money_rulers", "rate_measures", "shown_measures"]
 
 
-def measure_described(reading: MeasureReading, reports: Mapping[str, Report]) -> MetricDescriptor | None:
+def _measure_described(reading: MeasureReading, reports: Mapping[str, Report]) -> MetricDescriptor | None:
     """A measure's description on its aspect: the bundle's catalog's, else the engine's own.
 
     :param reading: The arm's reading of the measure.
@@ -92,7 +92,7 @@ def rate_measures(
         reading.measure
         for reading in readings.measures
         if reading.passed is not None
-        or reads_as_rate("measure", reading.measure, descriptor=measure_described(reading, reports))
+        or reads_as_rate("measure", reading.measure, descriptor=_measure_described(reading, reports))
         or ((summary := measure_summary(reading, reports, held)) is not None and summary.rate is not None)
     )
 
@@ -116,7 +116,7 @@ def money_rulers(readings: CampaignReadings, reports: Mapping[str, Report]) -> d
     """
     held: dict[str, list[float]] = {}
     for reading in readings.measures:
-        described = measure_described(reading, reports)
+        described = _measure_described(reading, reports)
         if reading.passed is not None or described is None or not is_money(described.unit or ""):
             continue
         figures = held.setdefault(reading.measure, [])
