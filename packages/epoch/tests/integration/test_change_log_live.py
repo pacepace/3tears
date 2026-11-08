@@ -92,7 +92,7 @@ async def test_a_walk_skips_other_tables_records(nats_container: str) -> None:
         assert [change.token for change in walk.changes] == mine
 
 
-async def test_a_lost_log_is_restored_at_its_old_sequences_and_incarnation(nats_container: str) -> None:
+async def test_a_lost_log_is_restored_at_its_old_sequences_continuing_its_incarnation(nats_container: str) -> None:
     async with _client(nats_container) as nc:
         source = EpochGenerationSource(nc)
         mark = await source.current(_TABLE)
@@ -107,10 +107,15 @@ async def test_a_lost_log_is_restored_at_its_old_sequences_and_incarnation(nats_
             await source.advance_continuing(_TABLE, [ChangedRow(ids=["m9"])])
 
         assert await source.restore_epochs(records)
-        assert await reader.read(_TABLE) == tokens[-1], "the restored log numbers the epochs as before"
-        walk = await reader.changes_after(_TABLE, mark, tokens[-1])
+        head = await reader.read(_TABLE)
+        assert head is not None
+        restored, _, seq = head.rpartition(":")
+        lost = tokens[-1].rpartition(":")[0]
+        assert seq == tokens[-1].rpartition(":")[2], "the restored log numbers the epochs as before"
+        assert await reader.continues(restored) == (lost, int(seq)), "the stream metadata names the lost log"
+        walk = await reader.changes_after(_TABLE, f"{restored}:{mark.rpartition(':')[2]}", head)
         assert walk.complete
-        assert [change.token for change in walk.changes] == tokens
+        assert [change.token.rpartition(":")[2] for change in walk.changes] == [t.rpartition(":")[2] for t in tokens]
         assert not await source.restore_epochs(records), "a log that is there is never restored over"
 
 
