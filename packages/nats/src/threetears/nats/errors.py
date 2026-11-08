@@ -15,6 +15,9 @@ __all__ = [
     "KvBucketNotFoundError",
     "KvConfigMismatch",
     "KvError",
+    "KvFullError",
+    "KvStoreExhaustedError",
+    "KvValueTooLargeError",
     "LockLossReason",
     "NamespaceNotConfiguredError",
     "NatsClientError",
@@ -213,7 +216,14 @@ class KvError(NatsClientError):
     :meth:`threetears.nats.NatsKvBucket.update`; this exception is
     reserved for transport / bucket-existence failures. a bucket that does not exist
     raises the narrower :class:`KvBucketNotFoundError`, which is still a ``KvError``.
+
+    :cvar server_error_code: the JetStream API error code, when the server ANSWERED the operation with
+        a refusal; ``None`` when it did not answer at all (a closed connection, a deadline, no
+        responder) or the failure never reached it. Tells "the broker said no" from "the broker is
+        unreachable" without the caller importing nats-py.
     """
+
+    server_error_code: int | None = None
 
 
 class KvBucketNotFoundError(KvError):
@@ -249,6 +259,77 @@ class KvBucketNotFoundError(KvError):
         :param message: human-readable explanation, naming the bucket and what to check
         :ptype message: str
         :param bucket: fully-qualified name of the absent bucket
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+
+
+class KvFullError(KvError):
+    """raised when a KV write is refused because a configured bound is reached: the bucket's own
+    ``max_bytes``, or the account's storage limit for the stream's storage type.
+
+    the bucket holds what it holds until keys are deleted or expire, so room comes from fewer keys,
+    shorter lifetimes, or a larger bound. a retry, a re-open or a reconnect changes none of that.
+
+    :ivar bucket: the fully-qualified bucket name
+    """
+
+    def __init__(self, message: str, *, bucket: str) -> None:
+        """build the error, carrying the bucket's name on the instance.
+
+        :param message: human-readable explanation, naming the server's own description
+        :ptype message: str
+        :param bucket: the fully-qualified bucket name
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+
+
+class KvStoreExhaustedError(KvError):
+    """raised when a KV write is refused because the server's JetStream has no storage left for the
+    stream's storage type (memory or file), whatever the bucket's own bound says.
+
+    every stream on that server shares the shortage, so the remedy is the server's: more storage, or
+    less held elsewhere.
+
+    :ivar bucket: the fully-qualified bucket name
+    """
+
+    def __init__(self, message: str, *, bucket: str) -> None:
+        """build the error, carrying the bucket's name on the instance.
+
+        :param message: human-readable explanation, naming the server's own description
+        :ptype message: str
+        :param bucket: the fully-qualified bucket name
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+
+
+class KvValueTooLargeError(KvError):
+    """raised when a KV write is refused for the size of its value: over the broker's ``max_payload``
+    (refused before it leaves the process) or over the stream's ``max_msg_size``.
+
+    the same value is refused every time, so the remedy is a smaller value or a larger limit.
+
+    :ivar bucket: the fully-qualified bucket name
+    """
+
+    def __init__(self, message: str, *, bucket: str) -> None:
+        """build the error, carrying the bucket's name on the instance.
+
+        :param message: human-readable explanation
+        :ptype message: str
+        :param bucket: the fully-qualified bucket name
         :ptype bucket: str
         :return: nothing
         :rtype: None
