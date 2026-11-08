@@ -92,6 +92,9 @@ def _entrypoint_server_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         async def serve(self) -> None:
             return None
 
+        def pop_key_provider(self) -> None:
+            return None
+
     monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
     runpy.run_module("threetears.registry", run_name="__main__")
     return captured
@@ -855,6 +858,9 @@ class TestTheIdentityTokenProviderFactoryHook:
                 captured.update(kwargs)
 
             async def serve(self) -> None:
+                return None
+
+            def pop_key_provider(self) -> None:
                 return None
 
         monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)

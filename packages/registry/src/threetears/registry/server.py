@@ -18,7 +18,7 @@ import os
 import signal
 import time
 from collections.abc import Awaitable, Callable
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
@@ -68,6 +68,7 @@ from threetears.registry.auth import (
     DenyAllAuthorizer,
     EndpointUsageEmitter,
     LimitGuard,
+    ProvingRegistryIdentity,
     RegistryIdentity,
     ToolPodAuthenticator,
 )
@@ -81,6 +82,9 @@ from threetears.registry.config import (
 )
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.rbac_stack import RegistryRbacStack, build_registry_rbac_stack
+
+if TYPE_CHECKING:
+    from threetears.core.security.door_request import PopKey
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
@@ -492,6 +496,20 @@ class RegistryServer:
                 extra={"extra_data": {"identity": type(self._identity).__name__}},
             )
         return self._identity
+
+    def pop_key_provider(self) -> Callable[[], PopKey | None] | None:
+        """the provider of the key the identity's token binds, for an L3 backend to prove the token with.
+
+        The hub's ``l3`` door requires a proof of possession from 2027-01-05. An identity that holds the
+        key (:class:`~threetears.registry.auth.ProvingRegistryIdentity`) hands its bound ``pop_key``, read
+        per request like the token; any other identity, or none, hands ``None`` and its backends send the
+        token alone, which the door accepts until its window closes.
+
+        :return: the identity's bound ``pop_key``, or ``None``
+        :rtype: Callable[[], PopKey | None] | None
+        """
+        identity = self._identity
+        return identity.pop_key if isinstance(identity, ProvingRegistryIdentity) else None
 
     def _identity_token_provider(self) -> IdentityTokenProvider | None:
         """the bound token provider every L3-building factory receives, or ``None``.
@@ -1212,6 +1230,9 @@ def _run_server() -> None:
                 subject_namespace=namespace,
                 l1_backend=l1_backend,
                 identity_token=identity_token,
+                # the same identity's key, so every L3 read proves its token at the l3 door. `server` is
+                # bound below; this factory runs only once serve() has built the identity
+                pop_key=server.pop_key_provider(),
             )
             await stack.subscribe_invalidations()
             # hand the stack to the server's teardown. Without this the subscriptions this

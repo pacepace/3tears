@@ -333,7 +333,7 @@ class TableFollower:
         quiet = (
             [
                 asyncio.create_task(
-                    _run_quiet_passes(self._registry, self._source, self._tables), name="follow-generation:quiet-pass"
+                    _run_quiet_passes(self._registry, self._source, self._tables), name="generation-quiet-pass"
                 )
             ]
             if isinstance(self._source, QuietReader)

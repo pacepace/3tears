@@ -22,6 +22,8 @@ from uuid import UUID
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.core.security.door_request import PopKey
+
     from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "EndpointUsageEmitter",
     "LimitDecision",
     "LimitGuard",
+    "ProvingRegistryIdentity",
     "RegistryIdentity",
     "ToolPodAuth",
     "ToolPodAuthenticator",
@@ -509,5 +512,25 @@ class RegistryIdentity(Protocol):
 
         :return: nothing
         :rtype: None
+        """
+        ...
+
+
+@runtime_checkable
+class ProvingRegistryIdentity(RegistryIdentity, Protocol):
+    """a registry identity that also holds the key its token binds (its ``cnf``), so it can prove the token.
+
+    The hub's ``l3`` door takes a bearer token only until its window closes (2027-01-05); after that
+    every request must carry a proof of possession signed with the key the token names
+    (:mod:`threetears.core.security.door_request`). A host whose identity answers :meth:`pop_key`
+    gets that proof on every L3 request the registry sends; one that does not keeps sending the token
+    alone, which the door accepts while its window is open.
+    """
+
+    def pop_key(self) -> PopKey | None:
+        """the key the CURRENT token binds, re-read on every call like the token.
+
+        :return: the key, or ``None`` when the host holds none
+        :rtype: PopKey | None
         """
         ...

@@ -8,6 +8,17 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### registry: the rbac pool proves its token at the hub's l3 door
+
+**Added (registry):** the hub's `l3` door requires a proof of possession from 2027-01-05, and the registry's
+rbac pool sent its identity token alone. `build_registry_rbac_stack(pop_key=...)` hands the key the token binds
+to its `NatsProxyL3Backend`, so every L3 request carries a proof over its body for the operation its subject
+names. `RegistryServer.pop_key_provider()` supplies it from a host identity that holds its key
+(`ProvingRegistryIdentity`: `RegistryIdentity` plus `pop_key()`); the entry point's rbac factory wires it.
+Compatible with today's hub: an identity without `pop_key()` hands nothing, and the pool sends the token alone,
+as before, which the door accepts until its window closes. The hub's `RegistryIdentitySession` gains
+`pop_key()` (its handshake's `pop_private_key`, as a `PopKey`) on its re-pin to 0.95.0.
+
 ### core, epoch: every write leaves a change note in L3, so a lost change log comes back for every table
 
 **Added (core):** `threetears.core.collections.change_notes`. Every noted table (`noted_tables()`: each table a

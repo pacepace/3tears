@@ -54,6 +54,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
@@ -76,6 +77,9 @@ from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 from threetears.epoch import EpochGenerationReader
 from threetears.nats import NatsClient, Principal, kv_key_scope_for
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.core.security.door_request import PopKey
 
 __all__ = [
     "REGISTRY_SERVICE_SENTINEL_AGENT_ID",
@@ -252,6 +256,7 @@ def build_registry_rbac_stack(
     subject_namespace: str,
     l1_backend: SQLiteBackend,
     identity_token: Callable[[], str | None] | None = None,
+    pop_key: Callable[[], PopKey | None] | None = None,
 ) -> RegistryRbacStack:
     """construct the registry-side rbac stack.
 
@@ -285,6 +290,11 @@ def build_registry_rbac_stack(
         :class:`RegistryIdentityUnavailableError` rather than building a backend
         that raises on its first query.
     :ptype identity_token: Callable[[], str | None] | None
+    :param pop_key: zero-arg PROVIDER of the key the identity token binds (its ``cnf``), read per
+        request like the token, so every L3 request carries a proof of possession over its body: the
+        hub's ``l3`` door requires one from 2027-01-05. ``None``, or a provider answering ``None``,
+        sends the token alone, which the door accepts until then
+    :ptype pop_key: Callable[[], PopKey | None] | None
     :return: populated rbac stack ready for downstream consumers
     :rtype: RegistryRbacStack
     :raises RegistryIdentityUnavailableError: when no identity-token provider was
@@ -306,6 +316,7 @@ def build_registry_rbac_stack(
         # replaces the held token in place, and the backend reads through this
         # callable on every request, so the two never drift.
         identity_token=identity_token,
+        pop_key=pop_key,
     )
 
     # THE SECOND REGISTRY IN THE REGISTRY-SERVER PROCESS, and it is L2-live even though no
