@@ -104,7 +104,15 @@ DOW_RUNGS: Final = (
 )
 
 #: The cases a production host minted through the mint door. They are kept as minted, never rebuilt here.
-MINTED_CASES: Final = ("discodon-dj-character-01a1b3d4", "discodon-judge-shortlist-01a14544")
+MINTED_CASES: Final = (
+    "discodon-dj-character-01a1b3d4",
+    "discodon-judge-shortlist-01a14544",
+    "discodon-kairo-models-pilot-01a18f50",
+    "discodon-1017-reasoning-effort-01a18d4d",
+    "discodon-planted-effect-01a18b10",
+    "discodon-kairo-directives-ab-01a16f8a",
+    "discodon-kairo-persona-r1-01a16bd4",
+)
 
 
 @dataclass(frozen=True)
