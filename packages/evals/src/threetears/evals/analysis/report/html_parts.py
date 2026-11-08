@@ -322,7 +322,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             tag, scope = ("th", ' scope="row"') if (block.name, column.key) in _ROW_HEADER_COLUMNS else ("td", "")
             # A cell holds a hyphenated word whole, as a pinned one does, so it wraps at its spaces alone; a prose cell
             # (wrap) wraps as a paragraph does.
-            held = _one_word(text) if pin or css != ' class="wrap"' else text
+            held = held_whole(text) if pin or css != ' class="wrap"' else text
             cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{held}</{tag}>")
         anchor = ""
         if block.name == "cases" and "case" in row:
@@ -619,13 +619,14 @@ _TAG = re.compile(r"(<[^>]*>)")
 
 
 def _pinned_text(markup: str, pinned: bool) -> str:
-    """A cell's markup as its column lays it out: a pinned cell's hyphenated words held whole (:func:`_one_word`)."""
-    return _one_word(markup) if pinned else markup
+    """A cell's markup as its column lays it out: a pinned cell's hyphenated words held whole (:func:`held_whole`)."""
+    return held_whole(markup) if pinned else markup
 
 
-def _one_word(markup: str) -> str:
-    """A pinned cell's markup, each hyphenated word of its text set ``<span class="id">``, which the stylesheet
-    keeps on one line: ``deepseek-v4.1-flash`` is one word, never broken after a hyphen while its column can grow.
+def held_whole(markup: str) -> str:
+    """Markup with each hyphenated word of its text set ``<span class="id">``, which the stylesheet keeps on one line:
+    ``deepseek-v4.1-flash`` is one word, never broken after a hyphen, in a pinned cell while its column can grow and in
+    a written page's running text (its headline, lede and cards) alike.
 
     Only text is read: a tag (a link's ``href`` holds a case id too) and a code span (an expression, which breaks
     anywhere instead) are left as they are. A word longer than :data:`_ONE_WORD_CHARS` is left free to wrap after its
@@ -865,12 +866,13 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
         for at, header in enumerate(headers)
     )
     # A cell of words wraps at a measure, as a table block's does (:data:`_PROSE_CELL`), so a long label or reason never
-    # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere.
+    # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere. Any
+    # other cell holds a hyphenated word whole, as a table block's does (``A · qwen3.8-flash``).
     body = "".join(
         "<tr>"
         + "".join(
             f"<td{_pinned_class(' class="wrap"' if len(cell) >= _PROSE_CELL else '', cell, at == 0)}>"
-            f"{_pinned_text(escape(cell), at == 0)}</td>"
+            f"{held_whole(escape(cell)) if at == 0 or len(cell) < _PROSE_CELL else escape(cell)}</td>"
             for at, cell in enumerate(row)
         )
         + "</tr>"
@@ -888,7 +890,8 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
         )
     framed = block.chart in _CELL_GRID_KINDS
     values = (
-        f'<div class="tbl chart-values"><table><caption>{escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
+        f'<div class="tbl chart-values"><table><caption>{held_whole(escape(block.title))}</caption>'
+        f"<thead><tr>{head}</tr></thead>"
         f"<tbody>{body}</tbody></table></div>"
     )
     # a cell grid wider than the phone scrolls inside a frame holding the chart and its table (on every page, drawn or
@@ -963,7 +966,7 @@ _HEADER_CELL = re.compile(r"(<th\b[^>]*>)(.*?)(</th>)", re.S)
 #: A link to a glossary entry, its target the group ``href``.
 _GLOSSARY_LINK = re.compile(r'<a\b[^>]*\bhref="(?P<href>#g-[^"]+)"[^>]*>')
 
-#: A hyphenated word held whole in a cell (:func:`_one_word`), its text the group.
+#: A hyphenated word held whole in a cell (:func:`held_whole`), its text the group.
 _HELD = re.compile(r'<span class="id(?: long)?">([^<]*)</span>')
 
 
@@ -1042,6 +1045,7 @@ __all__ = [
     "check_header_links",
     "glossary_slug",
     "grid_html",
+    "held_whole",
     "inline_html",
     "one_line",
     "page_head",

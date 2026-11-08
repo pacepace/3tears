@@ -43,7 +43,14 @@ from functools import reduce
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import POINT_PLACES, ends_places, format_number, group_thousands, spell_at
+from threetears.evals.kernel.numbers import (
+    POINT_PLACES,
+    ends_places,
+    format_number,
+    group_thousands,
+    set_places,
+    spell_at,
+)
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
@@ -211,7 +218,7 @@ def row_figures(row: AspectReading, control: str) -> str:
     interval, _ = _shown_interval(row)
     if interval is not None:
         # Both ends at one precision, as the interval's cell prints them: a point's one decimal, more where an end that
-        # is not zero would read as one (owner ruling O5).
+        # is not zero would read as one: a set reads at one precision.
         places = ends_places(interval[0], interval[1], POINT_PLACES)
         said.append(
             interval_words(
@@ -1300,8 +1307,15 @@ def pair_blocks(
                 "ahead": ahead if pair.confirmatory else f"{ahead}, a lead",
             }
         )
-        if pair.interval is not None:
-            cells["change"] = TableCell(value=change, low=pair.interval[0], high=pair.interval[1], zero_line=True)
+        # Signed at a point's one decimal, as every other change on the page reads: a pair is direction-free, so an
+        # unsigned 5.0 would read as a magnitude.
+        cells["change"] = (
+            TableCell(value=change, decimals=1, signed=True)
+            if pair.interval is None
+            else TableCell(
+                value=change, low=pair.interval[0], high=pair.interval[1], zero_line=True, decimals=1, signed=True
+            )
+        )
         rows.append(cells)
     blocks: list[ReportBlock] = []
     if readings.pairs:
@@ -1742,10 +1756,9 @@ _MEASURED_PLACES = 4
 
 def _one_precision(rows: list[dict[str, TableCell]], keys: Sequence[str]) -> list[dict[str, TableCell]]:
     """The scorecard's rows with each column of measured figures (neither a rate nor money, whose columns have forms of
-    their own) at one precision, as the line under the table spells the column's scale: the decimals that give its
-    smallest figure other than zero two significant figures (none from ten up), one more where two of its figures
-    would otherwise print alike, and never more than any figure holds. ``2.737`` beside ``0`` reads ``2.7``; a column
-    of whole counts stays whole; zero reads ``0``.
+    their own) at one precision, the set's (:func:`~threetears.evals.kernel.numbers.set_places`), so a figure reads
+    here as the Full results and the line under the table read it: ``2.737`` beside ``0`` reads ``2.7``, ``3.0``
+    beside ``2.0`` reads so, and ``99.2345`` beside ``100`` reads ``99`` and ``100``.
 
     :param rows: The scorecard's rows, by column key.
     :ptype rows: list[dict[str, TableCell]]
@@ -1757,14 +1770,8 @@ def _one_precision(rows: list[dict[str, TableCell]], keys: Sequence[str]) -> lis
     places: dict[str, int] = {}
     for key in keys:
         figures = [float(row[key].value) for row in rows if key in row and row[key].is_number]  # type: ignore[arg-type]
-        stated = [abs(figure) for figure in figures if figure != 0]
-        if not stated:
-            continue
-        held = max(_decimals_held(figure) for figure in figures)
-        chosen = min(held, max(0, 1 - math.floor(math.log10(min(stated)))))
-        while chosen < held and len({round(figure, chosen) for figure in figures}) < len(set(figures)):
-            chosen += 1
-        places[key] = chosen
+        if any(figure != 0 for figure in figures):
+            places[key] = set_places(figures)
     return [
         {
             key: cell.model_copy(update={"decimals": places[key]})
@@ -1774,11 +1781,6 @@ def _one_precision(rows: list[dict[str, TableCell]], keys: Sequence[str]) -> lis
         }
         for row in rows
     ]
-
-
-def _decimals_held(figure: float) -> int:
-    """The decimals ``figure`` holds, up to :data:`_MEASURED_PLACES`: ``2.7368`` holds four, ``4.5`` one, ``3.0`` none."""
-    return next((places for places in range(_MEASURED_PLACES) if round(figure, places) == figure), _MEASURED_PLACES)
 
 
 def measured_figure(reading: MeasureReading) -> str | None:

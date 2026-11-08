@@ -159,8 +159,8 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
         form = MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)
         return form.spell(value, signed=bool(match[1]))
     if unit in (PERCENT, POINTS) and match[3] is not None:
-        # A format naming its digits is the set's one precision (owner ruling O5): a share read to three decimals near
-        # even prints ``49.998%`` in the table as in the line under the chart, never ``50%``.
+        # A format naming its digits is the set's one precision, as every set reads at one: a share read to three
+        # decimals near even prints ``49.998%`` in the table as in the line under the chart, never ``50%``.
         text = spell_at(value, int(match[3]), signed=bool(match[1]))
         return f"{text}{unit}" if unit == PERCENT else f"{text} {unit}"
     if (not unit and read_at == POINTS) or unit == POINTS:

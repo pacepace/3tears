@@ -343,7 +343,7 @@ class Figure:
     how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
     arm whose cost counts only part of its calls, the words its pricing gives (``850 of 897 calls priced``), which
     :func:`format_figure` prints after the amount, so no key states a smaller total bare. Nor does ``places``: the
-    decimals the page's tables print a plain figure at (owner rulings O4 and O5), a judged score's two and a measure's
+    decimals the page's tables print a plain figure at, a judged score's two and a measure's
     set's (:func:`figure_places`), so a key reads its figure as the table beside it does; None for the number rule.
     """
 
@@ -1393,22 +1393,27 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
     return _text(path, report_input.caveats.latency, "why latency is not compared")
 
 
-def _held_values(report_input: ReportInput, key: str) -> list[float | None]:
-    """Every mean the input holds for a measure or judged dimension: overall and on each other aspect, in each task,
-    each stratum and each cell."""
+def held_means(report_input: ReportInput, key: str) -> list[float]:
+    """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell.
+    The one walk of them: a set's precision (:func:`figure_places`), a money ruler over the amounts a chart's changes
+    compare, a rate's scale and a rubric's bounds all read this set.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :return: The means, as stored.
+    :rtype: list[float]
+    """
     stats: list[Stat] = []
     for table in (report_input.measures, report_input.judged):
         if key in table:
             stats.extend(table[key].per_arm.values())
             stats.extend(stat for arms in table[key].by_aspect.values() for stat in arms.values())
-    slices = [
-        *(task.per_arm for task in report_input.tasks),
-        *(stratum.per_arm for stratum in report_input.strata),
-        *(cell.per_arm for cell in report_input.cells.values()),
-    ]
-    for per_arm in slices:
-        stats.extend(figures[key] for figures in per_arm.values() if key in figures)
-    return [stat.mean for stat in stats]
+    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
+    for held in slices:
+        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
+    return [float(stat.mean) for stat in stats if stat.mean is not None]
 
 
 def _scale_of(report_input: ReportInput, key: str, extra: Iterable[float] = ()) -> tuple[Scale, str]:
@@ -1418,7 +1423,7 @@ def _scale_of(report_input: ReportInput, key: str, extra: Iterable[float] = ()) 
         return _measure_scale(report_input.measures[key])
     judged = report_input.judged.get(key)
     if judged is not None and judged.scale == "pass_fail":
-        return _rate_scale([*_held_values(report_input, key), *extra]), ""
+        return _rate_scale([*held_means(report_input, key), *extra]), ""
     return "plain", ""
 
 
@@ -6462,11 +6467,15 @@ def _tabled(figure: Figure, statistic: str | None) -> bool:
 _LEVEL_FIGURES = frozenset({"mean", "low", "high"})
 
 
-def figure_places(report_input: ReportInput, key: str, *, change: bool = False) -> int | None:
-    """The decimals every plain figure of a measure reads at in the page's tables (owner rulings O4 and O5): two
-    significant figures of the least of its set, its levels (every mean the input holds of it) or its changes (every
-    corrected comparison's), each a set of its own; a judged score's two. None for a key that is neither, or a measure
-    the input holds no figure of in that set.
+def figure_places(
+    report_input: ReportInput, key: str, *, change: bool = False, judged: bool = False, factor: float = 1.0
+) -> int | None:
+    """The decimals every plain figure of a measure or judged dimension reads at wherever the page prints it, its Full
+    results and the keys its prose cites alike: a judged score's two (:data:`SCORE_PLACES`); any other figure at two
+    significant figures of the least of its set as drawn (:func:`~threetears.evals.kernel.numbers.set_places`), its
+    levels (every mean the input holds of it) or its changes (every corrected comparison's on it), each a set of its
+    own. None for a figure with no such set: a judged level off the rubric, a key that is neither, or a measure the
+    input holds no figure of in that set, whose figure keeps the number rule.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -6474,24 +6483,27 @@ def figure_places(report_input: ReportInput, key: str, *, change: bool = False) 
     :ptype key: str
     :param change: Whether the figures are changes.
     :ptype change: bool
+    :param judged: Whether the figures are a judged dimension's (a comparison of kind ``judged``), not a measure's.
+    :ptype judged: bool
+    :param factor: What each figure is multiplied by where it is drawn: the set is placed as it prints.
+    :ptype factor: float
     :return: The decimals, or None.
     :rtype: int | None
     """
-    if rubric_score(report_input, key):
+    if rubric_score(report_input, key) and (judged or key not in report_input.measures):
         return SCORE_PLACES
-    if key in report_input.judged or key not in report_input.measures:
-        return None
-    held = (
-        [
+    if change:
+        held = [
             float(contrast.delta)
             for contrast in report_input.contrasts
-            if contrast.measure == key and contrast.kind != "judged" and contrast.delta is not None
+            if contrast.measure == key and (contrast.kind == "judged") == judged and contrast.delta is not None
         ]
-        if change
-        else _measure_means(report_input, key)
-    )
+    elif judged or key not in report_input.measures:
+        return None
+    else:
+        held = held_means(report_input, key)
     # A measure the input holds no such figure of has no set: its figure keeps the number rule, never zero decimals.
-    return set_places(held) if held else None
+    return set_places(value * factor for value in held) if held else None
 
 
 #: A judged score's rubric scale (``ordinal``): the two decimals and the ``(1–5)`` a page prints it with.
@@ -6513,22 +6525,8 @@ def rubric_score(report_input: ReportInput, key: str) -> bool:
     judged = report_input.judged.get(key)
     if judged is None or judged.scale == "pass_fail":
         return False
-    stats = [*judged.per_arm.values(), *(stat for figures in judged.by_aspect.values() for stat in figures.values())]
-    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
-    for held in slices:
-        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
     low, high = RUBRIC_SCALE
-    return all(low <= float(stat.mean) <= high for stat in stats if stat.mean is not None)
-
-
-def _measure_means(report_input: ReportInput, key: str) -> list[float]:
-    """Every mean the input holds of a measure: overall, per aspect, and in each task, stratum and cell."""
-    measure = report_input.measures[key]
-    stats = [*measure.per_arm.values(), *(stat for figures in measure.by_aspect.values() for stat in figures.values())]
-    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
-    for held in slices:
-        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
-    return [float(stat.mean) for stat in stats if stat.mean is not None]
+    return all(low <= mean <= high for mean in held_means(report_input, key))
 
 
 def _beside_its_month(reading: _Reading, figure: Figure, report_input: ReportInput) -> bool:
@@ -7088,7 +7086,7 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
 
 
 def _one_precision(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
-    """An interval's two plain ends at one precision (owner ruling O5): the decimals the page's tables print the
+    """An interval's two plain ends at one precision, as every set reads: the decimals the page's tables print the
     figure's set at (``figure.places``), else two significant figures of the interval's width, which is what its ends
     can tell apart (``2.84–3.00`` for 2.839 to 3), never padded to its finer end's digits; more only where
     an end that is not zero would read as one. An end from
@@ -7110,9 +7108,9 @@ def _one_precision(ends: list[_Spelled], values: tuple[float, float], figure: Fi
 
 
 def _points_ends(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
-    """An interval in points with both ends at one precision (owner ruling O5): a point's one decimal, a whole end too
-    (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never ``-2.2 to
-    0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule, which writes a
+    """An interval in points with both ends at one precision, as every set reads: a point's one decimal, a whole end
+    too (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never
+    ``-2.2 to 0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule, which writes a
     whole one whole."""
     hundred = [value * 100 if figure.scale == "share" else value for value in values]
     at = ends_places(hundred[0], hundred[1], POINT_PLACES)
@@ -7159,10 +7157,21 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
             written = written_arm(name, tags[arm.id])
         else:
             written = format_figure(figure, key.filters)
+            if "words" in key.filters and _opens_sentence(text[:start]) and text[end:].strip():
+                # A count spelled as a word that opens a sentence reads as one does, with a capital: the writer
+                # cannot capitalise a word code spells for it ("Ten conversations", never "ten conversations"). A key
+                # alone is a figure, not a sentence, and reads as its filter spells it.
+                written = written[:1].upper() + written[1:]
         pieces.extend((text[at:start], written))
         at = end
     pieces.append(text[at:])
     return "".join(pieces)
+
+
+def _opens_sentence(before: str) -> bool:
+    """Whether a key after ``before`` opens a sentence: nothing but space before it, or a sentence's end."""
+    said = before.rstrip()
+    return not said or said.endswith((".", "!", "?")) or before.endswith("\n")
 
 
 def _allowed_names(report_input: ReportInput) -> set[str]:

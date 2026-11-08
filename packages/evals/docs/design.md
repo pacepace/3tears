@@ -164,6 +164,35 @@ follow as one table, and cases, trials, what was not tested, the methods and the
 interval beside it, and the only picture besides the outcome bar is each interval drawn in the row that states it
 ([the page](reading-reports.md#the-report-one-page-result-first)).
 
+### Presentation rulings
+
+The owner settled how a report page draws and prints its figures (owner rulings, 2026-11-08). Where a page does not
+yet hold one, the issue named below says why.
+
+- **No arm is drawn in a status colour.** Arms take hues apart from green, amber and red, and "passed" is drawn in ink,
+  so a status colour on a page means a status and nothing else.
+- **A change sits beside its own baseline.** A change prints with the control's level it is measured from, so a
+  reader never meets a bare delta. On the code page that level is the change's own baseline, the mean over the cases
+  the change is computed on, so the arithmetic closes. A written page's change charts print the control's level as
+  its arm table states it until the report input carries the paired baseline (#1125).
+- **Changes per place draw as dots.** A change per stratum, task, lever or configuration is a dot with its interval;
+  a bar is kept for a magnitude drawn from zero.
+- **A judged score reads at two decimals and a count at two significant figures.** A score on the rubric prints as
+  `4.86` with its scale named (`(1–5)`); a count per trial, a time or any other measured figure at two significant
+  figures of its set's least figure but zero.
+- **A set reads at one precision.** An interval's two ends, a column, an axis and a chart's labels share their
+  decimals (`-29.0 to +57.6`, `0.0 pts` beside `-5.0 pts`), wherever the set prints: a figure reads the same on the
+  scorecard, in the Full results and in the key the prose cites. A lone figure keeps the number rule, where a whole
+  value drops its decimal.
+
+Left for later, each with its issue: refusing a change chart of one row
+([#1124](https://github.com/pacepace/3tears/issues/1124)); the paired baseline on written pages' change charts
+([#1125](https://github.com/pacepace/3tears/issues/1125)); configuration lines only for a factor declared ordered
+([#1126](https://github.com/pacepace/3tears/issues/1126)); one form for a family-corrected level in prose
+([#1127](https://github.com/pacepace/3tears/issues/1127)); one interval level per screen on a written first screen
+([#1128](https://github.com/pacepace/3tears/issues/1128)); and "no variation" in a written page's Full results
+([#1129](https://github.com/pacepace/3tears/issues/1129)).
+
 ### The engine itself
 
 **One generic engine; the host owns the vocabulary.**

@@ -556,7 +556,8 @@ def figure_text(value: float, drawn: Quantity) -> str:
         return _money_text(value, drawn)
     if drawn.unit == POINTS:
         # A change in points at a point's one decimal, a whole one and a zero too (``-3.0 pts``, ``0.0 pts``), as its
-        # table, its values table and the keys citing it read it (owner ruling O5).
+        # table and its values table read it: a member of a set keeps the set's precision. A key citing it alone is a
+        # lone figure and keeps the number rule (``-15``).
         return f"{spell_at(value, POINT_PLACES, signed=drawn.change)} {POINTS}"
     return signed_with_unit(value, drawn.unit) if drawn.change else with_unit(value, drawn.unit)
 

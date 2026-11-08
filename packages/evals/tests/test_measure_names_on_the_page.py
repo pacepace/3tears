@@ -592,7 +592,7 @@ def test_every_measure_a_written_page_s_full_results_name_starts_with_a_capital(
     named += [
         row["measure"].text for table in page.doc_page.full_results for row in laid_out(table).rows if "measure" in row
     ]
-    # A judged score is named with its scale (owner ruling O4).
+    # A judged score is named with its scale, so its two decimals read on a scale a reader knows.
     assert "extraction layout fidelity (1–5)" in [name.casefold() for name in named], (
         "the control: the judged dimension"
     )

@@ -37,11 +37,11 @@ A browser renderer that restates this rule pins itself to the same cases this pa
   implements explicitly.
 - An absent or non-finite value is an em dash, never a zero.
 
-**A set reads at one precision** (owner rulings O4 and O5, 2026-11-08). The rule above is a lone figure's. Figures a
-reader compares (an interval's two ends, a column of one measure, a chart's labels) share their decimals
-(:func:`set_places`, :func:`spell_at`, :func:`ends_places`): a judged score at two decimals, a change in points at one,
-any other measured figure at two significant figures of the set's least figure but zero, so ``-29.0 to +57.6`` and
-``1.4`` beside ``1.5`` read alike, and a whole member keeps the set's decimals the lone rule would drop.
+**A set reads at one precision** (owner ruling, 2026-11-08; docs/design.md, Presentation rulings). The rule above is a
+lone figure's. Figures a reader compares (an interval's two ends, a column of one measure, a chart's labels) share
+their decimals (:func:`set_places`, :func:`spell_at`, :func:`ends_places`): a judged score at two decimals, a change in
+points at one, any other measured figure at two significant figures of the set's least figure but zero, so ``-29.0 to
++57.6`` and ``1.4`` beside ``1.5`` read alike, and a whole member keeps the set's decimals the lone rule would drop.
 """
 
 from __future__ import annotations
@@ -479,14 +479,14 @@ def spell_multiple(ratio: float) -> str:
 
 
 #: The significant figures a set of measured figures (neither a rate, money nor a judged score) reads to: a count per
-#: trial, a time, any other measured unit (owner ruling O4, 2026-11-08, which host pass 6's rule for a scorecard's
-#: measured columns already took). Two, of the set's least figure but zero, so every member reads at the decimals that
-#: figure needs: ``1.4`` beside ``1.5`` items, ``99`` beside ``100`` ms.
+#: trial, a time, any other measured unit: a count reads at two significant figures. Two, of the set's least figure but
+#: zero, so every member reads at the decimals that figure needs: ``1.4`` beside ``1.5`` items, ``99`` beside ``100``
+#: ms, on the scorecard as in the Full results.
 SET_FIGURES = 2
 
-#: The decimals a judged score on a rubric scale (1–5) reads at, its figures and its changes alike (owner ruling O4):
-#: a hundredth of a point is the step a mean over tens of cases distinguishes, and two decimals keep ``4.86`` beside
-#: ``5.00`` one precision.
+#: The decimals a judged score on a rubric scale (1–5) reads at, its figures and its changes alike: a hundredth of a
+#: point is the step a mean over tens of cases distinguishes, and two decimals keep ``4.86`` beside ``5.00`` one
+#: precision.
 SCORE_PLACES = 2
 
 #: The decimals a percent or a point reads at in a set: a change in a rate (``-7.6 pts``, ``0.0 pts``), an interval's
@@ -495,28 +495,33 @@ POINT_PLACES = 1
 
 
 def set_places(values: Iterable[float | None], *, figures: int = SET_FIGURES) -> int:
-    """The decimals one set of figures reads at, so its members share their precision (owner ruling O5, 2026-11-08):
-    those that give the set's least magnitude but zero ``figures`` significant figures, and never fewer than none
-    (``99`` and ``100``, never ``100`` rounded to ``1.0e2``).
+    """The decimals one set of figures reads at, so its members share their precision: those that give the set's least
+    magnitude but zero ``figures`` significant figures, and never fewer than none (``99`` and ``100``, never ``100``
+    rounded to ``1.0e2``).
 
     A set is the figures a reader compares: an interval's two ends, a column of one measure, an axis, a chart's end
     labels. The lone figure keeps :func:`format_number`'s rule, where a whole value drops its decimal; a member of a set
     keeps the set's decimals, so ``-29.0 to +57.6`` and ``1.4`` beside ``1.5`` read alike.
 
-    :param values: The set's figures, as they are drawn; ``None``, zero and non-finite ones say nothing of its precision.
+    :param values: The set's figures, as they are drawn; ``None``, non-finite ones and those under :data:`WRITTEN_FROM`
+        (zero among them) say nothing of its precision.
     :ptype values: Iterable[float | None]
     :param figures: The significant figures its least member reads to.
     :ptype figures: int
-    :return: The decimals; none for a set with no figure but zero.
+    :return: The decimals, at most :data:`WRITTEN_FROM`'s six; none for a set with no figure at or above it.
     :rtype: int
     """
-    stated = [abs(value) for value in values if value is not None and math.isfinite(value) and value != 0]
+    # A figure under WRITTEN_FROM reads as the bound it is under (spell_at), so it asks for no decimals: a change of
+    # float residue (5.5e-17) never spells the whole column to eighteen places.
+    stated = [
+        abs(value) for value in values if value is not None and math.isfinite(value) and abs(value) >= WRITTEN_FROM
+    ]
     if not stated:
         return 0
     least = min(stated)
     # Placed by the least figure as rounded to its figures, so 0.0996 (two figures: 0.10) reads at two decimals.
     exponent = int(f"{least:.{figures - 1}e}".split("e")[1])
-    return max(0, figures - 1 - exponent)
+    return min(max(0, figures - 1 - exponent), _WRITTEN_PLACES)
 
 
 def spell_at(value: float | None, places: int, *, signed: bool = False) -> str:

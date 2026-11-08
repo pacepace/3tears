@@ -52,7 +52,7 @@ from packages.evals.tests.campaign_page_support import kairo_page
 from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.page_contract_support import parsed
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
-from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked
+from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked, rendered
 from packages.evals.tests.report_shapes_support import s1_change, s2_choice, s4_change
 
 #: The type scale's five steps, in px.
@@ -268,7 +268,7 @@ def test_an_arm_s_colour_stands_as_a_mark_and_carries_its_tag_s_letter(theme: st
 def test_no_arm_s_colour_shares_a_hue_family_with_a_status_colour(theme: str) -> None:
     """Production, 0.94: arm C's series green drew beside the outcome bar's status green, and the orange and ochre
     arms sat in the warn and fail families. Every arm's hue stands at least 40 degrees from pass, warn and fail, so a
-    colour on a page means one thing (owner ruling O1, 2026-11-08)."""
+    colour on a page means one thing: no arm is drawn in a status colour."""
     near = {
         (arm, status): round(gap, 1)
         for arm in _ARMS
@@ -606,6 +606,100 @@ def test_the_campaign_lead_sets_its_decisions_in_bold_in_its_rows_and_pairs_form
         "The evidence cannot tell alpha and beta apart, alpha ahead of gamma, the evidence cannot tell beta and gamma apart"
     ], bold
     assert regular.strip() == ".", regular
+
+
+# =============================================================================
+# The appendix's last lines, and a name held whole in running text
+# =============================================================================
+
+
+#: The model a candidate of Kairo round 2 ran, which its written page names in the headline, the lede and the cards.
+_HYPHENATED_MODEL = "qwen3.8-flash"
+
+
+@cache
+def _doc5() -> DocPage:
+    """Kairo round 2's written report (prototype 5): Method terms carrying caveats, a made line, and a hyphenated
+    model's name in its headline, lede and decision cards."""
+    name = "prototype5/kairo"
+    with frozen_clock():
+        return build(
+            ReportDoc.model_validate(converted_doc(name)),
+            ReportInput.model_validate(snapshot_of(name).report_input),
+            strict=True,
+        )
+
+
+def test_a_model_s_name_in_the_headline_lede_and_cards_is_held_whole() -> None:
+    """Discodon's acceptance page broke ``qwen3.8-`` / ``flash`` across its headline's lines: a table's cell held a
+    hyphenated word whole, running text did not. Every place the written page's body prints the name above its
+    appendix (headline, lede, cards, claims, captions, code's lines, chart values) holds it as one word
+    (``span.id``); the masthead, a row of labelled parts, is left flat."""
+    page = doc_page_html(_doc5())
+    first = page[page.index("<body") : page.index('data-part="appendix"')]
+    # The masthead is a flat row of labelled spans a host reads part by part, not running text.
+    first = re.sub(r'<div class="mast">.*?</div>', "", first, count=1, flags=re.S)
+    said = [part for part in re.split(r"(<[^>]+>)", first) if not part.startswith("<")]
+    held = sum(
+        word.count(_HYPHENATED_MODEL) for word in re.findall(r'<span class="id(?: long)?">([^<]*)</span>', first)
+    )
+    named = sum(part.count(_HYPHENATED_MODEL) for part in said)
+    assert named > 3 and held == named, (held, named)
+    headline = re.search(r"<h1[^>]*>(.*?)</h1>", page, re.S)
+    assert headline is not None and f'<span class="id">{_HYPHENATED_MODEL}</span>' in headline.group(1)
+
+
+#: At the drawn width: the headline's held name set after each of sixty runs of filler, and the line fragments it
+#: takes held and bare; then the made line's and a Method caveat line's type and spacing beside the appendix's.
+_HELD_AND_APPENDIX = (
+    """() => {
+  const h1 = document.querySelector('.bluf h1, h1');
+  const name = '%s';
+  const frags = (markup) => {h1.innerHTML = markup; const el = h1.querySelector('span.id');
+    if (el) return el.getClientRects().length;
+    const text = [...h1.childNodes].find(n => n.nodeType === 3 && n.textContent.includes(name));
+    const range = document.createRange(); const at = text.textContent.indexOf(name);
+    range.setStart(text, at); range.setEnd(text, at + name.length); return range.getClientRects().length;};
+  let held = 0, bare = 0;
+  for (let n = 0; n < 60; n++) {
+    const lead = 'Keep September: ' + 'more '.repeat(n);
+    held = Math.max(held, frags(lead + '<span class="id">' + name + '</span> costs more and holds character no better.'));
+    bare = Math.max(bare, frags(lead + name + ' costs more and holds character no better.'));
+  }
+  const made = document.querySelector('p.cap[data-part="made"]');
+  const dd = document.querySelector('.method dd');
+  const cap = document.querySelector('.method .cap[data-part="caveats"]');
+  const style = (el) => getComputedStyle(el);
+  const above = made.previousElementSibling.getBoundingClientRect().bottom;
+  return {held, bare,
+    made: {size: style(made).fontSize, gap: made.getBoundingClientRect().top - above},
+    appendix: {size: style(dd).fontSize, color: style(dd).color},
+    caveat: {size: style(cap).fontSize, color: style(cap).color, margin: parseFloat(style(cap).marginTop)}};
+}"""
+    % _HYPHENATED_MODEL
+)
+
+
+@pytest.mark.integration
+def test_at_688_px_a_name_never_breaks_at_its_hyphen_and_the_appendix_ends_quietly(tmp_path: Path) -> None:
+    """At 688 px, a long headline set with the model's name at every place a line can end: held, the name is always
+    one line fragment, where bare it breaks after its hyphen. The made line (who wrote the report, for what, when)
+    sets at the appendix's size with a space above it, where it set at body size flush under the last finding; a
+    Method term's caveat line is spaced from its paragraph and quieter, where it ran on from it."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    path = tmp_path / "doc.html"
+    made = "Written by claude-opus-5-5, served as claude-opus-5-5, for $2.54, with analyst skill fd74326c6f2e."
+    path.write_text(doc_page_html(_doc5().model_copy(update={"made": made})), encoding="utf-8")
+    drawn, errors = rendered(path, _HELD_AND_APPENDIX, width=688)
+    assert errors == []
+    assert drawn["bare"] > 1, "the control: some line end falls inside the bare name"
+    assert drawn["held"] == 1, drawn
+    assert drawn["made"]["size"] == drawn["appendix"]["size"] == "14px", drawn
+    assert drawn["made"]["gap"] >= 16, drawn
+    assert drawn["caveat"]["size"] == drawn["appendix"]["size"] and drawn["caveat"]["margin"] > 0, drawn
+    assert drawn["caveat"]["color"] != drawn["appendix"]["color"], "the caveat line reads quieter than its term's text"
 
 
 # =============================================================================

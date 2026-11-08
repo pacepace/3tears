@@ -2,8 +2,8 @@
 
 The visual pass found a page printing ``-6 pts`` beside ``3.6 pts``, an interval ``[-6.9, 11] pts``, judged scores at
 four significant figures with no scale (``0.0686``, ``[-0.06693, 0.2041]``), a count's interval running below zero, an
-interval ``[-2.573, 2.573]`` on two arms that every case scored 5, and a level of ``99.69%``. The owner's rulings O4 and
-O5 (2026-11-08) set the forms held here:
+interval ``[-2.573, 2.573]`` on two arms that every case scored 5, and a level of ``99.69%``. The owner's rulings of
+2026-11-08 (docs/design.md, Presentation rulings) set the forms held here:
 
 - a judged score reads at two decimals, its scale named beside it (``(1–5)``);
 - any other measured figure (a count per trial, a time) at two significant figures of its set's least figure but zero;
@@ -35,18 +35,21 @@ from threetears.evals.analysis.report.build import (
     contrast_rows,
     contrast_verdicts,
 )
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, figure_places, format_figure, resolve
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at
 
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpus
 from packages.evals.tests.report_doc_support import snapshot_of
+from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, shape_of
 
 
 # --- the rule ----------------------------------------------------------------------------------------------------------
@@ -66,6 +69,14 @@ def test_a_set_reads_at_the_decimals_its_least_figure_needs_and_keeps_them_on_a_
         "0.0",
         "+3.6",
     ]
+
+
+def test_float_residue_says_nothing_of_a_set_s_precision_and_no_set_reads_past_a_millionth() -> None:
+    """A change of float residue (``5.5e-17``) spelled every member of its set to eighteen decimals; a figure under a
+    millionth reads as its bound, so it asks for no decimals, and no set reads past six."""
+    assert set_places([1.2, 5.5e-17]) == 1
+    assert set_places([5.5e-17]) == 0
+    assert set_places([0.0000012345]) == 6
 
 
 def test_an_interval_s_ends_take_more_decimals_only_where_an_end_would_read_as_a_zero_or_two_ends_alike() -> None:
@@ -204,6 +215,30 @@ def test_the_corrected_comparisons_read_each_figure_at_its_measure_s_one_precisi
     assert {row["level"] for row in rows} == {"99.7% (95% across 16 comparisons)"}
 
 
+def test_a_change_of_float_residue_leaves_its_measure_s_other_changes_at_their_precision() -> None:
+    """A change of ``5.5e-17`` notices beside Kairo's ``-0.0022`` spelled the column ``-0.002229654403567447 notices``
+    and itself ``+0.000000000000000055 notices``. The residue reads as its bound, and the rest as they did."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+    residue = [
+        contrast.model_copy(update={"delta": 5.5e-17})
+        if (contrast.arm, contrast.measure) == ("qwen3.8-flash", _NOTICES)
+        else contrast
+        for contrast in held.contrasts
+    ]
+    held = held.model_copy(update={"contrasts": residue})
+    look: PageLook = block_look(held, fact_arms(held))
+    (contrasts,) = [table for table in every_table(held, look) if table.name == "contrasts"]
+    said = {
+        row["arm"].text: (row["change"].text, row["interval"].text)
+        for row in contrasts.rows
+        if row["measure"].text == "Failed-reply notices"
+    }
+    assert said == {
+        "1017": ("-0.0022 notices", "-0.0069 notices to +0.0025 notices"),
+        "qwen3.8-flash": ("< 0.000001 notices", "-0.0069 notices to +0.0025 notices"),
+    }, said
+
+
 def test_a_judged_score_reads_at_two_decimals_and_an_exact_zero_whole_in_every_full_results_table(
     kairo_tables: dict[str, TableBlock],
 ) -> None:
@@ -219,11 +254,63 @@ def test_a_judged_score_reads_at_two_decimals_and_an_exact_zero_whole_in_every_f
     assert "0.0022 notices" in notices and "0 notices" in notices, notices
 
 
+def test_a_measured_figure_reads_on_the_scorecard_as_the_full_results_print_it() -> None:
+    """The scorecard placed its measured columns by a rule of its own, a decimal more where two figures would print
+    alike: mean turn times of 102.2 and 102.4 ms read ``102.2`` and ``102.4`` there and ``102 ms`` in the written page's
+    Full results. A set reads at one precision wherever it prints."""
+    shape = shape_of(
+        "measured",
+        [
+            AspectTrials(aspect, [ArmTrials("solo", passing=15, latency_ms=first)], margin=None)
+            for aspect, first in (("billing", 4.2), ("tone", 4.4))
+        ],
+        control=False,
+        question="How long does solo take?",
+    )
+    (scorecard,) = [
+        block for block in shape.page().blocks if isinstance(block, TableBlock) and block.name == "scorecard"
+    ]
+    carded = {row["aspect"].text: row["value"] for row in scorecard.rows if row["measure"].text == "Turn time"}
+    assert [cell.value for cell in carded.values()] == [102.2, 102.4], "the control: two figures alike at no decimals"
+    bundle = build_campaign_bundle(
+        shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
+    )
+    held = report_input(bundle)
+    look: PageLook = block_look(held, fact_arms(held))
+    (arms,) = [table for table in every_table(held, look) if table.name == "arms_by_measure"]
+    written = {row["aspect"].text: row["measure:total_ms"].text for row in arms.rows}
+    assert (
+        {aspect: f"{cell.text} ms" for aspect, cell in carded.items()}
+        == written
+        == {
+            "billing": "102 ms",
+            "tone": "102 ms",
+        }
+    )
+
+
+def test_a_choice_s_pairs_table_signs_every_change_as_the_rest_of_the_page_does() -> None:
+    """A pair's change read ``15.0`` under ``Change (pts)`` where a negative one carried its ``-``: a pair is read
+    first less second, so an unsigned figure reads as a magnitude. Each change carries its sign, a zero none."""
+    shape = shape_of(
+        "choice",
+        [
+            AspectTrials(aspect, [ArmTrials("solo", passing=first), ArmTrials("duo", passing=second)], margin=None)
+            for aspect, first, second in (("billing", 15, 12), ("tone", 12, 15), ("refunds", 14, 14))
+        ],
+        control=False,
+        question="Which arm passes more?",
+    )
+    (pairs,) = [block for block in shape.page().blocks if isinstance(block, TableBlock) and block.name == "pairs"]
+    said = {row["aspect"].text: row["change"].text for row in pairs.rows}
+    assert said == {"billing": "+15.0", "tone": "-15.0", "refunds": "0.0"}, said
+
+
 # --- figure keys, glyphs, cells and charts -----------------------------------------------------------------------------
 
 
 def test_an_interval_key_reads_both_ends_at_one_precision_and_a_lone_change_keeps_the_number_rule() -> None:
-    """Owner ruling O5's own example: a change from -29% to +57.6% read ``-29 to +57.6``. A lone figure, written
+    """The owner's own example of a set at one precision: a change from -29% to +57.6% read ``-29 to +57.6``. A lone figure, written
     whole, keeps the number rule (the analyst's served grammar reads ``-15``)."""
     interval = Figure(path="x", kind="interval", value=(-0.29, 0.576), scale="share", change=True)
     assert format_figure(interval) == "-29.0 to +57.6"
@@ -387,6 +474,38 @@ def test_a_key_reads_a_score_and_a_measure_s_interval_at_the_table_s_precision()
     notices = format_figure(resolve("contrast.1017.failed_reply_notices.interval", held))
     assert notices == "-0.0069 notices to +0.0025 notices", notices
     assert format_figure(resolve("contrast.1017.failed_reply_notices.delta", held)) == "-0.0022 notices"
+
+
+def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_set() -> None:
+    """The keys placed a measure's changes over every comparison on it but a judged one, the Full results over those of
+    the row's own kind: a notices change of -0.5 stated with no kind read ``-0.50 notices`` in the table and
+    ``-0.5000 notices`` in the key citing it. One owner places the set, for both."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+    unkinded = [
+        contrast.model_copy(update={"kind": None, "delta": -0.5})
+        if (contrast.arm, contrast.measure) == ("qwen3.8-flash", _NOTICES)
+        else contrast
+        for contrast in held.contrasts
+    ]
+    held = held.model_copy(update={"contrasts": unkinded})
+    look: PageLook = block_look(held, fact_arms(held))
+    (contrasts,) = [table for table in every_table(held, look) if table.name == "contrasts"]
+    tabled = {
+        row["arm"].text: row["change"].text for row in contrasts.rows if row["measure"].text == "Failed-reply notices"
+    }
+    keyed = {arm: format_figure(resolve(f"contrast.{arm}.{_NOTICES}.delta", held)) for arm in tabled}
+    assert tabled == keyed == {"1017": "-0.0022 notices", "qwen3.8-flash": "-0.5000 notices"}, (tabled, keyed)
+
+
+def test_a_measure_s_set_is_placed_as_it_is_drawn() -> None:
+    """The keys' copy of the set rule placed a measure's figures as stored, the Full results' as drawn (at its
+    quantity's factor). No unit the page draws at a factor reaches the rule today, so the one owner is held directly:
+    a set drawn a thousand times over reads three decimals fewer."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+    assert figure_places(held, _NOTICES) == 4, "the control: 0.0022 notices, two figures"
+    assert figure_places(held, _NOTICES, factor=1000.0) == 1
+    assert figure_places(held, _NOTICES, change=True) == 4
+    assert figure_places(held, _NOTICES, change=True, factor=1000.0) == 1
 
 
 def test_a_figure_under_a_millionth_reads_as_its_bound_and_asks_for_no_decimals() -> None:

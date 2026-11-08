@@ -32,6 +32,43 @@ headline. A case re-minted from a new export records that name in `minted`, so i
 an export that named the headline; its snapshot is the same. `ReasonedOn` is defined beside the export now and is
 still imported from `threetears.evals.harness`.
 
+### evals: a chart says what it compares, and one value reads in one form on every surface
+
+The owner's presentation rulings of 2026-11-08 are stated in `packages/evals/docs/design.md` (Presentation rulings).
+
+**Changed:**
+- A change chart names its zero as the control it is measured from (`no change vs P · September`), carries the
+  control's level (in the zero label, a group's head or the row's note) and says which way is better
+  (`← worse · better →`; cost reads better to the left). The margin band is named.
+- Changes per stratum, task, lever, comparison and configuration draw as dots with their intervals; a row with no
+  interval is an open mark. Bars are kept for magnitudes from zero, and a log axis draws dots, labelled where its scale
+  puts its ticks.
+- No label is cut: bars, forests, dot strips, range bars, line-chart end labels and the static matrix wrap a long
+  label, and a bar's note is printed whole, wrapped to two lines, where it once fell back to the chart's rounded value
+  (`-8` for `-7.6 pts worse`). Every scatter mark is named; configurations the input does not order are not joined.
+- An outcome bar draws each arm's trials as shares of 100%, its note the share passed and its counts
+  (`20% passed · 167 of 836`), titled `Outcomes, share of each arm's trials`. A code page's chart titles say what
+  they compare and in what unit.
+- Number forms: a judged score reads at two decimals with its scale (`(1–5)`); a change in points at one decimal,
+  signed, a zero as `0.0 pts`; any other measured figure at two significant figures of its set's least figure. A set
+  (an interval's ends, a column, an axis, a chart's labels) reads at one precision (`[-27.9, 100.0] pts`, where it read
+  `100`), on the scorecard as in the Full results and the keys the prose cites; a figure under a millionth reads
+  `< 0.000001`, and float residue no longer spells a column to eighteen places. A level under 100 never reads `100%`.
+- A choice's pairs table signs every change (`+15.0`), as the rest of the page does.
+- A count a written report spells in words opens its sentence with a capital ("Ten conversations…"). A model name or
+  arm id is held whole in running text, never broken at its hyphen. A Method entry's caveat line and the report's
+  "Written by" line set apart from the paragraph above them.
+- The writer-eval Scorecard opens on the candidate's share of the judge's preference against even (50%), and its
+  table prints both shares, which sum to 100; the Difference column is gone.
+- `evals quick`'s exit line repeats the page's lead, so an interval's ends read at one precision there too
+  (`between 63.3 and 100.0 points worse`).
+
+**Hosts:** a host pinning a rendered page, a page's text or a served chart's JSON updates its match. Chart JSON gains
+`better`, `dots` and `log` on bars, `better` on a forest, `better`, `zero_label` and a row's `short_label` and `note`
+on a dot interval (whose `hollow` row is also a change with no interval), and `tag` on a scatter point; an outcome bar's values are percent
+shares (`fmt` `pct`, domain 0 to 100) where they were trial counts. Every page's number forms move as above, and the
+writer-eval Scorecard has no Difference column. Nothing stored changes.
+
 ### evals: a report page reads quiet: five type sizes, readable contrast, ruled tables and one colour per meaning
 
 **Changed:**

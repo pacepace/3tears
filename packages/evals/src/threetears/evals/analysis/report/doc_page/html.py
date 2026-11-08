@@ -68,6 +68,7 @@ from threetears.evals.analysis.report.html_parts import (
     check_header_links,
     escape,
     grid_html,
+    held_whole,
     inline_html,
     one_line,
     page_head,
@@ -100,13 +101,21 @@ _WEIGHT_TAGS = {"lead": ("<h2>", "</h2>"), "support": ("<h3>", "</h3>"), "detail
 
 def _prose(text: str) -> str:
     """Analyst prose as a page line: escaped, its bold and code made markup, each of its lines broken where it
-    breaks."""
-    return "<br>".join(inline_html(line.strip()) for line in text.splitlines() if line.strip())
+    breaks, and each hyphenated word (a model's name, an arm's id: ``qwen3.8-flash``) held whole, as a table's cell
+    holds it, so a headline never breaks one after its hyphen."""
+    return "<br>".join(held_whole(inline_html(line.strip())) for line in text.splitlines() if line.strip())
+
+
+def _said(text: str) -> str:
+    """A line code writes on the page, escaped, each hyphenated word in it held whole (a model's name, an arm's id),
+    as analyst prose holds it (:func:`_prose`)."""
+    return held_whole(escape(text))
 
 
 def _masthead(masthead: PageMasthead, campaign: str) -> str:
     # The campaign's name its own first line, as a code page's title is; then each part as a reader's page prints it
-    # (masthead_parts): the kind, the system in bold, then the rest.
+    # (masthead_parts): the kind, the system in bold, then the rest. A flat row of spans a host reads part by part, so
+    # no word in it is held in a span of its own.
     kind, system, *rest = masthead_parts(masthead)
     spans = [
         f'<span class="name">{escape(one_line(campaign))}</span>',
@@ -147,8 +156,8 @@ def _block(evidence: DocEvidence, chart_id: str, *, static: bool) -> str:
             drawn = chart_html(block, chart_id, static=static, figcaption=False)
         else:
             drawn = f'<div class="table-block" data-table="{escape(block.name)}">{grid_html(block)}</div>'
-        drawn += "".join(f'<p class="cap">{escape(note)}</p>' for note in evidence.chart.notes)
-    degraded = f'<p class="cap">{escape(evidence.degraded)}</p>' if evidence.degraded else ""
+        drawn += "".join(f'<p class="cap">{_said(note)}</p>' for note in evidence.chart.notes)
+    degraded = f'<p class="cap">{_said(evidence.degraded)}</p>' if evidence.degraded else ""
     return f'{drawn}<p class="cap">{_prose(evidence.caption)}</p>{degraded}'
 
 
@@ -167,7 +176,7 @@ def _caveats(labels: Sequence[str]) -> str:
     """The caveats landed beside a claim or a Method term, by label, as code's line; nothing for none."""
     if not labels:
         return ""
-    return f'<p class="cap" data-part="caveats">{escape(caveats_line(labels))}</p>'
+    return f'<p class="cap" data-part="caveats">{_said(caveats_line(labels))}</p>'
 
 
 def _explore(explore: TableBlock) -> str:
@@ -184,7 +193,7 @@ def _next(steps: Sequence[DocNext]) -> str:
 def _arms_key(key: PageArmsKey) -> str:
     return (
         f'<section data-part="arms"><header><span class="eyebrow">{escape(key.eyebrow)}</span>'
-        f'<p class="takeaway">{escape(key.takeaway)}</p></header>'
+        f'<p class="takeaway">{_said(key.takeaway)}</p></header>'
         f'<div class="table-block" data-table="{escape(key.table.name)}">{grid_html(key.table)}</div></section>'
     )
 
@@ -213,7 +222,7 @@ def _checks(checks: Sequence[DocCheck]) -> str:
 
 
 def _finding(finding: DocFinding) -> str:
-    about = escape(finding.about)
+    about = _said(finding.about)
     if finding.claim_place is not None:
         about = f'<a href="#claim-{finding.claim_place}">{about}</a>'
     return f"<li><b>{escape(finding.severity)}</b> · {about}: {_prose(finding.said)}</li>"
@@ -238,7 +247,7 @@ def _appendix(page: DocPage) -> list[str]:
         _method(page.method),
         *([_checks(page.checks)] if page.checks else []),
         *([_findings(page.findings)] if page.findings else []),
-        *([f'<p class="cap" data-part="made">{escape(page.made)}</p>'] if page.made else []),
+        *([f'<p class="cap" data-part="made">{_said(page.made)}</p>'] if page.made else []),
     ]
 
 

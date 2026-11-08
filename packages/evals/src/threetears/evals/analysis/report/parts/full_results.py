@@ -58,10 +58,8 @@ from dataclasses import replace
 
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
-    SCORE_PLACES,
     ends_places,
     format_number,
-    set_places,
     spell_at,
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
@@ -72,15 +70,16 @@ from threetears.evals.analysis.report.figure_keys import (
     aspect_costs_per_thousand,
     cost_basis,
     cost_ruler,
+    figure_places,
     format_figure,
     held_figure,
+    held_means,
     RUBRIC_SCALE,
     resolve,
     rubric_score,
 )
 from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
-    held_means,
     interval_level,
     money_words,
     stat_value,
@@ -238,17 +237,14 @@ def _is_score(report_input: ReportInput, key: str, *, kind: str | None = None) -
 
 
 def _level_places(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
-    """The decimals every figure of a measure reads at in every Full results table (owner rulings O4 and O5): a judged
-    score at two, any other measured figure (a count per trial, a time) at two significant figures of the least of
-    every mean the input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate,
-    whose column rule spells it, and for money, whose form does."""
+    """The decimals every figure of a measure reads at in every Full results table, by the one owner the keys citing it
+    read too (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`), as drawn: a judged score at two,
+    any other measured figure (a count per trial, a time) at two significant figures of the least of every mean the
+    input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate, whose column
+    rule spells it, and for money, whose form does."""
     if drawn.unit in (MONEY, PERCENT, POINTS):
         return None
-    if _is_score(report_input, key, kind=kind):
-        return SCORE_PLACES
-    if kind == "judged":
-        return None
-    return set_places(mean * drawn.factor for mean in held_means(report_input, key))
+    return figure_places(report_input, key, judged=kind == "judged", factor=drawn.factor)
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
@@ -487,21 +483,17 @@ def _change(
 
 
 def _change_places(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> int | None:
-    """The decimals a comparison's change and its interval's ends read at (owner rulings O4 and O5): a rate's in
-    points at one decimal (``-6.0 pts`` beside ``-7.6 pts``), a score's at two, any other measured change at two
-    significant figures of the least change the table states of its measure; None for money, whose form spells it."""
+    """The decimals a comparison's change and its interval's ends read at: a rate's in points at one decimal (``-6.0
+    pts`` beside ``-7.6 pts``); a score's at two and any other measured change at two significant figures of the least
+    change the table states of its measure, as drawn, by the one owner the keys citing it read too
+    (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`); None for money, whose form spells it."""
     if drawn.unit == MONEY:
         return None
     if drawn.unit == POINTS:
         return POINT_PLACES
-    if _is_score(report_input, contrast.measure, kind=contrast.kind):
-        return SCORE_PLACES
-    changes = [
-        float(held.delta) * drawn.factor
-        for held in report_input.contrasts
-        if (held.measure, held.kind) == (contrast.measure, contrast.kind) and held.delta is not None
-    ]
-    return set_places(changes)
+    return figure_places(
+        report_input, contrast.measure, change=True, judged=contrast.kind == "judged", factor=drawn.factor
+    )
 
 
 def _change_span(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> float | None:

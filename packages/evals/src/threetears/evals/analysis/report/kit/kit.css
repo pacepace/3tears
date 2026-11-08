@@ -186,6 +186,10 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
    others grow, and is set as one box, so a line moves it whole to the next rather than split it; it is held whole in
    a frame that scrolls anyway, where every column is at its narrowest, and breaks after a hyphen only where the other
    columns at their narrowest leave no room, or a phone's cap is too narrow. */
+/* a hyphenated word (a model's name, an arm's id) held whole wherever it prints, in running text as in a cell; a
+   long one breaks after its hyphens on a phone, where holding it would push the page sideways */
+.id{white-space:nowrap}
+@media (max-width:639px){.id.long{white-space:normal}}
 .tbl .id{white-space:nowrap}
 .tbl .id.long{white-space:normal;display:inline-block}
 /* a column's width is not its minimum once the table overflows, so only this query holds a long id whole there; a
@@ -256,6 +260,10 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
 .method dt{font-weight:600;color:var(--ink)}
 .method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+/* a term's caveats: a line of their own under its paragraph, spaced and quieter, at the appendix's size */
+.method .cap{margin-top:.4rem;color:var(--muted)}
+/* who wrote the report, for what and when: the appendix's last line, at its size, set apart from the list above */
+.cap[data-part="made"]{font-size:var(--t-sm);color:var(--muted);max-width:var(--col);margin-top:1.5rem}
 /* a frame under 700 px (a host's at a 1024 px window, a phone) sets headings a step smaller and tighter, so a
    headline holds three lines, not five */
 @media (max-width:700px){h1{font-size:1.25rem;line-height:1.25}h2{font-size:1rem;line-height:1.35}h3{font-size:var(--t-base);line-height:1.35}}

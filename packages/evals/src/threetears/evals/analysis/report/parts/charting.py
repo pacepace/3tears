@@ -75,7 +75,14 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
-from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, input_check_name, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    NamedKind,
+    format_figure,
+    held_means,
+    input_check_name,
+    resolve,
+)
 from threetears.evals.kernel.numbers import format_number, spell_at, spell_count
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
@@ -284,29 +291,6 @@ def money_drawn(
     lines = tuple(notes)
     per = tuple(line for line in money_notes(context.report_input, money) if line not in lines)
     return Drawn(chart_block(context, data, read_at=read_at), (*lines, *per))
-
-
-def held_means(report_input: ReportInput, key: str) -> list[float]:
-    """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell;
-    the set a chart of its changes reads its money's ruler from (the amounts the changes compare).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure or judged dimension.
-    :ptype key: str
-    :return: The means, as stored.
-    :rtype: list[float]
-    """
-    stats: list[Stat] = []
-    for table in (report_input.measures, report_input.judged):
-        if key in table:
-            stats.extend(table[key].per_arm.values())
-            for figures in table[key].by_aspect.values():
-                stats.extend(figures.values())
-    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
-    for held in slices:
-        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
-    return [float(stat.mean) for stat in stats if stat.mean is not None]
 
 
 def _rate_unit(values: Sequence[float]) -> str:

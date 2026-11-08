@@ -416,7 +416,7 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
     (shown,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
     # The level every interval holds at is said once, in the column's header, never in each cell.
     # Six members, the question's pass rate among them (owner, 2026-11-06), so each interval holds at 1 − α/6.
-    # A change reads signed, and it and its interval's ends at two significant figures of the set (owner ruling O4).
+    # A change reads signed, and it and its interval's ends at two significant figures of the set, as a count does.
     assert (shown["change"].text, shown["interval"].text) == ("+0.50 s", "[0.45, 0.55] s")
     assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99.2%)"
     # A program's row has no header, so its interval says its level.
