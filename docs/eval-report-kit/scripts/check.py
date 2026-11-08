@@ -12,9 +12,13 @@ a cell classed unbroken, an id-like token, may break anywhere); a pinned cell pa
 sticky nav. A table that fits its frame by crushing its key column does not fit. A table wider than its
 frame with no visible cue: its frame's right edge must fade while more of it lies past the edge, and not
 once it is scrolled to its end. A first screen read at more than one measure: the masthead, the callouts
-under it, the headline, the lede and the confidence share one maximum width. 1104 px and 688 px are the
-frames a host gives the page (Discodon's iframe at a 1440 and a 1024 px window). Writes a full-page PNG
-per run. Exit code 1 when any check fails.
+under it, the headline, the lede and the confidence share one maximum width. Text under 4.5:1 against the
+ground it is drawn on, and an axis under 3:1 (WCAG 1.4.3 and 1.4.11), computed from the colours as drawn in
+each theme: a chart's text against the mark under it where one is, else the nearest painted background. A
+font size off the page's five-step scale (12, 14, 16, 20 and 28 px). A table drawn in a box or under a
+filled header row, or with no rule under its header: a table is ruled with hairlines, never boxed or
+tinted. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440 and a 1024 px
+window). Writes a full-page PNG per run. Exit code 1 when any check fails.
 """
 
 import asyncio, pathlib, sys
@@ -84,7 +88,9 @@ PROBE = r"""async () => {
     if (!f.offsetParent || f.clientWidth <= 2 || f.closest('details:not([open])')) continue;
     const name = `"${(f.querySelector('tr > :first-child')?.textContent||'').trim().slice(0,24)}"`;
     const faded = () => getComputedStyle(f).maskImage !== 'none';
-    if (f.scrollWidth > f.clientWidth + 1) {
+    // overflowing is what the browser scrolls, which a rounded scrollWidth misses by a pixel either way
+    f.scrollLeft = f.scrollWidth; const scrolls = f.scrollLeft > 0; f.scrollLeft = 0;
+    if (scrolls) {
       f.scrollLeft = 0; await frame(); const start = faded();
       f.scrollLeft = f.scrollWidth; await frame(); const end = faded();
       f.scrollLeft = 0; await frame();
@@ -99,9 +105,103 @@ PROBE = r"""async () => {
     const said = getComputedStyle(e).maxWidth;
     widths.add(said); measures.push(`${e.className || e.tagName.toLowerCase()} ${said}`);
   }
+  // Colours as drawn: any computed CSS colour (rgb, a color-mix, oklab) painted on a 1 px canvas and read back as
+  // sRGB, so every colour space the page's tokens mix in reads alike.
+  const pad = document.createElement('canvas'); pad.width = pad.height = 1;
+  const pen = pad.getContext('2d', {willReadFrequently: true}), seen = new Map();
+  const rgba = c => {
+    if (!c || c === 'none' || !CSS.supports('color', c)) return null;
+    if (!seen.has(c)) {
+      pen.clearRect(0, 0, 1, 1); pen.fillStyle = c; pen.fillRect(0, 0, 1, 1);
+      const d = pen.getImageData(0, 0, 1, 1).data;
+      seen.set(c, [d[0] / 255, d[1] / 255, d[2] / 255, d[3] / 255]);
+    }
+    return seen.get(c);
+  };
+  const over = (top, under) => [0, 1, 2].map(i => top[i] * top[3] + under[i] * (1 - top[3])).concat(1);
+  const lum = c => c.slice(0, 3).map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+    .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const opacity = e => { let o = 1; for (; e && e.nodeType === 1; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity); return o; };
+  // the ground under an element: its own and its ancestors' backgrounds, composited up to the first opaque one
+  const ground = e => {
+    const layers = [];
+    for (; e && e.nodeType === 1; e = e.parentElement) {
+      const c = rgba(getComputedStyle(e).backgroundColor);
+      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+    }
+    return layers.reverse().reduce((g, c) => over(c, g), [1, 1, 1, 1]);
+  };
+  // drawn for a reader: a box of its own, outside every clipped (screen-reader-only) wrapper and closed fold
+  const drawn = e => {
+    const r = e.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1 || e.closest('#tip, details:not([open]) > :not(summary)')) return false;
+    for (let a = e; a && a.nodeType === 1; a = a.parentElement) {
+      const s = getComputedStyle(a);
+      if (s.clipPath !== 'none' || s.visibility === 'hidden' || s.display === 'none') return false;
+    }
+    return opacity(e) > 0;
+  };
+  // a chart's text reads against the mark under its middle where one is filled there, else the figure's ground
+  const shape = new Set(['rect', 'circle', 'ellipse', 'path', 'polygon']);
+  const svgGround = t => {
+    let r = t.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > innerHeight) { t.scrollIntoView({block: 'center'}); r = t.getBoundingClientRect(); }
+    for (const e of document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2)) {
+      if (e === t || e.closest('text')) continue;
+      if (e instanceof SVGElement) {
+        if (!shape.has(e.tagName.toLowerCase())) continue;
+        const s = getComputedStyle(e), f = rgba(s.fill);
+        const a = f ? f[3] * parseFloat(s.fillOpacity) * opacity(e) : 0;
+        if (a > 0.05) return over([f[0], f[1], f[2], a], ground(e.ownerSVGElement));
+        continue;
+      }
+      return ground(e);
+    }
+    return ground(t.ownerSVGElement || t.parentElement);
+  };
+  const said = e => `${e.tagName.toLowerCase()}${e.classList.length ? '.' + [...e.classList].join('.') : ''} "${(e.textContent||'').trim().slice(0,24)}"`;
+  const SCALE = [12, 14, 16, 20, 28], faint = [], sizes = [], texts = new Set();
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+    const e = node.parentElement;
+    if (!node.data.trim() || !e || texts.has(e) || e.closest('script, style, title') || !drawn(e)) continue;
+    texts.add(e);
+    const s = getComputedStyle(e), size = parseFloat(s.fontSize);
+    if (!SCALE.some(step => Math.abs(step - size) < 0.05)) sizes.push(`${said(e)} is ${+size.toFixed(2)} px`);
+    const svg = e.closest('svg');
+    const ink = rgba(svg ? s.fill : s.color);
+    if (!ink) continue;
+    const g = svg ? svgGround(e) : ground(e);
+    const shown = over([ink[0], ink[1], ink[2], ink[3] * opacity(e) * (svg ? parseFloat(s.fillOpacity) : 1)], g);
+    const r = ratio(shown, g);
+    if (r < 4.5) faint.push(`${said(e)} ${r.toFixed(2)}:1`);
+  }
+  for (const a of document.querySelectorAll('svg .axis')) {
+    if (!drawn(a)) continue;
+    const s = getComputedStyle(a), ink = rgba(s.stroke);
+    if (!ink) continue;
+    const g = ground(a.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(a)], g), g);
+    if (r < 3) faint.push(`an axis ${r.toFixed(2)}:1`);
+  }
+  window.scrollTo(0, 0);
+  // a table is ruled, never boxed: no border on its frame, no fill behind its header row, a rule under it
+  const tables = [];
+  for (const f of document.querySelectorAll('.tbl')) {
+    if (!f.querySelector('table') || !drawn(f)) continue;
+    const name = `"${(f.querySelector('tr > :first-child')?.textContent||'').trim().slice(0,24)}"`, s = getComputedStyle(f);
+    if (['Top', 'Right', 'Bottom', 'Left'].some(k => parseFloat(s[`border${k}Width`]) > 0 && s[`border${k}Style`] !== 'none'))
+      tables.push(`${name} is drawn in a box`);
+    const g = ground(f), heads = [...f.querySelectorAll('thead th')];
+    if (heads.some(th => { const c = rgba(getComputedStyle(th).backgroundColor); return c && c[3] > 0 && c.some((v, i) => Math.abs(v - g[i]) > 1 / 255); }))
+      tables.push(`${name} fills its header row`);
+    const last = f.querySelector('thead tr:last-child > th');
+    if (last && !(parseFloat(getComputedStyle(last).borderBottomWidth) >= 1)) tables.push(`${name} has no rule under its header`);
+  }
   return {scrollWidth: document.documentElement.scrollWidth, past: out.slice(0, 8), overlaps: overlaps.slice(0, 12),
           unpinned: unpinned.slice(0, 8), crushed: crushed.slice(0, 8), under: under.slice(0, 8),
-          uncued: uncued.slice(0, 8), measures: widths.size > 1 ? measures : []};
+          uncued: uncued.slice(0, 8), measures: widths.size > 1 ? measures : [],
+          contrast: faint.slice(0, 8), sizes: sizes.slice(0, 8), tables: tables.slice(0, 8)};
 }"""
 
 
@@ -130,12 +230,26 @@ async def run(page_path, out_dir):
                     or res["under"]
                     or res["uncued"]
                     or res["measures"]
+                    or res["contrast"]
+                    or res["sizes"]
+                    or res["tables"]
                 )
                 failed |= bool(bad)
                 print(
                     f"{'FAIL' if bad else 'ok  '} {width}px {scheme:5}  scrollWidth={res['scrollWidth']}  screenshot={shot}"
                 )
-                for k in ("past", "overlaps", "unpinned", "crushed", "under", "uncued", "measures"):
+                for k in (
+                    "past",
+                    "overlaps",
+                    "unpinned",
+                    "crushed",
+                    "under",
+                    "uncued",
+                    "measures",
+                    "contrast",
+                    "sizes",
+                    "tables",
+                ):
                     for line in res[k]:
                         print(f"       {k}: {line}")
                 for e in errors:

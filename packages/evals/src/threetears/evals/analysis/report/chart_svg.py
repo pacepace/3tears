@@ -59,6 +59,7 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
     ScatterPanel,
 )
+from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import tenth_px
 
 #: The widths every chart is drawn at, in the kit's px, each with its class: the narrow one under every narrow rule
@@ -71,6 +72,11 @@ _PANEL_WIDTH = 280
 
 #: The one line a figure carries where its kind is not drawn here.
 AS_TABLE_NOTE = "This chart is shown as its table."
+
+#: The inks a tag's letter may take on its arm's colour, and a tinted cell's figure on its fill: each pair reads in
+#: either theme, one dark where the other is light (``kit.js``'s ``kOnTag`` and ``kInk``).
+_TAG_INKS = ("--on-fill", "--surface")
+_CELL_INKS = ("--ink", "--surface")
 
 #: A colour as a style takes one: a token name, so data can never write CSS of its own.
 _TOKEN = re.compile(r"^--[a-z][a-z0-9-]*$")
@@ -93,13 +99,13 @@ CHART_STYLE = """
   .chart-drawn svg.viz-wide { display: block; }
 }
 .chart-drawn text { font-family: var(--f-body); fill: var(--ink-2); }
-.chart-drawn .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-drawn .tick { font-size: 12px; fill: var(--muted); font-variant-numeric: tabular-nums; }
 .chart-drawn .lbl { font-size: 12px; fill: var(--ink-2); }
 .chart-drawn .lbl-strong { font-size: 12px; fill: var(--ink); font-weight: 600; }
 .chart-drawn .cell-main { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.chart-drawn .cell-sub { font-size: 10px; opacity: .85; font-variant-numeric: tabular-nums; }
+.chart-drawn .cell-sub { font-size: 12px; font-variant-numeric: tabular-nums; }
 .chart-drawn .grid { stroke: var(--line); stroke-width: 1; }
-.chart-drawn .axis { stroke: var(--base); stroke-width: 1; }
+.chart-drawn .axis { stroke: var(--muted); stroke-width: 1; }
 .chart-drawn .floor { stroke: var(--ink-2); stroke-width: 1.25; stroke-dasharray: 3 3; }
 .chart-drawn .viz-hit { fill: none; pointer-events: all; }
 .chart-drawn .legend svg { display: inline-block; vertical-align: -1px; margin-right: .4rem; }
@@ -492,7 +498,7 @@ def _ref_label(rx: float, text: str, x0: float, x1: float) -> _RefLabel:
     it: on one line to the right where it fits, else to the left, else wrapped at its spaces to the wider side."""
 
     def width(t: str) -> float:
-        return _text_width(t, 11)
+        return _text_width(t, 12)
 
     tw, lx = width(text), min(rx - 4, x1)
     right, left = x1 - rx - 4, lx - x0
@@ -615,7 +621,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     zero_label = d.zero_label if not no_preference and d.zero_label and d0 <= 0 <= d1 else None
     if zero_label:
         mt += 14
-    level_room = w - _text_width(f"{d.level} intervals", 11) - 8 if d.level else w
+    level_room = w - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
     label = _ref_label(x(line_ref.value), line_ref.label, 0, level_room) if line_ref and line_ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
@@ -660,7 +666,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         marks.append(_text(ml - 10 - tag_w, cy + 4, shown_label, "lbl-strong" if strong else "lbl", "end"))
         if r.tag is not None:
             tag_color = _tok(r.color, "--ink-2")
-            on_tag = "--surface" if tag_color == "--ink-2" else "--on-fill"
+            on_tag = ink_on(f"var({tag_color})", _TAG_INKS)
             marks.append(
                 _el(
                     "rect",
@@ -668,7 +674,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
                 )
             )
             marks.append(
-                _text(ml - 18, cy + 3.5, r.tag, "tag", "middle", f"fill:var({on_tag});font-size:10px;font-weight:600")
+                _text(ml - 18, cy + 3.5, r.tag, "tag", "middle", f"fill:var({on_tag});font-size:12px;font-weight:600")
             )
         if r.segments:
             acc = origin
@@ -791,7 +797,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     gaps = sum(1 for i in range(1, len(rows)) if rows[i].group != rows[i - 1].group)
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
-    level_room = w - mr - _text_width(f"{d.level} intervals", 11) - 8 if d.level else w
+    level_room = w - mr - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
     label = _ref_label(x(max(d0, ref.value)), ref.label, 0, level_room) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
@@ -1014,7 +1020,9 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
     narrow = w < 560
     y_ticks = d.y_ticks or _format_ticks(y0, y1, 5, yf)
     h = d.height or round(min(380, max(300, w * 0.45)))
-    ml, mr, mt, mb = max(30, max(len(yf(v)) for v in y_ticks) * 6.6 + 16), 18, (22 if d.level else 16), 40
+    # a y title takes a line of its own above the plot, top left, so no mark is ever drawn over it (kScatter)
+    mt = (22 if d.level else 16) + (16 if d.y_title else 0)
+    ml, mr, mb = max(30, max(len(yf(v)) for v in y_ticks) * 6.6 + 16), 18, 40
     x, y = _Scale(x0, x1, ml, w - mr, log=bool(d.x_log)), _Scale(y0, y1, h - mb, mt)
     obstacles: list[tuple[float, float, float, float, float]] = []
     out: list[str] = []
@@ -1067,8 +1075,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
     if d.x_title:
         out.append(_text((ml + w - mr) / 2, h - 6, d.x_title, anchor="middle"))
     if d.y_title:
-        out.append(_text(ml + 6, h - mb - 8, d.y_title))
-        obstacles.append((ml + 6, h - mb - 20, ml + 6 + len(d.y_title) * 6.4, h - mb - 6, 10.0))
+        out.append(_text(0, mt - 20, d.y_title))
     if d.x_reference is not None:
         rx = x(d.x_reference.value)
         out.append(_line(rx, mt, rx, h - mb, "floor"))
@@ -1186,7 +1193,7 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     room = math.floor((ml - 12) / 6.6)
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
-    level_room = w - mr - _text_width(f"{d.level} intervals", 11) - 8 if d.level else w
+    level_room = w - mr - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
     label = _ref_label(x(ref.value), ref.label, 0, level_room) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
@@ -1372,7 +1379,8 @@ def _diff_heatmap(d: DiffHeatmapChart, w: float) -> _Drawn:
                 if flat
                 else f"color-mix(in oklab, var({side}) {round(18 + size * 72)}%, var(--surface))"
             )
-            ink = "var(--on-fill)" if size > 0.55 and not flat else "var(--ink)"
+            # the ink that reads best on the cell's own fill, in either theme (kit.js's kInk at draw time)
+            ink = "var(--ink)" if flat else f"var({ink_on(fill, _CELL_INKS)})"
             sub = df(c.detail) if c.detail is not None and df is not None else None
             cells.append(_Cell(fill, ink, f(c.value), sub, _tip_or(c.tip, f"{row.label} · {columns[j]}", f(c.value))))
         rows.append((row.label, cells))
@@ -1482,7 +1490,7 @@ _CHART_ONLY = frozenset({"legend", "panels", "panel_min_rem"})
 def _panel_heading(panel: Any) -> str:
     if panel.tag:
         color = _tok(panel.color, "--ink-2")
-        on_tag = "--surface" if color == "--ink-2" else "--on-fill"
+        on_tag = ink_on(f"var({color})", _TAG_INKS)
         return (
             f'<h4><span class="armchip"><span class="tag" style="background:var({color});color:var({on_tag})">'
             f"{_escape(panel.tag)}</span>{_escape(panel.title or '')}</span></h4>"

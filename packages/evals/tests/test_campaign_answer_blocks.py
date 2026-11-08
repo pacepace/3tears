@@ -100,6 +100,11 @@ async def test_a_call_that_keeps_the_control_overrides_nothing() -> None:
     assert "Called: keep production" in first_screen_markdown(page) and not any("overrides" in line for line in called)
 
 
+def _unbolded(markup: str) -> str:
+    """``markup`` without its bold tags, so a sentence reads as one string whatever of it the page sets in bold."""
+    return markup.replace("<strong>", "").replace("</strong>", "")
+
+
 async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_out() -> None:
     page = await kind_page_of("billing", "refunds")
     assert page.readings.kind == "choice" and "recommendation" not in page.json_document()
@@ -110,10 +115,10 @@ async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_ou
     )
     assert opening(page) == [("verdict", lead)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
-    markdown, html = campaign_report_markdown(page), unlinked(campaign_report_html(page))
+    # The lead's words as printed: the undecided reading it first says is linked inside it, each decision in bold.
+    markdown, html = campaign_report_markdown(page), _unbolded(unlinked(campaign_report_html(page)))
     assert markdown.index(lead) < markdown.index("By aspect, pair by pair")
-    # The lead's words as printed: the undecided reading it first says is linked inside it.
-    header = unlinked(header_html(page))
+    header = _unbolded(unlinked(header_html(page)))
     assert header.index("<h1>") < header.index(lead)
     assert html.index(lead) < html.index('data-table="pairs"')
 

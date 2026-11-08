@@ -1646,7 +1646,7 @@ value, so you set only the ones you want:
 | `--host-font-body` | body text and headings | `"IBM Plex Sans"` (headings `"IBM Plex Sans Condensed"`), then `system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif` |
 | `--host-font-mono` | ids, expressions, payloads | `"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace` |
 | `--host-color-text` | text | `#11151b` / `#eef1f5` |
-| `--host-color-muted` | quiet text: table headers, captions | `#7f8896` / `#828b99` |
+| `--host-color-muted` | quiet text: captions, tick labels | `#5f6774` / `#8a93a1` |
 | `--host-color-surface` | the ground and every card | `#f5f6f8` and `#ffffff` / `#0e1115` and `#161a20` |
 | `--host-color-link` | links | the accent |
 | `--host-color-accent` | the accent: the decided verdict, the recommended row, focus | `#1f5fbf` / `#6aa2f0` |

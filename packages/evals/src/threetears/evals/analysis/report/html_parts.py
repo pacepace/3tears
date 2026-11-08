@@ -20,6 +20,7 @@ from importlib.resources import files
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from threetears.evals.analysis.report.charts import ChartStatus
+from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money, number_in, with_unit
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
@@ -59,10 +60,11 @@ h4, h5 { font-family: var(--f-display); font-weight: 600; margin: 0; }
 h4 { font-size: var(--t-base); }
 h5 { font-size: var(--t-sm); }
 article > header { display: grid; gap: .75rem; padding-block: 1.75rem 1.5rem; }
-article > header > h1 { max-width: var(--col); }
-.question { font-size: var(--t-md); line-height: 1.45; color: var(--ink-2); }
+/* a code page's title is the campaign's name, a label over the lead, so it sets at the scale's 20 px step */
+article > header > h1 { max-width: var(--col); font-size: var(--t-lg); line-height: 1.25; }
+.question { font-size: var(--t-base); line-height: 1.45; color: var(--ink-2); }
 .arms { font-size: var(--t-sm); color: var(--muted); }
-.verdict { font-size: var(--t-md); line-height: 1.45; padding: .15rem 0 .15rem .9rem; border-left: 3px solid var(--base); }
+.verdict { font-size: var(--t-base); line-height: 1.45; padding: .15rem 0 .15rem .9rem; border-left: 3px solid var(--base); }
 .verdict[data-tone="decided"] { border-left-color: var(--accent); }
 .verdict[data-tone="open"] { border-left-color: var(--warn); }
 .verdict[data-tone="failed"] { border-left-color: var(--bad); }
@@ -95,8 +97,9 @@ details.expr { display: inline-block; }
 details.expr > summary::before { content: none; }
 details.expr[open] > summary { display: none; }
 .table-block { display: grid; gap: .5rem; }
-th { text-transform: none; letter-spacing: normal; }
+/* a header's term is underlined dotted at the first header linking it; a later one (seen) keeps its link, plain */
 th a { color: inherit; text-decoration: underline dotted; }
+th a.seen { text-decoration: none; }
 th code { font-size: 1em; }
 td, tbody th { vertical-align: top; }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -110,11 +113,10 @@ td.glyph .no-glyph { display: inline-block; width: 7.5em; max-width: 100%; min-w
 td:target, tr:target > td { background: var(--accent-wash); }
 figure { margin: 0; }
 .fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
-.fig .tbl { border: 0; border-radius: 0; }
 .chart-values caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chart:not(:empty) + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.finding { font-family: var(--f-display); font-size: var(--t-md); margin-top: .75rem; }
+.finding { font-family: var(--f-display); font-size: var(--t-base); margin-top: .75rem; }
 .finding strong { font-weight: 600; }
 [data-role] > p + p, [data-role] > p + ul, [data-role] > ul + p { margin-top: .6rem; }
 p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: var(--t-sm); color: var(--muted);
@@ -132,7 +134,7 @@ details.trial > summary { font-size: var(--t-sm); }
 details.trial dl { margin: .5rem 0 0; font-size: var(--t-sm); }
 details.trial dt { font-weight: 600; margin-top: .5rem; }
 details.trial dd { margin: .15rem 0 0; }
-@media (max-width: 640px) { nav { position: static; } .verdict { font-size: var(--t-base); } }
+@media (max-width: 640px) { nav { position: static; } }
 @media print {
   nav { display: none; }
   .tbl { overflow: visible; }
@@ -862,7 +864,8 @@ def check_header_links(markup: str, names: Sequence[str]) -> str:
     checks ``names`` linked to that check's entry: a header is where a reader first meets a check's name, as a term of
     art's header links its term. A header naming a check reads its name, then its unit in brackets or the aspects it
     reads after a comma. A hyphenated word in it is held whole by a span (``span.id``), which the name is matched
-    through and the link keeps.
+    through and the link keeps. Then every header link to a glossary entry an earlier header already linked is marked
+    ``seen`` (:func:`_seen_header_links`), so a term's dotted underline marks its first header alone.
 
     :param markup: The page's markup.
     :ptype markup: str
@@ -871,8 +874,6 @@ def check_header_links(markup: str, names: Sequence[str]) -> str:
     :return: The markup, each such header linked.
     :rtype: str
     """
-    if not names:
-        return markup
     named = [(name, re.compile(rf"{re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?", re.S)) for name in names]
 
     def linked(found: re.Match[str]) -> str:
@@ -885,11 +886,35 @@ def check_header_links(markup: str, names: Sequence[str]) -> str:
                 return f"{found[1]}{term_link(name, found[2])}{found[3]}"
         return found[0]
 
-    return _HEADER_CELL.sub(linked, markup)
+    return _seen_header_links(_HEADER_CELL.sub(linked, markup) if named else markup)
+
+
+def _seen_header_links(markup: str) -> str:
+    """``markup`` with each header link to a glossary entry (``#g-…``) that an earlier header on the page linked
+    classed ``seen``, which the page draws plain: a term's dotted underline marks where a reader first meets it in a
+    header, not every table that repeats it."""
+    first: set[str] = set()
+
+    def marked(anchor: re.Match[str]) -> str:
+        href = anchor["href"]
+        if href not in first:
+            first.add(href)
+            return anchor[0]
+        tag = anchor[0]
+        return (
+            tag.replace(' class="', ' class="seen ', 1)
+            if ' class="' in tag
+            else tag.replace("<a ", '<a class="seen" ', 1)
+        )
+
+    return _HEADER_CELL.sub(lambda cell: f"{cell[1]}{_GLOSSARY_LINK.sub(marked, cell[2])}{cell[3]}", markup)
 
 
 #: A header cell, its opening tag, its content and its closing tag.
 _HEADER_CELL = re.compile(r"(<th\b[^>]*>)(.*?)(</th>)", re.S)
+
+#: A link to a glossary entry, its target the group ``href``.
+_GLOSSARY_LINK = re.compile(r'<a\b[^>]*\bhref="(?P<href>#g-[^"]+)"[^>]*>')
 
 #: A hyphenated word held whole in a cell (:func:`_one_word`), its text the group.
 _HELD = re.compile(r'<span class="id(?: long)?">([^<]*)</span>')
@@ -947,11 +972,12 @@ _CHIP_TOKEN = "--ink-2"
 def _arm_chip(tag: str, color: str | None, markup: str) -> str:
     """An arm as the kit's chip: its letter tag on its identity colour, then ``markup``, its name, already escaped.
 
-    The tag's letter is the kit's on-fill colour, except on the control's ink-gray, which is light in the dark theme
-    and takes the surface colour instead (``kit.js``'s ``kOnTag``).
+    The tag's letter is the kit's on-fill colour or its surface, whichever reads better on the tag's colour in either
+    theme: on-fill on an arm's colour, the surface on the control's ink-gray, which is light in the dark theme
+    (``kit.js``'s ``kOnTag``).
     """
     token = color or _CHIP_TOKEN
-    on_tag = "--surface" if token == "--ink-2" else "--on-fill"
+    on_tag = ink_on(f"var({token})", ("--on-fill", "--surface"))
     return (
         f'<span class="armchip"><span class="tag" style="background:var({token});color:var({on_tag})">'
         f"{escape(tag)}</span>{markup}</span>"

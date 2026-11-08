@@ -428,7 +428,7 @@ def test_a_finished_page_with_findings_open_counts_them_near_its_top_in_every_fo
 
     assert f'<p class="callout" data-part="open"><a href="#findings">{line}</a></p>' in written
     assert '<section data-part="findings" id="findings">' in written
-    assert written.index('class="mast"') < written.index(line) < written.index("<h1>")
+    assert written.index('class="mast"') < written.index(line) < written.index("<h1")
     assert markdown.splitlines()[2] == f"_{line}_" and markdown.index(line) < markdown.index("\n# ")
     assert [said for said in text.splitlines() if said][1] == line
     for form in (written, markdown, text):

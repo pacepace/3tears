@@ -151,6 +151,33 @@ def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_n
     assert "  No invented total score: 98.9%, 89 of 90 trials" in printed and "  no_invented_total:" not in printed
 
 
+#: A page's verdict line, its markup the group.
+_VERDICT_LINE = re.compile(r'<p class="verdict"[^>]*>(.*?)</p>', re.S)
+
+
+def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_one_term(
+    rungs: dict[str, _Surfaces],
+) -> None:
+    """Production, 0.94: the code page's three-line lead was bold throughout, then repeated its linked phrase as a
+    bracketed "(cannot tell apart)". On the campaign page and the aspect page the decision alone is bold, the figures
+    it rests on (``Of 90 trials each``) and the guardrail are regular, and the line holds one glossary link: the
+    undecided reading, in its sentence form."""
+    rung = rungs["rung3"]
+    for name, page in (
+        ("campaign", campaign_report_html(rung.result.page)),
+        ("aspect", report_html(rung.result.report)),
+    ):
+        found = _VERDICT_LINE.search(page)
+        assert found is not None, name
+        line = found.group(1)
+        bold = [re.sub(r"<[^>]+>", "", said) for said in re.findall(r"<strong>(.*?)</strong>", line, re.S)]
+        assert bold == ["Accuracy: the evidence cannot tell v2 and v1 apart"], (name, line)
+        regular = re.sub(r"<strong>.*?</strong>", "", line, flags=re.S)
+        assert "Of 90 trials each" in regular and "interval allows v2" in regular, (name, line)
+        links = re.findall(r"<a\b[^>]*>(.*?)</a>", line)
+        assert links == ["cannot tell v2 and v1 apart"], (name, links)
+
+
 def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs: dict[str, _Surfaces]) -> None:
     """A first-time reader of an undecided lead takes small figures for "the same"; the lead says what each arm passed
     and how far the interval lets the candidate fall or rise, in points, its ends the contrasts table's."""

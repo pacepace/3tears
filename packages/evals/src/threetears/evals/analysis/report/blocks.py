@@ -827,13 +827,13 @@ _OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
 _PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
 
 #: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
-#: state's order. Status colours, never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is
-#: the kit's good, solid; every failure cause is the kit's bad, each under a texture of its own, so a failure never
-#: reads as a pass even without colour, and the five failure causes (``FailCause``) are five looks; a loss cause is a
-#: neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: state's order. Never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is ink (the kit's
+#: secondary text), solid, so the status green means a status pill alone; every failure cause is the kit's bad, each
+#: under a texture of its own, so a failure never reads as a pass even without colour, and the five failure causes
+#: (``FailCause``) are five looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
 #: legend and the tooltip name every cause in words.
 _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
-    "passed": (("--good", None),),
+    "passed": (("--ink-2", None),),
     "failed": tuple(("--bad", pattern) for pattern in _PATTERNS),
     "lost": (
         ("--base", None),
@@ -1335,6 +1335,14 @@ class DisclosureBlock(_Block):
             "arm) — which HTML sets the line apart by. None on every other disclosure."
         ),
     )
+    emphasis: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The phrases of `text` a page sets in bold, in the order `text` says them, none empty and none cutting a "
+            "code span: on the verdict line, each decision, its figures and guardrails left regular. Empty for a line "
+            "read at one weight; a caller's lead with none renders without bold."
+        ),
+    )
 
     @staticmethod
     def verdict_tone(rule: str) -> Literal["decided", "open", "failed", "summary"]:
@@ -1355,6 +1363,37 @@ class DisclosureBlock(_Block):
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
+        return self
+
+    def emphasis_pieces(self) -> list[tuple[str, bool]]:
+        """``text`` cut where each phrase of ``emphasis`` starts and ends, in order, each piece with whether it is set
+        in bold: the raw text, so a page escapes each piece itself and never searches its own markup.
+
+        :return: The pieces, which join back to ``text``.
+        :rtype: list[tuple[str, bool]]
+        :raises ValueError: a phrase is empty, is not said after the one before it, or starts or ends inside a code
+            span (between backticks), where bold would cut the span in two.
+        """
+        pieces: list[tuple[str, bool]] = []
+        at = 0
+        for phrase in self.emphasis:
+            found = self.text.find(phrase, at) if phrase else -1
+            if found < 0:
+                raise ValueError(f"a disclosure sets {phrase!r} in bold, which its text does not say there")
+            end = found + len(phrase)
+            if self.text.count("`", 0, found) % 2 or self.text.count("`", 0, end) % 2:
+                raise ValueError(f"a disclosure sets {phrase!r} in bold, which cuts a code span in two")
+            pieces += [(self.text[at:found], False), (phrase, True)]
+            at = end
+        return [piece for piece in [*pieces, (self.text[at:], False)] if piece[0]]
+
+    @model_validator(mode="after")
+    def _each_emphasis_is_said_in_order(self) -> Self:
+        """Refuse a phrase to set in bold that the line does not say, says out of order, or says cutting a code span.
+
+        :raises ValueError: :meth:`emphasis_pieces` refuses the phrases.
+        """
+        self.emphasis_pieces()
         return self
 
     @model_validator(mode="after")
