@@ -91,6 +91,7 @@ _VIOLATIONS: dict[str, list[str]] = {
         "async def wipe(conn):\n    await conn.execute('TRUNCATE memories')\n",
         "async def wipe(conn):\n    await conn.execute('DELETE FROM memories')\n",
         "def on_group(cache):\n    cache.invalidate_all()\n",
+        "def first_sight(registrations):\n    for each in registrations:\n        each.on_table_dropped()\n",
     ],
     RULE_L2_SWALLOW: [
         "async def get(kv, log):\n    try:\n        return await kv.get('k')\n"
@@ -101,6 +102,7 @@ _VIOLATIONS: dict[str, list[str]] = {
         "async def open_(client):\n    return await client.kv_bucket(name='rows', ttl=600)\n",
         "class MemoriesCollection:\n    l1_ttl = 300\n",
         "async def put(kv, key, value):\n    await kv.put(key=key, value=value, ttl=60)\n",
+        "async def put(kv, key, value):\n    timed = {'ttl': 60}\n    await kv.update(key=key, value=value, **timed)\n",
     ],
     RULE_EPOCH_BYPASS: [
         "async def bump(pool, key):\n    await pool.execute('UPDATE agent_skills SET uses = uses + 1 WHERE id = $1', key)\n",
@@ -112,6 +114,7 @@ _VIOLATIONS: dict[str, list[str]] = {
         "async def all_roles(pool):\n    return await pool.fetch('SELECT id, name FROM roles')\n",
         "class Snap:\n    async def _rebuild_scopes(self, scope):\n        return await self._read_scope(scope)\n",
         "async def warm_cache(pool, table):\n    return await pool.fetch(f'SELECT * FROM {table} WHERE scope = $1', 's')\n",
+        "class Coll:\n    async def refill_l2(self):\n        async for page in self.l3_pages(500):\n            yield page\n",
     ],
 }
 

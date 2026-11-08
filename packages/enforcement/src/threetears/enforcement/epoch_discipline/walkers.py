@@ -53,6 +53,8 @@ _WHOLE_DROP_CALLS: Final[frozenset[str]] = frozenset(
         "replace_partitions",
         "reload_all",
         "rebuild_all",
+        # a derived cache's whole-table hook, called by anything but the registry's own drop
+        "on_table_dropped",
     }
 )
 
@@ -184,6 +186,8 @@ _L3_READS: Final[frozenset[str]] = frozenset(
         "load_all",
         "read_all",
         "rows_at",
+        "l3_pages",
+        "keyset_pages",
     }
 )
 
@@ -197,7 +201,9 @@ _WHOLE_READ_HELPER: Final[re.Pattern[str]] = re.compile(
 _L3_SEGMENT: Final[re.Pattern[str]] = re.compile(r"(?i)(pool|conn|backend|(^|_)l3($|_)|store|(^|_)db($|_)|driver)")
 
 #: L3 reads distinctive enough to count on any receiver.
-_L3_DISTINCT_READS: Final[frozenset[str]] = frozenset({"fetch_from_store", "list_entities", "rows_at", "fetch_scope"})
+_L3_DISTINCT_READS: Final[frozenset[str]] = frozenset(
+    {"fetch_from_store", "list_entities", "rows_at", "fetch_scope", "l3_pages", "keyset_pages"}
+)
 
 _SQL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--[^\n]*")
 _NAME: Final[str] = r"([\w.\"{}]+)"
@@ -745,6 +751,9 @@ class _ModuleWalk(ast.NodeVisitor):
         for keyword in node.keywords:
             if keyword.arg in _TTL_KEYWORDS and not _is_unset(keyword.value):
                 self._hit(RULE_TTL_SAFETY_NET, node, f"{name}({keyword.arg}=)")
+            elif keyword.arg is None:
+                # a ``**`` splat may carry an expiry under any of those names: the gate cannot see inside it
+                self._hit(RULE_TTL_SAFETY_NET, node, f"{name}(**)")
 
     def _bypass_call(self, node: ast.Call, name: str) -> None:
         """a backend write or a collection L2 put outside the write path.

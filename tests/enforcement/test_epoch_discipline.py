@@ -18,8 +18,9 @@ with the fix that removes it, pinned by count; ``_epoch_waivers.txt`` lists the 
 matches that are not what the rule forbids, each with its reason. A new site fails, and so does a
 line whose site shrank or went, so both lists only shrink.
 
-The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, is a
-:data:`_PRIMITIVES` entry under ``whole-drop``.
+The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, is not a
+primitive: its one ``drop_table`` (for a record naming the whole table) is a waiver pinned by count,
+so a second drop there fails the gate.
 """
 
 from __future__ import annotations
@@ -49,8 +50,6 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/backends/sql.py::SqlL3Backend.truncate",
             # the DuckDB L1 backend: its replace_all and partition swaps are the primitives callers reach
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
-            # the sanctioned whole-table-epoch apply: it drops a table only for a record naming the whole table
-            f"{_CORE}/collections/registry.py::CollectionRegistry.apply_epoch_change",
         }
     ),
     "epoch-bypass": frozenset(
