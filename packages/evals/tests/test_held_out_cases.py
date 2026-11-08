@@ -1,7 +1,7 @@
 """The held-out writer cases (``tests/fixtures/writer_cases/held_out/``) read, stay apart from rung 5's, and all sit
 on the held-out side.
 
-An acceptance run reads one directory holding rung 5's eleven cases and these sixteen, at a held-out share of 0.99
+An acceptance run reads one directory holding rung 5's eleven cases and these twenty-one, at a held-out share of 0.99
 (the directory's ``README.md``). These tests hold what that run relies on: every file reads as a writer case, no name
 is two cases, no two files freeze one source (the mint would count them as one case), every group lands held-out at
 0.99, and the cases the export rebuilds from the package's fixtures are the ones committed: every figure the same to
@@ -32,7 +32,7 @@ from threetears.evals.schema.hashing import identity_json
 ACCEPTANCE_FRACTION = 0.99
 
 #: How many held-out cases the acceptance run needs, rung 5's and these together.
-ACCEPTANCE_CASES = 27
+ACCEPTANCE_CASES = 32
 
 #: Where the reproducible cases were minted: the machine and its C library.
 MINTED_ON = "aarch64-glibc-2.39"
@@ -57,7 +57,7 @@ def _union() -> tuple[WriterCaseFile, ...]:
 
 def test_every_held_out_file_reads_as_a_writer_case_under_its_own_name() -> None:
     cases = _held_out()
-    assert len(cases) == 16
+    assert len(cases) == 21
     assert {case.format for case in cases} == {"writer-case/1"}
     assert sorted(path.name for path in HELD_OUT_DIR.glob("*.json.gz")) == sorted(
         held_out_path(case.name).name for case in cases
@@ -166,4 +166,64 @@ def test_the_second_production_minted_case_is_the_judge_shortlist() -> None:
         "report-snapshot:7e6a1af7d990096595843eb8f1f4f26f",
     )
     assert len(case.minted.unmatched) == 2
+    assert case.minted.withheld == []
+
+
+def test_the_third_production_minted_case_is_kairo_models_pilot() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-kairo-models-pilot-01a18f50"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "kairo",
+        "host",
+        [],
+        "report-snapshot:e0a71713362c27521787292b03d1a15f",
+    )
+    assert len(case.minted.unmatched) == 13
+    assert case.minted.withheld == []
+
+
+def test_the_fourth_production_minted_case_is_1017_reasoning_effort() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-1017-reasoning-effort-01a18d4d"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "kairo",
+        "host",
+        [],
+        "report-snapshot:ef124642639ad38eb722f746f3621670",
+    )
+    assert len(case.minted.unmatched) == 11
+    assert case.minted.withheld == []
+
+
+def test_the_fifth_production_minted_case_is_planted_effect() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-planted-effect-01a18b10"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "kairo",
+        "host",
+        [],
+        "report-snapshot:6aeeefc093054d1d54012f80805739a4",
+    )
+    assert len(case.minted.unmatched) == 11
+    assert case.minted.withheld == []
+
+
+def test_the_sixth_production_minted_case_is_kairo_directives_ab() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-kairo-directives-ab-01a16f8a"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "kairo",
+        "host",
+        [],
+        "report-snapshot:c06d084cbed5c085dccbc65d77531547",
+    )
+    assert len(case.minted.unmatched) == 10
+    assert case.minted.withheld == []
+
+
+def test_the_seventh_production_minted_case_is_kairo_persona_r1() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-kairo-persona-r1-01a16bd4"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "kairo",
+        "host",
+        [],
+        "report-snapshot:7fba39b1797487dc8ae8cf79a6e9c794",
+    )
+    assert len(case.minted.unmatched) == 12
     assert case.minted.withheld == []
