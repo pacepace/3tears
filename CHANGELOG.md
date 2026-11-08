@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.95.0 -- 2026-11-07
+
 ### core, epoch: an epoch is its change set, and a missed broadcast corrects only the rows it missed
 
 **Changed (core, epoch):** a pod that misses a cache-invalidation broadcast no longer drops the table. Each advance
