@@ -72,11 +72,8 @@ ChartStatus = Literal["good", "warn", "bad", "neutral"]
 #: read apart by more than colour.
 ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols"]
 
-#: Which way a change chart's axis is better, printed under the axis: ``right`` prints "← worse · better →", ``left``
+#: How a change chart's ``better`` field is described: ``"right"`` prints "← worse · better →" under the axis, ``"left"``
 #: its mirror, and two words print each under its own end, the left's first ("prefers shipped", "prefers lead-first").
-_Better = Literal["right", "left"] | tuple[str, str]
-
-#: How :data:`_Better` is described on every chart that carries it.
 _BETTER_WORDS = (
     'Which way is better, printed under the axis: "right" prints "← worse · better →", "left" its mirror; two words '
     "print each under its own end, the left end's first."
@@ -690,7 +687,7 @@ class _BarsFields(_Kind):
         description="Printed at the zero line of a change chart: what zero is (no change against the control, by "
         "name, and its level where the rows share one).",
     )
-    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
+    better: Literal["right", "left"] | tuple[str, str] | None = Field(default=None, description=_BETTER_WORDS)
     dots: bool | None = Field(
         default=None,
         description="Changes drawn as dots with their intervals, not bars: a row with no interval an open mark, each "
@@ -796,7 +793,7 @@ class ForestChart(_Drawable):
         description="Printed at the zero line: what zero is (no change against the control, by name, and its level "
         "where the rows share one).",
     )
-    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
+    better: Literal["right", "left"] | tuple[str, str] | None = Field(default=None, description=_BETTER_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -1061,7 +1058,7 @@ class _DotIntervalFields(_Kind):
         description="Printed at a change chart's zero line, which it draws: what zero is (no change against the "
         "control, by name, and its level where the rows share one).",
     )
-    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
+    better: Literal["right", "left"] | tuple[str, str] | None = Field(default=None, description=_BETTER_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
