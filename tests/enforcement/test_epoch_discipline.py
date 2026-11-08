@@ -70,8 +70,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/write_marks.py::WriteMarkReconciler",
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
-            # the L2-first epoch log in L3: the saved record of each epoch, the ledger the saver walks
-            f"{_CORE}/collections/l2_first.py::SqlEpochLogStore",
+            # the change-note ring in L3: its ring row, its note tables and its triggers (installed, emptied)
+            f"{_CORE}/collections/change_notes.py::ChangeNoteKeeper",
             # the migration runner's own version ledger, _schema_migrations
             f"{_CORE}/data/migrations/runner.py::MigrationRunner",
             # the epoch client's own counter table, config_epochs: it IS the epoch
