@@ -50,6 +50,7 @@ from threetears.evals.ops.analysis import report_read
 from threetears.evals.schema.goal_grammar import ACTION_BUILTINS, FIRE_PREDICATES, REFUSAL_BUILTINS
 
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
+from packages.evals.tests.report_kit_support import report_page
 from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, Shape, shape_of
 from packages.evals.tests.test_hot_path_oracle import subject
 
@@ -339,6 +340,52 @@ def test_a_name_inside_a_longer_one_is_never_linked_as_the_shorter() -> None:
     said = campaign_report_html(page)
     assert "Goal check 2 is unproven" in re.sub(r"<[^>]+>", "", said)
     assert not re.search(r">Goal check</a> \d", said)
+
+
+def test_no_glossary_term_is_linked_inside_a_measure_s_name_wherever_a_line_prints_it() -> None:
+    """Discodon's re-shoot of host pass 5: the line under a one-arm scorecard linked the glossary's "ran" inside
+    "Turns that ran over budget". A term is never linked inside a measure's or a column's name, in the line under a
+    table or anywhere else a line prints it; it is linked at its first use that is not a name's word, and a name that
+    is the term's own words is the term, linked where it is first read though its unit follows it."""
+    scorecard = TableBlock(
+        section="scoreboard",
+        name="scorecard",
+        title="solo by aspect",
+        shared_scale=True,
+        columns=[
+            TableColumn(key="aspect", header="Aspect"),
+            TableColumn(key="budget", header="Turns that ran over budget"),
+            TableColumn(key="spend", header="Measuring spend, all roles, per 1,000 replies"),
+        ],
+        rows=[
+            {
+                "aspect": TableCell(value="Research quality"),
+                "budget": TableCell(value=0.0, low=0.0, high=0.0),
+                "spend": TableCell(value=2.7, low=2.5, high=3.0, unit="usd", decimals=1),
+            }
+        ],
+        order="aspect by aspect",
+        total_rows=1,
+    )
+    runs = TableBlock(
+        section="methods",
+        name="runs",
+        title="Runs",
+        columns=[TableColumn(key="arm", header="Arm"), TableColumn(key="ran", header="Ran")],
+        rows=[{"arm": TableCell(value="solo"), "ran": TableCell(value=60)}],
+        order="as run",
+        total_rows=1,
+    )
+    lines = [
+        DisclosureBlock(section="methods", source="comparisons", text="Turns that ran over budget were none."),
+        DisclosureBlock(section="methods", source="comparisons", text="Each arm ran every case once."),
+    ]
+    said = report_page([scorecard, *lines, runs])
+    (axis,) = re.findall(r'<p class="axis">(.*?)</p>', said)
+    assert axis.startswith("Turns that ran over budget drawn from "), axis
+    assert ">Measuring spend, all roles</a>, per 1,000 replies drawn from" in axis, "the name is the term's words"
+    assert "Turns that ran over budget were none." in said, "nor in a line that names the measure"
+    assert re.search(r"Each arm <a [^>]*>ran</a> every case once", said), "the term links at its first use as itself"
 
 
 #: An expression a host could write that parses, so it reaches the naming path, and whose literals are Markdown and

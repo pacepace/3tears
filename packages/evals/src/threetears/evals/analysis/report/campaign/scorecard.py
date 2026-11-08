@@ -1440,6 +1440,7 @@ def _measure_matrix(
                 found = [reading for reading in held if reading.measure == key]
                 cells[f"measure:{key}"] = _measure_cell(found, rulers.get(key), rate=key in rates, counts=counts)
             rows.append(cells)
+    rows = _one_precision(rows, [f"measure:{key}" for key in measures if key not in rates and key not in rulers])
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
@@ -1470,7 +1471,7 @@ def _measure_cell(
     if ruler is not None:
         return _money_cell(reading.value, reading.interval, ruler)
     scale = 100.0 if rate else 1.0
-    places = 1 if rate else 4
+    places = 1 if rate else _MEASURED_PLACES
     if reading.value is None:
         return TableCell(value=None)
     value = round(scale * reading.value, places)
@@ -1482,6 +1483,51 @@ def _measure_cell(
     if reading.interval is None:
         return TableCell(value=value, flag=count)
     return TableCell(value=value, low=scale * reading.interval[0], high=scale * reading.interval[1], flag=count)
+
+
+#: The most decimals a measured figure is stated to (:func:`_measure_cell` rounds it there).
+_MEASURED_PLACES = 4
+
+
+def _one_precision(rows: list[dict[str, TableCell]], keys: Sequence[str]) -> list[dict[str, TableCell]]:
+    """The scorecard's rows with each column of measured figures (neither a rate nor money, whose columns have forms of
+    their own) at one precision, as the line under the table spells the column's scale: the decimals that give its
+    smallest figure other than zero two significant figures (none from ten up), one more where two of its figures
+    would otherwise print alike, and never more than any figure holds. ``2.737`` beside ``0`` reads ``2.7``; a column
+    of whole counts stays whole; zero reads ``0``.
+
+    :param rows: The scorecard's rows, by column key.
+    :ptype rows: list[dict[str, TableCell]]
+    :param keys: The columns of measured figures.
+    :ptype keys: Sequence[str]
+    :return: The rows, each such column's numbers carrying its decimals.
+    :rtype: list[dict[str, TableCell]]
+    """
+    places: dict[str, int] = {}
+    for key in keys:
+        figures = [float(row[key].value) for row in rows if key in row and row[key].is_number]  # type: ignore[arg-type]
+        stated = [abs(figure) for figure in figures if figure != 0]
+        if not stated:
+            continue
+        held = max(_decimals_held(figure) for figure in figures)
+        chosen = min(held, max(0, 1 - math.floor(math.log10(min(stated)))))
+        while chosen < held and len({round(figure, chosen) for figure in figures}) < len(set(figures)):
+            chosen += 1
+        places[key] = chosen
+    return [
+        {
+            key: cell.model_copy(update={"decimals": places[key]})
+            if key in places and cell.is_number and not cell.unit
+            else cell
+            for key, cell in row.items()
+        }
+        for row in rows
+    ]
+
+
+def _decimals_held(figure: float) -> int:
+    """The decimals ``figure`` holds, up to :data:`_MEASURED_PLACES`: ``2.7368`` holds four, ``4.5`` one, ``3.0`` none."""
+    return next((places for places in range(_MEASURED_PLACES) if round(figure, places) == figure), _MEASURED_PLACES)
 
 
 def measured_figure(reading: MeasureReading) -> str | None:

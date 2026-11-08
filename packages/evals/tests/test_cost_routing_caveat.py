@@ -48,7 +48,7 @@ def _routed_rows(page: CampaignReport) -> list[tuple[str, str]]:
         for block in page.blocks
         if isinstance(block, TableBlock) and block.name == "test_setup"
         for row in block.rows
-        if row["setup"].text == "cost as routed"
+        if row["setup"].text == "Cost as routed"
     ]
 
 

@@ -363,7 +363,7 @@ document's appendix lists its Checks after Method, each name defined by its expr
   bundle's `coverage`, in the `bundle-<aspect>.json` written beside a saved page (the command line's `report --out`); the page lists each `thin` or `unswept` lever under Not tested.
   Then the **Glossary**: every term of
   art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
-  hover reads it.
+  hover reads it. A term is linked at its first use in prose, never inside a measure's or a column's name.
 
 ### Style
 
@@ -387,7 +387,8 @@ and the key names each (`failed: check`, `failed: judge`); a lost cause's edge i
 **interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
 whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
 in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
-at a glance. There are no standalone interval charts: the tables carry the intervals.
+at a glance; a scale of levels runs below zero only where an interval on a measure not declared non-negative does. There
+are no standalone interval charts: the tables carry the intervals.
 
 No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
 every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden

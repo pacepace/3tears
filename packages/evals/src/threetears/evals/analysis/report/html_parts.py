@@ -275,7 +275,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     }
     pinned = {column.key for column in block.columns[: 2 if block.key_columns == 2 else 1]}
     head = "".join(
-        f'<th scope="col"{_pinned_class(classes[column.key], column.header, column.key in pinned)}>'
+        f'<th scope="col"{_pinned_class(classes[column.key], column.header, column.key in pinned)}'
+        f"{'' if column.key in pinned else _head_width(column.header)}>"
         f"{_pinned_text(_header(column.header, column.term), column.key in pinned)}</th>"
         for column in block.columns
     )
@@ -345,8 +346,9 @@ class _Scale:
     track: tuple[float, float]
 
     def spell(self, number: float) -> str:
-        """A number on the scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``."""
-        if self.cell.unit:
+        """A number on the scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``; a
+        bare figure at its column's one precision (``2.7``) where the cell carries one."""
+        if self.cell.unit or (self.cell.decimals is not None and not self.unit):
             return self.cell.amount(number)
         return with_unit(number, self.unit)
 
@@ -414,7 +416,11 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
 
     The scale runs from the least to the greatest of every interval end, every point and every margin either side of
     zero of the group, and holds zero where any cell is a difference or carries a margin: the data's own ends, never
-    padded, so the line under the table states what the track spans. A rate's scale stays within 0 to 100.
+    padded, so the line under the table states what the track spans. A rate's scale stays within 0 to 100. A scale of
+    levels alone (no cell a difference, none with a margin) never runs below zero where its measure cannot: money
+    floors at 0, and a scale whose one figure is zero (every count read 0) is drawn from 0, never from -1. A level
+    whose own interval reaches below zero is drawn there: its measure is not declared non-negative
+    (``MetricDescriptor.nonnegative``), so nothing here may say it cannot be.
 
     :return: ``{(column key, cell unit): scale}``, for the columns with a cell carrying an interval.
     :rtype: dict[tuple[str, str], _Scale]
@@ -423,6 +429,7 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
     ends: dict[tuple[str, str], list[float]] = {}
     margins: dict[tuple[str, str], float] = {}
     first: dict[tuple[str, str], TableCell] = {}
+    differences: set[tuple[str, str]] = set()
     for row in block.rows:
         for key, cell in row.items():
             if cell.low is None or cell.high is None or not cell.is_number:
@@ -435,6 +442,8 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
                 margins[key, cell.unit] = max(margins.get((key, cell.unit), 0.0), cell.margin)
             if cell.zero_line:
                 held.append(0.0)
+            if cell.zero_line or cell.margin is not None:
+                differences.add((key, cell.unit))
     units = {group: _read_unit(cell, headers.get(group[0], "")) for group, cell in first.items()}
 
     def pooled(group: tuple[str, str]) -> tuple[str, str]:
@@ -443,19 +452,26 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
 
     by_scale: dict[tuple[str, str], list[float]] = {}
     margin_of: dict[tuple[str, str], float] = {}
+    signed: set[tuple[str, str]] = set()
     for group, figures in ends.items():
         by_scale.setdefault(pooled(group), []).extend(figures)
         margin_of[pooled(group)] = max(margin_of.get(pooled(group), 0.0), margins.get(group, 0.0))
+        if group in differences:
+            signed.add(pooled(group))
     scales: dict[tuple[str, str], _Scale] = {}
     for group in ends:
         figures = by_scale[pooled(group)]
         low, high = min(figures), max(figures)
+        levels = pooled(group) not in signed
         if units[group] == PERCENT:
             low, high = max(low, 0.0), min(high, 100.0)
+        elif levels and is_money(units[group]):
+            low = max(low, 0.0)
         if low == high:
-            # One figure alone: a track either side of it, so its mark is drawn where it is.
+            # One figure alone: a track either side of it, so its mark is drawn where it is; a level's never runs
+            # below zero from a figure at or above it (every count read 0 is drawn from 0 to 1).
             pad = abs(low) * 0.05 or 1.0
-            low, high = low - pad, high + pad
+            low, high = (max(low - pad, 0.0) if levels and low >= 0 else low - pad), high + pad
         # A declared margin's ends sit inside the track, so its ticks and its band never fill it edge to edge.
         margin = margin_of.get(pooled(group), 0.0) * _PAST_MARGIN
         track = (min(low, -margin), max(high, margin))
@@ -465,17 +481,19 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
 
 def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale]) -> str:
     """A cell's interval glyph on its column's scale, or a blank of the same width where the cell has none, so the
-    column's figures stay aligned. Its title states its figures as the scale's cells write them."""
+    column's figures stay aligned. Its title states its figures as the scale's cells write them; its whisker is drawn
+    inside the track, where a scale that holds its measure's floor (a rate at 0 to 100, money at 0) ends it."""
     if cell.low is None or cell.high is None or not cell.is_number:
         return '<span class="no-glyph"></span>'
     scale = scales[(key, cell.unit)]
     said = f"{scale.spell(float(cell.value))}, interval {scale.interval(cell.low, cell.high)}"  # type: ignore[arg-type]
     if cell.margin is not None:
         said += f", margin ±{scale.spell(cell.margin)}"
+    first, last = scale.track
     return interval_glyph_svg(
         float(cell.value),  # type: ignore[arg-type]
-        cell.low,
-        cell.high,
+        min(max(cell.low, first), last),
+        max(min(cell.high, last), first),
         unit=cell.unit,
         scale=scale.track,
         margin=cell.margin,
@@ -666,6 +684,36 @@ def _set_lines(words: Sequence[str], width: int) -> int:
         else:
             lines, used = lines + 1, len(word)
     return lines
+
+
+#: The most lines a column's header takes in a table that scrolls anyway, and the narrowest a header is, in rem (the
+#: stylesheet's ``th`` floor).
+_HEAD_LINES = 2
+_HEAD_FLOOR_REM = 4.5
+
+
+def _head_width(header: str) -> str:
+    """A header's style attribute where its words would set in more than :data:`_HEAD_LINES` lines at the header's
+    floor: ``--head``, the width that sets them in that many, at their spaces. The stylesheet holds a header at it only
+    in a frame that scrolls anyway, where widening its column costs a little more scroll and saves a header row as tall
+    as its longest label's wrap (``Share of output spent reasoning`` in five lines at 688 px); in a table that fits,
+    the header wraps as its column needs. Empty for a header the floor sets in that many lines already.
+
+    :param header: The column's header, as declared.
+    :ptype header: str
+    :return: `` style="--head:<rem>rem"``, or empty.
+    :rtype: str
+    """
+    words = header.split()
+    at_floor = int((_HEAD_FLOOR_REM - _CELL_PAD_REM) / _HEAD_REM_PER_CHAR)
+    if not words or _set_lines(words, at_floor) <= _HEAD_LINES:
+        return ""
+    chars = next(
+        width
+        for width in range(max(len(word) for word in words), len(" ".join(words)) + 1)
+        if _set_lines(words, width) <= _HEAD_LINES
+    )
+    return f' style="--head:{round(chars * _HEAD_REM_PER_CHAR + _CELL_PAD_REM, 2)}rem"'
 
 
 def _id_rem(block: TableBlock, key: str) -> float | None:

@@ -207,7 +207,7 @@ def test_rung_2_s_first_screen_carries_its_judge_caveat_and_its_detail_one_step_
     # The aspect the quick path labelled `score` is called by the campaign's name.
     assert caveat.text == "Judged scores on replies are directional until people's labels calibrate the judge."
     (setup,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "test_setup"]
-    (row,) = [row for row in setup.rows if row["setup"].text == "judge scores directional"]
+    (row,) = [row for row in setup.rows if row["setup"].text == "Judge scores directional"]
     assert row["detail"].text.startswith("Judge google/gemini-2.5-flash-lite is uncalibrated on ")
     assert re.search(r"Rate about \d+ of its outputs to calibrate it\.$", row["detail"].text)
     # The fold says neither again: the campaign states both once.

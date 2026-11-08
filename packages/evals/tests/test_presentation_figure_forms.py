@@ -66,7 +66,7 @@ from threetears.evals.quick.result import Result
 
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_doc_support import REPORT_DOCS, snapshot_of
-from packages.evals.tests.report_shapes_support import s2_choice
+from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, s2_choice, shape_of
 
 #: The rungs held here: their directory, the file declaring their eval, and the attribute holding it (None for TOML).
 _RUNGS: dict[str, tuple[str, str, str | None]] = {
@@ -406,6 +406,86 @@ def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> 
     assert ranges[0].startswith("Pass rate (%) and Reply cites policy check (%) drawn from "), ranges
     assert any(part.startswith("Turn time drawn from 973 to 1") for part in ranges), ranges
     assert any(part.startswith("Measuring spend drawn from $") for part in ranges), ranges
+
+
+def _quality_scorecard(*cells: tuple[str, str, TableCell]) -> TableBlock:
+    """A one-arm code-only scorecard of the SearXNG quality campaign's shape (Discodon's re-shoot of host pass 5): one
+    aspect's row, a column per measure, on one scale."""
+    return TableBlock(
+        section="scorecard",
+        name="scorecard",
+        title="deepseek-v4.1-flash by aspect",
+        shared_scale=True,
+        columns=[
+            {"key": "aspect", "header": "Aspect"},
+            *({"key": key, "header": header} for key, header, _ in cells),
+        ],  # type: ignore[list-item]
+        order="aspect by aspect",
+        rows=[{"aspect": TableCell(value="Research quality"), **{key: cell for key, _, cell in cells}}],
+        total_rows=1,
+    )
+
+
+def _track(drawn: str) -> list[tuple[float, float]]:
+    """Each glyph's track, its two ends' x, in the order drawn."""
+    return [
+        (float(start), float(end))
+        for start, end in re.findall(r'class="viz-track" x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)"', drawn)
+    ]
+
+
+def test_a_scale_of_levels_never_runs_below_zero_where_its_measure_cannot() -> None:
+    """Discodon's re-shoot of host pass 5: four counts that each read 0 on a one-arm scorecard were drawn "from -1 to 1",
+    a count no arm can have. A scale of levels (no cell a difference) whose one figure is zero is drawn from 0, money
+    floors at 0 though a host's interval on it reaches below, and its glyph's whisker stops at the track; a difference
+    still reads either side of zero, and a level whose own interval reaches below zero (a measure not declared
+    non-negative) is drawn where it reaches."""
+    zeros = _quality_scorecard(
+        ("pass", "Pass rate (%)", TableCell(value=0.0, low=0.0, high=20.4)),
+        *(
+            (key, header, TableCell(value=0.0, low=0.0, high=0.0))
+            for key, header in (("items", "Items delivered"), ("notices", "Failed-reply notices"))
+        ),
+    )
+    (line,) = _AXIS.findall(grid_html(zeros))
+    assert html.unescape(line).split(" · ")[1] == "Items delivered and Failed-reply notices drawn from 0 to 1", line
+    money = _quality_scorecard(("spend", "Spend", TableCell(value=0.4, low=-0.2, high=1.0, unit="usd", decimals=1)))
+    drawn = grid_html(money)
+    (line,) = _AXIS.findall(drawn)
+    assert html.unescape(line).startswith("Spend drawn from $0 to "), line
+    ((start, _),) = _track(drawn)
+    whisker = re.search(r'class="viz-whisker" x1="([\d.]+)"', drawn)
+    assert whisker is not None and float(whisker.group(1)) >= start, "the whisker stops at the track's floor"
+    change = _quality_scorecard(("change", "Change (pts)", TableCell(value=0.0, low=0.0, high=0.0, zero_line=True)))
+    (line,) = _AXIS.findall(grid_html(change))
+    assert html.unescape(line) == "Each column drawn from -1 to 1 pts", line
+    signed = _quality_scorecard(("fields", "Stripped fields per delivery", TableCell(value=4.5, low=-4.9, high=13.9)))
+    (line,) = _AXIS.findall(grid_html(signed))
+    assert html.unescape(line) == "Each column drawn from -4.9 to 13.9", line
+
+
+def test_a_scorecard_column_of_measured_figures_reads_at_one_precision() -> None:
+    """Discodon's re-shoot of host pass 5: a one-arm scorecard printed a mean of ``2.737`` items beside counts read
+    whole. A column of measured figures (neither a rate nor money) reads at one precision, the one its scale's line
+    reads at: two significant figures of its smallest figure but zero, whole from ten up, so a mean turn time of
+    99.2345 ms beside one of 100 ms reads ``99`` and ``100``, in its cell and its glyph's title alike."""
+    shape = shape_of(
+        "measured",
+        [
+            AspectTrials(aspect, [ArmTrials("solo", passing=15, latency_ms=first)], margin=None)
+            for aspect, first in (("billing", 1.2345), ("tone", 2.0))
+        ],
+        control=False,
+        question="How long does solo take?",
+    )
+    page = shape.page()
+    (scorecard,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
+    (key,) = [column.key for column in scorecard.columns if column.header == "Turn time"]
+    assert [row[key].value for row in scorecard.rows] == [99.2345, 100.0], "the control: a figure past two places"
+    assert [row[key].text for row in scorecard.rows] == ["99", "100"]
+    drawn = grid_html(scorecard)
+    assert "<title>99, interval [72, 127]</title>" in drawn, re.findall(r"<title>(9[^<]*)</title>", drawn)
+    assert any(part.startswith("Turn time drawn from 72 to 128") for part in _AXIS.findall(drawn)[0].split(" · "))
 
 
 def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: str) -> None:

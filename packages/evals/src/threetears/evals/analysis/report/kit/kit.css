@@ -190,6 +190,11 @@ th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
    a sticky header would stick to the frame, never the page; a header that stays visible inside a tall table needs the
    frame capped at the viewport's height with its own vertical scroll, a design choice to take with the host later */
 th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);white-space:normal;min-width:4.5rem}
+/* a header row is as tall as the label that needs the most lines, every label set from the top; in a frame that
+   scrolls anyway a long label sets in two lines at most (its --head, the width that does), since widening its column
+   costs only scroll, where wrapping it at the floor made the whole row as tall as its five lines */
+thead th{vertical-align:top}
+@container scroll-state(scrollable:x){.tbl thead th{min-width:var(--head,4.5rem)}}
 /* a row's label (a turned table's figure) is the row's header and reads as a body cell */
 tbody th{font-weight:inherit;color:inherit;font-size:inherit;text-transform:none;letter-spacing:normal;background:none;
   min-width:0}

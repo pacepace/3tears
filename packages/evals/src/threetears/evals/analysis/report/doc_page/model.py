@@ -116,7 +116,10 @@ class DocTerm(EvalDocumentModel):
     term: ModelProse
     text: ModelProse
     caveats: list[str] = Field(
-        description="The labels of the caveats landed on it, in the document's order, each distinct label once."
+        description=(
+            "The labels of the caveats landed on it, in the document's order, each distinct label once; none of a "
+            "caveat whose own words its text prints (`{caveats.latency}`), which the label would only say again."
+        )
     )
 
 

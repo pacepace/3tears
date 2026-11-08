@@ -170,6 +170,38 @@ def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_
     assert len(set(stated.values())) == len(names), stated
 
 
+def test_a_dash_where_an_arm_recorded_none_says_so_and_one_where_the_aspect_read_nothing_stays_bare() -> None:
+    """Discodon's re-shoot of host pass 5: Every arm by measure printed "—" for the control's items delivered beside
+    "0 items" for the candidate's, two facts that read as one: the control made no delivery to count, the candidate
+    delivered nothing. Where an arm holds no entry on a figure another arm in the same place holds, its dash says
+    so (``— (not recorded)``); a dash where no arm read the figure (an aspect that never measured it) stays bare."""
+    held = fixture_inputs()["r5"]
+    control, *candidates = [arm.id for arm in held.arms]
+    delivered = Measure(
+        label="Items delivered",
+        unit="items",
+        higher_is_better=True,
+        per_arm={arm: Stat(mean=0.0, n=4, n_cases=4) for arm in candidates},
+    )
+    one = held.model_copy(update={"measures": {**held.measures, "delivered_items": delivered}})
+    (table,) = [t for t in every_table(one, block_look(one, fact_arms(one))) if t.name == "arms_by_measure"]
+    said = [_row(table, one, arm)["measure:delivered_items"].text for arm in (control, *candidates)]
+    assert said == ["— (not recorded)", "0 items", "0 items"], said
+    # More than one aspect: an arm missing on the one aspect that reads the figure says so; the others stay bare.
+    three = _three_aspects()
+    arrival = three.measures[_ARRIVAL_ONLY]
+    missing = arrival.model_copy(
+        update={
+            "by_aspect": {"arrival": {arm: stat for arm, stat in arrival.by_aspect["arrival"].items() if arm != "1017"}}
+        }
+    )
+    three = three.model_copy(update={"measures": {**three.measures, _ARRIVAL_ONLY: missing}})
+    (table,) = [t for t in every_table(three, block_look(three, fact_arms(three))) if t.name == "arms_by_measure"]
+    cells = {(row["aspect"].value, row["arm"].text): row[f"measure:{_ARRIVAL_ONLY}"] for row in table.rows}
+    assert cells["arrival", "1017"].text == "— (not recorded)"
+    assert {cell.flag for (aspect, _), cell in cells.items() if aspect != "arrival"} == {None}, "not read there"
+
+
 def test_the_arms_key_counts_each_aspects_usable_trials() -> None:
     held = _three_aspects()
     table = arms_key(held, block_look(held, fact_arms(held))).table

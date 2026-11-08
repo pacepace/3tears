@@ -634,9 +634,9 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert said == [_SET_LATE], "one line for the whole report"
     # Each aspect, billing's floor and tone's bar, all declared with the aspect, each dated once.
     (aspect, floor, bar) = _criteria(page)
-    assert aspect == ("aspect", "1 Jan 2099", "every aspect")
-    assert floor == ("floor that no pass rate drops by more than 10 points", "1 Jan 2099", "billing")
-    assert bar[0].startswith("bar on ") and bar[1:] == ("1 Jan 2099", "tone")
+    assert aspect == ("Aspect", "1 Jan 2099", "every aspect")
+    assert floor == ("Floor that no pass rate drops by more than 10 points", "1 Jan 2099", "billing")
+    assert bar[0].startswith("Bar on ") and bar[1:] == ("1 Jan 2099", "tone")
     first = _first_screen(page)
     assert all(first.index(QUESTION) < first.index(line) for line in said), "under the question"
     assert "a lead" not in first and "began" not in first and "The question" not in " ".join(said)

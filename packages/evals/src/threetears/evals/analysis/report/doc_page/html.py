@@ -220,8 +220,13 @@ def _finding(finding: DocFinding) -> str:
 
 
 def _findings(findings: Sequence[DocFinding]) -> str:
+    """The review findings left open, at the appendix's type size and measure (the kit's ``.method``), as Method and
+    Checks beside them read."""
     items = "".join(_finding(finding) for finding in findings)
-    return f'<section data-part="findings" id="findings"><h3>{escape(FINDINGS_TITLE)}</h3><ul>{items}</ul></section>'
+    return (
+        f'<section data-part="findings" id="findings"><h3>{escape(FINDINGS_TITLE)}</h3>'
+        f'<ul class="method">{items}</ul></section>'
+    )
 
 
 def _appendix(page: DocPage) -> list[str]:
