@@ -15,9 +15,13 @@ ordered, and a restore does not need them to be.
 
 **The ring.** Three note tables: the current one writers fill, the previous one, and one emptied and
 waiting. The current and the previous are the coverage. One keeper (this module's
-:class:`ChangeNoteKeeper`, under a lease) switches the ring when the current table has taken one change
-log's worth -- the bytes the log is configured to hold (``max_bytes``), measured from the log itself as the
-bytes per sequence it holds times the sequences taken since the switch, never by counting in L3 -- and
+:class:`ChangeNoteKeeper`, under a lease) switches the ring when the current table has taken half the
+restore budget: :data:`RESTORE_BUDGET_RATIO` (75 %) of the log's ``max_bytes``, over two -- measured from the
+log itself as the bytes per sequence it holds times the sequences taken since the switch, never by counting
+in L3. Why half: a restore reads the current and the previous table, and puts them back into a log it may
+fill to 75 %; two tables of half that each fit whole. A whole log's worth per table would make the coverage
+up to twice the log, and a restore on a busy day would fit only in part. When a switch is held up (its wait,
+an emptying) and the coverage outgrows the budget, the restore puts back its newest part instead (below). It
 empties the oldest with batched deletes (:meth:`ChangeNoteKeeper._empty_slot`), never ``TRUNCATE``. The ring
 row in L3 names the current table; only the keeper writes it, once per switch.
 
@@ -47,6 +51,16 @@ switch, so its note is in the current table or a later one. At the next switch t
 **floor**: every epoch after the floor has its note in the current or the previous table, the two a
 restore reads. An epoch whose writer stalled between its commit and its append for longer than the fence
 breaks that promise, and the scrub reports it.
+
+**A restore too big for the log.** When the coverage's records would take the new log past the budget, the
+restore puts back the newest part that fits rather than nothing. The keeper marks the log's position every
+twentieth of the fence (``threetears_change_note_marks``, by the database's clock, pruned at each switch). A
+mark's position ``P`` at time ``T`` vouches that every epoch after ``P`` has its note written after ``T`` less
+half the wait (a writing transaction ends within it). So the notes written since then, labelled with ``P`` as
+their floor (``covered_from``), cover every epoch after ``P``: a follower at or past ``P`` catches up, an
+older one is behind (``record_lost``). The oldest mark whose part fits is taken; the cut is said at ERROR and
+counted (``threetears_change_notes_restore_truncated_total``). Only when not even the part after the newest
+mark fits is the restore refused (``threetears_change_notes_restores_refused_total``).
 
 **Putting a lost log back.** When the keeper finds the log absent it first declares a new log under a NEW
 incarnation, marked as being restored from the lost one and continuing nothing yet, so a write waiting for
@@ -97,6 +111,7 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.generation import NotedTable, split_generation_token
 from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
+    MARKS_TABLE,
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
@@ -112,13 +127,14 @@ from threetears.core.ddl.change_notes import (
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
-from threetears.core.exceptions import GenerationUnavailableError, RestoreTooLargeError
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
     from threetears.core.coordination.lease import HeldLease
 
 __all__ = [
+    "RESTORE_BUDGET_RATIO",
     "ChangeNoteKeeper",
     "KeeperPass",
     "NoteRingState",
@@ -128,6 +144,17 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the most of a change log's ``max_bytes`` a restore may fill, what the log already holds included. The
+#: ring switches at half of it (:data:`_SWITCHES_PER_BUDGET`), so on a day the switch is not held up the
+#: current and the previous table -- the coverage a restore reads -- fit it whole
+RESTORE_BUDGET_RATIO: Final = 0.75
+
+#: the ring's switch size, by default: the restore budget over this, so the coverage's two tables fit it
+_SWITCHES_PER_BUDGET: Final = 2
+
+#: marks of the log's position per fence: a suffix restore can start at one every fence / this
+_MARKS_PER_FENCE: Final = 20
 
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
@@ -194,6 +221,10 @@ _RESTORES_REFUSED = counter(
     "threetears_change_notes_restores_refused_total",
     description="lost change logs NOT restored because the restore would not fit the log with headroom; alert on any",
 )
+_RESTORES_TRUNCATED = counter(
+    "threetears_change_notes_restore_truncated_total",
+    description="restores that put back only the newest notes that fit the log; followers older than its floor are behind",
+)
 _SCRUB_BEHIND = gauge(
     "threetears_change_notes_scrub_behind",
     description="epochs the change log holds after the scrub's position: how far the scrub is behind",
@@ -256,6 +287,16 @@ class _ChangeLogKeeping(Protocol):
         :return: the new log's incarnation; ``None`` when a log was already there
         :rtype: str | None
         :raises GenerationUnavailableError: when the log cannot be declared
+        """
+        ...
+
+    def restore_bytes(self, changes: Sequence[NotedChange]) -> int:
+        """the bytes the records of ``changes`` would take in the log.
+
+        :param changes: what the notes say changed, per table
+        :ptype changes: Sequence[NotedChange]
+        :return: the estimate
+        :rtype: int
         """
         ...
 
@@ -437,6 +478,23 @@ def _taken_bytes(state: ChangeLogState, switched_seq: str | None) -> int:
     return int(state.bytes / held * max(0, taken))
 
 
+def _switch_threshold(max_bytes: int | None) -> int | None:
+    """the ring's default switch size: half the restore budget of a log of ``max_bytes``.
+
+    The coverage a restore reads is the current and the previous table, so two tables of this size fill the
+    budget (:data:`RESTORE_BUDGET_RATIO` of the log) and no more: on a day the switch is not held up by its
+    wait or an emptying, a lost log is put back whole.
+
+    :param max_bytes: the log's bound; ``None`` when unbounded
+    :ptype max_bytes: int | None
+    :return: the bytes of records the current table takes before the ring switches; ``None`` never
+    :rtype: int | None
+    """
+    if not max_bytes:
+        return None
+    return max(1, int(max_bytes * RESTORE_BUDGET_RATIO / _SWITCHES_PER_BUDGET))
+
+
 def _changes_from_notes(notes: Iterable[Any]) -> list[NotedChange]:
     """fold the notes read into one change per table: each distinct row once, or the whole table.
 
@@ -569,8 +627,9 @@ class ChangeNoteKeeper:
             The scrub reads the log and the note tables, so it runs on its own interval, not every pass
         :ptype scrub_every: timedelta | None
         :param switch_bytes: how many bytes of change records the current table takes before the ring
-            switches; ``None`` (the default) is one change log's worth, the log's own ``max_bytes``. A
-            smaller ring keeps less coverage: never less than the log can hold between two keeper passes
+            switches; ``None`` (the default) is half the restore budget, ``max_bytes`` × 75 % / 2, so the
+            coverage's two tables fit a restore whole. Never set it below what the log takes between two
+            keeper passes
         :ptype switch_bytes: int | None
         :param empty_batch: notes deleted per statement while emptying the idle table; at least one
         :ptype empty_batch: int
@@ -603,6 +662,9 @@ class ChangeNoteKeeper:
         self._refused: set[str] = set()
         self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
         self._scrubbed_at: float | None = None
+        self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"
+        self._mark_every = fence / _MARKS_PER_FENCE
+        self._marked_at: float | None = None
         self._switch_bytes = switch_bytes
         self._empty_batch = empty_batch
         self._empty_pause = empty_pause
@@ -852,6 +914,7 @@ class ChangeNoteKeeper:
         if ring.log_incarnation != state.incarnation:
             ring = await self._adopt(ring, state)
             result.adopted = state.incarnation
+        await self._mark(ring, state)
         if ring.fence_seq is None and ring.now >= ring.switched_at + self._wait(ring):
             # every slot copy read before the last switch has expired and its statements have ended: an epoch
             # appended from here on has its note in the current table or a later one
@@ -863,7 +926,7 @@ class ChangeNoteKeeper:
             if done:
                 ring = await self._update(ring, emptied=True)
                 result.emptied = idle
-        switch_at = self._switch_bytes or state.max_bytes
+        switch_at = self._switch_bytes or _switch_threshold(state.max_bytes)
         if ring.fence_seq is not None and switch_at and _taken_bytes(state, ring.switched_seq) >= switch_at:
             if ring.emptied:
                 switched = await self._switch(ring, state)
@@ -1003,6 +1066,11 @@ class ChangeNoteKeeper:
             return None
         after = await self.ring()
         _SWITCHES.inc()
+        # a mark older than the table the coverage now starts with can floor no restore
+        await self._pool.execute(
+            f"DELETE FROM {self._marks} WHERE at < $1",  # noqa: S608 - trusted identifiers
+            ring.switched_at - self._wait(ring),
+        )
         log.info(
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
@@ -1039,37 +1107,67 @@ class ChangeNoteKeeper:
 
         :param indexes: the tables
         :ptype indexes: Sequence[int]
-        :return: the notes: ``table_name``, ``keys``, ``columns``
+        :return: the notes: ``table_name``, ``keys``, ``columns``, ``noted_at``
         :rtype: list[Any]
         """
         notes: list[Any] = []
         async with self._pool.acquire() as conn, conn.transaction():
             for index in indexes:
                 cursor = conn.cursor(
-                    f"SELECT table_name, keys, columns FROM {self._ring_table(index)}",  # noqa: S608 - trusted identifiers
+                    f"SELECT table_name, keys, columns, noted_at FROM {self._ring_table(index)}",  # noqa: S608 - trusted identifiers
                     prefetch=_RESTORE_PAGE,
                 )
                 async for note in cursor:
                     notes.append(note)
         return notes
 
+    async def _mark(self, ring: NoteRingState, state: ChangeLogState) -> None:
+        """record the log's position every ``fence / 20``: where a suffix restore may start.
+
+        The mark's time is the database's clock read before the log's state (``ring.now``), so every epoch
+        after the mark's position was appended after that time, and its note written at most half the wait
+        before it (a writing transaction ends within that half, the same bound the ring's emptying relies on).
+
+        :param ring: the ring, read this pass
+        :ptype ring: NoteRingState
+        :param state: the log, read after it
+        :ptype state: ChangeLogState
+        :return: nothing
+        :rtype: None
+        """
+        now = time.monotonic()
+        if self._marked_at is not None and now - self._marked_at < self._mark_every.total_seconds():
+            return
+        self._marked_at = now
+        await self._pool.execute(
+            f"INSERT INTO {self._marks} (log_incarnation, seq, at) VALUES ($1, $2, $3)",  # noqa: S608 - trusted identifiers
+            state.incarnation,
+            state.last_seq,
+            ring.now,
+        )
+
     async def _restore(self, ring: NoteRingState, *, incarnation: str | None = None) -> str | None:
-        """put the lost log back from the notes of the current and the previous tables.
+        """put the lost log back from the notes of the current and the previous tables, or their newest part.
 
         In order: declare the new log first (so writers waiting for it append at once), then read the notes,
         then append them and label the log as continuing the lost one. The label is the restore's completion:
         until it is written a follower of the lost log is behind, never carried over. ``incarnation`` names a
         restore declared earlier and never labelled; it is done again, in full, into that log.
 
-        A restore that would not fit the log with headroom is not attempted: logged at ERROR and counted
-        (``threetears_change_notes_restores_refused_total``), and the new log is taken as a fresh one, so
-        every follower of the lost log stays behind until it restarts. Never a reload.
+        The whole coverage is put back when its records fit :data:`RESTORE_BUDGET_RATIO` of the log. When
+        they do not, the newest part that fits is: the notes written since a mark of the log's position
+        (less half the wait), with that position as the floor (``covered_from``). A follower at or past it
+        catches up; an older one is behind (``record_lost``) until it restarts. Said at ERROR and counted
+        (``threetears_change_notes_restore_truncated_total``). Only when not even the part after the newest
+        mark fits is the restore refused (``threetears_change_notes_restores_refused_total``) and the new log
+        taken as a fresh one. Never a reload.
 
         :param ring: the ring
         :ptype ring: NoteRingState
         :param incarnation: the restoring log to finish; ``None`` declares one
         :ptype incarnation: str | None
-        :return: the new log's incarnation; ``None`` when a log was there and it was not this restore's
+        :return: the new log's incarnation; ``None`` when a log was there and it was not this restore's, or
+            the restore was refused
         :rtype: str | None
         :raises GenerationUnavailableError: when the log cannot be declared or written; the next pass redoes it
         """
@@ -1084,21 +1182,41 @@ class ChangeNoteKeeper:
             covered = _seq_under(ring.fence_seq, lost)
         began = time.monotonic()
         notes = await self._read_notes((ring.current, ring.previous))
-        changes = _changes_from_notes(notes)
-        try:
-            appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=covered)
-        except RestoreTooLargeError as exc:
+        state = await self._log.log_state()
+        budget = None if state is None or not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
+        chosen = await self._fitting(ring, lost, covered, notes, budget)
+        if chosen is None:
             _RESTORES_REFUSED.inc()
             log.error(
-                "the lost epoch change log was NOT restored from the change notes: the restore would not fit the "
-                "log with headroom. Every follower of the lost log is behind (replaced) until it restarts; the new "
-                "log is taken as a fresh one",
-                extra={"extra_data": {"lost": lost, "restored": incarnation, "notes": len(notes), "error": str(exc)}},
+                "the lost epoch change log was NOT restored from the change notes: not even the notes after the "
+                "newest mark fit the log with headroom. Every follower of the lost log is behind (replaced) until "
+                "it restarts; the new log is taken as a fresh one",
+                extra={"extra_data": {"lost": lost, "restored": incarnation, "notes": len(notes), "budget": budget}},
             )
             await self._update(ring, log_incarnation=incarnation, floor=_token(incarnation, 0), fence_seq=None)
             self._scrubbed = None
             self._seen = None
             return None
+        floor, changes, kept = chosen
+        # sized above with the source's own estimate; should the log have grown past it meanwhile (writers),
+        # finish_restore refuses (RestoreTooLargeError) before appending and the next pass sizes again
+        appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=floor)
+        if kept < len(notes):
+            _RESTORES_TRUNCATED.inc()
+            log.error(
+                "the lost epoch change log was put back from only the newest change notes that fit it. A follower "
+                "whose mark is older than covered_from is behind (record_lost) until it restarts",
+                extra={
+                    "extra_data": {
+                        "lost": lost,
+                        "restored": incarnation,
+                        "covered_from": None if floor is None else _token(lost, floor),
+                        "coverage_floor": None if covered is None else _token(lost, covered),
+                        "notes_kept": kept,
+                        "notes_left_out": len(notes) - kept,
+                    }
+                },
+            )
         state = await self._log.log_state()
         head = state.last_seq if state is not None and state.incarnation == incarnation else 0
         await self._update(
@@ -1118,8 +1236,8 @@ class ChangeNoteKeeper:
                 "extra_data": {
                     "lost": lost,
                     "restored": incarnation,
-                    "covered_from": covered,
-                    "notes": len(notes),
+                    "covered_from": floor,
+                    "notes": kept,
                     "tables": len(changes),
                     "records": appended,
                     "seconds": round(time.monotonic() - began, 3),
@@ -1127,6 +1245,53 @@ class ChangeNoteKeeper:
             },
         )
         return incarnation
+
+    async def _fitting(
+        self, ring: NoteRingState, lost: str, covered: int | None, notes: Sequence[Any], budget: float | None
+    ) -> tuple[int | None, list[NotedChange], int] | None:
+        """the oldest-reaching part of the coverage whose records fit ``budget``: its floor, changes and note count.
+
+        The candidates, oldest first: every note, with the coverage's floor; then, for each mark of the lost
+        log after that floor, the notes written since the mark's time less half the wait, with the mark's
+        position as the floor. Each is a suffix of the one before, so the first that fits is the largest.
+
+        :param ring: the ring
+        :ptype ring: NoteRingState
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param covered: the coverage's floor under it; ``None`` when it vouches for none
+        :ptype covered: int | None
+        :param notes: every note of the coverage, with ``noted_at``
+        :ptype notes: Sequence[Any]
+        :param budget: the bytes the restore may take; ``None`` unbounded
+        :ptype budget: float | None
+        :return: ``(floor, changes, notes kept)``; ``None`` when not even the newest part fits
+        :rtype: tuple[int | None, list[NotedChange], int] | None
+        """
+        whole = _changes_from_notes(notes)
+        if budget is None or self._log.restore_bytes(whole) <= budget:
+            return covered, whole, len(notes)
+        lag = self._wait(ring) / 2
+        marks = await self._pool.fetch(
+            f"SELECT seq, at FROM {self._marks} WHERE log_incarnation = $1 AND seq > $2 ORDER BY seq",  # noqa: S608 - trusted identifiers
+            lost,
+            -1 if covered is None else covered,
+        )
+        candidates: list[tuple[int, list[Any]]] = []
+        for mark in marks:
+            since = mark["at"] - lag
+            candidates.append((int(mark["seq"]), [note for note in notes if note["noted_at"] >= since]))
+        low, high = 0, len(candidates)
+        while low < high:  # the first (oldest-reaching) candidate that fits; sizes fall along the list
+            middle = (low + high) // 2
+            if self._log.restore_bytes(_changes_from_notes(candidates[middle][1])) <= budget:
+                high = middle
+            else:
+                low = middle + 1
+        if low == len(candidates):
+            return None
+        floor, kept = candidates[low]
+        return floor, _changes_from_notes(kept), len(kept)
 
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.

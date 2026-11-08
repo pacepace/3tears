@@ -23,14 +23,16 @@ This page is for whoever wires, runs and watches it. The design is in the module
 | Which tables are noted | every table a class declares `write_generation`, absence caching or `l2_first` for: `noted_tables()` |
 | Triggers | `threetears_change_note` (row) and `threetears_change_note_truncate` on each noted table, in every schema |
 | Keeper | `ChangeNoteKeeper(pool, notes_schema=..., log=source)`, run by `run_change_note_keeper(held_lease, keeper)` |
-| Ring switch | when the current table has taken one change log's worth (the log's `max_bytes`, 64 MiB on the hub) |
+| Ring switch | when the current table has taken half the restore budget: `max_bytes` × 75 % / 2 (24 MiB of the hub's 64 MiB log), so the current and previous tables fit a restore whole |
+| Marks | `threetears_change_note_marks`: the log's position every fence / 20 (30 s), pruned at each switch; a restore too big for the log starts at one |
 | Fence | the keeper's `fence`, 10 min by default, told to writers in the ring row (`fence_seconds`) at each switch. The least time between switches (`wait_seconds` = the larger of this fence and the one told before) |
 | Emptying | batched deletes of the idle table (`empty_batch` 1000 per statement, `empty_pause` 20 ms between, at most `empty_budget` 1 s per pass); never `TRUNCATE`. `emptied` in the ring row is set only once a read finds the table empty |
 | Restore reads | the current and the previous note tables |
 | Every source of the deployment | `EpochGenerationSource(..., restored_from_l3=True)` |
 | Follower quiet pass | every `quiet_pass_interval()`: the log's retention (24 h) / 4 = 6 h |
 | Missing notes | `threetears_change_notes_missing_total{table}`: alert on any increase |
-| Restore refused | `threetears_change_notes_restores_refused_total`: the restore would not fit the log; alert on any increase |
+| Restore truncated | `threetears_change_notes_restore_truncated_total`: only the newest notes that fit were put back; followers older than its `covered_from` are behind; alert on any increase |
+| Restore refused | `threetears_change_notes_restores_refused_total`: not even the notes after the newest mark fit; alert on any increase |
 | Noted columns | key and invalidation columns are uuid, text, varchar or an integer; a table with any other gets no trigger, with an ERROR |
 | Ring | `threetears_change_notes_switches_total`, `threetears_change_notes_emptied_total`, `threetears_change_notes_emptied_rows_total`, `threetears_change_notes_restores_total` |
 | Switch held by an emptying | `threetears_change_notes_switch_waits_total`, with one WARNING per held switch |
@@ -103,7 +105,8 @@ Each pass, in order:
    finds no note left. Never `TRUNCATE`: it takes an exclusive lock and bumps the catalog version, which
    replans every session's note function; deletes on an idle table touch no writer.
 5. **Switch**: when the wait has passed, the idle table's emptying has finished, and the current table has
-   taken one log's worth of records (bytes per sequence the log holds, times sequences since the switch),
+   taken half the restore budget (`max_bytes` × 75 % / 2, as bytes per sequence the log holds times
+   sequences since the switch),
    make the idle table current. The ring row refuses a switch into a table not yet emptied: a due switch
    waits, logged once and counted on `threetears_change_notes_switch_waits_total`. The fence's position
    becomes the coverage's **floor**: every epoch after it has its note in the current or the previous
@@ -156,9 +159,14 @@ but too slowly.
    - A restore that stops part-way (a refused append, a NATS error, the keeper losing its lease or its
      process) is unlabelled: the next pass, by any keeper, does it again in full into the same log, under
      fresh append ids. A key appended twice is evicted twice.
-   - A restore that would not fit is not attempted: one ERROR (`was NOT restored`), the counter
-     `threetears_change_notes_restores_refused_total` (alert on any), and the new log is taken as a fresh
-     one. Every follower of the lost log stays behind until it restarts. Nothing reloads.
+   - A coverage whose records would not fit puts back its newest part that does: the notes written since
+     the oldest mark that fits (less half the wait), with that mark's log position as `covered_from`. One
+     ERROR (`only the newest change notes`) names `covered_from` and the notes left out, and
+     `threetears_change_notes_restore_truncated_total` counts it (alert on any). Followers at or past it
+     catch up; older ones are behind (`record_lost`) until they restart.
+   - Only when not even the notes after the newest mark fit is the restore refused: one ERROR
+     (`was NOT restored`), `threetears_change_notes_restores_refused_total` (alert on any), and the new log
+     is taken as a fresh one. Every follower of the lost log stays behind until it restarts. Nothing reloads.
 3. Once the label is written, a follower whose mark under the lost incarnation is at or past the floor
    carries its mark to the start of the new log and walks every record, the writes made during the restore
    included: it evicts each noted key once (some it already held

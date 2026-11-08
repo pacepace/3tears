@@ -17,8 +17,14 @@ restored (`ChangeLogState.restoring`; writers waiting for the log append to it a
 appends them, and only then labels it (`NatsChangeLog.label_restored`). Until then followers of the lost log are
 behind. An unlabelled restore is done again in full by the next pass under fresh append ids
 (`EpochGenerationSource.begin_restore` / `finish_restore`; `restore_from_notes` runs both). A restore that would
-take the log past 75 % of `max_bytes` is refused (`RestoreTooLargeError`), said at ERROR and counted
-(`threetears_change_notes_restores_refused_total`), and its followers stay behind.
+take the log past 75 % of `max_bytes` (`RESTORE_BUDGET_RATIO`) puts back its newest part that fits: the notes since
+a mark of the log's position (`threetears_change_note_marks`, every fence / 20), with that position as
+`covered_from`, said at ERROR and counted (`threetears_change_notes_restore_truncated_total`); followers older than
+it are behind. Only when not even the part after the newest mark fits is it refused (`RestoreTooLargeError`,
+`threetears_change_notes_restores_refused_total`).
+
+**Changed (core):** the ring switches at half the restore budget (`max_bytes` × 75 % / 2) instead of a whole log's
+worth, so the current and previous tables fit a restore whole on a day the switch is not held up.
 
 **Changed (core):** the scrub runs on its own interval (`scrub_every`, a tenth of the fence), reads the log 64
 records at a time, and looks notes up through a new `(key_text, table_name)` index on each note table. A noted

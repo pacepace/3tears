@@ -35,7 +35,7 @@ from sqlalchemy import MetaData
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
-from threetears.core.collections.change_notes import ChangeNoteKeeper, ScrubPass
+from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
@@ -492,3 +492,87 @@ class TestTheScrubRunsOnItsOwnInterval:
                 and 0 <= each.find("key_text") < each.find("table_name", each.find("key_text"))
                 for each in indexed
             ), index
+
+
+class TestARestoreTooBigForTheLogPutsBackItsNewestPart:
+    async def test_the_floor_is_the_newest_fitting_mark_a_follower_past_it_catches_up_one_before_is_behind(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        retention = EpochChangeRetention(max_bytes=16 * 1024)
+
+        def pod(scope: str) -> _Pod:
+            made = _Pod(bus, pool, table, scope)  # type: ignore[arg-type]
+            made.source = EpochGenerationSource(
+                bus, change_retention=retention, restored_from_l3=True, restore_wait=timedelta(seconds=2)
+            )
+            made.registry.set_generation_source(made.source)
+            return made
+
+        writer, old, new = pod("writer"), pod("old"), pod("new")
+        await writer.source.start_log()
+        keeper = ChangeNoteKeeper(
+            pool, notes_schema=schema, log=writer.source, fence=_FENCE, scrub_every=timedelta(0), switch_bytes=10**9
+        )
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",), columns=("owner",))])
+        await keeper.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        await keeper.run_pass()
+
+        await writer.rows.save_entity(writer.rows.create({"id": "w0", "owner": "o", "n": "1"}))
+        old.registry.follow_generation(table)
+        await generation_catchup_tick(old.registry, old.reader)  # its mark: before the bulk below
+        # far more distinct keys than the log can take back: notes with no epoch of their own
+        await pool.execute(f"INSERT INTO {table} SELECT 'bulk-' || g, 'o', '1' FROM generate_series(1, 3000) g")
+        await writer.rows.save_entity(writer.rows.create({"id": "w1", "owner": "o", "n": "1"}))
+        # past half the wait, so the mark this pass takes (one every fence / 20) starts after the bulk
+        await asyncio.sleep(_FENCE.total_seconds())
+        await keeper.run_pass()
+        mark = (await writer.source.log_state()).last_seq  # type: ignore[union-attr]
+        new.registry.follow_generation(table)
+        await generation_catchup_tick(new.registry, new.reader)  # its mark: at the mark's position
+        await writer.rows.save_entity(writer.rows.create({"id": "w2", "owner": "o", "n": "after"}))
+        lost = (await writer.source.log_state()).incarnation  # type: ignore[union-attr]
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+
+        with caplog.at_level(logging.ERROR):
+            restored = (await keeper.run_pass()).restored
+        assert restored is not None
+        state = await writer.source.log_state()
+        assert state is not None and state.continues == lost and state.covered_from == mark
+        said = [r.__dict__["extra_data"] for r in caplog.records if "only the newest change notes" in r.getMessage()]
+        assert len(said) == 1 and said[0]["covered_from"] == f"{lost}:{mark}" and said[0]["notes_left_out"] >= 3000
+
+        await generation_catchup_tick(new.registry, new.reader)
+        assert not new.registry.behind_on(table), "a follower at the floor catches up"
+        assert (await new.rows.ensure("w2") or {}).get("n") == "after"
+        await generation_catchup_tick(old.registry, old.reader)
+        assert old.registry.behind_on(table), "a follower older than the floor is behind (record_lost)"
+
+
+class TestTheSwitchSizeIsDerivedFromTheRestoreBudget:
+    async def test_the_ring_switches_at_half_the_restore_budget_not_a_whole_log(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        max_bytes = 64 * 1024
+        source = EpochGenerationSource(FakeNatsClient(), change_retention=EpochChangeRetention(max_bytes=max_bytes))
+        await source.start_log()
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0))
+        await keeper.install()
+        await keeper.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        assert (await keeper.run_pass()).switched_to is None
+        threshold = max_bytes * RESTORE_BUDGET_RATIO / 2
+        switched: int | None = None
+        while switched is None:
+            await source.advance_with_change(table, [ChangedRow(ids=[f"k{uuid.uuid4().hex}"])])
+            state = await source.log_state()
+            assert state is not None
+            switched = (await keeper.run_pass()).switched_to
+            if switched is None:
+                assert state.bytes < threshold * 1.2, "it would have switched by now"
+        assert state.bytes < max_bytes / 2, "far before one whole log's worth"
+        assert state.bytes >= threshold * 0.8

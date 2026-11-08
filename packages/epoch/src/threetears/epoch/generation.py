@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from threetears.core.collections.change_notes import NotedChange
+from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
@@ -459,6 +459,37 @@ class _ChangeLogReading:
                 yield None if now is None else _token(now.incarnation, update.revision)
 
 
+def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]:
+    """the records a restore of ``changes`` appends: per table its row runs within the record bound, or the whole table.
+
+    :param changes: what the notes say changed, per table
+    :ptype changes: Sequence[NotedChange]
+    :return: ``(key, body)`` per record
+    :rtype: list[tuple[str, bytes]]
+    """
+    records: list[tuple[str, bytes]] = []
+    for change in changes:
+        if change.whole_table:
+            bodies = [epoch_change_body(change.table, None)]
+        elif change.rows:
+            bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
+        else:
+            continue
+        records.extend((generation_kv_key(change.table), body) for body in bodies)
+    return records
+
+
+def _restored_bytes(records: Sequence[tuple[str, bytes]]) -> int:
+    """the bytes ``records`` take in the log, by the restore's estimate.
+
+    :param records: ``(key, body)`` per record
+    :ptype records: Sequence[tuple[str, bytes]]
+    :return: the estimate
+    :rtype: int
+    """
+    return sum(len(key) + len(body) + _RESTORED_RECORD_OVERHEAD for key, body in records)
+
+
 class EpochGenerationSource(_ChangeLogReading):
     """advances collection write generations by appending each epoch's change to the change log.
 
@@ -729,7 +760,8 @@ class EpochGenerationSource(_ChangeLogReading):
         would drop a repeated one inside its dedup window), and a record appended twice is evicted twice.
 
         The restore is sized first, against the log's own bound: if what the log holds plus every record
-        would pass :data:`EPOCH_CHANGES_FILL_WARN_RATIO` of ``max_bytes``, nothing is appended.
+        would pass :data:`RESTORE_BUDGET_RATIO` of ``max_bytes``, nothing is appended. The keeper sizes
+        first (:meth:`restore_bytes`) and hands only what fits.
 
         :param changes: what the notes say changed, per table (:mod:`threetears.core.collections.change_notes`)
         :ptype changes: Sequence[NotedChange]
@@ -742,7 +774,8 @@ class EpochGenerationSource(_ChangeLogReading):
         :ptype covered_from: int | None
         :return: the records appended
         :rtype: int
-        :raises RestoreTooLargeError: when the restore would not fit with headroom; nothing was appended
+        :raises RestoreTooLargeError: when the restore would not fit with headroom (:data:`RESTORE_BUDGET_RATIO`);
+            nothing was appended
         :raises GenerationUnavailableError: when the log is not the one being restored, or cannot be written
         """
         state = await self._state()
@@ -750,20 +783,12 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(
                 f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
             )
-        records: list[tuple[str, bytes]] = []
-        for change in changes:
-            if change.whole_table:
-                bodies = [epoch_change_body(change.table, None)]
-            elif change.rows:
-                bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
-            else:
-                continue
-            records.extend((generation_kv_key(change.table), body) for body in bodies)
-        needed = sum(len(key) + len(body) + _RESTORED_RECORD_OVERHEAD for key, body in records)
-        if state.max_bytes and state.bytes + needed > state.max_bytes * EPOCH_CHANGES_FILL_WARN_RATIO:
+        records = _restored_records(changes)
+        needed = _restored_bytes(records)
+        if state.max_bytes and state.bytes + needed > state.max_bytes * RESTORE_BUDGET_RATIO:
             raise RestoreTooLargeError(
                 f"the restore of {lost!r} needs {needed} bytes and the log holds {state.bytes} of {state.max_bytes}; "
-                f"it may fill at most {EPOCH_CHANGES_FILL_WARN_RATIO:.0%}"
+                f"it may fill at most {RESTORE_BUDGET_RATIO:.0%}"
             )
         attempt = uuid7().hex
         try:
@@ -774,6 +799,16 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
         self._declared = labelled
         return len(records)
+
+    def restore_bytes(self, changes: Sequence[NotedChange]) -> int:
+        """the bytes the records of ``changes`` would take in the log, as :meth:`finish_restore` sizes them.
+
+        :param changes: what the notes say changed, per table
+        :ptype changes: Sequence[NotedChange]
+        :return: the estimate
+        :rtype: int
+        """
+        return _restored_bytes(_restored_records(changes))
 
     async def restore_from_notes(
         self, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None

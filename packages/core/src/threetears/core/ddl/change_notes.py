@@ -48,6 +48,7 @@ __all__ = [
     "NOTE_TRIGGER",
     "NOTE_TRUNCATE_TRIGGER",
     "NOTE_WHOLE_SETTING",
+    "MARKS_TABLE",
     "RING_TABLE",
     "change_notes_ddl",
     "inexact_note_columns",
@@ -74,6 +75,10 @@ _NOTE_TABLE_PREFIX: Final = "threetears_change_notes_"
 
 #: the one-row table naming the ring's current note table, and what the keeper knows of the coverage
 RING_TABLE: Final = "threetears_change_note_ring"
+
+#: the keeper's marks: the change log's position, by the database's clock, every so often. A restore that
+#: cannot take the whole coverage takes the notes after a mark, and the mark's position is then its floor
+MARKS_TABLE: Final = "threetears_change_note_marks"
 
 #: the function every table's trigger writes a note through; it reads the ring once per statement
 _RING_FUNCTION: Final = "threetears_change_note_put"
@@ -181,9 +186,15 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         f"ON {owner}.{quote_identifier(note_table(index))} (key_text, table_name)"
         for index in range(NOTE_RING_SIZE)
     )
+    marks = (
+        f"CREATE TABLE IF NOT EXISTS {owner}.{quote_identifier(MARKS_TABLE)} ("
+        "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
+        "at TIMESTAMPTZ NOT NULL)"
+    )
     return (
         *tables,
         *indexes,
+        marks,
         f"CREATE TABLE IF NOT EXISTS {ring} ("
         "id SMALLINT PRIMARY KEY CHECK (id = 1), "
         "current_ring SMALLINT NOT NULL, "
