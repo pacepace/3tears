@@ -37,7 +37,7 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - The promotion read wraps the existing family verdicts and `gate_verdicts`. It adds no new statistics.
 - Must stay possible (wave 2): a search proposes lever maps for ANY kind (host kinds included, e.g. a quantization lever a host declares), and scores them through this same campaign path. Nothing in wave 1 may assume the lever under test is text.
 
-**Constraints:** no new PR (all evals work merges into report-kit/analyst, #1006). Report text the package writes follows the report-style rulings. Live spend only in chunk 06, under a cap the owner names. Subagents run one test file at a time; package suites go on the testament pool.
+**Constraints:** no new PR (all evals work merged into report-kit/analyst, #1006, and since 2026-11-03 into evals/reset, #1087, which supersedes it). Report text the package writes follows the report-style rulings. Live spend only in chunk 06, under a cap the owner names. Subagents run one test file at a time; package suites go on the testament pool.
 
 **Tradeoffs accepted:**
 - Small case set, so low power. Revisit when hosts contribute writer cases (Discodon snapshots).
@@ -120,12 +120,12 @@ Type: code
 
 ### Chunk 06: Live mechanism smoke on Haiku (main session, owner-capped)
 Type: code
-- This proves the pipeline end to end; it is not a decision. Run one small campaign on claude-haiku-5-5: the shipped skill against a deliberately inert variant, over two or three dev cases, scored by the fixed judge.
+- This proves the pipeline end to end; it is not a decision. Run one small campaign on claude-haiku-5-5: the shipped skill against a deliberately inert variant, over two or three cases (built: minted on the held-out side; see 06 decisions), scored by the fixed judge.
 - First quote it with `ArmQuote`, and get the owner's cap before sending a turn.
 - Nothing is promoted and nothing is changed on its result. The ledger is untouched.
 - Done when: every arm has results with the objective and judged measures; the promotion read answers (expected: `undecided`); the cumulative Critic is clean.
 Critic mode: cumulative
-- **Done 2026-11-02** (owner cap $5). `fixtures/report_plans/writer_smoke.py` (with a `--dry` mode, held by `test_writer_smoke_dry.py`); record in `fixtures/report_docs/writer_smoke/20261102-haiku.json`. 2 arms × 3 cases (r1, r3, r4) on claude-haiku-5-5, judged by google/gemini-3.8-flash: all 6 cells completed with the writer's measures and all seven judged dims; promotion read `undecided` (12 of 12 readings not separated, n=3). Spend: Haiku $1.30 (control $0.63, variant $0.67) plus judge cents.
+- **Done 2026-11-02** (owner cap $5). `fixtures/report_plans/writer_smoke.py` (now `fixtures/writer_cases/writer_smoke.py`) (with a `--dry` mode, held by `test_writer_smoke_dry.py`); record in `fixtures/report_docs/writer_smoke/20261102-haiku.json`. 2 arms × 3 cases (r1, r3, r4) on claude-haiku-5-5, judged by google/gemini-3.8-flash: all 6 cells completed with the writer's measures and all seven judged dims; promotion read `undecided` (12 of 12 readings not separated, n=3). Spend: Haiku $1.30 (control $0.63, variant $0.67) plus judge cents.
 - 06 decisions: the cases are minted on the held-out side of the smoke's own in-memory bank (`held_out_fraction` 0.99 puts r1/r3/r4 there), since the promotion read refuses anything but held-out cases, which the plan's "dev cases" would have hit. r5 is left out while its input was re-recorded. The engine's quote answered unpriced (the toy rate card lists no Haiku). The recorded run had the host's ceilings OFF, so only the reports' budgets (6 × $0.75) bounded it and the judge was unbounded in dollars (it cost cents). After the Critic (R-2) the script runs with ceilings ON and launches each arm naming `max_cost_usd` = half the cap, which the engine enforces on the run's whole spend, judge included, and which is the only way it admits an unpriced arm; it also stops if a priced quote exceeds the share. The smoke host uses the package's `describe_failure`.
 - 06 observations (for wave 2, not fixed here): the uncalibrated flash judge scored 6 of 7 dims at 5 on almost every page (ceiling), so only `evidence_fits_claims` (2–4) discriminated; 5 of 6 Haiku reports ended `stored_with_findings`, 4 of them with a must-fix open after the three rounds; one variant cell had 4 unparsed bounces.
 

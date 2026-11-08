@@ -255,17 +255,17 @@ The renderer applies the kit (`kit/kit.css`, `kit/kit.js`). Don't restyle per re
 - **Host theming.** A host sets the seven `--host-*` tokens on the page's `<html>` tag (faces, text, muted text, surface, link, accent; `kit/API.md`). Series, status and sequential ramps are fixed so a brand color can never make a fail look like a pass.
 - **Both themes** are designed: tokens on `:root`, dark values under `prefers-color-scheme` and under `[data-theme="dark"]`. Heatmap cell text uses `--seq-tN` tokens because the dark ramp runs the other way.
 - **Type.** IBM Plex Sans Condensed for headlines, IBM Plex Sans for body and charts, IBM Plex Mono for ids and payloads, each as a local stack ending in a generic family. Tabular figures in tables and on axes.
-- **Layout.** A 44rem prose column; figures and tables break out to 68rem. Small multiples use auto-fill grids that collapse to one column. Wide tables scroll in their own container, a shadow showing there is more and the first column staying in view; the page never scrolls sideways.
-- **Restraint.** Borders only on figures. No shadows or gradients but a scrolling table's edge shadow. One emphasis per chart.
+- **Layout.** A 44rem prose column; figures and tables break out to 68rem. Small multiples use auto-fill grids that collapse to one column. A table fits its frame first (cells of words wrap; numbers and ids hold their line); one still wider scrolls in its own container, its right edge fading while more lies past it and its first column staying in view; the page never scrolls sideways.
+- **Restraint.** Borders only on figures. No shadows or gradients but a scrolling table's edge fade. One emphasis per chart.
 
 ---
 
 ## 8. Definition of done
 
-A page is done when all of these pass. `scripts/check.py` automates the first three; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
+A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade and a first screen read at more than one measure; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
 
-1. It renders at 1200 px and 390 px, in light and dark, with no console errors.
-2. `document.documentElement.scrollWidth` equals the viewport width at both widths (nothing scrolls sideways).
+1. It renders at every width `scripts/check.py` draws, in light and dark, with no console errors.
+2. `document.documentElement.scrollWidth` equals the viewport width at every width (nothing scrolls sideways).
 3. No two chart labels overlap, and no label overlaps a marker or leaves its chart (inspect the screenshots; `check.py` lists any element past the right edge).
 4. Every chart has a table view (Full results) and states its interval level.
 5. The explore part says where the answer flips (or that it can't, and where each reading flips); on a reference page its controls change the outcome text and the chart.
