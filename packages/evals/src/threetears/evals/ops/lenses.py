@@ -1424,6 +1424,7 @@ def pivot_text(table: PivotTable) -> str:
         withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
         substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
         lines.append(
+            # one line: a decided figure's text (PageForms) holds no line break
             f"- {cell.row} / {cell.column}: {forms.lone(cell.value, measure=table.metric).text} ({cell.status}; n={cell.n}, "
             f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{served}{withheld}{substituted}"
             f"{_predicted(forms, table.metric, cell.predicted, cell.n_unplanned)}"
@@ -1530,6 +1531,7 @@ def history_text(result: HistoryResult) -> str:
                 else ""
             )
             lines.append(
+                # one line: a decided figure's text (PageForms) holds no line break
                 f"- {point.created_at} {point.run_id}: {forms.lone(point.value, measure=result.metric).text} (n={point.n}, "
                 f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}{served}"
             )
@@ -1599,6 +1601,7 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
             lines.append(f"- {effect.name}: cannot estimate: {effect.cannot_estimate} (from runs {runs})")
             continue
         lines.append(
+            # one line: a decided figure's text (PageForms) holds no line break
             f"- {effect.name}: with {block.n_cases} cases and {block.k_runs} repeats this campaign can detect "
             f"Δ ≥ {forms.lone(effect.delta, measure=effect.name, kind=effect.reading).text} (from runs {runs}; "
             + (
