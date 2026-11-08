@@ -18,7 +18,16 @@ import pytest
 
 from threetears.evals.analysis import latency_partition, references, significance
 from threetears.evals.kernel import numbers
-from threetears.evals.kernel.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
+from threetears.evals.kernel.numbers import (
+    ABSENT,
+    WHOLE_FROM,
+    WRITTEN_FROM,
+    format_number,
+    format_signed,
+    round_half_even,
+    spell_effect,
+    spell_p,
+)
 from threetears.evals.analysis.report import build as report_build
 from threetears.evals.analysis import quantities
 from threetears.evals.schema.models import LatencyMetrics
@@ -196,6 +205,70 @@ class TestThePrefixedForm:
     @pytest.mark.parametrize("value", [1.23, -1.23, 3.6e-169, -3.3e-7, 12345.6])
     def test_a_prefix_never_lands_on_a_sign_or_a_comparison(self, value):
         assert not re.search(r"\$[-<>]", format_number(value, prefix="$"))
+
+
+class TestHalfToEven:
+    """The one rounding every decided figure goes through: half to even, on the value as stored."""
+
+    @pytest.mark.parametrize(
+        ("value", "places", "text"), [(0.125, 2, "0.12"), (0.375, 2, "0.38"), (2.5, 0, "2"), (3.5, 0, "4")]
+    )
+    def test_a_tie_rounds_to_the_even_digit(self, value, places, text):
+        assert round_half_even(value, places) == text
+
+    def test_it_rounds_the_stored_value_not_its_shortest_spelling(self):
+        """2.675 is stored a hair under its spelling, so it rounds down, as every other figure on the page does."""
+        assert round_half_even(2.675, 2) == "2.67"
+
+    @pytest.mark.parametrize(("value", "text"), [(-0.04, "0.0"), (-0.0, "0.0"), (0.04, "0.0")])
+    def test_a_value_that_rounds_to_zero_carries_no_sign(self, value, text):
+        assert round_half_even(value, 1) == text
+
+    def test_a_negative_value_keeps_its_sign(self):
+        assert round_half_even(-1.25, 1) == "-1.2"
+
+    def test_no_places_reads_whole(self):
+        assert round_half_even(84.6, 0) == "85"
+
+
+class TestAPValue:
+    """A p-value as APA spells it: under a thousandth as the bound, three decimals below 0.1, two from it up."""
+
+    @pytest.mark.parametrize(
+        ("p", "text"),
+        [
+            (3.6e-169, "< 0.001"),
+            (0.00008342, "< 0.001"),
+            (0.0009996, "< 0.001"),
+            (0.001, "0.001"),
+            (0.0031, "0.003"),
+            (0.0994, "0.099"),
+            (0.1, "0.10"),
+            (0.4996, "0.50"),
+            (1.0, "1.00"),
+            (0.0, "< 0.001"),
+        ],
+    )
+    def test_it_reads_as_apa_reads_it(self, p, text):
+        assert spell_p(p) == text
+
+    @pytest.mark.parametrize("p", [None, math.nan, math.inf])
+    def test_an_absent_p_reads_as_absent(self, p):
+        assert spell_p(p) == ABSENT
+
+
+class TestAnEffectSize:
+    """An effect size or a correlation reads at two decimals, its sign kept."""
+
+    @pytest.mark.parametrize(
+        ("value", "text"), [(0.08475, "0.08"), (0.1228, "0.12"), (-0.194, "-0.19"), (-0.001, "0.00")]
+    )
+    def test_it_reads_at_two_decimals(self, value, text):
+        assert spell_effect(value) == text
+
+    @pytest.mark.parametrize("value", [None, math.nan, -math.inf])
+    def test_an_absent_effect_reads_as_absent(self, value):
+        assert spell_effect(value) == ABSENT
 
 
 class TestThereIsOneImplementation:

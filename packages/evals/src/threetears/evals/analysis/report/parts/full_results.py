@@ -56,13 +56,8 @@ import math
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace
 
-from threetears.evals.kernel.numbers import (
-    POINT_PLACES,
-    ends_places,
-    format_number,
-    spell_at,
-)
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
+from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns, bare_columns, percent_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
@@ -70,17 +65,24 @@ from threetears.evals.analysis.report.figure_keys import (
     aspect_costs_per_thousand,
     cost_basis,
     cost_ruler,
-    figure_places,
     format_figure,
     held_figure,
-    held_means,
     RUBRIC_SCALE,
     resolve,
-    rubric_score,
+)
+from threetears.evals.analysis.report.forms import (
+    at_decimals,
+    change_decimals,
+    change_ends,
+    change_quantity,
+    change_span,
+    level_decimals,
+    level_quantity,
 )
 from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
     interval_level,
+    is_rubric_score,
     money_words,
     stat_value,
 )
@@ -89,9 +91,7 @@ from threetears.evals.analysis.report.parts.look import (
     PageLook,
     Quantity,
     figure_text,
-    in_change_form,
     quantity,
-    quantity_of,
 )
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.tables import pass_rate_cell
@@ -179,21 +179,13 @@ def _arm_columns(report_input: ReportInput, look: PageLook) -> list[TableColumn]
     return [_column(f"arm:{arm.id}", look.arm(arm.id).label) for arm in report_input.arms if arm.id in look.arms]
 
 
-def _drawn(report_input: ReportInput, key: str, *, kind: str | None = None) -> Quantity:
-    """How a measure's figures are drawn in every Full results table: by the one owner of money's scale over every
-    figure the input holds of it, so its money is drawn per one count in every table (per 1,000 replies for money per
-    reply, per 1,000,000 where it is under a cent per 1,000); any other unit as it is."""
-    unit = figure_unit(report_input, key, kind=kind)
-    return quantity_of(unit, held_means(report_input, key)) if kind != "judged" else quantity(unit)
-
-
 def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
     """A measure's reader name, with the count its money is drawn per in it (the one owner of money's words: the
     label's own count replaced, never a second), as every chart names it, starting with a capital as every measure
     name does (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`); a judged score with its
     scale (``Outcome (1–5)``), so its two decimals read on a scale a reader knows."""
-    named = money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
-    return _score_named(named) if _is_score(report_input, key, kind=kind) else named
+    named = money_words(report_input, key, level_quantity(report_input, key, kind=kind), kind=kind)
+    return _score_named(named) if is_rubric_score(report_input, key, kind=kind) else named
 
 
 def _stated(
@@ -208,43 +200,15 @@ def _stated(
     if read is None:
         return TableCell(value=None, flag=NOT_RECORDED if stat is None and others else None)
     value, statistic = read
-    drawn = _drawn(report_input, key, kind=kind)
+    drawn = level_quantity(report_input, key, kind=kind)
     flag = statistic if statistic != "mean" else None
     if drawn.unit == MONEY:
         # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
         return TableCell(value=value * drawn.factor, unit=MONEY, flag=flag)
-    places = _level_places(report_input, key, drawn, kind=kind)
+    places = level_decimals(report_input, key, drawn, kind=kind)
     if places is not None and statistic == "mean":
-        return TableCell(value=_at(value * drawn.factor, places, drawn.unit), flag=flag)
+        return TableCell(value=at_decimals(value * drawn.factor, places, drawn.unit), flag=flag)
     return TableCell(value=figure_text(value * drawn.factor, drawn), flag=flag)
-
-
-def _at(value: float, places: int, unit: str, *, signed: bool = False) -> str:
-    """A figure at its set's decimals (:func:`~threetears.evals.kernel.numbers.spell_at`), its unit spaced as the
-    package writes it (``1.4 notices``, ``4.75``, ``-6.0 pts``). A level that is exactly zero reads ``0`` (nothing
-    happened, which no precision qualifies, as ``0%`` reads in a column of percents); a change reads its zero at its
-    set's decimals (``0.0 pts`` beside ``-5.0 pts``)."""
-    text = "0" if value == 0 and not signed else spell_at(value, places, signed=signed)
-    if not unit:
-        return text
-    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
-
-
-def _is_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
-    """Whether a figure is a judged score on the 1–5 rubric (:func:`~threetears.evals.analysis.report.figure_keys.
-    rubric_score`), not a share, nor a figure an input calls ordinal but holds off the scale."""
-    return kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
-
-
-def _level_places(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
-    """The decimals every figure of a measure reads at in every Full results table, by the one owner the keys citing it
-    read too (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`), as drawn: a judged score at two,
-    any other measured figure (a count per trial, a time) at two significant figures of the least of every mean the
-    input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate, whose column
-    rule spells it, and for money, whose form does."""
-    if drawn.unit in (MONEY, PERCENT, POINTS):
-        return None
-    return figure_places(report_input, key, judged=kind == "judged", factor=drawn.factor)
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
@@ -426,27 +390,14 @@ def _beside_a_month(report_input: ReportInput) -> frozenset[str]:
 
 
 def _changes_drawn(report_input: ReportInput, contrasts: Sequence[Contrast]) -> dict[tuple[str, str | None], Quantity]:
-    """How each measure's changes are drawn in the comparisons table: on its figures' own ruler (:func:`_drawn`), so a
-    change is drawn per the count its measure's name says, in the changes' own form capped by their widest interval
-    (#993); any other unit's change quantity as it is."""
-    drawn: dict[tuple[str, str | None], Quantity] = {}
-    for measure, kind in dict.fromkeys((c.measure, c.kind) for c in contrasts):
-        amounts = _drawn(report_input, measure, kind=kind)
-        held = [c for c in contrasts if (c.measure, c.kind) == (measure, kind)]
-        drawn[measure, kind] = (
-            in_change_form(
-                amounts,
-                [float(c.delta) * amounts.factor for c in held if c.delta is not None],
-                [
-                    abs(float(c.interval[1]) - float(c.interval[0])) * amounts.factor
-                    for c in held
-                    if c.interval is not None
-                ],
-            )
-            if amounts.unit == MONEY
-            else quantity(figure_unit(report_input, measure, kind=kind), change=True)
+    """How each measure's changes are drawn in the comparisons table, by the page's forms (:func:`~threetears.evals.
+    analysis.report.forms.change_quantity`), over every comparison on the measure the table holds."""
+    return {
+        (measure, kind): change_quantity(
+            report_input, measure, kind, [c for c in contrasts if (c.measure, c.kind) == (measure, kind)]
         )
-    return drawn
+        for measure, kind in dict.fromkeys((c.measure, c.kind) for c in contrasts)
+    }
 
 
 def _change(
@@ -455,7 +406,7 @@ def _change(
     """A comparison's change and its interval, in its measure's unit (a rate's in points), money in the table's one
     form for its unit."""
     drawn = drawn_as[contrast.measure, contrast.kind]
-    places = _change_places(report_input, contrast, drawn)
+    places = change_decimals(report_input, contrast.measure, contrast.kind, drawn)
     if places is None:
         change = (
             TableCell(value=figure_text(float(contrast.delta) * drawn.factor, drawn))
@@ -467,43 +418,20 @@ def _change(
         low, high = (figure_text(float(end) * drawn.factor, drawn) for end in contrast.interval)
         return change, TableCell(value=f"{low} to {high}")
     change = (
-        TableCell(value=_at(float(contrast.delta) * drawn.factor, places, drawn.unit, signed=True))
+        TableCell(value=at_decimals(float(contrast.delta) * drawn.factor, places, drawn.unit, signed=True))
         if contrast.delta is not None
         else TableCell(value=None)
     )
     if contrast.interval is None:
         return change, TableCell(value=None)
-    ends = [float(end) * drawn.factor for end in contrast.interval]
-    if (span := _change_span(report_input, contrast, drawn)) is not None:
-        # A change never reaches past what its measure can move: a score's by its scale's width, a rate's by 100 points.
-        ends = [max(ends[0], -span), min(ends[1], span)]
-    at = ends_places(ends[0], ends[1], places)
-    low, high = (_at(end, at, drawn.unit, signed=True) for end in ends)
-    return change, TableCell(value=f"{low} to {high}")
-
-
-def _change_places(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> int | None:
-    """The decimals a comparison's change and its interval's ends read at: a rate's in points at one decimal (``-6.0
-    pts`` beside ``-7.6 pts``); a score's at two and any other measured change at two significant figures of the least
-    change the table states of its measure, as drawn, by the one owner the keys citing it read too
-    (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`); None for money, whose form spells it."""
-    if drawn.unit == MONEY:
-        return None
-    if drawn.unit == POINTS:
-        return POINT_PLACES
-    return figure_places(
-        report_input, contrast.measure, change=True, judged=contrast.kind == "judged", factor=drawn.factor
+    low, high = change_ends(
+        float(contrast.interval[0]) * drawn.factor,
+        float(contrast.interval[1]) * drawn.factor,
+        places,
+        drawn.unit,
+        span=change_span(report_input, contrast.measure, contrast.kind, drawn),
     )
-
-
-def _change_span(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> float | None:
-    """How far a change can reach either way, drawn: a rate's 100 points, a score's the width of its scale (4 on 1–5);
-    None for any other measure, whose range the input does not bound."""
-    if drawn.unit == POINTS:
-        return 100.0
-    if _is_score(report_input, contrast.measure, kind=contrast.kind):
-        return RUBRIC_SCALE[1] - RUBRIC_SCALE[0]
-    return None
+    return change, TableCell(value=f"{low} to {high}")
 
 
 def _score_named(name: str) -> str:
