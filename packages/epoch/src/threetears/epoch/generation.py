@@ -88,17 +88,14 @@ _LEGAL_KEY_TOKEN: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 #: above this.
 EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
 
-_CHANGES_FILL = gauge(
-    "threetears_epoch_changes_fill_ratio",
-    description=(
-        "how full the epoch change log is, as a fraction of its byte bound; it refuses records past 1.0, "
-        "failing their writes, so alert above 0.75"
-    ),
+#: the fill gauge and its warning counter, fetched where they are set rather than at import
+_CHANGES_FILL_NAME: Final = "threetears_epoch_changes_fill_ratio"
+_CHANGES_FILL_HELP: Final = (
+    "how full the epoch change log is, as a fraction of its byte bound; it refuses records past 1.0, "
+    "failing their writes, so alert above 0.75"
 )
-_CHANGES_FILL_WARNED = counter(
-    "threetears_epoch_changes_fill_warnings_total",
-    description="measurements of the epoch change log above its warn ratio",
-)
+_CHANGES_FILL_WARNED_NAME: Final = "threetears_epoch_changes_fill_warnings_total"
+_CHANGES_FILL_WARNED_HELP: Final = "measurements of the epoch change log above its warn ratio"
 
 
 @runtime_checkable
@@ -413,9 +410,9 @@ class EpochGenerationSource:
             )
             return None
         ratio = held / bound
-        _CHANGES_FILL.set(ratio)
+        gauge(_CHANGES_FILL_NAME, description=_CHANGES_FILL_HELP).set(ratio)
         if ratio >= EPOCH_CHANGES_FILL_WARN_RATIO:
-            _CHANGES_FILL_WARNED.inc()
+            counter(_CHANGES_FILL_WARNED_NAME, description=_CHANGES_FILL_WARNED_HELP).inc()
             log.warning(
                 "the epoch change log is nearly full; past its bound it refuses records and fails their writes. "
                 "Raise its max_bytes, or find what writes so many epochs",

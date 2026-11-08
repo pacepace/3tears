@@ -96,26 +96,37 @@ _RESTORE_PAGE_RECORDS: Final = 500
 #: the SQLSTATE class of an integrity constraint violation (unique, foreign key, not null, check).
 _INTEGRITY_SQLSTATE_CLASS: Final = "23"
 
-_SAVED = counter(
+#: the counters, fetched where they count rather than registered at import (a module reloaded under a
+#: test would otherwise register them twice): name, help, labels
+_SAVED: Final = (
     "threetears_l2_first_saved_total",
-    description="rows the L3 saver made L3 match L2 for, after their writer did not",
-    label_names=("table",),
+    "rows the L3 saver made L3 match L2 for, after their writer did not",
 )
-_REFUSED = counter(
+_REFUSED: Final = (
     "threetears_l2_first_l3_refused_total",
-    description="committed L2-first writes L3 refused (a constraint); alert on any increase",
-    label_names=("table",),
+    "committed L2-first writes L3 refused (a constraint); alert on any increase",
 )
-_MISSING = counter(
+_MISSING: Final = (
     "threetears_l2_first_records_missing_total",
-    description="epochs the L3 saver found no change record for; a write that did not wait may be unsaved",
-    label_names=("table",),
+    "epochs the L3 saver found no change record for; a write that did not wait may be unsaved",
 )
-_REFILLED = counter(
+_REFILLED: Final = (
     "threetears_l2_first_refills_total",
-    description="tables the refiller put back into L2 from L3 because L2 did not hold them complete",
-    label_names=("table",),
+    "tables the refiller put back into L2 from L3 because L2 did not hold them complete",
 )
+
+
+def _count(metric: tuple[str, str], table: str) -> None:
+    """add one to a per-table L2-first counter.
+
+    :param metric: the counter's name and help
+    :ptype metric: tuple[str, str]
+    :param table: the table label
+    :ptype table: str
+    :return: nothing
+    :rtype: None
+    """
+    counter(metric[0], description=metric[1], label_names=("table",)).labels(table=table).inc()
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,7 +595,7 @@ class L3Saver:
         change = await self._epochs.change(table, token)
         if change is None:
             result.missing += 1
-            _MISSING.labels(table=table).inc()
+            _count(_MISSING, table)
             log.error(
                 "an epoch of an L2-first table has no change record left to save from; a write that did not wait "
                 "for L3 may never reach it, until its source sends it again",
@@ -609,7 +620,7 @@ class L3Saver:
                     return False
                 self._deferred.tokens.discard(token)
                 result.rejected += 1
-                _REFUSED.labels(table=table).inc()
+                _count(_REFUSED, table)
                 log.error(
                     "L3 refused a committed L2-first write; L2 keeps it and L3 does not. Its source must send a "
                     "row L3 accepts",
@@ -624,7 +635,7 @@ class L3Saver:
                 )
                 continue
             result.saved += 1
-            _SAVED.labels(table=table).inc()
+            _count(_SAVED, table)
         await self._log.save(change)
         return True
 
@@ -710,7 +721,7 @@ class L2Refiller:
         if head is not None and await collection.read_l2_first_state("saved") is None:
             await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
         await collection.mark_l2_complete(head)
-        _REFILLED.labels(table=table).inc()
+        _count(_REFILLED, table)
         log.warning(
             "an L2-first table was put back into L2 from L3; a pod behind on it catches up from here",
             extra={"extra_data": {"table": table, "rows": rows, "epoch_records": records, "generation": head}},
