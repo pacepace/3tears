@@ -25,6 +25,11 @@ restore and the write-mark reconciler key by it. `build_permissions(epoch_change
 narrows an agent or tool pod's read to its own schema and, per platform table its role reads, its customer and
 `_all`; `None` keeps the whole-log read (the expand step). The collection census reports each class's tenancy.
 
+**Changed (agent-acl, core):** the access machinery (groups, group_members, roles, role_assignments,
+namespaces) is `no_tenant`: every pod's access evaluator reads it across customers by id, so its records go on
+`_all` and every follower evicts every customer's changed row. `build_agent_schema_name(agent_id)`
+(`threetears.core.namespaces`) is the one spelling of an agent's schema, `agent_<hex>`.
+
 **Changed (epoch, core):** a pod reads by each table's declared tenancy. `EpochGenerationReader(tenants=...)`
 takes a pod's `PodTenants(schema=..., customer=...)` only (a list is refused): a schema table is read under
 `s-{schema}` alone, a platform table with a tenant column under `v-{customer}` and `_all`, any other under

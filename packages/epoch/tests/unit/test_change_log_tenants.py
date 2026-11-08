@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from threetears.agent.acl.collections import GroupMemberCollection
 from threetears.core.collections import BaseCollection
 from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
@@ -31,6 +32,7 @@ from threetears.core.tenancy import (
     TENANT_BY_SCHEMA,
     PodTenants,
     epoch_change_key,
+    rows_with_tenants,
     schema_tenant,
     tenant_column,
     value_tenant,
@@ -281,3 +283,30 @@ async def _ids_after_table(reader: EpochGenerationReader, table: str, after: str
     return [row.ids[0] for change in walk.changes for row in change.rows] + [
         "*" for change in walk.changes if change.whole_table
     ]
+
+
+class TestTheAccessMachineryIsFollowedAcrossCustomers:
+    """every pod's access evaluator reads groups and roles cross-customer by id, so every pod sees every change."""
+
+    async def test_a_pod_applies_a_group_row_changed_under_another_customer(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        table = "group_members"
+        assert GroupMemberCollection.tenancy.kind == "none"
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
+        follower = CollectionRegistry()
+        follower.follow_generation(table)
+        await follower.catch_up_generation(table, await reader.read(table), changes=reader)
+        mark = await reader.read(table)
+        assert mark is not None
+        # customer B's membership changes: the writer keys it by the table's declaration
+        changed = rows_with_tenants(
+            GroupMemberCollection.tenancy, [ChangedRow(ids=["gm-b"], columns={"customer_id": "customer-b"})]
+        )
+        token = await source.advance_with_change(table, changed)
+        assert await reader.read(table) == token, "customer A's pod sees customer B's change"
+        assert await _ids_after_table(reader, table, mark) == ["gm-b"]
+        await follower.catch_up_generation(table, token, changes=reader)
+        assert not follower.behind_on(table)
+        assert follower.generation_marks.recorded(table) == token

@@ -12,7 +12,9 @@ from uuid import UUID
 
 import pytest
 
+from threetears.core.tenancy import schema_tenant
 from threetears.core.namespaces import (
+    build_agent_schema_name,
     HITL_NAMESPACE_TYPE,
     PLURAL_PREFIX_AGENT,
     PLURAL_PREFIX_BY_NAMESPACE_TYPE,
@@ -334,3 +336,10 @@ class TestBuildAgentNamespaceName:
     def test_the_derived_name_sits_under_the_agents_prefix(self) -> None:
         agent = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
         assert namespace_contains(PLURAL_PREFIX_AGENT, build_agent_namespace_name(agent)) is True
+
+
+def test_an_agents_schema_is_agent_and_its_hex() -> None:
+    agent = UUID("019470a8-b5c3-7def-8123-0000000000aa")
+    assert build_agent_schema_name(agent) == "agent_019470a8b5c37def81230000000000aa"
+    # the schema is one subject token, so its tenant is its name, never a digest
+    assert schema_tenant(build_agent_schema_name(agent)) == f"s-{build_agent_schema_name(agent)}"

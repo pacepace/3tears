@@ -65,6 +65,12 @@ schema table under each schema holding it when the notes cannot name one. A reco
 no schema still goes on `_all`, where no pod reads that table, and is said once per table and counted
 (`threetears_epoch_change_schema_record_untenanted_total{table}`).
 
+The access machinery (groups, group_members, roles, role_assignments, namespaces) is `no_tenant`: every pod's
+access evaluator reads those rows across customers by id, so every follower must see every customer's change,
+and a pod keyed to its own customer would decide access on a row it never evicted. An agent's schema is
+`threetears.core.namespaces.build_agent_schema_name(agent_id)` (`agent_<hex>`), the one spelling the broker,
+the callout and the pod's `PodTenants(schema=...)` share.
+
 A pod's reader picks each table's keys from the table's declared tenancy (`PodTenants.keys_for`), so the pod
 asks only for the keys its grant names; a key outside the grant would be refused by the broker and the read
 would wait to its deadline.

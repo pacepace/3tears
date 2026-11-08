@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
-from typing import ClassVar
+from typing import ClassVar, Final
 from uuid import UUID, uuid7
 
 from threetears.core.collections import DeleteCascade
@@ -85,9 +85,17 @@ from threetears.agent.acl.types import (
     ScopeType,
 )
 from threetears.agent.acl.types import Namespace as AclNamespace
-from threetears.core.tenancy import tenant_column
+from threetears.core.tenancy import no_tenant, tenant_column
 
 log = get_logger(__name__)
+
+#: the tenancy of the access machinery (groups, group_members, roles, role_assignments, namespaces): every pod's
+#: access evaluator reads their rows CROSS-CUSTOMER by id, so a follower must see every customer's changes, and
+#: their records go on the change log's ``_all``. Keyed by customer, a pod of one customer would never evict
+#: another customer's group or role it holds, and decide access on a stale row.
+_ACCESS_MACHINERY_TENANCY: Final = no_tenant(
+    "read cross-customer by id by every pod's access evaluator, so every follower reads every customer's changes"
+)
 
 __all__ = [
     "GroupCascade",
@@ -218,7 +226,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     consumer already does.
     """
 
-    tenancy = tenant_column("customer_id")
+    tenancy = _ACCESS_MACHINERY_TENANCY
 
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
@@ -637,7 +645,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     class.
     """
 
-    tenancy = tenant_column("customer_id")
+    tenancy = _ACCESS_MACHINERY_TENANCY
 
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
@@ -983,7 +991,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     ``get_many``) stay on the canonical class.
     """
 
-    tenancy = tenant_column("customer_id")
+    tenancy = _ACCESS_MACHINERY_TENANCY
 
     # v0.8.0 hygiene enrichment: ``is_builtin`` server default + date
     # defaults match the platform DDL (test fixture lines 177-185).
@@ -1203,7 +1211,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     ``count_by_*``) subclass and add their own methods.
     """
 
-    tenancy = tenant_column("scope_customer_id")
+    tenancy = _ACCESS_MACHINERY_TENANCY
 
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
@@ -1785,7 +1793,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     deploying-app subclasses.
     """
 
-    tenancy = tenant_column("customer_id")
+    tenancy = _ACCESS_MACHINERY_TENANCY
 
     # a per-namespace access decision reads the namespace row (its customer, its type), so the
     # table carries a write generation like the four access tables, and ``AclCache`` is evicted

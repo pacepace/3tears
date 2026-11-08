@@ -70,6 +70,7 @@ __all__ = [
     "HitlSessionNamespace",
     "ToolNamespaceName",
     "build_agent_namespace_name",
+    "build_agent_schema_name",
     "build_hitl_namespace_name",
     "build_namespace_name",
     "build_tool_namespace_name",
@@ -269,6 +270,23 @@ def build_agent_namespace_name(agent_id: UUID) -> str:
     """
     # convert at border: namespace name segment
     return build_namespace_name(PLURAL_PREFIX_AGENT, str(agent_id))
+
+
+def build_agent_schema_name(agent_id: UUID) -> str:
+    """build the database schema an agent's own namespace lives in.
+
+    shape is ``agent_<32-char hex>``. Asked from every side of the change log's tenancy, which must agree
+    exactly: the hub CREATES the schema and its broker keys an agent-schema table's change records by it
+    (:func:`threetears.core.tenancy.schema_tenant`); the auth callout grants the agent's pods that key; the
+    pod's reader asks for it (:class:`threetears.core.tenancy.PodTenants`). A second spelling would leave a
+    pod asking for keys no one writes and its grant does not name, and it would miss silently.
+
+    :param agent_id: agent unique identifier
+    :ptype agent_id: UUID
+    :return: the schema name, ``agent_<hex>``
+    :rtype: str
+    """
+    return f"agent_{agent_id.hex}"
 
 
 def namespace_contains(node: str, name: str) -> bool:
