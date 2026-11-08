@@ -13,7 +13,7 @@ packages (bumped in lock-step).
   (every stored document its links reach, verbatim, in `(doc_type, id)` order), the host's profile declaration
   (`host_declarations_digest` and `built_by`) and a manifest (what reasoned on the campaign, every document type
   counted, the links the scope does not hold). `CampaignExport.files()` gives the three files the mint reads. The
-  closure reads judge identities with the package's `judge_config_of` and computes the digest with
+  closure reads results' judge identities with the package's `judge_config_of` and computes the digest with
   `host_declarations_digest`, so no host keeps a copy of either.
 - `python -m threetears.evals.harness export --host module:callable --scope SCOPE --campaign ID --out DIR` writes
   `documents.json`, `profile.json` and `manifest.json`, which `mint` reads. Exits 0, 2 when refused, 3 when the
@@ -32,6 +32,10 @@ packages (bumped in lock-step).
 **Fixed:**
 - The mint refused an export of a quick eval's campaign: its runs name no template, and the mint required one.
   It now requires a template only where a run names one.
+- The export refused every campaign whose runs a configured judge scored, for "not a recorded judge identity" on a
+  run: it read the run's `judge_config_ids`, the bare config ids the launch commits to, as a result's
+  `<config id>@<sha12>`. It now reads each document in its own type's form and refuses a value in the other's, naming
+  the form that type records.
 
 **Hosts:** `OpsHost.campaign_export_max_bytes` (new, default 16,000,000) counts canonical JSON, not heap: a decoded
 document takes 3 to 5 times its JSON, so a host serving actions sets it at a tenth of its serving process's headroom or
@@ -39,7 +43,8 @@ less. A closure past it is refused by the action and exported with the command l
 package's: the command, the action, or `campaign_export`. Its manifest names a report document
 `report <id>: <campaign name>`, never by its headline. A case re-minted from a new export records that name in `minted`, so its file differs from one minted from
 an export that named the headline; its snapshot is the same. `ReasonedOn` is defined beside the export now and is
-still imported from `threetears.evals.harness`.
+still imported from `threetears.evals.harness`. A campaign export refused for "not a recorded judge identity" on a run
+is re-run unchanged; nothing stored needs repair.
 
 ### evals: a chart says what it compares, and one value reads in one form on every surface
 

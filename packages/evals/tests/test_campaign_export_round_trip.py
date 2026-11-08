@@ -3,7 +3,8 @@
 ``python -m threetears.evals.harness export --host module:factory --scope SCOPE --campaign ID --out DIR`` writes the
 three files ``python -m threetears.evals.harness mint`` reads. Over the courier's capture and the toy host's corpus
 campaign, exporting and then minting at the held-out export's instant writes the case the held-out export freezes
-through the host directly, byte for byte, and the committed one by its snapshot id.
+through the host directly, byte for byte, and the committed one by its snapshot id. A campaign whose runs a configured
+judge scored, recorded as a launch records it, exports and mints too.
 
 The committed Discodon case (``held_out/discodon-dj-character-01a1b3d4.json.gz``) is not re-minted here: the
 repository holds its frozen snapshot, not the stored documents it was frozen from, and its profile factory is
@@ -24,13 +25,14 @@ from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE
 from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import HOST_CAMPAIGNS, held_out_path, host_case
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import FROZEN_AT, FROZEN_BY, PACKAGE
 from packages.evals.tests.hot_path_support import campaign_id_of, courierhost_from
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, judged_as_launched, ops_fixture
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.harness.__main__ import main
 from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops import OpsHost, campaign_export
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
+from threetears.evals.storage import InMemoryDocumentStore
 
 #: The courier's capture: every document of its planner bake-off, as stored.
 CAPTURE = PACKAGE / "tests" / "fixtures" / "hot_path_oracle" / "inputs" / "courierhost.json"
@@ -51,6 +53,14 @@ def courier_export_host() -> EvalHost:
 def toy_export_host() -> EvalHost:
     """The toy host over its corpus campaign."""
     return ops_fixture(generation=False).host.eval_host
+
+
+def configured_judge_export_host() -> EvalHost:
+    """The toy host over its corpus campaign, its runs and results judged by a configured judge as a launch records it."""
+    store = InMemoryDocumentStore()
+    fixture = ops_fixture(generation=False, store=store)
+    judged_as_launched(fixture, store)
+    return fixture.host.eval_host
 
 
 def profile_only() -> HostProfile:
@@ -285,3 +295,23 @@ async def test_the_command_line_exports_a_closure_past_the_actions_ceiling(tmp_p
     args = _export_args(out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=campaign)
     assert await asyncio.to_thread(main, args) == EXIT_OK
     assert len((out / "documents.json").read_bytes()) > ceilinged.campaign_export_max_bytes
+
+
+def test_a_campaign_a_configured_judge_scored_exports_and_mints(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Production's refusal of 2026-11-08: a run records the bare config id it committed to, its results
+    ``<config id>@<sha12>``, and the command exited 2 on the run. It exports, the config in the closure, and mints."""
+    (toy,) = [entry for entry in HOST_CAMPAIGNS if entry.name == "toyhost"]
+    out, case = tmp_path / "export", tmp_path / "configured.json.gz"
+    host = f"{__name__}:configured_judge_export_host"
+    campaign = ops_fixture(generation=False).campaign.id
+
+    assert main(_export_args(out, host=host, scope=TOYHOST_SCOPE, campaign=campaign, built_by=TOY_PROFILE)) == EXIT_OK
+    assert capsys.readouterr().err == ""
+    documents: list[dict[str, Any]] = json.loads((out / "documents.json").read_text())
+    (run_judges,) = {json.dumps(doc["judge_config_ids"]) for doc in documents if doc["doc_type"] == "eval_run"}
+    (config,) = [doc for doc in documents if doc["doc_type"] == "judge_config"]
+    assert json.loads(run_judges) == {"toy.dim": config["id"]}, "the run is exported with the bare id it records"
+    assert main(_mint_args(out, case, campaign=campaign, name="configured", group=toy.group)) == EXIT_OK
+    assert WriterCaseFile.read(case).snapshot.id

@@ -18,9 +18,13 @@ campaign); a document of a sibling campaign in the same scope is reached only th
 documents hold. Two rules are wider than a link: every insight on the campaign's SUBJECT is included, whichever
 campaign minted it, because an analysis reads insights by subject; and the launches and judge profiles naming any of
 the campaign's runs are found by a whole-type scan, since a store compares scalar fields only (and a judge config's
-rubric dim by the dim's nested name, the same way). A recorded judge identity is read by the package's own reader
-(:func:`~threetears.evals.schema.judge_config_of`); one it refuses is refused here, naming the document. The manifest
-states every rule (``closure_rules``), and the types no link reaches.
+rubric dim by the dim's nested name, the same way). A run and a result record their judges in two forms under one field
+name: a run the bare config id it committed to, a result the configured judge's identity, ``<config id>@<sha12>``, read
+by the package's own reader (:func:`~threetears.evals.schema.judge_config_of`), or a built-in prompt's
+``builtin:<sha12>``. A run's built-in dim has no key (``RunJudge.config_ids``); a ``builtin:`` value on a run names no
+config and is listed with the built-in identities, never refused. A value in the other document type's form, or one the reader refuses, is refused here, naming
+the document and the form its type records. The manifest states every rule (``closure_rules``), and the types no
+link reaches.
 
 **An export is a pure function of the stored closure.** Nothing in it records when it was made, so two exports of an
 unchanged closure are equal, and its files (:meth:`CampaignExport.files`) are canonical JSON, the same bytes.
@@ -130,11 +134,17 @@ _PAST_CEILING: Final = (
     "threetears.evals.ops.campaign_export(host, scope_id, campaign_id, built_by=...)"
 )
 
-#: What a caller does about a stored judge identity the package's reader refuses: the record is what is wrong.
+#: What a caller does about a stored judge identity in a form its document type does not record: the record is wrong.
 _UNREAD_JUDGE: Final = (
-    "the stored record is what is wrong: correct its judge_config_ids to identities the package records "
-    "(<config id>@<sha12> or builtin:<sha12>), then export again"
+    "the stored record is what is wrong: correct its judge_config_ids to the form its document type records, "
+    "then export again"
 )
+
+#: The form each document type records its judges in, under the one field name ``judge_config_ids``.
+_RECORDED_JUDGE_FORM: Final[Mapping[str, str]] = {
+    "eval_run": "an eval_run records the bare config id it committed to",
+    "eval_result": "an eval_result records <config id>@<sha12> or builtin:<sha12>",
+}
 
 #: The most characters a ``reasoned_on`` name holds; a longer one is cut at a word boundary and ends in an ellipsis.
 _NAME_CHARS: Final = 80
@@ -156,11 +166,12 @@ _CLOSURE_RULES: Final[tuple[str, ...]] = (
         " the (name, version) the run pins, its cassettes by its corpus id, its sweep by its launch group id"
     ),
     (
-        "each run's and result's recorded judge identities, read by the package's judge_config_of: <config id>@<sha12>"
-        " names its stored judge config (or the config's tombstone), builtin:<sha12> names the engine's own wording and"
-        " no document (listed in builtin_judge_config_ids), and an identity the reader refuses refuses the export; each"
-        " config's rubric dim by the dim's NAME (rubric_dim.dim.name, every stored version), by a whole-type scan since"
-        " the name is nested"
+        "each run's recorded judge configs and each result's recorded judge identities: a run's bare config id (the set"
+        " it committed to at launch) and a result's <config id>@<sha12> (read by the package's judge_config_of) name its"
+        " stored judge config (or the config's tombstone), builtin:<sha12> names the engine's own wording and no"
+        " document (listed in builtin_judge_config_ids), and a value in the other type's form, or one the reader"
+        " refuses, refuses the export; each config's rubric dim by the dim's NAME (rubric_dim.dim.name, every stored"
+        " version), by a whole-type scan since the name is nested"
     ),
     (
         "each run's results and traces (the documents whose eval_run_id is the run's id), its calibration ratings,"
@@ -516,17 +527,36 @@ class _Closure:
         return [doc_id for held_type, doc_id in self.documents if held_type == doc_type]
 
 
+def _unread_judge(document: Mapping[str, Any], recorded: str, scope_id: str, why: str) -> UnreadableRecordError:
+    """The refusal of a recorded judge value its document's type does not record, naming the record and its form."""
+    return UnreadableRecordError(
+        f"the {document['doc_type']} {document['id']!r} in scope {scope_id!r} records a judge identity the package "
+        f"does not read: {why}; {_RECORDED_JUDGE_FORM[document['doc_type']]}",
+        remedy=_UNREAD_JUDGE,
+        details={"doc_type": document["doc_type"], "id": document["id"], "recorded": recorded},
+    )
+
+
 def _recorded_config(document: Mapping[str, Any], recorded: str, scope_id: str) -> str | None:
-    """The stored config one recorded judge identity names, by the package's reader, or a refusal naming the record."""
+    """The stored config one recorded value names, read in the form its document's type records, or a refusal.
+
+    A run records the config set it committed to at launch, so its value IS the config's id; a result records the
+    prompt that asked it, so its value names the config before the reply format's fingerprint.
+    """
+    if document["doc_type"] == "eval_run":
+        if not recorded:
+            raise _unread_judge(document, recorded, scope_id, f"{recorded!r} names no config")
+        try:
+            judge_config_of(recorded)
+        except ValueError:
+            return recorded
+        raise _unread_judge(
+            document, recorded, scope_id, f"{recorded!r} is a result's judge identity, the prompt sent, not a config"
+        )
     try:
         return judge_config_of(recorded)
     except ValueError as unread:
-        raise UnreadableRecordError(
-            f"the {document['doc_type']} {document['id']!r} in scope {scope_id!r} records a judge identity the package "
-            f"does not read: {unread}",
-            remedy=_UNREAD_JUDGE,
-            details={"doc_type": document["doc_type"], "id": document["id"], "recorded": recorded},
-        ) from unread
+        raise _unread_judge(document, recorded, scope_id, str(unread)) from unread
 
 
 def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> None:
@@ -575,7 +605,7 @@ def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> No
             ]
         ),
     )
-    # Every recorded identity is read by the package's reader: None is a dim no judge asked.
+    # A run's value and a result's are read each in its own type's form: None is a dim no judge asked.
     builtin: list[str] = []
     configured: list[str | None] = []
     for document in (*runs, *results):
