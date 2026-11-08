@@ -239,12 +239,11 @@ class TestAMissingRecordLeavesThePodBehindAndServing:
         assert reading.exists_in_cache_sync("m2")
         assert await _member_id(reading, "m1") == "ada"
         follower.registry.watched_by(_TABLE, lambda: True)
-        assert not follower.registry.tables_trusted([_TABLE]), "a derived cache does not trust a table it is behind on"
+        assert follower.registry.tables_trusted([_TABLE]), "behind is said, never a cache withdrawn"
 
         await bucket.put(key=key, value=held)
         assert await follower.tick() == 1
         assert not follower.registry.behind_on(_TABLE)
-        assert follower.registry.tables_trusted([_TABLE])
         assert await _member_id(reading, "m1") == "edsger"
         assert reading.exists_in_cache_sync("m2")
 
@@ -268,17 +267,18 @@ class TestAWholeTableChangeIsTheChange:
 
 
 class TestFirstSight:
-    async def test_the_pods_own_l2_entries_are_read_through_l3_once(self, bus: _Lossy) -> None:
+    async def test_the_head_is_the_mark_and_nothing_is_re_read(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
         writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
         writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
         await _save(writing, "m1", "ada")
-        assert await _member_id(reading, "m1") == "ada"  # now in the follower's own L2 key, which outlives it
-        rows["m1"] = {**rows["m1"], "member_id": "changed-while-nobody-followed"}
+        assert await _member_id(reading, "m1") == "ada"
+        head = await EpochGenerationReader(bus).read(_TABLE)
         follower.registry.follow_generation(_TABLE)
         await follower.tick()
+        assert follower.registry.generation_marks.recorded(_TABLE) == head
         assert not follower.registry.behind_on(_TABLE)
-        assert await _member_id(reading, "m1") == "changed-while-nobody-followed"
+        assert reading.exists_in_cache_sync("m1"), "a first sight drops and re-reads nothing"
 
     async def test_a_table_first_seen_with_no_generation_follows_its_first_incarnation(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}

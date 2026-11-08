@@ -205,23 +205,18 @@ class TableFollower:
 
     @property
     def watching(self) -> bool:
-        """whether the watches are running, none is failing now, and the registry is behind on no table.
+        """whether the watches are running and none is failing now.
 
         Weaker than :attr:`healthy`: a watch on a key never written is pushed nothing, and is still
         watching. What a cache that may serve held answers needs: a watch that is running judges every
-        advance it is pushed, its first push included, which is the key's latest, and has applied
-        every epoch it judged missed. A table whose missed epoch's record could not be read is
-        behind: a cache derived from it stops serving held answers until the epoch is applied.
+        advance it is pushed, its first push included, which is the key's latest. A table the registry
+        is behind on (an epoch whose record could not be read) stays served: behind is said through
+        the registry's log, counter and gauge, never by withdrawing a cache.
 
-        :return: ``True`` when every table's watch is running with no failure since its last push,
-            and none is behind
+        :return: ``True`` when every table's watch is running with no failure since its last push
         :rtype: bool
         """
-        return (
-            self.running
-            and all(h.consecutive_failures == 0 for h in self._health.values())
-            and not any(self._registry.behind_on(table) for table in self._tables)
-        )
+        return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
 
     def _table_watching(self, table: str) -> bool:
         """whether ``table``'s watch is running with no failure since its last push.
@@ -231,7 +226,7 @@ class TableFollower:
         :return: ``True`` while the watch can judge the table
         :rtype: bool
         """
-        return self.running and self._health[table].consecutive_failures == 0 and not self._registry.behind_on(table)
+        return self.running and self._health[table].consecutive_failures == 0
 
     @property
     def healthy(self) -> bool:

@@ -257,7 +257,7 @@ class CollectionRegistry:
         # table -> every follower's answer to whether its generation watch is running now
         self._watching: dict[str, list[Callable[[], bool]]] = {}
         # table -> why this registry is behind on it: an epoch whose change it could not apply. It keeps
-        # serving what it holds; a derived cache stops trusting the table until the epoch is applied.
+        # serving what it holds, its derived caches included, and says so (log, counter, gauge).
         self._behind: dict[str, str] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
@@ -768,7 +768,7 @@ class CollectionRegistry:
         """
         for table in table_names:
             followers = self._watching.get(table)
-            if not self._generation_marks.follows(table) or not followers or table in self._behind:
+            if not self._generation_marks.follows(table) or not followers:
                 return False
             if not all(watching() for watching in followers):
                 return False
@@ -810,9 +810,8 @@ class CollectionRegistry:
         drops the table.
 
         - :attr:`~GenerationVerdict.CURRENT`: nothing to apply.
-        - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read. A follower
-          starts before it serves the table, so its L1 holds nothing older; its own L2 entries, which
-          outlive it, are each read through L3 once before they are trusted again.
+        - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read, the head.
+          A follower starts before it serves the table, so it holds nothing older; nothing is re-read.
         - :attr:`~GenerationVerdict.MISSED`: each unheard epoch's record is applied and the mark moves.
           A record L2 does not hold holds the mark there, while the epochs after it are still applied:
           the registry is behind on the table, keeps serving what it holds, logs and counts it once,
@@ -839,13 +838,9 @@ class CollectionRegistry:
             self._caught_up(table_name)
             return verdict
         if verdict is GenerationVerdict.FIRST_SIGHT:
+            # the head is the mark: a process starts following before it serves, so it holds nothing
+            # older to bring forward, and nothing is re-read from any tier
             marks.adopt_generation(table_name, token)
-            # this principal's own L2 entries outlive the process, and writes made while no replica of
-            # it was following are on no epoch it will apply: each is read through L3 once before it
-            # is trusted again. A process starts following before it serves, so its L1 holds nothing.
-            collection = self._collections.get(table_name)
-            if collection is not None:
-                collection.drop_cached_table()
             # a cache derived from the table keeps its own marks, and starts them from this one; it
             # holds nothing derived from before the first sight it could vouch for
             for registration in tuple(self._derived_caches.get(table_name, ())):

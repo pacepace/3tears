@@ -39,9 +39,9 @@ follower that judges an epoch it did not hear in full (`CollectionRegistry.catch
 its rows; every other row stays cached. A first sight takes the mark and drops nothing.
 
 **Changed (core, epoch):** a record the log does not hold, or a generation from a replaced store, leaves the pod
-behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, logs at error, counts
-`collection_epoch_behind_total` and `collection_epoch_tables_behind`, and a derived cache stops trusting the table
-(`tables_trusted`, `TableFollower.watching`) until the next judgement applies the epoch. The log refuses a record
+behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, derived caches
+included, logs at error once, and counts `collection_epoch_behind_total` and `collection_epoch_tables_behind` until
+the next judgement applies the epoch. The log refuses a record
 past its `max_bytes` (`discard: new`) and the write that advanced raises `GenerationUnavailableError`, counted as
 `collection_epoch_change_refused_total`; it never evicts a record a pod may still need.
 
@@ -49,9 +49,9 @@ past its `max_bytes` (`discard: new`) and the write that advanced raises `Genera
 write-mark reconciler) records the whole table as its change, and a follower applies it as a table invalidation,
 because that is the change, and so is a commit whose rows would make a record past
 `EPOCH_CHANGE_MAX_RECORD_BYTES` (256 KiB). Records are built and checked by `epoch_change_record` and
-`read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table reads
-the process's own L2 entries through L3 once, and a table first seen with no generation follows the first
-incarnation minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
+`read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table takes
+the head as its mark and re-reads nothing, and a table first seen with no generation follows the first incarnation
+minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
 
 **Added (nats):** every principal granted the epoch bucket is granted `{ns}-epoch-changes` with the same
 capability: pods and the registry read it, the hub and the gateway write it.
