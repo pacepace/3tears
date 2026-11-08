@@ -88,8 +88,8 @@ from threetears.evals.analysis.confusion import confusion_matrix, label_statisti
 from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
 from threetears.evals.analysis.quantities import PERCENT, with_unit
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.build import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
@@ -184,9 +184,11 @@ class JudgeCalibration:
         if self.kappa is None:
             figure = "kappa undefined"
         else:
-            figure = f"kappa {self.kappa:.2f}"
+            forms = PageForms.off_page()
+            # How far the judge agrees with people is no measure of the eval's, so it is keyed to none.
+            figure = f"kappa {forms.reading(self.kappa).text}"
             if self.lower is not None:
-                figure += f" (lower bound {self.lower:.2f})"
+                figure += f" (lower bound {forms.reading(self.lower).text})"
         return f"{self.dimension}: {self.labels} label(s), {figure}, calibration {self.calibration}; tier {self.tier}"
 
 
@@ -426,10 +428,11 @@ class Result:
         roles = money_ruler(
             (role.cost_usd for summary in self.arms.values() for role in summary.spend if role.counted), per=0
         )
+        forms = PageForms.off_page()
         if full:
             return "\n\n".join(
                 [
-                    *(self._full_summary(summary, totals, roles) for summary in self.arms.values()),
+                    *(self._full_summary(forms, summary, totals, roles) for summary in self.arms.values()),
                     campaign_report_markdown(self.page),
                 ]
             )
@@ -443,15 +446,15 @@ class Result:
             lines.append(f"{label}{summary.results_text}")
             # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
             lines += [f"  {one_line(line)}" for line in (summary.stopped_text,) if line is not None]
-            lines += [f"  {one_line(line)}" for line in self._measure_texts(summary, arm)]
+            lines += [f"  {one_line(line)}" for line in self._measure_texts(forms, summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
                 lines += [f"    {one_line(_label_text(statistics))}" for statistics in summary.labels]
-            lines += [f"  {one_line(_dimension_text(dimension))}" for dimension in summary.judged]
+            lines += [f"  {one_line(_dimension_text(forms, dimension))}" for dimension in summary.judged]
             lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
             for line in (
-                _total_spend(summary, totals, roles),
+                _total_spend(forms, summary, totals, roles),
                 summary.self_judging_warning,
                 summary.model_identity_warning,
             ):
@@ -520,7 +523,7 @@ class Result:
             }
         return {row["measure_id"]: f"guardrail {row['outcome']} against {self.control}" for row in self.guardrails(arm)}
 
-    def _measure_texts(self, summary: EvalSummary, arm: str) -> list[str]:
+    def _measure_texts(self, forms: PageForms, summary: EvalSummary, arm: str) -> list[str]:
         """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out.
 
         In a comparison a guardrail's line says what the comparison decided on it for ``arm``; alone, that a guardrail
@@ -541,14 +544,14 @@ class Result:
             descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
             if measure.state == "measured" and figures is not None:
                 rate = measure.name == MATCH_MEASURE or reads_as_rate("measure", measure.name, descriptor=descriptor)
-                said = _measured_text(said, figures.mean, figures.n, rate=rate)
+                said = _measured_text(forms, measure.name, said, figures.mean, figures.n, rate=rate)
             # Each measure under the name the page gives it, never its key.
             texts.append(f"{self._printed_name(measure.name)}{said}")
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
 
-    def _full_summary(self, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
+    def _full_summary(self, forms: PageForms, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
         """An arm's whole summary as the full print writes it: the run summary's lines
         (:meth:`~threetears.evals.analysis.summary.EvalSummary.render`), each figure in the form the quiet print and
         the page state it (the review's P43, A4): a measure, its strata's included, under the page's name, a rate in
@@ -558,10 +561,15 @@ class Result:
         said: dict[str, str] = {}
         said.update(zip(summary.label_lines, (_label_text(statistics) for statistics in summary.labels), strict=True))
         said.update(
-            zip(summary.dimension_lines, (_dimension_text(dimension) for dimension in summary.judged), strict=True)
+            zip(
+                summary.dimension_lines,
+                (_dimension_text(forms, dimension) for dimension in summary.judged),
+                strict=True,
+            )
         )
         if summary.total_spend_text is not None and summary.total_cost_usd is not None:
-            said[summary.total_spend_text] = f"total spend: {totals.spell(summary.total_cost_usd)}, the results' cost"
+            total = forms.money_on(totals, summary.total_cost_usd).text
+            said[summary.total_spend_text] = f"total spend: {total}, the results' cost"
         spent = {role.role: role.cost_usd for role in summary.spend if role.cost_usd is not None}
         lines = []
         for line in summary.render().splitlines():
@@ -570,20 +578,20 @@ class Result:
             if body in said:
                 body = said[body]
             elif (measured := _FULL_MEASURE.fullmatch(body)) is not None:
-                body = self._full_measure(measured)
+                body = self._full_measure(forms, measured)
             elif (role := _ROLE_SPEND.fullmatch(body)) is not None and role["role"] in spent:
-                body = f"{role['role']} spend: {roles.spell(spent[role['role']])}{role['rest']}"
+                body = f"{role['role']} spend: {forms.money_on(roles, spent[role['role']]).text}{role['rest']}"
             lines.append(indent + body)
         return "\n".join(lines)
 
-    def _full_measure(self, measured: re.Match[str]) -> str:
+    def _full_measure(self, forms: PageForms, measured: re.Match[str]) -> str:
         """A run summary's measure line as the full print writes it: under the page's name, a rate in percent with its
         count of trials, any other measure with its trials named (:func:`_measured_text`)."""
         name = measured["name"]
         descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
         rate = not measured["unit"] and (name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor))
         mean = float(measured["mean"]) if rate else 0.0
-        return f"{self._printed_name(name)}{_measured_text(measured['said'], mean, int(measured['n']), rate=rate)}"
+        return f"{self._printed_name(name)}{_measured_text(forms, name, measured['said'], mean, int(measured['n']), rate=rate)}"
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
@@ -962,7 +970,7 @@ _FULL_MEASURE = re.compile(
 _ROLE_SPEND = re.compile(r"^(?P<role>[\w-]+) spend: [<>]? ?\$[\d.,]+(?P<rest> over .*)$")
 
 
-def _measured_text(said: str, mean: float | None, n: int, *, rate: bool) -> str:
+def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None, n: int, *, rate: bool) -> str:
     """A measure's figures as the quiet print says them, after its name: a rate in percent with its count of trials
     (``: 83.3%, 75 of 90 trials``), as the page states a rate; any other measure's mean with its trials named
     (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what follows it (a
@@ -972,7 +980,7 @@ def _measured_text(said: str, mean: float | None, n: int, *, rate: bool) -> str:
         return said
     rest, tail = read["rest"].removeprefix(", "), read["tail"]
     if rate:
-        counted = f"{round(mean * n)} of {n} trials"
+        counted = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
         return f": {with_unit(100 * mean, PERCENT)}, {counted}{f' ({rest})' if rest else ''}{tail}"
     left = f", {rest}" if rest else ""
     return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
@@ -1020,7 +1028,7 @@ def _label_text(statistics: LabelStatistics) -> str:
     return f"{shown}: {precision}, {recall}, {f1}"
 
 
-def _dimension_text(dimension: DimensionSummary) -> str:
+def _dimension_text(forms: PageForms, dimension: DimensionSummary) -> str:
     """One judged dimension's line as the quiet print says it: under the name the page gives it
     (:func:`~threetears.evals.analysis.report.words.judged_heading`) and its scale, a pass/fail one in percent with its
     count of trials, a scored one's mean with its trials named, and how often the judge could not tell."""
@@ -1030,12 +1038,14 @@ def _dimension_text(dimension: DimensionSummary) -> str:
         line += "no result carries a score"
     elif dimension.scale == "pass_fail":
         line += (
-            f"{with_unit(100 * dimension.mean, PERCENT)}, {round(dimension.mean * dimension.n)} of {dimension.n} trials"
+            f"{with_unit(100 * dimension.mean, PERCENT)}, {forms.hits(dimension.mean, dimension.n, measure=dimension.name, kind='judged').text} of "
+            f"{dimension.n} trials"
         )
     else:
         line += (
-            f"mean {format_number(dimension.mean)} ({dimension.n} trials, "
-            f"min {format_number(dimension.minimum)}, max {format_number(dimension.maximum)})"
+            f"mean {forms.lone(dimension.mean, measure=dimension.name, kind='judged').text} ({dimension.n} trials, "
+            f"min {forms.lone(dimension.minimum, measure=dimension.name, kind='judged').text}, "
+            f"max {forms.lone(dimension.maximum, measure=dimension.name, kind='judged').text})"
         )
     if dimension.cannot_tell:
         line += f", the judge could not tell on {dimension.cannot_tell}"
@@ -1058,7 +1068,7 @@ def _cut(text: str) -> str:
     return text if len(text) <= _MISS_ANSWER_CHARS else text[: _MISS_ANSWER_CHARS - 1] + "…"
 
 
-def _total_spend(summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str | None:
+def _total_spend(forms: PageForms, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str | None:
     """The total-spend line, split by role where more than one role the total counts spent, each role's dollars read
     off its usage rows (:attr:`~threetears.evals.analysis.summary.EvalSummary.spend`): the total in ``totals``' one
     form, the form the page writes the arms' test costs in, each role's in ``roles``': ``total spend: $0.017, the
@@ -1066,11 +1076,11 @@ def _total_spend(summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) ->
     said = summary.total_spend_text
     if said is None or summary.total_cost_usd is None:
         return said
-    said = f"total spend: {totals.spell(summary.total_cost_usd)}, the results' cost"
+    said = f"total spend: {forms.money_on(totals, summary.total_cost_usd).text}, the results' cost"
     spent = [(role.role, role.cost_usd) for role in summary.spend if role.counted and role.cost_usd]
     if len(spent) < 2:
         return said
-    return f"{said} ({', '.join(f'{role} {roles.spell(cost)}' for role, cost in spent)})"
+    return f"{said} ({', '.join(f'{role} {forms.money_on(roles, cost).text}' for role, cost in spent)})"
 
 
 def _exclusion_causes(summary: EvalSummary) -> list[str]:

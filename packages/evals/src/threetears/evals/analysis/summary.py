@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, mo
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.kernel.numbers import UNPRICED, format_number, spell_dollars
+from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
     RequestSettingsReading,
@@ -117,6 +117,7 @@ from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.words import judged_heading
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
@@ -151,7 +152,8 @@ def dollars_text(amount: float | None) -> str:
     """
     if amount is None:
         return UNPRICED
-    return spell_dollars(amount)
+    # A host's own line has no page, so the amount takes its form from a surface's forms of its own.
+    return PageForms.off_page().money_total(amount).text
 
 
 def _plural(count: int, noun: str) -> str:
@@ -177,13 +179,21 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
     """
     if not stops:
         raise ValueError("a stop line is written from at least one stop record")
+    forms = PageForms.off_page()
+
+    def money(value: float | None) -> str:
+        return UNPRICED if value is None else forms.money_total(value).text
+
+    def calls(value: float | None) -> str:
+        return forms.lone(value).text
+
     segments: list[str] = []
     for position, stop in enumerate(stops):
         show: Callable[[float | None], str]
         if stop.currency == "cost_usd":
-            what, show = "its cost cap", dollars_text
+            what, show = "its cost cap", money
         else:
-            what, show = "its metered-call ceiling", format_number
+            what, show = "its metered-call ceiling", calls
         settled = (
             f"{show(stop.landed_final)} once {_plural(stop.cells_in_flight, 'running cell')} finished "
             f"({'+' if stop.overshoot >= 0 else '-'}{show(abs(stop.overshoot))})"
@@ -522,6 +532,7 @@ class CaseResult(BaseModel):
             for score in result.rubric_scores
         ]
         goal_checks = {check.expression: check.passed for check in result.goal_state_outcomes}
+        forms = PageForms.off_page()
         missed: list[str] = []
         if outcome == "failed":
             missed.extend(f"failed: {error}" for error in errors or ["the candidate failed"])
@@ -529,7 +540,7 @@ class CaseResult(BaseModel):
             if result.host_measures.get(MATCH_MEASURE) is False:
                 missed.append(f"answered {_shown_value(answer)}, expected {_shown_value(expected)}")
             missed.extend(
-                f"{name} gave {format_number(value)}"
+                f"{name} gave {forms.lone(value, measure=name).text}"
                 for name, value in result.host_measures.items()
                 if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
                 and not isinstance(value, str)
@@ -571,8 +582,9 @@ class CaseResult(BaseModel):
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
+        forms = PageForms.off_page()
         grades = [
-            f"{name} {value if isinstance(value, str | bool) else format_number(value)}"
+            f"{name} {value if isinstance(value, str | bool) else forms.lone(value, measure=name).text}"
             for name, value in self.scores.items()
             if name != CONFUSION_CELL_MEASURE
         ]
@@ -692,7 +704,7 @@ class RoleSpend(BaseModel):
 
     def money_text(self) -> str:
         """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
-        money = UNPRICED if self.cost_usd is None else dollars_text(self.cost_usd)
+        money = UNPRICED if self.cost_usd is None else PageForms.off_page().money_total(self.cost_usd).text
         text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
             return text
@@ -970,7 +982,7 @@ class EvalSummary(BaseModel):
         """The spend-cap line, without indentation, or None."""
         if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
             return None
-        return _spend_cap_line(self)
+        return _spend_cap_line(PageForms.off_page(), self)
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="Each measure, in `measures` order: its state and the line printed for it."
@@ -1037,7 +1049,8 @@ class EvalSummary(BaseModel):
     @property
     def label_lines(self) -> list[str]:
         """Each label's line."""
-        return [_label_line(statistics) for statistics in self.labels]
+        forms = PageForms.off_page()
+        return [_label_line(forms, statistics) for statistics in self.labels]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
@@ -1076,7 +1089,8 @@ class EvalSummary(BaseModel):
     @property
     def dimension_lines(self) -> list[str]:
         """Each judged dimension's line."""
-        return [_dimension_line(dimension) for dimension in self.judged]
+        forms = PageForms.off_page()
+        return [_dimension_line(forms, dimension) for dimension in self.judged]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="The warning that a judge graded answers its own model produced; null when none did."
@@ -1134,14 +1148,15 @@ class EvalSummary(BaseModel):
         """The total-spend line, without indentation, or None."""
         if not self.spend:
             return None
+        forms = PageForms.off_page()
         if self.total_cost_usd is not None:
-            return f"total spend: {dollars_text(self.total_cost_usd)}, the results' cost"
+            return f"total spend: {forms.money_total(self.total_cost_usd).text}, the results' cost"
         # Unknown in full: what the counted roles' priced calls cost, which their lines add up to, and how many of
         # their calls are unpriced — never a bare "unknown" that drops the dollars the lines state.
         counted = [spend for spend in self.spend if spend.counted]
         priced = [spend.cost_usd for spend in counted if spend.cost_usd is not None]
         unpriced = sum(spend.unpriced_calls for spend in counted)
-        stated = f"{dollars_text(math.fsum(priced))} over the priced calls" if priced else "no call priced"
+        stated = f"{forms.money_total(math.fsum(priced)).text} over the priced calls" if priced else "no call priced"
         return f"total spend: unknown in full: {stated}, plus {unpriced} call(s) {UNPRICED}"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
@@ -1213,7 +1228,7 @@ class EvalSummary(BaseModel):
         return f"not shown, carried by no result: {len(names)} measure{'' if len(names) == 1 else 's'} ({', '.join(names)})"
 
 
-def _spend_cap_line(summary: EvalSummary) -> str | None:
+def _spend_cap_line(forms: PageForms, summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
     A cap counts the spend results report, so a capped run none of whose results reported any says that its cap
@@ -1224,14 +1239,16 @@ def _spend_cap_line(summary: EvalSummary) -> str | None:
     origin = summary.max_cost_usd_origin
     if origin is not None and origin not in COST_CAP_ORIGINS:
         ceiling = (
-            "none recorded" if summary.max_cost_usd is None else f"{dollars_text(summary.max_cost_usd)} for this run"
+            "none recorded"
+            if summary.max_cost_usd is None
+            else f"{forms.money_total(summary.max_cost_usd).text} for this run"
         )
         return f"spend cap: {ceiling} (its origin, {origin!r}, is one this build does not know)"
     if origin == "uncapped":
         return f"spend cap: {UNCAPPED_SPEND}"
     if summary.max_cost_usd is None:
         return None
-    line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
+    line = f"spend cap: {forms.money_total(summary.max_cost_usd).text} for this run"
     if summary.cap_checked_on_estimates:
         line += ", checked against estimated rates"
     if not summary.spend:
@@ -1254,21 +1271,28 @@ def _shown(label: str) -> str:
     return repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
 
 
+#: The kind a classifier label's precision, recall and F1 are held under in the ledger: each is a measure of how the
+#: label was read, by its statistic's name.
+_LABEL = "label"
+
+
 def _proportion(
-    name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
+    forms: PageForms, name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
 ) -> str:
     """A rate with its count and interval; where cases repeat, the count says over how many cases it rests on."""
     if rate is None:
         return f"{name} none (n=0)"
-    shown = f"{name} {format_number(rate)} ({hits}/{n}"
+    shown = f"{name} {forms.lone(rate, measure=name, kind=_LABEL).text} ({hits}/{n}"
     if cases < n:
         shown += f" over {cases} case{'' if cases == 1 else 's'}"
     if interval is not None:
-        shown += f", {INTERVAL_LEVEL:.0%} CI {format_number(interval[0])}-{format_number(interval[1])}"
+        level = forms.share(INTERVAL_LEVEL).text
+        low, high = (forms.lone(end, measure=name, kind=_LABEL).text for end in interval)
+        shown += f", {level} CI {low}-{high}"
     return shown + ")"
 
 
-def _dimension_line(dimension: DimensionSummary) -> str:
+def _dimension_line(forms: PageForms, dimension: DimensionSummary) -> str:
     """One judged dimension's line: its scale, its mean and range, and how often the judge could not tell."""
     scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
     line = f"{judged_heading(dimension.name)}{scale}: "
@@ -1276,17 +1300,19 @@ def _dimension_line(dimension: DimensionSummary) -> str:
         line += "no result carries a score"
     else:
         line += (
-            f"mean {format_number(dimension.mean)} (n={dimension.n}, "
-            f"min {format_number(dimension.minimum)}, max {format_number(dimension.maximum)})"
+            f"mean {forms.lone(dimension.mean, measure=dimension.name, kind='judged').text} (n={dimension.n}, "
+            f"min {forms.lone(dimension.minimum, measure=dimension.name, kind='judged').text}, "
+            f"max {forms.lone(dimension.maximum, measure=dimension.name, kind='judged').text})"
         )
     if dimension.cannot_tell:
         line += f", the judge could not tell on {dimension.cannot_tell}"
     return line
 
 
-def _label_line(statistics: LabelStatistics) -> str:
+def _label_line(forms: PageForms, statistics: LabelStatistics) -> str:
     """One label's line: its precision and recall with their counts and intervals, and its F1."""
     precision = _proportion(
+        forms,
         "precision",
         statistics.precision,
         statistics.correct,
@@ -1295,6 +1321,7 @@ def _label_line(statistics: LabelStatistics) -> str:
         statistics.precision_interval,
     )
     recall = _proportion(
+        forms,
         "recall",
         statistics.recall,
         statistics.correct,
@@ -1302,7 +1329,7 @@ def _label_line(statistics: LabelStatistics) -> str:
         statistics.expected_cases,
         statistics.recall_interval,
     )
-    f1 = "f1 none" if statistics.f1 is None else f"f1 {format_number(statistics.f1)}"
+    f1 = "f1 none" if statistics.f1 is None else f"f1 {forms.lone(statistics.f1, measure='f1', kind=_LABEL).text}"
     return f"{_shown(statistics.label)}: {precision}, {recall}, {f1}"
 
 

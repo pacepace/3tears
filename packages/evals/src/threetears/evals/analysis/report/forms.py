@@ -47,7 +47,7 @@ from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACE
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.figure_keys import RUBRIC_SCALE, figure_places, held_means
-from threetears.evals.analysis.report.blocks import TableCell, interval_text
+from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
 from threetears.evals.analysis.report.parts.charting import figure_unit, interval_level, interval_words, is_rubric_score
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report_input import Contrast, ContrastFamily, ReportInput
@@ -56,6 +56,8 @@ from threetears.evals.kernel.numbers import (
     MoneyForm,
     ends_places,
     format_number,
+    format_signed,
+    money_form,
     set_places,
     spell_at,
     spell_count,
@@ -64,12 +66,14 @@ from threetears.evals.kernel.numbers import (
 )
 
 __all__ = [
+    "EVEN_SHARE",
     "Issued",
     "MEASURED_PLACES",
     "MeasureForm",
     "MeasureKind",
     "PageForms",
     "PageKind",
+    "PreferenceShares",
     "Printed",
     "PrintedInterval",
     "ReadsAs",
@@ -111,10 +115,18 @@ Role = Literal[
     "share",
     "multiple",
     "money_total",
+    "lone",
+    "reading",
+    "echoed",
+    "hits",
+    "money",
+    "check",
+    "preference",
 ]
 
-#: Which page a set of forms is for: a written page (a report input) or a campaign's code page.
-PageKind = Literal["written", "code"]
+#: Which page a set of forms is for: a written page (a report input), a campaign's code page, or an off-page surface
+#: (a command line's lines, a lens's text, the rung-5 page's side-by-side figures), which states no page's measure.
+PageKind = Literal["written", "code", "off"]
 
 #: The most decimals a measured figure on the scorecard is stated to, before its column's precision is applied.
 MEASURED_PLACES = 4
@@ -180,6 +192,62 @@ class Issued:
     role: Role
     value: float | tuple[float, float] | None
     text: str
+
+
+@dataclass(frozen=True)
+class PreferenceShares:
+    """A judge's preference on the share scale, in percent, at the one precision the side-by-side table, the figure,
+    its line and the answer print it at (:meth:`PageForms.preference`).
+
+    :ivar candidate: The candidate's share, at :attr:`places`.
+    :ivar control: The control's: 100 less the candidate's as printed, so the two printed shares sum to 100.
+    :ivar interval: The interval on the candidate's share; ``None`` where the pass read none.
+    :ivar places: The decimals all three are read to.
+    """
+
+    candidate: float
+    control: float
+    interval: tuple[float, float] | None
+    places: int
+
+    def share_text(self, value: float) -> str:
+        """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
+        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
+        three are one set, and a set reads at one precision, so each keeps the set's decimals, a whole one too
+        (``80.000`` beside ``99.998``).
+
+        :param value: One of the three.
+        :ptype value: float
+        :return: Its text.
+        :rtype: str
+        """
+        return f"{value:.{self.places}f}"
+
+    def cell(self, value: float) -> CellValue:
+        """A share as a table cell, decided once for both shares: numbers where the set reads whole (the one number
+        rule prints a whole share as :meth:`share_text` does), else the text of both, since that rule drops a whole
+        share's decimals and keeps four significant figures where the set needs its own decimals. The two share
+        columns of a row are always one kind.
+
+        :param value: One of the shares.
+        :ptype value: float
+        :return: The cell's value.
+        :rtype: CellValue
+        """
+        return value if self.places == 0 else self.share_text(value)
+
+    @property
+    def fmt(self) -> str:
+        """The kit's format a chart draws the shares in, at the set's decimals, so its values table and its tooltips
+        read each share as the line under it does (``pct:3`` for ``49.998%``); ``pct`` where they read whole."""
+        return "pct" if self.places == 0 else f"pct:{self.places}"
+
+    @property
+    def ends(self) -> tuple[str, str] | None:
+        """The interval's two ends as text (:meth:`share_text`); ``None`` without an interval."""
+        if self.interval is None:
+            return None
+        return (self.share_text(self.interval[0]), self.share_text(self.interval[1]))
 
 
 @dataclass(frozen=True)
@@ -254,6 +322,17 @@ class PageForms:
             kinds[contrast.measure, _measure_kind(contrast.kind)] = None
         measures = {(key, kind): _written_form(report_input, key, kind) for key, kind in kinds}
         return cls("written", measures)
+
+    @classmethod
+    def off_page(cls) -> PageForms:
+        """An off-page surface's forms: a command line's lines, a lens's text, a result's fields, the rung-5 page's
+        side-by-side figures. It states no page's measure, so it holds none; its figures take the fixed forms and the
+        off-page ones (:meth:`lone`, :meth:`reading`, :meth:`preference` ...), and its ledger holds what it handed out.
+
+        :return: The surface's forms.
+        :rtype: PageForms
+        """
+        return cls("off", {})
 
     @classmethod
     def of_campaign(cls, readings: CampaignReadings, reports: Mapping[str, Report]) -> PageForms:
@@ -498,6 +577,190 @@ class PageForms:
         text = spell_dollars(amount)
         return self._issue("", "", "money_total", amount, text, _digits_of(text, MONEY), MONEY)
 
+    # --- an off-page surface's figures -------------------------------------------------------------------------------
+    #
+    # Each takes the measure a figure is of, keyword-only, so the ledger holds it under that measure and the policy
+    # can decide it by measure here without a caller changing; a figure of no measure (a spend, a setting, a judge's
+    # check, a level of confidence) passes none.
+
+    def lone(
+        self,
+        value: float | None,
+        *,
+        signed: bool = False,
+        money: bool = False,
+        measure: str = "",
+        kind: MeasureKind = None,
+    ) -> Printed:
+        """A figure an off-page surface states by itself, as it prints one today: by the lone figure rule, a change
+        signed, money with its ``$`` on the number inside its sign or bound (``-$1.23``, ``< $0.000001``). Of a
+        measure: a pivot's cell, a series' point, a run's dimension mean, a label's precision. Of none: a priced
+        band's end, a level of confidence, a result's field, a count of calls.
+
+        :param value: The figure; None for none.
+        :ptype value: float | None
+        :param signed: Whether it is a change, read signed.
+        :ptype signed: bool
+        :param money: Whether it is dollars, read with its ``$``.
+        :ptype money: bool
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The figure.
+        :rtype: Printed
+        :raises ValueError: Both ``signed`` and ``money``: the lone figure rule spells no signed money.
+        """
+        if signed and money:
+            raise ValueError("the lone figure rule spells no signed money")
+        text = format_signed(value) if signed else format_number(value, prefix="$" if money else "")
+        unit = MONEY if money else ""
+        return self._issue(*_keyed(measure, kind), "lone", value, text, _digits_of(text, unit), unit)
+
+    def reading(self, value: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """A reading an off-page table or line states at a fixed two decimals whatever its measure, as each prints one
+        today. Of a measure: an arm's mean in the rung-5 readings table. Of none: a judge's kappa and its lower bound
+        in the quick print, which say how far the judge agrees with people, not what the eval measured.
+
+        :param value: The reading.
+        :ptype value: float
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The reading.
+        :rtype: Printed
+        """
+        text = f"{value:.{_READING_PLACES}f}"
+        return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
+
+    def echoed(self, value: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """A value an author declared, echoed back in a refusal or an error as Python's general format writes it
+        (``0``, ``1``, ``0.5``): the form the declaration is read in, so the message names what was written. Of a
+        measure: an end of the range a grader declared its scores in.
+
+        :param value: The declared value.
+        :ptype value: float
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The value.
+        :rtype: Printed
+        """
+        text = f"{value:g}"
+        return self._issue(*_keyed(measure, kind), "echoed", value, text, text, "")
+
+    def hits(self, rate: float, n: int, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """How many of ``n`` trials a rate counts, recovered whole from the rate (``75`` of 90 at 0.8333), as the quick
+        print states it beside the rate: its digits bare. Always of a measure's rate, a measure's or a pass/fail
+        judged dimension's.
+
+        :param rate: The rate, 0 to 1.
+        :ptype rate: float
+        :param n: The trials it was read on.
+        :ptype n: int
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The count.
+        :rtype: Printed
+        """
+        text = str(round(rate * n))
+        return self._issue(*_keyed(measure, kind), "hits", rate, text, text, "")
+
+    def money_set(
+        self, amounts: Iterable[float | None], *, measure: str = "", kind: MeasureKind = None
+    ) -> tuple[Printed, ...]:
+        """Amounts of money read as one set, in one money form
+        (:func:`~threetears.evals.kernel.numbers.money_form`). Of none today: a pairwise pass's spend beside the part it
+        ran under.
+
+        :param amounts: The amounts, in dollars as stored; None for an absent one.
+        :ptype amounts: Iterable[float | None]
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: Each amount, in the order given.
+        :rtype: tuple[Printed, ...]
+        """
+        held = list(amounts)
+        form = money_form(held)
+        return tuple(self._money(amount, form.spell(amount), measure, kind) for amount in held)
+
+    def money_on(self, ruler: MoneyRuler, amount: float, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """An amount of money on a ruler a surface laid over its set, in the ruler's one form. Of none today: every
+        arm's total spend, every role's.
+
+        :param ruler: The set's ruler.
+        :ptype ruler: MoneyRuler
+        :param amount: Dollars, as stored.
+        :ptype amount: float
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The amount.
+        :rtype: Printed
+        """
+        return self._money(amount, ruler.spell(amount), measure, kind)
+
+    def check(self, value: float | None, *, measure: str = "", kind: MeasureKind = None) -> float | None:
+        """A judge's-check figure, a part from 0 to 1 or a lean of parts, in percent or points (x 100), at the fewest
+        decimals that keep its sign (:func:`_places` of it alone): the number the rung-5 checks table's cell holds,
+        which its serializer spells by the one rule. Of none today: order consistency and the first-slot lean say how
+        the judge read, not what the eval measured.
+
+        :param value: The figure as read; None for none.
+        :ptype value: float | None
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: MeasureKind
+        :return: The figure in percent or points, at its decimals; None for none.
+        :rtype: float | None
+        """
+        if value is None:
+            return None
+        points = value * 100
+        decided = round(points, _places([points]))
+        self._issue(*_keyed(measure, kind), "check", value, format_number(decided), format_number(decided), "")
+        return decided
+
+    def preference(self, share: float | None, difference: tuple[float, float] | None) -> PreferenceShares | None:
+        """A candidate's share of a judge's preference and the interval the pass read on the difference of the two
+        shares, on the share scale: the two shares run 0 to 1 and sum to 1, so a difference ``d`` is the candidate's
+        share ``(1 + d) / 2``. Each end is held within 0 to 100%, the scale a share lies on. The shares and the ends
+        read at one precision, the fewest decimals that keep each on its side of none, even and all, and the three
+        apart.
+
+        :param share: The candidate's share, 0 to 1; None when nothing was scored.
+        :ptype share: float | None
+        :param difference: The interval on the difference of the two shares; None for none.
+        :ptype difference: tuple[float, float] | None
+        :return: The shares; None when nothing was scored.
+        :rtype: PreferenceShares | None
+        """
+        if share is None:
+            return None
+        points = share * 100
+        ends = None if difference is None else [min(100.0, max(0.0, (1 + end) / 2 * 100)) for end in difference]
+        places = _even_places([points, *(ends or [])])
+        candidate = round(points, places)
+        shares = PreferenceShares(
+            candidate=candidate,
+            control=round(100 - candidate, places),
+            interval=None if ends is None else (round(ends[0], places), round(ends[1], places)),
+            places=places,
+        )
+        self._issue("", "", "preference", share, shares.share_text(candidate), shares.share_text(candidate), PERCENT)
+        return shares
+
+    def _money(self, amount: float | None, text: str, measure: str, kind: MeasureKind) -> Printed:
+        return self._issue(*_keyed(measure, kind), "money", amount, text, _digits_of(text, MONEY), MONEY)
+
     # --- the ledger --------------------------------------------------------------------------------------------------
 
     @property
@@ -533,6 +796,36 @@ class PageForms:
 #: What an absent figure reads as.
 _ABSENT_TEXT = format_number(None)
 
+#: The decimals an off-page reading is stated to (:meth:`PageForms.reading`).
+_READING_PLACES = 2
+
+#: Where a share of a judge's preference is even, in percent: the judge preferred neither page.
+EVEN_SHARE = 50.0
+
+#: The most decimals a side-by-side figure is read to (:func:`_places`).
+_MOST_SIDE_BY_SIDE_PLACES = 6
+
+
+def _places(values: Sequence[float]) -> int:
+    """The fewest decimals, none at first, at which every one of ``values`` keeps its sign (no end that is not 0 prints
+    as 0, and none crosses zero) and values that differ still differ: an interval's ends read as distinct and a
+    crossing stays visible, whatever the rounding (P19)."""
+    for places in range(_MOST_SIDE_BY_SIDE_PLACES + 1):
+        rounded = [round(value, places) for value in values]
+        if all(
+            (low > 0) == (value > 0) and (low < 0) == (value < 0) for low, value in zip(rounded, values, strict=True)
+        ):
+            if len(set(rounded)) == len(set(values)):
+                return places
+    return _MOST_SIDE_BY_SIDE_PLACES
+
+
+def _even_places(values: Sequence[float]) -> int:
+    """The fewest decimals at which shares in percent keep their side of none (0), of even (50) and of all (100), and
+    shares that differ still differ (:func:`_places` about each): a lean off even, or an end short of none or all,
+    stays visible whatever the rounding."""
+    return max(_places([value - edge for value in values]) for edge in (0.0, EVEN_SHARE, 100.0))
+
 
 def _joined(digits: str, unit: str) -> str:
     """Digits and their unit, spaced as the package writes the unit."""
@@ -555,6 +848,12 @@ def _interval_join(page: PageKind, low: str, high: str) -> str:
     """Two ends joined as the page joins an interval: ``low to high`` on a written page, ``[low, high]`` on a code
     page's scorecard."""
     return f"[{low}, {high}]" if page == "code" else f"{low} to {high}"
+
+
+def _keyed(measure: str, kind: MeasureKind) -> tuple[str, MeasureKind]:
+    """The key an off-page figure is held under in the ledger: its measure and kind, or neither for a figure of no
+    measure, as the fixed forms are held."""
+    return (measure, _measure_kind(kind)) if measure else ("", "")
 
 
 def _measure_kind(kind: MeasureKind) -> str:

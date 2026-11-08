@@ -146,7 +146,6 @@ from threetears.evals.analysis import (
     summarize_runs,
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
-from threetears.evals.analysis.quantities import render_cell
 from threetears.evals.analysis.report.blocks import (
     CellValue,
     ChartBlock,
@@ -157,6 +156,7 @@ from threetears.evals.analysis.report.blocks import (
     TableColumn,
     Verdict,
 )
+from threetears.evals.analysis.report.forms import EVEN_SHARE, PageForms, PreferenceShares
 from threetears.evals.analysis.report.charts import (
     ChartReference,
     DotIntervalChart,
@@ -170,7 +170,6 @@ from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, pro
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.numbers import format_number, group_thousands, money_form, spell_count, spell_dollars
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
@@ -282,9 +281,6 @@ _PREFERENCE_COLUMNS: Final = (
     ("interval", "Interval (%)"),
 )
 
-#: Where a share is even, in percent: the judge preferred neither page.
-_EVEN: Final = 50.0
-
 #: The preference figure's axis ticks, in percent: the whole share scale, even at its middle.
 _SHARE_TICKS: Final = (0.0, 25.0, 50.0, 75.0, 100.0)
 
@@ -301,9 +297,6 @@ _CHECK_COLUMNS: Final = (
 #: The two sets of pairs a preference row reads: every pair, and those whose two pages were both stored finished.
 _EVERY_PAIR: Final = "every pair"
 _BOTH_FINISHED: Final = "both pages finished"
-
-#: The most decimals a side-by-side figure is read to (:func:`_places`).
-_MOST_PLACES: Final = 6
 
 #: What the side-by-side tables say once, above them: what a share, its interval, order consistency and the lean are.
 _PAIRWISE_LEAD: Final = (
@@ -674,6 +667,8 @@ class WriterResult:
         """The readings table: a row per measure some arm carries, then per judged dimension, a column per arm."""
         measures = self.host.profile.measures
         rows: dict[str, dict[str, float]] = {}
+        # Each row's measure, by its key and kind, which the label a reader sees may rename.
+        read: dict[str, tuple[str, str]] = {}
         for arm, summary in self.arms.items():
             for measure in summary.measures:
                 if measure.mean is not None:
@@ -682,12 +677,20 @@ class WriterResult:
                         descriptor.reader_name if descriptor is not None and descriptor.reader_name else measure.name
                     )
                     rows.setdefault(label, {})[arm] = measure.mean
+                    read.setdefault(label, (measure.name, "measure"))
             for dimension in summary.judged:
                 if dimension.mean is not None:
                     rows.setdefault(f"{dimension.name} (judged)", {})[arm] = dimension.mean
+                    read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged"))
         head = ["| reading | " + " | ".join(self.arms) + " |", "|---|" + "---|" * len(self.arms)]
+        forms = PageForms.off_page()
         body = [
-            f"| {label} | " + " | ".join(f"{row[arm]:.2f}" if arm in row else "-" for arm in self.arms) + " |"
+            f"| {label} | "
+            + " | ".join(
+                forms.reading(row[arm], measure=read[label][0], kind=read[label][1]).text if arm in row else "-"
+                for arm in self.arms
+            )
+            + " |"
             for label, row in rows.items()
         ]
         return [*head, *body] if body else ["no reading: no arm's results carry a measure"]
@@ -731,7 +734,12 @@ class WriterResult:
         """
         lines = [_PAIRWISE_LEAD]
         for block in _side_by_side_blocks(
-            self.control, self.pairwise, self.pairwise_unread, candidates=self._candidates, why=self.promotion_why
+            PageForms.off_page(),
+            self.control,
+            self.pairwise,
+            self.pairwise_unread,
+            candidates=self._candidates,
+            why=self.promotion_why,
         ):
             if isinstance(block, TableBlock):
                 lines += ["", *table_lines(block)]
@@ -1062,10 +1070,12 @@ class WriterEval:
             if index > 0 and short is not None:
                 whose, reserve, left = short
                 total = math.fsum([*spent.values(), *spent_pass.values()])
+                forms = PageForms.off_page()
                 cap_stop = (
-                    f"Stopped at the spend cap after {len(launched)} of {len(planned)} cases, {spell_dollars(total)} "
-                    f"spent: the next batch of {size // self.k} would reserve {spell_dollars(reserve)} against the "
-                    f"{spell_dollars(max(left, 0.0))} left of {whose}."
+                    f"Stopped at the spend cap after {len(launched)} of {len(planned)} cases, "
+                    f"{forms.money_total(total).text} spent: the next batch of {size // self.k} would reserve "
+                    f"{forms.money_total(reserve).text} against the {forms.money_total(max(left, 0.0)).text} left of "
+                    f"{whose}."
                 )
                 break
             ref = case_set
@@ -1338,6 +1348,7 @@ class WriterEval:
         docstring). An arm whose model the published rates do not list is left to each report's first turn."""
         floors: dict[str, float] = {}
         twice: list[tuple[float, str]] = []
+        forms = PageForms.off_page()
         for arm, writer in self.arms.items():
             analyst_texts = [writer.analyst_skill.analyst(withhold=case.withhold).text for case in cases] or [
                 writer.analyst_skill.analyst().text
@@ -1360,7 +1371,7 @@ class WriterEval:
                     ceiling,
                     priced=(
                         f"the {role}'s first turn of arm {arm!r} on {model}, priced at its "
-                        f"{group_thousands(str(max_tokens))}-token output cap and its text before any snapshot is read,"
+                        f"{forms.count(max_tokens).text}-token output cap and its text before any snapshot is read,"
                     ),
                 )
                 if refused is not None:
@@ -1375,9 +1386,10 @@ class WriterEval:
         dearest, model = max(twice)
         if dearest * MIN_TURNS_FOR_A_REPORT <= self.budget.usd:
             return floors, []
+        needed = forms.money_total(dearest * MIN_TURNS_FOR_A_REPORT).text
         return floors, [
             f"the {self.budget.spelled} report budget is under {MIN_TURNS_FOR_A_REPORT} of a first turn's ceiling on "
-            f"{model} ({spell_dollars(dearest * MIN_TURNS_FOR_A_REPORT)}), so the cap may stop a report before its "
+            f"{model} ({needed}), so the cap may stop a report before its "
             f"review; {_RECORDED_BUDGETS if model == _RECORDED_MODEL else f'no acceptance run is recorded on {model}'}"
         ]
 
@@ -1418,7 +1430,8 @@ class WriterEval:
         smallest = max(
             costs.arm(cases) * arms / (1 - self.pairwise_share), costs.pairs(cases) * candidates / self.pairwise_share
         )
-        admits = f"a max_cost_usd of {spell_dollars(math.ceil(smallest * 100 - 1e-9) / 100)} or more admits it"
+        admitted = PageForms.off_page().money_total(math.ceil(smallest * 100 - 1e-9) / 100)
+        admits = f"a max_cost_usd of {admitted.text} or more admits it"
         which = "the first batch's" if self.stop_when == "separated" else "the"
         if self.budget.usd is not None and cases * self.budget.usd > self._arm_part:
             raise ValueError(
@@ -1669,10 +1682,13 @@ class WriterEval:
         unread = {arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None}
         decisions: dict[str, str] = {arm: read.decision for arm, read in promotions.items()}
         why = {arm: read.why for arm, read in promotions.items()}
+        # The side-by-side section and the answer state one candidate's shares alike, so they share one set of forms.
+        forms = PageForms.off_page()
         side_by_side = _side_by_side_blocks(
-            control, pairwise, unread, candidates=list(passes), why=why, launch_line=launch_line
+            forms, control, pairwise, unread, candidates=list(passes), why=why, launch_line=launch_line
         )
         answer = _answer_block(
+            forms,
             control,
             list(passes),
             pairwise,
@@ -1717,112 +1733,20 @@ def _pairwise_reads(verdict: Verdict) -> str:
     return f"{outcome}: {verdict.reason_detail}" if verdict.outcome == "untested" and verdict.reason_detail else outcome
 
 
-def _places(values: Sequence[float]) -> int:
-    """The fewest decimals, none at first, at which every one of ``values`` keeps its sign (no end that is not 0 prints
-    as 0, and none crosses zero) and values that differ still differ: an interval's ends read as distinct and a
-    crossing stays visible, whatever the rounding (P19)."""
-    for places in range(_MOST_PLACES + 1):
-        rounded = [round(value, places) for value in values]
-        if all(
-            (low > 0) == (value > 0) and (low < 0) == (value < 0) for low, value in zip(rounded, values, strict=True)
-        ):
-            if len(set(rounded)) == len(set(values)):
-                return places
-    return _MOST_PLACES
-
-
-def _in_points(value: float | None) -> float | None:
-    """A judge's-check figure, a part from 0 to 1 or a lean of parts, in percent or points (x 100), at the
-    decimals :func:`_places` reads it to alone: the one figure the checks table prints."""
-    if value is None:
-        return None
-    points = value * 100
-    return round(points, _places([points]))
-
-
-def _even_places(values: Sequence[float]) -> int:
-    """The fewest decimals at which shares in percent keep their side of none (0), of even (50) and of all (100), and
-    shares that differ still differ (:func:`_places` about each): a lean off even, or an end short of none or all,
-    stays visible whatever the rounding."""
-    return max(_places([value - edge for value in values]) for edge in (0.0, _EVEN, 100.0))
-
-
-@dataclass(frozen=True)
-class _Shares:
-    """A preference on the share scale, in percent, at the one precision the table, the figure, its line and the answer
-    print it at.
-
-    :ivar candidate: The candidate's share.
-    :ivar control: The control's: 100 less the candidate's as printed, so the two printed shares sum to 100.
-    :ivar interval: The interval on the candidate's share; ``None`` where the pass read none.
-    :ivar places: The decimals all three are read to.
-    """
-
-    candidate: float
-    control: float
-    interval: tuple[float, float] | None
-    places: int
-
-    def spell(self, value: float) -> str:
-        """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
-        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
-        three are one set, and a set reads at one precision, so each keeps the set's decimals, a whole one too
-        (``80.000`` beside ``99.998``)."""
-        return f"{value:.{self.places}f}"
-
-    def cell(self, value: float) -> CellValue:
-        """A share as a table cell, decided once for both shares: numbers where the set reads whole (the one number
-        rule prints a whole share as :meth:`spell` does), else the text of both, since that rule drops a whole share's
-        decimals and keeps four significant figures where the set needs its own decimals. The two share columns of a
-        row are always one kind."""
-        return value if self.places == 0 else self.spell(value)
-
-    @property
-    def fmt(self) -> str:
-        """The kit's format a chart draws the shares in, at the set's decimals, so its values table and its tooltips
-        read each share as the line under it does (``pct:3`` for ``49.998%``); ``pct`` where they read whole."""
-        return "pct" if self.places == 0 else f"pct:{self.places}"
-
-    @property
-    def ends(self) -> tuple[str, str] | None:
-        """The interval's two ends as text (:meth:`spell`); ``None`` without an interval."""
-        if self.interval is None:
-            return None
-        return (self.spell(self.interval[0]), self.spell(self.interval[1]))
-
-
-def _shares(share: float | None, difference: tuple[float, float] | None) -> _Shares | None:
-    """A candidate's share and the interval the pass read on the difference of the two shares, on the share scale:
-    the two shares run 0 to 1 and sum to 1, so a difference ``d`` is the candidate's share ``(1 + d) / 2``. Each end is
-    held within 0 to 100%, the scale a share lies on. ``None`` when nothing was scored."""
-    if share is None:
-        return None
-    points = share * 100
-    ends = None if difference is None else [min(100.0, max(0.0, (1 + end) / 2 * 100)) for end in difference]
-    places = _even_places([points, *(ends or [])])
-    candidate = round(points, places)
-    return _Shares(
-        candidate=candidate,
-        control=round(100 - candidate, places),
-        interval=None if ends is None else (round(ends[0], places), round(ends[1], places)),
-        places=places,
-    )
-
-
 def _primary_reads(read: WriterPairwise) -> str:
     """What a candidate's primary reading reads, ``void`` beside it when the order checks void it."""
     reads = _pairwise_reads(read.primary)
     return reads if read.void is None else f"{reads} (void)"
 
 
-def _level_text(pairwise: Mapping[str, WriterPairwise]) -> str | None:
+def _level_text(forms: PageForms, pairwise: Mapping[str, WriterPairwise]) -> str | None:
     """The level the passes read their intervals at (``95%``); ``None`` when none read one."""
     level = next((read.primary.interval_level for read in pairwise.values() if read.primary.interval_level), None)
-    return None if level is None else f"{format_number(level * 100)}%"
+    return None if level is None else f"{forms.lone(level * 100).text}%"
 
 
 def _preference_figure(
-    control: str, pairwise: Mapping[str, WriterPairwise], candidates: Sequence[str]
+    forms: PageForms, control: str, pairwise: Mapping[str, WriterPairwise], candidates: Sequence[str]
 ) -> list[ReportBlock]:
     """The preference drawn at the head of the Scorecard, so a reader sees at once which page the judge preferred, by
     how much and whether it is settled: each candidate's share as a dot on the 0 to 100% scale, its interval where its
@@ -1830,12 +1754,13 @@ def _preference_figure(
     page it prefers ("← prefers shipped", "prefers lead-first →"); then one line per candidate saying
     the same in words, the control's share beside the candidate's. Nothing when no pass scored a pair. An interval is
     drawn and said only with its level, as every interval on a page is (GENERATOR §5.2)."""
-    level = _level_text(pairwise)
+    level = _level_text(forms, pairwise)
     # Each share at the precision the table prints it, its interval dropped from the figure where it has no level.
     drawn = [
         (arm, read, shares if read.primary.interval_level else replace(shares, interval=None))
         for arm in candidates
-        if (read := pairwise.get(arm)) is not None and (shares := _shares(read.share, read.primary.interval))
+        if (read := pairwise.get(arm)) is not None
+        and (shares := forms.preference(read.share, read.primary.interval)) is not None
     ]
     if not drawn:
         return []
@@ -1843,7 +1768,7 @@ def _preference_figure(
     # Each candidate's share reads at its own precision everywhere it appears: its table row, its line, the answer and
     # its mark. Where the candidates' precisions differ, each is a panel of its own, with its own format, so no share
     # is padded to another's decimals (``61.000%`` beside ``49.998%``).
-    def row(arm: str, shares: _Shares) -> DotIntervalRow:
+    def row(arm: str, shares: PreferenceShares) -> DotIntervalRow:
         return DotIntervalRow(
             label=arm,
             value=shares.candidate,
@@ -1865,13 +1790,16 @@ def _preference_figure(
         fmt=drawn[0][2].fmt,
         level=level if any(shares.interval is not None for _, _, shares in drawn) else None,
         ticks=list(_SHARE_TICKS),
-        reference=ChartReference(value=_EVEN, kind="no_preference", label=f"even ({format_number(_EVEN)}%)"),
+        reference=ChartReference(
+            value=EVEN_SHARE, kind="no_preference", label=f"even ({forms.lone(EVEN_SHARE).text}%)"
+        ),
         # Right of even the judge preferred the candidate's page, left of it the control's: each end says whose.
         better=(f"prefers {control}", f"prefers {drawn[0][0] if len(drawn) == 1 else 'the candidate'}"),
     )
     lines = []
     for arm, read, shares in drawn:
-        line = f"{arm} {shares.spell(shares.candidate)}% · {control} {shares.spell(shares.control)}% (50% is even)"
+        candidate_share, control_share = shares.share_text(shares.candidate), shares.share_text(shares.control)
+        line = f"{arm} {candidate_share}% · {control} {control_share}% (50% is even)"
         if shares.ends is not None:
             low, high = shares.ends
             line += f", {level} interval {low}% to {high}%"
@@ -1887,7 +1815,7 @@ def _cells(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
     return {key: TableCell(value=value) for key, value in values.items()}
 
 
-def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, TableCell]]:
+def _preference_rows(forms: PageForms, arm: str, read: WriterPairwise | None) -> list[dict[str, TableCell]]:
     """A candidate's rows of the preference table: every pair, then the pairs whose two pages were both finished; one
     row of the candidate alone when its pass was not read."""
     if read is None:
@@ -1900,7 +1828,7 @@ def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, Ta
         reads = _primary_reads(read) if pairs == _EVERY_PAIR else _pairwise_reads(verdict)
         # Both shares and the interval's ends at one precision, the fewest decimals that keep each on its side of
         # none, even and all, and the three apart.
-        shares = _shares(share, verdict.interval)
+        shares = forms.preference(share, verdict.interval)
         rows.append(
             _cells(
                 {
@@ -1916,32 +1844,32 @@ def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, Ta
     return rows
 
 
-def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
+def _check_row(forms: PageForms, arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
     """A candidate's row of the judge's checks table; the candidate alone when its pass was not read."""
     if read is None:
         return _cells({key: arm if key == "candidate" else None for key, _ in _CHECK_COLUMNS})
     rate, settle = read.order_consistency, read.cases_to_settle
-    form = money_form([read.cost_usd, read.cap_usd])  # the spend and its part read in one money form
-    spent = form.spell(read.cost_usd)
+    spent, cap = forms.money_set([read.cost_usd, read.cap_usd])  # the spend and its part read in one money form
     return _cells(
         {
             "candidate": arm,
             "order_consistency": None
             if rate is None
-            else f"{render_cell(_in_points(rate))}% ({read.order_consistent} of {read.both_orders})",
-            "first_slot_lean": _in_points(read.first_slot_bias),
+            else f"{forms.lone(forms.check(rate)).text}% ({read.order_consistent} of {read.both_orders})",
+            "first_slot_lean": forms.check(read.first_slot_bias),
             "cannot_tell": read.cannot_tell,
             "to_settle": None
             if settle is None
-            else f"more than {spell_count(PROJECTION_CASE_CAP)}"
+            else f"more than {forms.count(PROJECTION_CASE_CAP).text}"
             if settle > PROJECTION_CASE_CAP
-            else spell_count(settle),
-            "spent": spent if read.cap_usd is None else f"{spent} of {form.spell(read.cap_usd)}",
+            else forms.count(settle).text,
+            "spent": spent.text if read.cap_usd is None else f"{spent.text} of {cap.text}",
         }
     )
 
 
 def _side_by_side_blocks(
+    forms: PageForms,
     control: str,
     pairwise: Mapping[str, WriterPairwise],
     unread: Mapping[str, str],
@@ -1956,15 +1884,15 @@ def _side_by_side_blocks(
     checks table (a row per candidate), a line for each pass that did not complete, and each candidate's promotion
     reading in its own sentence. A run launched in batches (``launch_line``) says where it stopped launching and what
     each pass did against its rule, so the page says how many cases its readings were read on."""
-    level = _level_text(pairwise)
+    level = _level_text(forms, pairwise)
     interval = "Interval (%)" if level is None else f"{level} interval (%)"
     preference = [
         TableColumn(key=key, header=interval if key == "interval" else header) for key, header in _PREFERENCE_COLUMNS
     ]
-    rows = [row for arm in candidates for row in _preference_rows(arm, pairwise.get(arm))]
-    checks = [_check_row(arm, pairwise.get(arm)) for arm in candidates]
+    rows = [row for arm in candidates for row in _preference_rows(forms, arm, pairwise.get(arm))]
+    checks = [_check_row(forms, arm, pairwise.get(arm)) for arm in candidates]
     return [
-        *_preference_figure(control, pairwise, candidates),
+        *_preference_figure(forms, control, pairwise, candidates),
         DisclosureBlock(section="scorecard", source="comparisons", text=_PAIRWISE_LEAD),
         TableBlock(
             section="scorecard",
@@ -2011,6 +1939,7 @@ def _side_by_side_blocks(
 
 
 def _answer_block(
+    forms: PageForms,
     control: str,
     candidates: Sequence[str],
     pairwise: Mapping[str, WriterPairwise],
@@ -2029,6 +1958,7 @@ def _answer_block(
     the cases up to its stop, and its sentence counts those."""
     sentences = [
         _answer_sentence(
+            forms,
             control,
             arm,
             pairwise.get(arm),
@@ -2046,6 +1976,7 @@ def _answer_block(
 
 
 def _answer_sentence(
+    forms: PageForms,
     control: str,
     arm: str,
     read: WriterPairwise | None,
@@ -2061,12 +1992,12 @@ def _answer_sentence(
     primary = read.primary
     improved = primary.outcome == "improved" and primary.reason != "too_few_cases" and read.void is None
     regressed = primary.outcome == "regressed" and primary.reason != "too_few_cases" and read.void is None
-    shares = _shares(read.share, primary.interval)
+    shares = forms.preference(read.share, primary.interval)
     if shares is None:
         preference = f"across {cases} the judge scored no pair of {arm} against {control}"
     else:
         preference = (
-            f"across {cases} the judge gave {arm} {shares.spell(shares.candidate)}% of its preference over "
+            f"across {cases} the judge gave {arm} {shares.share_text(shares.candidate)}% of its preference over "
             f"{control} (50% is even)"
         )
     settle = read.cases_to_settle
@@ -2081,13 +2012,13 @@ def _answer_sentence(
         preference += ", too few cases to tell from an even split"
         if settle is not None:
             # A projection that assumes the observed share is the true one: said as conditional and coarse (one
-            # significant figure, as a count reads, spell_count), since a share on these few cases moves between two
+            # significant figure, as a count reads, PageForms.count), since a share on these few cases moves between two
             # recordings of near-identical pages: ``if the share stayed near 52%, roughly 3,000 cases would settle it``.
-            near = shares.spell(shares.candidate) if shares is not None else None
+            near = shares.share_text(shares.candidate) if shares is not None else None
             about = (
-                f"more than {spell_count(PROJECTION_CASE_CAP)}"
+                f"more than {forms.count(PROJECTION_CASE_CAP).text}"
                 if settle > PROJECTION_CASE_CAP
-                else f"roughly {spell_count(_coarse(settle))}"
+                else f"roughly {forms.count(_coarse(settle)).text}"
             )
             condition = f"if the share stayed near {near}%, " if near is not None else ""
             preference += f"; {condition}{about} cases would settle it"
@@ -2254,6 +2185,7 @@ def _over_budget_with_no_page(
     stored a page needed under the cap: what they spent, plus one turn's ceiling (the arm's analyst first-turn floor,
     where it was priced), so the next budget is sized from them. Blocking."""
     storage = host.eval_host.storage
+    forms = PageForms.off_page()
     said: list[str] = []
     for arm, ids in run_ids.items():
         results = [result for run_id in ids for result in storage.query_eval_results_by_run(run_id, scope_id)]
@@ -2274,9 +2206,10 @@ def _over_budget_with_no_page(
             needed = (
                 "that plus one turn's ceiling"
                 if floor is None
-                else f"about {spell_dollars(most + floor)}, that plus one turn's ceiling of at least {spell_dollars(floor)}"
+                else f"about {forms.money_total(most + floor).text}, that plus one turn's ceiling of at least "
+                f"{forms.money_total(floor).text}"
             )
-            low, high = spell_dollars(spent[0]), spell_dollars(most)
+            low, high = forms.money_total(spent[0]).text, forms.money_total(most).text
             span = low if low == high else f"{low} to {high}"
             evidence = (
                 f"the {len(spent)} that stored a page under it spent {span}{' each' if len(spent) > 1 else ''}, so "

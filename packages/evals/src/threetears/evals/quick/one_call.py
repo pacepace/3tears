@@ -104,6 +104,7 @@ from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValu
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from threetears.evals.analysis.summary import CaseResult, EvalSummary, summarize_run
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
     KindFactory,
@@ -519,8 +520,10 @@ def refuse_unusable_guardrails(
             raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
         bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
         if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
+            forms = PageForms.off_page()
+            low, high = (forms.echoed(end, measure=name).text for end in bounds)
             raise ValueError(
-                f"a margin of {guardrail.margin!r} on {name!r}, which scores {bounds[0]:g} to {bounds[1]:g}, is "
+                f"a margin of {guardrail.margin!r} on {name!r}, which scores {low} to {high}, is "
                 "as wide as every value it can return, so every arm would hold whatever it did; declare a "
                 "smaller one"
             )
@@ -981,11 +984,12 @@ class CallableKind:
                     telemetry=telemetry,
                 )
             if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
-                low, high = self._ranges[name]
+                forms = PageForms.off_page()
+                low, high = (forms.echoed(end, measure=name).text for end in self._ranges[name])
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[
-                        f"the scorer {name} returned {score!r}, outside the range {low:g} to {high:g} declared for it"
+                        f"the scorer {name} returned {score!r}, outside the range {low} to {high} declared for it"
                     ],
                     judge_evidence=evidence,
                     telemetry=telemetry,
