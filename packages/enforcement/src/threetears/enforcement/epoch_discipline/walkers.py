@@ -80,6 +80,15 @@ _BACKEND_ROW_WRITES: Final[frozenset[str]] = frozenset({"upsert", "delete", "ins
 #: a receiver segment naming L3 or a backend.
 _BACKEND_SEGMENT: Final[re.Pattern[str]] = re.compile(r"(?i)(backend|(^|_)l3($|_))")
 
+#: raw KV writes: a put, create, update, delete or purge on a receiver that names a KV bucket, inside a
+#: collection class (one whose name ends in ``Collection``). Outside the collection write path, an L2 row or
+#: state written this way reaches no follower. Coordination primitives' own buckets (leases, counters) hold no
+#: collection's rows and are not walked for it.
+_KV_WRITES: Final[frozenset[str]] = frozenset({"put", "create", "update", "delete", "purge"})
+
+#: a receiver segment naming a KV bucket: ``kv``, ``..._kv``, ``kv_...``, ``bucket``.
+_KV_WRITE_SEGMENT: Final[re.Pattern[str]] = re.compile(r"(?i)(^_?kv$|_kv$|^_?kv_|bucket$)")
+
 #: a collection's own L2 primitives; called anywhere but the collection write path, they bypass it.
 _L2_PRIMITIVES: Final[frozenset[str]] = frozenset({"_save_to_l2", "_delete_from_l2", "_put_l2", "_l2_put"})
 
@@ -771,6 +780,13 @@ class _ModuleWalk(ast.NodeVisitor):
         backend = any(_BACKEND_SEGMENT.search(segment) for segment in segments)
         if name in _L2_PRIMITIVES:
             self._hit(RULE_EPOCH_BYPASS, node, name)
+        elif (
+            name in _KV_WRITES
+            and segments
+            and _KV_WRITE_SEGMENT.search(segments[-1])
+            and any(part.endswith("Collection") for part in self._stack)
+        ):
+            self._hit(RULE_EPOCH_BYPASS, node, f"kv.{name}")
         elif isinstance(node.func, ast.Attribute) and (
             name in _BACKEND_BULK_WRITES or (name in _BACKEND_ROW_WRITES and backend)
         ):

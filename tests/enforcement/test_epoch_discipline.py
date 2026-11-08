@@ -65,6 +65,28 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/base.py::BaseCollection._clear_marks",
             f"{_CORE}/collections/base.py::BaseCollection._withdraw_from_caches",
             f"{_CORE}/collections/base.py::BaseCollection.invalidate_cache_many",
+            # the row's L2 put, behind save_entity
+            f"{_CORE}/collections/base.py::BaseCollection._save_to_l2",
+            # the row's L2 delete, behind delete
+            f"{_CORE}/collections/base.py::BaseCollection._delete_from_l2",
+            # a revision-fenced L2 delete on the write path
+            f"{_CORE}/collections/base.py::BaseCollection._delete_l2_at",
+            # seeding L2 from a read, revision-fenced, the read path's own fill
+            f"{_CORE}/collections/base.py::BaseCollection._seed_l2",
+            # an L2-first commit: its epoch is appended with the row
+            f"{_CORE}/collections/base.py::BaseCollection._l2_first_apply",
+            # the receiver's eviction of a key an invalidation named
+            f"{_CORE}/collections/base.py::BaseCollection.delete_l2_entry",
+            # the L1+L2-only collection's compare-and-swap write path
+            f"{_CORE}/collections/base.py::BaseCollection.l2_cas_mutate",
+            # taking back a won compare-and-swap whose persist failed
+            f"{_CORE}/collections/base.py::BaseCollection._withdraw_unpersisted_cas",
+            # the L2 write generation: the epoch machinery itself
+            f"{_CORE}/collections/base.py::BaseCollection._advance_l2_generation",
+            # the L2 write generation: the epoch machinery itself
+            f"{_CORE}/collections/base.py::BaseCollection._advance_l2_generation_key",
+            # the L2 write generation: the epoch machinery itself
+            f"{_CORE}/collections/base.py::BaseCollection.l2_write_generation",
             # the schema-backed collection's keyed bulk writes, which name every row they change
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.save_rows",
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.delete_rows",

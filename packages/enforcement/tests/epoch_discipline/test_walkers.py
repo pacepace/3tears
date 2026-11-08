@@ -109,6 +109,9 @@ _VIOLATIONS: dict[str, list[str]] = {
         "_SQL = 'INSERT INTO memories (id) VALUES ($1)'\n\nasync def add(conn, key):\n    await conn.execute(_SQL, key)\n",
         "class Coll:\n    async def remember(self, key, data):\n        await self._save_to_l2(key, data)\n",
         "async def load(backend, files):\n    await backend.load_files('rows', files)\n",
+        "class WidgetCollection:\n    async def stash(self, key, value):\n        kv = await self._ensure_kv()\n"
+        "        await kv.put(key=key, value=value)\n",
+        "class WidgetCollection:\n    async def fill(self, key, value):\n        await self._kv.update(key=key, value=value, revision=0)\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def all_roles(pool):\n    return await pool.fetch('SELECT id, name FROM roles')\n",
@@ -146,6 +149,8 @@ _COMPLIANT: dict[str, list[str]] = {
         "async def load(conn, rows):\n    await conn.execute('INSERT INTO t SELECT * FROM unnest($1)', rows)\n"
         "    await announce_change('t', rows)\n",
         "async def read(pool, key):\n    return await pool.fetchrow('SELECT * FROM t WHERE id = $1 FOR UPDATE', key)\n",
+        # a coordination primitive's own bucket holds no collection's rows
+        "class KVLease:\n    async def take(self, key, value):\n        await self._kv.create(key=key, value=value)\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def one(pool, key):\n    return await pool.fetchrow('SELECT * FROM roles WHERE id = $1', key)\n",
