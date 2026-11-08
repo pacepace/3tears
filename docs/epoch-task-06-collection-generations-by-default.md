@@ -1451,7 +1451,7 @@ fetch epochs `mine+1 .. head`, apply each.
   falls through to another tier for it.
   Until the L3 refill of the epoch log is deployed, a lost record or a REPLACED generation is ended
   only by restarting the process (a first sight).
-- A commit whose rows would make a record past 256 KiB (`EPOCH_CHANGE_MAX_RECORD_BYTES`) is recorded
+- A commit whose rows would make a record past 256 KiB is recorded
   as the whole table. Pods, the registry, the hub and the gateway are granted `{ns}-epoch-changes`
   beside `{ns}-epochs`.
 

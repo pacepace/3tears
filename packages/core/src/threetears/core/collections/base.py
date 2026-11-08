@@ -22,7 +22,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -31,6 +31,7 @@ from uuid import uuid7
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.core._bridge import fire_and_forget, sync_await
+from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.cache import MISSING
@@ -1990,6 +1991,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         failure = await self._advance_generation(changed)
         return _NO_BUMP if failure is None else _Bump(failure=failure)
 
+    def _naming_changed(self, rows: Sequence[ChangedRow]) -> AbstractContextManager[None]:
+        """name ``rows`` on every L3 write request made inside the block (``CHANGED_ROWS_FIELD``).
+
+        A pod's broker advances the table's generation after it commits the write and stores the
+        epoch's change record from these rows; a write that names none leaves the epoch's keys unknown.
+
+        :param rows: the rows the write changes
+        :ptype rows: Sequence[ChangedRow]
+        :return: the naming context
+        :rtype: AbstractContextManager[None]
+        """
+        return naming_changed_rows(self.table_name, [row.model_dump(exclude_none=True) for row in rows])
+
     def changed_row(
         self, entity_id: Any, row: dict[str, Any] | None = None, *, l2_key_current: bool = False
     ) -> ChangedRow:
@@ -3585,7 +3599,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
             before = await self._l2_revision_before_write(entity_id)
             try:
-                rows_affected = await self.save_to_store(data)
+                with self._naming_changed([self.changed_row(entity_id, data)]):
+                    rows_affected = await self.save_to_store(data)
             # BaseException, not Exception: a cancelled write's outcome is as unknown as a failed
             # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
             # path is fire-and-forget, so there is no caller to hand it to.
@@ -4057,7 +4072,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # touched the key since (see _cache_committed_row).
                 before = await self._l2_revision_before_write(entity_id)
                 try:
-                    rows_affected = await self.save_to_store(data, original_timestamp)
+                    with self._naming_changed([self.changed_row(entity_id, data)]):
+                        rows_affected = await self.save_to_store(data, original_timestamp)
                 # BaseException, not Exception: a cancellation mid-write leaves the outcome as
                 # unknown as any failure does, and CancelledError is not an Exception.
                 except BaseException:
@@ -4152,7 +4168,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises RuntimeError: when an insert affects no row
         """
         try:
-            rows_affected = await self.save_to_store(data, original_timestamp, conn=conn)
+            with self._naming_changed([self.changed_row(entity_id, data)]):
+                rows_affected = await self.save_to_store(data, original_timestamp, conn=conn)
         # BaseException, not Exception: CancelledError is not an Exception, and a cancelled write
         # leaves the outcome as unknown as any failure does.
         except BaseException:
@@ -4370,10 +4387,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: int
         """
         rows: int
-        if self.persists_l2_order and l2_order_of(data) is not None:
-            rows = await self.save_ordered_to_store(data, conn=conn)
-        else:
-            rows = await self.save_to_store(data, conn=conn)
+        key = tuple(data[column] for column in self.primary_key_columns)
+        # a flushed row is announced as leaving this scope's L2 key current, and named so
+        with self._naming_changed([self.changed_row(key if len(key) > 1 else key[0], data, l2_key_current=True)]):
+            if self.persists_l2_order and l2_order_of(data) is not None:
+                rows = await self.save_ordered_to_store(data, conn=conn)
+            else:
+                rows = await self.save_to_store(data, conn=conn)
         return rows
 
     @traced()
@@ -4467,7 +4487,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         cascaded = await read_delete_cascade(self, [entity_id])
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        await self.delete_from_store(entity_id)
+        with self._naming_changed([self.changed_row(entity_id, row)]):
+            await self.delete_from_store(entity_id)
         bump = await self._bump_generation([self.changed_row(entity_id, row)])
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
@@ -5077,7 +5098,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             assert self._write_buffer is not None  # narrow: deferral requires one
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(new_row))
             return _NO_BUMP
-        if await self.save_ordered_to_store(new_row) == 0:
+        with self._naming_changed(changed):
+            stored = await self.save_ordered_to_store(new_row)
+        if stored == 0:
             await self._confirm_superseded(entity_id, new_row)
             return _NO_BUMP
         return await self._bump_after_commit(changed)

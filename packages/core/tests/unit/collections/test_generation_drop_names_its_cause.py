@@ -43,7 +43,7 @@ async def test_falling_behind_logs_the_epoch_the_generation_read_and_the_mark(
     ]
     assert seen == {
         "table": "namespaces",
-        "reason": "epoch change record not in L2",
+        "reason": "record_missing",
         "epoch": "inc:2",
         "read": "inc:3",
         "recorded": "inc:1",

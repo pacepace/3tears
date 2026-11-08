@@ -52,8 +52,12 @@ _EPOCHS_APPLIED = counter(
 )
 _EPOCHS_BEHIND = counter(
     "collection_epoch_behind_total",
-    description="catch-ups that stopped at an epoch whose change record L2 does not hold; the pod serves what it has",
-    label_names=("table",),
+    description=(
+        "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change record), "
+        "keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the generation's "
+        "store was replaced); the pod serves what it has"
+    ),
+    label_names=("table", "reason"),
 )
 _TABLES_BEHIND = gauge(
     "collection_epoch_tables_behind",
@@ -850,23 +854,22 @@ class CollectionRegistry:
         if verdict is GenerationVerdict.REPLACED or token is None:
             self._fall_behind(
                 table_name,
-                reason=verdict.value,
+                reason="replaced",
                 detail={"read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
-        missing: str | None = None
+        hole: tuple[str, str] | None = None
         for epoch in marks.unaccounted(table_name, token):
             try:
                 change = None if changes is None else await changes.change(table_name, epoch)
             except GenerationUnavailableError as exc:
-                self._fall_behind(
-                    table_name, reason="epoch change record unreadable", detail={"epoch": epoch, "error": str(exc)}
-                )
+                self._fall_behind(table_name, reason="record_unreadable", detail={"epoch": epoch, "error": str(exc)})
                 raise
-            if change is None:
+            if change is None or change.keys_unknown:
                 # one hole holds the mark, never the epochs after it: they are applied, and wait as
-                # heard until the hole's record can be read
-                missing = missing or epoch
+                # heard until the hole's record can be read. A record whose writer named no rows is a
+                # hole no later read fills; it is told apart in the log and the counter.
+                hole = hole or (epoch, "record_missing" if change is None else "keys_unknown")
                 continue
             if change.whole_table:
                 # the mark moves first, so a cache derived from the table that re-bases on the drop
@@ -877,11 +880,11 @@ class CollectionRegistry:
                 await self.apply_epoch_change(change)
                 marks.applied(table_name, epoch)
             _EPOCHS_APPLIED.labels(table=table_name).inc()
-        if missing is not None:
+        if hole is not None:
             self._fall_behind(
                 table_name,
-                reason="epoch change record not in L2",
-                detail={"epoch": missing, "read": token, "recorded": marks.recorded(table_name)},
+                reason=hole[1],
+                detail={"epoch": hole[0], "read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
         self._caught_up(table_name)
@@ -939,7 +942,7 @@ class CollectionRegistry:
             # said once when it began; the gauge says how long it lasts
             return
         self._behind[table_name] = reason
-        _EPOCHS_BEHIND.labels(table=table_name).inc()
+        _EPOCHS_BEHIND.labels(table=table_name, reason=reason).inc()
         _TABLES_BEHIND.set(len(self._behind))
         log.error(
             "behind on a table: an epoch's change could not be applied; serving what this process holds "

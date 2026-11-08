@@ -32,12 +32,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EPOCH_CHANGE_MAX_AGE",
-    "EPOCH_CHANGE_MAX_RECORD_BYTES",
     "ChangedRow",
     "EpochChange",
     "EpochChangeReader",
-    "EpochChangeWriter",
     "advance_recording",
+    "check_change_form",
     "epoch_change_record",
     "read_epoch_change",
 ]
@@ -49,7 +48,7 @@ EPOCH_CHANGE_MAX_AGE: Final = timedelta(hours=24)
 #: the largest record of a commit's rows that is stored as rows. A commit whose rows would not fit is
 #: recorded as a change to the whole table: one record that always fits, where a refused one would
 #: leave every follower that missed it behind for good. Well under a broker's default message limit.
-EPOCH_CHANGE_MAX_RECORD_BYTES: Final = 256 * 1024
+_EPOCH_CHANGE_MAX_RECORD_BYTES: Final = 256 * 1024
 
 
 class ChangedRow(BaseModel):
@@ -74,26 +73,31 @@ class EpochChange(BaseModel):
     :ivar token: the generation the advance wrote, ``{incarnation}:{count}``
     :ivar whole_table: the advance covered every row of the table (a truncate, a load, an
         announced migration); :attr:`rows` is then empty
+    :ivar keys_unknown: the advance's writer named no rows and did not change the whole table (a
+        broker advancing for a write that sent no ``changed_rows``): a follower that missed it cannot
+        apply it, and is behind on the table for that epoch -- serving, logged and counted as
+        ``keys_unknown``, never a drop. :attr:`rows` is then empty
     :ivar rows: the rows the advance covered, one per row broadcast of its commit
     """
 
     table: str
     token: str
     whole_table: bool = False
+    keys_unknown: bool = False
     rows: list[ChangedRow] = []
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
-        """refuse a record that names no row and is not the whole table, or names rows and is.
+        """refuse a record that is not exactly one of: its rows, the whole table, or keys unknown.
 
         :return: the record
         :rtype: EpochChange
         :raises ValueError: when the reach is empty or contradictory
         """
-        if self.whole_table == bool(self.rows):
+        if [bool(self.rows), self.whole_table, self.keys_unknown].count(True) != 1:
             raise ValueError(
-                f"an epoch change of {self.table!r} at {self.token!r} names either the whole table or its rows, "
-                f"never both and never neither"
+                f"an epoch change of {self.table!r} at {self.token!r} names exactly one of its rows, the whole "
+                f"table, or keys unknown"
             )
         return self
 
@@ -118,25 +122,48 @@ class EpochChangeReader(Protocol):
 
 
 @runtime_checkable
-class EpochChangeWriter(Protocol):
+class _EpochChangeWriter(Protocol):
     """a generation source that records each advance's change as it makes it."""
 
-    async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str | None:
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str | None:
         """advance the table's generation once and store what the advance covered.
 
         :param table_name: the table
         :ptype table_name: str
         :param rows: the rows the committed write changed; ``None`` when it changed the whole table
         :ptype rows: Sequence[ChangedRow] | None
+        :param keys_unknown: the writer named no rows and did not change the whole table; the record
+            says so and a follower that missed it is behind for that epoch. Requires ``rows=None``
+        :ptype keys_unknown: bool
         :return: the generation token the advance wrote, as :meth:`GenerationSource.advance`
         :rtype: str | None
         :raises GenerationUnavailableError: when the generation could not be advanced, or its
             change could not be stored, after a committed write
+        :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
         """
         ...
 
 
-async def advance_recording(source: GenerationSource, table_name: str, rows: Sequence[ChangedRow] | None) -> str | None:
+def check_change_form(rows: Sequence[ChangedRow] | None, *, keys_unknown: bool) -> None:
+    """refuse ``keys_unknown`` together with rows: a change is its rows, the whole table, or keys unknown.
+
+    :param rows: the rows named, or ``None``
+    :ptype rows: Sequence[ChangedRow] | None
+    :param keys_unknown: whether the writer's keys are unknown
+    :ptype keys_unknown: bool
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when both are given
+    """
+    if keys_unknown and rows is not None:
+        raise ValueError("keys_unknown=True names no rows: pass rows=None")
+
+
+async def advance_recording(
+    source: GenerationSource, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
     Every advance goes through here, so a source that keeps the epoch change log is never handed an
@@ -149,35 +176,49 @@ async def advance_recording(source: GenerationSource, table_name: str, rows: Seq
     :ptype table_name: str
     :param rows: the rows the committed write changed; ``None`` when its reach is the whole table
     :ptype rows: Sequence[ChangedRow] | None
+    :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
+    :ptype keys_unknown: bool
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
+    :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
-    if isinstance(source, EpochChangeWriter):
-        return await source.advance_with_change(table_name, rows)
+    check_change_form(rows, keys_unknown=keys_unknown)
+    if isinstance(source, _EpochChangeWriter):
+        return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown)
     return await source.advance(table_name)
 
 
-def epoch_change_record(table_name: str, token: str, rows: Sequence[ChangedRow] | None) -> bytes:
+def epoch_change_record(
+    table_name: str, token: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+) -> bytes:
     """the stored form of the change one advance made.
 
-    Rows that would make a record past :data:`EPOCH_CHANGE_MAX_RECORD_BYTES` are recorded as the
+    Rows that would make a record past :data:`_EPOCH_CHANGE_MAX_RECORD_BYTES` are recorded as the
     whole table instead.
 
     :param table_name: the table
     :ptype table_name: str
     :param token: the generation the advance wrote
     :ptype token: str
-    :param rows: the rows it covered; ``None`` when its reach is the whole table
+    :param rows: the rows it covered; ``None`` when its reach is the whole table, or its keys unknown
     :ptype rows: Sequence[ChangedRow] | None
+    :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
+    :ptype keys_unknown: bool
     :return: the record, as stored
     :rtype: bytes
+    :raises ValueError: when ``keys_unknown`` is set with rows
     """
+    check_change_form(rows, keys_unknown=keys_unknown)
     record = EpochChange(
-        table=table_name, token=token, whole_table=rows is None, rows=list(rows) if rows is not None else []
+        table=table_name,
+        token=token,
+        whole_table=rows is None and not keys_unknown,
+        keys_unknown=keys_unknown,
+        rows=list(rows) if rows is not None else [],
     )
     stored = record.model_dump_json().encode("utf-8")
-    if len(stored) > EPOCH_CHANGE_MAX_RECORD_BYTES:
+    if len(stored) > _EPOCH_CHANGE_MAX_RECORD_BYTES:
         stored = EpochChange(table=table_name, token=token, whole_table=True).model_dump_json().encode("utf-8")
     return stored
 

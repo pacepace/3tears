@@ -31,7 +31,7 @@ from threetears.core.collections import (
     CollectionRegistry,
     announce_unheard_writes,
 )
-from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, advance_recording, epoch_change_record
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
@@ -41,7 +41,6 @@ from threetears.epoch import (
     EpochChangeRetention,
     EpochGenerationReader,
     EpochGenerationSource,
-    epoch_change_kv_key,
     generation_catchup_tick,
 )
 from threetears.nats import set_default_namespace
@@ -165,6 +164,12 @@ async def _changes(bus: FakeNatsClient) -> FakeKvBucket:
     return await bus.kv_bucket(name=EPOCH_CHANGES_BUCKET)
 
 
+def _record_key(token: str) -> str:
+    """the change log key of the table's epoch at ``token``: ``{table}.{incarnation}.{count}``."""
+    incarnation, _, count = token.rpartition(":")
+    return f"{_TABLE}.{incarnation}.{count}"
+
+
 async def _two_pods(bus: _Lossy) -> tuple[_Members, _Pod, _Members]:
     """a writer and a follower of the table, the follower listening and following, two rows cached."""
     rows: dict[str, dict[str, Any]] = {}
@@ -227,7 +232,7 @@ class TestAMissingRecordLeavesThePodBehindAndServing:
         bus.deaf = False
         token = await EpochGenerationReader(bus).read(_TABLE)
         assert token is not None
-        key = epoch_change_kv_key(_TABLE, token)
+        key = _record_key(token)
         bucket = await _changes(bus)
         held = await bucket.get(key=key)
         assert held is not None
@@ -254,6 +259,46 @@ class TestAMissingRecordLeavesThePodBehindAndServing:
         await follower.tick()
         assert follower.registry.behind_on(_TABLE)
         assert reading.exists_in_cache_sync("m2")
+
+
+class TestAnEpochWhoseKeysAreUnknown:
+    async def test_it_leaves_the_pod_behind_said_apart_from_a_lost_record(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        token = await EpochGenerationReader(bus).read(_TABLE)
+        assert token is not None
+        # what a broker stores for a commit that named no rows
+        await (await _changes(bus)).put(
+            key=_record_key(token), value=epoch_change_record(_TABLE, token, None, keys_unknown=True)
+        )
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+        assert follower.registry.behind_on(_TABLE)
+        assert reading.exists_in_cache_sync("m2"), "behind is never a drop"
+        (said,) = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert said["reason"] == "keys_unknown"
+
+    async def test_a_writer_records_it_and_may_not_name_rows_with_it(self, bus: _Lossy) -> None:
+        source = EpochGenerationSource(bus)
+        token = await source.advance_with_change(_TABLE, None, keys_unknown=True)
+        record = await EpochGenerationReader(bus).change(_TABLE, token)
+        assert record is not None
+        assert (record.keys_unknown, record.whole_table, record.rows) == (True, False, [])
+        with pytest.raises(ValueError, match="rows=None"):
+            await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])], keys_unknown=True)
+        assert await EpochGenerationReader(bus).read(_TABLE) == token, "a refused call advanced nothing"
+        with pytest.raises(ValueError, match="rows=None"):
+            await advance_recording(source, _TABLE, [ChangedRow(ids=["m1"])], keys_unknown=True)
+
+    def test_a_record_is_exactly_one_of_its_three_forms(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            EpochChange(table=_TABLE, token="inc:1", whole_table=True, keys_unknown=True)
+        with pytest.raises(ValueError, match="exactly one"):
+            EpochChange(table=_TABLE, token="inc:1")
 
 
 class TestAWholeTableChangeIsTheChange:
@@ -308,7 +353,7 @@ class TestAHoleHoldsOnlyTheMark:
         await _save(writing, "m2", "barbara")
         bus.deaf = False
         assert first is not None
-        await (await _changes(bus)).delete(key=epoch_change_kv_key(_TABLE, first))
+        await (await _changes(bus)).delete(key=_record_key(first))
         await follower.tick()
         assert follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m2") == "barbara", "the epoch after the hole was applied"
@@ -336,7 +381,7 @@ class TestBehindIsSaidOnce:
         bus.deaf = False
         token = await EpochGenerationReader(bus).read(_TABLE)
         assert token is not None
-        await (await _changes(bus)).delete(key=epoch_change_kv_key(_TABLE, token))
+        await (await _changes(bus)).delete(key=_record_key(token))
         with caplog.at_level(logging.ERROR):
             for _ in range(3):
                 await follower.tick()
