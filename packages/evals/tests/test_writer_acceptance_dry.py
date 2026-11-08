@@ -595,6 +595,11 @@ def test_a_live_run_under_ten_cases_is_not_refused_for_them_and_a_missing_key_is
     the retry is not blocked."""
     for name in KEYS:
         monkeypatch.delenv(name, raising=False)
+
+    async def launched(**_: object) -> Acceptance:
+        raise RuntimeError("the launch would begin here, and the check is before it")
+
+    monkeypatch.setattr(writer_acceptance, "acceptance", launched)
     out = tmp_path / "out"
     cases = writer_acceptance.default_cases(tmp_path / "cases")
     assert writer_acceptance.held_out_cases(cases, 0.99) == writer_acceptance.held_out_cases(None, 0.99) == 7
@@ -624,9 +629,11 @@ def test_a_live_run_under_ten_cases_prints_its_floor_line_before_anything_is_bou
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """With its keys set, a live run over seven held-out cases prints the floor's line, saying it is under the 10,
-    before it launches anything; here the launch itself is stopped where it would begin."""
+    and how many fallback keys each key has, before it launches anything; here the launch itself is stopped where it
+    would begin."""
     for name in KEYS:
         monkeypatch.setenv(name, "unused")
+        monkeypatch.delenv(f"{name}_FALLBACKS", raising=False)
 
     async def launched(**_: object) -> Acceptance:
         raise RuntimeError("the launch would begin here")
@@ -637,8 +644,74 @@ def test_a_live_run_under_ten_cases_prints_its_floor_line_before_anything_is_bou
         writer_acceptance.main(["--cap-usd", "45", "--out", str(tmp_path / "out"), "--cases", str(cases)])
     assert capsys.readouterr().err.splitlines() == [
         "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
-        "every case."
+        "every case.",
+        "Keys: ANTHROPIC_API_KEY with no fallback, OPENROUTER_API_KEY with no fallback.",
     ]
+
+
+def test_a_live_run_says_how_many_fallback_keys_each_key_has_and_names_no_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``<VARIABLE>_FALLBACKS`` lists the keys tried when one's credit is spent: the launch line counts them, and
+    prints no key's value."""
+    for name in (*KEYS, "ANTHROPIC_API_KEY_LUMENS", "ANTHROPIC_API_KEY_3"):
+        monkeypatch.setenv(name, f"secret-{name.lower()}")
+    monkeypatch.setenv("ANTHROPIC_API_KEY_FALLBACKS", "ANTHROPIC_API_KEY_LUMENS, ANTHROPIC_API_KEY_3")
+    monkeypatch.delenv("OPENROUTER_API_KEY_FALLBACKS", raising=False)
+
+    async def launched(**_: object) -> Acceptance:
+        raise RuntimeError("the launch would begin here")
+
+    monkeypatch.setattr(writer_acceptance, "acceptance", launched)
+    with pytest.raises(RuntimeError, match="the launch would begin here"):
+        writer_acceptance.main(["--cap-usd", "45", "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr().err
+    assert "Keys: ANTHROPIC_API_KEY with 2 fallbacks, OPENROUTER_API_KEY with no fallback." in printed.splitlines()
+    assert "secret-" not in printed
+
+
+def test_a_fallback_naming_an_unset_variable_is_refused_before_its_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ``_FALLBACKS`` entry the environment does not set is refused by name before anything is made or bought, as a
+    missing key is: the run would otherwise stop on it only once the first key's credit ran out."""
+    for name in KEYS:
+        monkeypatch.setenv(name, "unused")
+    monkeypatch.setenv("ANTHROPIC_API_KEY_FALLBACKS", "ANTHROPIC_API_KEY_UNSET")
+    monkeypatch.delenv("ANTHROPIC_API_KEY_UNSET", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY_FALLBACKS", raising=False)
+
+    async def launched(**_: object) -> Acceptance:
+        raise RuntimeError("the launch would begin here, and the check is before it")
+
+    monkeypatch.setattr(writer_acceptance, "acceptance", launched)
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY_FALLBACKS names ANTHROPIC_API_KEY_UNSET"):
+        writer_acceptance.main(["--cap-usd", "45", "--out", str(out)])
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "listed", ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_LUMENS"], ids=["itself", "twice"]
+)
+def test_a_fallback_list_the_client_refuses_is_refused_before_its_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, listed: str
+) -> None:
+    """A ``_FALLBACKS`` list naming the key's own variable, or one variable twice, is what the client refuses when a
+    model is built: the script reads it with the client's reader and refuses it before anything is made."""
+    for name in (*KEYS, "ANTHROPIC_API_KEY_LUMENS"):
+        monkeypatch.setenv(name, "unused")
+    monkeypatch.setenv("ANTHROPIC_API_KEY_FALLBACKS", listed)
+    monkeypatch.delenv("OPENROUTER_API_KEY_FALLBACKS", raising=False)
+
+    async def launched(**_: object) -> Acceptance:
+        raise RuntimeError("the launch would begin here, and the check is before it")
+
+    monkeypatch.setattr(writer_acceptance, "acceptance", launched)
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY_FALLBACKS names ANTHROPIC_API_KEY"):
+        writer_acceptance.main(["--cap-usd", "45", "--out", str(out)])
+    assert not out.exists()
 
 
 def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_stopped_and_what_that_saved(

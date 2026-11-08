@@ -19,6 +19,27 @@ packages (bumped in lock-step).
 **Hosts:** a stored report that cites one of those criterion, weakest or settle keys on a non-rate measure renders
 it at the new decimals; no other text changes. Nothing to change in host code.
 
+### evals: a provider key whose credit is spent fails over to the next key the environment names
+
+**Added:**
+- `<VARIABLE>_FALLBACKS` (`ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3`) names, in order,
+  the variables a `Model` reading its provider's key from the environment tries when a key's credit is spent
+  (Anthropic's 400 credit-balance notice, or a 402). The same request is resent on the next key, which the refused
+  call left unbilled. A spent key is never sent again in the process by any model, two calls refused at once move to
+  the same next key, and each switch is logged once at WARNING naming the two variables, never a key. With every key
+  spent, the account failure stands as before, naming every variable tried. A name the environment does not set, the
+  primary itself or a name given twice is refused when the model is built. No other failure fails over, and a key
+  passed as `api_key=` never does. A tool turn's `resent_after` lists each resend on the next key.
+- `ProviderError.credit_spent` says whether an answer is that refusal.
+- `providers.wire.fallback_key_variables(variable)` is the one reader of a `_FALLBACKS` list, for the client and
+  for a script checking it before launch.
+- The writer acceptance script refuses, through that reader, a `_FALLBACKS` list the client would refuse before
+  launch, prints how many fallbacks each key has, and builds its judge on the environment's key, so the judge fails
+  over too.
+
+**Hosts:** opt-in. Nothing changes unless a `_FALLBACKS` variable is set. No key or variable name enters a recording,
+a completion or a stored document.
+
 ### evals: the engine exports a campaign for the mint, for every host
 
 **Added:**

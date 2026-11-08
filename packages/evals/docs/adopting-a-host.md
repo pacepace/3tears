@@ -437,6 +437,28 @@ reply type through, refuses a schema whose `enum` or `const` holds anything but 
 naming where it sits, rather than rewrite a type your parser expects: declare such values as strings (a `Literal` of
 strings, a `str` enum) and convert them on read.
 
+### Fallback keys
+
+A key with prepaid credit runs dry mid-run, and the provider says so (Anthropic's 400 "credit balance is too low",
+a 402 on OpenRouter), which stops the run as the account's failure. To go on with another key, set
+`<VARIABLE>_FALLBACKS` to a comma list of other variables' names, tried in order after the provider's own:
+
+```bash
+ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3
+```
+
+On a spent key's refusal the model sends the same request again on the next key; the refused call was not billed.
+A spent key is never sent again in the process, by any model reading that variable, and each switch is logged once at
+WARNING naming the two variables, never a key. Only that refusal fails over: a refused key (401, 403), a bad request,
+a 5xx and a timeout keep their behaviour. When every key's credit is spent, the account failure is raised as before,
+naming every variable it tried. A name in the list the environment does not set is refused when the model is built.
+Any provider's variable takes a list; OpenAI's own spent quota (a 429 `insufficient_quota`) is not read as spent
+credit and does not fail over, while an OpenAI-compatible endpoint's 402 does. A key passed as `Model(..., api_key=...)` never fails
+over: which key a call spends is then yours. A tool turn's `resent_after` lists the resend on the next key with the
+provider's answer, never a variable or key. Nothing changes unless a `_FALLBACKS` variable is set, and no key or
+variable name enters a recording.
+A spent-credit error OpenRouter answers inside a 200's body does not fail over: it stops the run as before.
+
 ### Reporting what each request was sent with
 
 **A completion may say what its request actually carried: `sent_settings`.** The run records what the engine ASKED

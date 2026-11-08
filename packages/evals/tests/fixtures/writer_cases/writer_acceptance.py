@@ -57,8 +57,11 @@ its snapshot (or nothing, for a snapshot that has none) and the editor clears it
 of its prompt. Nothing is sent and the verdict carries no signal. A live run is the one pre-registered live run per
 candidate, with the stopping rule on, under the monthly envelope recorded in ``PROMOTIONS.toml``. It reads
 ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (a ``vendor/model`` judge) from the environment, and
-records every writer turn and judge call under ``--out``. A run over fewer than 10 held-out cases (design §4), the
-default seven included, runs, and its floor line says it is under them: a floor is a disclosure, never a refusal.
+records every writer turn and judge call under ``--out``. Each key fails over, when its credit is spent, to the keys
+its ``<variable>_FALLBACKS`` names (``ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS``); a name there the
+environment does not set is refused before launch, and the launch line counts each key's fallbacks. A run over fewer
+than 10 held-out cases (design §4), the default seven included, runs, and its floor line says it is under them: a
+floor is a disclosure, never a refusal.
 
 **The spend cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest
 equally, each arm's part holding its reports and their absolute judging. It is a budget the run runs under: each
@@ -988,11 +991,30 @@ def judge_provider(model: str) -> str:
     return "openrouter" if "/" in model else "anthropic"
 
 
-def refuse_missing_keys(judge: str) -> None:
-    """Refuse a live run, by variable, when the writer's key or the judge's is not in the environment."""
-    wanted = {_KEYS[judge_provider(judge)], _KEYS[WRITER_PROVIDER]}
-    if missing := sorted(name for name in wanted if not os.environ.get(name)):
+def refuse_missing_keys(judge: str) -> str:
+    """Refuse a live run, by variable, when the writer's key or the judge's is not in the environment, or when its
+    ``<variable>_FALLBACKS`` is a list the client refuses (a variable the environment does not set, the key's own, or
+    one named twice); else the launch line, counting each key's fallbacks and naming no key.
+
+    The list is read by the client's own reader, :func:`~threetears.evals.providers.wire.fallback_key_variables`, so
+    what the client would refuse once a model is built, after spend, is refused here, before anything is made.
+    """
+    wanted = sorted({_KEYS[judge_provider(judge)], _KEYS[WRITER_PROVIDER]})
+    if missing := [name for name in wanted if not os.environ.get(name)]:
         raise SystemExit(f"writer_acceptance.py: a live run needs {', '.join(missing)}; --dry needs none")
+    from threetears.evals.providers.wire import fallback_key_variables  # the client, loaded only for a live run
+
+    try:
+        listed = {name: fallback_key_variables(name) for name in wanted}
+    except ValueError as refused:
+        raise SystemExit(f"writer_acceptance.py: {refused}") from refused
+    counts = (f"{name} with {_fallbacks(len(fallbacks))}" for name, fallbacks in listed.items())
+    return f"Keys: {', '.join(counts)}."
+
+
+def _fallbacks(count: int) -> str:
+    """How many fallback keys a key has, in words: ``no fallback``, ``1 fallback``, ``2 fallbacks``."""
+    return "no fallback" if count == 0 else f"{count} fallback{'s' if count > 1 else ''}"
 
 
 def held_out_cases(cases_dir: Path | None, held_out_fraction: float) -> int:
@@ -1020,10 +1042,11 @@ def _live_judge(judge: str, out: Path) -> WriterJudge:
 
     # The same cap and effort as rung 5's judge: a score and a short reason fit in 2,048 tokens, and the pre-launch
     # bound prices every rubric call at this cap, so the engine's 8,192 default would refuse a run the cap admits.
+    # The key is the client's to read, from the variable refuse_missing_keys checked, so the judge fails over to its
+    # fallback keys as the writer does; a key passed as api_key= never would.
     return Model(
         judge,
         provider=provider,
-        api_key=os.environ[_KEYS[provider]],
         max_tokens=JUDGE_MAX_TOKENS,
         effort="low",
         recording=out / "judge.jsonl",
@@ -1276,12 +1299,13 @@ def main(argv: Sequence[str]) -> int:
     if not options.dry:
         if options.out is None or options.cap_usd is None:
             parser.error("a live run names --cap-usd and --out")
-        refuse_missing_keys(options.judge)
+        keys_line = refuse_missing_keys(options.judge)
     # Said before anything is bought, and by a dry run as by the live one it rehearses: what this many held-out cases
     # can show, under the floor or not, never a refusal.
     held = held_out_cases(options.cases, options.held_out_fraction)
     print(resolution_line(held, fewest=MIN_LIVE_CASES), file=sys.stderr)
     if not options.dry:
+        print(keys_line, file=sys.stderr)
         # Made before anything is sent, so a directory already there refuses the run rather than its result.
         options.out.mkdir(parents=True, exist_ok=False)
     prior = None if options.prior is None else read_prior(options.prior)
