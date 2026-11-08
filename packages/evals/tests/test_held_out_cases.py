@@ -1,7 +1,7 @@
 """The held-out writer cases (``tests/fixtures/writer_cases/held_out/``) read, stay apart from rung 5's, and all sit
 on the held-out side.
 
-An acceptance run reads one directory holding rung 5's eleven cases and these fifteen, at a held-out share of 0.99
+An acceptance run reads one directory holding rung 5's eleven cases and these sixteen, at a held-out share of 0.99
 (the directory's ``README.md``). These tests hold what that run relies on: every file reads as a writer case, no name
 is two cases, no two files freeze one source (the mint would count them as one case), every group lands held-out at
 0.99, and the cases the export rebuilds from the package's fixtures are the ones committed: every figure the same to
@@ -32,7 +32,7 @@ from threetears.evals.schema.hashing import identity_json
 ACCEPTANCE_FRACTION = 0.99
 
 #: How many held-out cases the acceptance run needs, rung 5's and these together.
-ACCEPTANCE_CASES = 26
+ACCEPTANCE_CASES = 27
 
 #: Where the reproducible cases were minted: the machine and its C library.
 MINTED_ON = "aarch64-glibc-2.39"
@@ -57,7 +57,7 @@ def _union() -> tuple[WriterCaseFile, ...]:
 
 def test_every_held_out_file_reads_as_a_writer_case_under_its_own_name() -> None:
     cases = _held_out()
-    assert len(cases) == 15
+    assert len(cases) == 16
     assert {case.format for case in cases} == {"writer-case/1"}
     assert sorted(path.name for path in HELD_OUT_DIR.glob("*.json.gz")) == sorted(
         held_out_path(case.name).name for case in cases
@@ -152,6 +152,18 @@ def test_the_production_minted_case_is_the_first_real_one() -> None:
         "host",
         [],
         "report-snapshot:de914e5e66bb9ac748f9e753210aff29",
+    )
+    assert len(case.minted.unmatched) == 2
+    assert case.minted.withheld == []
+
+
+def test_the_second_production_minted_case_is_the_judge_shortlist() -> None:
+    case = WriterCaseFile.read(held_out_path("discodon-judge-shortlist-01a14544"))
+    assert (case.group, case.stratum, case.withhold, case.snapshot.id) == (
+        "discodon-judge-shortlist",
+        "host",
+        [],
+        "report-snapshot:7e6a1af7d990096595843eb8f1f4f26f",
     )
     assert len(case.minted.unmatched) == 2
     assert case.minted.withheld == []
