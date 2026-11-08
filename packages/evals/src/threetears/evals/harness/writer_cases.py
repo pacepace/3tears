@@ -38,6 +38,7 @@ from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, report_snapshot_restore
+from threetears.evals.ops.campaign_closure import ReasonedOn
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.writer_bank import (
     MintedWriterCase,
@@ -58,20 +59,6 @@ WriterCaseFormat = Literal["writer-case/1"]
 #: and refusing a key they do not declare, as the report input's parts are. Not ``EvalBaseModel``, whose subclasses
 #: declaring a ``doc_type`` are the stored documents, and ``ReasonedOn.doc_type`` names a host's document instead.
 _VALUE = ConfigDict(frozen=True, extra="forbid")
-
-
-class ReasonedOn(BaseModel):
-    """One stored document that reasoned on a campaign, as a host's mint manifest names it."""
-
-    model_config = _VALUE
-
-    doc_type: str = Field(min_length=1, description="Its document type: an analysis, a report, an insight.")
-    id: str = Field(min_length=1, description="Its id in the host's store.")
-    name: str | None = Field(
-        default=None,
-        min_length=1,
-        description="What a reader knows it by: an insight's statement, a report's title, an analysis's date and model.",
-    )
 
 
 class WithheldNote(BaseModel):

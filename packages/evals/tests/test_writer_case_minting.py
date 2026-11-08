@@ -456,3 +456,17 @@ def test_the_export_is_checked_before_the_profile_factory_is_imported(
     # With the export sound, the same command stops at the factory.
     (tmp_path / "documents.json").write_text(json.dumps(_documents()))
     assert "cannot import 'nowhere_host.evals'" in _refused(args, capsys)
+
+
+async def test_a_campaign_whose_runs_name_no_template_mints_without_one() -> None:
+    """A quick eval's runs carry a blank template_id: the freeze reads no template for them, so none is required,
+    while a run that names one still needs it (the refusals above)."""
+    documents = [
+        {**document, "template_id": ""} if document["doc_type"] == "eval_run" else document
+        for document in _documents()
+        if document["doc_type"] != "eval_template"
+    ]
+    assert not any(document["doc_type"] == "eval_template" for document in documents)
+    case = await _minted(documents, as_of=FROZEN_AT)
+    assert case.snapshot.campaign_id == _campaign(documents)["id"]
+    assert case.name == NAME

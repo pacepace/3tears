@@ -29,7 +29,8 @@ Six modules build it, each for one part of a writer eval:
 - :mod:`~threetears.evals.harness.writer_cases`: a writer case frozen into a portable file, read back and minted
   into any scope;
 - :mod:`~threetears.evals.harness.minting`: a writer case minted from a host's export, which ``python -m
-  threetears.evals.harness mint`` writes to a file;
+  threetears.evals.harness mint`` writes to a file, from the files ``python -m threetears.evals.harness export``
+  writes (:func:`~threetears.evals.ops.campaign_export`);
 - :mod:`~threetears.evals.harness.analyse`: the report writer's report on one campaign of the quick path, replayed
   from its recording with no key, written beside the eval's own report; ``python -m threetears.evals.harness FILE
   --write-report MODEL`` (:mod:`~threetears.evals.harness.__main__`) runs an eval file, then analyses each result.

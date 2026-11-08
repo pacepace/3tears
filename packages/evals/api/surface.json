@@ -7391,6 +7391,11 @@
       "signature": "campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine",
       "tier": "stable"
     },
+    "threetears.evals.ops.campaign_export": {
+      "kind": "function",
+      "signature": "campaign_export(host: EvalHost, scope_id: str, campaign_id: str, *, built_by: str | None, paged: bool = False, after_doc_type: str | None = None, after_document_id: str | None = None) -> CampaignExport",
+      "tier": "host-contract"
+    },
     "threetears.evals.ops.campaign_record": {
       "kind": "function",
       "signature": "campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None) -> CampaignCallLine",
@@ -7425,6 +7430,21 @@
       "kind": "model",
       "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', question: str = '', arms: list[dict[str, Any]] = list(), aspects: list[dict[str, Any]] = list(), floors: list[dict[str, Any]] = list(), margins: dict[str, Margin] = dict(), aspects_from: list[str | dict[str, str]] = list(), exploratory: bool = False)",
       "tier": "stable"
+    },
+    "threetears.evals.ops.CampaignExport": {
+      "kind": "model",
+      "signature": "CampaignExport(documents: list[dict[str, Any]], profile: ProfileDeclaration, manifest: CampaignExportManifest, page: CampaignExportPage | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.ops.CampaignExportManifest": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.CampaignExportPage": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.ops.CampaignLine": {
       "kind": "model",
@@ -7771,6 +7791,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.KindDeclaration": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.launch_estimate": {
       "kind": "async function",
       "signature": "",
@@ -7832,6 +7857,11 @@
       "tier": "provisional"
     },
     "threetears.evals.ops.PivotTable": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.ProfileDeclaration": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -8096,6 +8126,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.SweepableDeclaration": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.SweepArguments": {
       "kind": "model",
       "signature": "",
@@ -8167,6 +8202,11 @@
       "tier": "provisional"
     },
     "threetears.evals.ops.UnreadableRunsListing": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.UnresolvedLink": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

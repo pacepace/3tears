@@ -731,10 +731,66 @@ registry. It builds its case bank from its own campaigns through four actions, a
   finished beside the primary, and for a primary that does not separate, the held-out cases that would settle it.
   With no pass named it never promotes. It records nothing; a person records the call with `campaign_record`.
 
+### Exporting a campaign for the mint
+
+The engine exports a campaign's closure as the three files the mint reads, read-only, so no host writes a closure of
+its own. From the host's environment:
+
+```
+python -m threetears.evals.harness export --host module:callable --scope SCOPE --campaign CAMPAIGN --out DIR \
+    [--built-by module:callable]
+```
+
+`--host` names the zero-argument callable that returns the host's `EvalHost`, whose store holds the campaign.
+`--built-by` names the factory the mint rebuilds the profile from, and is written into `profile.json`; omitted, it is
+`--host`, which the mint accepts too, since it reads only the profile of the host a factory returns. It must be
+`module:callable`, importable wherever the mint runs; an export naming anything else is refused. The command writes
+`documents.json`, `profile.json` and `manifest.json` as the directory `DIR`, which must not exist yet or be empty: it
+writes them into a new sibling directory and renames that to `DIR`, so either all three are there or none is, and a
+run that fails part-way can simply run again. It exits 0 when the files are written, 2 when the export is refused (a
+campaign the scope does not hold, a `DIR` holding files, a factory that does not load or returns no host, a stored
+judge identity the package does not read), and 3 when the factory raises.
+
+A host whose code serves the engine's actions exports with no code of its own: `campaign_export` (read) takes
+`campaign_id` and, optionally, `built_by`, reads the caller's scope, and returns `documents`, `profile` and `manifest`
+as its JSON. A closure past one page is paged by whole documents, under `page.byte_ceiling` bytes of them a page, each
+page carrying the profile and the manifest whole; its text names the next call (`export_after_doc_type` with
+`export_after_document_id`). Join the pages' documents in order.
+
+The pages bound a response for a client, not the read: every page call reads, sorts and slices the whole closure,
+so reading a campaign of many pages costs about as many whole reads. Export a large campaign (hundreds of megabytes,
+most of it traces) once, through the command line or the function below, each of which reads the closure once.
+
+Pages are not a snapshot either. A write between two page calls can drop a document from the join or leave the
+manifest disagreeing with the joined documents. Every page's manifest carries `closure_documents` and
+`closure_keys_digest` (the sha256 of the closure's sorted `(doc_type, id)` keys): compare each page's with the first
+page's, and when they differ, read the export again from the first page. In code, `campaign_export(host, scope_id, campaign_id,
+built_by=...)` (`threetears.evals.ops`) returns the whole `CampaignExport`, and `CampaignExport.files()` its three
+files' bytes, for a host serving them from a route of its own.
+
+What the closure holds:
+
+- the campaign, the runs its aspects name, and each run's template, test cases, case set, cassettes and sweep;
+- each run's results and traces, calibration ratings, second judge passes, temperature checks and out-of-run spend;
+- the judge configs its runs' and results' recorded identities name (read with the package's `judge_config_of`), a
+  deleted config's tombstone, and each config's rubric dim; a built-in judge's identity is listed in the manifest's
+  `builtin_judge_config_ids` and names no document;
+- the campaign's analyses, report snapshots, report documents and their sessions and analyst gaps;
+- every insight on the campaign's subject in the scope, whichever campaign minted it;
+- the launches and judge profiles naming its runs.
+
+The closure follows stored links, never the scope: a sibling campaign's runs and results are not in it. Each document
+is exported verbatim, each `(doc_type, id)` once, in `(doc_type, id)` order. The manifest counts every document type
+the engine stores, names the two no link reaches (`eval_action_job`, `rubric_dim_tombstone`), lists each link the
+scope does not hold under `unresolved`, and states its rules in `closure_rules`. It names each analysis, report
+document and insight under `reasoned_on`, which the mint reads to withhold notes: a report document as
+`report <id>: <campaign name>`, never by its headline. Nothing in an export records when it was made, so exporting
+an unchanged campaign again writes the same bytes.
+
 ### Minting a case from a production export
 
-A host whose production store may only be read mints its writer cases from an export. It writes three files per
-campaign, and the command freezes the campaign from them into one case file (`format: writer-case/1`), writing
+A host whose production store may only be read mints its writer cases from an export: the three files `export`
+writes (above), from which the command freezes the campaign into one case file (`format: writer-case/1`), writing
 nothing to the host's store:
 
 ```
@@ -756,7 +812,7 @@ eval document reachable from the campaign:
 |---|---|---|
 | `eval_campaign` | the campaign named | refused |
 | `eval_run` | every run the campaign names | refused, naming the runs missing |
-| `eval_template` | the template every run ran | refused, naming the templates missing |
+| `eval_template` | the template every run names (a quick eval's run names none) | refused, naming the templates missing |
 | `eval_result` | the runs' results | refused |
 | `eval_trace` | the results' traces, where a judge's evidence is read | refused, naming each trace a result records and the export lacks |
 | `eval_test_case` | the cases the runs ran, read for their strata | read when present |

@@ -390,6 +390,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "ops/analyst_keys.py": {},
     "ops/analyst_levers.py": {},
     "ops/analyst_price.py": {},
+    "ops/campaign_closure.py": {},
     "ops/cases.py": {},
     "ops/host.py": {},
     "ops/jobs.py": {},

@@ -41,6 +41,7 @@ from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import (
+    CampaignExport,
     JobsStarted,
     JobStatus,
     JudgeTemperatureComparison,
@@ -730,6 +731,49 @@ def render_export(export: ScoreExport) -> str:
     return export_text(export, next_call=hint + ".")
 
 
+def render_campaign_export(export: CampaignExport) -> str:
+    """A campaign's export as what it holds, and on a page that has a next, the call that reads it.
+
+    The documents are the result's JSON, not its text: an export is for the files a mint reads, and a page's text
+    repeating its documents would carry each twice. The next call repeats the factory the profile names.
+
+    :param export: The export, or one page of it.
+    :ptype export: CampaignExport
+    :return: The text.
+    :rtype: str
+    """
+    manifest, page = export.manifest, export.page
+    counts = ", ".join(f"{doc_type} {count}" for doc_type, count in sorted(manifest.doc_type_counts.items()) if count)
+    held = f"{len(export.documents)} documents of campaign {manifest.campaign_id}"
+    if page is not None:
+        total = page.documents_before + len(export.documents) + page.documents_after
+        held += (
+            f" (documents {page.documents_before + 1} to {page.documents_before + len(export.documents)} of {total})"
+        )
+    unresolved = f"{len(manifest.unresolved)} links unresolved" if manifest.unresolved else "every link resolved"
+    lines = [
+        f"{held}; the whole export holds {counts}; {unresolved}.",
+        "The result's JSON carries documents, profile and manifest: write them as documents.json (every page's "
+        "documents, joined in order), profile.json and manifest.json, and mint a writer case from them with "
+        "python -m threetears.evals.harness mint.",
+    ]
+    if page is not None:
+        lines.append(
+            "Pages are not a snapshot: when a page's manifest closure_keys_digest is not the first page's "
+            f"({manifest.closure_keys_digest[:12]}…), the campaign moved between calls; read it again from the first page."
+        )
+    if page is not None and page.next_after_doc_type is not None:
+        hint = (
+            f"More: action='campaign_export', campaign_id='{manifest.campaign_id}', "
+            f"export_after_doc_type='{page.next_after_doc_type}', "
+            f"export_after_document_id='{page.next_after_document_id}'"
+        )
+        if export.profile.built_by is not None:
+            hint += f", built_by='{export.profile.built_by}'"
+        lines.append(hint + ".")
+    return "\n".join(lines)
+
+
 def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition: ResultOutcome) -> str:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
@@ -923,6 +967,7 @@ __all__ = [
     "refuse_unknown_action",
     "refuse_unknown_page",
     "refuse_unknown_topic",
+    "render_campaign_export",
     "render_cited",
     "render_help_index",
     "render_help_page",

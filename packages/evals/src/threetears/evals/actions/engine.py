@@ -36,6 +36,8 @@ from threetears.evals.schema import KnownOutOfRunPurpose
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
+    CampaignExport,
+    campaign_export,
     SweepArguments,
     SweepSettings,
     sweep_launch,
@@ -858,6 +860,32 @@ class ScopeExportParams(EvalBaseModel):
     export_after_case_id: ExportAfterCaseId = None
 
 
+class CampaignExportParams(EvalBaseModel):
+    """``campaign_export``."""
+
+    campaign_id: CampaignId
+    built_by: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="The module:callable, importable where the host's code is, that returns this host's profile "
+            "(or the host) with no arguments: the factory the mint rebuilds the profile from. Omitted, the profile names "
+            "none, and the mint is given one (--host).",
+        ),
+    ] = None
+    export_after_doc_type: Annotated[
+        str | None,
+        Field(min_length=1, description="The previous page's next_after_doc_type; omitted for the first page."),
+    ] = None
+    export_after_document_id: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="The previous page's next_after_document_id, named with export_after_doc_type.",
+        ),
+    ] = None
+
+
 class LaunchEstimateParams(RunLaunchParams):
     """``launch_estimate`` — what a ``run_launch`` with the same arguments would cost, priced by its own rule."""
 
@@ -1513,6 +1541,23 @@ async def _scope_export(host: OpsHost, caller: Caller, params: ScopeExportParams
         run_ids=params.export_run_ids,
         after_run_id=params.export_after_run_id,
         after_case_id=params.export_after_case_id,
+    )
+
+
+async def _campaign_export(host: OpsHost, caller: Caller, params: CampaignExportParams) -> CampaignExport:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            campaign_export,
+            eval_host,
+            caller.scope_id,
+            params.campaign_id,
+            built_by=params.built_by,
+            paged=True,
+            after_doc_type=params.export_after_doc_type,
+            after_document_id=params.export_after_document_id,
+        ),
     )
 
 
@@ -2995,6 +3040,33 @@ def engine_actions() -> tuple[Action, ...]:
                 "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). Named runs "
                 "past the ceiling page as the scope does, the pages holding the named runs alone and the next call "
                 "naming them again; one named run past the ceiling is paged by its cases."
+            ),
+        ),
+        Action(
+            name="campaign_export",
+            summary="Export a campaign's stored documents, its host's profile and a manifest: what a writer case is "
+            "minted from.",
+            workflow=ANALYSE,
+            permission="read",
+            params=CampaignExportParams,
+            result=CampaignExport,
+            handler=_campaign_export,
+            render=render.render_campaign_export,
+            example={"campaign_id": campaign_id},
+            detail=(
+                "Read-only. The documents are the campaign's closure, each verbatim as stored, in (doc_type, id) "
+                "order: the documents its stored links reach, every insight on its subject, and the launches and "
+                "judge profiles naming its runs. The profile is the host's declarations with host_declarations_digest "
+                "and built_by; the manifest names what reasoned on the campaign, counts every document type and lists "
+                "the links the scope does not hold. A closure past one page is paged by whole documents, each page "
+                "under its page.byte_ceiling bytes of them and carrying the profile and manifest whole: its text "
+                "names the call that reads the next (export_after_doc_type with export_after_document_id). Pages are not a "
+                "snapshot: when a page's manifest.closure_keys_digest is not the first page's, the campaign moved "
+                "between calls, so read it again from the first page. Every page call reads the whole closure: export "
+                "a very large campaign once, with python -m threetears.evals.harness export. Write the "
+                "pages' documents, joined, as documents.json, the profile as profile.json and the manifest as "
+                "manifest.json, and mint a held-out writer case from them with python -m threetears.evals.harness "
+                "mint."
             ),
         ),
         Action(
