@@ -50,6 +50,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
+from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
 
 SCHEMA = TableSchema(
@@ -394,6 +395,10 @@ class _Conn:
         yield
         self._pool.committed.append(copies)
 
+    async def execute(self, query: str, *args: Any) -> str:
+        self._pool.settings.append(args)
+        return "SELECT 1"
+
     async def copy_records_to_table(self, table_name: str, *, records: Any, columns: Any) -> str:
         if self._pool.fail_on is not None and any(record[0] == self._pool.fail_on for record in records):
             raise asyncpg.UniqueViolationError("duplicate key value violates unique constraint")
@@ -408,6 +413,8 @@ class _Pool:
         self.committed: list[list[tuple[str, list[tuple[Any, ...]], list[str]]]] = []
         self.open: list[tuple[str, list[tuple[Any, ...]], list[str]]] = []
         self.fail_on: str | None = None
+        #: the arguments of each statement a transaction ran beside its copies (the whole-note setting)
+        self.settings: list[tuple[Any, ...]] = []
 
     @asynccontextmanager
     async def _acquire(self) -> AsyncIterator[_Conn]:
@@ -458,6 +465,7 @@ async def test_a_direct_load_copies_each_file_ordered_by_key_in_transactions_of_
     result = await _direct(_store(pool), files)
     assert result == LoadResult(row_count=4, files=(FileLoad(0, 3), FileLoad(1, 1)))
     assert [[len(records) for _, records, _ in copies] for copies in pool.committed] == [[2], [1], [1]]
+    assert pool.settings == [(NOTE_WHOLE_SETTING,)] * 3, "each transaction is marked whole for its change note"
     [(table, records, columns)] = pool.committed[0]
     assert table == "lsf_rows"
     assert columns == ["geo", "votes", "source_id", "race", "loaded_at"]

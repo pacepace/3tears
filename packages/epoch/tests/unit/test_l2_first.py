@@ -8,9 +8,10 @@ can make refuse a row, as a unique constraint would. The contract this pins:
   loses nothing, because the saver carries the commit to L3 later, and saving twice is harmless;
 - a caller that waits for L3 is told when L3 refuses the row, and L2 no longer holds it;
 - a collection that does not wait has an L3 refusal counted and logged at ERROR, and the saver moves on;
-- when NATS loses everything, the refiller puts rows, epoch records and the generation back from L3;
-  until then a pod serves what it holds and is behind, and afterwards it catches up through the normal
-  epoch path without reading L3;
+- when NATS loses everything, the change log is put back from the L3 change notes (what the keeper
+  does; here the notes are the keys each L3 write named, as the trigger writes them) and the refiller
+  puts the rows back; until then a pod serves what it holds and is behind, and afterwards it catches up
+  through the normal epoch path without reading L3;
 - without L2 the same write goes straight to L3.
 """
 
@@ -29,7 +30,8 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import NO_L2, WRITE_GENERATION, BaseCollection, CollectionRegistry
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.collections.change_notes import NotedChange
+from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.l2_first import (
     L2_FIRST,
     L2First,
@@ -97,6 +99,8 @@ class _L3:
         self.crash_on: set[str] = set()
         self.lands_then_drops: set[str] = set()
         self.writes = 0
+        #: the key of each row an L3 write changed, as the table's change-note trigger notes it with the row
+        self.notes: list[str] = []
 
 
 class _Row(BaseEntity):
@@ -139,6 +143,7 @@ class _Results(BaseCollection[_Row]):
         if key in self._l3.refused:
             raise _UniqueViolation(f"duplicate key value violates unique constraint ({key})")
         self._l3.rows[key] = dict(data)
+        self._l3.notes.append(key)
         self._l3.writes += 1
         if key in self._l3.lands_then_drops:
             self._l3.lands_then_drops.discard(key)
@@ -147,6 +152,7 @@ class _Results(BaseCollection[_Row]):
 
     async def delete_from_store(self, entity_id: Any) -> None:
         self._l3.rows.pop(str(entity_id), None)
+        self._l3.notes.append(str(entity_id))
 
     def l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
         rows = [dict(row) for row in self._l3.rows.values()]
@@ -172,51 +178,17 @@ class _Feed(_Results):
     _table: ClassVar[str] = _FEED
 
 
-# parity-with: threetears.core.collections.l2_first.EpochLogStore
-class FakeEpochLog:
-    """the L3 epoch log, kept in a dict."""
-
-    def __init__(self) -> None:
-        self.records: dict[tuple[str, str, int], EpochChange] = {}
-        self.order: list[tuple[str, str, int]] = []
-
-    async def save(self, change: EpochChange) -> None:
-        incarnation, _, count = change.token.rpartition(":")
-        key = (change.table, incarnation, int(count))
-        if key not in self.records:
-            self.records[key] = change
-            self.order.append(key)
-
-    async def head(self, table_name: str) -> str | None:
-        mine = [key for key in self.order if key[0] == table_name]
-        if not mine:
-            return None
-        incarnation = mine[-1][1]
-        count = max(key[2] for key in mine if key[1] == incarnation)
-        return f"{incarnation}:{count}"
-
-    async def since(self, table_name: str, token: str, *, limit: int) -> list[EpochChange]:
-        incarnation, _, count = token.rpartition(":")
-        found = sorted(
-            (key for key in self.records if key[0] == table_name and key[1] == incarnation and key[2] > int(count)),
-            key=lambda key: key[2],
-        )
-        return [self.records[key] for key in found[:limit]]
-
-
 class _Pod:
     """one registry of the principal, with its own L1, generation source and reader."""
 
-    def __init__(
-        self, bus: FakeNatsClient, log: FakeEpochLog, *, retention: EpochChangeRetention | None = None
-    ) -> None:
+    def __init__(self, bus: FakeNatsClient, *, retention: EpochChangeRetention | None = None) -> None:
         l1 = SQLiteBackend(db_name=f"l2_first_{uuid.uuid4().hex[:8]}")
         l1.initialize(_metadata(_TABLE))
         l1.initialize(_metadata(_FEED))
         self.bus = bus
         self.registry = CollectionRegistry()
         self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-        # every process of a deployment running the L2-first worker: the refiller alone starts a lost log
+        # every process of a deployment running the change-note keeper: the keeper alone starts a lost log
         self.source = EpochGenerationSource(
             bus,
             change_retention=retention or EpochChangeRetention(),
@@ -224,7 +196,6 @@ class _Pod:
             restore_wait=timedelta(0),
         )
         self.registry.set_generation_source(self.source)
-        self.registry.set_epoch_log(log)
         self.reader = EpochGenerationReader(bus)
 
     async def tick(self) -> int:
@@ -232,25 +203,26 @@ class _Pod:
 
 
 class _Fleet:
-    """a writer, a follower and the claimed worker, over one L3 and one epoch log."""
+    """a writer, a follower and the claimed worker, over one L3 and the change log."""
 
     def __init__(self, bus: FakeNatsClient) -> None:
         self.bus = bus
         self.l3 = _L3()
         self.feed_l3 = _L3()
-        self.log = FakeEpochLog()
-        self.writer, self.follower, self.worker = _Pod(bus, self.log), _Pod(bus, self.log), _Pod(bus, self.log)
+        self.lost: str | None = None
+        self.writer, self.follower, self.worker = _Pod(bus), _Pod(bus), _Pod(bus)
         self.writing = _Results(self.writer.registry, self.l3)
         self.reading = _Results(self.follower.registry, self.l3)
         self.feeding = _Feed(self.writer.registry, self.feed_l3)
         self.feed_read = _Feed(self.follower.registry, self.feed_l3)
         self.working = _Results(self.worker.registry, self.l3)
         self.feed_work = _Feed(self.worker.registry, self.feed_l3)
-        self.saver = L3Saver(self.worker.registry, epochs=self.worker.source, log=self.log)
-        self.refiller = L2Refiller(self.worker.registry, epochs=self.worker.source, log=self.log)
+        self.saver = L3Saver(self.worker.registry, epochs=self.worker.source)
+        self.refiller = L2Refiller(self.worker.registry, epochs=self.worker.source)
 
     async def start(self) -> None:
-        """seed L2 from the empty L3 (the refiller's first sight) and start the follower following."""
+        """start the log (the keeper's first sight), seed L2 from the empty L3 and start the follower following."""
+        await self.worker.source.start_log()
         await self.refiller.run_pass()
         await self.follower.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
         self.follower.registry.follow_generation(_TABLE)
@@ -259,8 +231,20 @@ class _Fleet:
 
     async def lose_nats(self) -> None:
         """every memory bucket loses every entry, as a full broker restart does."""
+        state = await self.worker.source.log_state()
+        self.lost = None if state is None else state.incarnation
         (await self.bus.kv_bucket(name="collections")).wipe()
         self.bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+
+    async def restore(self) -> str | None:
+        """put the lost change log back from the change notes, as the keeper does, covering it from its start."""
+        assert self.lost is not None
+        notes = [
+            NotedChange(table=table, rows=tuple(ChangedRow(ids=[key]) for key in dict.fromkeys(l3.notes)))
+            for table, l3 in ((_TABLE, self.l3), (_FEED, self.feed_l3))
+            if l3.notes
+        ]
+        return await self.worker.source.restore_from_notes(notes, lost=self.lost, covered_from=0)
 
 
 async def _save(collection: _Results, entity_id: str, votes: str) -> None:
@@ -280,13 +264,13 @@ async def fleet() -> _Fleet:
 
 
 class TestTheCommitIsInNats:
-    async def test_a_waiting_save_is_in_l2_l3_and_the_l3_epoch_log_when_it_returns(self, fleet: _Fleet) -> None:
+    async def test_a_waiting_save_is_in_l2_l3_and_noted_when_it_returns(self, fleet: _Fleet) -> None:
         await _save(fleet.writing, "precinct-1", "10")
 
         assert fleet.l3.rows["precinct-1"]["votes"] == "10"
+        assert fleet.l3.notes == ["precinct-1"], "the L3 write left its change note"
         token = await fleet.writer.reader.read(_TABLE)
         assert token is not None
-        assert await fleet.log.head(_TABLE) == token, "the epoch record reached the L3 epoch log too"
         record = await fleet.writer.reader.change(_TABLE, token)
         assert record is not None
         assert [row.ids for row in record.rows] == [["precinct-1"]]
@@ -318,8 +302,7 @@ class TestACrashBetweenTheCommitAndTheL3Save:
         assert result.saved == 2
         assert fleet.feed_l3.rows["precinct-1"]["votes"] == "10"
         assert fleet.feed_l3.rows["precinct-2"]["votes"] == "20"
-        token = await fleet.writer.reader.read(_FEED)
-        assert await fleet.log.head(_FEED) == token
+        assert sorted(fleet.feed_l3.notes) == ["precinct-1", "precinct-2"], "the saver's L3 writes are noted too"
 
     async def test_a_writer_that_dies_between_its_commit_and_its_l2_apply_loses_nothing(
         self, fleet: _Fleet, monkeypatch: pytest.MonkeyPatch
@@ -355,12 +338,12 @@ class TestACrashBetweenTheCommitAndTheL3Save:
         assert fleet.feed_l3.rows["precinct-1"]["votes"] == "10"
         assert "precinct-2" not in fleet.feed_l3.rows
 
-        restarted = L3Saver(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
+        restarted = L3Saver(fleet.worker.registry, epochs=fleet.worker.source)
         result = await restarted.run_pass()
 
         assert result.saved == 1, "the saver resumed after the last epoch it finished"
         assert fleet.feed_l3.rows["precinct-2"]["votes"] == "20"
-        again = L3Saver(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
+        again = L3Saver(fleet.worker.registry, epochs=fleet.worker.source)
         before = dict(fleet.feed_l3.rows)
         await again.run_pass()
         assert fleet.feed_l3.rows == before
@@ -431,7 +414,7 @@ class TestANoWaitRefusalIsLoud:
 
 
 class TestL2Lost:
-    async def test_the_refiller_restores_and_the_pod_catches_up_without_reading_l3(self, fleet: _Fleet) -> None:
+    async def test_the_restore_and_refill_bring_the_pod_back_without_it_reading_l3(self, fleet: _Fleet) -> None:
         await _save(fleet.writing, "precinct-1", "10")
         await _save(fleet.writing, "precinct-2", "20")
         assert await _votes(fleet.reading, "precinct-1") == "10"
@@ -447,7 +430,9 @@ class TestL2Lost:
         assert fleet.follower.registry.behind_on(_TABLE), "and reports itself behind"
         with pytest.raises(L2LostError):
             await _save(fleet.writing, "precinct-4", "40")
+        assert await fleet.refiller.run_pass() == 0, "the refiller waits for the keeper to put the log back"
 
+        assert await fleet.restore()
         assert await fleet.refiller.run_pass() >= 1
 
         await fleet.follower.tick()
@@ -466,11 +451,12 @@ class TestL2Lost:
         incarnation = (await fleet.writer.source.read(_TABLE) or "").rpartition(":")[0]
         await fleet.lose_nats()
 
-        # a table that is not L2-first writes before the refiller's pass: it waits, and starts no log
+        # a table that is not L2-first writes before the keeper's restore: it waits, and starts no log
         with pytest.raises(GenerationUnavailableError, match="restore"):
             await fleet.writer.source.advance_with_change("other_table", [ChangedRow(ids=["o1"])])
         assert await fleet.bus.change_log(EPOCH_CHANGES_BUCKET).state() is None
 
+        await fleet.restore()
         await fleet.refiller.run_pass()
         head = await fleet.writer.source.read(_TABLE)
         assert head is not None
@@ -490,9 +476,11 @@ class TestL2Lost:
         await _save(fleet.writing, "precinct-1", "11")
         await fleet.lose_nats()
 
+        await fleet.restore()
         await fleet.refiller.run_pass()
         await fleet.follower.tick()
 
+        assert not fleet.follower.registry.behind_on(_TABLE), "the notes cover the mark: nothing is lost"
         assert await _votes(fleet.reading, "precinct-1") == "11"
         assert fleet.reading.l3_reads == 0
 
@@ -534,30 +522,22 @@ class TestTheChangeLogWarnsBeforeItFills:
 class TestTheOperatorSeesWhereEachTableStands:
     async def test_lost_then_refilled_then_saved(self, fleet: _Fleet) -> None:
         await _save(fleet.feeding, "precinct-1", "10")
-        statuses = {
-            s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
-        }
+        statuses = {s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source)}
         assert statuses[_FEED].complete
         assert statuses[_FEED].unsaved_epochs == 1, "the no-wait write waits for the saver"
         await fleet.saver.run_pass()
-        statuses = {
-            s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
-        }
+        statuses = {s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source)}
         assert statuses[_FEED].unsaved_epochs == 0
         await fleet.lose_nats()
-        statuses = {
-            s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
-        }
+        statuses = {s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source)}
         assert statuses[_FEED].generation is None
         assert not statuses[_FEED].complete
+        restored = await fleet.restore()
         await fleet.refiller.run_pass()
-        statuses = {
-            s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
-        }
+        statuses = {s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source)}
         assert statuses[_FEED].complete
-        generation, logged = statuses[_FEED].generation, statuses[_FEED].l3_logged
-        assert generation is not None and logged is not None
-        assert generation.rpartition(":")[2] == logged.rpartition(":")[2], "the same epoch, under the restored log"
+        generation = statuses[_FEED].generation
+        assert generation is not None and generation.rpartition(":")[0] == restored, "under the restored log"
 
 
 class TestEveryReadAndWritePathStaysOnL2:

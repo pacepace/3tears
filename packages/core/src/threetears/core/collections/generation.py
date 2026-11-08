@@ -46,6 +46,7 @@ __all__ = [
     "GenerationSource",
     "GenerationVerdict",
     "L2WriteGeneration",
+    "NotedTable",
     "NoWriteGeneration",
     "READS_GENERATIONS_ATTRIBUTE",
     "UndeclaredWriteGeneration",
@@ -55,6 +56,7 @@ __all__ = [
     "note_generation_class",
     "primary_key_of_table",
     "note_l2_first_class",
+    "noted_tables",
     "source_reads",
     "split_generation_token",
     "table_named_by_class",
@@ -576,13 +578,15 @@ class GenerationMarks:
             # the overflow only hid which advances were heard; every one up to here is applied now
             mark.overflowed = False
 
-    def continue_under(self, table_name: str, lost: str, restored: str, through: int) -> bool:
-        """carry the table's mark from a lost log's incarnation to the one restored from it, where it may.
+    def continue_under(self, table_name: str, lost: str, restored: str, covered_from: int | None) -> bool:
+        """carry the table's mark from a lost log's incarnation to the start of the one restored from it.
 
-        A restore puts the lost log's epochs back at their sequences up to ``through`` under ``restored``.
-        A mark under ``lost`` at or below ``through`` numbers the same epoch under both, so it is carried
-        over, with every advance heard up to ``through``; one past it counted epochs the restore could not
-        put back, and is left as it is.
+        A restore puts back, under ``restored``, what the L3 change notes say changed after ``covered_from``
+        of the lost log, in no particular order. A mark under ``lost`` at or past ``covered_from`` missed
+        only epochs the notes cover, so it is carried to the restored log's start, with nothing heard: the
+        follower walks every restored record and applies each, which evicts some rows it already held
+        current, never fewer than it missed. An older mark, or a restore whose notes cover nothing, is left
+        as it is.
 
         :param table_name: the followed table
         :ptype table_name: str
@@ -590,21 +594,25 @@ class GenerationMarks:
         :ptype lost: str
         :param restored: the restored log's incarnation
         :ptype restored: str
-        :param through: the last sequence of the lost log the restore put back
-        :ptype through: int
+        :param covered_from: the lost log's sequence from which the notes cover every epoch; ``None`` when
+            they cover none
+        :ptype covered_from: int | None
         :return: whether the mark was carried over
         :rtype: bool
         """
         mark = self._tables.get(table_name)
-        if mark is None or not mark.sighted or mark.incarnation != lost or mark.accounted > through:
+        if (
+            mark is None
+            or not mark.sighted
+            or mark.incarnation != lost
+            or covered_from is None
+            or mark.accounted < covered_from
+        ):
             return False
         mark.incarnation = restored
-        mark.heard = {
-            (restored, count): heard
-            for (incarnation, count), heard in mark.heard.items()
-            if incarnation == lost and count <= through
-        }
-        self._move_on(mark)
+        mark.accounted = 0
+        mark.heard = {}
+        mark.overflowed = False
         return True
 
     def adopt_generation(self, table_name: str, token: str | None) -> None:
@@ -844,3 +852,65 @@ def tables_written_l2_first() -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return frozenset(name for name in map(table_named_by_class, list(_L2_FIRST_CLASSES)) if name is not None)
+
+
+@dataclass(frozen=True, slots=True)
+class NotedTable:
+    """a table whose writes leave a change note in L3, and the columns its note names.
+
+    :ivar table: the table
+    :ivar keys: its primary-key columns, in declared order
+    :ivar columns: its declared invalidation columns, which a note carries as a row broadcast does
+    """
+
+    table: str
+    keys: tuple[str, ...]
+    columns: tuple[str, ...] = ()
+
+
+def _declared_key(cls: type) -> tuple[str, ...] | None:
+    """the primary key a collection class declares, or ``None`` when it declares none readable.
+
+    :param cls: the collection class
+    :ptype cls: type
+    :return: the columns in declared order
+    :rtype: tuple[str, ...] | None
+    """
+    declared = getattr(cls, "primary_key_column", None)
+    if isinstance(declared, str):
+        return (declared,)
+    if isinstance(declared, tuple) and declared and all(isinstance(column, str) for column in declared):
+        return declared
+    return None
+
+
+def noted_tables() -> tuple[NotedTable, ...]:
+    """every table whose epochs go into the change log, with the key and columns its change note names.
+
+    The tables of every class this process defined that carries a write generation, caches absences
+    (:func:`tables_with_write_generation`) or commits L2-first (:func:`tables_written_l2_first`): each of
+    their L3 writes leaves a note in its own transaction
+    (:mod:`~threetears.core.collections.change_notes`). A table two classes name with different keys, or
+    whose class names it per instance, is left out: no one trigger can name its rows. Two classes naming
+    one table with one key carry every invalidation column either declares.
+
+    :return: the tables, in table order
+    :rtype: tuple[NotedTable, ...]
+    """
+    keys_of: dict[str, set[tuple[str, ...]]] = {}
+    columns_of: dict[str, dict[str, None]] = {}
+    for cls in [*list(_GENERATION_CLASSES), *list(_L2_FIRST_CLASSES)]:
+        name = table_named_by_class(cls)
+        keys = _declared_key(cls)
+        if name is None or keys is None:
+            continue
+        keys_of.setdefault(name, set()).add(keys)
+        declared = getattr(cls, "invalidation_columns", ())
+        for column in declared if isinstance(declared, tuple) else ():
+            if isinstance(column, str):
+                columns_of.setdefault(name, {})[column] = None
+    return tuple(
+        NotedTable(table=name, keys=next(iter(keys)), columns=tuple(columns_of.get(name, {})))
+        for name, keys in sorted(keys_of.items())
+        if len(keys) == 1
+    )

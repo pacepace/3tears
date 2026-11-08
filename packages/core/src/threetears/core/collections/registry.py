@@ -37,7 +37,6 @@ from threetears.observe.metrics import counter, gauge
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
     from threetears.core.collections.generation import GenerationSource
-    from threetears.core.collections.l2_first import EpochLogStore
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
@@ -289,7 +288,6 @@ class CollectionRegistry:
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
         self._write_marks_schema: str | None = None
-        self._epoch_log: EpochLogStore | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
@@ -558,29 +556,6 @@ class CollectionRegistry:
         :rtype: tuple[str, ...]
         """
         return tuple(self._collections)
-
-    def set_epoch_log(self, log: EpochLogStore | None) -> None:
-        """wire the L3 epoch log an L2-first collection's waiting writes save their epoch records to.
-
-        A waiting write (:class:`~threetears.core.collections.l2_first.L2First`) saves its row and its
-        epoch's record to L3 before it returns, so the refiller can put the epoch history back after NATS
-        loses it. A process that commits L2-first writes wires it; a pod that only reads does not.
-
-        :param log: the L3 epoch log, or ``None`` to unwire it
-        :ptype log: EpochLogStore | None
-        :return: nothing
-        :rtype: None
-        """
-        self._epoch_log = log
-
-    @property
-    def epoch_log(self) -> EpochLogStore | None:
-        """the L3 epoch log wired here, or ``None``.
-
-        :return: the log
-        :rtype: EpochLogStore | None
-        """
-        return self._epoch_log
 
     def get_l1_backend(self, table_name: str) -> Any:
         """Get L1 backend for a collection (override or default)."""
@@ -861,8 +836,8 @@ class CollectionRegistry:
         verdict = marks.judge(table_name, token)
         extent = changes if isinstance(changes, EpochLogExtent) else None
         if verdict is GenerationVerdict.REPLACED and token is not None and extent is not None:
-            # a restored log continues the lost one up to the last sequence it put back: a mark at or below
-            # it is carried over and walks on; one past it counted epochs nobody can put back
+            # a restored log holds what the change notes say changed after their floor: a mark at or past it
+            # is carried to the restored log's start and walks every record; an older one is behind
             carried = await self._carry_over_restore(table_name, token, extent)
             if carried is None:
                 return verdict
@@ -1016,14 +991,18 @@ class CollectionRegistry:
         recorded = marks.recorded(table_name)
         if lineage is None or recorded is None or recorded.rpartition(":")[0] != lineage[0]:
             return GenerationVerdict.REPLACED
-        lost, through = lineage
-        if marks.continue_under(table_name, lost, restored, through):
+        lost, covered = lineage
+        if marks.continue_under(table_name, lost, restored, covered):
             return marks.judge(table_name, token)
-        # the mark counted epochs past the last one the restore put back; their sequences are reused
+        # the mark is older than the notes reach: an epoch it missed may be one no note names
         self._fall_behind(
             table_name,
             reason="record_lost",
-            detail={"read": token, "recorded": recorded, "restored_through": f"{lost}:{through}"},
+            detail={
+                "read": token,
+                "recorded": recorded,
+                "covered_from": None if covered is None else f"{lost}:{covered}",
+            },
         )
         return None
 

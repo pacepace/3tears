@@ -86,7 +86,7 @@ from threetears.nats.errors import (
 from threetears.nats import kv_watch
 from threetears.nats.change_log import (
     CHANGE_LOG_CONTINUES_METADATA,
-    CHANGE_LOG_CONTINUES_THROUGH_METADATA,
+    CHANGE_LOG_COVERED_FROM_METADATA,
     CHANGE_LOG_INCARNATION_METADATA,
     ChangeLogEntry,
     ChangeLogState,
@@ -3531,7 +3531,7 @@ class NatsChangeLog:
         replicas: int | None,
         incarnation: str | None = None,
         first_seq: int | None = None,
-        continues: tuple[str, int] | None = None,
+        continues: tuple[str, int | None] | None = None,
     ) -> ChangeLogState:
         """create the log when absent, and say what it holds; a live log is kept as it is.
 
@@ -3547,8 +3547,9 @@ class NatsChangeLog:
         :param first_seq: the first sequence it assigns, for a restore that puts records back at their
             old numbers; ``None`` starts at one
         :ptype first_seq: int | None
-        :param continues: for a restore, the lost log's incarnation and the last of its sequences put back
-        :ptype continues: tuple[str, int] | None
+        :param continues: for a restore, the lost log's incarnation and its sequence from which the restore's
+            notes cover every epoch; ``None`` for that sequence when they cover none
+        :ptype continues: tuple[str, int | None] | None
         :return: what it holds
         :rtype: ChangeLogState
         :raises KvError: when it can be neither created nor read
@@ -3583,7 +3584,7 @@ class NatsChangeLog:
                         if continues is None
                         else {
                             CHANGE_LOG_CONTINUES_METADATA: continues[0],
-                            CHANGE_LOG_CONTINUES_THROUGH_METADATA: str(continues[1]),
+                            CHANGE_LOG_COVERED_FROM_METADATA: "" if continues[1] is None else str(continues[1]),
                         }
                     ),
                 },
@@ -3626,17 +3627,17 @@ class NatsChangeLog:
         metadata = info.config.metadata or {}
         incarnation = metadata.get(CHANGE_LOG_INCARNATION_METADATA) or f"created-{info.created}"
         max_bytes = info.config.max_bytes
-        continues = metadata.get(CHANGE_LOG_CONTINUES_METADATA)
-        through = metadata.get(CHANGE_LOG_CONTINUES_THROUGH_METADATA)
-        lineage = bool(continues) and through is not None and through.isdigit()
+        continues = metadata.get(CHANGE_LOG_CONTINUES_METADATA) or None
+        covered = metadata.get(CHANGE_LOG_COVERED_FROM_METADATA) or ""
         return ChangeLogState(
             first_seq=int(info.state.first_seq or 0),
             last_seq=int(info.state.last_seq or 0),
             bytes=int(info.state.bytes or 0),
             max_bytes=int(max_bytes) if max_bytes and max_bytes > 0 else None,
             incarnation=str(incarnation),
-            continues=str(continues) if lineage else None,
-            continues_through=int(str(through)) if lineage else None,
+            continues=str(continues) if continues else None,
+            covered_from=int(covered) if continues and covered.isdigit() else None,
+            max_age=timedelta(seconds=float(info.config.max_age)) if info.config.max_age else None,
         )
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int:

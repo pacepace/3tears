@@ -45,6 +45,7 @@ __all__ = [
     "EpochWalk",
     "epoch_change_body",
     "read_epoch_change_body",
+    "read_logged_epoch_change",
     "walk_by_count",
     "advance_recording",
     "changed_row_runs",
@@ -176,7 +177,8 @@ class EpochWalk:
         :attr:`complete`
     :ivar reason: why the walk is not complete, for the behind log line and counter:
         ``record_missing`` (a record the log does not hold), ``aged_out`` (retention took the epochs after
-        the mark) or ``record_lost`` (an epoch lost with the broker that a restore could not put back)
+        the mark) or ``record_lost`` (the log was lost with the broker, and the change notes that put it
+        back do not reach back to the mark)
     """
 
     changes: tuple[EpochChange, ...]
@@ -236,14 +238,18 @@ class EpochQuiet:
 class EpochLogExtent(Protocol):
     """what a change log can say about its own reach: the lost log a restore continues, and quiet stretches."""
 
-    async def continues(self, incarnation: str) -> tuple[str, int] | None:
-        """the lost log's incarnation the log ``incarnation`` continues, and the last of its sequences put back.
+    async def continues(self, incarnation: str) -> tuple[str, int | None] | None:
+        """the lost log's incarnation the log ``incarnation`` continues, and the sequence its notes cover it from.
+
+        A follower whose mark under the lost incarnation is at or past that sequence missed nothing the
+        restored log does not hold: it walks every record of the restored log. One whose mark is older is
+        behind.
 
         :param incarnation: the log's incarnation, as a generation read names it
         :ptype incarnation: str
-        :return: ``(lost incarnation, last sequence put back)``; ``None`` when the log continues none, or
-            is not ``incarnation`` (any more)
-        :rtype: tuple[str, int] | None
+        :return: ``(lost incarnation, covered from)``, the second ``None`` when the notes cover none of the
+            lost log; ``None`` when the log continues none, or is not ``incarnation`` (any more)
+        :rtype: tuple[str, int | None] | None
         :raises GenerationUnavailableError: when the log cannot be read
         """
         ...
@@ -513,3 +519,23 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
     if record.table != table_name:
         raise GenerationUnavailableError(f"the change record at {token!r} is of {record.table!r}, not {table_name!r}")
     return record
+
+
+def read_logged_epoch_change(raw: bytes, token: str) -> EpochChange:
+    """the change a log stored as ``raw`` at the epoch ``token``, of whichever table it names.
+
+    For a reader that walks the log by sequence rather than by table: the change-note scrub.
+
+    :param raw: the stored body
+    :ptype raw: bytes
+    :param token: the epoch the log numbered it
+    :ptype token: str
+    :return: the record
+    :rtype: EpochChange
+    :raises GenerationUnavailableError: when it is malformed
+    """
+    try:
+        body = _EpochBody.model_validate_json(raw)
+    except ValidationError as exc:
+        raise GenerationUnavailableError(f"the change record at {token!r} is malformed: {exc}") from exc
+    return read_epoch_change_body(raw, body.table, token)

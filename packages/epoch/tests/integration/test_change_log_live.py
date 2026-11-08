@@ -6,8 +6,8 @@ What a fake cannot prove:
   no compare-and-swap for them to lose;
 - an append retried with its ``Nats-Msg-Id`` records once;
 - a follower walks a table's epochs past other tables' records between them;
-- a log the broker lost is put back at its old sequences and incarnation, so a mark taken before the
-  loss is still followable;
+- a log the broker lost is put back from the change notes under a new incarnation that names the lost
+  one and the floor its notes cover it from;
 - a full log refuses an append loudly, and its fill is measured.
 
 Uses the session-scoped ``nats_container`` fixture; a checkout without docker skips cleanly.
@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError
 from threetears.epoch import (
@@ -92,31 +93,36 @@ async def test_a_walk_skips_other_tables_records(nats_container: str) -> None:
         assert [change.token for change in walk.changes] == mine
 
 
-async def test_a_lost_log_is_restored_at_its_old_sequences_continuing_its_incarnation(nats_container: str) -> None:
+async def test_a_lost_log_is_put_back_from_notes_under_a_new_incarnation_continuing_the_lost_one(
+    nats_container: str,
+) -> None:
     async with _client(nats_container) as nc:
         source = EpochGenerationSource(nc)
         mark = await source.current(_TABLE)
         tokens = [await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"m{i}"])]) for i in range(3)]
         reader = EpochGenerationReader(nc)
-        records = [record for token in tokens if (record := await reader.change(_TABLE, token)) is not None]
-        assert len(records) == 3
+        state = await reader.log_state()
+        assert state is not None and state.max_age is not None, "the log says its own retention"
+        lost = tokens[-1].rpartition(":")[0]
 
         await nc.jetstream_context().delete_stream(f"KV_{nc.namespace}-{EPOCH_CHANGES_BUCKET}")
         assert await reader.read(_TABLE) is None
         with pytest.raises(L2LostError):
             await source.advance_continuing(_TABLE, [ChangedRow(ids=["m9"])])
 
-        assert await source.restore_epochs(records)
+        notes = [NotedChange(table=_TABLE, rows=tuple(ChangedRow(ids=[f"m{i}"]) for i in range(3)))]
+        restored = await source.restore_from_notes(notes, lost=lost, covered_from=_seq(mark))
+        assert restored is not None and restored != lost
         head = await reader.read(_TABLE)
-        assert head is not None
-        restored, _, seq = head.rpartition(":")
-        lost = tokens[-1].rpartition(":")[0]
-        assert seq == tokens[-1].rpartition(":")[2], "the restored log numbers the epochs as before"
-        assert await reader.continues(restored) == (lost, int(seq)), "the stream metadata names the lost log"
-        walk = await reader.changes_after(_TABLE, f"{restored}:{mark.rpartition(':')[2]}", head)
+        assert head is not None and head.rpartition(":")[0] == restored
+        assert await reader.continues(restored) == (lost, _seq(mark)), "the stream metadata names the lost log"
+        walk = await reader.changes_after(_TABLE, f"{restored}:0", head)
         assert walk.complete
-        assert [change.token.rpartition(":")[2] for change in walk.changes] == [t.rpartition(":")[2] for t in tokens]
-        assert not await source.restore_epochs(records), "a log that is there is never restored over"
+        assert sorted(row.ids[0] for change in walk.changes for row in change.rows) == ["m0", "m1", "m2"]
+        assert (await source.epoch_at(_seq(head))) == walk.changes[-1], "the scrub reads a record by sequence"
+        assert await source.restore_from_notes(notes, lost=lost, covered_from=0) is None, (
+            "a log that is there is never restored over"
+        )
 
 
 async def test_a_full_log_refuses_and_its_fill_is_measured(nats_container: str) -> None:

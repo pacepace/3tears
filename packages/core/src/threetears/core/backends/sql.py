@@ -53,6 +53,7 @@ from threetears.core.backends.protocol import (
     TruncatingStore,
     parse_rowcount,
 )
+from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyset import read_keyset_pages
@@ -982,6 +983,8 @@ class SqlL3Backend:
         off the loop), held to the row count its :class:`LoadFile` declares, its rows given the
         ``constants`` and ordered by primary key, and copied in transactions of
         ``rows_per_transaction`` rows (``copy_records_to_table``), each bounded by ``timeout_ms``.
+        Each transaction is marked whole (:data:`~threetears.core.ddl.change_notes.NOTE_WHOLE_SETTING`), so
+        a noted table's trigger writes one whole-table change note for it rather than one per row.
         Values are written as an insert binds them (:func:`schema_sql.normalize_write_value`).
         Insert-only: a key already held fails that transaction, and the load stops there; the
         transactions before it stay committed. The load's own checks run before anything is
@@ -1072,6 +1075,9 @@ class SqlL3Backend:
                 batch = records[start : start + rows_per_transaction]
                 with _unmask_asyncpg_release_race():
                     async with asyncio.timeout(timeout_ms / 1000), self._pool.acquire() as conn, conn.transaction():
+                        # the load's epoch names the whole table, so its change note does too: one per
+                        # transaction, never one per copied row (threetears.core.collections.change_notes)
+                        await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
                         await conn.copy_records_to_table(table, records=batch, columns=names)
             loaded.append(FileLoad(index=index, rows_loaded=len(records)))
         result = LoadResult(row_count=sum(file.rows_loaded for file in loaded), files=tuple(loaded))

@@ -3171,6 +3171,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         re-caching anything, and a peer principal's copy is its own truth rather than a stale
         view of somebody else's.
 
+        **A no-op on an L2-first collection too**, for the same reason: its writes commit in L2
+        (:mod:`~threetears.core.collections.l2_first`), so its L2 entry is the row, never a cache of
+        it. A live epoch names the writer's scope as current and is skipped anyway; a record put back
+        from the change notes after a NATS loss names no scope, and evicting by it would delete the
+        rows the refiller just put back.
+
         Same narrow exception scope as its siblings: only :class:`KvError` (real transport
         failure, including during bucket resolution) degrades to ``False``. A
         :class:`L2ScopeNotConfiguredError` from :meth:`l2_key` is NOT a transport failure and
@@ -3183,7 +3189,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: bool
         :raises L2ScopeNotConfiguredError: if this collection's registry carries no scope
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or self.writes_l2_first:
             return False
         try:
             kv = await self._ensure_kv()
@@ -4249,8 +4255,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :return: the registry's generation source
         :rtype: L2FirstEpochs
-        :raises GenerationUnavailableError: when the source cannot commit an L2-first write, or a waiting
-            collection's registry has no L3 epoch log
+        :raises GenerationUnavailableError: when the source cannot commit an L2-first write
         """
         source = self._registry.generation_source
         if not isinstance(source, L2FirstEpochs):
@@ -4258,11 +4263,6 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"{type(self).__name__} commits L2-first and its registry's generation source "
                 f"({type(source).__name__}) cannot advance the epoch log for it: wire "
                 f"threetears.epoch.EpochGenerationSource"
-            )
-        if self.waits_for_l3 and self._registry.epoch_log is None:
-            raise GenerationUnavailableError(
-                f"{type(self).__name__} waits for L3 and its registry has no L3 epoch log to save each epoch to: "
-                f"registry.set_epoch_log(...)"
             )
         return source
 
@@ -4338,23 +4338,20 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
 
     async def _settle_l2_first(self, changes: Sequence[EpochChange]) -> None:
-        """record that the writer has saved these epochs itself: their records into the L3 epoch log, and
-        each one marked settled so the saver does not save it again.
+        """record that the writer has saved these epochs itself: each one marked settled so the saver does
+        not save it again. Their change notes went into L3 with the rows, in the same transaction.
 
         Runs after L3 has the write, so a failure here does not make the write a failed one: it is logged,
-        and the saver, finding no mark, makes L3 match again (harmless) and saves the record.
+        and the saver, finding no mark, makes L3 match again (harmless).
 
         :param changes: the epochs the writer committed and saved
         :ptype changes: Sequence[EpochChange]
         :return: nothing
         :rtype: None
         """
-        epoch_log = self._registry.epoch_log
         for change in changes:
             parts = split_generation_token(change.token)
             try:
-                if epoch_log is not None:
-                    await epoch_log.save(change)
                 if parts is not None:
                     await self.write_l2_first_state(b"1", "settled", parts[0], str(parts[1]))
             # prawduct:allow prawduct/broad-except -- the write is saved; the saver redoes this harmlessly

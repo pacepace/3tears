@@ -874,7 +874,7 @@ class FakeChangeLog:
         self._bucket = bucket
         self._present = False
         self._incarnation = ""
-        self._continues: tuple[str, int] | None = None
+        self._continues: tuple[str, int | None] | None = None
         self._entries: list[ChangeLogEntry] = []
         self._next_seq = 1
         self._max_bytes: int | None = None
@@ -910,7 +910,7 @@ class FakeChangeLog:
         replicas: int | None,
         incarnation: str | None = None,
         first_seq: int | None = None,
-        continues: tuple[str, int] | None = None,
+        continues: tuple[str, int | None] | None = None,
     ) -> ChangeLogState:
         """create the log when absent, and say what it holds; a live log is kept as it is.
 
@@ -924,8 +924,8 @@ class FakeChangeLog:
         :ptype incarnation: str | None
         :param first_seq: the first sequence it assigns; ``None`` starts at one
         :ptype first_seq: int | None
-        :param continues: for a restore, the lost log's incarnation and the last of its sequences put back
-        :ptype continues: tuple[str, int] | None
+        :param continues: for a restore, the lost log's incarnation and the sequence its notes cover it from
+        :ptype continues: tuple[str, int | None] | None
         :return: what it holds
         :rtype: ChangeLogState
         """
@@ -961,7 +961,8 @@ class FakeChangeLog:
             max_bytes=self._max_bytes,
             incarnation=self._incarnation,
             continues=None if self._continues is None else self._continues[0],
-            continues_through=None if self._continues is None else self._continues[1],
+            covered_from=None if self._continues is None else self._continues[1],
+            max_age=self._max_age,
         )
 
     @property

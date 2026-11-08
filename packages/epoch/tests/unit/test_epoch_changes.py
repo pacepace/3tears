@@ -9,10 +9,13 @@ the real generation source, the real reader and the real pass. The contract this
   counted, untrusted by derived caches -- and the next pass that can read the record catches up;
 - a write whose reach is the whole table invalidates the table, because that is the change; a large
   commit is several keyed records, never a whole-table one;
-- a restore that could not put an epoch back leaves every follower whose walk spans it behind
-  (``record_lost``), and a lost log waits for its restore rather than starting under a new incarnation;
+- a log put back from the change notes carries a follower whose mark the notes cover to its start, where
+  it walks every restored record and catches up; an older follower is behind (``record_lost``); and a
+  lost log waits for its restore rather than starting under a new incarnation;
 - a follower's first sight of a generation takes it as its mark and drops nothing;
-- the change log refuses a record past its cap, loudly, rather than evicting one.
+- the change log refuses a record past its cap, loudly, rather than evicting one;
+- a follower's quiet pass, reading only the change log, keeps a quiet table's mark inside retention and
+  walks any table it holds an unapplied epoch of.
 """
 
 from __future__ import annotations
@@ -36,7 +39,9 @@ from threetears.core.collections import (
     CollectionRegistry,
     announce_unheard_writes,
 )
+from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import (
+    EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
     EpochChange,
     EpochWalk,
@@ -54,12 +59,18 @@ from threetears.epoch import (
     EpochChangeRetention,
     EpochGenerationReader,
     EpochGenerationSource,
+    TableFollower,
     generation_catchup_tick,
+    quiet_marks_tick,
+    quiet_pass_interval,
 )
 from threetears.nats import set_default_namespace
 
 _TABLE = "group_members"
 _KEPT = "precincts"
+
+#: the quiet pass runs this many times per retention window, as quiet_pass_interval documents
+_PASSES_PER_RETENTION = 4
 
 
 @pytest.fixture(autouse=True)
@@ -281,9 +292,15 @@ class TestAMissingRecordLeavesThePodBehindAndServing:
         follower.registry.watched_by(_TABLE, lambda: True)
         assert follower.registry.tables_trusted([_TABLE]), "behind is said, never a cache withdrawn"
 
-        # the broker loses the log, and the refiller puts it back from L3 at its old sequences
+        # the broker loses the log, and the change-note keeper puts it back from the notes, which reach back
+        # to the follower's mark
+        mark = follower.registry.generation_marks.recorded(_TABLE)
+        assert mark is not None
         _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_epochs([record for record in records if record is not None])
+        notes = [_noted(_TABLE, "m1", "m2")]
+        assert await EpochGenerationSource(bus).restore_from_notes(
+            notes, lost=mark.rpartition(":")[0], covered_from=_seq(mark)
+        )
         assert await follower.tick() == 1
         assert not follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m1") == "edsger"
@@ -454,115 +471,6 @@ class TestARecordStaysWithinItsBound:
             changed_row_runs(_TABLE, [ChangedRow(ids=["x" * (300 * 1024)])])
 
 
-class TestARestoreNamesWhatItLost:
-    async def test_a_table_whose_epochs_l3_did_not_hold_is_behind_after_the_restore(
-        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        writing, follower, reading = await _two_pods(bus)
-        source, reader = EpochGenerationSource(bus), EpochGenerationReader(bus)
-        kept: list[EpochChange] = []
-        for each in range(2):
-            change = await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=[f"k{each}"])]))
-            assert change is not None
-            kept.append(change)
-        bus.deaf = True
-        await _save(writing, "m1", "edsger")  # its record is not in L3: the table is not L2-first
-        bus.deaf = False
-        change = await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=["k9"])]))
-        assert change is not None
-        kept.append(change)
-
-        _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_epochs(kept)
-        lost = await reader.read(_TABLE)
-        assert lost is not None and _seq(lost) > 0, "a table with no restored record never reads below what was lost"
-
-        with caplog.at_level(logging.ERROR):
-            await follower.tick()
-            await follower.tick()
-        assert follower.registry.behind_on(_TABLE), "the missed epoch is said, never read as current"
-        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
-        assert [each["reason"] for each in said] == ["record_lost"], "said once, as lost"
-        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds"
-        assert reading.exists_in_cache_sync("m2"), "and drops nothing"
-
-    async def test_a_filler_inside_a_restored_tables_walk_holds_its_mark(self, bus: _Lossy) -> None:
-        source, reader = EpochGenerationSource(bus), EpochGenerationReader(bus)
-        first = await source.advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
-        follower = CollectionRegistry()
-        follower.follow_generation(_KEPT)
-        await follower.catch_up_generation(_KEPT, first, changes=reader)
-        kept = [await reader.change(_KEPT, first)]
-        await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])  # not in L3: a filler once restored
-        kept.append(await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=["k1"])])))
-        _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_epochs([each for each in kept if each is not None])
-
-        head = await reader.read(_KEPT)
-        assert head is not None
-        await follower.catch_up_generation(_KEPT, head, changes=reader)
-        assert follower.behind_on(_KEPT), "an epoch of unknown table lies inside the walk"
-        assert follower.generation_marks.recorded(_KEPT) == f"{head.rpartition(':')[0]}:{_seq(first)}", (
-            "the mark is carried over to the restored log, and never moves past the filler"
-        )
-
-
-class TestARestoredLogContinuesTheLostOne:
-    async def test_a_follower_at_or_below_the_restored_head_carries_its_mark_over_and_walks_on(
-        self, bus: _Lossy
-    ) -> None:
-        writing, follower, reading = await _two_pods(bus)
-        reader = EpochGenerationReader(bus)
-        lost = (await reader.read(_TABLE) or "").rpartition(":")[0]
-        bus.deaf = True
-        await _save(writing, "m1", "edsger")
-        bus.deaf = False
-        head = await reader.read(_TABLE)
-        assert head is not None
-        record = await reader.change(_TABLE, head)
-        assert record is not None
-
-        _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_epochs([record])
-        restored = (await reader.read(_TABLE) or "").rpartition(":")[0]
-        assert restored != lost and await reader.continues(restored) == (lost, _seq(head))
-
-        await follower.tick()
-        assert not follower.registry.behind_on(_TABLE)
-        assert (follower.registry.generation_marks.recorded(_TABLE) or "").startswith(f"{restored}:")
-        assert await _member_id(reading, "m1") == "edsger", "the missed epoch was applied from the restored log"
-        assert reading.exists_in_cache_sync("m2")
-
-    async def test_a_follower_past_the_restored_head_is_behind_and_never_reads_reused_numbers_as_current(
-        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        writing, follower, reading = await _two_pods(bus)
-        reader = EpochGenerationReader(bus)
-        kept = await reader.read(_TABLE)
-        assert kept is not None
-        record = await reader.change(_TABLE, kept)
-        assert record is not None
-        # written and heard after the newest record L3 holds: the restore cannot put it back
-        await _save(writing, "m2", "barbara")
-        await follower.tick()
-        assert await _member_id(reading, "m2") == "barbara"
-
-        _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_epochs([record])
-        bus.deaf = True
-        await _save(writing, "m1", "edsger")  # takes a sequence the follower's mark already counted
-        bus.deaf = False
-
-        with caplog.at_level(logging.ERROR):
-            await follower.tick()
-            await follower.tick()
-        assert follower.registry.behind_on(_TABLE), "past the restored head, nothing can be vouched for"
-        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
-        assert [each["reason"] for each in said] == ["record_lost"]
-        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds"
-        assert reading.exists_in_cache_sync("m2"), "and drops nothing"
-
-
 class TestAGapPastRetention:
     async def test_a_quiet_tables_follower_that_judges_keeps_its_mark_inside_retention(self, bus: _Lossy) -> None:
         _, follower, _ = await _two_pods(bus)
@@ -598,14 +506,96 @@ class TestAGapPastRetention:
         assert reading.exists_in_cache_sync("m1"), "behind serves what it holds and drops nothing"
 
 
+def _noted(table: str, *ids: str, columns: dict[str, str | None] | None = None) -> NotedChange:
+    """what the change notes of ``table`` say changed: these rows."""
+    return NotedChange(table=table, rows=tuple(ChangedRow(ids=[each], columns=columns) for each in ids))
+
+
+class TestARestoreFromNotesCarriesACoveredFollowerOver:
+    async def test_a_follower_at_or_past_the_floor_walks_the_restored_log_and_catches_up(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        reader = EpochGenerationReader(bus)
+        floor = follower.registry.generation_marks.recorded(_TABLE)
+        assert floor is not None
+        lost = floor.rpartition(":")[0]
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")  # missed by the follower; its note is in L3 with the row
+        bus.deaf = False
+
+        _log(bus).vanish()
+        restored = await EpochGenerationSource(bus).restore_from_notes(
+            [_noted(_TABLE, "m1", columns={"member_id": "edsger"})], lost=lost, covered_from=_seq(floor)
+        )
+        assert restored is not None and restored != lost
+        assert await reader.continues(restored) == (lost, _seq(floor))
+
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE), "covered: nothing is lost, so nothing is said lost"
+        assert (follower.registry.generation_marks.recorded(_TABLE) or "").startswith(f"{restored}:")
+        assert await _member_id(reading, "m1") == "edsger", "the missed epoch was applied from the restored log"
+        assert reading.exists_in_cache_sync("m2"), "a row no note names stays cached: no table drop"
+
+    async def test_a_non_l2_first_tables_records_come_back_beside_others(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        floor = follower.registry.generation_marks.recorded(_TABLE)
+        assert floor is not None
+        source = EpochGenerationSource(bus)
+        await source.advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        await source.advance_with_change(_KEPT, [ChangedRow(ids=["k1"])])
+
+        _log(bus).vanish()
+        notes = [_noted(_KEPT, "k0", "k1"), _noted(_TABLE, "m1", columns={"member_id": "edsger"})]
+        assert await source.restore_from_notes(notes, lost=floor.rpartition(":")[0], covered_from=_seq(floor))
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE)
+        assert await _member_id(reading, "m1") == "edsger"
+
+    async def test_a_follower_older_than_the_floor_is_behind_as_lost_and_drops_nothing(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        floor = follower.registry.generation_marks.recorded(_TABLE)
+        assert floor is not None
+        await EpochGenerationSource(bus).advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        head = await EpochGenerationReader(bus).read(_TABLE)
+        assert head is not None
+
+        _log(bus).vanish()
+        # the notes reach back only to an epoch after the follower's mark
+        assert await EpochGenerationSource(bus).restore_from_notes(
+            [_noted(_TABLE, "m1")], lost=floor.rpartition(":")[0], covered_from=_seq(head)
+        )
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+            await follower.tick()
+        assert follower.registry.behind_on(_TABLE), "older than the notes reach: said, never read as current"
+        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert [each["reason"] for each in said] == ["record_lost"], "said once, as lost"
+        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds"
+        assert reading.exists_in_cache_sync("m2"), "and drops nothing"
+
+    async def test_a_restore_whose_notes_cover_nothing_leaves_every_follower_behind(self, bus: _Lossy) -> None:
+        _, follower, reading = await _two_pods(bus)
+        floor = follower.registry.generation_marks.recorded(_TABLE)
+        assert floor is not None
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_from_notes([], lost=floor.rpartition(":")[0], covered_from=None)
+        await follower.tick()
+        assert follower.registry.behind_on(_TABLE)
+        assert reading.exists_in_cache_sync("m2")
+
+
 class TestALostLogWaitsForItsRestore:
     async def test_a_write_after_the_loss_never_starts_a_log_ahead_of_the_restore(self, bus: _Lossy) -> None:
         source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(0))
-        reader = EpochGenerationReader(bus)
         incarnation = await source.start_log()
         written = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])
-        record = await reader.change(_TABLE, written)
-        assert record is not None
 
         _log(bus).vanish()
         with pytest.raises(GenerationUnavailableError, match="restore"):
@@ -614,30 +604,112 @@ class TestALostLogWaitsForItsRestore:
             await source.current(_TABLE)
         assert await _log(bus).state() is None, "no log was started under a new incarnation"
 
-        assert await source.restore_epochs([record])
+        assert await source.restore_from_notes([_noted(_TABLE, "m1")], lost=incarnation, covered_from=0)
         after = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m3"])])
-        assert await source.continues(after.rpartition(":")[0]) == (incarnation, _seq(written)), (
+        assert await source.continues(after.rpartition(":")[0]) == (incarnation, 0), (
             "the restored log continues the lost one"
         )
-        assert _seq(after) > _seq(written)
+        assert after.rpartition(":")[0] != written.rpartition(":")[0]
 
     async def test_a_write_waits_for_the_restore_and_lands_in_the_restored_log(self, bus: _Lossy) -> None:
         source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=5))
-        reader = EpochGenerationReader(bus)
         incarnation = await source.start_log()
-        record = await reader.change(_TABLE, await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])]))
-        assert record is not None
+        await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])
         _log(bus).vanish()
 
-        async def restore() -> bool:
+        async def restore() -> str | None:
             await asyncio.sleep(0.2)
-            return await EpochGenerationSource(bus).restore_epochs([record])
+            return await EpochGenerationSource(bus).restore_from_notes(
+                [_noted(_TABLE, "m1")], lost=incarnation, covered_from=0
+            )
 
         written, restored = await asyncio.gather(
             source.advance_with_change(_TABLE, [ChangedRow(ids=["m2"])]), restore()
         )
-        assert restored, "the restore ran first: the waiting write started no log"
-        assert await source.continues(written.rpartition(":")[0]) == (incarnation, _seq(record.token))
+        assert restored is not None, "the restore ran first: the waiting write started no log"
+        assert written.rpartition(":")[0] == restored
+        assert await source.continues(restored) == (incarnation, 0)
+
+
+class TestTheQuietPass:
+    async def test_a_quiet_table_stays_current_across_more_than_one_retention_window(self, bus: _Lossy) -> None:
+        _, follower, reading = await _two_pods(bus)
+        source = EpochGenerationSource(bus)
+        held_from = (await _log(bus).state()).first_seq  # type: ignore[union-attr]
+        # three retention windows, each a pass interval at a time: other tables are written, the follower's
+        # quiet pass runs, and retention takes what the window has passed -- the quiet table's history first
+        for each in range(3 * _PASSES_PER_RETENTION):
+            await source.advance_with_change(_KEPT, [ChangedRow(ids=[f"k{each}"])])
+            done = await quiet_marks_tick(follower.registry, follower.reader)
+            assert done.moved == (_TABLE,) and done.walked == ()
+            state = await _log(bus).state()
+            assert state is not None
+            _log(bus).age_out(state.last_seq - 1)
+        state = await _log(bus).state()
+        assert state is not None and state.first_seq > held_from, "the quiet table's every record aged out"
+
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE), "never judged aged_out for a stretch nothing happened in"
+        assert reading.exists_in_cache_sync("m1"), "and nothing was dropped"
+
+    async def test_a_table_with_a_pending_record_is_never_skipped(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        await EpochGenerationSource(bus).advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+        missed = await EpochGenerationReader(bus).read(_TABLE)
+
+        done = await quiet_marks_tick(follower.registry, follower.reader)
+        assert done.walked == (_TABLE,) and done.moved == ()
+        assert not follower.registry.behind_on(_TABLE)
+        assert not reading.exists_in_cache_sync("m1"), "the unapplied epoch was walked and applied"
+        assert await _member_id(reading, "m1") == "edsger"
+        state = await _log(bus).state()
+        assert state is not None
+        assert follower.registry.generation_marks.recorded(_TABLE) == missed, "the mark is the applied epoch"
+
+    async def test_the_pass_reads_only_the_change_log_never_l3(
+        self, bus: _Lossy, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        bus.deaf = True
+        await _save(writing, "m2", "barbara")
+        bus.deaf = False
+        await EpochGenerationSource(bus).advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+
+        async def no_l3(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("the quiet pass read L3")
+
+        monkeypatch.setattr(reading, "fetch_from_store", no_l3)
+        monkeypatch.setattr(reading, "save_to_store", no_l3)
+        monkeypatch.setattr(reading, "delete_from_store", no_l3)
+        done = await quiet_marks_tick(follower.registry, follower.reader)
+        assert done.walked == (_TABLE,)
+
+    async def test_the_interval_is_a_fraction_of_the_logs_own_retention(self, bus: _Lossy) -> None:
+        await EpochGenerationSource(bus, change_retention=EpochChangeRetention(max_age=timedelta(hours=1))).start_log()
+        state, _ = await EpochGenerationReader(bus).newest_epochs(())
+        assert quiet_pass_interval(state) == timedelta(hours=1) / _PASSES_PER_RETENTION
+        assert quiet_pass_interval(None) == EPOCH_CHANGE_MAX_AGE / _PASSES_PER_RETENTION
+
+    async def test_a_table_follower_runs_the_pass_for_its_tables(self, bus: _Lossy) -> None:
+        retention = EpochChangeRetention(max_age=timedelta(milliseconds=400))
+        await EpochGenerationSource(bus, change_retention=retention).start_log()
+        _, follower, _ = await _two_pods(bus)
+        watcher = TableFollower(follower.registry, follower.reader, [_TABLE])
+        watcher.start()
+        try:
+            head = await EpochGenerationSource(bus).advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+            for _ in range(100):
+                if follower.registry.generation_marks.recorded(_TABLE) == head:
+                    break
+                await asyncio.sleep(0.02)
+            assert follower.registry.generation_marks.recorded(_TABLE) == head, (
+                "the pass moved the quiet table's mark to the log's head"
+            )
+        finally:
+            await watcher.stop()
 
 
 class TestBehindIsSaidOnce:

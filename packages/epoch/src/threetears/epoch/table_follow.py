@@ -41,7 +41,14 @@ from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.observe import contain, get_logger
 
-from threetears.epoch.generation_tick import DEFAULT_BROADCAST_GRACE, GenerationWatcher, follow_generation_key
+from threetears.epoch.generation_tick import (
+    DEFAULT_BROADCAST_GRACE,
+    GenerationWatcher,
+    QuietReader,
+    follow_generation_key,
+    quiet_marks_tick,
+    quiet_pass_interval,
+)
 
 __all__ = [
     "DEFAULT_STOP_TIMEOUT",
@@ -156,13 +163,13 @@ class _ObservedWatcher:
             return await self._inner.changes_after(table_name, after, upto)
         return EpochWalk(changes=(), complete=False, first_missing=upto)
 
-    async def continues(self, incarnation: str) -> tuple[str, int] | None:
+    async def continues(self, incarnation: str) -> tuple[str, int | None] | None:
         """the lost log a restored one continues, read through the watcher this wraps when it can say.
 
         :param incarnation: the log's incarnation
         :ptype incarnation: str
-        :return: the lost incarnation and the last sequence put back; ``None`` when none or unknown
-        :rtype: tuple[str, int] | None
+        :return: the lost incarnation and the sequence its notes cover it from; ``None`` when none or unknown
+        :rtype: tuple[str, int | None] | None
         """
         if isinstance(self._inner, EpochLogExtent):
             return await self._inner.continues(incarnation)
@@ -205,6 +212,16 @@ class TableFollower:
 
     A watch whose connection is closed (the watcher's ``closed``) stops instead of starting again:
     the client is shutting down, and a retry loop against it would keep the process alive.
+
+    **A quiet table never ages out.** A watch is pushed only when its table is written, so a table
+    nobody writes would keep its mark while the change log's retention moves past it, and then be judged
+    behind (``aged_out``) for a stretch in which nothing happened. Where the reader can read the log's
+    head (:class:`~threetears.epoch.generation_tick.QuietReader`, as
+    :class:`~threetears.epoch.generation.EpochGenerationReader` does), the follower also runs one quiet
+    pass for all its tables (:func:`~threetears.epoch.generation_tick.quiet_marks_tick`) every
+    :func:`~threetears.epoch.generation_tick.quiet_pass_interval`, a fraction of the log's own retention:
+    it reads only NATS, moves each quiet table's mark to the log's head, and catches up any table the log
+    holds an unapplied epoch of through the ordinary walk.
     """
 
     def __init__(
@@ -312,8 +329,19 @@ class TableFollower:
         for table in self._tables:
             self._registry.follow_generation(table)
             self._registry.watched_by(table, self._watching_by_table[table])
+        # one quiet pass for every table, where the reader can read the log's head
+        quiet = (
+            [
+                asyncio.create_task(
+                    _run_quiet_passes(self._registry, self._source, self._tables), name="follow-generation:quiet-pass"
+                )
+            ]
+            if isinstance(self._source, QuietReader)
+            else []
+        )
         self._tasks = [
-            asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables
+            *(asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables),
+            *quiet,
         ]
         log.info("following tables' write generations", extra={"extra_data": {"tables": self._tables}})
 
@@ -396,6 +424,42 @@ class TableFollower:
                 },
             )
             await asyncio.sleep(delay)
+
+
+async def _run_quiet_passes(registry: CollectionRegistry, reader: QuietReader, tables: Sequence[str]) -> None:
+    """run the quiet pass over a follower's tables every pass interval, until cancelled.
+
+    The first interval is read from the log itself, so it follows the log's declared retention; a pass
+    that fails is logged and the next one runs at the same interval. Nothing is buffered: each pass reads
+    the log and judges every table there and then.
+
+    :param registry: the follower's registry
+    :ptype registry: CollectionRegistry
+    :param reader: reads the change log
+    :ptype reader: QuietReader
+    :param tables: the follower's tables
+    :ptype tables: Sequence[str]
+    :return: nothing; it ends only when cancelled
+    :rtype: None
+    """
+    try:
+        state, _ = await reader.newest_epochs(())
+        interval = quiet_pass_interval(state)
+    except GenerationUnavailableError as exc:
+        # NOSILENT: the log could not be read; the retention a source declares by default sets the first interval
+        log.warning(
+            "the quiet pass could not read the change log's retention", extra={"extra_data": {"error": str(exc)}}
+        )
+        interval = quiet_pass_interval(None)
+    while True:
+        await asyncio.sleep(interval.total_seconds())
+        try:
+            interval = (await quiet_marks_tick(registry, reader, tables)).interval
+        except asyncio.CancelledError:
+            raise
+        # prawduct:allow prawduct/broad-except -- a failed pass is retried at the next interval; stopping would leave quiet tables to age out
+        except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="a quiet pass failed; the next one runs at the same interval")
 
 
 def follow_tables(
