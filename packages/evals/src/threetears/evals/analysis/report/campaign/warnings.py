@@ -17,6 +17,7 @@ from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadi
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.verdict import GUARDRAIL_SAID, guardrail_name
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -40,7 +41,12 @@ def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[Repo
 
 
 def guardrail_warnings(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """One line per arm and decision naming each guardrail it is not shown safe on with the aspects that guardrail
     holds on, after the broken floors, what it means for the decision first: ``v2 may do worse than v1 on the No
@@ -59,6 +65,8 @@ def guardrail_warnings(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The lines, the breached before the undecided, each arm in the order first met.
     :rtype: list[ReportBlock]
     """
@@ -95,14 +103,16 @@ def guardrail_warnings(
             bound = None
             if decision == "undecided" and len(checks_of[arm]) == 1:
                 ((check, bundle, control),) = checks_of[arm]
-                bound = _undecided_bound(check, bundle, arm=arm, control=control)
+                bound = _undecided_bound(check, bundle, arm=arm, control=control, forms=forms)
             said = words.format(arm=arm, control=readings.control_label, named=listed(each))
             text = f"{said}{bound}." if bound else f"{said}."
             blocks.append(DisclosureBlock(section="warnings", source="guardrails", text=text, term="guardrail"))
     return blocks
 
 
-def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, arm: str, control: str) -> str | None:
+def _undecided_bound(
+    check: GuardrailCheck, bundle: AnalysisContextBundle, *, arm: str, control: str, forms: PageForms
+) -> str | None:
     """What leaves one undecided guardrail undecided, where it is a pass/fail check read on a declared margin: the
     margin the arm may be worse than the control by, then how many cases could fail it and how many each arm failed
     it on, too few to settle it: ``, by more than its 5-point margin. Of the 30 cases that could fail it, neither arm
@@ -122,6 +132,8 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
     :ptype arm: str
     :param control: The control, by name.
     :ptype control: str
+    :param forms: The page's forms, which state the margin as declared.
+    :ptype forms: PageForms
     :return: The words, opening with the comma that follows the guardrail's name, or None.
     :rtype: str | None
     """
@@ -138,7 +150,8 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
     good = 1.0 if check.higher_is_better else 0.0
     cases = check.contrast.n_cases
     head = (
-        f", by more than its {format_number(check.margin * 100)}-point margin. Of the {cases} cases that could fail it"
+        f", by more than its {forms.declared(check.margin * 100).text}-point margin. Of the {cases} cases that could "
+        "fail it"
     )
     tail = "too few to settle it"
     if check.control.mean == good and check.contrast.mean == good:

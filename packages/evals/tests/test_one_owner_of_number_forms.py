@@ -226,10 +226,9 @@ _RULE_CALLABLES, _RULE_METHODS = _rule_primitives()
 
 def _forms_primitives(root: Path = _SOURCE_ROOT) -> frozenset[str]:
     """The public module-level functions of ``forms.py``: a decision relocated there and called as a free function
-    (``at_decimals``, ``level_decimals``) is still decided where it is called, so its caller is a site. Only
-    :class:`PageForms`, built once per page and asked by measure and role, is the migrated route: its classes (the
-    page's forms and the value types it hands out) and their methods are not primitives. None before ``forms.py``
-    exists.
+    is still decided where it is called, so its caller is a site. Only :class:`PageForms`, built once per page and
+    asked by measure and role, is the migrated route: its classes (the page's forms and the value types it hands out)
+    and their methods are not primitives. None before ``forms.py`` exists.
     """
     path = root / _FORMS
     if not path.exists():
@@ -347,11 +346,13 @@ class _Lookup:
     :ivar index: The walked modules' definitions and imports.
     :ivar functions: ``(module, name)`` of every module-level or nested function found to be a wrapper.
     :ivar methods: ``(module, "Class.name")`` of every method found to be a wrapper.
+    :ivar primitives: The names a call is a site by: the rule's, the plan's and ``forms.py``'s public functions.
     """
 
     index: _Index
     functions: frozenset[tuple[str, str]] = frozenset()
     methods: frozenset[tuple[str, str]] = frozenset()
+    primitives: frozenset[str] = _BASE_PRIMITIVES
 
     def named(self, node: ast.expr, where: tuple[str, str], *, as_value: bool = False) -> str | None:
         """The primitive ``node`` names, called (or, with ``as_value``, handed on as a function value), or ``None``.
@@ -385,7 +386,7 @@ class _Lookup:
             return None
         if name.startswith("_"):
             return None
-        if name in _BASE_PRIMITIVES or (not as_value and name.startswith(_SET_HELPER_PREFIXES)):
+        if name in self.primitives or (not as_value and name.startswith(_SET_HELPER_PREFIXES)):
             return name
         return None
 
@@ -588,7 +589,7 @@ def _reached_names(function: ast.FunctionDef | ast.AsyncFunctionDef, module: str
     return frozenset(names)
 
 
-def _derive_wrappers(index: _Index) -> _Lookup:
+def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVES) -> _Lookup:
     """Every function over the walked modules that returns a form, to the fixed point.
 
     A helper that returns what a site produced is a primitive itself, and so is one that returns what such a helper
@@ -602,7 +603,7 @@ def _derive_wrappers(index: _Index) -> _Lookup:
         for function, reached, cls in _definitions(tree)
         if not function.name.startswith("__")
     ]
-    lookup = _Lookup(index)
+    lookup = _Lookup(index, primitives=primitives)
     fresh: frozenset[str] | None = None
     while True:
         functions: set[tuple[str, str]] = set()
@@ -616,13 +617,13 @@ def _derive_wrappers(index: _Index) -> _Lookup:
         if not functions and not methods:
             return lookup
         fresh = frozenset(name.rsplit(".", 1)[-1] for _module, name in functions | methods)
-        lookup = _Lookup(index, lookup.functions | functions, lookup.methods | methods)
+        lookup = _Lookup(index, lookup.functions | functions, lookup.methods | methods, primitives)
 
 
-def _walk_python(sources: dict[str, str]) -> list[_Site]:
+def _walk_python(sources: dict[str, str], primitives: frozenset[str] = _BASE_PRIMITIVES) -> list[_Site]:
     """Every site in ``sources`` (module to text), with the wrappers derived over them as primitives."""
     index = _Index({module: ast.parse(text) for module, text in sources.items()})
-    lookup = _derive_wrappers(index)
+    lookup = _derive_wrappers(index, primitives)
     sites = []
     for module, tree in index.trees.items():
         visitor = _PythonForms(module, lookup)
@@ -631,8 +632,10 @@ def _walk_python(sources: dict[str, str]) -> list[_Site]:
     return sorted(sites, key=lambda site: (site.module, site.line, site.form, site.expression))
 
 
-def _python_sites(source: str, module: str = "sample.py") -> list[_Site]:
-    return _walk_python({module: source})
+def _python_sites(
+    source: str, module: str = "sample.py", *, primitives: frozenset[str] = _BASE_PRIMITIVES
+) -> list[_Site]:
+    return _walk_python({module: source}, primitives)
 
 
 # --- kit.js -------------------------------------------------------------------------------------------------------
@@ -1259,13 +1262,23 @@ class TestAWrapperIsAPrimitive:
             encoding="utf-8",
         )
         assert _forms_primitives(tmp_path) == frozenset({"relocated"})
-        assert "measured_decimals" in _FORMS_CALLABLES
-        assert _forms(_python_sites("measured_decimals(cells)")) == [
-            ("<module>", "measured_decimals()", "measured_decimals(cells)")
+        live = ast.parse((_SOURCE_ROOT / _FORMS).read_text(encoding="utf-8"))
+        assert _FORMS_CALLABLES == {
+            node.name
+            for node in live.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+        }
+        assert _FORMS_CALLABLES <= _BASE_PRIMITIVES
+        assert _python_sites("relocated(cells)") == []
+        primitives = _BASE_PRIMITIVES | _forms_primitives(tmp_path)
+        assert _forms(_python_sites("relocated(cells)", primitives=primitives)) == [
+            ("<module>", "relocated()", "relocated(cells)")
         ]
-        assert _forms(_python_sites("forms.measured_decimals(cells)")) == [
-            ("<module>", "measured_decimals()", "forms.measured_decimals(cells)")
+        assert _forms(_python_sites("forms.relocated(cells)", primitives=primitives)) == [
+            ("<module>", "relocated()", "forms.relocated(cells)")
         ]
+        assert _python_sites("page.level(v)", primitives=primitives) == []
+        assert _python_sites("_kept_inside(v)", primitives=primitives) == []
 
     def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self):
         """``PageForms``, its constructors, its methods and the values it hands out decide nothing at the call."""

@@ -33,8 +33,9 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns, percent_columns
-from threetears.evals.analysis.report.forms import PageForms, Printed, measured_decimals
+from threetears.evals.analysis.report.forms import Issued, PageForms, Printed
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.charting import interval_level
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text
@@ -331,11 +332,225 @@ def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
         assert again["interval"].text == printed["interval"].text
 
 
+def test_the_code_page_builds_its_forms_once_and_issues_every_change_its_scorecard_prints() -> None:
+    """The page's one forms object decides its scorecard: each candidate's change cell holds the number the pass
+    rate's form issued, and its text is one the ledger holds."""
+    page = _scaled().page
+    forms, _ = _ledger_and_page(_scaled_page)
+    issued = {entry.text for entry in forms.issued("passed", kind="trial", role="change")}
+    (row,) = _named(page.blocks, "scorecard").rows
+    changes = [cell for key, cell in row.items() if key.startswith("arm:") and cell.level is not None]
+    assert changes
+    for cell in changes:
+        assert cell.figure.partition(" · ")[2] in issued
+
+
+def _code_forms() -> PageForms:
+    scaled = _scaled()
+    return PageForms.of_campaign(scaled.readings, scaled.reports)
+
+
+def test_a_level_drawn_in_percent_is_held_as_computed_and_alone_keeps_today_s_spelling() -> None:
+    """A baseline in percent is rounded as computed (``6.25`` held at ``6.2``, half to even), and stated alone in words
+    it is spelled half away from zero (``6.3%``): today's two spellings, relocated, until the policy flip."""
+    forms = _code_forms()
+    held = forms.drawn_level("passed", 6.25, kind="trial")
+    alone = forms.drawn_level("passed", 6.25, kind="trial", alone=True)
+    assert (held.held, held.decimals, held.text, held.unit) == (6.2, 1, "6.2%", "%")
+    assert (alone.text, alone.held) == ("6.3%", 6.2)
+    assert forms.drawn_level("passed", None, kind="trial").held is None
+
+
+def test_a_code_page_s_change_and_its_half_width_are_held_at_a_point_s_decimal() -> None:
+    forms = _code_forms()
+    change = forms.change("passed", 2.46, kind="trial")
+    assert (change.held, change.decimals, change.text) == (2.5, 1, "+2.5 pts")
+    width = forms.half_width("passed", 3.04, kind="trial")
+    assert (width.held, width.text, width.unit) == (3.0, "3.0 pts", "pts")
+    assert [entry.role for entry in forms.ledger] == ["change", "half_width"]
+
+
+def test_an_interval_sized_in_a_sentence_reads_each_end_unsigned_at_one_precision() -> None:
+    forms = _code_forms()
+    sized = forms.sizes("passed", -3.46, 7.9, kind="trial")
+    assert (sized.low_text, sized.high_text) == ("3.5", "7.9")
+    # An end a point's decimal would print as zero takes the decimals that show it, and the other end takes them too.
+    finer = forms.sizes("passed", -0.03, 4.2, kind="trial")
+    assert (finer.low_text, finer.high_text) == ("0.03", "4.20")
+
+
 @pytest.mark.parametrize(
-    ("figures", "decimals"), [([2.737, 0.0], 1), ([3.0, 2.0], 1), ([99.2345, 100.0], 0), ([0.0, 0.0], None), ([], None)]
+    ("level", "text", "held"), [(0.95, "95%", 0.95), (0.99688, "99.69%", 0.9969), (0.025, "2.5%", 0.025)]
 )
-def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(figures: list[float], decimals: int | None) -> None:
-    assert measured_decimals(figures) == decimals
+def test_an_interval_s_level_held_as_a_share_reads_to_the_hundredth_that_tells_two_apart(
+    level: float, text: str, held: float
+) -> None:
+    printed = PageForms("code", {}).confidence_share(level)
+    assert (printed.text, printed.held, printed.unit) == (text, held, "%")
+
+
+def test_a_pass_k_and_a_share_are_held_as_a_table_s_cell_holds_them() -> None:
+    forms = PageForms("code", {})
+    pass_k = forms.pass_k("passed", 0.4567, kind="trial")
+    assert (pass_k.held, pass_k.text) == (45.7, "45.7%")
+    assert forms.pass_k("passed", None, kind="trial").held is None
+    # Recorded under its measure, so the policy flip can re-decide it there.
+    assert [entry.text for entry in forms.issued("passed", kind="trial", role="pass_k")] == ["45.7%", ABSENT]
+    share = forms.share(0.374)
+    assert (share.held, share.text) == (37, "37%") and isinstance(share.held, int)
+
+
+def test_a_money_level_bracketed_by_its_interval_reads_both_in_one_form() -> None:
+    """Money drawn with its interval beside it takes the decimals its level and both ends need, as one cell."""
+    shape = s3_measurement()
+    forms = PageForms.of_campaign(shape.readings, shape.reports)
+    reading = next(reading for reading in shape.readings.measures if forms.measure(reading.measure).reads_as == "money")
+    assert reading.value is not None and reading.interval is not None
+    level, interval = forms.bracketed(reading.measure, reading.value, *reading.interval)
+    form = forms.measure(reading.measure)
+    assert form.ruler is not None
+    cell = TableCell(value=level.held, unit=level.unit, decimals=level.decimals)
+    assert level.text == cell.figure and level.held == form.ruler.drawn(reading.value)
+    assert interval.text == f"[{cell.amount(form.ruler.drawn(reading.interval[0]))}, " + (
+        f"{cell.amount(form.ruler.drawn(reading.interval[1]))}]"
+    )
+    assert "$" not in interval.digits
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [
+        lambda forms, key: forms.drawn_level(key, 1.0),
+        lambda forms, key: forms.half_width(key, 1.0),
+        lambda forms, key: forms.sizes(key, -1.0, 1.0),
+        lambda forms, key: forms.bracketed(key, 1.0, 0.0, 2.0),
+    ],
+)
+def test_a_written_page_refuses_a_code_page_s_own_forms(figure: Callable[[PageForms, str], object]) -> None:
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    with pytest.raises(ValueError, match="only on a code page"):
+        figure(forms, next(iter(held.measures)))
+
+
+@pytest.mark.parametrize(
+    ("figures", "decimals"),
+    [([2.737, 0.0], 1), ([3.0, 2.0], 1), ([99.2345, 100.0], 0), ([0.0, 0.0], None), ([None], None)],
+)
+def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
+    figures: list[float | None], decimals: int | None
+) -> None:
+    """A measure that is neither a rate nor money reads at its column's set's decimals, over each arm's one figure:
+    ``2.737`` beside ``0`` at one, ``99.2345`` beside ``100`` at none; a column of zeros or of no figure at all is
+    left to the number rule."""
+    shape = s3_measurement()
+    base = shape.readings.measures[0]
+    made = [
+        base.model_copy(
+            update={"measure": "made_up", "arm": f"arm {index}", "value": figure, "interval": None, "passed": None}
+            | {"trials": None}
+        )
+        for index, figure in enumerate(figures)
+    ]
+    readings = shape.readings.model_copy(update={"measures": [*shape.readings.measures, *made]})
+    form = PageForms.of_campaign(readings, shape.reports).measure("made_up")
+    assert (form.reads_as, form.level_decimals) == ("measured", decimals)
+
+
+#: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, whose bare
+#: figures ``blocks.percent_columns`` respells by the unit's rule after the cell is built (``bare_places``): a
+#: half-width (``Half-width (pts)``), a pass^k (``Pass^k there (%)``) and the between-cases share (``Between cases
+#: (%)``). Until C3e relocates the rule, their ledger texts may read otherwise on the page.
+_RESPELLED_ROLES = frozenset({"half_width", "pass_k", "share"})
+
+
+def _respelled(forms: PageForms, entry: Issued) -> bool:
+    """Whether ``blocks.percent_columns`` respells an issued figure on a code page after its cell is built, by its
+    measure and role, until C3e:
+
+    - :data:`_RESPELLED_ROLES`, each under a head naming its unit;
+    - a rate's interval: a pass rate's under ``Interval (pts)``, respelled at a point's decimal, and a measure's
+      ``[76.4%, 99.1%]`` in an interval column, whose percents the rule sets at one precision (``percent_places``);
+    - a measurement's rate level (kind ``measure``): bare under ``Accuracy (%)`` in its matrix, or a percent in a value
+      column, respelled alike.
+
+    Never excluded: a change's pass rate level and change (kind ``trial``), whose cells carry their decimals, which
+    the rule keeps; and an interval's confidence level, which only sentences state and the rule never reads."""
+    if entry.role in _RESPELLED_ROLES:
+        return True
+    if not entry.measure or forms.measure(entry.measure, kind=entry.kind).reads_as != "rate":
+        return False
+    return entry.role == "interval" or (entry.role == "level" and entry.kind == "measure")
+
+
+def _ledger_and_page(page_of: Callable[[], CampaignReport]) -> tuple[PageForms, str]:
+    """The one forms a code page was built with, and its markdown."""
+    built: list[PageForms] = []
+    real = PageForms.of_campaign
+
+    def capture(readings: CampaignReadings, reports: Mapping[str, Report]) -> PageForms:
+        forms = real(readings, reports)
+        built.append(forms)
+        return forms
+
+    with mock.patch.object(PageForms, "of_campaign", side_effect=capture):
+        page = page_of()
+    (forms,) = built
+    return forms, campaign_report_markdown(page)
+
+
+@pytest.mark.parametrize(
+    "page_of",
+    [
+        pytest.param(lambda: _scaled_page(), id="scaled"),
+        pytest.param(lambda: _scaled_page(two_aspects=True), id="scaled_two_aspects"),
+        pytest.param(lambda: s3_measurement().page(), id="measurement"),
+    ],
+)
+def test_the_ledger_holds_only_text_the_code_page_prints(page_of: Callable[[], CampaignReport]) -> None:
+    """Every text a code page's forms issued is on the page: a decision that compares figures prints nothing and
+    issues nothing. Excluded until C3e, by measure and role: a figure the column rule still respells after its cell is
+    built (:func:`_respelled`), whose digits the rule may change."""
+    forms, body = _ledger_and_page(page_of)
+    assert forms.ledger
+    missing = [entry for entry in forms.ledger if entry.text not in body and not _respelled(forms, entry)]
+    assert not missing, missing
+
+
+def test_a_decision_that_prints_nothing_issues_nothing() -> None:
+    """Comparing two levels at the precision they read at prints neither, so the ledger is left as it was."""
+    forms = _code_forms()
+    forms.count(3)
+    before = forms.ledger
+    assert forms.told_apart(0.99688) == 0.9969
+    assert forms.drawn_held("passed", 86.65, kind="trial") == 86.7
+    assert forms.ledger == before
+
+
+@pytest.mark.parametrize("two_aspects", [False, True], ids=["scaled", "scaled_two_aspects"])
+def test_the_control_cell_issues_only_the_level_it_prints(two_aspects: bool) -> None:
+    """On a change's matrix each pass rate level issued is one a cell prints: the control's (its pooled rate and its
+    candidates' baselines compared, not issued), each candidate's level beside its change, and each baseline a cell
+    names in words; on the row across the aspects, the control's level across them in place of its own figure."""
+    forms, _ = _ledger_and_page(lambda: _scaled_page(two_aspects=two_aspects))
+    rows = _named(_scaled_page(two_aspects=two_aspects).blocks, "scorecard").rows
+    assert len(rows) == (3 if two_aspects else 1), "two aspects and the row across them, or one aspect"
+    printed = [
+        cell
+        for row in rows
+        for key, cell in row.items()
+        if key.startswith("arm:") and cell.is_number and (cell.unit == "%" or cell.level is not None)
+    ]
+    named = sum((cell.flag or "").count("'s ") for cell in printed if cell.level is not None)
+    levels = forms.issued("passed", kind="trial", role="level")
+    assert len(levels) == len(printed) + named
+    controls = [cell for cell in printed if cell.level is None]
+    assert len(controls) == len(rows) and {cell.figure for cell in controls} <= {entry.text for entry in levels}
+
+
+def _scaled_page(*, two_aspects: bool = False) -> CampaignReport:
+    corpus = hot_path_corpus(scale=1, two_aspects=two_aspects)
+    return campaign_report(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
 
 
 # --- the ledger and the fixed forms -------------------------------------------------------------------------------

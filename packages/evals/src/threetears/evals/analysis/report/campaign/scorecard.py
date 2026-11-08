@@ -41,16 +41,10 @@ from dataclasses import dataclass, replace
 from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import (
-    POINT_PLACES,
-    ends_places,
-    format_number,
-    group_thousands,
-    spell_at,
-)
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
+from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.campaign.measure_kinds import (
@@ -59,9 +53,9 @@ from threetears.evals.analysis.report.campaign.measure_kinds import (
     rate_measures,
     shown_measures,
 )
-from threetears.evals.analysis.report.forms import MEASURED_PLACES, measured_decimals
+from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.kernel.surface import DecisionSurface
-from threetears.evals.analysis.report.campaign.common import floor_of, points
+from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
@@ -76,7 +70,6 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.report.blocks import bare_columns
-from threetears.evals.analysis.report.charts import percent_at
 from threetears.evals.analysis.report.model import (
     CellValue,
     DisclosureBlock,
@@ -85,7 +78,6 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TableCell,
     TableColumn,
-    interval_text,
     table_row,
 )
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
@@ -144,6 +136,34 @@ _CONTRAST_WORDS: dict[str, str] = {
 _CONTRAST_OF: dict[str, str] = {"better": "improved", "worse": "regressed"}
 
 
+def _rate_level(forms: PageForms, level: float, *, alone: bool = False) -> Printed:
+    """The pass rate's level as a change's or a choice's matrix draws it, in percent, in the page's one form for it."""
+    return forms.drawn_level(TRIAL_PASS_NAME, level, kind="trial", alone=alone)
+
+
+def _rate_held(forms: PageForms, level: float) -> float:
+    """The number the pass rate's level, drawn in percent, is held at, for a decision that compares levels and prints
+    none of them."""
+    return forms.drawn_held(TRIAL_PASS_NAME, level, kind="trial")
+
+
+def _rate_change(forms: PageForms, change: float) -> Printed:
+    """The pass rate's change in points, in the page's one form for it."""
+    return forms.change(TRIAL_PASS_NAME, change, kind="trial")
+
+
+def _level_text(forms: PageForms, level: float) -> str:
+    """An interval's level, held as a share, as the page states it: in percent to the precision that tells two levels
+    apart."""
+    return forms.confidence_share(level).text
+
+
+def _told_apart(forms: PageForms, level: float) -> float:
+    """An interval's level, held as a share, to the precision its text tells two levels apart at: two levels read
+    alike, or one reads as the nominal level, where these agree. A comparison prints nothing, so nothing is issued."""
+    return forms.told_apart(level)
+
+
 def _shown_interval(row: AspectReading) -> tuple[tuple[float, float] | None, float | None]:
     """The interval a row's reading was read on, and its level: the gain's for shown better, the drop's for shown
     worse, the nominal level's (a floor's own) for no worse than the margin; for unclear, the wider of the gain's and
@@ -187,7 +207,7 @@ def _row_words(row: AspectReading) -> str:
     return READING_WORDS[row.reading]
 
 
-def row_figures(row: AspectReading, control: str) -> str:
+def row_figures(row: AspectReading, control: str, *, forms: PageForms) -> str:
     """The figures a row's reading rests on, as sentences the lead says after its decision, each arm the subject and
     each figure as the matrix's fold prints it: what each arm passed of its trials, then what the interval the row was
     read on allows the arm to be against the control, in points; and for a row left unclear against its margin, the
@@ -198,6 +218,8 @@ def row_figures(row: AspectReading, control: str) -> str:
     :ptype row: AspectReading
     :param control: The control, as the page names it.
     :ptype control: str
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The sentences.
     :rtype: str
     """
@@ -215,20 +237,21 @@ def row_figures(row: AspectReading, control: str) -> str:
     interval, _ = _shown_interval(row)
     if interval is not None:
         # Both ends at one precision, as the interval's cell prints them: a point's one decimal, more where an end that
-        # is not zero would read as one: a set reads at one precision.
-        places = ends_places(interval[0], interval[1], POINT_PLACES)
+        # is not zero would read as one: a set reads at one precision. Each end is sized by its distance from zero.
+        sized = forms.sizes(TRIAL_PASS_NAME, interval[0], interval[1], kind="trial")
+        size = {abs(interval[0]): sized.low_text, abs(interval[1]): sized.high_text}
         said.append(
             interval_words(
                 row.arm_label,
                 interval[0],
                 interval[1],
-                amount=lambda value: spell_at(abs(value), places),
+                amount=lambda value: size[abs(value)],
                 unit=" points",
             )
         )
     need = row.projection.if_observed if row.projection is not None else None
     if row.reading == "unclear" and row.margin is not None and need is not None and need.kind == "more":
-        settles = group_thousands(format_number(float(need.cases)))
+        settles = forms.count(need.cases).text
         said.append(f"If the arms differ as observed, settling it takes {settles} cases in all (the To settle table).")
     return " ".join(said)
 
@@ -317,12 +340,15 @@ def _with_equal_weight_row(
     columns: Sequence[TableColumn],
     arms: Mapping[str, tuple[str, str]],
     levels: Mapping[str, tuple[float, str | None]] | None = None,
+    *,
+    forms: PageForms,
 ) -> list[dict[str, TableCell]]:
     """The row across every aspect, each aspect weighed alike, with each arm's cell
     (:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells`) in that arm's column; no row
     where no cell is given. ``arms`` is each arm's column and the unit it holds, by variant key. A figure states its
     unit, which must be its column's; it is placed without it where the column's header names it (``alpha (%)``),
-    else with it at the unit's one decimal, a change signed. A withheld figure (no value) carries none.
+    else with it at the unit's one decimal, a change signed, each held as the page's forms hold the matrix's own cells.
+    A withheld figure (no value) carries none.
 
     A change's ``levels`` are each arm's level across the aspects on its change's own basis, by variant key, with any
     words its cell adds: the equal-weight mean of the levels printed above it (:func:`_across_levels`). The row's
@@ -354,23 +380,37 @@ def _with_equal_weight_row(
                 f"the {aggregate.EQUAL_WEIGHT_ROW!r} cell for arm {key} states {stated}, and its column holds {unit!r}"
             )
         if column in bare:
-            row[column] = cell.model_copy(update={"unit": ""})
+            placed: dict[str, object] = {"unit": ""}
+            if cell.value is not None:
+                placed["value"] = _across(forms, float(cell.value), unit).held
+            row[column] = cell.model_copy(update=placed)
         elif cell.value is not None:
             # A head that names no unit leaves it on each figure, at the unit's one decimal as the column's cells are:
-            # a candidate's change signed, after its level across the aspects, as every change cell reads.
-            update: dict[str, object] = {"decimals": 1, "signed": unit == POINTS}
-            if key in held:
-                level, said = held[key]
+            # a candidate's change signed, after its level across the aspects, as every change cell reads. A control
+            # with its level across the aspects prints that level in place of its own figure.
+            level, said = held.get(key, (None, None))
+            figure = _across(forms, float(cell.value), unit) if level is None or unit == POINTS else None
+            update: dict[str, object] = {"signed": unit == POINTS}
+            if figure is not None:
+                update |= {"value": figure.held, "decimals": figure.decimals}
+            if level is not None:
+                shown = _rate_level(forms, level)
                 if unit == POINTS:
-                    update["level"] = round(level, 1)
+                    update["level"] = shown.held
                 else:
-                    update |= {"value": round(level, 1), "low": None, "high": None}
+                    update |= {"value": shown.held, "decimals": shown.decimals, "low": None, "high": None}
                 if said is not None:
                     update["flag"] = said
             row[column] = cell.model_copy(update=update)
         else:
             row[column] = cell
     return [row]
+
+
+def _across(forms: PageForms, value: float, unit: str) -> Printed:
+    """An equal-weight figure in its column's unit, as the matrix's own cells are held: a change in points, else a pass
+    rate in percent."""
+    return _rate_change(forms, value) if unit == POINTS else _rate_level(forms, value)
 
 
 def _no_equal_weight_row(
@@ -393,7 +433,12 @@ def _no_equal_weight_row(
 
 
 def table_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """A change's scorecard: the matrix of aspects × candidates, the same readings row by row in a fold, and the lines
     under them that change how a cell reads.
@@ -406,6 +451,8 @@ def table_blocks(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The matrix, its folded rows and its lines; one line where no control was named.
     :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
@@ -422,7 +469,10 @@ def table_blocks(
         ]
     blocks: list[ReportBlock] = []
     if readings.readings:
-        blocks += [_change_matrix(campaign, readings, reports, names, readings.control), _change_rows(readings, names)]
+        blocks += [
+            _change_matrix(campaign, readings, reports, names, readings.control, forms),
+            _change_rows(readings, names, forms),
+        ]
     else:
         _no_equal_weight_row(campaign, readings, reports, "no candidate was compared on any aspect")
     levels = [
@@ -432,7 +482,10 @@ def table_blocks(
     ]
     # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse. It is
     # a method, so it is the page's methods, not its scorecard.
-    read = [*(_level_lines(levels, readings) if readings.readings else []), *_within_lines(readings, names)]
+    read = [
+        *(_level_lines(levels, readings, forms) if readings.readings else []),
+        *_within_lines(readings, names, forms),
+    ]
     if read:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=" ".join(read)))
     notes = [
@@ -440,7 +493,7 @@ def table_blocks(
         for row in readings.readings
         if row.rig is not None
     ]
-    notes += _reconciled_lines(readings, reports, names)
+    notes += _reconciled_lines(readings, reports, names, forms)
     notes += _unread_lines(campaign, readings, names)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
@@ -452,6 +505,7 @@ def _change_matrix(
     reports: Mapping[str, Report],
     names: AspectNames,
     control: str,
+    forms: PageForms,
 ) -> TableBlock:
     """One row per aspect any candidate was compared on, one column per candidate, the control's pass rate beside the
     aspect; then the row across every aspect, where one is given. Each column's head names its arm and the measure, a
@@ -479,10 +533,10 @@ def _change_matrix(
             continue
         bundle = reports[aspect.label].bundle
         baselines = {arm: _baseline(row, bundle, control) for arm, row in on.items()}
-        shown = _control_cell(list(on.values()), bundle, control, baselines)
+        shown = _control_cell(list(on.values()), bundle, control, baselines, forms)
         # Where the candidates' changes read different cases, the control's cell is its trials passed, and every
         # candidate names the baseline its own change is read from.
-        uneven = len({(round(level, 1), cases) for level, cases in baselines.values()}) > 1
+        uneven = len({(_rate_held(forms, level), cases) for level, cases in baselines.values()}) > 1
         split = split or uneven
         for arm, (level, _) in baselines.items():
             stated.setdefault(arm, []).append(level)
@@ -496,12 +550,18 @@ def _change_matrix(
             cells[_arm_column(arm)] = (
                 TableCell(value=None)
                 if row is None
-                else _change_cell(row, campaign, readings, baselines[arm][0], stated=uneven)
+                else _change_cell(row, campaign, readings, baselines[arm][0], forms, stated=uneven)
             )
         rows.append(cells)
     arms = {control: (_arm_column(control), PERCENT), **{key: (_arm_column(key), POINTS) for key in candidates}}
     rows += _with_equal_weight_row(
-        campaign, readings, reports, columns, arms, _across_levels(control, named, rows, stated, split=split)
+        campaign,
+        readings,
+        reports,
+        columns,
+        arms,
+        _across_levels(control, named, rows, stated, split=split, forms=forms),
+        forms=forms,
     )
     return TableBlock(
         section="scorecard",
@@ -512,7 +572,7 @@ def _change_matrix(
         rows=rows,
         order="aspect by aspect, each candidate's change against the control",
         total_rows=len(rows),
-        glyph_key=_glyph_key(readings, [labels[arm] for arm in candidates]),
+        glyph_key=_glyph_key(readings, [labels[arm] for arm in candidates], forms),
     )
 
 
@@ -523,6 +583,7 @@ def _across_levels(
     stated: Mapping[str, Sequence[float]],
     *,
     split: bool,
+    forms: PageForms,
 ) -> dict[str, tuple[float, str | None]]:
     """Each arm's level across the aspects for the row under a change's matrix, on its change's own basis: the
     equal-weight mean of the levels its column prints above (the control's, each its changes' baseline; a
@@ -541,6 +602,8 @@ def _across_levels(
     :ptype stated: Mapping[str, Sequence[float]]
     :param split: Whether some aspect's candidates read different cases.
     :ptype split: bool
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: Each arm's level and its cell's words (None for none), by variant key.
     :rtype: dict[str, tuple[float, str | None]]
     """
@@ -556,7 +619,11 @@ def _across_levels(
     for key, baselines in stated.items():
         if key == control or (level := mean(key, lambda cell: cell.level)) is None:
             continue
-        own = f"from {named}'s {percent_at(math.fsum(baselines) / len(baselines), 1)}" if split else None
+        own = (
+            f"from {named}'s {_rate_level(forms, math.fsum(baselines) / len(baselines), alone=True).text}"
+            if split
+            else None
+        )
         levels[key] = (level, own)
     return levels
 
@@ -570,13 +637,13 @@ _ACROSS_BASIS = "mean of the aspects above, each weighted equally"
 _MEASURE = PASS_RATE.lower()
 
 
-def _glyph_key(readings: CampaignReadings, candidates: Sequence[str]) -> str:
+def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: PageForms) -> str:
     """What each glyph of a change's matrix draws, which the line under it opens with: whose change, from which
     control (the tick), the level its interval was read at (every interval drawn's, :func:`_shown_interval`), and
     which way is better (a pass rate's gain is to the right)."""
     levels = sorted(
         {
-            round(level, 4)
+            _told_apart(forms, level)
             for row in readings.readings
             for interval, level in [_shown_interval(row)]
             if interval is not None and level is not None
@@ -585,9 +652,9 @@ def _glyph_key(readings: CampaignReadings, candidates: Sequence[str]) -> str:
     if not levels:
         interval_said = "its interval"
     elif len(levels) == 1:
-        interval_said = f"its {_percent(levels[0])} interval"
+        interval_said = f"its {_level_text(forms, levels[0])} interval"
     else:
-        interval_said = f"its interval, read at {_percent(levels[0])} to {_percent(levels[-1])}"
+        interval_said = f"its interval, read at {_level_text(forms, levels[0])} to {_level_text(forms, levels[-1])}"
     whose = f"{candidates[0]}'s" if len(candidates) == 1 else "a candidate's"
     return (
         f"Each mark is {whose} change from {readings.control_label} (the tick) with {interval_said}; right is better."
@@ -611,6 +678,7 @@ def _control_cell(
     bundle: AnalysisContextBundle,
     control: str,
     baselines: Mapping[str, tuple[float, int | None]],
+    forms: PageForms,
 ) -> TableCell:
     """The control's pass rate on an aspect at one decimal, and what it is over: the level every candidate's change on
     it is read from (``baselines``), which is its trials passed (``18 of 20 cases``) where the two agree, else the mean
@@ -621,7 +689,7 @@ def _control_cell(
     row = rows[0]
     if not row.control_trials:
         return TableCell(value=None)
-    pooled = round(100 * row.control_passed / row.control_trials, 1)
+    pooled = 100 * row.control_passed / row.control_trials
     bounds = control_cannot_show(
         bundle,
         control,
@@ -633,17 +701,25 @@ def _control_cell(
     )
     marks = [f"cannot show a {bound}" for bound in bounds]
     count = _rate_count(row.control_passed, row.control_trials, row.control_cases)
+    # The baselines are compared at the precision they read at; only the level the cell prints is issued.
     level = pooled
-    held = {(round(figure, 1), cases) for figure, cases in baselines.values()}
+    held = {(_rate_held(forms, figure), cases): figure for figure, cases in baselines.values()}
     if len(held) == 1:
-        ((level, cases),) = held
-        if cases is not None and level != pooled:
+        (((shown, cases), level),) = held.items()
+        if cases is not None and shown != _rate_held(forms, pooled):
             count = f"mean of {cases} cases"
-    return TableCell(value=level, unit=PERCENT, decimals=1, flag=_marks(count, *marks))
+    printed = _rate_level(forms, level)
+    return TableCell(value=printed.held, unit=printed.unit, decimals=printed.decimals, flag=_marks(count, *marks))
 
 
 def _change_cell(
-    row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings, baseline: float, *, stated: bool
+    row: AspectReading,
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    baseline: float,
+    forms: PageForms,
+    *,
+    stated: bool,
 ) -> TableCell:
     """A candidate's change on one aspect: the level it reads at, then its change from the control's, signed and in
     points at one decimal (``23.0% · +2.5 pts``); the interval its reading was read on, drawn against the margin where
@@ -654,13 +730,14 @@ def _change_cell(
     if (status := _floor_state(row, campaign, readings)) is not None and status != _IMPLIED_FLOOR[row.reading]:
         marks.append(f"floor {status}")
     if stated:
-        marks.append(f"from {readings.control_label}'s {percent_at(baseline, 1)}")
+        marks.append(f"from {readings.control_label}'s {_rate_level(forms, baseline, alone=True).text}")
+    figure = _rate_change(forms, row.change)
     change = TableCell(
-        value=round(row.change, 1),
-        unit=POINTS,
-        decimals=1,
+        value=figure.held,
+        unit=figure.unit,
+        decimals=figure.decimals,
         signed=True,
-        level=round(baseline + row.change, 1),
+        level=_rate_level(forms, baseline + row.change).held,
         flag="; ".join(marks),
     )
     interval, _ = _shown_interval(row)
@@ -688,7 +765,7 @@ def _floor_state(row: AspectReading, campaign: EvalCampaign, readings: CampaignR
     return "held" if all(status == "held" for status in statuses) else "unclear"
 
 
-def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
+def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> TableBlock:
     """The matrix's readings one row per aspect × candidate, folded: the cases, each arm's passes, the change and the
     interval it was read on, the margin and the reading."""
     control = readings.control_label
@@ -706,6 +783,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
     rows = []
     for row in readings.readings:
         interval, _ = _shown_interval(row)
+        change = _rate_change(forms, row.change)
         rows.append(
             table_row(
                 {
@@ -715,8 +793,10 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
                     "control": _counted(row.control_passed, row.control_trials, row.control_cases),
                     "passed": _counted(row.arm_passed, row.arm_trials, row.arm_cases),
                     # Signed and in points at one decimal, as the matrix cell reads it.
-                    "change": TableCell(value=round(row.change, 1), unit=POINTS, decimals=1, signed=True),
-                    "interval": None if interval is None else interval_text(interval[0], interval[1], POINTS),
+                    "change": TableCell(value=change.held, unit=change.unit, decimals=change.decimals, signed=True),
+                    "interval": None
+                    if interval is None
+                    else forms.interval(TRIAL_PASS_NAME, interval[0], interval[1], kind="trial", change=True).text,
                     "margin": row.margin,
                     "reading": _reading_words(row),
                 }
@@ -742,12 +822,7 @@ def _rig_line(aspect: str, what: str, rig: str) -> str:
     )
 
 
-def _percent(level: float) -> str:
-    """A level as a percent, to the precision that tells two levels apart."""
-    return format_number(round(100 * level, 2)) + "%"
-
-
-def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[str]:
+def _level_lines(levels: Sequence[float], readings: CampaignReadings, forms: PageForms) -> list[str]:
     """The level the corrected intervals were read at (``levels``: every reading's but one no worse than the margin,
     whose sentence is :func:`_within_lines`; none where every reading is) and why it is wider than a plain interval,
     then how often one arm is shown better or worse wrongly, and, with several arms, how often some arm is, since the
@@ -761,12 +836,12 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
     lines: list[str] = []
     if levels:
         low, high = min(levels), max(levels)
-        if round(high, 4) <= round(INTERVAL_LEVEL, 4):
+        if _told_apart(forms, high) <= _told_apart(forms, INTERVAL_LEVEL):
             # A family of one is read at the nominal level: no reading is corrected.
             lines.append(
-                f"The interval is read at {_percent(low)}, as a floor's is."
+                f"The interval is read at {_level_text(forms, low)}, as a floor's is."
                 if len(levels) == 1
-                else f"Each interval is read at {_percent(low)}, as a floor's is."
+                else f"Each interval is read at {_level_text(forms, low)}, as a floor's is."
             )
         else:
             if len(sizes) > 1:
@@ -779,9 +854,13 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
                     else f"Each arm's gains on {gained} aspects, and its drops on {dropped}, are each corrected "
                     "together."
                 )
-            read_at = _percent(low) if round(low, 4) == round(high, 4) else f"{_percent(low)} to {_percent(high)}"
-            lines.append(f"So each interval is read at {read_at}, not {_percent(INTERVAL_LEVEL)}.")
-    half = _percent(readings.alpha / 2)
+            read_at = (
+                _level_text(forms, low)
+                if _told_apart(forms, low) == _told_apart(forms, high)
+                else f"{_level_text(forms, low)} to {_level_text(forms, high)}"
+            )
+            lines.append(f"So each interval is read at {read_at}, not {_level_text(forms, INTERVAL_LEVEL)}.")
+    half = _level_text(forms, readings.alpha / 2)
     lines.append(
         f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and likewise "
         "for wrongly shown worse."
@@ -792,19 +871,20 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
     if len(families) > 1:
         lines.append(
             f"The correction does not run across the {len(families)} arms, so the chance that some arm is wrongly "
-            f"shown better is up to {_percent(min(1.0, len(families) * readings.alpha / 2))}, and likewise for worse."
+            f"shown better is up to {_level_text(forms, min(1.0, len(families) * readings.alpha / 2))}, and likewise "
+            "for worse."
         )
     return lines
 
 
-def _within_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
+def _within_lines(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> list[str]:
     """Where a row reads no worse than the margin, the level it was read at and why that needs no correction; where
     such a row's interval sits above zero, that it is still no gain shown, naming each such row."""
     within = [row for row in readings.readings if row.reading == "within_margin"]
     if not within:
         return []
     lines = [
-        f"A row no worse than the margin reads {_percent(INTERVAL_LEVEL)}, uncorrected: an arm is no worse only where "
+        f"A row no worse than the margin reads {_level_text(forms, INTERVAL_LEVEL)}, uncorrected: an arm is no worse only where "
         "it holds on every asked aspect at once."
     ]
     clearing = [
@@ -825,7 +905,9 @@ def _listed(items: Sequence[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _reconciled_lines(readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames) -> list[str]:
+def _reconciled_lines(
+    readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames, forms: PageForms
+) -> list[str]:
     """Where a contrast in an aspect's fold reads the very per-case values a row reads and reaches another verdict, one
     line naming both and the interval each was read on, so the disagreement is explained where it is seen.
 
@@ -852,7 +934,7 @@ def _reconciled_lines(readings: CampaignReadings, reports: Mapping[str, Report],
             said = comparison.verdict if comparison.verdict in ("improved", "regressed") else None
             if said == _CONTRAST_OF.get(row.reading):
                 continue
-            lines.append(_reconciled(row, comparison, bundle, level, family_level, names(row.aspect)))
+            lines.append(_reconciled(row, comparison, bundle, level, family_level, names(row.aspect), forms))
     return lines
 
 
@@ -887,6 +969,7 @@ def _reconciled(
     level: float,
     family_level: float,
     aspect: str,
+    forms: PageForms,
 ) -> str:
     """One row and the contrast reading its values to another verdict: both verdicts, then how each was read."""
     if comparison.reading == "trial":
@@ -895,17 +978,22 @@ def _reconciled(
         reading = humanize("dimension", comparison.name)
     else:
         reading = measure_name_of(bundle, comparison.name)
-    own = "on its own" if round(level, 4) <= round(INTERVAL_LEVEL, 4) else f"corrected across {row.arm_label}'s aspects"
+    own = (
+        "on its own"
+        if _told_apart(forms, level) <= _told_apart(forms, INTERVAL_LEVEL)
+        else f"corrected across {row.arm_label}'s aspects"
+    )
     # The interval the contrast is drawn on, which is not always the test its p came from: a rate's is its bounded one.
     basis = comparison.interval_basis or ("t" if comparison.basis == "t" else "bounded")
     said = (
         f"On {aspect}, {row.arm_label}'s row reads {_row_words(row)} and its contrast on {reading} reads "
         f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "
-        f"{_percent(level)}, {own}; the contrast a {basis} interval at {_percent(family_level)}, corrected within the "
+        f"{_level_text(forms, level)}, {own}; the contrast a {basis} interval at {_level_text(forms, family_level)}, "
+        "corrected within the "
         "aspect's family."
     )
     if comparison.verdict == "regressed" and row.reading != "worse" and row.margin is not None:
-        said += f" The row counts a drop only past the {format_number(row.margin)}-point margin."
+        said += f" The row counts a drop only past the {forms.declared(row.margin).text}-point margin."
     return said
 
 
@@ -942,7 +1030,12 @@ class _Sizing:
 
 
 def settle_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """One table of what would settle each unclear reading of a change, aspect by aspect and arm by arm: a row left
     unclear against its margin, read on the pass rate alone; and each rate floor left unclear, read on every rate its
@@ -963,10 +1056,12 @@ def settle_blocks(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The table and its note; nothing where no reading is to settle.
     :rtype: list[ReportBlock]
     """
-    sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports)]
+    sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports, forms)]
     if not sizings:
         return []
     # The arm and both counts lead, so a frame as narrow as a host's (688 px) shows them without scrolling; the
@@ -1008,12 +1103,16 @@ def settle_blocks(
             order="as the matrix, each arm's reading on the pass rate before its floors",
             total_rows=len(rows),
         ),
-        DisclosureBlock(section="scorecard", source="comparisons", text=_settle_note(sizings)),
+        DisclosureBlock(section="scorecard", source="comparisons", text=_settle_note(sizings, forms)),
     ]
 
 
 def _sizings(
-    row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    row: AspectReading,
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    forms: PageForms,
 ) -> list[_Sizing]:
     """What would settle a row left unclear against its margin, then each rate floor on its aspect left unclear for
     its arm, each counted as the aspect's own page counts it."""
@@ -1023,7 +1122,7 @@ def _sizings(
         own = _Sizing(
             aspect=row.aspect,
             arm=row.arm_label,
-            shows=f"no worse than the {format_number(row.margin)}-point margin",
+            shows=f"no worse than the {forms.declared(row.margin).text}-point margin",
             decided_by=PASS_RATE,
             why=reason_words(row.reason) or "",
             projection=row.projection,
@@ -1059,8 +1158,8 @@ def _sizings(
             found[found.index(own)] = replace(
                 own,
                 shows=(
-                    f"no worse than the {format_number(row.margin)}-point margin, and the "
-                    f"{format_number(clause.max_points)}-point floor holds"
+                    f"no worse than the {forms.declared(row.margin).text}-point margin, and the "
+                    f"{forms.declared(clause.max_points).text}-point floor holds"
                 ),
             )
             own = None
@@ -1069,7 +1168,7 @@ def _sizings(
             _Sizing(
                 aspect=row.aspect,
                 arm=row.arm_label,
-                shows=f"the {format_number(clause.max_points)}-point floor holds",
+                shows=f"the {forms.declared(clause.max_points).text}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding),
                 why=reason_words(verdict.reason if deciding is None else deciding.reason) or "",
                 projection=projection,
@@ -1103,7 +1202,7 @@ def _rate_words(rate: RateVerdict) -> str:
     return PASS_RATE if rate.rate.measure is None else rate.rate.name
 
 
-def _settle_note(sizings: Sequence[_Sizing]) -> str:
+def _settle_note(sizings: Sequence[_Sizing], forms: PageForms) -> str:
     """The sentences under the sizing table, each said only where a row needs it: how a count is read, what each side
     assumes, why a floor's count can exceed the pass rate's, what ``none would`` and ``re-run the lost trials`` mean,
     and how rough a count is."""
@@ -1115,7 +1214,7 @@ def _settle_note(sizings: Sequence[_Sizing]) -> str:
     ]
     floors = any(sizing.floor for sizing in sizings)
     said = [
-        f"Each count is the cases a {_percent(INTERVAL_LEVEL)} interval needs in all, not cases to add, to rule out a "
+        f"Each count is the cases a {_level_text(forms, INTERVAL_LEVEL)} interval needs in all, not cases to add, to rule out a "
         "drop past the margin or the floor's points.",
         "The no-difference count assumes the arms truly do not differ, and the as-observed count that they differ as "
         "this run saw.",
@@ -1254,7 +1353,12 @@ CHOICE_NOTE = (
 
 
 def pair_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """A choice's scorecard: the matrix of aspects × arms, each cell the arm's pass rate and the arms it is shown ahead
     of; every pair folded under it, each arm's passes, the difference with its interval, and the arm shown ahead or
@@ -1268,6 +1372,8 @@ def pair_blocks(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The matrix, the pairs and their lines.
     :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
@@ -1289,7 +1395,7 @@ def pair_blocks(
     for pair in readings.pairs:
         if pair.confidence is not None:
             levels.append(pair.confidence)
-        change = round(pair.change, 1)
+        change = _rate_change(forms, pair.change)
         ahead = pair.ahead_label or "no separation"
         cells = table_row(
             {
@@ -1299,24 +1405,31 @@ def pair_blocks(
                 "cases": min(pair.first_cases, pair.second_cases),
                 "first_passed": _counted(pair.first_passed, pair.first_trials, pair.first_cases),
                 "second_passed": _counted(pair.second_passed, pair.second_trials, pair.second_cases),
-                "change": change,
-                "interval": None if pair.interval is None else interval_text(*pair.interval, POINTS),
+                "change": change.held,
+                "interval": None
+                if pair.interval is None
+                else forms.interval(TRIAL_PASS_NAME, *pair.interval, kind="trial", change=True).text,
                 "ahead": ahead if pair.confirmatory else f"{ahead}, a lead",
             }
         )
         # Signed at a point's one decimal, as every other change on the page reads: a pair is direction-free, so an
         # unsigned 5.0 would read as a magnitude.
         cells["change"] = (
-            TableCell(value=change, decimals=1, signed=True)
+            TableCell(value=change.held, decimals=change.decimals, signed=True)
             if pair.interval is None
             else TableCell(
-                value=change, low=pair.interval[0], high=pair.interval[1], zero_line=True, decimals=1, signed=True
+                value=change.held,
+                low=pair.interval[0],
+                high=pair.interval[1],
+                zero_line=True,
+                decimals=change.decimals,
+                signed=True,
             )
         )
         rows.append(cells)
     blocks: list[ReportBlock] = []
     if readings.pairs:
-        blocks.append(_choice_matrix(campaign, readings, reports, names))
+        blocks.append(_choice_matrix(campaign, readings, reports, names, forms))
     else:
         _no_equal_weight_row(campaign, readings, reports, "no pair of arms was read on any aspect")
     blocks.append(
@@ -1335,9 +1448,10 @@ def pair_blocks(
     if levels:
         low, high = min(levels), max(levels)
         notes.append(
-            f"Each interval is read at {_percent(low)}."
-            if round(low, 4) == round(high, 4)
-            else f"Each interval is read at the level its pair was tested at, from {_percent(low)} to {_percent(high)}."
+            f"Each interval is read at {_level_text(forms, low)}."
+            if _told_apart(forms, low) == _told_apart(forms, high)
+            else f"Each interval is read at the level its pair was tested at, from {_level_text(forms, low)} to "
+            f"{_level_text(forms, high)}."
         )
     notes += [
         _rig_line(names(pair.aspect), f"the difference between {pair.first_label} and {pair.second_label}", pair.rig)
@@ -1350,7 +1464,11 @@ def pair_blocks(
 
 
 def _choice_matrix(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    names: AspectNames,
+    forms: PageForms,
 ) -> TableBlock:
     """One row per aspect any pair was read on, one column per arm: its pass rate over its usable trials, and the
     arms it is shown ahead of there; then the row across every aspect, where one is given."""
@@ -1378,11 +1496,12 @@ def _choice_matrix(
                 continue
             count = _rate_count(board.passed, board.usable, board.usable_cases)
             cells[_arm_column(arm)] = TableCell(
-                value=round(100 * board.passed / board.usable, 1), flag=_marks(count, _ahead_marks(arm, pairs))
+                value=_rate_level(forms, 100 * board.passed / board.usable).held,
+                flag=_marks(count, _ahead_marks(arm, pairs)),
             )
         rows.append(cells)
     rows += _with_equal_weight_row(
-        campaign, readings, reports, columns, {arm: (_arm_column(arm), PERCENT) for arm in arms}
+        campaign, readings, reports, columns, {arm: (_arm_column(arm), PERCENT) for arm in arms}, forms=forms
     )
     return TableBlock(
         section="scorecard",
@@ -1472,7 +1591,12 @@ def _frontier_words(aspect: str, named: str, tied: Sequence[str], decision: str 
 
 
 def measure_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """A measurement's scorecard: the matrix of aspects × measures for its arm, each value with its interval; every
     measure folded under it, the pass rate as its count, with a Setup column where an arm was measured under more
@@ -1486,6 +1610,8 @@ def measure_blocks(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The matrix, the measures and their lines.
     :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell is given: a measurement's matrix has no arm columns to hold it.
@@ -1514,12 +1640,12 @@ def measure_blocks(
             "aspect": names.cell(reading.aspect),
             "arm": reading.arm_label,
             "measure": _measure_words(reading, reports) + (_money_label(ruler) if ruler is not None else ""),
-            "value": _measured(reading.value, reading.passed, reading.trials, reading.cases, rate=rate)
+            "value": _measured(reading, forms, rate=rate)
             if ruler is None
-            else _money_cell(reading.value, None, ruler),
-            "interval": _measured_interval(reading.interval, rate)
+            else _money_cell(forms, reading.measure, reading.value, None),
+            "interval": _measured_interval(forms, reading.measure, reading.interval)
             if ruler is None
-            else _money_interval(reading.interval, ruler),
+            else _money_interval(forms, reading.measure, reading.interval),
             "cases": reading.cases,
         }
         if by_rig:
@@ -1528,7 +1654,7 @@ def measure_blocks(
     _no_equal_weight_row(campaign, readings, reports, "a measurement's matrix holds its one arm's measures")
     blocks: list[ReportBlock] = []
     if readings.measures:
-        blocks.append(_measure_matrix(campaign, readings, reports, names))
+        blocks.append(_measure_matrix(campaign, readings, reports, names, forms))
     blocks += [
         TableBlock(
             section="scorecard",
@@ -1569,7 +1695,11 @@ def _measure_header(key: str, readings: CampaignReadings, reports: Mapping[str, 
 
 
 def _measure_matrix(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    names: AspectNames,
+    forms: PageForms,
 ) -> TableBlock:
     """One row per aspect (per aspect and arm, where more than one arm was measured), one column per measure: its value
     with its interval, a pass rate in percent. A measure read under several test setups on one aspect has a cell for
@@ -1618,12 +1748,11 @@ def _measure_matrix(
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
                 found = [reading for reading in held if reading.measure == key]
-                cells[f"measure:{key}"] = _measure_cell(found, rulers.get(key), rate=key in rates, counts=counts)
+                cells[f"measure:{key}"] = _measure_cell(found, forms, rulers.get(key), counts=counts)
             rows.append(cells)
-    rows = _one_precision(rows, [f"measure:{key}" for key in measures if key not in rates and key not in rulers])
     if len(arms) == 1:
         return _turned_matrix(
-            campaign, rows, list(measures), reports, rulers, rates, shown, title=f"{labels[arms[0]]} by aspect"
+            campaign, rows, list(measures), reports, rulers, rates, shown, forms, title=f"{labels[arms[0]]} by aspect"
         )
     return TableBlock(
         section="scorecard",
@@ -1645,6 +1774,7 @@ def _turned_matrix(
     rulers: Mapping[str, MoneyRuler],
     rates: frozenset[str],
     shown: Sequence[MeasureReading],
+    forms: PageForms,
     *,
     title: str,
 ) -> TableBlock:
@@ -1675,8 +1805,8 @@ def _turned_matrix(
                 cell = cell.model_copy(update={"unit": PERCENT})
             interval = (
                 None
-                if cell.low is None or cell.high is None
-                else f"[{cell.amount(cell.low)}, {cell.amount(cell.high)}]"
+                if cell.low is None or reading.interval is None
+                else forms.bracketed(key, reading.value, *reading.interval)[1].text
             )
             named = _measure_words(reading, reports) + (_money_label(rulers[key]) if key in rulers else "")
             turned.append(
@@ -1706,63 +1836,41 @@ def _read_on(aspect: str, shown: Sequence[MeasureReading]) -> bool:
 
 def _measure_cell(
     found: Sequence[MeasureReading],
+    forms: PageForms,
     ruler: MoneyRuler | None = None,
     *,
-    rate: bool,
     counts: Mapping[tuple[str, str, str], str] | None = None,
 ) -> TableCell:
     """One measure on one aspect: its value with its interval, a rate (a pass rate, an accuracy) in percent, money in
-    its measure's one form on its ruler (``ruler``, per 1,000 replies as its header says); a dash where it was not
-    read, and a marked dash where it was read under several test setups, whose figures the fold holds."""
+    its measure's one form on its ruler (``ruler``, per 1,000 replies as its header says), any other measure at its
+    column's one precision, the set's (``2.737`` beside ``0`` reads ``2.7``, ``99.2345`` beside ``100`` reads ``99``),
+    so a figure reads here as the Full results and the line under the table read it; a dash where it was not read,
+    and a marked dash where it was read under several test setups, whose figures the fold holds."""
     if not found:
         return TableCell(value=None)
     if len(found) > 1:
         return TableCell(value=None, flag="split by setup")
     (reading,) = found
     if ruler is not None:
-        return _money_cell(reading.value, reading.interval, ruler)
-    scale = 100.0 if rate else 1.0
-    places = 1 if rate else MEASURED_PLACES
+        return _money_cell(forms, reading.measure, reading.value, reading.interval)
     if reading.value is None:
         return TableCell(value=None)
-    value = round(scale * reading.value, places)
+    figure = forms.level(reading.measure, reading.value)
     count = (
         _rate_count(reading.passed, reading.trials, reading.cases)
         if reading.passed is not None and reading.trials is not None
         else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
     if reading.interval is None:
-        return TableCell(value=value, flag=count)
-    return TableCell(value=value, low=scale * reading.interval[0], high=scale * reading.interval[1], flag=count)
-
-
-def _one_precision(rows: list[dict[str, TableCell]], keys: Sequence[str]) -> list[dict[str, TableCell]]:
-    """The scorecard's rows with each column of measured figures (neither a rate nor money, whose columns have forms of
-    their own) at one precision, the set's (:func:`~threetears.evals.kernel.numbers.set_places`), so a figure reads
-    here as the Full results and the line under the table read it: ``2.737`` beside ``0`` reads ``2.7``, ``3.0``
-    beside ``2.0`` reads so, and ``99.2345`` beside ``100`` reads ``99`` and ``100``.
-
-    :param rows: The scorecard's rows, by column key.
-    :ptype rows: list[dict[str, TableCell]]
-    :param keys: The columns of measured figures.
-    :ptype keys: Sequence[str]
-    :return: The rows, each such column's numbers carrying its decimals.
-    :rtype: list[dict[str, TableCell]]
-    """
-    places: dict[str, int] = {}
-    for key in keys:
-        figures = [float(row[key].value) for row in rows if key in row and row[key].is_number]  # type: ignore[arg-type]
-        if (decimals := measured_decimals(figures)) is not None:
-            places[key] = decimals
-    return [
-        {
-            key: cell.model_copy(update={"decimals": places[key]})
-            if key in places and cell.is_number and not cell.unit
-            else cell
-            for key, cell in row.items()
-        }
-        for row in rows
-    ]
+        return TableCell(value=figure.held, decimals=figure.decimals, flag=count)
+    factor = forms.measure(reading.measure).factor
+    return TableCell(
+        value=figure.held,
+        decimals=figure.decimals,
+        low=factor * reading.interval[0],
+        high=factor * reading.interval[1],
+        flag=count,
+    )
 
 
 def measured_figure(reading: MeasureReading) -> str | None:
@@ -1812,43 +1920,49 @@ def _money_label(ruler: MoneyRuler) -> str:
     return f", {ruler.words('replies')}"
 
 
-def _money_cell(value: float | None, interval: tuple[float, float] | None, ruler: MoneyRuler) -> TableCell:
-    """A money figure on its measure's ruler, in its one form, its interval where given."""
+def _money_cell(forms: PageForms, key: str, value: float | None, interval: tuple[float, float] | None) -> TableCell:
+    """A money figure on its measure's ruler, in its one form, its interval where given: drawn beside it, the form then
+    holding the interval's ends too."""
     if value is None:
         return TableCell(value=None)
-    drawn = ruler.drawn(value)
     if interval is None:
-        return TableCell(value=drawn, unit=MONEY, decimals=ruler.form.places_of([drawn]))
-    low, high = ruler.drawn(interval[0]), ruler.drawn(interval[1])
-    places = ruler.form.places_of([drawn, low, high], ends=(low, high))
-    return TableCell(value=drawn, unit=MONEY, decimals=places, low=low, high=high)
+        figure = forms.level(key, value)
+        return TableCell(value=figure.held, unit=figure.unit, decimals=figure.decimals)
+    figure, _ = forms.bracketed(key, value, *interval)
+    factor = forms.measure(key).factor
+    return TableCell(
+        value=figure.held,
+        unit=figure.unit,
+        decimals=figure.decimals,
+        low=factor * interval[0],
+        high=factor * interval[1],
+    )
 
 
-def _money_interval(interval: tuple[float, float] | None, ruler: MoneyRuler) -> str | None:
+def _money_interval(forms: PageForms, key: str, interval: tuple[float, float] | None) -> str | None:
     """A money figure's interval as the fold's table states it, its ends in the figure's one form on its ruler."""
     if interval is None:
         return None
-    low, high = ruler.spell_ends(*interval)
-    return f"[{low}, {high}]"
+    return forms.interval(key, *interval).text
 
 
-def _measured(value: float | None, passed: int | None, trials: int | None, cases: int, *, rate: bool) -> CellValue:
-    """A measure's value as the table states it: a pass rate as its count, any other rate in percent, any other value
-    as measured."""
-    if passed is not None and trials is not None:
-        return _counted(passed, trials, cases)
-    if value is None:
+def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellValue:
+    """A measure's value as the fold's table states it: a pass rate as its count, any other rate in percent, any other
+    value as measured, each by the lone figure rule at its cell's precision."""
+    if reading.passed is not None and reading.trials is not None:
+        return _counted(reading.passed, reading.trials, reading.cases)
+    if reading.value is None:
         return None
-    return f"{points(100 * value)}{PERCENT}" if rate else round(value, 4)
+    figure = forms.level(reading.measure, reading.value, alone=True)
+    return figure.text if rate else figure.held
 
 
-def _measured_interval(interval: tuple[float, float] | None, rate: bool) -> str | None:
-    """A measure's interval as the table states it: a rate's in percent, any other in the measure's units."""
+def _measured_interval(forms: PageForms, key: str, interval: tuple[float, float] | None) -> str | None:
+    """A measure's interval as the fold's table states it: a rate's in percent, any other in the measure's units, each
+    end as the fold states a value."""
     if interval is None:
         return None
-    if rate:
-        return f"[{points(100 * interval[0])}{PERCENT}, {points(100 * interval[1])}{PERCENT}]"
-    return f"[{format_number(round(interval[0], 4))}, {format_number(round(interval[1], 4))}]"
+    return forms.stated_interval(key, *interval).text
 
 
 def _unread_until_candidate_lines(campaign: EvalCampaign, names: AspectNames) -> list[str]:
@@ -1878,7 +1992,9 @@ def _unread_until_candidate_lines(campaign: EvalCampaign, names: AspectNames) ->
 BAR_WORDS: dict[str, str] = {"met": "met", "missed": "missed", "unclear": "unclear"}
 
 
-def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames) -> list[ReportBlock]:
+def bar_blocks(
+    readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames, forms: PageForms
+) -> list[ReportBlock]:
     """Every arm against every absolute bar, aspect by aspect, for every kind, each measure by its reader's name;
     nothing where no bar is declared.
 
@@ -1888,6 +2004,8 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, nam
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The bars table, or nothing.
     :rtype: list[ReportBlock]
     """
@@ -1912,7 +2030,8 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, nam
                 "aspect": names.cell(status.aspect),
                 "arm": status.arm_label,
                 "measure": named(status.aspect, status.measure),
-                "bar": f"{'at most' if status.direction == 'lower_is_better' else 'at least'} {format_number(status.bar)}",
+                "bar": f"{'at most' if status.direction == 'lower_is_better' else 'at least'} "
+                f"{forms.declared(status.bar).text}",
                 "value": status.value,
                 "interval": None
                 if status.interval is None

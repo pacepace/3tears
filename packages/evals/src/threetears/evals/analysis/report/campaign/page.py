@@ -62,6 +62,7 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     table_blocks,
 )
 from threetears.evals.analysis.report.campaign.warnings import bar_warnings, floor_warnings, guardrail_warnings
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
     CampaignReport,
@@ -150,6 +151,8 @@ def build_campaign_report(
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles, campaign=campaign.name or None)
+    # Every figure the page states is decided once, by its measure, before any part is laid out.
+    forms = PageForms.of_campaign(readings, reports)
     # The first screen is the decision: the question, what the page compares, the lead, then where the campaign's
     # report is where it has one, then what warns, one line per arm, and each report-wide caveat once. Evidence of an
     # earlier shape this build reads as stored says so before all of it.
@@ -157,25 +160,25 @@ def build_campaign_report(
         *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms),
-        *(_lead_blocks(campaign, readings, reports, names=names) if lead is None else lead),
+        *(_lead_blocks(campaign, readings, reports, names=names, forms=forms) if lead is None else lead),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names),
-        *guardrail_warnings(campaign, readings, reports, names=names),
+        *guardrail_warnings(campaign, readings, reports, names=names, forms=forms),
         *caveat_blocks(bundles, section="warnings", names=names),
     ]
     if kind == "change":
-        blocks += table_blocks(campaign, readings, reports, names=names)
-        blocks += settle_blocks(campaign, readings, reports, names=names)
+        blocks += table_blocks(campaign, readings, reports, names=names, forms=forms)
+        blocks += settle_blocks(campaign, readings, reports, names=names, forms=forms)
     elif kind == "choice":
-        blocks += pair_blocks(campaign, readings, reports, names=names)
+        blocks += pair_blocks(campaign, readings, reports, names=names, forms=forms)
         blocks += frontier_blocks(campaign, readings, reports, names=names)
     else:
-        blocks += measure_blocks(campaign, readings, reports, names=names)
-    blocks += aggregate_blocks(campaign, readings, reports)
-    blocks += depth_blocks(campaign, readings, reports, names=names)
-    blocks += bar_blocks(readings, reports, names=names)
+        blocks += measure_blocks(campaign, readings, reports, names=names, forms=forms)
+    blocks += aggregate_blocks(campaign, readings, reports, forms=forms)
+    blocks += depth_blocks(campaign, readings, reports, names=names, forms=forms)
+    blocks += bar_blocks(readings, reports, names=names, forms=forms)
     blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
     # Design & provenance: the design and when each criterion was set, then what depth says once. What each check's
     # name stands for is the glossary's (``CampaignReport.glossary``).
@@ -220,6 +223,7 @@ def _lead_blocks(
     reports: Mapping[str, Report],
     *,
     names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """The page's lead, its verdict line, on every page where its caller states no answer of its own: one sentence
     per candidate on each aspect in the campaign's order, naming the reading and both arms; for one arm measured, the arm's pass rate with its count. Never a cost reading, and never a
@@ -262,7 +266,7 @@ def _lead_blocks(
                     f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
                     f"{'' if row.confirmatory or not asked else ', a lead'}"
                 )
-                sentences.append(f"{decision}. {row_figures(row, readings.control_label)}")
+                sentences.append(f"{decision}. {row_figures(row, readings.control_label, forms=forms)}")
                 decisions.append(decision)
         elif paired := pairs_words(readings, aspect.label, marked=asked):
             # An arm's label is a name, printed as given, even where it opens the sentence; the undecided reading's
