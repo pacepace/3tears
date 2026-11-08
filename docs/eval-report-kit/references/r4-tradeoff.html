@@ -190,6 +190,10 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
    others grow, and is set as one box, so a line moves it whole to the next rather than split it; it is held whole in
    a frame that scrolls anyway, where every column is at its narrowest, and breaks after a hyphen only where the other
    columns at their narrowest leave no room, or a phone's cap is too narrow. */
+/* a hyphenated word (a model's name, an arm's id) held whole wherever it prints, in running text as in a cell; a
+   long one breaks after its hyphens on a phone, where holding it would push the page sideways */
+.id{white-space:nowrap}
+@media (max-width:639px){.id.long{white-space:normal}}
 .tbl .id{white-space:nowrap}
 .tbl .id.long{white-space:normal;display:inline-block}
 /* a column's width is not its minimum once the table overflows, so only this query holds a long id whole there; a
@@ -260,6 +264,10 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
 .method dt{font-weight:600;color:var(--ink)}
 .method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+/* a term's caveats: a line of their own under its paragraph, spaced and quieter, at the appendix's size */
+.method .cap{margin-top:.4rem;color:var(--muted)}
+/* who wrote the report, for what and when: the appendix's last line, at its size, set apart from the list above */
+.cap[data-part="made"]{font-size:var(--t-sm);color:var(--muted);max-width:var(--col);margin-top:1.5rem}
 /* a frame under 700 px (a host's at a 1024 px window, a phone) sets headings a step smaller and tighter, so a
    headline holds three lines, not five */
 @media (max-width:700px){h1{font-size:1.25rem;line-height:1.25}h2{font-size:1rem;line-height:1.35}h3{font-size:var(--t-base);line-height:1.35}}
@@ -552,7 +560,10 @@ function kBetter(s,words,x0,x1,y){if(!words)return;const two=kBetterH(words,x0,x
 // a row's end note wrapped at its spaces to room px, two lines at most: the figure with its unit, then the words
 function kWrapNote(t,room){const lines=[];let cur="";for(const wd of String(t).split(" ")){const nx=cur?cur+" "+wd:wd;
   if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
-  if(lines.length>2){const wds=String(t).split(" ");return [wds.slice(0,2).join(" "),wds.slice(2).join(" ")];}return lines;}
+  if(lines.length>2){const wds=String(t).split(" ");let at=2,best=Infinity;
+    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first
+    for(let i=2;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
+    return [wds.slice(0,at).join(" "),wds.slice(at).join(" ")];}return lines;}
 // a row label in its column of maxC characters: whole, else wrapped at its spaces onto two lines, else its short label
 // so, else wrapped onto as many lines as it takes; never cut, so no two rows read alike that their labels tell apart.
 // A strip draws every row in one form: whole where every label fits, else each its short label
@@ -711,12 +722,12 @@ function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?
     if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
       for(const e of open?[r.lo]:[r.lo,r.hi])S("line",{x1:x(kClamp(e,d0,d1)),x2:x(kClamp(e,d0,d1)),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);
       if(open){const ex=x(d1);S("path",{d:`M${ex-5},${cy-4}L${ex},${cy}L${ex-5},${cy+4}`,style:"fill:none;stroke:var(--ink);stroke-width:1.25"},g);}}
-    // the note past the bar's end, wrapped as the margin was sized; the value alone only where no side holds it
+    // the note past the bar's end, whole, in the very lines the margin was sized on (kNoteMargin), so it fits past any
+    // bar's end, or past zero where it does not fit before a bar running left; never swapped for a rounded value
     const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,hi)):x(Math.max(d0,r.lo))):x(v);
-    let nl=r.note!=null?kWrapNote(r.note,m.r-10):[opt.fmt(val)],nw=Math.max(...nl.map(l=>l.length*6.4));
-    if(right&&edge+6+nw>w){nl=[opt.fmt(val)];nw=nl[0].length*6.4;}const flip=!right&&edge-6-nw<m.l+4;
+    const nl=r.note!=null?kWrapNote(r.note,w*.3-10):[opt.fmt(val)],nw=Math.max(...nl.map(l=>l.length*6.4));
+    const flip=!right&&edge-6-nw<m.l+4;
     const past=Math.max(z,x(Math.min(d1,hi!=null?hi:o)));
-    if(flip&&past+6+nw>w){nl=[opt.fmt(val)];nw=nl[0].length*6.4;}
     const nx=right?edge+6:flip?past+6:edge-6,nt=S("text",{x:nx,y:cy+4-6*(nl.length-1),"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,j)=>S("tspan",{x:nx,dy:j?12:0,text:l},nt));
     hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null?"":open?` (from ${opt.fmt(r.lo)} up, no upper bound)`:` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));});

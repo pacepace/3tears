@@ -394,9 +394,14 @@ def _wrapped(text: str, room: float) -> list[str]:
             current = joined
     lines.append(current)
     if len(lines) > 2:
-        # Two lines at most, so a row's label never reaches the next row: the figure with its unit, then the words.
+        # Two lines at most, so a row's label never reaches the next row, split where the longer is shortest so the
+        # margin sized on them stays narrow; the figure with its unit is kept on the first (``kWrapNote``).
         words = text.split(" ")
-        return [" ".join(words[:2]), " ".join(words[2:])]
+        at = min(
+            range(2, len(words)),
+            key=lambda i: max(len(" ".join(words[:i])), len(" ".join(words[i:]))),
+        )
+        return [" ".join(words[:at]), " ".join(words[at:])]
     return lines
 
 
@@ -777,22 +782,17 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
                         },
                     )
                 )
-        # The note past the bar's end, wrapped as the margin was sized; the value alone only where no side holds it.
+        # The note past the bar's end, whole, in the very lines the margin was sized on (_note_margin), so it fits past
+        # any bar's end, or past zero where it does not fit before a bar running left; never swapped for a rounded value.
         right = value >= origin
         if r.lo is not None and hi is not None:
             edge = x(min(d1, hi)) if right else x(max(d0, r.lo))
         else:
             edge = x(v)
-        notes = _wrapped(r.note, mr - 10) if r.note is not None else [f(value)]
+        notes = _wrapped(r.note, w * 0.3 - 10) if r.note is not None else [f(value)]
         note_w = max(len(line) for line in notes) * 6.4
-        if right and edge + 6 + note_w > w:
-            notes = [f(value)]
-            note_w = len(notes[0]) * 6.4
         flip = not right and edge - 6 - note_w < ml + 4
         past = max(z, x(min(d1, hi if hi is not None else origin)))
-        if flip and past + 6 + note_w > w:
-            notes = [f(value)]
-            note_w = len(notes[0]) * 6.4
         note_x = edge + 6 if right else past + 6 if flip else edge - 6
         spans = "".join(
             _el("tspan", {"x": note_x, "dy": 12 if j else 0}, _escape(line)) for j, line in enumerate(notes)

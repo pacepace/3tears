@@ -385,7 +385,7 @@ def test_the_findings_left_open_and_the_made_line_close_the_appendix_in_every_fo
     line, last. None of it is above the appendix."""
     name = "prototype3/kairo"
     page = build(_doc(name), _input(name), strict=True, findings=_FINDINGS, made=_MADE)
-    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
+    written, markdown, text = _html_words(page), doc_page_markdown(page), doc_page_text(page)
     must, should = SEVERITY_WORDS["must_fix"], SEVERITY_WORDS["should_fix"]
 
     assert '<li><b>Must fix</b> · <a href="#claim-2">Claim 2</a>: The second claim' in written
@@ -538,9 +538,18 @@ def test_a_method_term_that_prints_a_caveat_s_own_words_does_not_label_it_again(
         build(ReportDoc.model_validate(data), _input(name), strict=True)
 
 
+#: A hyphenated word the page holds whole (a model's name, an arm's id), its text the group.
+_HELD_WORD = re.compile(r'<span class="id(?: long)?">([^<]*)</span>')
+
+
+def _html_words(page: DocPage) -> str:
+    """The page's HTML as its lines read: unescaped, each word held whole (``span.id``) read as the word it holds."""
+    return html.unescape(_HELD_WORD.sub(r"\1", doc_page_html(page)))
+
+
 def _printed_once(page: DocPage, line: str, label: str) -> None:
     """The line is printed once in every form, and the label is never printed twice in a row."""
-    for form in (html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)):
+    for form in (_html_words(page), doc_page_markdown(page), doc_page_text(page)):
         assert form.count(line) == 1
         assert f"{label}; {label}" not in form
 

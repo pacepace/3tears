@@ -1766,8 +1766,8 @@ class _Shares:
     def spell(self, value: float) -> str:
         """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
         all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
-        three are one set, so each keeps the set's decimals, a whole one too (``80.000`` beside ``99.998``, owner
-        ruling O5)."""
+        three are one set, and a set reads at one precision, so each keeps the set's decimals, a whole one too
+        (``80.000`` beside ``99.998``)."""
         return f"{value:.{self.places}f}"
 
     def cell(self, value: float) -> CellValue:

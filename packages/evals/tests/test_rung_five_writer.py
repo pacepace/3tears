@@ -118,9 +118,11 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert 'effort="medium"' in writer and "max_cost_usd=39.0" in writer
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
-    # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
+    # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again,
+    # naming the commit whose pages the judge read, which is the one a replay of its keys must stand on.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
-    assert "2026-11-08, over the number-forms pass on head `b9164e5ec`" in readme
+    assert "2026-11-08, over the number-forms pass's pages, as committed at `1459b84e4`" in readme
+    assert "`b9164e5ec`" not in readme, "the merge under the recording, whose pages the judge never read"
     assert "Not recorded" not in readme
 
 

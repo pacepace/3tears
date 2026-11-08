@@ -208,8 +208,21 @@ def test_a_count_written_through_a_key_types_no_digit(name: str) -> None:
     held = INPUTS[name]
     sentence = "{count.surviving|words} of {count.arms|words} options survive; {count.gates} gates."
     rendered = render(sentence, held, {})
-    assert str(len(surviving_options(held))) in rendered or WORDS[len(surviving_options(held))] in rendered
+    # The sentence opens on the spelled count, which takes its capital (``Two of three``).
+    said = rendered.casefold()
+    assert str(len(surviving_options(held))) in said or WORDS[len(surviving_options(held))] in said
     assert literal_numbers(sentence, held) == []
+
+
+def test_a_count_spelled_at_a_sentence_s_start_takes_its_capital_and_nowhere_else() -> None:
+    """A Method entry opened on its spelled count (``{cases|words} conversations per model``) read ``ten
+    conversations``: the writer cannot capitalise a word code spells. It reads ``Ten`` where it opens a sentence, and
+    keeps its case inside one, and a key alone keeps its filter's spelling."""
+    held = INPUTS["r4"]
+    arms = WORDS[len(held.arms)]
+    rendered = render("{count.arms|words} arms ran. Of {count.arms|words}, the {count.arms|words} held.", held, {})
+    assert rendered == f"{arms.capitalize()} arms ran. Of {arms}, the {arms} held.", rendered
+    assert render("{count.arms|words}", held, {}) == arms, "a key alone is a figure, read as its filter spells it"
 
 
 def test_the_grammar_teaches_the_counts_with_their_examples_rendered() -> None:

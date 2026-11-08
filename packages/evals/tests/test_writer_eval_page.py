@@ -179,7 +179,7 @@ async def test_both_shares_print_at_the_interval_s_decimals_sum_to_100_and_stay_
 
     # An interval end of 99.998% needs three decimals to stay short of all; both shares print at those decimals, past
     # the four significant figures a lone figure keeps, so the two sum to exactly 100 as printed. The three are one
-    # set, so the whole end keeps the set's decimals too (owner ruling O5).
+    # set, and a set reads at one precision, so the whole end keeps the set's decimals too.
     candidate, control, ends = shares(0.910714, (0.6, 0.99996))
     assert (candidate, control, ends) == ("91.071", "8.929", "80.000 to 99.998")
     assert Decimal(candidate) + Decimal(control) == 100

@@ -9,7 +9,8 @@ own test runs, so the page is held to the files it quotes. What the ladder and t
 printing is held to a replay: each rung's file is run through the door from a copy with no key, and every line of
 each ``text`` block under its heading is found in what it printed or in the ``report.md`` it wrote, ``...`` standing
 for what the page leaves out. ``reading-reports.md``'s aspect first screen is held to the page the invoices rung
-lays out alone (``Result.report``), line for line, but for the render's date.
+lays out alone (``Result.report``), line for line, but for the render's date, and its campaign first screen and
+scorecard to the campaign pages they show.
 
 Each block is compiled as a reader's REPL compiles it (``PyCF_ALLOW_TOP_LEVEL_AWAIT``) and awaited on the test's own
 loop. A block the page presents as a fragment, or one that needs more than the page builds, is named below with
@@ -35,8 +36,10 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, s1_change, shape_of
 from packages.evals.tests.rung_support import rung_copy
-from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
+from threetears.evals.kernel.declaration import RateDrop
 from threetears.evals.quick.files import main
 
 #: The guides directory.
@@ -151,11 +154,12 @@ _DATE = re.compile(r"\b\d{1,2} [A-Z][a-z]{2} \d{4}\b")
 
 
 def _markdown_under(page: Path, heading: str) -> str:
-    """The first ``markdown`` block under ``heading`` on ``page``, before the next heading."""
+    """The first ``markdown`` block under ``heading`` on ``page``, before the next heading: a heading inside the block
+    (a page's own ``## Scorecard``) is the block's, not the guide's."""
     section = page.read_text(encoding="utf-8").split(f"\n{heading}\n", 1)[1]
-    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
     found = re.search(r"```markdown\n(.*?)```", section, re.S)
     assert found is not None, f"no markdown block under {heading!r} on {page.name}"
+    assert not re.search(r"\n#{2,3} ", section[: found.start()]), f"no markdown block under {heading!r} on {page.name}"
     return found.group(1)
 
 
@@ -174,6 +178,41 @@ async def test_what_reading_reports_shows_an_aspect_page_opening_on_is_the_invoi
     expected = _DATE.sub("<date>", shown).splitlines()
     printed = _DATE.sub("<date>", report_markdown(result.report)).splitlines()[: len(expected)]
     assert printed == expected, "reading-reports.md's aspect first screen is not what the invoices page opens on"
+
+
+def _support_queue() -> str:
+    """The change ``reading-reports.md`` shows a campaign's first screen of: two aspects, v2 regressing past billing's
+    floor and improving on tone, with no report written yet, as the campaign page lays it out in Markdown."""
+    shape = shape_of(
+        "support queue",
+        [
+            AspectTrials(
+                "billing",
+                [ArmTrials("production", passing=18), ArmTrials("v2", passing=6)],
+                floors=(RateDrop(max_points=10),),
+            ),
+            AspectTrials("tone", [ArmTrials("production", passing=10), ArmTrials("v2", passing=18)]),
+        ],
+        control=True,
+    )
+    return campaign_report_markdown(shape.page())
+
+
+def test_what_reading_reports_shows_a_campaign_opening_on_is_the_page_s_first_screen() -> None:
+    """The campaign first screen ``reading-reports.md`` shows is the page's own opening, line for line: it once showed
+    a lead with no figures and no masthead line, which no page had printed for several versions."""
+    shown = _markdown_under(DOCS / "reading-reports.md", "### The campaign's first screen").splitlines()
+    assert _support_queue().splitlines()[: len(shown)] == shown, "reading-reports.md's campaign first screen is stale"
+
+
+def test_what_reading_reports_shows_a_change_s_scorecard_is_what_the_page_prints() -> None:
+    """The scorecard ``reading-reports.md`` shows is the s1 change's own (three candidates on three aspects, the
+    control passing nothing on one), line for line from its heading: it once printed ``0 pts`` where the page prints
+    ``0.0 pts`` beside ``-5.0 pts``, and left out the equal-weight row."""
+    shown = _markdown_under(DOCS / "reading-reports.md", "### The campaign's scorecard").splitlines()
+    printed = campaign_report_markdown(s1_change().page())
+    printed_lines = printed[printed.index("## Scorecard") :].splitlines()
+    assert printed_lines[: len(shown)] == shown, "reading-reports.md's scorecard example is not what the page prints"
 
 
 def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:

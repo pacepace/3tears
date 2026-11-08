@@ -748,7 +748,7 @@ def percent_columns(
         for unit in set(bare.values())
     }
     # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
-    # unit's precision, which whole percents' rule for levels never coarsens (owner ruling O5).
+    # unit's precision, which whole percents' rule for levels never coarsens: a set reads at one precision.
     by_unit = {
         unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
     }

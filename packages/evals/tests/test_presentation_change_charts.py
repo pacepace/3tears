@@ -237,8 +237,8 @@ def test_the_margin_band_is_named_and_the_family_level_said() -> None:
     says what the family's intervals hold at together, "99.7% intervals (95% across 16 comparisons)"."""
     drawn, _ = _one("prototype5/kairo", "contrasts")
     assert isinstance(drawn.data, ForestChart) and drawn.data.reference is not None
-    # The margin's label is one of the chart's labels, read at their one precision beside its rows' ``-7.6 pts``
-    # (owner ruling O5).
+    # The margin's label is one of the chart's labels, read at their one precision beside its rows' ``-7.6 pts``: a
+    # set reads at one precision.
     assert drawn.data.reference.label == "margin -15.0 pts; shaded: no worse than the margin"
     assert drawn.data.level == "99.7% (95% across 16 comparisons)"
     assert "99.7% intervals (95% across 16 comparisons)" in _drawn_texts(drawn)

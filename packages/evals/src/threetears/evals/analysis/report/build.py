@@ -1589,7 +1589,7 @@ def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str
 
 class _Places(NamedTuple):
     """How one reading's figures read wherever a page states its contrasts: the contrasts table, the verdict line's
-    figures and a program's rows alike (owner rulings O4 and O5, 2026-11-08). A set keeps one precision: every level of
+    figures and a program's rows alike (docs/design.md, Presentation rulings). A set keeps one precision: every level of
     the reading (both arms' figures and their intervals' ends) reads at ``level`` decimals, every change and its
     interval's ends at ``change``. A rate's level reads by its column's percent rule and money by its form, so either
     is None there. ``floor`` and ``ceiling`` are what a level can take, drawn, so an interval never runs past them (a

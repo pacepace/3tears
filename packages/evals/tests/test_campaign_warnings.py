@@ -253,7 +253,7 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    # The decision, then the figures it rests on, the interval's two ends at one precision (owner ruling O5): the near
+    # The decision, then the figures it rests on, the interval's two ends at one precision, as a set reads: the near
     # end of 0.0129 points takes the decimals that keep it off zero, and the far end reads at them too.
     assert lead == (
         f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "

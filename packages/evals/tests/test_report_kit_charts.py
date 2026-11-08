@@ -527,6 +527,43 @@ def test_a_short_line_charts_wrapped_end_labels_all_sit_inside_its_drawing(tmp_p
     assert max(drawn["bottoms"]) <= drawn["height"], drawn
 
 
+#: A change chart of bars whose first note is wider than the margin's 30% at a phone's width.
+_LONG_NOTE_BARS = {
+    "rows": [
+        {
+            "label": "Persona holds character",
+            "value": -7.6,
+            "note": "-7.6 pts worse than the margin, held on the floor",
+        },
+        {"label": "Reply cites policy", "value": 4.5, "note": "+4.5 pts not separated"},
+    ],
+    "domain": [-9, 6],
+    "fmt": "+num:0",
+}
+
+#: Each label and note the page's bar chart draws (each set in lines, unlike a tick), its lines joined by a space.
+_BAR_TEXTS = """() => [...document.querySelectorAll('div.chart[data-kind="bars"] svg text')]
+  .filter(t => t.querySelector('tspan'))
+  .map(t => [...t.querySelectorAll('tspan')].map(s => s.textContent).join(' '))"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", [1200, 390])
+def test_the_kit_prints_a_bar_s_note_whole_where_it_does_not_fit(tmp_path: Path, width: int) -> None:
+    """A note wider than the margin's 30% at a phone's width: the kit drew ``-8`` in its place, the chart's ``+num:0``
+    value. At 1200 and at 390 px each note is drawn whole, wrapped at its spaces, and no bar reads a rounded value."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    page = tmp_path / "bars.html"
+    block = {"kind": "chart", "section": "memo", "chart": "bars", "title": "Change by place", "data": _LONG_NOTE_BARS}
+    page.write_text(report_page([block]), encoding="utf-8")
+    drawn, errors = rendered(page, _BAR_TEXTS, width=width)
+    assert errors == []
+    assert all(row["note"] in drawn for row in _LONG_NOTE_BARS["rows"]), drawn  # type: ignore[index]
+    assert not {"-8", "+5"} & set(drawn), drawn
+
+
 #: The kit's arm naming over a control and thirty candidates: each arm's tag, in order.
 _ARM_TAGS = """() => armLabels(
   [{id: 'c', role: 'control', spec: {model: 'm'}},

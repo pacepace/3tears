@@ -146,7 +146,7 @@ def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> No
         "lost: judge truncated 3",
         "lost: setup fault 1",
     ]
-    # Passed is drawn in ink, never the status green, so green on a page means a status pill alone (owner ruling O1).
+    # Passed is drawn in ink, never the status green, so green on a page means a status pill alone.
     assert second["segments"] == [{"value": 100, "color": "--ink-2"}]
 
 

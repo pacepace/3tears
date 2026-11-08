@@ -46,8 +46,8 @@ from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
-from threetears.evals.analysis.report.parts.charting import figure_stat, figure_unit, held_means, money_words
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve
+from threetears.evals.analysis.report.parts.charting import figure_stat, figure_unit, money_words
 from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE, GROUP_LEVEL_TEMPLATE

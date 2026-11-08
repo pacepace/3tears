@@ -531,6 +531,36 @@ def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: 
     assert "kWrap(r.note," in KIT_JS, "the kit wraps a forest's note rather than falling back to its format"
 
 
+#: A change chart of bars whose first note is wider than the margin's 30% at a phone's width: the static page drew
+#: ``-8`` in its place, the chart's ``+num:0`` value.
+LONG_NOTE_BARS = {
+    "rows": [
+        {
+            "label": "Persona holds character",
+            "value": -7.6,
+            "note": "-7.6 pts worse than the margin, held on the floor",
+        },
+        {"label": "Reply cites policy", "value": 4.5, "note": "+4.5 pts not separated"},
+    ],
+    "domain": [-9, 6],
+    "fmt": "+num:0",
+}
+
+
+def test_a_bar_s_note_that_does_not_fit_is_wrapped_never_swapped_for_its_rounded_value() -> None:
+    """A note is printed whole (GENERATOR §5.2): at each of the static page's widths the long note reads whole on two
+    lines at most, and no bar's end reads the rounded value the note replaced (``-8``, ``+5``)."""
+    drawn = chart_drawing(ChartBlock(section="memo", chart="bars", title="t", data=LONG_NOTE_BARS))  # type: ignore[arg-type]
+    assert drawn is not None
+    texts = re.findall(r"<text[^>]*>((?:<tspan[^>]*>[^<]*</tspan>)+)</text>", drawn)
+    labels = [" ".join(re.findall(r"<tspan[^>]*>([^<]*)</tspan>", spans)) for spans in texts]
+    widths = drawn.count("<svg")
+    for row in LONG_NOTE_BARS["rows"]:  # type: ignore[attr-defined]
+        assert labels.count(row["note"]) == widths, (row["note"], labels)
+    assert not {"-8", "+5"} & set(labels), labels
+    assert all(len(re.findall(r"<tspan", spans)) <= 2 for spans in texts)
+
+
 def _kairo_text() -> str:
     """The Kairo prototype-5 document's page as a reader who cannot see the picture reads it (``doc_page_text``): what
     the editor and the scoring judge read."""

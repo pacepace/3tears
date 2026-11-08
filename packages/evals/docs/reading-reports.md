@@ -101,7 +101,9 @@ A change of two aspects, one regressing past its floor and one improving, with n
 # support queue
 "Does the candidate pass more support requests than production, without losing any aspect?"
 
-**Pass rate on billing: v2 against production shown worse. Pass rate on tone: v2 against production shown better.**
+production vs v2 · billing, tone
+
+**Pass rate on billing: v2 against production shown worse. Of 20 cases each, production passed 18 and v2 6. The interval puts v2 between 19.4 and 86.3 points worse. Pass rate on tone: v2 against production shown better. Of 20 cases each, production passed 10 and v2 18. The interval puts v2 between 3.6 and 66.2 points better.**
 
 **Adopting v2 overrides the 10-point floor it breaks on billing.**
 ```
@@ -130,8 +132,9 @@ three candidates on three aspects, one aspect where the control passes nothing:
 | Aspect | Cases | ▸ production · pass rate | v2 · pass rate vs production | v3 · pass rate vs production | v4 · pass rate vs production |
 |---|---|---|---|---|---|
 | billing | 20 | 90.0% (18 of 20 cases) | 30.0% · -60.0 pts (shown worse) | 85.0% · -5.0 pts (unclear) | 95.0% · +5.0 pts (unclear) |
-| tone | 20 | 50.0% (10 of 20 cases) | 90.0% · +40.0 pts (shown better; floor unclear) | 50.0% · 0 pts (unclear) | 40.0% · -10.0 pts (unclear; floor broken) |
-| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25.0% · +25.0 pts (no worse than the margin) | 0% · 0 pts (unclear) | 10.0% · +10.0 pts (unclear) |
+| tone | 20 | 50.0% (10 of 20 cases) | 90.0% · +40.0 pts (shown better; floor unclear) | 50.0% · 0.0 pts (unclear) | 40.0% · -10.0 pts (unclear; floor broken) |
+| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25.0% · +25.0 pts (no worse than the margin) | 0% · 0.0 pts (unclear) | 10.0% · +10.0 pts (unclear) |
+| All aspects (equal weight) | — | 46.7% (mean of the aspects above, each weighted equally) | 48.3% · +1.7 pts | 45.0% · -1.7 pts | 48.3% · +1.7 pts |
 ```
 
 The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
@@ -389,13 +392,16 @@ The page draws two marks, as inline SVG with no dependency. The **outcome bar**,
 one chart: a census, so it is always drawn, one bar per arm, each its arm's trials as shares from 0 to 100% so arms
 with unequal trials read alike, passed, failed and lost to the test setup cause by cause, the share passed and its
 counts written beside the bar (`20% passed · 167 of 836`), and a key naming only the states that occur. A
-failure's causes share its one colour and differ in ink alone (solid, then a lighter tone), each alike on every bar,
-and the key names each (`failed: check`, `failed: judge`); a lost cause's edge is dashed, the next dotted. An
-**interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
-whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
-in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
-at a glance; a scale of levels runs below zero only where an interval on a measure not declared non-negative does. There
-are no standalone interval charts: the tables carry the intervals.
+failure's causes share the fail colour and differ in texture alone (hatched, crossed, dotted, then rows and columns),
+each alike on every bar, and the key names each (`failed: check`, `failed: judge`); a lost cause is a neutral grey,
+solid and then textured, so no loss reads as a failure. An **interval glyph** is drawn in the table row that states
+the figure (Tufte's table-graphic): the interval as a whisker, the point as a dot, a zero line for a change, and a
+declared margin as a quiet band. Every cell of a column in one unit shares one scale, written once under the table,
+its two ends at one precision (`Each column drawn from -7.0 to 36.7 pts`), so the rows compare at a glance. A change's
+matrix opens that line with what its marks draw (`Each mark is a candidate's change from production (the tick) with
+its interval, read at 95% to 98.33%; right is better. Drawn from -88.0 to 68.5 pts.`). A scale of levels runs below
+zero only where an interval on a measure not declared non-negative does. There are no standalone interval charts: the
+tables carry the intervals.
 
 No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
 every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden
