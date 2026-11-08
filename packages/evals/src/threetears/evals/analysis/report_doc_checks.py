@@ -52,8 +52,8 @@ refused, so a revision sees everything at once.
    print their trial and case ids and are exempt (plan §2.2, input 11).
 6. **Method is present**: at least one item. The full-results appendix is the renderer's, always built.
 
-Invariant 7 (``check.py`` at 1200 and 390 px, light and dark) needs a browser, so it is not checked at storage; the
-integration suite runs it.
+Invariant 7 (``check.py`` at 1200, 1104, 688 and 390 px, light and dark) needs a browser, so it is not checked at
+storage; the integration suite runs it.
 """
 
 from __future__ import annotations

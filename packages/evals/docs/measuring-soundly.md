@@ -512,7 +512,7 @@ a report's, and run a campaign blind, with its own note withheld, before reading
 **Runs are cheap; the report is the bill.** A write that stores nothing is still billed. Give the report a budget
 that covers a revision, since one that runs out keeps only its last reviewed draft
 ([a campaign report](cost-and-budgets.md#spend-outside-any-run)).
-*Evidence:* the report writer, 2026-10 to 2026-11. In the acceptance runs an Opus report took 36–47 turns and $3.6–6.1, the analyst's and the editor's together. Six earlier campaigns under a $4 cap each cost $11.33, and the two that needed a revision ended over budget with their first reviewed draft stored. On Sonnet, rung 5's recording wrote 14 reports at about 12.4 turns and $0.49 a report for the writer; the 14-report recording cost $7.56 with its judge. Under the memo writer (2026-09), over 99% of a classifier campaign's spend was its reports, and only a multi-turn agent campaign's runs outweighed them (≈ $11 of $17).
+*Evidence:* the report writer, 2026-10 to 2026-11. In the acceptance runs an Opus report took 36–47 turns and $3.6–6.1, the analyst's and the editor's together. Six earlier campaigns under a $4 cap each cost $11.33, and the two that needed a revision ended over budget with their first reviewed draft stored. On Sonnet, rung 5's recording wrote 14 reports at about 12.4 turns and $0.49 a report for the writer; the 14-report recording cost $7.55 with its judge. Under the memo writer (2026-09), over 99% of a classifier campaign's spend was its reports, and only a multi-turn agent campaign's runs outweighed them (≈ $11 of $17).
 
 ## How an eval program drifts
 

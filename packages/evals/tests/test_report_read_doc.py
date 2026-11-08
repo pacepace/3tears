@@ -17,8 +17,8 @@ Contracts held here (``threetears.evals.ops.report_read``, ``threetears.evals.an
 - **``report_doc_id``** of another campaign, or of none, is refused as not found;
 - **``ReportDocument.doc``** replaces ``plan``;
 - **the render checks** (integration): the static page of Kairo and of each misfit, its accepted recording replayed and
-  stored, then read back as the report read reads a stored document, passes ``scripts/check.py`` at 1200, 688 and
-  390 px, light and dark.
+  stored, then read back as the report read reads a stored document, passes ``scripts/check.py`` at 1200, 1104, 688
+  and 390 px, light and dark.
 """
 
 from __future__ import annotations

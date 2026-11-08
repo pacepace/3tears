@@ -479,7 +479,7 @@ writer_eval = WriterEval(
   the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
 - **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
 
-What the recording printed (made 2026-11-03, its judge's calls again 2026-11-07), replayed from `packages/evals/` with no key: the arms, the first
+What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08), replayed from `packages/evals/` with no key: the arms, the first
 readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
 turns came from (each path printed whole):
 
@@ -496,21 +496,21 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Writer turns | 12.57 | 12.29 |
 ...
 | report_writer.first_screen (judged) | 5.00 | 5.00 |
-| report_writer.coherent_story (judged) | 4.71 | 5.00 |
+| report_writer.coherent_story (judged) | 5.00 | 5.00 |
 | report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
-| report_writer.sound_elision (judged) | 5.00 | 5.00 |
+| report_writer.sound_elision (judged) | 4.86 | 5.00 |
 | report_writer.confounds_handled (judged) | 5.00 | 5.00 |
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
-| report_writer.evidence_fits_claims (judged) | 4.57 | 5.00 |
+| report_writer.evidence_fits_claims (judged) | 4.71 | 4.57 |
 ...
 | Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval, 95% (pts) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 52 | 4 | -67 to 70 |
+| lead-first | every pair | cannot tell apart | 61 | 21 | -47 to 89 |
 | lead-first | both pages finished | untested: no pair had both pages finished, 0 of 7 | — | — | — |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 71% (5 of 7) | 16 | 0 | 2,969 | $0.14 of $1.95 |
+| lead-first | 86% (6 of 7) | 11 | 0 | 113 | $0.14 of $1.95 |
 ...
 promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -522,7 +522,7 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 cases would settle it.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 61%, roughly 100 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:
@@ -538,7 +538,7 @@ Further down it reads the two code measures that moved most:
 | Writer turns | about 12.4 a report |
 | Writer | $6.90, about $0.49 a report |
 | Judge | $0.65, 112 calls: 98 scores and the pass's 14 |
-| Total | $7.56, under the $39 `max_cost_usd` |
+| Total | $7.55, under the $39 `max_cost_usd` |
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records it again, what
 it may spend, and what to do when a recording run is cut short.
@@ -546,14 +546,14 @@ it may spend, and what to do when a recording run is cut short.
 **The lesson: a judge that scores one page at a time sits at the ceiling here, so the arms are read side by side,
 and at seven cases even that reading is mostly the judge's own noise.** Every judged item reads 5 or near it for both
 arms: the writer revises each page until the editor passes it on the same rubric, so the scores bunch at the top and
-cannot tell the arms apart. Read side by side, the same judge gave lead-first 52% of its preference (50% is even), and
-its two orders agreed on 5 of 7 cases. Recorded twice on the same seven cases, a few lines of the pages apart, the
-judge read 70% and then 52%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
+cannot tell the arms apart. Read side by side, the same judge gave lead-first 61% of its preference (50% is even), and
+its two orders agreed on 6 of 7 cases. Recorded five times on the same seven cases, a few lines of the pages apart
+each time, the judge read between 52% and 70%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
 tell the arms apart on either: 3 of 7 lead-first reports finished against 1 of 7, with fewer must-fix findings left
 open (0.29 a report against 0.43). That preference is the promotion read's primary reading, fixed before the run: it
 reads `promote` only when the preference favours the candidate on enough held-out cases, no gated reading regressed
 and every guardrail held. 7 held-out cases, each written once (k=1), separate only a large effect, and the pass gives
-the size that would settle this one only if the share it read were the true one: if it stayed near 52%, roughly 3,000
+the size that would settle this one only if the share it read were the true one: if it stayed near 61%, roughly 100
 held-out cases. So the read is `Undecided`, which never promotes, and recording the call stays a person's act. That
 is the answer at this size, stated rather than tuned around: what would answer it is more cases or more repeats of
 each, and each costs a recorded report. [Pairwise

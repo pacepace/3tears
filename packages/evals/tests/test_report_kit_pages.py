@@ -6,7 +6,7 @@
 - **No fonts fetched.** The page's head links nothing: its faces are a local stack ending in a generic family, so a
   sandboxed host frame sets it as any browser does. (The reference memos, which are documentation, still load Plex.)
 - **The render checks.** Each of the four shape campaigns' pages (``report_shapes_support.SHAPES``) passes
-  ``scripts/check.py`` at 1200, 688 (a host's frame) and 390 px, light and dark: no console errors, no sideways scroll, nothing past the
+  ``scripts/check.py`` at 1200, 1104 and 688 (a host's frames) and 390 px, light and dark: no console errors, no sideways scroll, nothing past the
   right edge outside a scrolling frame, no overlapping chart labels (GENERATOR.md §8, items 1-3). That check drives
   headless Chromium, so it carries the ``integration`` marker; where Chromium cannot launch it skips and says why.
 """

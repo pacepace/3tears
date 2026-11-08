@@ -68,7 +68,7 @@ from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.html_parts import table_html
-from threetears.evals.analysis.report.model import CampaignReport, TableCell, TableColumn
+from threetears.evals.analysis.report.model import CampaignReport, ReportBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import STRATUM_MIN_CASES, EvalStorage
@@ -510,6 +510,34 @@ def test_a_pinned_first_column_wraps_at_its_words_between_a_floor_and_a_third_of
 def _kairo_page() -> str:
     """Kairo's code page as served: three arms, so its contrasts hold a row per reading on each arm."""
     return report_html(build_code_only_report(kairo_bundle().aspects[0], assembled_at="2026-11-08T00:00:00+00:00"))
+
+
+#: Three more arms for Kairo's cases table, hyphenated as a model id is.
+_MORE_ARMS = ("deepseek-v4.1-flash", "gemini-3.8-flash", "glm-5.1-air")
+
+
+@cache
+def _kairo_six_arm_page() -> str:
+    """Kairo's code page with its cases table as six arms draw it: each case's marks on the three arms again under
+    three more. Three arms' marks wrap to fit a host's 1104 px frame; six do not, so the table scrolls at both of a
+    host's frames with its case ids pinned."""
+    report = build_code_only_report(kairo_bundle().aspects[0], assembled_at="2026-11-08T00:00:00+00:00")
+    blocks: list[ReportBlock] = []
+    for block in report.blocks:
+        if isinstance(block, TableBlock) and block.name == "cases":
+            arms = [column for column in block.columns if column.key.startswith("arm_")]
+            more = [TableColumn(key=f"arm_{len(arms) + at}", header=arm) for at, arm in enumerate(_MORE_ARMS)]
+            block = block.model_copy(
+                update={
+                    "columns": [*block.columns[:-1], *more, block.columns[-1]],
+                    "rows": [
+                        {**row, **{added.key: row[arm.key] for arm, added in zip(arms, more, strict=True)}}
+                        for row in block.rows
+                    ],
+                }
+            )
+        blocks.append(block)
+    return report_html(report.model_copy(update={"blocks": blocks}))
 
 
 def _framed(page: str, name: str) -> tuple[str, str]:
@@ -1250,21 +1278,29 @@ def test_no_pinned_id_breaks_after_its_hyphen_in_a_host_s_frame_and_one_too_long
     table scrolled anyway (44 on the written page at 688 px). Drawn here at both of a host's frames, on Kairo's code
     page (its cases table pins ids up to 24 characters) and a written report with its evidence record: no pinned id
     breaks. At a phone's 390 px a long id wraps after its hyphens, and an id past any cap wraps at every width; the
-    page never scrolls sideways."""
+    page never scrolls sideways. Kairo's three-arm cases table fits the 1104 px frame, so the same page with six arms
+    holds the guard there: a cases table wider than the frame, its case ids pinned."""
     _browser()
-    pages = {"aspect": _kairo_page(), "doc with its record": _served()["doc with its record"]}
+    pages = {
+        "aspect": _kairo_page(),
+        "aspect, six arms": _kairo_six_arm_page(),
+        "doc with its record": _served()["doc with its record"],
+    }
     for name, page in pages.items():
-        drawn = _drawn_ids(page, width, tmp_path, name.replace(" ", "-"))
+        drawn = _drawn_ids(page, width, tmp_path, re.sub(r"\W+", "-", name))
         assert drawn["page"] == width, (name, drawn["page"])
         ids = {frame["table"]: frame for frame in drawn["frames"]}
-        assert name != "aspect" or (ids["cases"]["scrolls"] and "abt-genre-you-cant-stand" in page), "the control"
+        # The control: a cases table that scrolls in this frame, pinning a 24-character case id.
+        if name == "aspect, six arms" or (name == "aspect" and width == FRAME_PX):
+            assert ids["cases"]["scrolls"] and "abt-genre-you-cant-stand" in page, ("the control", name, width)
         held = [(frame["table"], word) for frame in drawn["frames"] for word in frame["broken"] if len(word) <= 28]
         assert held == [], name
         assert '<span class="id' in page, f"the control: {name} pins a hyphenated id"
         # The first key is held at its estimated width, so a cell wider than the estimate would run under the second:
         # in every two-key frame the second starts where the first ends.
         two_keys = [frame for frame in drawn["frames"] if frame["left"] is not None]
-        assert name != "aspect" or len(two_keys) >= 2, "the control: Kairo's contrasts and strata keep two keys"
+        kairo = name.startswith("aspect")
+        assert not kairo or len(two_keys) >= 2, "the control: Kairo's contrasts and strata keep two keys"
         for frame in two_keys:
             assert frame["left"] == pytest.approx(frame["keys"][0], abs=0.5), (name, width, frame)
     probe = report_page([_keyed_table([LONG_ID, TOO_LONG_ID], figures=16)])
