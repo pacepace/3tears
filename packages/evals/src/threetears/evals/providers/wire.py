@@ -24,6 +24,7 @@ from the cache and writes only what it adds.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ __all__ = [
     "TurnRead",
     "declared_facts",
     "directive_of",
+    "fallback_key_variables",
     "in_body_error",
     "read_reply",
     "reported_cost",
@@ -103,6 +105,29 @@ KEY_VARIABLES: Final[Mapping[Provider, str]] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
+
+
+def fallback_key_variables(variable: str) -> tuple[str, ...]:
+    """The variables ``<variable>_FALLBACKS`` names, in order: the keys tried after ``variable``'s when one's credit is
+    spent. The one reading of that list, for the client and for a script that checks it before launch.
+
+    The list is a comma list of other variables' names, blank entries skipped; unset, it is empty.
+
+    :param variable: The key's own variable (``ANTHROPIC_API_KEY``).
+    :ptype variable: str
+    :return: The fallback variables' names, in the order they are tried.
+    :rtype: tuple[str, ...]
+    :raises ValueError: The list names ``variable`` itself, one variable twice, or a variable the environment does
+        not set, naming it; never a value.
+    """
+    listed = f"{variable}_FALLBACKS"
+    names = tuple(name.strip() for name in os.environ.get(listed, "").split(",") if name.strip())
+    if variable in names or len(set(names)) != len(names):
+        raise ValueError(f"{listed} names {variable} itself or one variable twice: {', '.join(names)}")
+    if unset := [name for name in names if not os.environ.get(name)]:
+        raise ValueError(f"{listed} names {', '.join(unset)}, which the environment does not set")
+    return names
+
 
 #: Each provider's API root.
 BASE_URLS: Final[Mapping[Provider, str]] = {

@@ -16,7 +16,7 @@ import string
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cache
 from typing import Any, Final, Self, get_args
@@ -53,6 +53,7 @@ from threetears.evals.providers.wire import (
     TurnRead,
     declared_facts,
     directive_of,
+    fallback_key_variables,
     in_body_error,
     read_reply,
     read_turn,
@@ -100,6 +101,62 @@ _CACHE_APPROXIMATE: Final = ";cache-approximate"
 
 
 _FILE_CLOCK_SLACK_SECONDS: Final = 1.0
+
+#: The keys whose credit a provider has said is spent, in this process, each as its variable and its value: no model
+#: sends on one again, whichever model met the refusal. The value is part of the identity, so a key is spent, not a
+#: variable's name; the set holds only what the models already hold, and nothing in it is ever logged or stored.
+_SPENT_KEYS: Final[set[tuple[str, str]]] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyChain:
+    """The keys a model sends on, in order: its provider's variable, then each variable ``<VARIABLE>_FALLBACKS`` names.
+
+    One key (one passed as ``api_key=``, or a variable with no fallbacks) never fails over. Every model whose chain
+    holds a key reads the same :data:`_SPENT_KEYS`, and marking a key spent is idempotent and runs without an
+    ``await``, so two calls refused on the same key at once move every model to the same next key, once.
+    """
+
+    #: Each key as its variable and its value; never in the repr, which would print every key.
+    keys: tuple[tuple[str, str], ...] = field(repr=False)
+
+    def current(self) -> tuple[str, str]:
+        """The first key not spent, or the last when every one is, which then meets its refusal as before."""
+        return next((key for key in self.keys if key not in _SPENT_KEYS), self.keys[-1])
+
+    def spend(self, key: tuple[str, str], *, provider: Provider, model: str) -> tuple[str, str] | None:
+        """Mark ``key`` spent: the key to send on next, or ``None`` when every key in the chain is spent.
+
+        The switch is logged at WARNING by the call that first found the key spent, naming the two variables and
+        never a value; a call that meets the same refusal after it moves to the same key, unlogged.
+        """
+        first = key not in _SPENT_KEYS
+        _SPENT_KEYS.add(key)
+        after = next((other for other in self.keys if other not in _SPENT_KEYS), None)
+        if first and after is not None:
+            log.warning(
+                "eval.providers a key's credit is spent, failing over provider=%s model=%s from=%s to=%s",
+                provider,
+                model,
+                key[0],
+                after[0],
+            )
+        return after
+
+    def variables(self) -> str:
+        """Every variable in the chain, in order, as a refusal names them."""
+        return ", ".join(variable for variable, _ in self.keys)
+
+
+def _keys_from_environment(variable: str) -> _KeyChain | None:
+    """The chain ``variable`` and ``<variable>_FALLBACKS`` name (:func:`fallback_key_variables`, which refuses a list
+    naming an unset variable, ``variable`` itself or one twice), read from the environment; ``None`` when ``variable``
+    itself is unset, which the caller refuses as a missing key."""
+    primary = os.environ.get(variable)
+    if not primary:
+        return None
+    names = fallback_key_variables(variable)
+    return _KeyChain(((variable, primary), *((name, os.environ[name]) for name in names)))
 
 
 @cache
@@ -332,7 +389,7 @@ class _Live:
         model_name: str,
         provider: Provider,
         *,
-        key: str,
+        keys: _KeyChain,
         base_url: str | None,
         asked: WireSettings,
         catalogue: Catalogue,
@@ -349,7 +406,7 @@ class _Live:
         self._retry = retry
         self._catalogue_fetch_timeout = catalogue_fetch_timeout
         self.provider: Provider = provider
-        self._key = key
+        self._keys = keys
         self._url = (base_url or BASE_URLS[provider]).rstrip("/")
         self._direct_openai = provider == "openai" and base_url is None
         self._asked = asked
@@ -456,9 +513,42 @@ class _Live:
     async def _post(
         self, body: Mapping[str, Any], *, betas: Sequence[str] = (), failure_attempts: int = 1
     ) -> tuple[int, Mapping[str, Any], tuple[str, ...]]:  # Any: JSON
-        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it, and what
-        each resend followed (:attr:`~threetears.evals.schema.TurnReply.resent_after`); ``betas`` go as Anthropic's
-        ``anthropic-beta`` header.
+        """The provider's answer to ``body`` on the model's current key (:meth:`_post_on`), the same request sent
+        again on the next key while the answer says a key's credit is spent (:attr:`ProviderError.credit_spent`),
+        each such resend first among what the call's resends followed.
+
+        Each key gets the whole resend policy and time bound of its own: the refusal came back at once and was not
+        billed. Any other failure is raised as it came, as is a spent key's refusal on a chain of one key. When every
+        key's credit is spent, the account failure is raised naming every variable the chain holds, never a value.
+        """
+        failed_over: list[str] = []
+        while True:
+            key = self._keys.current()
+            try:
+                status, parsed, resent_after = await self._post_on(
+                    key[1], body, betas=betas, failure_attempts=failure_attempts
+                )
+                return status, parsed, (*failed_over, *resent_after)
+            except ProviderError as error:
+                if not error.credit_spent or len(self._keys.keys) == 1:
+                    raise
+                # What the resend followed, as a decline's resend records it: the provider's answer, never a key's name.
+                failed_over.append(f"the key's credit was spent, so the call went to the next key: {error}")
+                if self._keys.spend(key, provider=self.provider, model=self.model_name) is None:
+                    said = error.message or "the response carried no message"
+                    raise ProviderError(
+                        self.provider,
+                        error.status,
+                        f"{said} (every key's credit is spent: tried {self._keys.variables()})",
+                        attempts=error.attempts,
+                    ) from error
+
+    async def _post_on(
+        self, key: str, body: Mapping[str, Any], *, betas: Sequence[str], failure_attempts: int
+    ) -> tuple[int, Mapping[str, Any], tuple[str, ...]]:  # Any: JSON
+        """The provider's answer to ``body`` sent on ``key``, parsed, the call sent again while the provider declines
+        it, and what each resend followed (:attr:`~threetears.evals.schema.TurnReply.resent_after`); ``betas`` go as
+        Anthropic's ``anthropic-beta`` header.
 
         A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503, as a status or as the
         code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`).
@@ -470,11 +560,11 @@ class _Live:
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
         if self.provider == "anthropic":
-            path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
+            path, headers = "/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
             if betas:
                 headers["anthropic-beta"] = ",".join(betas)
         else:
-            path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
+            path, headers = "/chat/completions", {"authorization": f"Bearer {key}"}
         client = self.http_client()
         budget = client.timeout.read
         until = time.monotonic() + budget if budget is not None else None
@@ -816,6 +906,15 @@ class Model:
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
     and the reply names what each resend followed (``TurnReply.resent_after``).
 
+    **Keys.** A model handed no ``api_key=`` reads its provider's variable (``ANTHROPIC_API_KEY``), then the
+    variables ``<VARIABLE>_FALLBACKS`` names, a comma list tried in order
+    (``ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3``).
+    When the provider says a key's credit is spent (:attr:`ProviderError.credit_spent
+    <threetears.evals.providers.ProviderError>`), the same request is sent again on the next key, which the refused
+    call left unbilled; a spent key is never sent again in the process, by any model, and each switch is logged at
+    WARNING naming the two variables, never a key. When every key is spent, the account failure is raised naming every
+    variable tried. No other failure fails over. A fallback the environment does not set is refused at construction.
+
     **Recording.** Given ``recording=``, a file that exists is replayed, offline and free, and ``RECORD=1`` in the
     environment records it again live (started afresh by the first model built on it in the run). A file that does
     not exist yet is recorded live. A replay serves only calls recorded under the same model and request settings,
@@ -883,7 +982,9 @@ class Model:
         :ptype id: str
         :param provider: ``"openrouter"``, ``"anthropic"`` or ``"openai"``; required for a bare id with no ``base_url``.
         :ptype provider: Provider | None
-        :param api_key: The key, or ``None`` to read the provider's variable.
+        :param api_key: The key, or ``None`` to read the provider's variable and the fallback keys
+            ``<VARIABLE>_FALLBACKS`` names (the class docstring's **Keys**). A key passed here never fails over:
+            which key a call spends is then the host's choice.
         :ptype api_key: str | None
         :param base_url: An OpenAI-compatible endpoint's root (``https://api.deepseek.com/v1``), or ``None``.
         :ptype base_url: str | None
@@ -942,8 +1043,9 @@ class Model:
             beside a ``catalogue`` prices every call from that catalogue, as before.
         :ptype pricer: Pricer | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
-            variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
-            setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
+            variable), a ``<VARIABLE>_FALLBACKS`` naming a variable the environment does not set, the primary itself
+            or one variable twice, ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it,
+            or a setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
             ``max_tokens``, an Anthropic budget below 1024), or a ``catalogue_fetch_timeout`` that is not above zero;
             a ``turn_recording`` on a route other than Anthropic's, beside settings a tool turn refuses (a temperature;
             a thinking budget, or ``effort='none'``, on a model whose declared facts say it takes none), or to be
@@ -1023,14 +1125,14 @@ class Model:
             self._client = replay
             return
         variable = KEY_VARIABLES[self.provider]
-        key = api_key or os.environ.get(variable)
-        if not key:
+        keys = _KeyChain((("api_key=", api_key),)) if api_key else _keys_from_environment(variable)
+        if keys is None:
             where = f"; or record {self.recording} once with it set" if self.recording is not None else ""
             raise ValueError(f"no key for {self.provider}: pass api_key= or set {variable}{where}")
         live = _Live(
             id,
             self.provider,
-            key=key,
+            keys=keys,
             base_url=base_url,
             asked=asked,
             catalogue=catalogue if catalogue is not None else Catalogue(),
