@@ -18,8 +18,8 @@ with the fix that removes it, pinned by count; ``_epoch_waivers.txt`` lists the 
 matches that are not what the rule forbids, each with its reason. A new site fails, and so does a
 line whose site shrank or went, so both lists only shrink.
 
-The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, joins
-:data:`_PRIMITIVES` under ``whole-drop`` with the change that adds it.
+The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, is a
+:data:`_PRIMITIVES` entry under ``whole-drop``.
 """
 
 from __future__ import annotations
@@ -49,6 +49,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/backends/sql.py::SqlL3Backend.truncate",
             # the DuckDB L1 backend: its replace_all and partition swaps are the primitives callers reach
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
+            # the sanctioned whole-table-epoch apply: it drops a table only for a record naming the whole table
+            f"{_CORE}/collections/registry.py::CollectionRegistry.apply_epoch_change",
         }
     ),
     "epoch-bypass": frozenset(
@@ -69,6 +71,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/write_marks.py::WriteMarkReconciler",
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
+            # the L2-first epoch log in L3: the saved record of each epoch, the ledger the saver walks
+            f"{_CORE}/collections/l2_first.py::SqlEpochLogStore",
             # the migration runner's own version ledger, _schema_migrations
             f"{_CORE}/data/migrations/runner.py::MigrationRunner",
             # the epoch client's own counter table, config_epochs: it IS the epoch
