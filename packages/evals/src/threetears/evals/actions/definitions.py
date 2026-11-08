@@ -30,7 +30,8 @@ class DefinitionsDriftParams(EvalBaseModel):
 
 
 class DefinitionsResetParams(EvalBaseModel):
-    """What ``definitions_reset`` writes, and whether it may write over what may be an operator's."""
+    """What ``definitions_reset`` writes, whether it may write over what may be an operator's, and whether it carries
+    live cases the corpus does not carry into a template's new revision."""
 
     definitions: list[str] = Field(
         min_length=1,
@@ -40,9 +41,17 @@ class DefinitionsResetParams(EvalBaseModel):
     overwrite_customized: bool = Field(
         default=False,
         description="Write the seed corpus's content as the next revision of a definition whose stored content reads "
-        "customized or unknown (an edit that may be an operator's), and of a judge template holding live cases the "
-        "corpus does not carry; such a definition is refused without it. The revision it supersedes stays stored, "
-        "archived and readable by id.",
+        "customized or unknown (an edit that may be an operator's); such a definition is refused without it. Without "
+        "carry_live_cases it also resets a template holding live cases the corpus does not carry, leaving them out of "
+        "the new revision. The revision it supersedes stays stored, archived and readable by id.",
+    )
+    carry_live_cases: bool = Field(
+        default=False,
+        description="Copy each live case the corpus does not carry (cases people froze or added) from a template's "
+        "current revision into its new one, beside the corpus's cases, content and labels unchanged, each copy naming "
+        "its source; without it such a template is refused unless overwrite_customized leaves them behind. It answers "
+        "only those cases: a customized or unknown definition still needs overwrite_customized. A case set outside "
+        "the corpus over the old revision is not minted again; the result names each one.",
     )
 
 
@@ -82,6 +91,7 @@ def definition_drift_actions(
                 corpus(scope_id),
                 params.definitions,
                 overwrite_customized=params.overwrite_customized,
+                carry_live_cases=params.carry_live_cases,
                 seeded_digests=supplied(scope_id),
             ),
         )
@@ -107,7 +117,7 @@ def definition_drift_actions(
         Action(
             name="definitions_reset",
             summary="Write the seed corpus's content for named definitions as new revisions; customized or unknown "
-            "ones need overwrite_customized.",
+            "ones need overwrite_customized, and live cases the corpus lacks are kept with carry_live_cases.",
             workflow=DEFINITIONS_WORKFLOW,
             permission="write",
             params=DefinitionsResetParams,
@@ -119,9 +129,12 @@ def definition_drift_actions(
                 "Never in place: a template's new content is its next revision, the one it supersedes archived and "
                 "readable by id, so results stay with the content they ran against and two revisions never pool. A "
                 "judge case resets with its judge template and a template case with its template, whose new revision "
-                "holds every corpus case of it. A row reads discarded only where a stored copy that read customized "
-                "or unknown was written over under overwrite_customized; one written fresh, with nothing stored, or "
-                "over a stale copy reads discarded false. "
+                "holds every corpus case of it. A template holding live cases the corpus does not carry (people's "
+                "frozen ratings, an operator's own case) is refused unless carry_live_cases copies each into the new "
+                "revision, keeping them all, or overwrite_customized leaves them on the archived one. A row reads "
+                "discarded only where a stored copy that read customized or unknown was written over under "
+                "overwrite_customized; one written fresh, with nothing stored, or over a stale copy reads discarded "
+                "false. "
                 "All or nothing: a refusal writes nothing and names every refused definition."
             ),
         ),

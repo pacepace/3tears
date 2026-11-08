@@ -308,6 +308,24 @@ def _cases_of_result(
 _AUTHORED_SOURCE = "authored"
 
 
+def _carried_copies(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> dict[tuple[str, str, str], str]:
+    """Every case a definition reset carried into ``template`` (``EvalTestCase.carried_from``), by the identity a
+    freeze derives a case's id from: its source (a result's id, or :data:`_AUTHORED_SOURCE`), its dim and its content.
+
+    A copy keeps its source's content but not its id, so the derived id alone would not find it, and a freeze of the
+    same labels or results into the new revision would store the case a second time beside it.
+
+    :raises ValueError: A carried case holds a judge case this build cannot read.
+    """
+    copies: dict[tuple[str, str, str], str] = {}
+    for stored in storage.query_test_cases(scope_id, template_id=template.id):
+        if stored.carried_from is None or (case := judge_case_of(stored)) is None:
+            continue
+        source = _AUTHORED_SOURCE if case.source.result_id is None else case.source.result_id
+        copies.setdefault((source, case.dim, stored.content_hash or case.content_digest()), stored.id)
+    return copies
+
+
 def _store_case(
     storage: EvalStorage,
     template: EvalTemplate,
@@ -318,16 +336,21 @@ def _store_case(
     seen: set[str],
     *,
     seed_name: str | None = None,
+    copies: Mapping[tuple[str, str, str], str] | None = None,
 ) -> FrozenJudgeCase | None:
     """Write one frozen case as a test case of ``template`` unless it is stored already; ``None`` for a repeat.
 
     The id is derived from the template, the source result (an authored case: :data:`_AUTHORED_SOURCE`), the dim
-    and the case's content, so freezing or authoring the same thing twice names the stored case. ``seed_name`` is
-    the corpus name a seeded case is written with; a case already stored is never rewritten to carry one.
+    and the case's content, so freezing or authoring the same thing twice names the stored case. A case a reset
+    carried into the template under that same identity (``copies``, :func:`_carried_copies`) is the stored case too.
+    ``seed_name`` is the corpus name a seeded case is written with; a case already stored is never rewritten to carry
+    one.
     """
     digest = case.content_digest()
     source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
     case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
+    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
+        case_id = copied
     if case_id in seen:
         return None
     seen.add(case_id)
@@ -538,7 +561,9 @@ def freeze_judge_cases(
     after its run, or whose run did not record its judging, is skipped with that reason), the criterion as its
     template worded it, and the person labels :func:`judge_case_labels` finds for it. A case's id is derived from
     the template, the result, the dim and everything the case freezes, so freezing the same thing twice names the
-    stored case, and a re-freeze after a label changed mints a new case beside the old one.
+    stored case, and a re-freeze after a label changed mints a new case beside the old one. A case a definition reset
+    carried into the template (``EvalTestCase.carried_from``) is named by the same identity, so a freeze of the same
+    labels into the new revision names the copy rather than storing the case beside it.
 
     **From labels** (``from_labels=True``, and no runs or results named): the cases are the scope's durable person
     labels, one per output and criterion (:func:`_cases_of_labels`), each frozen from the content its labels carry
@@ -603,17 +628,20 @@ def freeze_judge_cases(
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
+    copies = _carried_copies(storage, template, scope_id)
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
     for written in authored:
         case = JudgeCase.from_authored(written)
-        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen)
+        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen, copies=copies)
         if minted_case is not None:
             cases.append(minted_case)
     if from_labels:
         labelled, skipped = _cases_of_labels(storage, scope_id, dims)
         for source_result_id, case in labelled:
-            minted_case = _store_case(storage, template, scope_id, source_result_id, case.dim, case, seen)
+            minted_case = _store_case(
+                storage, template, scope_id, source_result_id, case.dim, case, seen, copies=copies
+            )
             if minted_case is not None:
                 cases.append(minted_case)
     for run_id in run_ids:
@@ -635,7 +663,7 @@ def freeze_judge_cases(
             if not frozen:
                 skipped.append(JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it"))
             for dim, case in frozen:
-                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen)
+                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen, copies=copies)
                 if minted_case is not None:
                     cases.append(minted_case)
     if wanted is not None and (stray := sorted(wanted - found)):

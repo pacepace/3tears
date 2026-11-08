@@ -1904,9 +1904,16 @@ A reset never edits in place. A template's new content is its next **revision**:
 content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
 which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
 whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
-of them in its new revision. The reset refuses `customized` and `unknown`, and a judge template (or a template the
-corpus gives cases) holding live cases the corpus does not carry, unless `overwrite_customized=True`; it writes
-nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
+of them in its new revision. The reset refuses `customized` and `unknown` unless `overwrite_customized=True`. It
+refuses a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry, such as
+cases frozen from people's ratings, unless one of two flags says what becomes of them. `carry_live_cases=True` copies
+each into the new revision beside the corpus's cases, content and labels unchanged, the copy naming its source
+(`EvalTestCase.carried_from`) and the source staying on the archived revision with its runs; the template then reads
+`current`, the same reset again writes nothing, and freezing the same labels into the new revision names the copy
+rather than adding the case again. `overwrite_customized=True` leaves them on the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown` definition, and both together
+write the corpus over it and carry the cases. A case set outside the corpus over the archived revision is not minted
+again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each source case to its copy for its
+next mint. A reset writes nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
 and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
 `customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
 template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
