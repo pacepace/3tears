@@ -40,6 +40,8 @@ __all__ = [
     "ChangedRow",
     "EpochChange",
     "EpochChangeReader",
+    "EpochLogExtent",
+    "EpochQuiet",
     "EpochWalk",
     "epoch_change_body",
     "read_epoch_change_body",
@@ -173,8 +175,8 @@ class EpochWalk:
     :ivar first_missing: the oldest epoch known or suspected missing, for the log line; ``None`` when
         :attr:`complete`
     :ivar reason: why the walk is not complete, for the behind log line and counter:
-        ``record_missing`` (a record the log does not hold) or ``record_lost`` (an epoch of unknown table
-        lost with the broker, which a restore could not put back)
+        ``record_missing`` (a record the log does not hold), ``aged_out`` (retention took the epochs after
+        the mark) or ``record_lost`` (an epoch lost with the broker that a restore could not put back)
     """
 
     changes: tuple[EpochChange, ...]
@@ -213,6 +215,51 @@ async def walk_by_count(reader: EpochChangeReader, table_name: str, after: str, 
             continue
         changes.append(change)
     return EpochWalk(changes=tuple(changes), complete=missing is None, first_missing=missing)
+
+
+@dataclass(frozen=True, slots=True)
+class EpochQuiet:
+    """what a log can vouch for after a follower's mark, when the table's generation reads at or below it.
+
+    :ivar through: the newest epoch through which the log holds nothing of the table after the mark, so
+        the mark may move to it; ``None`` when the log holds an epoch of the table (or one it cannot
+        name) after the mark, or cannot say
+    :ivar aged_out: the log no longer holds the epoch after the mark (retention took it), so it cannot say
+        whether the table was written since: the follower is behind (``aged_out``), never current
+    """
+
+    through: str | None
+    aged_out: bool = False
+
+
+@runtime_checkable
+class EpochLogExtent(Protocol):
+    """what a change log can say about its own reach: the lost log a restore continues, and quiet stretches."""
+
+    async def continues(self, incarnation: str) -> tuple[str, int] | None:
+        """the lost log's incarnation the log ``incarnation`` continues, and the last of its sequences put back.
+
+        :param incarnation: the log's incarnation, as a generation read names it
+        :ptype incarnation: str
+        :return: ``(lost incarnation, last sequence put back)``; ``None`` when the log continues none, or
+            is not ``incarnation`` (any more)
+        :rtype: tuple[str, int] | None
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
+
+    async def quiet_after(self, table_name: str, mark: str) -> EpochQuiet:
+        """what the log can vouch for of ``table_name`` after ``mark``.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param mark: the follower's mark
+        :ptype mark: str
+        :return: how far the mark may move, and whether the log has aged past it
+        :rtype: EpochQuiet
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
 
 
 @runtime_checkable

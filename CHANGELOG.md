@@ -48,7 +48,7 @@ deletes a mark on an L2-first table without a whole-table advance, and the trigg
 **Added (epoch):** a lost change log has one owner. `EpochGenerationSource(restored_from_l3=True, restore_wait=...)`,
 for every process of a deployment that runs the L2-first worker, never declares a log: while it is absent a write
 waits for the refiller (then fails, logged), and `current()` raises so its caller asks L3. The refiller restores it
-at its old incarnation, or starts it (`start_log`) when the L3 epoch log holds nothing. Without the flag a lost log
+at its old sequences, or starts it (`start_log`) when the L3 epoch log holds nothing. Without the flag a lost log
 is declared again under a new incarnation, as before.
 
 Operations: [docs/l2-first-operations.md](docs/l2-first-operations.md).
@@ -82,7 +82,10 @@ advance appends ONE record under the table's key with a `Nats-Msg-Id`, so a retr
 per-table counter key in `{ns}-epochs` and its compare-and-swap are gone: at 32 concurrent writers the bench
 (`scripts/measure-epoch-write-cost.py`, PR #1122) measured 3.6 lost compare-and-swaps per write and saves committed
 without an advance; with the log there is nothing to lose. A token is `{incarnation}:{sequence}`, the incarnation the
-log's own (stream metadata), kept when the log is restored.
+log's own (stream metadata). A restored log is a new incarnation continuing the lost one up to the last sequence
+it put back (`ChangeLogState.continues`, `continues_through`; `NatsChangeLog.declare(continues=...)`): a follower's
+mark at or below it is carried over (`GenerationMarks.continue_under`) and walks on, one past it is behind
+(`record_lost`), since the restored log reuses those sequences.
 
 **Changed (core):** a table's sequences are not one apart, so a follower catches up by walking the table's records
 after its mark (`EpochChangeReader.changes_after`, returning an `EpochWalk`) rather than by counting. A walk the log
@@ -92,7 +95,7 @@ stamps with the registry's mark is told when it moves (`register_derived_cache(o
 
 **Added (epoch):** `EpochGenerationSource.advance_continuing` (an L2-first commit: never declares the log, raises
 `threetears.core.exceptions.L2LostError` when it is absent), `restore_epochs` (the refiller's put-back: the log is
-created under its incarnation and every record keeps its number; a sequence L3 holds no record for is a filler, an
+created under a new incarnation continuing the lost one, and every record keeps its number; a sequence L3 holds no record for is a filler, an
 epoch whose table nobody can name, and a follower whose walk spans one is behind as `record_lost`), and
 `observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.75). `ChangedRow.value` carries a
 row's stored bytes for a record that is the commit. `follow_l2_kept_tables` follows `L2_WRITE_GENERATION` tables by
@@ -134,7 +137,16 @@ rows and did not change the whole table. `advance_with_change`, `advance_recordi
 a keyword-only `keys_unknown=True` (with `rows=None`; anything else raises `ValueError` before anything advances). A
 follower that missed such an epoch is behind on the table for it, said apart from a lost record:
 `collection_epoch_behind_total` carries a `reason` label (`record_missing`, `keys_unknown`, `record_unreadable`,
-`replaced`, `record_lost`), as does the log line.
+`replaced`, `record_lost`, `aged_out`), as does the log line.
+
+**Changed (core, epoch):** a gap past retention is behind, never current (owner, 2026-11-08). A follower that
+judges a table the log holds nothing of after its mark moves the mark with the log (`EpochLogExtent.quiet_after`),
+staying inside retention; one whose mark the log no longer reaches is behind as `aged_out`, serving and dropping
+nothing.
+
+**Changed (core):** a delete's foreign-key action on a table this registry holds no collection for is announced as
+a keyed epoch, by the primary key the table's collection class declares (`primary_key_of_table`); never as the
+whole table. With no class declaring it, the epoch's keys are unknown and its followers are behind.
 
 **Added (core):** a pod's collection write names the rows it changes on the request that commits it,
 `CHANGED_ROWS_FIELD` (`"changed_rows"`, `{table: [ChangedRow]}`, `threetears.core.backends.broker_generation`), sent

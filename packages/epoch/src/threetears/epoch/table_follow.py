@@ -29,7 +29,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final
 
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, EpochWalk, walk_by_count
+from threetears.core.collections.epoch_change import (
+    EpochChange,
+    EpochChangeReader,
+    EpochLogExtent,
+    EpochQuiet,
+    EpochWalk,
+    walk_by_count,
+)
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.observe import contain, get_logger
@@ -148,6 +155,32 @@ class _ObservedWatcher:
         if isinstance(self._inner, EpochChangeReader):
             return await self._inner.changes_after(table_name, after, upto)
         return EpochWalk(changes=(), complete=False, first_missing=upto)
+
+    async def continues(self, incarnation: str) -> tuple[str, int] | None:
+        """the lost log a restored one continues, read through the watcher this wraps when it can say.
+
+        :param incarnation: the log's incarnation
+        :ptype incarnation: str
+        :return: the lost incarnation and the last sequence put back; ``None`` when none or unknown
+        :rtype: tuple[str, int] | None
+        """
+        if isinstance(self._inner, EpochLogExtent):
+            return await self._inner.continues(incarnation)
+        return None
+
+    async def quiet_after(self, table_name: str, mark: str) -> EpochQuiet:
+        """what the wrapped watcher's log vouches for after a mark; nothing when it cannot say.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param mark: the follower's mark
+        :ptype mark: str
+        :return: the log's answer
+        :rtype: EpochQuiet
+        """
+        if isinstance(self._inner, EpochLogExtent):
+            return await self._inner.quiet_after(table_name, mark)
+        return EpochQuiet(through=None)
 
 
 class TableFollower:

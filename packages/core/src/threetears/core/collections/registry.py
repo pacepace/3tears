@@ -12,7 +12,13 @@ from uuid import uuid7
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, EpochWalk, walk_by_count
+from threetears.core.collections.epoch_change import (
+    EpochChange,
+    EpochChangeReader,
+    EpochLogExtent,
+    EpochWalk,
+    walk_by_count,
+)
 from threetears.core.collections.generation import (
     GenerationMarks,
     GenerationVerdict,
@@ -853,13 +859,38 @@ class CollectionRegistry:
         """
         marks = self._generation_marks
         verdict = marks.judge(table_name, token)
+        extent = changes if isinstance(changes, EpochLogExtent) else None
+        if verdict is GenerationVerdict.REPLACED and token is not None and extent is not None:
+            # a restored log continues the lost one up to the last sequence it put back: a mark at or below
+            # it is carried over and walks on; one past it counted epochs nobody can put back
+            carried = await self._carry_over_restore(table_name, token, extent)
+            if carried is None:
+                return verdict
+            verdict = carried
         if verdict is GenerationVerdict.CURRENT:
+            recorded = marks.recorded(table_name)
+            if extent is not None and recorded is not None:
+                quiet = await extent.quiet_after(table_name, recorded)
+                if quiet.aged_out:
+                    # retention took the epochs after the mark: whether the table was written since, nobody
+                    # can say, so this registry is behind on it -- serving, said and counted, never current
+                    self._fall_behind(table_name, reason="aged_out", detail={"read": token, "recorded": recorded})
+                    return verdict
+                if quiet.through is not None:
+                    # the log holds nothing of the table after the mark: the mark moves with the log, so a
+                    # quiet table's follower stays inside its retention
+                    marks.advance_to(table_name, quiet.through)
+                    self._tell_caught_up(table_name)
             self._caught_up(table_name)
             return verdict
         if verdict is GenerationVerdict.FIRST_SIGHT:
             # the head is the mark: a process starts following before it serves, so it holds nothing
             # older to bring forward, and nothing is re-read from any tier
             marks.adopt_generation(table_name, token)
+            if extent is not None and token is not None:
+                quiet = await extent.quiet_after(table_name, token)
+                if quiet.through is not None:
+                    marks.advance_to(table_name, quiet.through)
             # a cache derived from the table keeps its own marks, and starts them from this one; like the
             # table's own rows, what it holds was derived after following began, so nothing is dropped
             for registration in tuple(self._derived_caches.get(table_name, ())):
@@ -962,6 +993,39 @@ class CollectionRegistry:
         :rtype: bool
         """
         return table_name in self._behind
+
+    async def _carry_over_restore(
+        self, table_name: str, token: str, extent: EpochLogExtent
+    ) -> GenerationVerdict | None:
+        """carry the mark over to a restored log that continues the mark's own, or say this registry is behind.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation read, under the restored log's incarnation
+        :ptype token: str
+        :param extent: what the log can say of its own reach
+        :ptype extent: EpochLogExtent
+        :return: the verdict against the carried mark; :attr:`~GenerationVerdict.REPLACED` when the log
+            continues another incarnation than the mark's; ``None`` when this registry fell behind
+        :rtype: GenerationVerdict | None
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        marks = self._generation_marks
+        restored = token.rpartition(":")[0]
+        lineage = await extent.continues(restored)
+        recorded = marks.recorded(table_name)
+        if lineage is None or recorded is None or recorded.rpartition(":")[0] != lineage[0]:
+            return GenerationVerdict.REPLACED
+        lost, through = lineage
+        if marks.continue_under(table_name, lost, restored, through):
+            return marks.judge(table_name, token)
+        # the mark counted epochs past the last one the restore put back; their sequences are reused
+        self._fall_behind(
+            table_name,
+            reason="record_lost",
+            detail={"read": token, "recorded": recorded, "restored_through": f"{lost}:{through}"},
+        )
+        return None
 
     def _fall_behind(self, table_name: str, *, reason: str, detail: Mapping[str, Any]) -> None:
         """record that the catch-up of ``table_name`` stopped short, and say so where an operator will see it.

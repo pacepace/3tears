@@ -53,6 +53,7 @@ __all__ = [
     "WriteGenerationDeclaration",
     "announce_unheard_writes",
     "note_generation_class",
+    "primary_key_of_table",
     "note_l2_first_class",
     "source_reads",
     "split_generation_token",
@@ -575,6 +576,37 @@ class GenerationMarks:
             # the overflow only hid which advances were heard; every one up to here is applied now
             mark.overflowed = False
 
+    def continue_under(self, table_name: str, lost: str, restored: str, through: int) -> bool:
+        """carry the table's mark from a lost log's incarnation to the one restored from it, where it may.
+
+        A restore puts the lost log's epochs back at their sequences up to ``through`` under ``restored``.
+        A mark under ``lost`` at or below ``through`` numbers the same epoch under both, so it is carried
+        over, with every advance heard up to ``through``; one past it counted epochs the restore could not
+        put back, and is left as it is.
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param restored: the restored log's incarnation
+        :ptype restored: str
+        :param through: the last sequence of the lost log the restore put back
+        :ptype through: int
+        :return: whether the mark was carried over
+        :rtype: bool
+        """
+        mark = self._tables.get(table_name)
+        if mark is None or not mark.sighted or mark.incarnation != lost or mark.accounted > through:
+            return False
+        mark.incarnation = restored
+        mark.heard = {
+            (restored, count): heard
+            for (incarnation, count), heard in mark.heard.items()
+            if incarnation == lost and count <= through
+        }
+        self._move_on(mark)
+        return True
+
     def adopt_generation(self, table_name: str, token: str | None) -> None:
         """take ``token`` as the table's mark, for a follower that holds nothing older than it.
 
@@ -759,6 +791,29 @@ def tables_with_write_generation() -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
+
+
+def primary_key_of_table(table_name: str) -> tuple[str, ...] | None:
+    """the primary key columns of ``table_name``, as the collection classes defined here declare it.
+
+    For a writer that must name rows of a table it holds no collection for -- a delete's foreign-key
+    action reaching it -- so its epoch is keyed, never the whole table.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: the columns in declared order; ``None`` when no class here names the table, or two disagree
+    :rtype: tuple[str, ...] | None
+    """
+    found: set[tuple[str, ...]] = set()
+    for cls in list(_GENERATION_CLASSES):
+        if table_named_by_class(cls) != table_name:
+            continue
+        declared = getattr(cls, "primary_key_column", None)
+        if isinstance(declared, str):
+            found.add((declared,))
+        elif isinstance(declared, tuple) and all(isinstance(column, str) for column in declared):
+            found.add(declared)
+    return found.pop() if len(found) == 1 else None
 
 
 #: every collection class defined in this process that commits its writes in NATS first

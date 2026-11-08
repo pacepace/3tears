@@ -19,8 +19,9 @@ and the change can never disagree. An append carries ``Nats-Msg-Id``, so one ret
 window records once.
 
 **A token is ``"{incarnation}:{sequence}"``.** The incarnation is the log's own, carried in its stream
-metadata: minted when the log is declared, and kept when the refiller restores it at its old
-sequences, so a pod's mark survives the broker losing the log. A table's generation is the sequence of
+metadata, minted when the log is declared. A restored log is a new incarnation that names the lost one
+and the last sequence it put back (``continues``), so a pod's mark at or below it survives the broker
+losing the log, and one past it is behind. A table's generation is the sequence of
 its newest record (``:0`` for a table with none): it moves with every write to the table, which is all
 an absence's stamp needs. A table's sequences are not consecutive -- other tables' records sit between
 them -- so a follower catches up by walking the table's records after its mark
@@ -41,6 +42,7 @@ from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
     EpochChange,
+    EpochQuiet,
     EpochWalk,
     changed_row_runs,
     check_change_form,
@@ -163,6 +165,7 @@ class _ChangeLogLike(Protocol):
         replicas: int | None,
         incarnation: str | None = None,
         first_seq: int | None = None,
+        continues: tuple[str, int] | None = None,
     ) -> ChangeLogState: ...
 
     async def state(self) -> ChangeLogState | None: ...
@@ -331,6 +334,10 @@ class _ChangeLogReading:
             return EpochWalk(changes=(), complete=False, first_missing=upto)
         key = generation_kv_key(table_name)
         complete = state.first_seq <= low[1] + 1
+        # the epochs after the mark are gone from the front of the log: retention took them, or a restore
+        # could not reach back that far
+        short = "aged_out" if state.continues is None else "record_lost"
+        reason = "record_missing" if complete else short
         changes: list[EpochChange] = []
         seq = low[1]
         try:
@@ -366,7 +373,54 @@ class _ChangeLogReading:
                 reason="record_lost",
             )
         first_missing = None if complete else _token(state.incarnation, low[1] + 1)
-        return EpochWalk(changes=tuple(changes), complete=complete, first_missing=first_missing)
+        return EpochWalk(changes=tuple(changes), complete=complete, first_missing=first_missing, reason=reason)
+
+    async def continues(self, incarnation: str) -> tuple[str, int] | None:
+        """the lost log's incarnation the log ``incarnation`` continues, and the last of its sequences put back.
+
+        :param incarnation: the log's incarnation, as a generation read names it
+        :ptype incarnation: str
+        :return: ``(lost incarnation, last sequence put back)``; ``None`` when the log was not restored, or
+            is no longer ``incarnation``
+        :rtype: tuple[str, int] | None
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        state = await self._state()
+        if state is None or state.incarnation != incarnation or state.continues is None:
+            return None
+        return state.continues, state.continues_through or 0
+
+    async def quiet_after(self, table_name: str, mark: str) -> EpochQuiet:
+        """what the log can vouch for of ``table_name`` after ``mark``: how far the mark may move, or that it aged out.
+
+        The log's state is read before the table's newest epoch, so an epoch of the table appended
+        between the two is seen, and never skipped.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param mark: the follower's mark
+        :ptype mark: str
+        :return: the log's answer; nothing to vouch for when the mark is of another incarnation
+        :rtype: EpochQuiet
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        parts = split_generation_token(mark)
+        state = await self._state()
+        if parts is None or state is None or parts[0] != state.incarnation:
+            return EpochQuiet(through=None)
+        aged_out = state.first_seq > parts[1] + 1 and state.last_seq > parts[1]
+        try:
+            newest, lost = await asyncio.gather(
+                self._log().last(generation_kv_key(table_name)), self._log().last(_RESTORE_FILLER_KEY)
+            )
+        except KvBucketNotFoundError:
+            # NOSILENT: the log went between the reads; nothing is vouched for, and the next judgement reads again
+            return EpochQuiet(through=None)
+        except KvError as exc:
+            raise GenerationUnavailableError(f"the epochs of {table_name!r} could not be read: {exc}") from exc
+        written = max(newest.seq if newest is not None else 0, lost.seq if lost is not None else 0)
+        quiet = written <= parts[1] and state.last_seq > parts[1]
+        return EpochQuiet(through=_token(state.incarnation, state.last_seq) if quiet else None, aged_out=aged_out)
 
     async def watch(self, table_name: str) -> AsyncGenerator[str | None]:
         """the table's newest epoch, then each later one, until the caller stops.
@@ -396,7 +450,7 @@ class EpochGenerationSource(_ChangeLogReading):
     """advances collection write generations by appending each epoch's change to the change log.
 
     **A lost log has one owner.** In a deployment that runs the L2-first worker, the refiller puts a lost
-    log back from the L3 epoch log at its old incarnation and sequences, so every process's source there
+    log back from the L3 epoch log at its old sequences, so every process's source there
     is built with ``restored_from_l3=True``: it never declares a log. While the log is absent a write
     waits up to ``restore_wait`` for the refiller, then fails (its rows committed, its epoch not
     appended, logged and counted as any refused append); a read of the generation fails at once, so its
@@ -614,14 +668,18 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(f"the epoch of {table_name!r} could not be appended: {exc}") from exc
 
     async def restore_epochs(self, changes: Sequence[EpochChange]) -> bool:
-        """put a lost log back from the L3 epoch log, every record at its old sequence.
+        """put a lost log back from the L3 epoch log, every record at its old sequence, under a new incarnation.
 
-        Only where the broker holds no log: the log is created under the records' incarnation, and every
-        sequence from the oldest record's to the newest is appended in order -- a record where L3 holds
-        one, a filler where it holds none -- so each record keeps the number every follower's mark was
-        taken against. A restore whose oldest record is past sequence one starts one earlier, with a
-        filler standing for every sequence below. A filler is an epoch lost with the broker whose table
-        nobody can name: a follower whose walk spans one is behind (``record_lost``), never caught up past it.
+        Only where the broker holds no log. The log is created under a NEW incarnation that names the lost
+        one and the last sequence put back (``continues``, ``continues_through``): the lost log may have
+        held epochs past the newest record L3 holds, and the new one numbers its appends from there, so a
+        sequence past that point means different epochs in the two. Every sequence from the oldest
+        record's to the newest is appended in order -- a record where L3 holds one, a filler where it
+        holds none -- so each record keeps its number. A restore whose oldest record is past sequence one
+        starts one earlier, with a filler standing for every sequence below. A filler is an epoch lost with
+        the broker whose table nobody can name: a follower whose walk spans one is behind
+        (``record_lost``), never caught up past it. A follower whose mark under the lost incarnation is at
+        or below the last sequence put back carries its mark over and walks on; one past it is behind.
 
         :param changes: every epoch record to put back, of any tables, under one incarnation
         :ptype changes: Sequence[EpochChange]
@@ -651,13 +709,15 @@ class EpochGenerationSource(_ChangeLogReading):
             first -= 1
         filled = 0
         retention = self._change_retention
+        restored = str(uuid7())
         try:
             await self._log().declare(
                 max_age=retention.max_age,
                 max_bytes=retention.max_bytes,
                 replicas=retention.replicas,
-                incarnation=incarnation,
+                incarnation=restored,
                 first_seq=first,
+                continues=(incarnation, last),
             )
             for seq in range(first, last + 1):
                 held = numbered.get(seq)
@@ -671,7 +731,7 @@ class EpochGenerationSource(_ChangeLogReading):
                         None if held.whole_table or held.keys_unknown else held.rows,
                         keys_unknown=held.keys_unknown,
                     )
-                took = await self._log().append(key, body, msg_id=f"restore-{incarnation}-{seq}")
+                took = await self._log().append(key, body, msg_id=f"restore-{restored}-{seq}")
                 if took != seq:
                     log.error(
                         "a restore of the epoch change log lost a sequence to another writer; the log keeps what it has",
@@ -685,7 +745,9 @@ class EpochGenerationSource(_ChangeLogReading):
             log.warning(
                 "the epoch change log was restored with epochs whose tables are unknown; every follower whose mark "
                 "is older than the newest of them is behind on each table it follows (record_lost)",
-                extra={"extra_data": {"incarnation": incarnation, "lost": filled, "through": last}},
+                extra={
+                    "extra_data": {"incarnation": restored, "continues": incarnation, "lost": filled, "through": last}
+                },
             )
         return True
 

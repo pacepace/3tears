@@ -1451,9 +1451,11 @@ fetch epochs `mine+1 .. head`, apply each.
   falls through to another tier for it. The L2-first refiller puts a lost log back from the L3 epoch
   log at its old sequences. An epoch L3 does not hold (every epoch of a table that is not L2-first) is
   a filler, and a follower whose walk spans one -- of any table, an L2-first one included -- stays
-  behind (`record_lost`) until it restarts (a first sight). Open: per-table restore coverage, so an
-  L2-first follower can walk past another table's filler, and the restored log's tail (sequences
-  after the newest record L3 held are reused).
+  behind (`record_lost`) until it restarts (a first sight). The restored log is a NEW incarnation
+  that names the lost one and the last sequence it put back: a mark at or below that sequence is
+  carried over and walks on; one past it counted epochs nobody can put back (their numbers are
+  reused) and is behind (`record_lost`). Open, awaiting the owner: an L2-first follower cannot walk
+  past another table's filler until every table's change records reach L3.
 - A commit whose rows would make a record past 256 KiB is recorded as several consecutive keyed
   records, its epoch the last; never as the whole table. Pods, the registry, the hub and the gateway
   are granted `{ns}-epoch-changes` beside `{ns}-epochs`.
@@ -1468,15 +1470,17 @@ The write-cost bench (PR #1122) showed the per-table counter key failing at 32 c
 change log, `{ns}-epoch-changes`, is one memory stream (KV-shaped, every key keeping its history); an
 advance appends one record under the table's key with `Nats-Msg-Id`, and the sequence the stream gives
 it is the epoch. A token is `{incarnation}:{sequence}`; the incarnation is the log's stream metadata,
-minted when it is declared and kept by `restore_epochs`, so a mark survives the broker losing the log
-once the refiller puts it back at its old sequences.
+minted when it is declared. `restore_epochs` mints a new one that continues the lost one up to the
+last sequence it put back, so a mark at or below it survives the broker losing the log.
 
 A table's sequences have other tables' between them, so a follower walks the table's records after its
 mark (`changes_after`, by next-by-subject reads). A gap is known only where the log cannot vouch for the
 range: its oldest record is newer than the mark's next sequence (retention), or the log is absent or of
 another incarnation, or a restore filled a sequence in the range (`record_lost`). A table whose own
-newest record aged out reads as `:0` and its follower as current: nothing distinguishes "no write since
-the mark" from "written and aged out" once retention has passed. That case is open: no follower path
-reads the L3 epoch log, so a pod partitioned past retention is not told it is behind. Records carry no `prev`: knowing it
+newest record aged out reads as `:0`. Owner ruling (2026-11-08): a gap past retention is behind, never
+current. A follower that judges a table the log holds nothing of after its mark moves its mark with the
+log (`quiet_after`), so it stays inside retention; one whose mark the log no longer reaches is behind
+(`aged_out`): serving, logged, counted, never dropping. A pod that only watches keys (no catch-up tick)
+judges a quiet table only when it is written, so its mark can age out and leave it behind. Records carry no `prev`: knowing it
 would take a compare-and-swap on the table's subject, which is the contention this removes.
 

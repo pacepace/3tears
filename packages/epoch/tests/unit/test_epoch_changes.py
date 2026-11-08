@@ -502,7 +502,100 @@ class TestARestoreNamesWhatItLost:
         assert head is not None
         await follower.catch_up_generation(_KEPT, head, changes=reader)
         assert follower.behind_on(_KEPT), "an epoch of unknown table lies inside the walk"
-        assert follower.generation_marks.recorded(_KEPT) == first, "the mark never moves past it"
+        assert follower.generation_marks.recorded(_KEPT) == f"{head.rpartition(':')[0]}:{_seq(first)}", (
+            "the mark is carried over to the restored log, and never moves past the filler"
+        )
+
+
+class TestARestoredLogContinuesTheLostOne:
+    async def test_a_follower_at_or_below_the_restored_head_carries_its_mark_over_and_walks_on(
+        self, bus: _Lossy
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        reader = EpochGenerationReader(bus)
+        lost = (await reader.read(_TABLE) or "").rpartition(":")[0]
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        head = await reader.read(_TABLE)
+        assert head is not None
+        record = await reader.change(_TABLE, head)
+        assert record is not None
+
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_epochs([record])
+        restored = (await reader.read(_TABLE) or "").rpartition(":")[0]
+        assert restored != lost and await reader.continues(restored) == (lost, _seq(head))
+
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE)
+        assert (follower.registry.generation_marks.recorded(_TABLE) or "").startswith(f"{restored}:")
+        assert await _member_id(reading, "m1") == "edsger", "the missed epoch was applied from the restored log"
+        assert reading.exists_in_cache_sync("m2")
+
+    async def test_a_follower_past_the_restored_head_is_behind_and_never_reads_reused_numbers_as_current(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        reader = EpochGenerationReader(bus)
+        kept = await reader.read(_TABLE)
+        assert kept is not None
+        record = await reader.change(_TABLE, kept)
+        assert record is not None
+        # written and heard after the newest record L3 holds: the restore cannot put it back
+        await _save(writing, "m2", "barbara")
+        await follower.tick()
+        assert await _member_id(reading, "m2") == "barbara"
+
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_epochs([record])
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")  # takes a sequence the follower's mark already counted
+        bus.deaf = False
+
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+            await follower.tick()
+        assert follower.registry.behind_on(_TABLE), "past the restored head, nothing can be vouched for"
+        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert [each["reason"] for each in said] == ["record_lost"]
+        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds"
+        assert reading.exists_in_cache_sync("m2"), "and drops nothing"
+
+
+class TestAGapPastRetention:
+    async def test_a_quiet_tables_follower_that_judges_keeps_its_mark_inside_retention(self, bus: _Lossy) -> None:
+        _, follower, _ = await _two_pods(bus)
+        source = EpochGenerationSource(bus)
+        await follower.tick()
+        for each in range(3):
+            await source.advance_with_change(_KEPT, [ChangedRow(ids=[f"k{each}"])])
+            await follower.tick()
+        state = await _log(bus).state()
+        assert state is not None
+        _log(bus).age_out(state.last_seq - 1)  # every record of the quiet table is gone
+
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE), "its mark moved with the log while nothing was written"
+
+    async def test_a_follower_away_past_retention_is_behind_never_current(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _, follower, reading = await _two_pods(bus)
+        source = EpochGenerationSource(bus)
+        for each in range(3):  # the follower is away: it judges nothing meanwhile
+            await source.advance_with_change(_KEPT, [ChangedRow(ids=[f"k{each}"])])
+        state = await _log(bus).state()
+        assert state is not None
+        _log(bus).age_out(state.last_seq - 1)  # the table's whole history aged out
+        assert await EpochGenerationReader(bus).read(_TABLE) == f"{state.incarnation}:0"
+
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+        assert follower.registry.behind_on(_TABLE), "a gap past retention is behind, never current"
+        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert [each["reason"] for each in said] == ["aged_out"]
+        assert reading.exists_in_cache_sync("m1"), "behind serves what it holds and drops nothing"
 
 
 class TestALostLogWaitsForItsRestore:
@@ -523,7 +616,9 @@ class TestALostLogWaitsForItsRestore:
 
         assert await source.restore_epochs([record])
         after = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m3"])])
-        assert after.rpartition(":")[0] == incarnation, "the restored incarnation carries on"
+        assert await source.continues(after.rpartition(":")[0]) == (incarnation, _seq(written)), (
+            "the restored log continues the lost one"
+        )
         assert _seq(after) > _seq(written)
 
     async def test_a_write_waits_for_the_restore_and_lands_in_the_restored_log(self, bus: _Lossy) -> None:
@@ -542,7 +637,7 @@ class TestALostLogWaitsForItsRestore:
             source.advance_with_change(_TABLE, [ChangedRow(ids=["m2"])]), restore()
         )
         assert restored, "the restore ran first: the waiting write started no log"
-        assert written.rpartition(":")[0] == incarnation
+        assert await source.continues(written.rpartition(":")[0]) == (incarnation, _seq(record.token))
 
 
 class TestBehindIsSaidOnce:

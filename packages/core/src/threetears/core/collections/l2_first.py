@@ -30,7 +30,7 @@ refiller's mark), a key L2 does not hold is absent; while it does not, a lookup 
 :class:`L2LostError` and the pod serves what it holds, reporting itself behind through the epoch catch-up.
 The refiller (:class:`L2Refiller`) puts back, from L3: every row (only where L2 holds nothing for the key,
 so a write since the loss is never overwritten), the epoch records a pod may still need, then the
-generation itself under its old incarnation, and last the mark that L2 is complete. A pod then catches up
+generation itself under a new incarnation that continues the lost one, and last the mark that L2 is complete. A pod then catches up
 through the ordinary epoch path. Nothing drops a table and nothing is rebuilt.
 
 **One claimed worker.** The saver and the refiller are run by one process at a time, under a

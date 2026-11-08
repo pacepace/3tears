@@ -11,10 +11,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-__all__ = ["CHANGE_LOG_INCARNATION_METADATA", "ChangeLogEntry", "ChangeLogState"]
+__all__ = [
+    "CHANGE_LOG_CONTINUES_METADATA",
+    "CHANGE_LOG_CONTINUES_THROUGH_METADATA",
+    "CHANGE_LOG_INCARNATION_METADATA",
+    "ChangeLogEntry",
+    "ChangeLogState",
+]
 
 #: the metadata key a change log's stream carries its incarnation under
 CHANGE_LOG_INCARNATION_METADATA: Final = "threetears_incarnation"
+
+#: the metadata keys a restored log names the incarnation it continues under, and the last sequence of
+#: that incarnation it put back: a sequence at or below it numbers the same epoch in both
+CHANGE_LOG_CONTINUES_METADATA: Final = "threetears_continues"
+CHANGE_LOG_CONTINUES_THROUGH_METADATA: Final = "threetears_continues_through"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +36,11 @@ class ChangeLogState:
     :ivar last_seq: the newest sequence written (0 when nothing has been)
     :ivar bytes: the bytes held
     :ivar max_bytes: the byte bound, or ``None`` when unbounded
-    :ivar incarnation: the stream's incarnation: minted when it was declared, carried over when it was
-        restored, so a sequence under one incarnation is never compared with one under another
+    :ivar incarnation: the stream's incarnation, minted when it was declared, so a sequence under one
+        incarnation is never compared with one under another
+    :ivar continues: for a restored log, the incarnation of the lost log it continues; ``None`` otherwise
+    :ivar continues_through: the last sequence of :attr:`continues` the restore put back: up to it, a
+        sequence numbers the same epoch under both incarnations; past it, the lost log's epochs are gone
     """
 
     first_seq: int
@@ -34,6 +48,8 @@ class ChangeLogState:
     bytes: int
     max_bytes: int | None
     incarnation: str
+    continues: str | None = None
+    continues_through: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -84,7 +84,13 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
 )
 from threetears.nats import kv_watch
-from threetears.nats.change_log import CHANGE_LOG_INCARNATION_METADATA, ChangeLogEntry, ChangeLogState
+from threetears.nats.change_log import (
+    CHANGE_LOG_CONTINUES_METADATA,
+    CHANGE_LOG_CONTINUES_THROUGH_METADATA,
+    CHANGE_LOG_INCARNATION_METADATA,
+    ChangeLogEntry,
+    ChangeLogState,
+)
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
@@ -3525,6 +3531,7 @@ class NatsChangeLog:
         replicas: int | None,
         incarnation: str | None = None,
         first_seq: int | None = None,
+        continues: tuple[str, int] | None = None,
     ) -> ChangeLogState:
         """create the log when absent, and say what it holds; a live log is kept as it is.
 
@@ -3540,6 +3547,8 @@ class NatsChangeLog:
         :param first_seq: the first sequence it assigns, for a restore that puts records back at their
             old numbers; ``None`` starts at one
         :ptype first_seq: int | None
+        :param continues: for a restore, the lost log's incarnation and the last of its sequences put back
+        :ptype continues: tuple[str, int] | None
         :return: what it holds
         :rtype: ChangeLogState
         :raises KvError: when it can be neither created nor read
@@ -3567,7 +3576,17 @@ class NatsChangeLog:
                 deny_delete=True,
                 duplicate_window=_CHANGE_LOG_DEDUP_WINDOW_SECONDS,
                 first_seq=first_seq,
-                metadata={CHANGE_LOG_INCARNATION_METADATA: incarnation or str(uuid7())},
+                metadata={
+                    CHANGE_LOG_INCARNATION_METADATA: incarnation or str(uuid7()),
+                    **(
+                        {}
+                        if continues is None
+                        else {
+                            CHANGE_LOG_CONTINUES_METADATA: continues[0],
+                            CHANGE_LOG_CONTINUES_THROUGH_METADATA: str(continues[1]),
+                        }
+                    ),
+                },
             )
 
         wanted = replicas or 1
@@ -3607,12 +3626,17 @@ class NatsChangeLog:
         metadata = info.config.metadata or {}
         incarnation = metadata.get(CHANGE_LOG_INCARNATION_METADATA) or f"created-{info.created}"
         max_bytes = info.config.max_bytes
+        continues = metadata.get(CHANGE_LOG_CONTINUES_METADATA)
+        through = metadata.get(CHANGE_LOG_CONTINUES_THROUGH_METADATA)
+        lineage = bool(continues) and through is not None and through.isdigit()
         return ChangeLogState(
             first_seq=int(info.state.first_seq or 0),
             last_seq=int(info.state.last_seq or 0),
             bytes=int(info.state.bytes or 0),
             max_bytes=int(max_bytes) if max_bytes and max_bytes > 0 else None,
             incarnation=str(incarnation),
+            continues=str(continues) if lineage else None,
+            continues_through=int(str(through)) if lineage else None,
         )
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int:

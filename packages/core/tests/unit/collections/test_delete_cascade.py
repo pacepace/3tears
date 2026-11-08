@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -19,6 +20,7 @@ from sqlalchemy import Column, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections import delete_cascade as delete_cascade_module
 from threetears.core.collections.delete_cascade import (
     CascadedRows,
@@ -101,16 +103,23 @@ class _Books(_Collection):
 
 
 class _Source:
-    """counts advances per table."""
+    """counts advances per table, and keeps what each advance's change named."""
 
     def __init__(self) -> None:
         self.advanced: list[str] = []
+        self.changes: list[tuple[str, list[ChangedRow] | None, bool]] = []
 
     async def current(self, table_name: str) -> str:
         return f"inc:{self.advanced.count(table_name)}"
 
     async def advance(self, table_name: str) -> str:
+        return await self.advance_with_change(table_name, None, keys_unknown=True)
+
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
         self.advanced.append(table_name)
+        self.changes.append((table_name, None if rows is None else list(rows), keys_unknown))
         return f"inc:{self.advanced.count(table_name)}"
 
 
@@ -174,17 +183,17 @@ async def test_the_rows_are_read_before_the_delete_reaches_them() -> None:
     assert len(pool.reads) == 2
 
 
-async def test_a_table_with_no_collection_here_is_advanced_with_no_rows() -> None:
-    """its followers find an advance they did not hear and drop the table: the reach is unknown."""
+async def test_a_table_with_no_collection_here_is_advanced_naming_its_rows_never_the_whole_table() -> None:
+    """its followers evict exactly the rows the action reached, by the key the table's class declares."""
     registry, _pool, source = _library()
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     shelves = _Shelves(registry, config)  # no books collection registered
 
     cascaded = await read_delete_cascade(shelves, ["s1"])
-    assert cascaded == [CascadedRows("books", (), unheard=True)]
+    assert cascaded == [CascadedRows("books", ("b1", "b2"), unheard=True)]
     await announce_delete_cascade(shelves, cascaded)
 
-    assert source.advanced == ["books"]
+    assert source.changes == [("books", [ChangedRow(ids=["b1"]), ChangedRow(ids=["b2"])], False)]
 
 
 async def test_nothing_is_read_for_a_collection_that_declares_nothing() -> None:

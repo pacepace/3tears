@@ -473,12 +473,15 @@ class TestL2Lost:
 
         await fleet.refiller.run_pass()
         head = await fleet.writer.source.read(_TABLE)
-        assert head is not None and head.rpartition(":")[0] == incarnation, "restored at its old incarnation"
+        assert head is not None
+        restored = head.rpartition(":")[0]
+        lineage = await fleet.writer.source.continues(restored)
+        assert lineage is not None and lineage[0] == incarnation, "the restored log continues the lost one"
         await fleet.follower.tick()
         assert not fleet.follower.registry.behind_on(_TABLE)
         assert await _votes(fleet.reading, "precinct-1") == "11"
         written = await fleet.writer.source.advance_with_change("other_table", [ChangedRow(ids=["o1"])])
-        assert written.rpartition(":")[0] == incarnation
+        assert written.rpartition(":")[0] == restored
 
     async def test_a_missed_epoch_is_restored_and_applied_through_the_normal_path(self, fleet: _Fleet) -> None:
         await _save(fleet.writing, "precinct-1", "10")
@@ -552,7 +555,9 @@ class TestTheOperatorSeesWhereEachTableStands:
             s.table: s for s in await l2_first_status(fleet.worker.registry, epochs=fleet.worker.source, log=fleet.log)
         }
         assert statuses[_FEED].complete
-        assert statuses[_FEED].generation == statuses[_FEED].l3_logged
+        generation, logged = statuses[_FEED].generation, statuses[_FEED].l3_logged
+        assert generation is not None and logged is not None
+        assert generation.rpartition(":")[2] == logged.rpartition(":")[2], "the same epoch, under the restored log"
 
 
 class TestEveryReadAndWritePathStaysOnL2:

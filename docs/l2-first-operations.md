@@ -86,7 +86,7 @@ for status in await l2_first_status(registry, epochs=source, log=epoch_log):
 | `generation=None`, `complete=False` | NATS lost the table; the refiller has not run | check the worker holds its lease and is passing |
 | `complete=True`, `unsaved_epochs` small | normal | nothing |
 | `unsaved_epochs` growing | no saver running, or L3 failing | check the worker's ERROR lines |
-| `generation` equals `l3_logged` | caught up with the L3 epoch log | nothing |
+| `generation`'s sequence equals `l3_logged`'s | caught up with the L3 epoch log (after a restore the incarnations differ: the log is a new one continuing the lost one) | nothing |
 
 ## After NATS loses data
 

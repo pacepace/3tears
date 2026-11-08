@@ -10,9 +10,11 @@ A collection declares each foreign key that points at it with an action
 :meth:`~threetears.core.collections.base.BaseCollection.delete` reads the keys of the rows each
 action will reach before the delete (:func:`read_delete_cascade`) and, once the delete has
 committed, invalidates them through their own collections (:func:`announce_delete_cascade`), which
-advances each table's generation for them. A table whose collection this registry does not hold
-is advanced with no rows, so every follower drops it: the reach is unknown there. A delete written
-as raw SQL calls the two itself, around its statement.
+advances each table's generation for them. A table whose collection this registry does not hold is
+advanced naming the rows by the primary key its collection class declares
+(:func:`~threetears.core.collections.generation.primary_key_of_table`): its followers evict exactly
+those rows. Nothing here records a change to the whole table. A delete written as raw SQL calls the
+two itself, around its statement.
 """
 
 from __future__ import annotations
@@ -22,7 +24,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.collections.generation import announce_unheard_writes, tables_with_write_generation
+from threetears.core.collections.epoch_change import ChangedRow, advance_recording
+from threetears.core.collections.generation import primary_key_of_table, tables_with_write_generation
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
 
@@ -52,10 +55,11 @@ class CascadedRows:
     """the rows of one table a delete's foreign-key actions reach, by their collection's keys.
 
     :ivar table_name: the table
-    :ivar keys: each row's pk value, or tuple of pk values in its collection's declared order;
-        empty when no collection for the table is registered (``unheard``)
-    :ivar unheard: whether the table has no collection here, so its rows cannot be named and it is
-        advanced with none
+    :ivar keys: each row's pk value, or tuple of pk values in its collection's declared order; for a
+        table with no collection here, by the key its collection class declares, and empty only when no
+        class here declares it
+    :ivar unheard: whether the table has no collection here, so it is advanced directly, naming
+        :attr:`keys` (or, with none, as an epoch whose keys are unknown: its followers are behind)
     :ivar rows: each row's key columns and the columns its collection's messages carry
         (``invalidation_columns``), in ``keys`` order, so a cache derived from the table hears what
         each row was; empty when ``unheard``
@@ -93,7 +97,17 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
             continue
         child = None if registry is None else registry.get_collection(cascade.child_table)
         if child is None:
-            found.append(CascadedRows(cascade.child_table, (), unheard=True))
+            declared = primary_key_of_table(cascade.child_table)
+            if declared is None:
+                found.append(CascadedRows(cascade.child_table, (), unheard=True))
+                continue
+            # cache-bypass: the keys of the rows the action reaches, by the key the table's class declares
+            rows = await _children(
+                collection.l3_pool, cascade.child_table, cascade.child_column, declared, declared, values
+            )
+            keys = tuple(row[declared[0]] if len(declared) == 1 else tuple(row[c] for c in declared) for row in rows)
+            if keys:
+                found.append(CascadedRows(cascade.child_table, keys, unheard=True))
             continue
         columns = tuple(child.primary_key_columns)
         carried = tuple(dict.fromkeys((*columns, *getattr(child, "invalidation_columns", ()))))
@@ -148,14 +162,11 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
     """
     failure: GenerationUnavailableError | None = None
     registry = collection.registry
-    unheard: list[str] = []
+    unheard: list[CascadedRows] = []
     for rows in cascaded:
-        if rows.unheard:
-            unheard.append(rows.table_name)
-            continue
-        child = None if registry is None else registry.get_collection(rows.table_name)
+        child = None if rows.unheard or registry is None else registry.get_collection(rows.table_name)
         if child is None:
-            unheard.append(rows.table_name)
+            unheard.append(rows)
             continue
         try:
             await child.invalidate_cache_many(list(rows.keys), rows=list(rows.rows) if rows.rows else None)
@@ -166,12 +177,26 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
             )
             failure = failure or exc
     # only a switched-on table has followers to tell, and only it may be advanced
-    unheard = [table for table in unheard if table in tables_with_write_generation()]
     source = None if registry is None else registry.generation_source
-    if unheard and source is not None:
+    for rows in unheard:
+        if rows.table_name not in tables_with_write_generation() or source is None:
+            continue
+        named = [
+            ChangedRow(ids=[str(value) for value in (key if isinstance(key, tuple) else (key,))])  # convert at border
+            for key in rows.keys
+        ]
         try:
-            await announce_unheard_writes(source, unheard)
+            # keyed when the keys are known; otherwise an epoch whose keys are unknown -- never the whole table
+            token = await advance_recording(source, rows.table_name, named or None, keys_unknown=not named)
+            if not isinstance(token, str) or not token:
+                raise GenerationUnavailableError(
+                    f"the source advanced {rows.table_name} without returning a generation"
+                )
         except GenerationUnavailableError as exc:
+            log.error(
+                "a delete's foreign-key action was not announced: its table's generation did not advance",
+                extra={"extra_data": {"table": rows.table_name, "rows": len(rows.keys), "error": str(exc)}},
+            )
             failure = failure or exc
     if failure is not None:
         raise failure
