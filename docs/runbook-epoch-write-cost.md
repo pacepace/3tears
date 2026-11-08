@@ -41,6 +41,9 @@ the same table, so they contend only where the platform makes them.
 | `undeclared` | nothing (today's default) |
 | `declared` | one append of the epoch's change record to the change log (its stream sequence is the epoch; there is no counter to contend for) |
 | `declared+marks` | the same, plus the write-mark trigger's insert in the write's transaction and the read and delete of the marks the advance covered: the hub's production shape |
+| `declared+notes` | `declared`, plus the change-note trigger's note row in the write's transaction. A keeper process runs the note ring beside the writers with a 200 ms fence and a switch size of a fifth of the run's records, so the ring switches and `TRUNCATE`s its oldest table mid-run |
+
+Pick variants with `--variants` (e.g. `--variants declared declared+notes`).
 
 The script times each append through the source's public `advance_with_change`, so its append columns
 measure the shipped path.
@@ -64,6 +67,40 @@ table really has. Count writers per table, not per pod: on the platform every ag
 table is advanced by the hub's broker, so the hub's concurrent commits to one table are the writers.
 
 ## Recorded results
+
+### The change note (`declared+notes`), 2026-11-08
+
+Apple M4 (10 cores), Docker Desktop, `postgres:17-alpine`, `nats:2.14.2-alpine`, on the change-note branch
+(`release/0.95.0-fold` after 12a01170f). Two runs, the second with 400 saves per writer. Read each notes row
+against the `declared` row above it.
+
+| run | writers | variant | p50 ms | p99 ms | writes/s | switches | emptied | saves during an emptying | their p99 ms | their max ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | declared | 2.68 | 4.53 | 361 | - | - | - | - | - |
+| 1 | 1 | declared+notes | 3.11 | 4.99 | 311 | 3 | 3 | 104 | 4.99 | 5.62 |
+| 1 | 8 | declared | 5.45 | 13.99 | 1338 | - | - | - | - | - |
+| 1 | 8 | declared+notes | 6.20 | 10.14 | 1233 | 4 | 4 | 486 | 8.13 | 8.74 |
+| 1 | 32 | declared | 17.66 | 50.39 | 1501 | - | - | - | - | - |
+| 1 | 32 | declared+notes | 18.24 | 69.26 | 1416 | 2 | 2 | 12 | 72.41 | 72.41 |
+| 2 | 8 | declared | 5.29 | 8.24 | 1439 | - | - | - | - | - |
+| 2 | 8 | declared+notes | 5.80 | 10.95 | 1282 | 5 | 5 | 1198 | 18.77 | 40.42 |
+| 2 | 32 | declared | 19.05 | 74.83 | 1363 | - | - | - | - | - |
+| 2 | 32 | declared+notes | 21.68 | 77.00 | 1249 | 1 | 0 | 0 | - | - |
+
+No append or save failed in any row. The note costs about 0.4 to 0.8 ms at p50 at one and eight writers and
+does not grow with writers at p50 (0.6 ms at 32 in run 1, 2.6 ms in run 2). At 32 writers on a 10-core laptop
+p99 is dominated by the machine (two runs of the same `declared` row differ by 24 ms), so its +2 to +19 ms is
+not separable from noise. During an emptying on Postgres the overlapping saves stayed at the run's p99 in run
+1 and rose to an 18.8 ms p99 (40 ms max) in run 2 at eight writers: `TRUNCATE` invalidates every session's
+cached plan of the note function, so each replans once.
+
+**YugabyteDB 2026.1.0.0-b118 (local `yugabyted`): not measured to the end.** The YB tserver crashed with
+SIGSEGV during the noted run at eight writers, and a probe with no notes and no triggers at all -- eight
+writers inserting into one table while a loop `TRUNCATE`s another -- crashed it four times in two minutes.
+The crash follows `TRUNCATE` deleting the old tablet under concurrent writes; it is in that YB build, not in
+the note path. The one noted YB row that finished: 1 writer, p50 4.31 ms, p99 11.06 ms against 3.18 / 6.25 ms
+declared; 8 writers declared: 4.09 / 19.16 ms. Re-run on the YB version production runs before relying on
+emptying by `TRUNCATE` there.
 
 **These are from before the change log (pre-#1121): the advance was a compare-and-swap on a per-table
 counter key.** That path is gone, so the CAS columns and the conclusion below describe what the change
