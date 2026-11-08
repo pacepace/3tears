@@ -41,7 +41,14 @@ from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.harness import read_writer_cases
-from threetears.evals.kernel.numbers import ABSENT, format_number, spell_count, spell_dollars, spell_multiple
+from threetears.evals.kernel.numbers import (
+    ABSENT,
+    format_number,
+    format_signed,
+    spell_count,
+    spell_dollars,
+    spell_multiple,
+)
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.example_loader import EXAMPLES
@@ -407,3 +414,36 @@ def test_a_figure_that_is_no_measurement_keeps_today_s_fixed_form(
     assert forms.ledger[-1].text == expected and forms.ledger[-1].measure == ""
     if issued.unit == "usd":
         assert "$" not in issued.digits and issued.text.replace("$", "", 1) == issued.digits
+
+
+@pytest.mark.parametrize(
+    ("printed", "expected"),
+    [
+        (lambda forms: forms.lone(2.737), format_number(2.737)),
+        (lambda forms: forms.lone(-0.3, signed=True), format_signed(-0.3)),
+        (lambda forms: forms.lone(0.0016, money=True), format_number(0.0016, prefix="$")),
+        (lambda forms: forms.reading(0.7349), "0.73"),
+        (lambda forms: forms.echoed(1e-07), "1e-07"),
+        (lambda forms: forms.hits(0.8333, 90), "75"),
+    ],
+)
+def test_an_off_page_figure_keeps_today_s_form_and_is_held_under_no_measure_unless_named(
+    printed: Callable[[PageForms], Printed], expected: str
+) -> None:
+    forms = PageForms.off_page()
+    assert printed(forms).text == expected
+    assert (forms.ledger[-1].measure, forms.ledger[-1].kind) == ("", "")
+
+
+def test_an_off_page_figure_of_a_measure_is_held_under_that_measure_and_kind() -> None:
+    forms = PageForms.off_page()
+    forms.lone(4.2, measure="clarity", kind="judged")
+    forms.hits(0.5, 10, measure="exact_match")
+    assert [entry.role for entry in forms.issued("clarity", kind="judged")] == ["lone"]
+    # A measure named with no kind is a measure's own, as every page's form reads it.
+    assert [entry.text for entry in forms.issued("exact_match")] == ["5"]
+
+
+def test_the_lone_figure_rule_spells_no_signed_money() -> None:
+    with pytest.raises(ValueError, match="no signed money"):
+        PageForms.off_page().lone(-1.2, signed=True, money=True)

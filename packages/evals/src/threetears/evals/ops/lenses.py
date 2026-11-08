@@ -42,7 +42,7 @@ from threetears.evals.analysis.reads import (
     pivot,
 )
 
-from threetears.evals.kernel.numbers import format_number, format_signed
+from threetears.evals.analysis.report.forms import PageForms
 
 from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
 
@@ -1014,11 +1014,13 @@ def _detectable_effect(
             }
         )
     delta = paired_detectable_difference(n_cases, difference_sd, alpha=alpha)
+    forms = PageForms.off_page()
     if reading.value_range is not None and delta > reading.value_range[1] - reading.value_range[0]:
         return measured.model_copy(
             update={
                 "cannot_estimate": (
-                    f"the difference it would take ({format_number(delta)}) is wider than the reading's range allows, "
+                    f"the difference it would take ({forms.lone(delta, measure=reading.name, kind=reading.reading).text}) is wider than the reading's range "
+                    "allows, "
                     "so no difference is found with this power at this size"
                 )
             }
@@ -1061,10 +1063,12 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
     )
 
 
-def _band_from_history(low: float, centre: float, high: float) -> str:
+def _band_from_history(forms: PageForms, low: float, centre: float, high: float) -> str:
     """A band as the history computed it, for a basis whose cap reads a margin above it: its ends, and how far each
     sits from the centre, so a reader can judge whether one or two percent matters.
 
+    :param forms: The surface's forms.
+    :ptype forms: PageForms
     :param low: The band's lower end.
     :ptype low: float
     :param centre: The central estimate.
@@ -1075,14 +1079,14 @@ def _band_from_history(low: float, centre: float, high: float) -> str:
     :rtype: str
     """
     if low == high:
-        return f"has no width, at {format_number(centre, prefix='$')}"
+        return f"has no width, at {forms.lone(centre, money=True).text}"
 
     def share(gap: float) -> str:
-        return f"{format_number(100 * gap / centre)}%"
+        return f"{forms.lone(100 * gap / centre).text}%"
 
     return (
-        f"is {format_number(low, prefix='$')}-{format_number(high, prefix='$')} ({share(centre - low)} below to "
-        f"{share(high - centre)} above {format_number(centre, prefix='$')})"
+        f"is {forms.lone(low, money=True).text}-{forms.lone(high, money=True).text} ({share(centre - low)} below to "
+        f"{share(high - centre)} above {forms.lone(centre, money=True).text})"
     )
 
 
@@ -1166,27 +1170,30 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     def priced(cell: CostEstimateCell, predicted: PredictedValue, condition: str, drawn_on: str = "") -> ArmPrice:
         """The arm's price from a cell holding priced results (``predicted``, its prediction), or why they bound
         nothing."""
+        forms = PageForms.off_page()
         if predicted.interval_high is None:
             return ArmPrice(
                 predicted_usd=None,
                 basis=(
                     f"{drawn_on}{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm "
                     f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at "
-                    f"{format_number(predicted.value, prefix='$')})"
+                    f"{forms.lone(predicted.value, money=True).text})"
                 ),
             )
         low, centre, high = predicted.interval_low or 0.0, predicted.value, predicted.interval_high
         floor = centre * (1 + COST_BAND_SAFETY_MARGIN)
         if floor > high:
             held = (
-                f"the band from history {_band_from_history(low, centre, high)}; the cap reads "
-                f"{format_number(floor, prefix='$')}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above the "
-                f"estimate, wider than the band by {format_number(floor - high, prefix='$')}"
+                f"the band from history {_band_from_history(forms, low, centre, high)}; the cap reads "
+                f"{forms.lone(floor, money=True).text}, the {forms.share(COST_BAND_SAFETY_MARGIN).text} safety "
+                "margin above the "
+                f"estimate, wider than the band by {forms.lone(floor - high, money=True).text}"
             )
         else:
             held = (
-                f"the upper end of the band {format_number(low, prefix='$')}-{format_number(high, prefix='$')} around "
-                f"{format_number(centre, prefix='$')}"
+                f"the upper end of the band {forms.lone(low, money=True).text}-{forms.lone(high, money=True).text} "
+                "around "
+                f"{forms.lone(centre, money=True).text}"
             )
         return ArmPrice(
             predicted_usd=max(high, floor),
@@ -1361,7 +1368,7 @@ def _completeness(disclosures: Mapping[str, str], n_degraded: int | None = None)
     return [f"incomplete runs{weight}:", *(f"- {run_id}: {sentence}" for run_id, sentence in disclosures.items())]
 
 
-def _predicted(predicted: PredictedValue | None, n_unplanned: int | None = None) -> str:
+def _predicted(forms: PageForms, metric: str, predicted: PredictedValue | None, n_unplanned: int | None = None) -> str:
     """A prediction, set apart from the observation it sits beside, and how much of that observation the plan made."""
     if predicted is None:
         return ""
@@ -1373,15 +1380,17 @@ def _predicted(predicted: PredictedValue | None, n_unplanned: int | None = None)
         else ""
     )
     band = (
-        f" [{format_number(predicted.interval_low)}, {format_number(predicted.interval_high)}]"
+        f" [{forms.lone(predicted.interval_low, measure=metric).text}, "
+        f"{forms.lone(predicted.interval_high, measure=metric).text}]"
         if predicted.interval_low is not None and predicted.interval_high is not None
         else ""
     )
-    return f"; predicted {format_number(predicted.value)}{band} ({predicted.method_id}){population}"
+    return f"; predicted {forms.lone(predicted.value, measure=metric).text}{band} ({predicted.method_id}){population}"
 
 
 def pivot_text(table: PivotTable) -> str:
     """A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries."""
+    forms = PageForms.off_page()
     lines = [
         f"pivot of {measure_title(table.metric)} by {table.row_factor} (rows) x {table.column_factor} (columns), "
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
@@ -1390,7 +1399,7 @@ def pivot_text(table: PivotTable) -> str:
     if table.narrowed_read_disclosure:
         lines.append(table.narrowed_read_disclosure)
     for cell in table.cells:
-        spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
+        spread = f", sem {forms.lone(cell.sem, measure=table.metric).text}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
         # A cell's compositions are worth a reader's eye only where the table's differ; otherwise they repeat.
         roles = (
@@ -1415,9 +1424,9 @@ def pivot_text(table: PivotTable) -> str:
         withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
         substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
         lines.append(
-            f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
+            f"- {cell.row} / {cell.column}: {forms.lone(cell.value, measure=table.metric).text} ({cell.status}; n={cell.n}, "
             f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{served}{withheld}{substituted}"
-            f"{_predicted(cell.predicted, cell.n_unplanned)}"
+            f"{_predicted(forms, table.metric, cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:
         lines.append("- no cells")
@@ -1453,21 +1462,22 @@ def pivot_text(table: PivotTable) -> str:
 
 def history_text(result: HistoryResult) -> str:
     """A history as text: each contestant's series, oldest first, with each step's verdict and its test."""
+    forms = PageForms.off_page()
     direction = {True: "higher is better", False: "lower is better", None: "no better direction"}
     lines = [
         f"history of {result.metric} ({direction[result.higher_is_better]}), {result.weighting}: "
         f"{len(result.series)} series over {result.n_results} result(s), {result.n_filtered_out} filtered out",
         f"formula: {result.formula}",
-        f"regression thresholds: min absolute change {format_number(result.min_absolute_change)}, "
-        f"min relative change {format_number(result.min_relative_change)}",
+        f"regression thresholds: min absolute change {forms.lone(result.min_absolute_change, measure=result.metric).text}, "
+        f"min relative change {forms.lone(result.min_relative_change, measure=result.metric).text}",
         (
             "equivalence margin: none declared for this measure, so no step can read equivalent; "
             "not_separated says the data cannot tell a move from noise, never that nothing changed"
             if result.equivalence_margin is None
-            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            else f"equivalence margin: ±{forms.lone(result.equivalence_margin, measure=result.metric).text} (the measure's declared "
             f"materiality threshold), but no step can read equivalent: {untested}"
             if (untested := equivalence_untested_reason(result.equivalence_margin, result.measure.value_range))
-            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            else f"equivalence margin: ±{forms.lone(result.equivalence_margin, measure=result.metric).text} (the measure's declared "
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),
     ]
@@ -1492,7 +1502,9 @@ def history_text(result: HistoryResult) -> str:
             flag = point.regression
             verdict = f"; {flag.label} vs previous ({flag.test})" if flag is not None else ""
             baseline = (
-                " (baseline)" if point.is_baseline else f", {format_signed(point.delta_from_baseline)} from baseline"
+                " (baseline)"
+                if point.is_baseline
+                else f", {forms.lone(point.delta_from_baseline, signed=True, measure=result.metric).text} from baseline"
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
             if point.epoch_boundary and (point.epoch_label or previous_label):
@@ -1518,7 +1530,7 @@ def history_text(result: HistoryResult) -> str:
                 else ""
             )
             lines.append(
-                f"- {point.created_at} {point.run_id}: {format_number(point.value)} (n={point.n}, "
+                f"- {point.created_at} {point.run_id}: {forms.lone(point.value, measure=result.metric).text} (n={point.n}, "
                 f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}{served}"
             )
     if not result.series:
@@ -1529,13 +1541,14 @@ def history_text(result: HistoryResult) -> str:
 
 def estimate_text(estimate: LaunchEstimate) -> str:
     """An estimate as text: the launch priced, each arm's price and outcome, and the total."""
+    forms = PageForms.off_page()
     grid = (
         f"{estimate.hypothetical_case_count} case(s) (hypothetical)"
         if estimate.hypothetical_case_count is not None
         else (f"{estimate.n_variations} generated case(s)" if estimate.n_variations else "its stored cases")
     )
     cap = (
-        f"each arm capped at {format_number(estimate.cap_usd, prefix='$')} ({estimate.cap_origin})"
+        f"each arm capped at {forms.lone(estimate.cap_usd, money=True).text} ({estimate.cap_origin})"
         if estimate.cap_usd is not None
         else "no cap in force"
     )
@@ -1545,8 +1558,8 @@ def estimate_text(estimate: LaunchEstimate) -> str:
     ]
     for arm in estimate.arms:
         figure = (
-            f"cap figure {format_number(arm.predicted_usd, prefix='$')}"
-            + (f" (central {format_number(arm.central_usd, prefix='$')})" if arm.central_usd is not None else "")
+            f"cap figure {forms.lone(arm.predicted_usd, money=True).text}"
+            + (f" (central {forms.lone(arm.central_usd, money=True).text})" if arm.central_usd is not None else "")
             if arm.predicted_usd is not None
             else "unpriced"
         )
@@ -1563,7 +1576,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
     if estimate.total_predicted_usd is None:
         lines.append("total cap figure: none — an arm has no prediction, so no total is the launch's")
     else:
-        lines.append(f"total cap figure: {format_number(estimate.total_predicted_usd, prefix='$')}")
+        lines.append(f"total cap figure: {forms.lone(estimate.total_predicted_usd, money=True).text}")
     lines.append("would launch" if estimate.would_launch else "would be refused")
     if estimate.detectable_effect is not None:
         lines += detectable_effect_lines(estimate.detectable_effect)
@@ -1572,9 +1585,10 @@ def estimate_text(estimate: LaunchEstimate) -> str:
 
 def detectable_effect_lines(block: DetectableEffects) -> list[str]:
     """A launch's power pre-flight as text: one line per reading, then what every line assumes."""
+    forms = PageForms.off_page()
     head = (
-        f"detectable difference ({format_number(100 * block.power)}% power, paired, Holm over {block.family_size} "
-        f"comparison(s) so α/m = {format_number(block.per_comparison_alpha)}):"
+        f"detectable difference ({forms.lone(100 * block.power).text}% power, paired, Holm over {block.family_size} "
+        f"comparison(s) so α/m = {forms.lone(block.per_comparison_alpha).text}):"
     )
     if block.cannot_estimate is not None:
         return [head, f"- cannot estimate: {block.cannot_estimate}"]
@@ -1586,7 +1600,7 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
             continue
         lines.append(
             f"- {effect.name}: with {block.n_cases} cases and {block.k_runs} repeats this campaign can detect "
-            f"Δ ≥ {format_number(effect.delta)} (from runs {runs}; "
+            f"Δ ≥ {forms.lone(effect.delta, measure=effect.name, kind=effect.reading).text} (from runs {runs}; "
             + (
                 "between-arm case spread measured on earlier paired runs)"
                 if effect.basis == "paired_runs"
@@ -1659,8 +1673,15 @@ def _served(reading: Mapping[str, Any] | None) -> str:
     return models if reading.get("state") == "one" else f"{models} (pooled)"
 
 
+#: The two readings two runs compared state, by the measure the ledger holds each under: the mean judged composite,
+#: and pass^k, which reads how each trial ended.
+_COMPOSITE = "composite"
+_PASS_HAT_K = "pass_hat_k"
+
+
 def runs_compared_text(compared: RunsCompared) -> str:
     """Two runs compared as text: the arms, each reading with its delta and test, then every disclosure."""
+    forms = PageForms.off_page()
     view = compared.comparison
     arm: Mapping[str, Any] = view.get("comparison", {}).get("arm", {})
     paired = bool(arm.get("paired"))
@@ -1675,8 +1696,9 @@ def runs_compared_text(compared: RunsCompared) -> str:
         composite = f"mean composite: none — no paired cases: {untested}"
     else:
         composite = (
-            f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
-            f"(delta {format_signed(arm.get('composite_delta'))}; "
+            f"mean composite: {forms.lone(arm.get('composite_a'), measure=_COMPOSITE, kind='judged').text} vs "
+            f"{forms.lone(arm.get('composite_b'), measure=_COMPOSITE, kind='judged').text} "
+            f"(delta {forms.lone(arm.get('composite_delta'), signed=True, measure=_COMPOSITE, kind='judged').text}; "
             + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both")
             + "), "
             + format_significance(
@@ -1691,8 +1713,9 @@ def runs_compared_text(compared: RunsCompared) -> str:
     lines = [
         f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
         f"({arm.get('model_b')})",
-        f"{label}: {format_number(arm.get('pass_hat_k_a'))} vs "
-        f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
+        f"{label}: {forms.lone(arm.get('pass_hat_k_a'), measure=_PASS_HAT_K, kind='trial').text} vs "
+        f"{forms.lone(arm.get('pass_hat_k_b'), measure=_PASS_HAT_K, kind='trial').text} "
+        f"(delta {forms.lone(arm.get('pass_hat_k_delta'), signed=True, measure=_PASS_HAT_K, kind='trial').text}; "
         f"{arm.get('pass_hat_k_n_cases_a')} vs {arm.get('pass_hat_k_n_cases_b')} case(s))",
         composite,
     ]
