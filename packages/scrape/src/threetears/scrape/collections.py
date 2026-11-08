@@ -47,6 +47,7 @@ from uuid_utils import uuid7
 from .driver import NavStep
 from .extraction import FieldSchema
 from .migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
+from threetears.core.tenancy import no_tenant
 
 __all__ = [
     "ENRICHMENT_STATUSES",
@@ -941,6 +942,8 @@ class ScrapeCollection(BaseCollection[EntityT]):
 class ScrapeTargetCollection(ScrapeCollection[ScrapeTarget]):
     """Collection of onboarded scrape targets, keyed by ``target_id``."""
 
+    tenancy = no_tenant("the platform scrape catalogue; rows carry no customer column")
+
     primary_key_column = "target_id"
 
     @property
@@ -956,6 +959,8 @@ class ScrapeTargetCollection(ScrapeCollection[ScrapeTarget]):
 
 class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
     """Collection of extraction recipes, one per target, keyed by ``target_id``."""
+
+    tenancy = no_tenant("the platform scrape catalogue; rows carry no customer column")
 
     primary_key_column = "target_id"
     datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {
@@ -976,6 +981,8 @@ class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
 
 class ScrapeExtractionCollection(ScrapeCollection[ScrapeExtraction]):
     """Collection of per-fetch extraction rows, keyed by uuid7 ``id``."""
+
+    tenancy = no_tenant("the platform scrape catalogue; rows carry no customer column")
 
     datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {"retrieved_at"}
 

@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.core.data.gin import gin_filter
 from threetears.observe import get_logger
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "ConversationsCollection",
@@ -86,6 +87,8 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         bounded-concurrency flushing
     :ptype write_buffer: WriteBuffer | None
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     # rationale: ``attach_write_buffer`` wires a back-reference to a
     # pre-constructed ``ConversationWriteBuffer``; it neither reads

@@ -25,6 +25,12 @@ restore and the write-mark reconciler key by it. `build_permissions(epoch_change
 narrows an agent or tool pod's read to its own schema and, per platform table its role reads, its customer and
 `_all`; `None` keeps the whole-log read (the expand step). The collection census reports each class's tenancy.
 
+**Added (enforcement, core):** tenancy is declared, never guessed. The collection census fails on any concrete
+collection class with no tenancy declaration (the framework's own and a consumer's, through the shared
+`find_census_problems`), and on `no_tenant` without a reason; every framework class now declares one. At runtime
+an undeclared table keeps `_all`, logging one WARNING per table and counting each record in
+`threetears_collection_tenancy_undeclared_records_total{table}`.
+
 ### core, epoch: the keeper streams its restore, the reconciler names rows, writers follow a restored log
 
 **Changed (core):** the write-mark reconciler records a row-level epoch for a missed write: it reads the marked

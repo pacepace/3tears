@@ -89,6 +89,14 @@ def find_census_problems(census: dict[str, Any], named_per_instance: dict[str, s
             problems.append(f"{record['name']}: write_generation is not one of the four declarations")
         if record["declaration"] == "opted_out" and not str(record["reason"] or "").strip():
             problems.append(f"{record['name']}: NoWriteGeneration without a reason")
+        if record["table"] is not None and not record["abstract"] and record.get("tenancy") == "undeclared":
+            problems.append(
+                f"{record['name']}: declares no tenancy; its change records would go on the change log's _all key. "
+                f"Declare tenancy = TENANT_BY_SCHEMA, tenant_column(...) or no_tenant(reason) "
+                f"(threetears.core.tenancy)"
+            )
+        if record.get("tenancy") == "none" and not str(record.get("tenancy_reason") or "").strip():
+            problems.append(f"{record['name']}: no_tenant without a reason")
         if (
             record["table"] is None
             and not record["abstract"]

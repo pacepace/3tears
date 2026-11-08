@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
 from threetears.core.backends.protocol import DurableStore
@@ -743,6 +744,32 @@ class TestBehindIsSaidOnce:
         said = [r for r in caplog.records if r.getMessage().startswith("behind on a table")]
         assert len(said) == 1
         assert follower.registry.behind_on(_TABLE)
+
+
+class _Untenanted(_Members):
+    """the same switched-on table under its own name, its class declaring no tenancy."""
+
+    @property
+    def table_name(self) -> str:
+        return "untenanted_members"
+
+
+class TestAnUndeclaredTenancyIsSaid:
+    async def test_its_records_go_on_all_with_one_warning_and_every_record_counted(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pod = _Pod(bus, scope="writer")
+        collection = _Untenanted(pod.registry, {})
+        metric = "threetears_collection_tenancy_undeclared_records_total"
+        before = REGISTRY.get_sample_value(metric, {"table": "untenanted_members"}) or 0.0
+        with caplog.at_level(logging.WARNING):
+            for n in range(3):
+                await _save(collection, f"m{n}", "ada")
+        said = [r for r in caplog.records if r.getMessage().startswith("collection class declares no tenancy")]
+        assert len(said) == 1, "one WARNING per table, not one per write"
+        assert REGISTRY.get_sample_value(metric, {"table": "untenanted_members"}) == before + 3
+        keys = {entry.key for entry in await _log(bus).records_after("*.untenanted_members.e", 0, 100)}
+        assert keys == {"_all.untenanted_members.e"}, "nothing is lost: an undeclared table keeps _all"
 
 
 class TestTheLogRefusesPastItsCap:

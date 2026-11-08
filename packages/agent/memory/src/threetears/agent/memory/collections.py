@@ -77,6 +77,7 @@ from threetears.agent.memory.entities import (
     MemoryEntity,
     MemoryRefEntity,
 )
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "ConsolidationCycleError",
@@ -725,6 +726,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
     columns; callers use ``delete`` for hard removal (CASCADE
     propagates to chunks + media via v017 FKs).
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "memory_id")
     # v0.8.0 enrichment: TableSchema is now the single source of truth
@@ -2701,6 +2704,8 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     from ``date_created``.
     """
 
+    tenancy = TENANT_BY_SCHEMA
+
     primary_key_column: str | tuple[str, ...] = ("agent_id", "media_id")
     # v0.8.0 enrichment: full prod shape (matches v0.7.5 ``media_table``
     # factory + prod ``information_schema.columns``). Columns added in
@@ -2842,6 +2847,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
     the generator emits ``$N::text::public.vector`` on the INSERT path and decodes
     the textual response back to ``list[float]`` on read.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "content_id")
     # v0.8.0 enrichment: full prod shape (matches v0.7.5
@@ -3433,6 +3440,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
     ``VECTOR_TYPE`` for pgvector cast on write + ``list[float]``
     decode on read.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "chunk_id")
     # v0.8.0 enrichment: full prod shape. Added: ``chunk_index``
@@ -4423,6 +4432,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     match the migration-v002 VARCHAR(150) bound.
     """
 
+    tenancy = TENANT_BY_SCHEMA
+
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "item_id")
     # rationale: ``save_to_store`` is a framework override that
     # truncates ``short_desc`` to the migration-v002 VARCHAR(150) bound;
@@ -4676,6 +4687,8 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
     back-lookup by one composite-pk prefix is not full-pk addressable.
     :meth:`assert_no_cycle` guards writes against a provenance cycle.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = (
         "agent_id",

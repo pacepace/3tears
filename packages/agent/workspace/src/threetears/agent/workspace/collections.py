@@ -31,6 +31,7 @@ from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "WorkspaceCollection",
@@ -55,6 +56,8 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
     namespace via :meth:`NamespaceCollection.save_entity` after the
     workspace transaction commits.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str = "workspace_id"
     # v0.8.0 hygiene enrichment: ``current_version`` carries
@@ -285,6 +288,8 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
     through L2 preserves arbitrary bytes including NULs.
     """
 
+    tenancy = TENANT_BY_SCHEMA
+
     primary_key_column: str = "file_id"
     # v0.8.0 hygiene enrichment: FK
     # ``workspace_id → workspaces.workspace_id ON DELETE CASCADE``
@@ -438,6 +443,8 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
     relative_path, version)`` inserts surface as
     :class:`asyncpg.exceptions.UniqueViolationError` from asyncpg.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str = "version_id"
     # v0.8.0 hygiene enrichment: FK

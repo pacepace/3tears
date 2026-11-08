@@ -87,6 +87,7 @@ def _scan_cache_for(collection: Any) -> Any:
 
 from threetears.agent.knowledge.entities import ConceptEntity, PlaybookEntryEntity
 from threetears.agent.knowledge.integration import DraftView
+from threetears.core.tenancy import tenant_column
 
 __all__ = ["KNOWLEDGE_SCAN_TABLES", "ConceptCollection", "PlaybookEntryCollection"]
 
@@ -292,6 +293,8 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
     the SQL itself, never a python post-filter) and :meth:`list_own_drafts` (the
     author-private draft read).
     """
+
+    tenancy = tenant_column("customer_id")
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
@@ -526,6 +529,8 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
     filtered list evaluated SQL-side, exactly mirroring the entry collection) and
     :meth:`list_own_drafts` (the author-private draft read).
     """
+
+    tenancy = tenant_column("customer_id")
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out

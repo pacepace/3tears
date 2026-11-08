@@ -32,6 +32,7 @@ from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
 from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.entities import ContextItemEntity
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "ContextItemCollection",
@@ -82,6 +83,8 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
     ``count_results``, ``evict_lru``) stay here because their query
     shape is per-collection.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "context_id")
     # v0.8.0 enrichment: ``long_desc`` carries ``server_default="''"``

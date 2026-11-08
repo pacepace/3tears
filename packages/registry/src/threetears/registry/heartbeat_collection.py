@@ -46,6 +46,7 @@ from threetears.core.exceptions import L2WriteRefusedError
 from threetears.observe import get_logger
 
 from threetears.registry.entities import HeartbeatEntity
+from threetears.core.tenancy import no_tenant
 
 __all__ = ["HeartbeatCollection"]
 
@@ -69,6 +70,8 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
     registry processes evict their L1 copy. the base class ``get``
     path then refills L1 from L2 on the next read.
     """
+
+    tenancy = no_tenant("pod heartbeats are the platform's registry of pods; no row belongs to a customer")
 
     primary_key_column: str = "pod_id"
     #: Declared rather than listed inline in `deserialize`, which is where they used to live --

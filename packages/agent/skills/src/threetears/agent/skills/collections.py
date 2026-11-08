@@ -49,6 +49,7 @@ from threetears.core.serialization import (
     serialize_to_json,
 )
 from threetears.observe import get_logger
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "AgentSkillCollection",
@@ -401,6 +402,8 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
     explicit ``# cache-bypass:`` annotations because the L1 row cache
     cannot serve them.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "skill_id")
 
@@ -848,6 +851,8 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
     invocation history; this Collection holds no delete logic for
     that fan-out (Postgres handles it).
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = (
         "agent_id",

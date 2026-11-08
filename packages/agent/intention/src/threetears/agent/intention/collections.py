@@ -42,6 +42,7 @@ from threetears.observe import get_logger
 
 from threetears.agent.intention.entities import IntentionEntity
 from threetears.agent.intention.types import INTENTION_STATUS_VALUES, IntentionStatus
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "IntentionsCollection",
@@ -103,6 +104,8 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
     because the multi-row scan is not primary-key addressable; keeping it
     on the Collection preserves the single-entry-point contract.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "intention_id")
     schema = TableSchema(

@@ -96,6 +96,7 @@ from threetears.core.exceptions import (
 from threetears.core.sql_fragments import quote_identifier
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
+from threetears.observe.metrics import counter
 
 if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
@@ -117,6 +118,39 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: tables whose class declares no tenancy and that already logged it: one WARNING per table per process
+_UNDECLARED_TENANCY_WARNED: set[str] = set()
+
+
+def _undeclared_tenancy_records() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_collection_tenancy_undeclared_records_total",
+        description=(
+            "change records of a table whose collection class declares no tenancy, so they go on the change log's "
+            "_all key (every reader of the table sees them); declare one (threetears.core.tenancy)"
+        ),
+        label_names=("table",),
+    )
+
+
+def _note_undeclared_tenancy(table: str) -> None:
+    """count one change record of a table with no tenancy declaration, and WARN once for the table.
+
+    :param table: the table
+    :ptype table: str
+    """
+    _undeclared_tenancy_records().labels(table=table).inc()
+    if table in _UNDECLARED_TENANCY_WARNED:
+        return
+    _UNDECLARED_TENANCY_WARNED.add(table)
+    log.warning(
+        "collection class declares no tenancy; its change records go on the change log's _all key, readable by "
+        "every reader of the table. Declare tenancy = TENANT_BY_SCHEMA, tenant_column(...) or no_tenant(reason)",
+        extra={"extra_data": {"table": table}},
+    )
+
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
 
@@ -1758,6 +1792,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the rows, each with its tenant
         :rtype: Sequence[ChangedRow] | None
         """
+        if self.tenancy.kind == "undeclared":
+            _note_undeclared_tenancy(self.table_name)
         return rows_with_tenants(self.tenancy, changed)
 
     async def _bump_generation(self, changed: Sequence[ChangedRow] | None) -> _Bump:

@@ -40,6 +40,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "FolderCollection",
@@ -74,6 +75,8 @@ class FolderCollection(SchemaBackedCollection[Folder]):
         bounded-concurrency flushing
     :ptype write_buffer: WriteBuffer | None
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     # composite-pk partition on ``agent_id`` (matches the conversations
     # table). ``customer_id`` / ``user_id`` / ``date_created`` are

@@ -42,6 +42,7 @@ from threetears.core.exceptions import ConcurrentModificationError, GenerationUn
 
 from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
 from .extraction import html_to_text
+from threetears.core.tenancy import no_tenant
 
 __all__ = [
     "ScrapeTargetHealth",
@@ -322,6 +323,8 @@ class ScrapeTargetHealth(BaseEntity):
 
 class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
     """Collection of per-target fetch health, keyed by ``target_id``."""
+
+    tenancy = no_tenant("the platform scrape catalogue's health; rows carry no customer column")
 
     primary_key_column = "target_id"
     datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {

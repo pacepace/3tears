@@ -22,11 +22,17 @@ _CONFIG = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="
 
 
 class _Pool:
-    """answers the two reads a group delete makes before it deletes."""
+    """answers the reads a group delete makes before it deletes: the group's own row (its tenant column rides
+    with the delete's change), then its members and its role assignments."""
 
     def __init__(self, members: list[dict[str, Any]], assignments: list[dict[str, Any]]) -> None:
         self.members = members
         self.assignments = assignments
+
+    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
+        assert sql.startswith("SELECT row_scope, group_id, customer_id, name"), sql
+        row_scope, group_id = params
+        return {"row_scope": row_scope, "group_id": group_id, "customer_id": None, "name": "g", "description": None}
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         if sql.startswith("SELECT member_type, member_id, id FROM group_members WHERE group_id = $1"):

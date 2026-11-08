@@ -47,6 +47,7 @@ from threetears.channels.presence.entities import (
     PresenceConnectionEntity,
     RoomIndexEntity,
 )
+from threetears.core.tenancy import tenant_column
 
 __all__ = [
     "PresenceCollection",
@@ -293,6 +294,8 @@ class PresenceConnectionCollection(_L1L2OnlyCollection):
     ``date_last_heartbeat`` of THIS row only — no room-index contention.
     """
 
+    tenancy = tenant_column("customer_id")
+
     primary_key_column: str = "connection_id"
     datetime_columns: ClassVar[frozenset[str]] = _L1L2OnlyCollection.datetime_columns | {"date_last_heartbeat"}
 
@@ -334,6 +337,8 @@ class RoomIndexCollection(_L1L2OnlyCollection):
     through L1 and the invalidation envelope, so cross-pod coherence is
     unaffected.
     """
+
+    tenancy = tenant_column("customer_id")
 
     primary_key_column: str = "room_id"
 

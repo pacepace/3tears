@@ -45,6 +45,7 @@ from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
+from threetears.core.tenancy import no_tenant
 
 __all__ = [
     "REAPED_DISPATCH_ERROR",
@@ -145,6 +146,8 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
     ``partition_key``. Standalone ``UNIQUE (job_id)`` lets
     ``job_fires.job_id`` reference the bare id.
     """
+
+    tenancy = no_tenant("the platform job scheduler; jobs carry no customer column")
 
     schema: ClassVar[TableSchema] = _SCHEDULED_JOBS_SCHEMA
 
@@ -774,6 +777,8 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
     ``status='dispatching'``, then a finalize overwrites the terminal
     status.
     """
+
+    tenancy = no_tenant("the platform job scheduler's fires; jobs carry no customer column")
 
     schema: ClassVar[TableSchema] = _JOB_FIRES_SCHEMA
 

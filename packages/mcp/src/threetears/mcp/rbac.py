@@ -44,6 +44,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.entities.base import BaseEntity
 from threetears.observe import get_logger
+from threetears.core.tenancy import no_tenant
 
 __all__ = [
     "McpToolGrantCollection",
@@ -96,6 +97,8 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
     write and the broadcast happen in the same scope. see task-02
     Chunks B + C for the same discipline.
     """
+
+    tenancy = no_tenant("tool grants are keyed by principal, platform-wide, with no customer column")
 
     primary_key_column: str | tuple[str, ...] = "grant_id"
     # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``

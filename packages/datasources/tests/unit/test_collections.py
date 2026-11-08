@@ -958,6 +958,8 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         template_id, bound = uuid4(), [uuid4(), uuid4()]
         pool = AsyncMock()
         pool.fetch = AsyncMock(return_value=[{"id": table_id} for table_id in bound])
+        # the template's own row, read first so its customer column rides with the delete's change
+        pool.fetchrow = AsyncMock(return_value={"id": template_id, "customer_id": None})
         templates.l3_pool = pool
 
         await templates.delete(template_id)

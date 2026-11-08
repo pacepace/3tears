@@ -44,6 +44,7 @@ from threetears.agent.identity.types import (
     IDENTITY_STATUS_VALUES,
     IdentityVersionStatus,
 )
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "IdentityVersionsCollection",
@@ -90,6 +91,8 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
     lifecycle fields (``status`` / ``consenter_user_id``). ``date_updated``
     is the CAS fence.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = ("agent_id", "version_id")
     schema = TableSchema(

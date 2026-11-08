@@ -73,6 +73,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import DataLayerUnavailableError, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "COORDINATION_TABLE_SCHEMAS",
@@ -493,6 +494,8 @@ def _rows_affected(result: Any) -> int:
 class CoordinationCountersCollection(CoordinationCollection):
     """windowed attempt counts: many increments, each cheap, none worth an L3 write on its own."""
 
+    tenancy = TENANT_BY_SCHEMA
+
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
     schema = TableSchema(
@@ -515,6 +518,8 @@ class CoordinationCountersCollection(CoordinationCollection):
 
 class CoordinationClaimsCollection(CoordinationCollection):
     """idempotency claims: the claim itself, and the outcome a retry must be given back."""
+
+    tenancy = TENANT_BY_SCHEMA
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
@@ -544,6 +549,8 @@ class CoordinationRevocationsCollection(CoordinationCollection):
     """standing revocations: read on nearly every request, written rarely, and absence is the
     common answer -- which is what negative caching is for."""
 
+    tenancy = TENANT_BY_SCHEMA
+
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
     negative_cache_max_age: ClassVar[timedelta | None] = timedelta(seconds=_REVOCATION_NEGATIVE_CACHE_SECONDS)
@@ -572,6 +579,8 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
     redemption (identity-core: one per token refresh, held 400 days). The replay anchor's read of its
     one row per purpose goes to L2, once per guard.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     caches_in_l1: ClassVar[bool] = False
 

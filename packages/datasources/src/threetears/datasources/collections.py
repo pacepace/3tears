@@ -73,6 +73,7 @@ from threetears.datasources.entities import (
     DataSourceTableEntity,
     TableTemplateEntity,
 )
+from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 
 log = get_logger(__name__)
 
@@ -232,6 +233,8 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
     helpers (every other callsite resolves by primary key or filters in
     admin endpoints via the L3 pool with cache-bypass rationales).
     """
+
+    tenancy = BY_CUSTOMER
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
@@ -529,6 +532,8 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
     data source tables are hard-deleted (no soft-delete pattern).
     """
 
+    tenancy = TABLE_CATALOGUE
+
     schema: ClassVar[TableSchema] = _DATASOURCE_TABLES_SCHEMA
 
     #: ``coverage_dimension`` (v033) is written on insert and never on update. the per-region
@@ -691,6 +696,8 @@ class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]
     data source columns are hard-deleted (no soft-delete pattern).
     tags is stored as JSONB array in L3.
     """
+
+    tenancy = COLUMN_CATALOGUE
 
     schema: ClassVar[TableSchema] = _DATASOURCE_COLUMNS_SCHEMA
 
@@ -861,6 +868,8 @@ class DataSourceSchemaDigestCollection(
     hard-deleted (no soft-delete) — a datasource removal drops its digest.
     """
 
+    tenancy = BY_CUSTOMER
+
     # the L1/L2 key is the schema's primary key, ``datasource_id``: this table has NO ``id``
     # column, and keying by the ``"id"`` default would break every by-pk read and invalidation.
     schema: ClassVar[TableSchema] = _DATASOURCE_SCHEMA_DIGESTS_SCHEMA
@@ -970,6 +979,8 @@ class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEnt
     data source relations are hard-deleted (no soft-delete pattern).
     datasource_ids and join_paths are stored as JSONB arrays in L3.
     """
+
+    tenancy = BY_CUSTOMER
 
     schema: ClassVar[TableSchema] = _DATASOURCE_RELATIONS_SCHEMA
 
@@ -1097,6 +1108,8 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
     from ``table_template_columns.template_id`` is ``ON DELETE
     CASCADE`` so the per-template column list goes with it.
     """
+
+    tenancy = BY_CUSTOMER
 
     schema: ClassVar[TableSchema] = _TABLE_TEMPLATES_SCHEMA
 

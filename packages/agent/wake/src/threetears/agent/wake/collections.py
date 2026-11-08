@@ -88,6 +88,7 @@ from threetears.core.serialization import (
 )
 from threetears.observe import get_logger
 from threetears.scheduled_jobs.collections import REAPED_DISPATCH_ERROR
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "REFUSALS_KEPT_FOR",
@@ -432,6 +433,8 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
     - :meth:`pause` / :meth:`resume` -- status flips.
     - :meth:`mark_expired` -- one-shot terminal transition.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = (
         "conversation_id",
@@ -990,6 +993,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
     ``ON DELETE SET NULL`` so webhook subscription deletes leave the
     history visible.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = (
         "conversation_id",
@@ -1630,6 +1635,8 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
     ``EncryptionService`` is passed at the API surface (shard 04) and
     the resulting ``secret_ciphertext`` bytes land here unchanged.
     """
+
+    tenancy = TENANT_BY_SCHEMA
 
     primary_key_column: str | tuple[str, ...] = (
         "conversation_id",

@@ -52,6 +52,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.interfaces.media import ObjectHandle
 from threetears.observe import get_logger
+from threetears.core.tenancy import tenant_column
 
 __all__ = [
     "OBJECT_RESOLUTIONS_TABLE",
@@ -94,6 +95,8 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
     UUIDs: they are grammar-safe for the JetStream KV key charset and contain no
     underscore, so the composite body is unambiguous.
     """
+
+    tenancy = tenant_column("customer_id")
 
     primary_key_column: str | tuple[str, ...] = ("customer_id", "object_id")
 

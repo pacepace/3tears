@@ -85,6 +85,7 @@ from threetears.agent.acl.types import (
     ScopeType,
 )
 from threetears.agent.acl.types import Namespace as AclNamespace
+from threetears.core.tenancy import tenant_column
 
 log = get_logger(__name__)
 
@@ -216,6 +217,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     immutable handle column and resolve through that instead; one
     consumer already does.
     """
+
+    tenancy = tenant_column("customer_id")
 
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
@@ -634,6 +637,8 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     class.
     """
 
+    tenancy = tenant_column("customer_id")
+
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
@@ -978,6 +983,8 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     ``get_many``) stay on the canonical class.
     """
 
+    tenancy = tenant_column("customer_id")
+
     # v0.8.0 hygiene enrichment: ``is_builtin`` server default + date
     # defaults match the platform DDL (test fixture lines 177-185).
     # Platform-managed table -- 3tears has no migration; the name
@@ -1195,6 +1202,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     listing shapes (``list_by_filter`` / ``list_by_namespace`` /
     ``count_by_*``) subclass and add their own methods.
     """
+
+    tenancy = tenant_column("scope_customer_id")
 
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
@@ -1775,6 +1784,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     composition. discovery JOINs that span app-specific tables live on
     deploying-app subclasses.
     """
+
+    tenancy = tenant_column("customer_id")
 
     # a per-namespace access decision reads the namespace row (its customer, its type), so the
     # table carries a write generation like the four access tables, and ``AclCache`` is evicted
@@ -2848,6 +2859,8 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
     stale cached read of a security gate is a worse failure mode than one
     extra round trip per check.
     """
+
+    tenancy = tenant_column("customer_id")
 
     primary_key_column: str = "customer_id"
     schema = TableSchema(

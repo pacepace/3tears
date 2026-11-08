@@ -460,6 +460,22 @@ class TestTheWalkersBite:
             ]
         )
 
+    def test_a_concrete_class_with_no_tenancy_is_flagged(self, tmp_path: Path) -> None:
+        source = _PLANTED_HEAD + _planted("Loose", "loose_rows", tenancy=None) + _planted("Kept", "kept_rows")
+        problems = find_census_problems(run_census(_source_roots(_plant(tmp_path, "loose.py", source))), {})
+        assert [p.split(":")[0] for p in problems] == ["threetears.planted.loose.Loose"]
+        assert "declares no tenancy" in problems[0]
+
+    def test_every_tenancy_declaration_passes(self, tmp_path: Path) -> None:
+        source = (
+            _PLANTED_HEAD
+            + "from threetears.core.tenancy import TENANT_BY_SCHEMA, tenant_column\n"
+            + _planted("BySchema", "schema_rows", tenancy="TENANT_BY_SCHEMA")
+            + _planted("ByColumn", "column_rows", tenancy='tenant_column("customer_id")')
+            + _planted("Shared", "shared_rows", tenancy='no_tenant("platform-wide")')
+        )
+        assert find_census_problems(run_census(_source_roots(_plant(tmp_path, "tenants.py", source))), {}) == []
+
     def test_a_module_that_does_not_import_is_flagged(self, tmp_path: Path) -> None:
         root = _plant(tmp_path, "broken.py", "import threetears.planted.nowhere\n")
         problems = find_census_problems(run_census(_source_roots(root)), {})
@@ -470,22 +486,27 @@ class TestTheWalkersBite:
 _PLANTED_HEAD = """from typing import Any
 
 from threetears.core.collections import WRITE_GENERATION, BaseCollection
+from threetears.core.tenancy import no_tenant
 """
 
 
-def _planted(name: str, table: str | None) -> str:
+def _planted(name: str, table: str | None, tenancy: str | None = 'no_tenant("planted")') -> str:
     """a concrete planted collection class naming ``table`` (or a table named per instance).
 
     :param name: the class name
     :ptype name: str
     :param table: the literal table name, or ``None`` for one read off the instance
     :ptype table: str | None
+    :param tenancy: the class's tenancy declaration as source, or ``None`` for none
+    :ptype tenancy: str | None
     :return: the class source
     :rtype: str
     """
     answer = repr(table) if table is not None else "self.scoped_table"
+    declared = f"    tenancy = {tenancy}\n\n" if tenancy is not None else ""
     return (
         f"\n\nclass {name}(BaseCollection[Any]):\n"
+        f"{declared}"
         f"    @property\n    def table_name(self) -> str:\n        return {answer}\n\n"
         f"    @property\n    def entity_class(self) -> Any:\n        return dict\n\n"
         f"    async def fetch_from_store(self, entity_id: Any) -> Any:\n        return None\n\n"
