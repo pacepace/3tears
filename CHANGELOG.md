@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: one module decides every figure's form (number forms C1 to C3)
+
+**Changed:**
+- `analysis/report/forms.py` (`PageForms`, internal to the report package, not host contract) now decides every
+  figure the written page, the code page, the charts, the tables and the off-page surfaces print, each keyed by its
+  measure. The move reproduces today's text: every golden and rung 5's pins are byte-identical.
+- A figure key's criterion value, low/high and gap, `weakest.value`, `weakest.margin` and a settle `distance` now
+  resolve at their measure's decimals (gap, margin and distance at its change set), so they read as the table does.
+  On a rate nothing moves; on another measure with contrasts the decimals can (s2's turn time: 673.3 to 673 ms).
+
+**Hosts:** a stored report that cites one of those criterion, weakest or settle keys on a non-rate measure renders
+it at the new decimals; no other text changes. Nothing to change in host code.
+
 ### evals: the engine exports a campaign for the mint, for every host
 
 **Added:**
