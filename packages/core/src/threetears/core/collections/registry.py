@@ -45,24 +45,35 @@ __all__ = [
 
 log = get_logger(__name__)
 
-_EPOCHS_APPLIED = counter(
-    "collection_epoch_changes_applied_total",
-    description="epoch change records a follower fetched and applied because it had not heard every row of them",
-    label_names=("table",),
-)
-_EPOCHS_BEHIND = counter(
-    "collection_epoch_behind_total",
-    description=(
-        "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change record), "
-        "keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the generation's "
-        "store was replaced); the pod serves what it has"
-    ),
-    label_names=("table", "reason"),
-)
-_TABLES_BEHIND = gauge(
-    "collection_epoch_tables_behind",
-    description="followed tables this registry is behind on: an epoch it could not apply, awaiting its record in L2",
-)
+# the epoch catch-up's instruments, fetched where they are moved, never held at import: a module that a
+# fresh import of the package runs again would register them twice
+
+
+def _epochs_applied() -> Any:
+    return counter(
+        "collection_epoch_changes_applied_total",
+        description="epoch change records a follower fetched and applied because it had not heard every row of them",
+        label_names=("table",),
+    )
+
+
+def _epochs_behind() -> Any:
+    return counter(
+        "collection_epoch_behind_total",
+        description=(
+            "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change "
+            "record), keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the "
+            "generation's store was replaced); the pod serves what it has"
+        ),
+        label_names=("table", "reason"),
+    )
+
+
+def _tables_behind() -> Any:
+    return gauge(
+        "collection_epoch_tables_behind",
+        description="followed tables this registry is behind on: an epoch it could not apply, awaiting its record in L2",
+    )
 
 
 def _as_l3_backend(l3_pool: Any) -> Any:
@@ -879,7 +890,7 @@ class CollectionRegistry:
             else:
                 await self.apply_epoch_change(change)
                 marks.applied(table_name, epoch)
-            _EPOCHS_APPLIED.labels(table=table_name).inc()
+            _epochs_applied().labels(table=table_name).inc()
         if hole is not None:
             self._fall_behind(
                 table_name,
@@ -942,8 +953,8 @@ class CollectionRegistry:
             # said once when it began; the gauge says how long it lasts
             return
         self._behind[table_name] = reason
-        _EPOCHS_BEHIND.labels(table=table_name, reason=reason).inc()
-        _TABLES_BEHIND.set(len(self._behind))
+        _epochs_behind().labels(table=table_name, reason=reason).inc()
+        _tables_behind().set(len(self._behind))
         log.error(
             "behind on a table: an epoch's change could not be applied; serving what this process holds "
             "until the record is in L2 again. A record never written or lost with the broker comes back "
@@ -961,7 +972,7 @@ class CollectionRegistry:
         :rtype: None
         """
         if self._behind.pop(table_name, None) is not None:
-            _TABLES_BEHIND.set(len(self._behind))
+            _tables_behind().set(len(self._behind))
             log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
     def drop_table(self, table_name: str, *, reason: str) -> None:

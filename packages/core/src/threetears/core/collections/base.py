@@ -5273,8 +5273,13 @@ class BaseCollection(ABC, Generic[EntityT]):
             return
         seen: Sequence[dict[str, Any] | None] = rows if rows is not None else (None,) * len(entity_ids)
         # with or without a bus: the caches this advance tells are other pods'.
+        # the rows are an epoch's change only where the call advances a generation: a collection that
+        # advances none is handed none, so evicting many keys builds nothing per key on the loop
+        advances = self._write_generation_on or self.keeps_write_generation_in_l2
         bump = await self._bump_generation(
             [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)]
+            if advances
+            else []
         )
         if self._nats_client is None:
             self._warn_missing_nats_client_once()

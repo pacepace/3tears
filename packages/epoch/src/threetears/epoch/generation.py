@@ -78,11 +78,14 @@ EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 
 _LEGAL_KEY_TOKEN: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
-_CHANGES_REFUSED = counter(
-    "collection_epoch_change_refused_total",
-    description="epoch change records the bucket refused (full, or unreachable) after a committed write",
-    label_names=("table",),
-)
+
+def _changes_refused() -> Any:
+    """the count of change records the log refused, fetched where it is moved, never held at import."""
+    return counter(
+        "collection_epoch_change_refused_total",
+        description="epoch change records the bucket refused (full, or unreachable) after a committed write",
+        label_names=("table",),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +253,7 @@ class EpochGenerationSource:
             bucket = await self._changes()
             await bucket.put(key=key, value=epoch_change_record(table_name, token, rows, keys_unknown=keys_unknown))
         except KvError as exc:
-            _CHANGES_REFUSED.labels(table=table_name).inc()
+            _changes_refused().labels(table=table_name).inc()
             log.error(
                 "an epoch's change record was not stored after a committed write; a follower that missed its "
                 "broadcasts is behind on the table until the record is written",
