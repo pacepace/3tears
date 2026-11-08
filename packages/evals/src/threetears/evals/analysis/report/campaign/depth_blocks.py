@@ -7,8 +7,8 @@ A table is printed only where it says more than a sentence would (rule 2 of the 
   (:func:`~threetears.evals.analysis.depth.repeats_sentence`);
 - the pass^k depth table is one sentence where pass^k compares pass rates on every aspect, at a common and planned
   depth of 1 with no case left out;
-- the precision table drops a column empty on every row, and sits under the Methods where every arm ran each case
-  once, since no repeat then splits its noise;
+- the precision table drops a column empty on every row, and sits folded under the Methods: what limits an interval is
+  how it was read, one step further from the answer than the scorecard;
 - what extra repeats cannot lower is said once, in Design & provenance, where a between-case share is read
   (:func:`depth_provenance_blocks`).
 """
@@ -34,7 +34,6 @@ from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
     ReportBlock,
-    ReportSection,
     TableBlock,
     TableCell,
     TableColumn,
@@ -103,8 +102,9 @@ def depth_blocks(
     else:
         blocks = [*_depth_table(rows), *_differ_lines(depths)]
     blocks += _pass_k_depth_blocks(depths, labels, names)
-    once_each = all(held.uniform() and held.repeats_min == 1 for _, depth in depths for held in depth.arms.values())
-    blocks += _precision_blocks(readings, names, section="methods" if once_each else "scorecard")
+    # What limits each interval is a method, read one step from the answer only by someone who asks, so it is folded under
+    # the page's methods, never on the scorecard.
+    blocks += _precision_blocks(readings, names)
     return blocks
 
 
@@ -267,9 +267,9 @@ def _model_blocks(
     ]
 
 
-def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section: ReportSection) -> list[ReportBlock]:
+def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[ReportBlock]:
     """What limits each pass-rate comparison's interval: its half-width, each arm's own, the arm limiting it and the
-    between-case share of its variance, in ``section``; a column no row fills is left out."""
+    between-case share of its variance, folded under the methods; a column no row fills is left out."""
     compared: list[tuple[str, Precision]] = [(row.aspect, row.precision) for row in readings.readings if row.precision]
     compared += [(pair.aspect, pair.precision) for pair in readings.pairs if pair.precision]
     if not compared:
@@ -308,13 +308,14 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section
     filled = [column for column in columns if any(row[column.key].value is not None for row in rows)]
     return [
         TableBlock(
-            section=section,
+            section="methods",
             name="precision",
             title="Precision",
             columns=filled,
             rows=[{column.key: row[column.key] for column in filled} for row in rows],
             order="aspect by aspect, each comparison as the readings list it",
             total_rows=len(rows),
+            details=True,
         )
     ]
 

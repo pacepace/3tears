@@ -371,10 +371,11 @@ def test_a_measurement_s_scorecard_names_the_pass_rate_as_a_name_and_one_figure_
 ) -> None:
     page = rungs["rung0"].result.page
     (matrix,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    headers = [column.header for column in matrix.columns]
-    assert "Pass rate (%)" in headers and "pass rate (%)" not in headers
-    # The classifier's label match is its accuracy: one figure, one column, under the name the lead reads.
-    assert "Accuracy (%)" in headers and "Label matched" not in headers
+    # One arm's matrix is turned, a row per measure (visual pass V2), each named as a name.
+    labels = [row["measure"].text for row in matrix.rows]
+    assert "Pass rate" in labels and "pass rate" not in labels
+    # The classifier's label match is its accuracy: one figure, one row, under the name the lead reads.
+    assert labels.count("Accuracy") == 1 and "Label matched" not in labels
     (measures,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures"]
     named = [row["measure"].text for row in measures.rows]
     assert "Pass rate" in named and "Label matched" not in named and named.count("Accuracy") == 1

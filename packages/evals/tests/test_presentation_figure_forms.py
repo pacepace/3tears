@@ -195,7 +195,8 @@ def test_every_grid_table_s_scale_line_spells_its_money_and_its_ends_as_its_cell
             assert ("$" in low and "$" in high) or ("%" in low and "%" in high) or re.search(r" [a-z]+$", high), span
             if "%" in high:
                 assert 0 <= float(low.rstrip("%")) and float(high.rstrip("%")) <= 100, span
-    if name in ("rung2", "rung3"):
+    # Rung 2 measures one arm, whose scorecard is turned and draws no glyph (visual pass V2); rung 3's compares.
+    if name == "rung3":
         assert checked, f"{name} draws money glyphs"
 
 
@@ -232,9 +233,11 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
         heads = {column.key: column.header for column in block.columns}
         for row in block.rows:
             for key, cell in row.items():
-                # A money measure's cell in a scorecard table reads per 1,000 replies, as its header says.
+                # A money measure's cell in a scorecard table reads per 1,000 replies, as its header says, or in one
+                # arm's turned matrix, as its row's measure says.
                 if cell.decimals is not None and cell.unit == "usd" and block.name == "scorecard":
-                    assert heads[key].endswith(", per 1,000 replies"), heads[key]
+                    named = row["measure"].text if "measure" in row else heads[key]
+                    assert named.endswith(", per 1,000 replies"), named
     markdown = campaign_report_markdown(rung.page)
     (test_cost,) = [line for line in markdown.splitlines() if line.startswith("| Test cost |")]
     for found in _MONEY.finditer(test_cost):
@@ -480,12 +483,15 @@ def test_a_scorecard_column_of_measured_figures_reads_at_one_precision() -> None
     )
     page = shape.page()
     (scorecard,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    (key,) = [column.key for column in scorecard.columns if column.header == "Turn time"]
-    assert [row[key].value for row in scorecard.rows] == [99.2345, 100.0], "the control: a figure past two places"
-    assert [row[key].text for row in scorecard.rows] == ["99", "100"]
-    drawn = grid_html(scorecard)
-    assert "<title>99, interval [72, 127]</title>" in drawn, re.findall(r"<title>(9[^<]*)</title>", drawn)
-    assert any(part.startswith("Turn time drawn from 72 to 128") for part in _AXIS.findall(drawn)[0].split(" · "))
+    # One arm's matrix is turned, a row per measure (visual pass V2): the measure's rows are its column of figures, and
+    # its interval's ends read in its value's form, as its glyph's title did.
+    rows = [row for row in scorecard.rows if row["measure"].text == "Turn time"]
+    assert [row["value"].value for row in rows] == [99.2345, 100.0], "the control: a figure past two places"
+    assert [row["value"].text for row in rows] == ["99", "100"]
+    assert rows[0]["interval"].text == "[72, 127]", rows[0]["interval"].text
+    assert all(re.fullmatch(r"\[\d+, \d+\]", row["interval"].text) for row in rows), [
+        row["interval"].text for row in rows
+    ]
 
 
 def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: str) -> None:

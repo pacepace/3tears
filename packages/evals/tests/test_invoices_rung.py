@@ -187,7 +187,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     assert not [line for line in lines if line.startswith("On classify, the evidence cannot tell a drop")]
     assert module.invoices.margin is None and result.margin is None
     assert (
-        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |"
+        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +16.7 pts | [-1.5, 25.9] | — | cannot tell apart |"
     ) in lines
     assert "no worse than the margin" not in "\n".join(lines)
 

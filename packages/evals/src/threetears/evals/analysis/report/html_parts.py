@@ -108,7 +108,9 @@ td.key { font-weight: 600; }
 [data-table="scoreboard"] table { font-size: var(--t-base); }
 td.wrap { max-width: 32rem; }
 td.glyph { font-variant-numeric: tabular-nums; }
-td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
+/* a glyph cell reads its figure first, then the glyph with the reading after it, as a sentence reads them */
+td.glyph .figure { display: block; }
+td.glyph .reading { color: var(--ink-2); }
 td.glyph .no-glyph { display: inline-block; width: 7.5em; max-width: 100%; min-width: 4.5em; margin-right: 6px; }
 td:target, tr:target > td { background: var(--accent-wash); }
 figure { margin: 0; }
@@ -156,9 +158,10 @@ _TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {("cases", "trials"), ("trials", "trial"), ("finding_facts", "trials")}
 )
 
-#: The columns whose cells head their rows (``<th scope="row">``): a turned Every arm by measure's figure, which names
-#: what each row reads, so a header link (a goal check's, :func:`check_header_links`) reaches it as a column's does.
-_ROW_HEADER_COLUMNS: frozenset[tuple[str, str]] = frozenset({("arms_by_measure", "measure")})
+#: The columns whose cells head their rows (``<th scope="row">``): a turned Every arm by measure's figure, and a turned
+#: one-arm scorecard's measure, each naming what its row reads, so a header link (a goal check's,
+#: :func:`check_header_links`) reaches it as a column's does.
+_ROW_HEADER_COLUMNS: frozenset[tuple[str, str]] = frozenset({("arms_by_measure", "measure"), ("scorecard", "measure")})
 
 #: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
 #: by its name (``case-double-charge``).
@@ -256,9 +259,10 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     A turned Every arm by measure heads each row with its figure (``<th scope="row">``, which reads as a body cell).
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
     of prose is classed ``wrap`` (the kit's) so it wraps at a measure instead of widening its column. A column whose cells carry
-    an interval is classed ``glyph``: each such cell draws its interval beside its number
-    (:func:`~threetears.evals.analysis.report.svg.interval_glyph_svg`), every cell of the column in one unit on one
-    scale, and the scale's ends are written once under the table (:func:`_scale_line`). A row at a position in
+    an interval is classed ``glyph``: each such cell states its figure, then draws its interval under it
+    (:func:`~threetears.evals.analysis.report.svg.interval_glyph_svg`) with its reading (the cell's flag) after the
+    glyph, every cell of the column in one unit on one scale, and the scale's ends are written once under the table
+    (:func:`_scale_line`). A row at a position in
     ``highlighted`` is the kit's highlighted row (``tr.hl``): the one a page sets apart, as the recommendation.
 
     :param block: The table.
@@ -287,7 +291,9 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
         cells = []
         for column in block.columns:
             cell = row[column.key]
-            text = _cell_code(cell.text)
+            glyphed = classes[column.key] == ' class="glyph"'
+            # A glyph cell sets its reading after its glyph, so its figure alone is the cell's text here.
+            text = _cell_code(cell.figure if glyphed else cell.text)
             if cell.ref is not None:
                 # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it. A
                 # link never holds a fold that opens: a long expression's fold sits beside the link, not inside it.
@@ -305,9 +311,10 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
                 css = ' class="trial-links"'
-            elif classes[column.key] == ' class="glyph"':
+            elif glyphed:
                 css = classes[column.key]
-                text = _glyph(cell, column.key, scales) + f'<span class="figure">{text}</span>'
+                reading = "" if cell.flag is None else f' <span class="reading">{_cell_code(cell.flag)}</span>'
+                text = f'<span class="figure">{text}</span>' + _glyph(cell, column.key, scales) + reading
             else:
                 css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
@@ -507,26 +514,36 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], _Scale]) -> str
     """One quiet line under a table with glyphs: each scale's ends, written once, in the cells' own form and with the
     unit on every span, each range naming the columns drawn on it (``Pass rate (%) and Reply cites policy check (%)
     drawn from 47.2% to 100% · Turn time drawn from 973 to 1,029``); where one range is every glyph column's, it says
-    so (``Each column drawn from -7.8 to 35.4 pts``)."""
+    so (``Each column drawn from -7.8 to 35.4 pts``). A table on one scale that says what its glyphs draw
+    (``TableBlock.glyph_key``) opens its range of differences with that sentence, so a change's mark names the
+    baseline its tick stands for and which way is better: ``Each mark is a candidate's change from v1 (the tick) with
+    its 95% interval; right is better. Drawn from -7.8 to 35.4 pts.``"""
     if not scales:
         return ""
     headers = {column.key: column.header for column in block.columns}
-    # Each range: the columns drawn on it (a table on one scale pools every column of a unit but money's), its spans.
+    # Each range: the columns drawn on it (a table on one scale pools every column of a unit but money's), its spans,
+    # and whether it is a range of differences.
     ranges: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    keyed: set[tuple[str, str]] = set()
     for (key, _), scale in scales.items():
         pooled = block.shared_scale and not is_money(scale.unit)
-        keys, spans = ranges.setdefault(("", scale.unit) if pooled else (key, ""), ([], []))
+        group = ("", scale.unit) if pooled else (key, "")
+        keys, spans = ranges.setdefault(group, ([], []))
         if key not in keys:
             keys.append(key)
         if scale.span() not in spans:
             spans.append(scale.span())
-    if len(ranges) == 1:
+        if pooled and block.glyph_key is not None and scale.cell.zero_line:
+            keyed.add(group)
+    if len(ranges) == 1 and not keyed:
         (((pool, _), (keys, spans)),) = ranges.items()
         named = "Each column" if not pool else code_html(headers[keys[0]])
         return f'<p class="axis">{named} drawn from {" and from ".join(spans)}</p>'
     lines = [
-        f"{_and([code_html(headers[key]) for key in keys])} drawn from {' and from '.join(spans)}"
-        for keys, spans in ranges.values()
+        f"{code_html(block.glyph_key or '')} Drawn from {' and from '.join(spans)}."
+        if group in keyed
+        else f"{_and([code_html(headers[key]) for key in keys])} drawn from {' and from '.join(spans)}"
+        for group, (keys, spans) in ranges.items()
     ]
     return f'<p class="axis">{" · ".join(lines)}</p>'
 

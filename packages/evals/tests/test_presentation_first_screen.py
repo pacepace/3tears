@@ -175,12 +175,18 @@ def test_every_first_screen_rate_carries_its_count(rungs: dict[str, _Rung], name
             assert _COUNT.search(block.text), block.text
     # The scorecard's matrix, which a desktop's first screen shows under the caveats: each rate cell its count.
     (matrix,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    rates = [column.key for column in matrix.columns if column.header.endswith("(%)")]
+    # A rate is a cell under a (%) head, or one stating its percent on the figure (a change's control, one arm's turned
+    # matrix: visual pass V2).
+    heads = {column.key for column in matrix.columns if column.header.endswith("(%)")}
+    rates = [
+        cell
+        for row in matrix.rows
+        for key, cell in row.items()
+        if cell.value is not None and (key in heads or cell.unit == "%")
+    ]
     assert rates, "every rung's matrix holds a rate"
-    for row in matrix.rows:
-        for key in rates:
-            if row[key].value is not None:
-                assert _COUNT.search(row[key].text), row[key].text
+    for cell in rates:
+        assert _COUNT.search(cell.text), cell.text
 
 
 # --- every report-wide caveat lands on the first screen ---------------------------------------------------------------

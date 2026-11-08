@@ -666,9 +666,21 @@ def _verdict_markup(block: DisclosureBlock) -> str:
     out = []
     for piece, bold in block.emphasis_pieces():
         said = code_html(piece)
-        found = None if linked else CANNOT_TELL_APART_PHRASE.search(piece)
-        # linked only outside a code span, so neither half of the piece cuts one
-        if found is not None and "`" not in found.group(0) and not piece.count("`", 0, found.start()) % 2:
+        # linked only outside a code span, so neither half of the piece cuts one: the first such match, since an
+        # earlier one may cross a span while a whole one follows it
+        found = (
+            None
+            if linked
+            else next(
+                (
+                    match
+                    for match in CANNOT_TELL_APART_PHRASE.finditer(piece)
+                    if "`" not in match.group(0) and not piece.count("`", 0, match.start()) % 2
+                ),
+                None,
+            )
+        )
+        if found is not None:
             said = (
                 code_html(piece[: found.start()])
                 + term_link(CANNOT_TELL_APART, escape(found.group(0)))

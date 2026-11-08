@@ -76,9 +76,9 @@ def _table(page: CampaignReport, name: str) -> TableBlock:
 
 
 def _by_arm(table: TableBlock, row: Mapping[str, TableCell]) -> dict[str, TableCell]:
-    """A matrix row's cells by the arm heading each column (its unit and the control's mark left off)."""
+    """A matrix row's cells by the arm heading each column (the control's mark, and its measure or unit, left off)."""
     return {
-        column.header.removeprefix("▸ ").rsplit(" (", 1)[0]: row[column.key]
+        column.header.removeprefix("▸ ").split(" · ")[0].rsplit(" (", 1)[0]: row[column.key]
         for column in table.columns
         if column.key not in ("aspect", "cases")
     }
@@ -136,9 +136,8 @@ async def test_a_floor_broken_beside_a_row_not_shown_worse_is_marked_on_its_cell
     assert row.reading == "unclear"
     matrix = _table(page, "scorecard")
     billing = next(cells for cells in matrix.rows if cells["aspect"].text == "billing")
-    assert (
-        _by_arm(matrix, billing)[CANDIDATE_LABEL].text == "-60.0 (unclear; floor broken)"
-    )  # its (pts) columns read at one decimal (C-15, N-4)
+    # Its level, then its change signed in points at one decimal (C-15, N-4; visual pass V2).
+    assert _by_arm(matrix, billing)[CANDIDATE_LABEL].text == "30.0% · -60.0 pts (unclear; floor broken)"
     assert "The floor broken on" not in campaign_report_markdown(page)
 
 
@@ -396,9 +395,12 @@ async def test_a_measurement_states_its_pass_rate_as_a_count_and_each_rig_apart(
     table = _table(page, "measures")
     setups = [row["setup"].text for row in table.rows]
     assert setups[0] == "every setup" and len(set(setups[1:])) == 2
-    # The matrix holds one figure a cell: a measure read under two setups is marked, its figures in the fold.
-    (row,) = _table(page, "scorecard").rows
-    assert {cell.text for key, cell in row.items() if key != "aspect" and cell.value is None} == {"— (split by setup)"}
+    # The matrix holds one figure a cell: a measure read under two setups is marked, its figures in the fold. One arm's
+    # matrix is turned, a row per measure on its one aspect (visual pass V2).
+    rows = _table(page, "scorecard").rows
+    assert {row["aspect"].text for row in rows} == {"solo"}
+    split = {row["value"].text for row in rows if row["value"].value is None}
+    assert split == {"— (split by setup)"}
 
 
 # =============================================================================
@@ -409,35 +411,46 @@ async def test_a_measurement_states_its_pass_rate_as_a_count_and_each_rig_apart(
 @pytest.mark.parametrize(
     ("build", "rows", "columns"),
     [
-        # A change: aspects × candidates, the control's rate and the cases beside each aspect.
+        # A change: aspects × candidates, the control's rate and the cases beside each aspect, each head naming the
+        # measure and a candidate's the control its change is against (visual pass V2).
         # Over two or more aspects, each arm's figure across them closes the matrix.
         (
             s1_change,
             ["billing", "tone", "refunds", aggregate.EQUAL_WEIGHT_ROW],
-            ["Aspect", "Cases", "▸ production (%)", "v2 (pts)", "v3 (pts)", "v4 (pts)"],
+            [
+                "Aspect",
+                "Cases",
+                "▸ production · pass rate",
+                "v2 · pass rate vs production",
+                "v3 · pass rate vs production",
+                "v4 · pass rate vs production",
+            ],
         ),
         # A choice: aspects × arms.
         (s2_choice, ["answers"], ["Aspect", "Cases", "alpha (%)", "beta (%)", "gamma (%)"]),
-        # A measurement: aspects × measures, its one arm named in the title.
-        (s3_measurement, ["accuracy", "clarity"], None),
+        # A measurement of one arm: turned, a row per measure on each aspect, its one arm named in the title.
+        (
+            s3_measurement,
+            ["accuracy"] * 3 + ["clarity"] * 3,
+            ["Aspect", "Measure", "Value", "Interval", "Cases"],
+        ),
         # One candidate on one aspect: a one-row matrix.
-        (s4_change, ["billing"], ["Aspect", "Cases", "▸ production (%)", "v2 (pts)"]),
+        (s4_change, ["billing"], ["Aspect", "Cases", "▸ production · pass rate", "v2 · pass rate vs production"]),
     ],
     ids=["s1", "s2", "s3", "s4"],
 )
 def test_the_scorecard_is_one_matrix_of_aspects_by_the_kind_s_columns_with_its_rows_folded_under_it(
-    build: Callable[[], Shape], rows: list[str], columns: list[str] | None
+    build: Callable[[], Shape], rows: list[str], columns: list[str]
 ) -> None:
     shape = build()
     page = shape.page()
     matrix = _table(page, "scorecard")
     assert matrix.section == "scorecard" and not matrix.details
     assert [row["aspect"].text for row in matrix.rows] == rows
-    if columns is not None:
-        assert [column.header for column in matrix.columns] == columns
-    else:
+    assert [column.header for column in matrix.columns] == columns
+    if shape.readings.kind == "measurement":
         assert matrix.title == "solo by aspect"
-        assert [column.header for column in matrix.columns][:2] == ["Aspect", "Pass rate (%)"]
+        assert [row["measure"].text for row in matrix.rows][:1] == ["Pass rate"]
     # The long form is folded, under the matrix, in the same section.
     folded = [
         block
@@ -468,11 +481,12 @@ def test_a_change_s_cell_is_its_change_its_interval_against_the_margin_and_its_r
     matrix = _table(shape.page(), "scorecard")
     billing = _by_arm(matrix, matrix.rows[0])
     (v2,) = [row for row in shape.readings.on_aspect("billing") if row.arm_label == "v2"]
-    assert billing["v2"].text == "-60 (shown worse)"
+    # Its level, then its change from the control's signed in points (visual pass V2).
+    assert billing["v2"].text == "30.0% · -60.0 pts (shown worse)"
     assert (billing["v2"].low, billing["v2"].high) == v2.drop_interval
     assert billing["v2"].margin == 10 and billing["v2"].zero_line
     # The control's rate carries the count it is computed over (presentation build, chunk 1).
-    assert billing["production"].text == "90 (18 of 20 cases)"
+    assert billing["production"].text == "90.0% (18 of 20 cases)"
     assert matrix.rows[0]["cases"].text == "20"
 
 
@@ -503,12 +517,13 @@ def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
     controls = {row["aspect"].text: _by_arm(matrix, row)["production"].text for row in matrix.rows}
     # Each with the count it is computed over, then its mark (presentation build, chunk 1).
     assert controls == {
-        "billing": "90 (18 of 20 cases)",
-        "tone": "50 (10 of 20 cases)",
-        "refunds": "0 (0 of 20 cases; cannot show a drop)",
+        "billing": "90.0% (18 of 20 cases)",
+        "tone": "50.0% (10 of 20 cases)",
+        "refunds": "0% (0 of 20 cases; cannot show a drop)",
         # Its pass rate across the aspects reads no margin, so it is marked neither way.
-        # A (%) column whose values whole percents keep apart reads whole (C-15, N-4).
-        aggregate.EQUAL_WEIGHT_ROW: "47",
+        # The control's level reads at one decimal, the mean of its cells above, as every change read from it does
+        # (visual pass V2).
+        aggregate.EQUAL_WEIGHT_ROW: "46.7% (mean of the aspects above, each weighted equally)",
     }
 
 
@@ -517,7 +532,7 @@ async def test_a_control_passing_every_trial_cannot_show_a_gain() -> None:
     matrix = _table(page, "scorecard")
     (row,) = matrix.rows
     # At 100% against a 20-point margin a drop can still show, so only the gain is marked.
-    assert _by_arm(matrix, row)[CONTROL_LABEL].text == "100 (60 of 60 trials, 20 cases; cannot show a gain)"
+    assert _by_arm(matrix, row)[CONTROL_LABEL].text == "100.0% (60 of 60 trials, 20 cases; cannot show a gain)"
 
 
 def _uneven_control(shares: list[float], passed: int, trials: int) -> Shape:
@@ -549,13 +564,14 @@ def test_cannot_show_a_drop_is_decided_on_the_per_case_shares_a_drop_is_read_on(
     """The review's case: ten control cases on a 6-point margin, one with a single trial that passed and nine with two
     failing trials each. Its trial rate is 1 of 19, about 5.3%, at or below the margin, but its per-case shares
     average 10%, so a candidate failing every case drops 10 points: a drop past the margin can show, and the cell is
-    not marked. With every share nought, none can."""
+    not marked. With every share nought, none can. The cell prints the per-case mean, the level the change is read
+    from, and says what it is a mean of (visual pass V2)."""
     uneven = _uneven_control([1.0] + [0.0] * 9, passed=1, trials=19)
     (row,) = _table(uneven.page(), "scorecard").rows
-    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5 (1 of 19 trials, 10 cases)"
+    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "10.0% (mean of 10 cases)"
     nothing = _uneven_control([0.0] * 10, passed=0, trials=19)
     matrix = _table(nothing.page(), "scorecard")
-    assert _by_arm(matrix, matrix.rows[0])["production"].text == "0 (0 of 19 trials, 10 cases; cannot show a drop)"
+    assert _by_arm(matrix, matrix.rows[0])["production"].text == "0% (0 of 19 trials, 10 cases; cannot show a drop)"
 
 
 def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_count() -> None:
@@ -829,9 +845,22 @@ def test_the_equal_weight_row_closes_the_matrix_each_arm_s_cell_in_its_own_colum
     *aspects, across = matrix.rows
     assert [row["aspect"].text for row in aspects] == [aspect.label for aspect in shape.campaign.aspects]
     assert across["aspect"].text == aggregate.EQUAL_WEIGHT_ROW and across["cases"].value is None
-    assert {arm: cell.value for arm, cell in _by_arm(matrix, across).items()} == figures
-    # Each figure is placed under the header that names its unit, so it prints as the column's other cells do.
-    assert {cell.unit for cell in _by_arm(matrix, across).values()} == {""}
+    placed_figures = {arm: cell.value for arm, cell in _by_arm(matrix, across).items()}
+    if name == "s2":
+        assert placed_figures == figures
+    else:
+        # A change's control reads the mean of its cells above, the changes' own basis (visual pass V2); each
+        # candidate's change is the one handed in.
+        control = next(arm.label for arm in shape.arms if arm.role == "control")
+        above = [float(_by_arm(matrix, row)[control].value) for row in aspects]  # type: ignore[arg-type]
+        assert placed_figures == {**figures, control: round(sum(above) / len(above), 1)}
+    # Each figure prints as the column's other cells do: placed bare under a head that names its unit (a choice's), or
+    # in its unit at one decimal, a change signed, under one that names none (a change's, visual pass V2).
+    placed = {arm: (cell.unit, cell.signed) for arm, cell in _by_arm(matrix, across).items()}
+    if name == "s2":
+        assert placed == {label: ("", False) for label in figures}
+    else:
+        assert placed == {label: (_unit(shape, label), _unit(shape, label) == POINTS) for label in figures}
     # The long form holds no such row: the figure across aspects is the matrix's alone.
     folded = _table(shape.page(), "aspects" if name == "s1" else "pairs")
     assert aggregate.EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in folded.rows}
@@ -932,21 +961,21 @@ async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_
     the matrix and in the fold alike, never ``0.0003`` or ``0``."""
     result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")
     matrix = _table(result.page, "scorecard")
-    spend = next(
-        column.key for column in matrix.columns if column.header == "Measuring spend, all roles, per 1,000 replies"
-    )
-    (row,) = matrix.rows
-    cell = row[spend]
+    # One arm's matrix is turned: a row per measure, its value in a column of its own (visual pass V2).
+    (row,) = [line for line in matrix.rows if line["measure"].text == "Measuring spend, all roles, per 1,000 replies"]
+    cell = row["value"]
     assert cell.unit == MONEY and not cell.per_thousand and cell.decimals is not None
     assert cell.text == f"${cell.value:.{cell.decimals}f}" and "/1000" not in cell.text
+    assert re.fullmatch(r"\[\$\d+\.\d+, \$\d+\.\d+\]", str(row["interval"].value))
     measures = _table(result.page, "measures")
     (folded,) = [
         line for line in measures.rows if line["measure"].text == "Measuring spend, all roles, per 1,000 replies"
     ]
     assert folded["value"].text == cell.text
+    assert folded["interval"].text == row["interval"].text
     assert re.fullmatch(r"\[\$\d+\.\d+, \$\d+\.\d+\]", str(folded["interval"].value))
     # Only the money measures carry money's form; every other figure keeps the number rule.
-    assert {key for key, other in row.items() if other.unit == MONEY} == {
-        spend,
-        "measure:production_replicating_cost",
+    assert {line["measure"].text for line in matrix.rows if line["value"].unit == MONEY} == {
+        "Measuring spend, all roles, per 1,000 replies",
+        "Production cost, per 1,000 replies",
     }

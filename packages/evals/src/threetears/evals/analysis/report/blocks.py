@@ -18,7 +18,15 @@ from typing import Annotated, Any, Literal, Self, get_args
 from pydantic import Field, JsonValue, model_validator
 
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, render_cell, unit_label, with_unit
+from threetears.evals.analysis.quantities import (
+    PERCENT,
+    POINTS,
+    is_money,
+    number_in,
+    render_cell,
+    unit_label,
+    with_unit,
+)
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
     bare_at,
@@ -454,7 +462,25 @@ class TableCell(EvalDocumentModel):
             "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
             "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); for a "
             "percentage, the decimals its column reads at (0, or 1 where whole percents would print two of its values "
-            "alike); None for none, and the number rule spells the number."
+            "alike), which a builder that sets them keeps; for points, the decimals the change reads at (`-7.6 pts`, "
+            "never `-8 pts`); None for none, and the number rule spells the number."
+        ),
+    )
+    signed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "Whether the number is written with its sign, as a change is (`+2.5 pts`, `-7.4 pts`): its direction is "
+            "half the fact. False for a level."
+        ),
+    )
+    level: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a change from a baseline, the level the arm reads at, in percent, which every serializer writes "
+            "before the change at one decimal (`23.0% · +2.5 pts`), so a change is never read without where it "
+            "lands. None for none."
         ),
     )
     per_thousand: bool = Field(
@@ -507,6 +533,16 @@ class TableCell(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _a_level_and_a_sign_qualify_a_number(self) -> Self:
+        """Refuse a level or a sign on anything but a number.
+
+        :raises ValueError: ``level`` or ``signed`` is set and ``value`` is not a number.
+        """
+        if (self.level is not None or self.signed) and not self.is_number:
+            raise ValueError(f"a cell's level and sign qualify a change, and this cell holds {self.value!r}")
+        return self
+
+    @model_validator(mode="after")
     def _an_interval_brackets_a_number(self) -> Self:
         """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
 
@@ -549,6 +585,9 @@ class TableCell(EvalDocumentModel):
         if self.decimals is not None and self.is_number and not self.unit:
             # A bare figure under a (%) or (pts) head, at its column's one precision.
             return bare_at(number, self.decimals)
+        if self.decimals is not None and self.is_number and self.unit == POINTS:
+            # A change at its unit's precision: a whole one keeps its decimal beside its siblings (`10.0 pts`).
+            return f"{bare_at(number, self.decimals)} {POINTS}"
         return with_unit(number, self.unit)
 
     @property
@@ -560,11 +599,20 @@ class TableCell(EvalDocumentModel):
     def text(self) -> str:
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
+        said = self.figure
+        return said if self.flag is None else f"{said} ({self.flag})"
+
+    @property
+    def figure(self) -> str:
+        """``value`` as every serializer prints it, without its ``flag``: signed where the cell is a change
+        (``signed``), after the level it lands at where it carries one (``23.0% · +2.5 pts``)."""
         if (self.unit or self.decimals is not None) and self.is_number and isinstance(self.value, int | float):
             said = self.amount(float(self.value))
         else:
             said = render_cell(self.value)
-        return said if self.flag is None else f"{said} ({self.flag})"
+        if self.signed and self.is_number and float(self.value) > 0 and not said.startswith(("+", "<", ">")):  # type: ignore[arg-type]
+            said = f"+{said}"
+        return said if self.level is None else f"{percent_at(self.level, 1)} · {said}"
 
 
 def money_columns(
@@ -720,9 +768,11 @@ def _said(cell: TableCell) -> str:
 
 def _respelled_percents(cell: TableCell, places: int) -> TableCell:
     """A cell with every percentage it states at ``places`` decimals (:func:`respell_percents`); a number held with
-    the percent unit keeps its value, glyph and status and reads at its column's precision."""
+    the percent unit keeps its value, glyph and status and reads at its column's precision, or at the decimals its
+    builder set."""
     if cell.is_number and cell.unit == PERCENT:
-        return cell.model_copy(update={"decimals": places})
+        # A builder that chose the cell's decimals (a level a change is read from, at its unit's one decimal) keeps them.
+        return cell if cell.decimals is not None else cell.model_copy(update={"decimals": places})
     text = _said(cell)
     respelled = respell_percents(text, places)
     return cell if respelled == text else cell.model_copy(update={"value": respelled})
@@ -771,6 +821,15 @@ class TableBlock(_Block):
         description=(
             "How many leading columns a row is told apart by (2 where one column alone repeats, as a reading's row "
             "on each arm): HTML keeps that many in view while the table scrolls sideways."
+        ),
+    )
+    glyph_key: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What each interval glyph of a table on one scale draws, in a sentence the line under the table opens "
+            "with before the scale's ends: `Each mark is a candidate's change from v1 (the tick) with its 95% "
+            "interval; right is better.` None where the line names the columns each range is drawn for alone."
         ),
     )
 
@@ -1355,6 +1414,31 @@ class DisclosureBlock(_Block):
         """
         return _VERDICT_TONES[rule]
 
+    @staticmethod
+    def code_emphasis(text: str, decisions: Sequence[str]) -> list[str]:
+        """The decisions code's own line sets in bold: every one, or none where one would start or end inside a code
+        span. A host's name may hold a stray backtick, and code's own verdict then reads at one weight rather than
+        refusing the page; a caller's emphasis is held to :meth:`emphasis_pieces`, and refused there instead.
+
+        :param text: The line.
+        :ptype text: str
+        :param decisions: Each decision the line says, word for word and in its order.
+        :ptype decisions: Sequence[str]
+        :return: The decisions to set in bold.
+        :rtype: list[str]
+        """
+        at = 0
+        for decision in decisions:
+            found = text.find(decision, at) if decision else -1
+            if found < 0:
+                # A decision the line does not say is code's own fault, which the model refuses where it is made.
+                return list(decisions)
+            end = found + len(decision)
+            if text.count("`", 0, found) % 2 or text.count("`", 0, end) % 2:
+                return []
+            at = end
+        return list(decisions)
+
     @model_validator(mode="after")
     def _the_term_is_defined(self) -> Self:
         """Refuse a link to a term the glossary does not define.
@@ -1377,10 +1461,12 @@ class DisclosureBlock(_Block):
         pieces: list[tuple[str, bool]] = []
         at = 0
         for phrase in self.emphasis:
+            # prose-canary: allow — only code's verdict rules or a host's own lead set emphasis; no model does
             found = self.text.find(phrase, at) if phrase else -1
             if found < 0:
                 raise ValueError(f"a disclosure sets {phrase!r} in bold, which its text does not say there")
             end = found + len(phrase)
+            # prose-canary: allow — only code's verdict rules or a host's own lead set emphasis; no model does
             if self.text.count("`", 0, found) % 2 or self.text.count("`", 0, end) % 2:
                 raise ValueError(f"a disclosure sets {phrase!r} in bold, which cuts a code span in two")
             pieces += [(self.text[at:found], False), (phrase, True)]
