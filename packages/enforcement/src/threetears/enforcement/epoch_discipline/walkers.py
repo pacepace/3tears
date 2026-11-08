@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.observe import BuildOnce
 from threetears.enforcement.epoch_discipline.config import (
     RULE_EPOCH_BYPASS,
     RULE_L2_SWALLOW,
@@ -823,13 +824,44 @@ class _ModuleWalk(ast.NodeVisitor):
             self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}")
 
 
-_SCANS: dict[tuple[Path, tuple[Path, ...], tuple[str, ...]], EpochScan] = {}
+_SCANS: BuildOnce[tuple[Path, tuple[Path, ...], tuple[str, ...]], EpochScan] = BuildOnce()
+
+
+def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple[str, ...]) -> EpochScan:
+    """walk every module under ``src_roots`` once and record every rule's hits.
+
+    :param repo_root: the repo root; paths are relative to it
+    :ptype repo_root: Path
+    :param src_roots: source trees to walk
+    :ptype src_roots: tuple[Path, ...]
+    :param excluded_prefixes: repo-relative directory prefixes left unwalked
+    :ptype excluded_prefixes: tuple[str, ...]
+    :return: the walk
+    :rtype: EpochScan
+    """
+    scan = EpochScan()
+    used: set[str] = set()
+    for root in src_roots:
+        for path in iter_python_files(root):
+            relative = relative_posix_path(path, repo_root)
+            excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
+            used.update(excluded)
+            if excluded:
+                continue
+            tree = parse_python_path(path)
+            walk = _ModuleWalk(relative, tree)
+            walk.visit(tree)
+            scan.hits.extend(walk.hits)
+            scan.definitions.update(walk.definitions)
+            scan.files_scanned += 1
+    scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
+    return scan
 
 
 def scan_epoch_discipline(
     repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple[str, ...] = ()
 ) -> EpochScan:
-    """walk every module under ``src_roots`` and record every rule's hits.
+    """every rule's hits under ``src_roots``.
 
     The walk is kept for the process, keyed by its inputs, so the five rule gates of one repo
     read one walk.
@@ -843,24 +875,4 @@ def scan_epoch_discipline(
     :return: the walk
     :rtype: EpochScan
     """
-    key = (repo_root, src_roots, excluded_prefixes)
-    cached = _SCANS.get(key)
-    if cached is not None:
-        return cached
-    scan = EpochScan()
-    used: set[str] = set()
-    for root in src_roots:
-        for path in iter_python_files(root):
-            relative = relative_posix_path(path, repo_root)
-            excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
-            used.update(excluded)
-            if excluded:
-                continue
-            walk = _ModuleWalk(relative, parse_python_path(path))
-            walk.visit(parse_python_path(path))
-            scan.hits.extend(walk.hits)
-            scan.definitions.update(walk.definitions)
-            scan.files_scanned += 1
-    scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
-    _SCANS[key] = scan
-    return scan
+    return _SCANS.get((repo_root, src_roots, excluded_prefixes), lambda: _walk(repo_root, src_roots, excluded_prefixes))
