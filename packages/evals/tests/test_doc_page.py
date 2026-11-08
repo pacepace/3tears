@@ -406,6 +406,18 @@ def test_the_findings_left_open_and_the_made_line_close_the_appendix_in_every_fo
     assert not any(said in above for said in (FINDINGS_TITLE, must, should, _MADE))
 
 
+def test_the_findings_left_open_read_at_the_appendix_s_type_size_and_measure() -> None:
+    """Discodon's re-shoot of host pass 5: "Review findings left open" printed its list at the body's size across the
+    page's full width, beside Method and Checks at the appendix's. Its list is set as theirs are (the kit's
+    ``.method``: the appendix's small type, at the prose column's measure)."""
+    name = "prototype3/kairo"
+    written = doc_page_html(build(_doc(name), _input(name), strict=True, findings=_FINDINGS, made=_MADE))
+    found = written[written.index('<section data-part="findings"') :]
+    assert found.startswith(f'<section data-part="findings" id="findings"><h3>{FINDINGS_TITLE}</h3><ul class="method">')
+    method = written[written.index('<section data-part="method"') :]
+    assert method.startswith(f'<section data-part="method"><h3>{METHOD_TITLE}</h3><dl class="method">'), "the control"
+
+
 def test_a_finished_page_with_findings_open_counts_them_near_its_top_in_every_form() -> None:
     """Under the masthead, before the headline: how many findings are open, from the page's findings, the HTML line
     linked to where Method's list of them is; the list itself stays last in the appendix."""
@@ -501,6 +513,29 @@ def test_a_shared_label_whose_records_name_no_arm_says_only_how_many() -> None:
 
     assert page.claims[1].caveats == [said]
     _printed_once(page, CAVEATS_TEMPLATE.format(labels=said), label)
+
+
+def test_a_method_term_that_prints_a_caveat_s_own_words_does_not_label_it_again() -> None:
+    """Discodon's re-shoot of host pass 5: Method's Latency term printed the latency caveat's own words
+    (``{caveats.latency}``), then "Caveats: Latency is not compared." under them, the paragraph said twice. Code's
+    line names no caveat whose words the term's text prints; a term whose own prose explains it still names it, in
+    every form, and a caveat code does not assign is still refused by its path."""
+    name = "prototype3/kairo"
+    data = _doc(name).model_dump(mode="json", by_alias=True)
+    data["method"][0].update({"text": "{caveats.latency}", "caveats": ["latency"]})
+    data["method"][1]["caveats"] = ["latency"]
+    page = build(ReportDoc.model_validate(data), _input(name), strict=True)
+    label = CAVEATS_TEMPLATE.format(labels="Latency is not compared")
+    assert page.method[0].text == _input(name).caveats.latency, "the control: the term prints the caveat's words"
+    assert (page.method[0].caveats, page.method[1].caveats) == ([], ["Latency is not compared"])
+    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
+    for form in (written, markdown, text):
+        method = form[form.index(METHOD_TITLE) :]
+        assert method.count(label) == 1, form
+        assert method.index(page.method[1].text[:30]) < method.index(label), "beside the term whose prose explains it"
+    data["method"][0]["caveats"] = ["made-up"]
+    with pytest.raises(UnresolvableReference, match=re.escape("method[0].caveats[0]")):
+        build(ReportDoc.model_validate(data), _input(name), strict=True)
 
 
 def _printed_once(page: DocPage, line: str, label: str) -> None:

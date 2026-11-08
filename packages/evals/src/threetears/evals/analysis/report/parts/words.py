@@ -67,6 +67,7 @@ __all__ = [
     "CRITERION_LINE_WHERE",
     "MISSING_TEMPLATE",
     "NO_FIGURE",
+    "NOT_RECORDED",
     "NO_REASON",
     "OVERALL",
     "OPTIONS_TITLE",
@@ -288,6 +289,10 @@ CRITERION_LINE_WHERE = {
 
 #: What a gate matrix cell says beside its status where the input holds no figure there.
 NO_FIGURE = "no figure"
+
+#: What a Full results dash says beside it where the arm recorded nothing on a figure another arm has (no delivery to
+#: count items of): a dash that carries its reason, never read as a zero, and worded so it cannot read as "no items".
+NOT_RECORDED = "not recorded"
 
 #: A full gate grid's cell where the input holds no figure: unknown, never a fail, as the page reads it everywhere else.
 GATE_UNKNOWN = "Unknown"

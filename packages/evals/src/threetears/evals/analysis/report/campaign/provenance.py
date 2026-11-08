@@ -454,8 +454,9 @@ def provenance_blocks(
             if (detail := _setup_detail(kind, bundle, _namer(named_arms(bundle, labels)))) is not None:
                 setup.setdefault((what, detail), []).append(bundle.aspect)
     if setup:
+        # A disclosure's name is its row's label, so it starts with a capital as every row label does.
         rows = [
-            {"setup": TableCell(value=what), "detail": TableCell(value=detail), "aspects": aspects(held)}
+            {"setup": TableCell(value=_label(what)), "detail": TableCell(value=detail), "aspects": aspects(held)}
             for (what, detail), held in setup.items()
         ]
         blocks.append(
@@ -477,6 +478,12 @@ def provenance_blocks(
             )
         )
     return blocks
+
+
+def _label(words: str) -> str:
+    """A row's label as a table prints it: its words, starting with a capital (``Latency read under concurrency``,
+    ``Aspect; control; margin``); each starts with a word of code's, never a name or an expression."""
+    return words[:1].upper() + words[1:]
 
 
 def _namer(named: Mapping[str, ArmName]) -> Callable[[str], str]:
@@ -517,10 +524,11 @@ def _criteria_table(
     merged: dict[tuple[str | None, tuple[str, ...]], list[str]] = {}
     for (kind, what, at), held in groups.items():
         merged.setdefault((at, tuple(held)), []).append(_criterion_noun(kind, what))
-    # One criterion's words may hold a comma (a measure's name), so a row's criteria are set apart by semicolons.
+    # One criterion's words may hold a comma (a measure's name), so a row's criteria are set apart by semicolons; the
+    # row's label starts with a capital as every row label does.
     rows = [
         {
-            "criterion": TableCell(value="; ".join(nouns)),
+            "criterion": TableCell(value=_label("; ".join(nouns))),
             "set_on": TableCell(value=at or "not recorded"),
             "aspects": cell(list(held)),
         }

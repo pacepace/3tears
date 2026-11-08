@@ -98,6 +98,7 @@ from threetears.evals.analysis.report.parts.words import (
     GATE_WORDS,
     LINE_TEMPLATES,
     NO_FIGURE,
+    NOT_RECORDED,
     OVERALL,
 )
 from threetears.evals.analysis.report_gates import GateCheck, gate_check
@@ -180,12 +181,17 @@ def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> s
     return money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
 
 
-def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str | None = None) -> TableCell:
+def _stated(
+    report_input: ReportInput, key: str, stat: Stat | None, *, kind: str | None = None, others: bool = False
+) -> TableCell:
     """One figure on a measure or judged dimension as a cell: its mean (else the statistic a criterion on it reads,
-    named beside it) in the measure's unit, by the page's number rule; a dash where the input holds none."""
+    named beside it) in the measure's unit, by the page's number rule; a dash where the input holds none, which says
+    the arm recorded none where ``others`` (another arm in the same place holds the figure) and the arm holds no entry
+    at all: the control that made no delivery reads ``— (not recorded)`` beside a candidate's ``0 items``, two facts a
+    bare dash and a zero would print as one."""
     read = stat_value(report_input, key, stat) if stat is not None else None
     if read is None:
-        return TableCell(value=None)
+        return TableCell(value=None, flag=NOT_RECORDED if stat is None and others else None)
     value, statistic = read
     drawn = _drawn(report_input, key, kind=kind)
     flag = statistic if statistic != "mean" else None
@@ -252,12 +258,15 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
         cells = {"arm": _chip(look, arm)}
         if passing:
             cells["pass_rate"] = pass_rate_cell(report_input, arm)
+        # Every column is one some arm holds a figure in, so an arm with no entry recorded none.
         for key in judged:
             cells[f"judged:{key}"] = _stated(
-                report_input, key, report_input.judged[key].per_arm.get(arm), kind="judged"
+                report_input, key, report_input.judged[key].per_arm.get(arm), kind="judged", others=True
             )
         for key in measures:
-            cells[f"measure:{key}"] = _stated(report_input, key, report_input.measures[key].per_arm.get(arm))
+            cells[f"measure:{key}"] = _stated(
+                report_input, key, report_input.measures[key].per_arm.get(arm), others=True
+            )
         if costed:
             cells["cost_per_1k"] = _cost(report_input, arm)
         rows.append(cells)
@@ -316,18 +325,35 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
         ),
     ]
     keys = {column.key for column in columns}
+    def read_there(table: Measure | Judged, key: str, aspect: Aspect, *, kind: str | None = None) -> bool:
+        """Whether some arm holds the figure on ``aspect``: a dash there is an arm's not recorded, not the aspect's
+        not read."""
+        return any(
+            _stated(report_input, key, figure, kind=kind).value is not None
+            for figure in on_aspect(report_input, table, aspect.id).values()
+        )
+
     rows = []
     for aspect, arm in places:
         cells = {"arm": _chip(look, arm), "aspect": TableCell(value=aspect.name or aspect.id)}
         if "pass_rate" in keys:
             cells["pass_rate"] = passing[aspect.id, arm]
         for key in judged:
+            dimension = report_input.judged[key]
             cells[f"judged:{key}"] = _stated(
-                report_input, key, on_aspect(report_input, report_input.judged[key], aspect.id).get(arm), kind="judged"
+                report_input,
+                key,
+                on_aspect(report_input, dimension, aspect.id).get(arm),
+                kind="judged",
+                others=read_there(dimension, key, aspect, kind="judged"),
             )
         for key in measures:
+            measure = report_input.measures[key]
             cells[f"measure:{key}"] = _stated(
-                report_input, key, on_aspect(report_input, report_input.measures[key], aspect.id).get(arm)
+                report_input,
+                key,
+                on_aspect(report_input, measure, aspect.id).get(arm),
+                others=read_there(measure, key, aspect),
             )
         if costed:
             cost = costs[aspect.id].get(arm)

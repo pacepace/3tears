@@ -129,6 +129,9 @@ __all__ = ["build", "written_prose"]
 #: A figure key in the document's prose, as the figure keys' grammar spells one: ``{path|filter}``.
 _KEY = re.compile(r"\{[^{}]*\}")
 
+#: A figure key that prints a caveat's own words (``{caveats.latency}``), and the caveat it prints.
+_CAVEAT_KEY = re.compile(r"\{caveats\.([^{}|]+)(?:\|[^{}]*)?\}")
+
 #: The kind of block a block that no longer draws as its own falls back to: a table of its values.
 _TABLE = "table"
 
@@ -333,15 +336,20 @@ class _Labels:
         self.reader.refuse(path, f"names caveat {caveat_id!r}, which code does not assign on this input")
         return self.reader.written(own, path) if own is not None else UNRESOLVED
 
-    def landed(self, caveat_ids: Sequence[str], path: str) -> list[str]:
+    def landed(self, caveat_ids: Sequence[str], path: str, *, printed: str = "") -> list[str]:
         """The labels of the caveats a claim or a Method item names, in its order, each distinct label once.
 
         A label several of them share (two short runs, which code labels alike) is said once, with how many carry it
-        and what tells them apart where their records say it: the arms they name, as the page writes each arm.
+        and what tells them apart where their records say it: the arms they name, as the page writes each arm. A
+        caveat whose own words the item's text prints by its key (``printed``: ``{caveats.latency}``) is read, so a
+        caveat neither code's nor the analyst's is still refused, and not labelled again beside the words that say it.
         """
+        said = set(_CAVEAT_KEY.findall(printed))
         shared: dict[str, list[str]] = {}
         for index, caveat_id in enumerate(caveat_ids):
-            shared.setdefault(self.label(caveat_id, f"{path}[{index}]"), []).append(caveat_id)
+            label = self.label(caveat_id, f"{path}[{index}]")
+            if caveat_id not in said:
+                shared.setdefault(label, []).append(caveat_id)
         return [self._said(label, held) for label, held in shared.items()]
 
     def _said(self, label: str, caveat_ids: Sequence[str]) -> str:
@@ -685,7 +693,7 @@ def build(
             DocTerm(
                 term=reader.written(item.term, f"method[{index}].term"),
                 text=reader.written(item.text, f"method[{index}].text"),
-                caveats=labels.landed(item.caveats, f"method[{index}].caveats"),
+                caveats=labels.landed(item.caveats, f"method[{index}].caveats", printed=item.text),
             )
             for index, item in enumerate(doc.method)
         ],

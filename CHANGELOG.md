@@ -43,6 +43,28 @@ result names in `stranded_case_sets` over the copies (`carried` maps old ids to 
 revision. During a rolling deploy, a pod before v16.9 reads a carried copy and keeps its `carried_from` on write; it
 does not know the copy's identity, so a freeze run on such a pod adds the case again beside the copy.
 
+### evals: a report's scales, links, header rows, dashes and appendix read as one page
+
+**Changed:**
+- A glyph scale of levels never runs below zero where its measure cannot: a column of counts that all read 0 is drawn
+  from 0 to 1 (it was -1 to 1), and money floors at $0, its whisker stopped at the track. A difference still reads
+  either side of zero, and so does a level whose own interval reaches below zero: its measure is not declared
+  non-negative (`MetricDescriptor.nonnegative`), which a host's count should declare.
+- A glossary term is never linked inside a measure's or a column's name, in the line under a table or any other line
+  (`ran` in `Turns that ran over budget`); a name that is the term's own words still links it.
+- A header row sets every label from the top. In a frame that scrolls anyway, a long header takes two lines at most
+  (`--head`, the width that does), so it no longer sets the whole row's height by wrapping at the floor.
+- Every arm by measure says why a dash stands where an arm recorded nothing on a figure another arm holds:
+  `— (not recorded)` beside a candidate's `0 items`. A dash where no arm read the figure stays bare.
+- A Method term whose text prints a caveat's own words (`{caveats.latency}`) no longer repeats the caveat's label
+  under them; the review findings left open read at the appendix's type size and measure.
+- Design & provenance's row labels (Test setup's disclosures, Criteria set late's criteria) start with a capital, as
+  every other row label does. A code-only scorecard's column of measured figures (neither a rate nor money) reads at
+  one precision, two significant figures of its smallest figure but zero (`2.7` beside `0`, where it read `2.737`).
+
+**Hosts:** a match on a Test setup or Criteria set late row label, on a scorecard figure's digits, or on an Every arm
+by measure dash must take the new text.
+
 ### evals: a report page fits a host's frame first, and says when a table still runs past it
 
 **Changed:**

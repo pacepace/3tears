@@ -467,6 +467,27 @@ def test_a_row_s_label_heads_its_row_and_reads_as_a_body_cell() -> None:
     assert '<th scope="row"' in turned and "<td" in turned, "the control: the page's turned table heads its rows"
 
 
+def test_a_header_row_sets_its_labels_from_the_top_and_a_long_label_takes_two_lines_where_its_frame_scrolls() -> None:
+    """Discodon's re-shoot of host pass 5: the written report's Arms table at 688 px drew a header row about 90 px tall,
+    its short labels floating in the middle, set by "Share of output spent reasoning" wrapped in five lines at the
+    header's floor in a column past the frame's edge, though the table scrolls anyway. A header row sets every label
+    from the top; a label the floor would set in more than two lines carries the width that sets it in two
+    (``--head``), which the frame holds it at only when it scrolls anyway; a short label and a pinned one carry none."""
+    rules = _rules(_style(_served()["doc"]))
+    by = {(rule.at, rule.selector): rule.declarations() for rule in rules}
+    assert by[("", "thead th")] == {"vertical-align": "top"}
+    assert by[("@container scroll-state(scrollable:x)", ".tbl thead th")] == {"min-width": "var(--head,4.5rem)"}
+    arms = _served()["doc"].split('data-table="arms_key"', 1)[1].split("</thead>", 1)[0]
+    widths = {label: width for width, label in _HEAD.findall(arms)}
+    assert widths["Share of output spent reasoning"], arms
+    assert 9 < float(widths["Share of output spent reasoning"]) < 11, "the width of two lines, not of one"
+    assert widths["Arm"] == widths["Role"] == widths["Served model"] == "", "pinned, or two lines at the floor"
+
+
+#: A column header as a table writes it: the width it carries (``--head``), empty for none, and its label.
+_HEAD = re.compile(r'<th scope="col"[^>]*?(?: style="--head:([\d.]+)rem")?>([^<]*)</th>')
+
+
 #: A table's scrolling frame: its classes, and the widths its pinned columns are laid out at, when it sets any.
 _FRAME = re.compile(r'<div class="(tbl(?: [\w-]+)*)"(?: style="([^"]*)")?><table')
 
@@ -1044,6 +1065,38 @@ def test_a_frame_under_700_px_sets_its_headings_a_step_smaller() -> None:
     assert set(small) >= {"h1", "h2", "h3"}, small
     assert float(small["h1"]["font-size"].removesuffix("rem")) <= 1.5 and float(small["h1"]["line-height"]) <= 1.25
     assert float(small["h2"]["font-size"].removesuffix("rem")) <= 1.25
+
+
+#: Each header of the written report's Arms table as drawn: how many lines its label sets in, where its first line
+#: stands below the cell's top, and whether the frame scrolls.
+_HEAD_PROBE = """() => {
+  const table = document.querySelector('[data-table="arms_key"] table'), frame = table.closest('.tbl');
+  const heads = [...table.querySelectorAll('thead th')].map(th => {
+    const range = document.createRange(); range.selectNodeContents(th);
+    const tops = [...new Set([...range.getClientRects()].map(rect => Math.round(rect.top)))].sort((a, b) => a - b);
+    return {label: th.textContent.trim(), lines: tops.length, first: tops[0] - Math.round(th.getBoundingClientRect().top)};
+  });
+  return {scrolls: frame.scrollWidth > frame.clientWidth + 1, heads};
+}"""
+
+
+@pytest.mark.integration
+def test_the_arms_table_s_header_row_sets_every_label_from_the_top_in_two_lines_at_most_at_688_px(
+    tmp_path: Path,
+) -> None:
+    """Drawn in a host's 688 px frame, where the written report's Arms table scrolls anyway: no label takes more than
+    two lines (``Share of output spent reasoning`` took five, past the frame's edge, and set the row's height), and
+    every label's first line stands at one height, from the top."""
+    _browser()
+    path = tmp_path / "doc.html"
+    path.write_text(_served()["doc"], encoding="utf-8")
+    drawn, errors = rendered(path, _HEAD_PROBE, width=FRAME_PX)
+    assert not errors, errors
+    assert drawn["scrolls"], "the control: the Arms table scrolls in a 688 px frame"
+    lines = {head["label"]: head["lines"] for head in drawn["heads"]}
+    assert lines["Share of output spent reasoning"] == 2, lines
+    assert max(lines.values()) <= 2, lines
+    assert len({head["first"] for head in drawn["heads"]}) == 1, drawn["heads"]
 
 
 @pytest.mark.integration

@@ -143,7 +143,7 @@ def report_html(report: Report, *, static: bool = False) -> str:
     nav = [*present, *(["glossary"] if report.glossary else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
     parts += _sections(report, present, static=static)
-    parts = [_first_uses(_check_headers("\n".join(parts), report), report)]
+    parts = [_first_uses(_check_headers("\n".join(parts), report), report, _printed_names(report.blocks))]
     parts += _glossary(report)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
@@ -209,7 +209,8 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         parts += _aspect_fold(fold, slug, static=static)
     for section in after:
         parts += _campaign_section(report, section, static=static)
-    parts = [_first_uses(_check_headers("\n".join(parts), report), report)]
+    every = [*report.blocks, *(block for fold in report.aspects for block in fold.report.blocks)]
+    parts = [_first_uses(_check_headers("\n".join(parts), report), report, _printed_names(every))]
     parts += _glossary(report)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
@@ -235,12 +236,15 @@ _UNLINKED_IN: frozenset[str] = frozenset(
 )
 
 
-def _first_uses(markup: str, report: Report | CampaignReport) -> str:
+def _first_uses(markup: str, report: Report | CampaignReport, names: Sequence[str] = ()) -> str:
     """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
     own), the verdict line linking no term of art but the undecided reading. Each term is linked once this way; the
     glossary at the foot defines it. A goal check's name is matched whole and in its own case, never inside a longer
-    one (``Goal check`` in ``Goal check 2``); a name that is a term of art's words (``Outcome``) is left to the term."""
+    one (``Goal check`` in ``Goal check 2``); a name that is a term of art's words (``Outcome``) is left to the term.
+    Nor is a term linked inside a measure's or a column's name (``names``, :func:`_printed_names`), wherever a line
+    prints it: ``ran`` in ``Turns that ran over budget`` is the name's word, not the term; a name that is the term's
+    own words is the term."""
     terms = list(report.terms)
     of_art = {term.casefold() for term in terms}
     checks = [name for name, _ in report.check_glossary if name.casefold() not in of_art]
@@ -256,6 +260,7 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
     pending.update({name: re.compile(rf"(?<![\w-]){re.escape(escape(name))}(?!(?:[\w-]| \d))") for name in checks})
     opened: list[str] = []
     out: list[str] = []
+    named = _NamedIn(names)
     for token in _TAG.split(markup):
         if not token.startswith("<"):
             if token and pending and not any(name in _UNLINKED_IN for name in opened):
@@ -265,7 +270,7 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
                         for term, pattern in pending.items()
                         if term == CANNOT_TELL_APART or term not in GLOSSARY
                     }
-                    token = _linked_once(token, held)
+                    token = _linked_once(token, held, named)
                     # A term linked here is pending no longer.
                     for term in [
                         term
@@ -274,7 +279,7 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
                     ]:
                         pending.pop(term)
                 else:
-                    token = _linked_once(token, pending)
+                    token = _linked_once(token, pending, named)
             out.append(token)
             continue
         out.append(token)
@@ -304,14 +309,15 @@ def _check_headers(markup: str, report: Report | CampaignReport) -> str:
     return check_header_links(markup, [name for name, _ in report.check_glossary if name.casefold() not in of_art])
 
 
-def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
-    """``text`` with the first use of each pending term in it linked, the longest first where two start alike; each
-    term linked is no longer pending."""
+def _linked_once(text: str, pending: dict[str, re.Pattern[str]], named: _NamedIn | None = None) -> str:
+    """``text`` with the first use of each pending term in it linked, the longest first where two start alike, never
+    one inside a name ``named`` holds; each term linked is no longer pending."""
+    spans = named.spans(text) if named is not None else []
     found = sorted(
         (
             (match.start(), -len(match.group(0)), match.end(), term)
             for term, pattern in pending.items()
-            if (match := pattern.search(text)) is not None
+            if (match := _first_free(pattern, text, spans)) is not None
         ),
     )
     said: list[str] = []
@@ -323,6 +329,47 @@ def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
         pending.pop(term)
         at = end
     return "".join([*said, text[at:]])
+
+
+def _first_free(pattern: re.Pattern[str], text: str, spans: Sequence[tuple[int, int]]) -> re.Match[str] | None:
+    """The first match of ``pattern`` in ``text`` that is not inside a name's span (``spans``): one a name holds whole
+    is the name's own words; one that is the whole name is the term."""
+    for match in pattern.finditer(text):
+        if not any(
+            start <= match.start() and match.end() <= end and (start, end) != match.span() for start, end in spans
+        ):
+            return match
+    return None
+
+
+#: A column head's unit, which is no part of the name it follows: ``(%)``, ``(pts)``, and the count money is drawn
+#: per (``, per 1,000 replies``).
+_HEAD_UNIT = re.compile(r"(?: \((?:%|pts)\)|, per [\d,]+ [\w ]+)$")
+
+
+def _printed_names(blocks: Sequence[ReportBlock]) -> list[str]:
+    """Every measure's and column's name a page's tables print: each column's header without the unit it closes on
+    (``Pass rate`` of ``Pass rate (%)``, ``Measuring spend, all roles`` of its ``, per 1,000 replies``), so a term that
+    is a measure's whole name (``measuring spend, all roles``) is that name, wherever the unit follows it."""
+    headers = {column.header for block in blocks if isinstance(block, TableBlock) for column in block.columns}
+    return sorted({_HEAD_UNIT.sub("", header) for header in headers} - {""})
+
+
+class _NamedIn:
+    """Where the names a page prints stand in a line of its markup: each the longest that starts there, matched whole
+    and in any case (a name in a sentence keeps the sentence's case), so a term inside one is left to the name."""
+
+    def __init__(self, names: Sequence[str]) -> None:
+        held = sorted({escape(name) for name in names if name.strip()}, key=len, reverse=True)
+        self._pattern = (
+            re.compile(rf"(?<![\w-])(?:{'|'.join(re.escape(name) for name in held)})(?![\w-])", re.IGNORECASE)
+            if held
+            else None
+        )
+
+    def spans(self, text: str) -> list[tuple[int, int]]:
+        """Each name's span in ``text``, the longest at each place, none overlapping."""
+        return [] if self._pattern is None else [match.span() for match in self._pattern.finditer(text)]
 
 
 def _appendix(report: CampaignReport, static: bool) -> list[str]:
