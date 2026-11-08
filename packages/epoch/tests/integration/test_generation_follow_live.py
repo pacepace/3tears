@@ -191,7 +191,7 @@ async def _pods(url: str) -> AsyncIterator[tuple[_Pod, _Pod, Callable[[], Any]]]
         try:
 
             async def lose_epoch_bucket() -> None:
-                await writer_nc.jetstream_context().delete_stream(f"KV_{namespace}-epochs")
+                await writer_nc.jetstream_context().delete_stream(f"KV_{namespace}-epoch-changes")
 
             yield writer, follower, lose_epoch_bucket
         finally:

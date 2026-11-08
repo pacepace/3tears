@@ -1,7 +1,8 @@
 # Running L2-first collections
 
-An L2-first collection commits each write in NATS: the row lands in L2 and its epoch record lands in the
-epoch change log. A saver then makes L3 (Yugabyte) match. Pods never read L3. When NATS loses data, one
+An L2-first collection commits each write in NATS: one epoch record in the change log, carrying the row.
+The row is applied to L2 right after; if the writer dies first, the saver applies it from the record. The
+saver then makes L3 (Yugabyte) match. Pods never read L3. When NATS loses data, one
 claimed worker puts L2 back from L3.
 
 This page is for whoever wires, runs and watches it. The design is in the module docstring of
@@ -83,9 +84,10 @@ for status in await l2_first_status(registry, epochs=source, log=epoch_log):
 
 1. Pods keep serving what they hold. A key a pod does not hold raises `L2LostError`. Followers count
    themselves on `collection_epoch_tables_behind`. Writes raise `L2LostError`.
-2. The worker's next pass refills each table: rows L2 holds nothing for, the newest 4096 epoch records,
-   the generation under its old incarnation, the saver's position, then the "complete" mark. It logs
-   one WARNING per table and counts `threetears_l2_first_refills_total`.
+2. The worker's next pass puts the change log back from the L3 epoch log: every table's newest 4096
+   records, at their old sequences, in one restore. Then, per table, the rows L2 holds nothing for, the
+   saver's position, and the "complete" mark. It logs one WARNING for the log and one per table, and
+   counts `threetears_l2_first_refills_total`.
 3. Pods catch up through the normal epoch path. They never read L3.
 4. Verify with the status read above: every table `complete=True` and a `generation`.
 

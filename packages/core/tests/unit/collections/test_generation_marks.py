@@ -135,7 +135,8 @@ class TestAnotherIncarnationIsAReplacedStore:
         # replaces nothing: its advances are ones this pod may have missed, each with its record
         marks = _followed(None)
         assert marks.judge(_TABLE, "inc-a:1") is GenerationVerdict.MISSED
-        assert marks.unaccounted(_TABLE, "inc-a:2") == ("inc-a:1", "inc-a:2")
+        marks.advance_to(_TABLE, "inc-a:2")
+        assert marks.recorded(_TABLE) == "inc-a:2"
 
     def test_a_token_that_is_not_a_count_only_ever_equals_itself(self) -> None:
         marks = _followed("opaque-1")

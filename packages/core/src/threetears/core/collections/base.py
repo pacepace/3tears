@@ -22,7 +22,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -69,7 +69,7 @@ from threetears.core.collections.generation import (
     tables_with_write_generation,
 )
 from threetears.core.collections.l2_degrade import degrade_l2
-from threetears.core.collections.l2_first import L2First, L2FirstEpochs, L2LostError, complete_mark
+from threetears.core.collections.l2_first import L2First, L2FirstEpochs, complete_mark
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
     L2Order,
@@ -82,6 +82,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
+    L2LostError,
     ConcurrentModificationError,
     CorruptCacheEntry,
     GenerationNotCommittedError,
@@ -1941,6 +1942,31 @@ class BaseCollection(ABC, Generic[EntityT]):
         if raw is None:
             return None
         return read_epoch_change(raw, table_name, token)
+
+    async def watch_l2_write_generation(self) -> AsyncIterator[str | None]:
+        """this L2-kept table's write generation as it stands, then each value it takes, until the caller stops.
+
+        Pushed through the bucket's key watch on the generation key, so a replica follows the table by
+        each advance rather than by a timed pass (``threetears.epoch.follow_l2_kept_tables``).
+
+        :return: the generation tokens, in order; ``None`` when the key was deleted
+        :rtype: AsyncIterator[str | None]
+        :raises GenerationUnavailableError: when the bucket cannot be opened or cannot watch the key
+        """
+        try:
+            kv = await self._ensure_kv()
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {self.table_name!r} could not be watched: {exc}"
+            ) from exc
+        watch_key = getattr(kv, "watch_key", None)
+        if kv is None or watch_key is None:
+            raise GenerationUnavailableError(f"write generation for {self.table_name!r} has no key to watch")
+        # sender-posture: own-consumer -- a generation counts only through the KV key watch, which takes an update only with its own consumer's ack reply
+        async with aclosing(watch_key(key=self._l2_generation_key())) as updates:
+            async for update in updates:
+                value = update.value
+                yield None if value is None else value.decode("utf-8", errors="replace")
 
     async def l2_write_generation(self) -> str | None:
         """this table's write generation as L2 holds it, for the pass that judges a follower's mark.
@@ -4149,7 +4175,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         kv = await self._ensure_kv()
         if kv is None:
             raise L2LostError(f"{self.table_name}: no L2 to save from")
-        raw, _ = await kv.get_latest(key=self.l2_key(entity_id))
+        raw, latest = await kv.get_latest(key=self.l2_key(entity_id))
+        if row.l2_revision is not None and latest == row.l2_revision and raw != row.value:
+            # the key is where the committing writer read it: it died before applying its row, so the
+            # saver applies it now, at that revision; a write since would have moved the key on
+            await self._l2_first_apply(kv, entity_id, row.value, latest)
+            raw, latest = await kv.get_latest(key=self.l2_key(entity_id))
         held: dict[str, Any] | None = None
         if raw is not None:
             decoded = self._decode_l2_value(raw)
@@ -4235,115 +4266,65 @@ class BaseCollection(ABC, Generic[EntityT]):
         assert kv is not None  # narrow: writes_l2_first means an L2 client is wired
         return kv
 
-    async def _l2_first_swap(
-        self,
-        kv: NatsKvBucket,
-        entity_id: Any,
-        payload: bytes | None,
-        original_timestamp: datetime | None,
-        lifetime: timedelta | None = None,
-    ) -> tuple[int, bytes | None]:
-        """write (or, with no payload, delete) one key in L2 at the revision just read, and say what it held.
+    async def _l2_first_read(
+        self, kv: NatsKvBucket, entity_id: Any, original_timestamp: datetime | None
+    ) -> tuple[bytes | None, int]:
+        """read the key a write is about to commit, checking the optimistic-lock fence against it.
 
         :param kv: the bucket
         :ptype kv: NatsKvBucket
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
-        :param payload: the row to write, or ``None`` to delete the key
-        :ptype payload: bytes | None
-        :param original_timestamp: the optimistic-lock fence: the ``date_updated`` the writer read
+        :param original_timestamp: the ``date_updated`` the writer read, or ``None`` for no fence
         :ptype original_timestamp: datetime | None
-        :param lifetime: the row's server-side lifetime, for a table that declares an expiry
-        :ptype lifetime: timedelta | None
-        :return: the revision the write left the key at, and the value the key held before it
-            (``None`` when it held no row)
-        :rtype: tuple[int, bytes | None]
-        :raises ConcurrentModificationError: when the fence does not match, or the key stays contended
-        :raises KvError: when L2 cannot be read or written
+        :return: the value the key holds (``None`` for no row) and its latest revision
+        :rtype: tuple[bytes | None, int]
+        :raises ConcurrentModificationError: when the fence does not match the row L2 holds
+        :raises KvError: when L2 cannot be read
         """
-        key = self.l2_key(entity_id)
-        fence = original_timestamp or datetime.min
-        for _ in range(_L2_FIRST_SWAP_ROUNDS):
-            prior, revision = await kv.get_latest(key=key)
-            if original_timestamp is not None:
-                held = None if prior is None else self._decode_l2_value(prior)
-                if not isinstance(held, dict) or held.get("date_updated") != original_timestamp:
-                    raise ConcurrentModificationError(self.table_name, entity_id, fence)
-            if payload is None:
-                if prior is None:
-                    return revision, None
-                if await kv.delete(key=key, revision=revision):
-                    # the delete's own marker revision, for a withdrawal to fence on. A write that landed
-                    # since is someone else's: revision zero then fences a withdrawal off it entirely.
-                    after, marker = await kv.get_latest(key=key)
-                    return (marker if after is None else 0), prior
-            else:
-                timed = {} if lifetime is None else {"ttl": lifetime}
-                won = await kv.update(key=key, value=payload, revision=revision, **timed)
-                if won is not None:
-                    return won, prior
-            if original_timestamp is not None:
-                raise ConcurrentModificationError(self.table_name, entity_id, fence)
-            await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
-        raise ConcurrentModificationError(self.table_name, entity_id, fence)
+        prior, revision = await kv.get_latest(key=self.l2_key(entity_id))
+        if original_timestamp is not None:
+            held = None if prior is None else self._decode_l2_value(prior)
+            if not isinstance(held, dict) or held.get("date_updated") != original_timestamp:
+                raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp)
+        return prior, revision
 
-    async def _withdraw_l2_first(
-        self, kv: NatsKvBucket, entity_id: Any, won: int, prior: bytes | None, failure: BaseException
-    ) -> bool:
-        """put back what a key held before an L2-first write that is being reported failed.
-
-        As :meth:`_withdraw_unpersisted_cas`: the caller is about to be told the write did not happen, so
-        L2 must not keep answering with it. Where L2 is the record, the prior value is put back at the
-        revision the write won (a key that held no row is deleted at it), not merely the key deleted. A
-        put-back that loses means another write has built on the withdrawn value; it is logged.
+    async def _l2_first_apply(self, kv: NatsKvBucket, entity_id: Any, value: bytes | None, revision: int) -> int | None:
+        """apply a committed value (or, with none, a delete) to the key, only while it is at ``revision``.
 
         :param kv: the bucket
         :ptype kv: NatsKvBucket
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
-        :param won: the revision the write left the key at
-        :ptype won: int
-        :param prior: the value the key held before it, ``None`` for no row
-        :ptype prior: bytes | None
-        :param failure: why the write is reported failed, for the log
-        :ptype failure: BaseException
-        :return: whether L2 holds the prior value again
-        :rtype: bool
+        :param value: the row to put, or ``None`` to delete the key
+        :ptype value: bytes | None
+        :param revision: the revision the committing writer read
+        :ptype revision: int
+        :return: the revision the key is at after it; ``None`` when another write moved the key first, or
+            L2 refused it (counted; the saver applies the commit from its record)
+        :rtype: int | None
         """
         key = self.l2_key(entity_id)
-        withdrawn = False
-        withdraw_error: str | None = None
         try:
-            if prior is None:
-                withdrawn = await kv.delete(key=key, revision=won)
-            else:
-                withdrawn = await kv.update(key=key, value=prior, revision=won) is not None
+            if value is None:
+                if not await kv.delete(key=key, revision=revision):
+                    return None
+                after, marker = await kv.get_latest(key=key)
+                # a write that landed after the delete is someone else's: nothing of this one to fence on
+                return marker if after is None else None
+            decoded = self._decode_l2_value(value)
+            lifetime = self._l2_entry_lifetime(decoded) if isinstance(decoded, dict) else None
+            timed = {} if lifetime is None else {"ttl": lifetime}
+            return await kv.update(key=key, value=value, revision=revision, **timed)
         except KvError as exc:
-            withdraw_error = f"{type(exc).__name__}: {exc}"
             degrade_l2(
                 exc,
                 table=self.table_name,
-                op="withdraw",
-                what="L2 refused the withdrawal of an L2-first write reported failed",
+                op="apply",
+                what="L2 refused a committed L2-first value; the saver applies it from the epoch's record",
                 entity_id=entity_id,
             )
-        self._evict_l1(entity_id)
-        log.error(
-            "an L2-first write was not saved; it is withdrawn from L2 and reported failed",
-            extra={
-                "extra_data": {
-                    "entity_id": str(entity_id),  # convert at border: log extra_data field
-                    "table": self.table_name,
-                    "error": f"{type(failure).__name__}: {failure}",
-                    "l2_withdrawn": withdrawn,
-                    "l2_withdraw_error": withdraw_error,
-                    "remedy": "retry the write"
-                    if withdrawn
-                    else "a later write already built on this value in L2; the saver carries that one",
-                }
-            },
-        )
-        return withdrawn
+            return None
 
     async def _settle_l2_first(self, changes: Sequence[EpochChange]) -> None:
         """record that the writer has saved these epochs itself: their records into the L3 epoch log, and
@@ -4379,16 +4360,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         epochs: L2FirstEpochs,
         kv: NatsKvBucket,
         entity_id: Any,
-        won: int,
+        revision: int,
         prior: bytes | None,
-        committed: EpochChange,
         failure: BaseException,
     ) -> _Bump:
-        """take back a committed L2-first write L3 did not save, and announce the take-back as one more epoch.
+        """take back a committed L2-first write L3 did not save: one more epoch, carrying the prior value.
 
-        The first epoch already told every follower the key changed; one that took the withdrawn value
-        must drop it again, so the withdrawal is itself an epoch naming the key. Both epochs are settled:
-        L3 already holds what L2 holds again.
+        The withdrawal is committed as the write was, record first: an epoch naming the key with the value
+        it held before (none, for a key that held no row), then applied at the revision the write left.
+        Neither epoch is settled: an L3 write that failed may still have landed (a lost connection does not
+        say), so the saver makes L3 hold what L2 holds again, harmless where L3 never took the write.
 
         :param epochs: the epoch log
         :ptype epochs: L2FirstEpochs
@@ -4396,39 +4377,56 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype kv: NatsKvBucket
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
-        :param won: the revision the write left the key at
-        :ptype won: int
-        :param prior: the value the key held before it
+        :param revision: the revision the write left the key at
+        :ptype revision: int
+        :param prior: the value the key held before the write; ``None`` for no row
         :ptype prior: bytes | None
-        :param committed: the epoch the write committed
-        :ptype committed: EpochChange
         :param failure: why L3 did not save it
         :ptype failure: BaseException
         :return: the withdrawal's advance, to stamp on its broadcast
         :rtype: _Bump
         """
-        await self._withdraw_l2_first(kv, entity_id, won, prior, failure)
         prior_row = None if prior is None else self._decode_l2_value(prior)
         seen = prior_row if isinstance(prior_row, dict) else None
-        changed = self.changed_row(entity_id, seen, l2_key_current=True).model_copy(update={"l3_pending": True})
+        changed = self.changed_row(entity_id, seen, l2_key_current=True).model_copy(
+            update={"l3_pending": True, "value": prior, "l2_revision": revision}
+        )
+        bump = _NO_BUMP
+        withdrawn = False
         try:
             token = await epochs.advance_continuing(self.table_name, [changed])
         except GenerationUnavailableError as exc:
             log.error(
-                "the withdrawal of an L2-first write was not announced as an epoch; a follower that heard the "
-                "write keeps its value until it next reads the key",
+                "the withdrawal of an L2-first write did not commit; L2 keeps the value L3 did not take until the "
+                "key is next written",
                 extra={
                     "extra_data": {
                         "table": self.table_name,
                         "entity_id": str(entity_id),  # convert at border: log extra_data field
-                        "epoch": committed.token,
                         "error": str(exc),
                     }
                 },
             )
-            return _NO_BUMP
-        self._registry.account_generation(self.table_name, token)
-        return _Bump(token=token, rows=1)
+        else:
+            self._registry.account_generation(self.table_name, token)
+            bump = _Bump(token=token, rows=1)
+            withdrawn = await self._l2_first_apply(kv, entity_id, prior, revision) is not None
+        self._evict_l1(entity_id)
+        log.error(
+            "an L2-first write was not saved; it is withdrawn from L2 and reported failed",
+            extra={
+                "extra_data": {
+                    "entity_id": str(entity_id),  # convert at border: log extra_data field
+                    "table": self.table_name,
+                    "error": f"{type(failure).__name__}: {failure}",
+                    "l2_withdrawn": withdrawn,
+                    "remedy": "retry the write"
+                    if withdrawn
+                    else "a later write already moved the key on; the saver carries the newest value to L3",
+                }
+            },
+        )
+        return bump
 
     async def _save_l2_first(
         self,
@@ -4438,7 +4436,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         original_timestamp: datetime | None,
         working: dict[str, Any],
     ) -> None:
-        """commit a save in NATS, then (when the collection waits) in L3; see :attr:`l2_first`.
+        """commit a save in NATS, then apply it to L2, then (when the collection waits) save it to L3.
+
+        The commit is one epoch record carrying the row and the revision of its key the writer read. Only
+        then is the row applied to L2, at that revision; a writer that dies between the two leaves the key
+        where it was, and the saver applies the row from the record. See :attr:`l2_first`.
 
         :param entity: the entity being saved
         :ptype entity: BaseEntity
@@ -4452,14 +4454,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype working: dict[str, Any]
         :return: nothing
         :rtype: None
-        :raises L2LostError: when L2 does not hold the table, so no epoch can commit
-        :raises ConcurrentModificationError: when the fence does not match L2's row
+        :raises L2LostError: when the change log is absent, so nothing can commit
+        :raises ConcurrentModificationError: when the fence does not match L2's row, or another write of the
+            key was applied between this one's read and its own apply (this commit then stands as the
+            older of the two, and L2 keeps the other)
         :raises Exception: whatever L3 raised for a waiting write, after it was withdrawn
         """
         try:
             epochs = self._l2_first_epochs()
             data = self._write_ahead_row(data)
             kv = await self._l2_first_bucket()
+            prior, revision = await self._l2_first_read(kv, entity_id, original_timestamp)
+            payload = self.serialize(self._normalise_datetimes_for_write(data))
+            changed = self.changed_row(entity_id, data, l2_key_current=True).model_copy(
+                update={"l3_pending": True, "value": payload, "l2_revision": revision}
+            )
+            with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
+                token = await epochs.advance_continuing(self.table_name, [changed])
+                self._registry.account_generation(self.table_name, token)
+                won = await self._l2_first_apply(kv, entity_id, payload, revision)
+                if won is not None and self._l1 is not None and self._l1_fence.still_newest(ticket):
+                    self._l1_upsert(data, self.primary_key_columns)
+                else:
+                    self._evict_l1(entity_id)
         except KvError as exc:
             self._withdraw_unstored(entity, entity_id, working)
             degrade_l2(exc, table=self.table_name, op="put", what="L2-first save refused", l2_is_the_store=True)
@@ -4467,33 +4484,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         except BaseException:
             self._withdraw_unstored(entity, entity_id, working)
             raise
-        payload = self.serialize(self._normalise_datetimes_for_write(data))
-        changed = self.changed_row(entity_id, data, l2_key_current=True).model_copy(update={"l3_pending": True})
-        with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
-            try:
-                won, prior = await self._l2_first_swap(
-                    kv, entity_id, payload, original_timestamp, self._l2_entry_lifetime(data)
-                )
-            except KvError as exc:
-                self._withdraw_unstored(entity, entity_id, working)
-                degrade_l2(exc, table=self.table_name, op="put", what="L2-first save refused", l2_is_the_store=True)
-                raise
-            except BaseException:
-                self._withdraw_unstored(entity, entity_id, working)
-                raise
-            try:
-                token = await epochs.advance_continuing(self.table_name, [changed])
-            except BaseException as exc:
-                await self._withdraw_l2_first(kv, entity_id, won, prior, exc)
-                self._withdraw_unstored(entity, entity_id, working)
-                raise
-            self._registry.account_generation(self.table_name, token)
-            if self._l1 is not None and self._l1_fence.still_newest(ticket):
-                self._l1_upsert(data, self.primary_key_columns)
-            else:
-                self._evict_l1(entity_id)
-        committed = EpochChange(table=self.table_name, token=token, rows=[changed])
         bump = _Bump(token=token, rows=1)
+        if won is None:
+            _, latest = await kv.get_latest(key=self.l2_key(entity_id))
+            if latest != revision:
+                # another write of the key was applied first: L2 keeps it, and the saver carries it
+                await self._announce_row(entity_id, l2_key_current=True, bump=bump, row=data)
+                self._withdraw_unstored(entity, entity_id, working)
+                raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
+        committed = EpochChange(table=self.table_name, token=token, rows=[changed])
         if self.waits_for_l3:
             try:
                 if await self.save_to_store(data, None) == 0:
@@ -4501,7 +4500,9 @@ class BaseCollection(ABC, Generic[EntityT]):
                         raise RuntimeError(f"L3 saved no row for {self.table_name} entity {entity_id}")
                     raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
             except BaseException as exc:
-                withdrawal = await self._withdraw_committed_l2_first(epochs, kv, entity_id, won, prior, committed, exc)
+                withdrawal = await self._withdraw_committed_l2_first(
+                    epochs, kv, entity_id, won if won is not None else revision, prior, exc
+                )
                 self._withdraw_unstored(entity, entity_id, working)
                 await self._announce_row(entity_id, l2_key_current=True, bump=withdrawal, row=data)
                 raise
@@ -4512,36 +4513,36 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self._announce_row(entity_id, l2_key_current=True, bump=bump, row=data)
 
     async def _delete_l2_first(self, entity_id: Any) -> bool:
-        """commit a delete in NATS, then (when the collection waits) in L3; see :attr:`l2_first`.
+        """commit a delete in NATS, then apply it to L2, then (when the collection waits) to L3.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :return: always ``True``
         :rtype: bool
-        :raises L2LostError: when L2 does not hold the table, so no epoch can commit
+        :raises L2LostError: when the change log is absent, so nothing can commit
         :raises Exception: whatever L3 raised for a waiting delete, after it was withdrawn
         """
         epochs = self._l2_first_epochs()
         try:
             kv = await self._l2_first_bucket()
-            with self._l1_fence.watching(self._fence_key(entity_id), writing=True):
-                won, prior = await self._l2_first_swap(kv, entity_id, None, None)
+            prior, revision = await self._l2_first_read(kv, entity_id, None)
         except KvError as exc:
             degrade_l2(exc, table=self.table_name, op="delete", what="L2-first delete refused", l2_is_the_store=True)
             raise
         self._evict_l1(entity_id)
         if prior is None:
-            # L2 is complete and held no row: there was nothing to delete, here or in L3
+            # L2 is complete and holds no row: there is nothing to delete, here or in L3
             return True
         prior_row = self._decode_l2_value(prior)
         seen = prior_row if isinstance(prior_row, dict) else None
-        changed = self.changed_row(entity_id, seen, l2_key_current=True).model_copy(update={"l3_pending": True})
-        try:
+        changed = self.changed_row(entity_id, seen, l2_key_current=True).model_copy(
+            update={"l3_pending": True, "value": None, "l2_revision": revision}
+        )
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=True):
             token = await epochs.advance_continuing(self.table_name, [changed])
-        except BaseException as exc:
-            await self._withdraw_l2_first(kv, entity_id, won, prior, exc)
-            raise
-        self._registry.account_generation(self.table_name, token)
+            self._registry.account_generation(self.table_name, token)
+            won = await self._l2_first_apply(kv, entity_id, None, revision)
+        self._evict_l1(entity_id)
         committed = EpochChange(table=self.table_name, token=token, rows=[changed])
         bump = _Bump(token=token, rows=1)
         if self.waits_for_l3:
@@ -4549,7 +4550,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             try:
                 await self.delete_from_store(entity_id)
             except BaseException as exc:
-                withdrawal = await self._withdraw_committed_l2_first(epochs, kv, entity_id, won, prior, committed, exc)
+                withdrawal = await self._withdraw_committed_l2_first(
+                    epochs, kv, entity_id, won if won is not None else revision, prior, exc
+                )
                 await self._announce_row(entity_id, l2_key_current=True, bump=withdrawal, row=seen)
                 raise
             await self._settle_l2_first([committed])

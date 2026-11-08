@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, read_epoch_change
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, read_epoch_change
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
@@ -68,7 +68,6 @@ __all__ = [
     "L2First",
     "L2FirstEpochs",
     "L2FirstTableStatus",
-    "L2LostError",
     "L2Refiller",
     "L3Saver",
     "SaverPass",
@@ -161,15 +160,6 @@ class L2First:
 L2_FIRST: Final = L2First()
 
 
-class L2LostError(GenerationUnavailableError):
-    """L2 does not hold an L2-first table complete: it was lost, or the refiller has not filled it yet.
-
-    A read of a key the pod does not hold cannot be answered (an absence would be a lie, and pods never
-    read L3), and a write cannot commit (the epoch would start a new history pods cannot follow). Both
-    are answered again once the refiller has put L2 back.
-    """
-
-
 @runtime_checkable
 class L2FirstEpochs(Protocol):
     """the epoch log an L2-first collection commits through, and the saver and refiller read and restore."""
@@ -215,22 +205,40 @@ class L2FirstEpochs(Protocol):
         """
         ...
 
-    async def restore_epochs(self, table_name: str, head: str | None, changes: Sequence[EpochChange]) -> bool:
-        """put a table's epoch history back after NATS lost it, only where the store holds none.
-
-        The records keep their epochs, oldest first, and the head becomes ``head``: a pod whose mark is
-        within them catches up by applying them, as after any missed broadcast. One call, so a store that
-        numbers epochs itself (a stream's sequence) can be created at the first restored one.
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """every epoch of the table after ``after`` and up to ``upto``, oldest first, as the log holds them.
 
         :param table_name: the table
         :ptype table_name: str
-        :param head: the epoch to resume at; ``None`` starts a fresh incarnation at count zero
-        :ptype head: str | None
-        :param changes: the newest records the L3 epoch log keeps, oldest first, ending at ``head``
+        :param after: the epoch to read after
+        :ptype after: str
+        :param upto: the newest epoch to read
+        :ptype upto: str
+        :return: the walk, saying whether the log may be missing one of them
+        :rtype: EpochWalk
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
+
+    async def current(self, table_name: str) -> str:
+        """the table's generation, declaring a fresh log when the broker holds none.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the generation token
+        :rtype: str
+        :raises GenerationUnavailableError: when the log can be neither read nor declared
+        """
+        ...
+
+    async def restore_epochs(self, changes: Sequence[EpochChange]) -> bool:
+        """put a lost log back, every record at its old epoch, only where the broker holds no log.
+
+        :param changes: every record to put back, of every table, under one incarnation
         :ptype changes: Sequence[EpochChange]
-        :return: whether this call put the history back; ``False`` when the store already held one
+        :return: whether this call put the log back
         :rtype: bool
-        :raises GenerationUnavailableError: when the store cannot be written
+        :raises GenerationUnavailableError: when the log cannot be created or written
         """
         ...
 
@@ -542,13 +550,23 @@ class L3Saver:
         if head is None:
             # L2 lost, or never written: the refiller puts it back first
             return
-        incarnation, top = _parts(table, head)
+        incarnation, _ = _parts(table, head)
         start = await self._start(collection, incarnation)
-        for count in range(start + 1, top + 1):
-            token = f"{incarnation}:{count}"
-            if not await self._save_epoch(collection, incarnation, count, token, result):
+        # a table's epochs are walked, never counted: other tables' epochs sit between them in the log
+        walk = await self._epochs.changes_after(table, f"{incarnation}:{start}", head)
+        if not walk.complete:
+            result.missing += 1
+            _count(_MISSING, table)
+            log.error(
+                "the change log may have lost an epoch of an L2-first table before the saver reached it; a write "
+                "that did not wait for L3 may never reach it, until its source sends it again",
+                extra={"extra_data": {"table": table, "first_missing": walk.first_missing, "head": head}},
+            )
+        for change in walk.changes:
+            if not await self._save_epoch(collection, change, result):
                 return
-            await collection.write_l2_first_state(token.encode("utf-8"), "saved")  # convert at border: KV value
+            await collection.write_l2_first_state(change.token.encode("utf-8"), "saved")  # convert at border: KV value
+        await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
 
     async def _start(self, collection: BaseCollection[Any], incarnation: str) -> int:
         """the count after which this table's epochs are unsaved.
@@ -569,38 +587,24 @@ class L3Saver:
         parts = None if held is None else split_generation_token(held.decode("utf-8"))
         return parts[1] if parts is not None and parts[0] == incarnation else 0
 
-    async def _save_epoch(
-        self, collection: BaseCollection[Any], incarnation: str, count: int, token: str, result: SaverPass
-    ) -> bool:
+    async def _save_epoch(self, collection: BaseCollection[Any], change: EpochChange, result: SaverPass) -> bool:
         """save one epoch, or say the table's pass stops here.
 
         :param collection: the collection
         :ptype collection: BaseCollection[Any]
-        :param incarnation: the epoch's incarnation
-        :ptype incarnation: str
-        :param count: the epoch's count
-        :ptype count: int
-        :param token: ``{incarnation}:{count}``
-        :ptype token: str
+        :param change: the epoch's record, as the walk read it
+        :ptype change: EpochChange
         :param result: the pass's tally
         :ptype result: SaverPass
         :return: whether the epoch is done with and the position may move past it
         :rtype: bool
         """
         table = collection.table_name
+        token = change.token
+        incarnation, count = _parts(table, token)
         if await collection.read_l2_first_state("settled", incarnation, str(count)) is not None:
             result.settled += 1
             await collection.drop_l2_first_state("settled", incarnation, str(count))
-            return True
-        change = await self._epochs.change(table, token)
-        if change is None:
-            result.missing += 1
-            _count(_MISSING, table)
-            log.error(
-                "an epoch of an L2-first table has no change record left to save from; a write that did not wait "
-                "for L3 may never reach it, until its source sends it again",
-                extra={"extra_data": {"table": table, "epoch": token}},
-            )
             return True
         for row in change.rows:
             if not row.l3_pending:
@@ -682,49 +686,80 @@ class L2Refiller:
         self._log = log
 
     async def run_pass(self) -> int:
-        """refill every L2-first table L2 does not hold complete.
+        """put back the change log when the broker lost it, then refill every L2-first table L2 does not hold complete.
 
         :return: how many tables were refilled
         :rtype: int
         """
+        collections = l2_first_collections(self._registry)
+        if not collections:
+            return 0
+        if await self._epochs.read(collections[0].table_name) is None:
+            await self._restore_log(collections)
         refilled = 0
-        for collection in l2_first_collections(self._registry):
+        for collection in collections:
             if await self.refill(collection):
                 refilled += 1
         return refilled
 
+    async def _restore_log(self, collections: Sequence[BaseCollection[Any]]) -> None:
+        """put the change log back from the L3 epoch log, every table's newest records in one restore.
+
+        The log is one stream for every table, under one incarnation: the one the L3 epoch log saw last.
+        With nothing in the L3 epoch log, a fresh log is declared.
+
+        :param collections: the L2-first collections
+        :ptype collections: Sequence[BaseCollection[Any]]
+        :return: nothing
+        :rtype: None
+        """
+        heads = {c.table_name: await self._log.head(c.table_name) for c in collections}
+        known = {table: _parts(table, head) for table, head in heads.items() if head is not None}
+        if not known:
+            await self._epochs.current(collections[0].table_name)
+            return
+        # every table's newest epoch is under the log's one incarnation; the latest is the highest sequence
+        incarnation = max(known.values(), key=lambda parts: parts[1])[0]
+        changes: list[EpochChange] = []
+        for table, (each, top) in known.items():
+            if each != incarnation:
+                log.error(
+                    "an L2-first table's newest saved epoch is of an older change log; its history is not put back",
+                    extra={"extra_data": {"table": table, "incarnation": each, "restoring": incarnation}},
+                )
+                continue
+            changes.extend(await self._newest_records(table, f"{each}:{top}"))
+        restored = await self._epochs.restore_epochs(changes)
+        log.warning(
+            "the epoch change log was put back from the L3 epoch log; a pod behind on it catches up from here",
+            extra={"extra_data": {"records": len(changes), "incarnation": incarnation, "restored": restored}},
+        )
+
     async def refill(self, collection: BaseCollection[Any]) -> bool:
         """put one table back into L2 from L3, when L2 does not hold it complete.
 
-        In order, so that nothing reads "complete" before it is: every row L2 holds nothing for; the
-        newest epoch records, when the generation was lost with them; the generation itself, under the
-        incarnation L3 last saw; the saver's position, at that generation (every epoch up to it is in
-        L3, or was lost with NATS before it got there); then the mark that L2 holds the table complete.
+        Every row L2 holds nothing for; then the saver's position, at the table's generation (every epoch up
+        to it is in L3, or was lost with NATS before it got there); then the mark that L2 holds the table
+        complete, last, so nothing reads "complete" before it is.
 
         :param collection: the L2-first collection
         :ptype collection: BaseCollection[Any]
-        :return: whether it was refilled; ``False`` when L2 already held it complete
+        :return: whether it was refilled; ``False`` when L2 already held it complete, or the change log is
+            still absent
         :rtype: bool
         """
         table = collection.table_name
         head = await self._epochs.read(table)
-        if head is not None and await collection.l2_complete():
+        if head is None or await collection.l2_complete():
             return False
         rows = await collection.refill_l2_from_l3(page_size=_REFILL_PAGE_ROWS)
-        records = 0
-        if head is None:
-            logged = await self._log.head(table)
-            changes = [] if logged is None else await self._newest_records(table, logged)
-            await self._epochs.restore_epochs(table, logged, changes)
-            records = len(changes)
-            head = await self._epochs.read(table)
-        if head is not None and await collection.read_l2_first_state("saved") is None:
+        if await collection.read_l2_first_state("saved") is None:
             await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
         await collection.mark_l2_complete(head)
         _count(_REFILLED, table)
         log.warning(
             "an L2-first table was put back into L2 from L3; a pod behind on it catches up from here",
-            extra={"extra_data": {"table": table, "rows": rows, "epoch_records": records, "generation": head}},
+            extra={"extra_data": {"table": table, "rows": rows, "generation": head}},
         )
         return True
 

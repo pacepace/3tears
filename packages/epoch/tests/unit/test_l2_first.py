@@ -33,13 +33,13 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.l2_first import (
     L2_FIRST,
     L2First,
-    L2LostError,
     L2Refiller,
     L3Saver,
     l2_first_status,
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.exceptions import L2LostError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -255,8 +255,8 @@ class _Fleet:
 
     async def lose_nats(self) -> None:
         """every memory bucket loses every entry, as a full broker restart does."""
-        for name in ("collections", "epochs", EPOCH_CHANGES_BUCKET):
-            (await self.bus.kv_bucket(name=name)).wipe()
+        (await self.bus.kv_bucket(name="collections")).wipe()
+        self.bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
 
 
 async def _save(collection: _Results, entity_id: str, votes: str) -> None:
@@ -316,6 +316,31 @@ class TestACrashBetweenTheCommitAndTheL3Save:
         assert fleet.feed_l3.rows["precinct-2"]["votes"] == "20"
         token = await fleet.writer.reader.read(_FEED)
         assert await fleet.log.head(_FEED) == token
+
+    async def test_a_writer_that_dies_between_its_commit_and_its_l2_apply_loses_nothing(
+        self, fleet: _Fleet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _save(fleet.feeding, "precinct-1", "10")
+        bucket = await fleet.bus.kv_bucket(name="collections")
+        real_update = bucket.update
+
+        async def dies(**kwargs: Any) -> int | None:
+            raise _Crash("the writer died after its commit, before applying its row")
+
+        monkeypatch.setattr(bucket, "update", dies)
+        with pytest.raises(_Crash):
+            await _save(fleet.feeding, "precinct-1", "11")
+        monkeypatch.setattr(bucket, "update", real_update)
+        fleet.feed_work.evict_from_cache_sync("precinct-1")
+        assert await _votes(fleet.feed_work, "precinct-1") == "10", "the commit is in the log, not yet in L2"
+
+        await fleet.saver.run_pass()
+
+        fleet.feed_work.evict_from_cache_sync("precinct-1")
+        assert await _votes(fleet.feed_work, "precinct-1") == "11", "the saver applied the committed row to L2"
+        await fleet.follower.tick()
+        assert await _votes(fleet.feed_read, "precinct-1") == "11", "a follower catches up to it from the log"
+        assert fleet.feed_l3.rows["precinct-1"]["votes"] == "11"
 
     async def test_a_saver_that_dies_mid_pass_is_resumed_and_saving_twice_is_harmless(self, fleet: _Fleet) -> None:
         await _save(fleet.feeding, "precinct-1", "10")
@@ -469,7 +494,7 @@ class TestTheChangeLogWarnsBeforeItFills:
     async def test_the_fill_ratio_is_measured_and_warned_on(self, caplog: pytest.LogCaptureFixture) -> None:
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus, change_retention=EpochChangeRetention(max_bytes=3200))
-        for each in range(11):
+        for each in range(17):
             await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"row-{each:04d}"])])
         with caplog.at_level(logging.WARNING):
             ratio = await source.observe_change_log_fill()

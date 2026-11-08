@@ -211,7 +211,14 @@ async def follow_generation_key(
     async with aclosing(reader.watch(table_name)) as generations:
         async for token in generations:
             deadline = loop.time() + grace.total_seconds()
-            while marks.judge(table_name, token) is GenerationVerdict.MISSED and loop.time() < deadline:
+            # the pushed epoch's broadcasts are given the grace to arrive, so the walk that follows
+            # finds it heard and applies nothing for it
+            while (
+                token is not None
+                and not marks.heard_in_full(table_name, token)
+                and marks.judge(table_name, token) is GenerationVerdict.MISSED
+                and loop.time() < deadline
+            ):
                 await asyncio.sleep(_GRACE_POLL_SECONDS)
             try:
                 await registry.catch_up_generation(table_name, token, changes=records)

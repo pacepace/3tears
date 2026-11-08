@@ -509,36 +509,56 @@ class GenerationMarks:
         """
         self._record(table_name, token, rows=1, of=1)
 
-    def unaccounted(self, table_name: str, token: str) -> tuple[str, ...]:
-        """the advances up to ``token`` this pod has not heard every row of, in order, as tokens.
+    def heard_in_full(self, table_name: str, token: str) -> bool:
+        """whether every row of the advance that wrote ``token`` was heard or applied here.
 
-        What a follower must fetch the change records of to catch up to ``token``. Only advances
-        under the mark's incarnation can be named; a token from another incarnation, or a table
-        with no mark, names none (see :meth:`judge`).
+        A follower walking a table's epochs skips applying one it heard in full: its broadcasts evicted
+        every row already.
 
         :param table_name: the followed table
         :ptype table_name: str
-        :param token: the generation the table's store holds now
+        :param token: the advance
         :ptype token: str
-        :return: each advance after the mark and up to ``token`` whose rows were not all heard
-        :rtype: tuple[str, ...]
-        :raises KeyError: when ``table_name`` is not followed
+        :return: ``True`` when it was heard in full, or is at or below the mark
+        :rtype: bool
         """
-        mark = self._tables[table_name]
+        mark = self._tables.get(table_name)
         parts = split_generation_token(token)
-        if parts is not None and mark.sighted and mark.incarnation is None:
-            # the first incarnation since a mark taken over no generation: counted from its start
+        if mark is None or parts is None or not mark.sighted:
+            return False
+        if parts[0] == mark.incarnation and parts[1] <= mark.accounted:
+            return True
+        heard = mark.heard.get(parts)
+        return heard is not None and heard.rows >= heard.of and not mark.overflowed
+
+    def advance_to(self, table_name: str, token: str) -> None:
+        """move the mark to ``token``: every advance of the table up to it is accounted for.
+
+        For a follower that walked the table's epochs up to ``token`` and applied, or heard in full,
+        every one. A mark taken over no generation takes ``token``'s incarnation. Advances heard beyond
+        ``token`` stay.
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :param token: the generation accounted up to
+        :ptype token: str
+        :return: nothing
+        :rtype: None
+        """
+        mark = self._tables.get(table_name)
+        parts = split_generation_token(token)
+        if mark is None or parts is None or not mark.sighted:
+            return
+        if mark.incarnation is None:
             mark.incarnation = parts[0]
             mark.accounted = 0
-        if parts is None or not mark.sighted or parts[0] != mark.incarnation:
-            return ()
-        incarnation, count = parts
-        missing: list[str] = []
-        for each in range(mark.accounted + 1, count + 1):
-            heard = mark.heard.get((incarnation, each))
-            if mark.overflowed or heard is None or heard.rows < heard.of:
-                missing.append(f"{incarnation}:{each}")
-        return tuple(missing)
+        if parts[0] != mark.incarnation or parts[1] <= mark.accounted:
+            return
+        mark.accounted = parts[1]
+        mark.overflowed = False
+        mark.heard = {
+            key: heard for key, heard in mark.heard.items() if key[0] == mark.incarnation and key[1] > parts[1]
+        }
 
     def applied(self, table_name: str, token: str) -> None:
         """record that the change of the advance that wrote ``token`` was fetched and applied in full.
@@ -555,6 +575,9 @@ class GenerationMarks:
         """
         mark = self._tables.get(table_name)
         parts = split_generation_token(token)
+        if mark is not None and parts is not None and mark.sighted and mark.incarnation is None:
+            mark.incarnation = parts[0]
+            mark.accounted = 0
         if mark is None or parts is None or not mark.sighted or parts[0] != mark.incarnation:
             return
         if parts[1] > mark.accounted:

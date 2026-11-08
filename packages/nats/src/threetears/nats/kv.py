@@ -42,10 +42,11 @@ import asyncio
 import dataclasses
 import json
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import aclosing
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
+from uuid import uuid7
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
 from nats.errors import Error as NatsError
@@ -62,12 +63,14 @@ from nats.js.api import (
     StreamInfo,
 )
 from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, ServiceUnavailableError
+from nats.js.errors import NoStreamResponseError as NatsNoStreamResponseError
+from nats.js.errors import NotFoundError as NatsNotFoundError
 from threetears.observe import contain, get_logger
 from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
 from threetears.nats._stream_listing import stream_subjects
-from threetears.nats._publish import run_bounded
+from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.errors import (
     KvBucketNotFoundError,
     KvConfigMismatch,
@@ -76,10 +79,12 @@ from threetears.nats.errors import (
     KvStoreExhaustedError,
     KvValueTooLargeError,
     NatsClientError,
+    PublishError,
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
 from threetears.nats import kv_watch
+from threetears.nats.change_log import CHANGE_LOG_INCARNATION_METADATA, ChangeLogEntry, ChangeLogState
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
@@ -101,6 +106,7 @@ __all__ = [
     "KvRestoredHook",
     "KvStreamOpening",
     "KvTimings",
+    "NatsChangeLog",
     "NatsKvBucket",
     "build_kv_stream_config",
     "kv_stream_differences",
@@ -127,6 +133,9 @@ _KV_DUPLICATE_WINDOW_SECONDS = 120.0
 #: not make that distinction -- it falls through to ``update_stream`` for every
 #: non-overlap failure, refusals included -- so the arm is built here.
 _JS_ERR_STREAM_NAME_IN_USE = 10058
+
+#: JetStream's "replicas > 1 not supported in non-clustered mode": a single-node broker
+_JS_ERR_REPLICAS_UNSUPPORTED: Final = 10074
 
 #: JetStream API error codes that say the server is up but cannot serve the stream RIGHT NOW: the
 #: answers a broker gives while it restarts or rolls, until the stream's replicas recover and a
@@ -2416,23 +2425,6 @@ class NatsKvBucket:
             return None
         return True
 
-    async def held_bytes(self) -> int:
-        """how many bytes the bucket's backing stream holds now, read fresh from the server.
-
-        What a bounded bucket counts against its ``max_bytes``: a caller divides one by the other to
-        see how close the bucket is to refusing writes.
-
-        :return: the bytes held
-        :rtype: int
-        :raises KvError: on transport failure
-        """
-        js = self._client.jetstream_context()
-        stream = kv_stream_name(self._full_name)
-        info: StreamInfo = await self._run_op(
-            lambda: js.stream_info(stream), passthrough=(), failure=f"KV stream info failed: bucket={self._full_name}"
-        )
-        return int(info.state.bytes)
-
     async def date_created(self) -> datetime:
         """when the bucket's backing stream was created, read fresh from the server.
 
@@ -3447,3 +3439,314 @@ class JetStreamPublisher(Protocol):
     """
 
     async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# The change log: a KV-shaped stream every key of which keeps its whole history
+# ---------------------------------------------------------------------------
+
+#: how long the broker remembers a published ``Nats-Msg-Id``, so a publish retried inside it records once
+_CHANGE_LOG_DEDUP_WINDOW_SECONDS: Final = 120.0
+
+#: the records a change log keeps per key: none is ever replaced by a later one of its key
+_CHANGE_LOG_HISTORY: Final = 1_000_000_000
+
+#: the per-call deadline of a change log operation
+_CHANGE_LOG_OP_TIMEOUT_SECONDS: Final = 5.0
+
+
+class NatsChangeLog:
+    """an append-only log of keyed records over one JetStream stream, whose sequence numbers each record.
+
+    Shaped like a KV bucket -- stream ``KV_{bucket}``, subjects ``$KV.{bucket}.{key}`` -- so a principal's
+    ordinary grant on the bucket reads it, but every key keeps its whole history: an append never replaces
+    the key's last record, and the sequence the stream assigns an append is that record's number.
+    Appends never contend: there is no compare-and-swap, only the broker's own ordering. Memory
+    storage, discard-new under ``max_bytes`` (a full log refuses an append, loudly, and evicts nothing),
+    and a dedup window, so an append retried with the same ``msg_id`` records once.
+
+    Never created by an append: a log the broker lost stays absent until its declarer (or a restore)
+    puts it back, so an append to it fails rather than starting a log no reader can follow.
+    """
+
+    def __init__(self, client: NatsClient, name: str, bucket: str) -> None:
+        """bind a change log by its bucket name; no I/O.
+
+        :param client: the connected wrapper client
+        :ptype client: NatsClient
+        :param name: the bucket's name as :meth:`NatsClient.kv_bucket` takes it, before the namespace
+        :ptype name: str
+        :param bucket: the namespace-prefixed bucket name
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        self._client = client
+        self._name = name
+        self._bucket = bucket
+        self._stream = f"KV_{bucket}"
+
+    @property
+    def bucket(self) -> str:
+        """the bucket name the log is shaped as.
+
+        :return: the name
+        :rtype: str
+        """
+        return self._bucket
+
+    def _subject(self, key: str) -> str:
+        """the subject ``key``'s records are appended on.
+
+        :param key: the key
+        :ptype key: str
+        :return: ``$KV.{bucket}.{key}``
+        :rtype: str
+        """
+        return f"$KV.{self._bucket}.{key}"
+
+    async def _call(self, op: Callable[[], Coroutine[Any, Any, Any]], what: str) -> Any:
+        """run one nats-py call under the log's deadline.
+
+        :param op: the call
+        :ptype op: Callable[[], Coroutine[Any, Any, Any]]
+        :param what: what it does, for the deadline's error
+        :ptype what: str
+        :return: what the call returned
+        :rtype: Any
+        """
+        return await run_bounded(op, timeout=_CHANGE_LOG_OP_TIMEOUT_SECONDS, what=f"{what} on {self._stream}")
+
+    async def declare(
+        self,
+        *,
+        max_age: timedelta,
+        max_bytes: int,
+        replicas: int | None,
+        incarnation: str | None = None,
+        first_seq: int | None = None,
+    ) -> ChangeLogState:
+        """create the log when absent, and say what it holds; a live log is kept as it is.
+
+        :param max_age: how long a record is kept
+        :ptype max_age: timedelta
+        :param max_bytes: the most it holds
+        :ptype max_bytes: int
+        :param replicas: how many servers hold it; ``None`` one. A broker that is not clustered
+            cannot hold more, and gets one, said at WARNING
+        :ptype replicas: int | None
+        :param incarnation: the incarnation to create it under; ``None`` mints one
+        :ptype incarnation: str | None
+        :param first_seq: the first sequence it assigns, for a restore that puts records back at their
+            old numbers; ``None`` starts at one
+        :ptype first_seq: int | None
+        :return: what it holds
+        :rtype: ChangeLogState
+        :raises KvError: when it can be neither created nor read
+        """
+        live = await self.state()
+        if live is not None:
+            return live
+        js = self._client.jetstream_context()
+
+        def config(count: int) -> StreamConfig:
+            """the stream's configuration on ``count`` replicas."""
+            return StreamConfig(
+                name=self._stream,
+                subjects=[f"$KV.{self._bucket}.>"],
+                storage=StorageType.MEMORY,
+                num_replicas=count,
+                max_age=max_age.total_seconds(),
+                max_bytes=max_bytes,
+                discard=DiscardPolicy.NEW,
+                # every record a key was given is kept: a KV bind needs a positive history, and one
+                # past any table's records in a retention window is a log, not a latest value
+                max_msgs_per_subject=_CHANGE_LOG_HISTORY,
+                allow_direct=True,
+                allow_rollup_hdrs=False,
+                deny_delete=True,
+                duplicate_window=_CHANGE_LOG_DEDUP_WINDOW_SECONDS,
+                first_seq=first_seq,
+                metadata={CHANGE_LOG_INCARNATION_METADATA: incarnation or str(uuid7())},
+            )
+
+        wanted = replicas or 1
+        try:
+            await self._call(lambda: js.add_stream(config(wanted)), "change log create")
+        except APIError as exc:
+            if exc.err_code == _JS_ERR_REPLICAS_UNSUPPORTED and wanted > 1:
+                log.warning(
+                    "the broker is not clustered; the change log is created on one replica",
+                    extra={"extra_data": {"stream": self._stream}},
+                )
+                await self._call(lambda: js.add_stream(config(1)), "change log create")
+            elif exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
+                raise KvError(f"change log {self._stream} could not be created: {exc}") from exc
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} could not be created: {exc}") from exc
+        state = await self.state()
+        if state is None:
+            raise KvBucketNotFoundError(f"change log {self._stream} vanished as it was created", bucket=self._bucket)
+        return state
+
+    async def state(self) -> ChangeLogState | None:
+        """what the log holds, or ``None`` when the broker holds no such stream.
+
+        :return: the state
+        :rtype: ChangeLogState | None
+        :raises KvError: when the stream cannot be read
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await self._call(lambda: js.stream_info(self._stream), "change log info")
+        except NatsNotFoundError:
+            # NOSILENT: an absent log is an answer, not a failure
+            return None
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} could not be read: {exc}") from exc
+        metadata = info.config.metadata or {}
+        incarnation = metadata.get(CHANGE_LOG_INCARNATION_METADATA) or f"created-{info.created}"
+        max_bytes = info.config.max_bytes
+        return ChangeLogState(
+            first_seq=int(info.state.first_seq or 0),
+            last_seq=int(info.state.last_seq or 0),
+            bytes=int(info.state.bytes or 0),
+            max_bytes=int(max_bytes) if max_bytes and max_bytes > 0 else None,
+            incarnation=str(incarnation),
+        )
+
+    async def append(self, key: str, value: bytes, *, msg_id: str) -> int:
+        """append one record under ``key``, and say the sequence the stream gave it.
+
+        :param key: the key
+        :ptype key: str
+        :param value: the record
+        :ptype value: bytes
+        :param msg_id: the append's identity: an append retried with it inside the dedup window records once
+        :ptype msg_id: str
+        :return: the record's sequence
+        :rtype: int
+        :raises KvBucketNotFoundError: when the broker holds no such stream; nothing is created
+        :raises KvFullError: when the log is at its bound
+        :raises KvError: when the append failed otherwise, or its outcome is unknown
+        """
+        js = self._client.jetstream_context()
+        try:
+            ack = await publish_bounded(
+                js,
+                self._subject(key),
+                value,
+                timeout=_CHANGE_LOG_OP_TIMEOUT_SECONDS,
+                headers={"Nats-Msg-Id": msg_id},
+            )
+        except NatsNoStreamResponseError as exc:
+            raise KvBucketNotFoundError(
+                f"change log {self._stream} is absent; the append was not recorded", bucket=self._bucket
+            ) from exc
+        except APIError as exc:
+            refusal = _refusal_for_its_room_or_size(exc)
+            if refusal is not None:
+                raise refusal(f"change log {self._stream} refused an append: {exc}", bucket=self._bucket) from exc
+            raise KvError(f"change log {self._stream} refused an append: {exc}") from exc
+        except PublishError as exc:
+            raise KvError(f"change log {self._stream} append failed: {exc}") from exc
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} append failed: {exc}") from exc
+        return int(ack.seq)
+
+    def _entry(self, raw: Any) -> ChangeLogEntry:
+        """the entry one nats-py stream message is.
+
+        :param raw: the message
+        :ptype raw: Any
+        :return: the entry
+        :rtype: ChangeLogEntry
+        """
+        subject = str(raw.subject)
+        prefix = f"$KV.{self._bucket}."
+        return ChangeLogEntry(
+            seq=int(raw.seq),
+            key=subject[len(prefix) :] if subject.startswith(prefix) else subject,
+            value=raw.data or b"",
+        )
+
+    async def last(self, key: str) -> ChangeLogEntry | None:
+        """the newest record under ``key``, or ``None`` when the log holds none.
+
+        :param key: the key
+        :ptype key: str
+        :return: the record
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the log cannot be read
+        """
+        js = self._client.jetstream_context()
+        return await self._read(lambda: js.get_last_msg(self._stream, self._subject(key), direct=True), "last record")
+
+    async def at(self, seq: int) -> ChangeLogEntry | None:
+        """the record at ``seq``, or ``None`` when the log holds none there.
+
+        :param seq: the sequence
+        :ptype seq: int
+        :return: the record
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the log cannot be read
+        """
+        js = self._client.jetstream_context()
+        return await self._read(lambda: js.get_msg(self._stream, seq=seq), "record by sequence")
+
+    async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None:
+        """the first record under ``key`` after ``seq``, or ``None`` when the log holds none.
+
+        :param key: the key
+        :ptype key: str
+        :param seq: the sequence to look past
+        :ptype seq: int
+        :return: the record
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the log cannot be read
+        """
+        js = self._client.jetstream_context()
+        return await self._read(
+            lambda: js.get_msg(self._stream, seq=seq + 1, subject=self._subject(key), next=True), "next record"
+        )
+
+    async def _read(self, op: Callable[[], Coroutine[Any, Any, Any]], what: str) -> ChangeLogEntry | None:
+        """run one read, telling a missing message from a missing log.
+
+        :param op: the nats-py read
+        :ptype op: Callable[[], Coroutine[Any, Any, Any]]
+        :param what: what it reads, for errors
+        :ptype what: str
+        :return: the entry, or ``None`` when the log holds no such message
+        :rtype: ChangeLogEntry | None
+        :raises KvBucketNotFoundError: when the log is absent
+        :raises KvError: when the read failed
+        """
+        try:
+            raw = await self._call(op, f"change log {what}")
+        except NatsNotFoundError:
+            # NOSILENT: no such message, or no such stream: told apart by asking for the stream
+            if await self.state() is None:
+                raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket) from None
+            return None
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} {what} failed: {exc}") from exc
+        return self._entry(raw)
+
+    async def watch(self, key: str) -> AsyncGenerator[KvKeyUpdate]:
+        """``key``'s newest record, then every later one, through the bucket's key watch.
+
+        :param key: the key
+        :ptype key: str
+        :return: the records, as key updates whose revision is the record's sequence
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises KvError: when the log cannot be bound
+        """
+        bucket = await self._client.kv_bucket(name=self._name, ttl=None, create_if_missing=False)
+        # sender-posture: own-consumer -- a record counts only through the KV key watch, which takes an update only with its own consumer's ack reply
+        async with aclosing(bucket.watch_key(key=key)) as updates:
+            async for update in updates:
+                yield update

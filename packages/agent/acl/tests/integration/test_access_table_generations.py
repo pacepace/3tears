@@ -43,6 +43,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
+    EPOCH_CHANGES_BUCKET,
     EpochGenerationReader,
     EpochGenerationSource,
     TableFollower,
@@ -164,8 +165,14 @@ class _Follower:
 
 
 async def _count(bus: FakeNatsClient, table: str) -> int | None:
-    raw = await (await bus.kv_bucket(name="epochs")).get(key=generation_kv_key(table))
-    return None if raw is None else int(raw.decode().rpartition(":")[2])
+    """how many epochs the change log holds for the table; ``None`` before the log exists."""
+    log = bus.change_log(EPOCH_CHANGES_BUCKET)
+    if await log.state() is None:
+        return None
+    count, seq = 0, 0
+    while (entry := await log.next_after(generation_kv_key(table), seq)) is not None:
+        count, seq = count + 1, entry.seq
+    return count
 
 
 @pytest.fixture

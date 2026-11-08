@@ -112,3 +112,6 @@ packages/epoch/src/threetears/epoch/__init__.py:EPOCH_CHANGES_BUCKET  # bluelabs
 packages/epoch/src/threetears/epoch/generation.py:EPOCH_CHANGES_BUCKET  # defined here and re-exported from threetears.epoch for the hub grants the __init__.py entry names
 packages/epoch/src/threetears/epoch/__init__.py:EpochChangeRetention  # bluelabsio/14-eng-ai-bot: src/aibots/hub/common/generation_sources.py builds its EpochGenerationSource with replicas=3, the platform's R3 rule
 packages/epoch/src/threetears/epoch/generation.py:EpochChangeRetention  # defined here and re-exported from threetears.epoch for the hub source the __init__.py entry names
+packages/core/src/threetears/core/testing/kv.py:FakeChangeLog  # bluelabsio/14-eng-ai-bot and bluelabsio/14-eng-ai-bot-agents: their tests drive the epoch change log through FakeNatsClient.change_log, and type and age out the log it returns
+packages/epoch/src/threetears/epoch/__init__.py:follow_l2_kept_tables  # bluelabsio/14-eng-ai-bot: the hub follows its L2-kept collections by their generation keys in place of its timed L2 catch-up pass (L2_CATCH_UP_INTERVAL)
+packages/epoch/src/threetears/epoch/table_follow.py:follow_l2_kept_tables  # defined here and re-exported from threetears.epoch for the hub the __init__.py entry names

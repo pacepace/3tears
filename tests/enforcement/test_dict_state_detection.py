@@ -448,6 +448,33 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeChangeLog",
+        attr_name="_seen_ids",
+        rationale=(
+            "an in-memory test double's record of each append's Nats-Msg-Id, standing in for the stream's "
+            "dedup window; it lives and dies with the one test that built the double"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeChangeLog",
+        attr_name="_watchers",
+        rationale=(
+            "an in-memory test double's queue per watched key, standing in for the broker's push consumers; "
+            "it lives and dies with the one test that built the double"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
+        attr_name="_change_logs",
+        rationale=(
+            "the test double client's change logs by name, so every caller in one test binds the same "
+            "in-memory log, as every caller of a broker binds the same stream"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
         attr_name="_entries",
         rationale=(

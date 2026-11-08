@@ -8,30 +8,27 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
-### core, epoch, nats: an L2-first collection commits its writes in NATS, and L3 is saved from there
+### core, epoch: an L2-first collection commits its writes in NATS, and L3 is saved from there
 
 **Added (core):** `BaseCollection.l2_first`. A collection that declares `L2_FIRST` (or
-`L2First(wait_for_l3=False, refetchable_from=...)`) commits a save or delete in NATS: the row lands in L2 at its
-key's revision and the epoch's change record naming the key lands in the change log
-(`EpochChange.rows[].l3_pending`). By default the caller then waits for L3: an L3 refusal is the caller's error,
-and the L2 write is withdrawn (its prior value put back) and announced by one more epoch. A collection that does not
-wait returns at the commit. Pods never read L3 for it: a miss is an absence while L2 holds the table complete, and
+`L2First(wait_for_l3=False, refetchable_from=...)`) commits a save or delete as one epoch record carrying the row
+(`ChangedRow.value`), the revision of its key the writer read (`ChangedRow.l2_revision`) and `l3_pending`; the row
+is applied to L2 after, at that revision. By default the caller then waits for L3: an L3 refusal is the caller's
+error, and the write is withdrawn by one more epoch carrying the prior value. A collection that does not wait returns
+after the L2 apply. Pods never read L3 for it: a miss is an absence while L2 holds the table complete, and
 `L2LostError` while it does not. Without an L2 client the same collection writes straight to L3. Declared, not yet
 the default: the default changes once every writing principal holds the epoch grants and a worker runs.
 
-**Added (core):** `threetears.core.collections.l2_first`: `L3Saver` (makes L3 match L2 for every epoch after each
-table's saved position; idempotent; an L3 refusal of a write that did not wait is an ERROR counted on
-`threetears_l2_first_l3_refused_total`), `L2Refiller` (after NATS loses data, puts rows, the newest epoch records
-and the generation back from L3, under the old incarnation, so pods catch up through the normal epoch path),
-`run_l2_first_worker`, `l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`), `CollectionRegistry.set_epoch_log` and `registered_tables`, `SchemaBackedCollection.l3_pages`,
-and `tables_written_l2_first`. The write-mark reconciler deletes a mark on an L2-first table without a whole-table
-advance, and the trigger install skips such tables.
+**Added (core):** `threetears.core.collections.l2_first`: `L3Saver` (walks each table's epochs after its saved
+position, applies to L2 any committed row its writer died before applying, then makes L3 match L2; idempotent; an L3
+refusal of a write that did not wait is an ERROR counted on `threetears_l2_first_l3_refused_total`), `L2Refiller`
+(after NATS loses the change log, puts every table's newest records back in one `restore_epochs` at their old
+sequences, then the rows, so pods catch up through the normal epoch path), `run_l2_first_worker`,
+`l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`), `CollectionRegistry.set_epoch_log` and
+`registered_tables`, `SchemaBackedCollection.l3_pages`, and `tables_written_l2_first`. The write-mark reconciler
+deletes a mark on an L2-first table without a whole-table advance, and the trigger install skips such tables.
 
-**Added (epoch):** `EpochGenerationSource.read`, `change`, `advance_continuing` (never mints an incarnation),
-`restore_epochs` and `observe_change_log_fill`, which sets
-`threetears_epoch_changes_fill_ratio` and warns at `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75).
-
-**Added (nats):** `NatsKvBucket.held_bytes` (and `FakeKvBucket.held_bytes`).
+**Added (epoch):** `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75), at which `observe_change_log_fill` warns.
 
 Operations: [docs/l2-first-operations.md](docs/l2-first-operations.md).
 
@@ -54,6 +51,31 @@ failure and nothing counted them.
 
 **Added (core):** every collection key read is counted on `threetears_tier_reads_total{table, tier}`, beside the
 once-a-minute INFO line, so a table whose reads keep reaching L2 or L3 can be alerted on.
+
+### core, epoch, nats: the epoch is the change log's sequence -- no counter, so concurrent writers never contend
+
+**Changed (epoch, nats):** an epoch is now the sequence the change log's stream gives its record. The log,
+`{ns}-epoch-changes` (`EPOCH_CHANGES_BUCKET`), is one memory stream shaped as a KV bucket (so a pod's bucket grant
+reads it) whose every key keeps its history: `threetears.nats.NatsChangeLog`, bound by `NatsClient.change_log`. An
+advance appends ONE record under the table's key with a `Nats-Msg-Id`, so a retried append records once. The
+per-table counter key in `{ns}-epochs` and its compare-and-swap are gone: at 32 concurrent writers the bench
+(`scripts/measure-epoch-write-cost.py`, PR #1122) measured 3.6 lost compare-and-swaps per write and saves committed
+without an advance; with the log there is nothing to lose. A token is `{incarnation}:{sequence}`, the incarnation the
+log's own (stream metadata), kept when the log is restored.
+
+**Changed (core):** a table's sequences are not one apart, so a follower catches up by walking the table's records
+after its mark (`EpochChangeReader.changes_after`, returning an `EpochWalk`) rather than by counting. A walk the log
+cannot vouch for -- its oldest record is newer than the mark, or the log is absent or of another incarnation -- leaves
+the follower behind. `GenerationMarks.heard_in_full` and `advance_to` replace `unaccounted`; a derived cache that
+stamps with the registry's mark is told when it moves (`register_derived_cache(on_caught_up=...)`).
+
+**Added (epoch):** `EpochGenerationSource.advance_continuing` (an L2-first commit: never declares the log, raises
+`threetears.core.exceptions.L2LostError` when it is absent), `restore_epochs` (the refiller's put-back: the log is
+created at the oldest record's sequence under its incarnation and every record keeps its number), and
+`observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.8). `ChangedRow.value` carries a
+row's stored bytes for a record that is the commit. `follow_l2_kept_tables` follows `L2_WRITE_GENERATION` tables by
+their generation keys (`BaseCollection.watch_l2_write_generation`); the registry's timed "no catch-up pass" warning
+(`L2_CATCH_UP_OVERDUE`) is removed. `TableTemplateCollection` declares a write generation.
 
 ### core, epoch: an epoch is its change set, and a missed broadcast corrects only the rows it missed
 

@@ -22,7 +22,8 @@ def test_an_advance_heard_past_a_gap_waits_as_pending() -> None:
     marks.hear("namespaces", "inc:3", 1)
     assert marks.pending("namespaces") == ("inc:3 (1/1)",)
     assert marks.pending("not_followed") == ()
-    assert marks.unaccounted("namespaces", "inc:3") == ("inc:2",)
+    assert not marks.heard_in_full("namespaces", "inc:2")
+    assert marks.heard_in_full("namespaces", "inc:3")
 
 
 async def test_falling_behind_logs_the_epoch_the_generation_read_and_the_mark(

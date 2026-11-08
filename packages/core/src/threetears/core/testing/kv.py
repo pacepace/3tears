@@ -86,11 +86,14 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iter
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
+from uuid import uuid7
+
+from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError, KvFullError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import contain, get_logger
 
-__all__ = ["FakeKvBucket", "FakeNatsClient"]
+__all__ = ["FakeChangeLog", "FakeKvBucket", "FakeNatsClient"]
 
 log = get_logger(__name__)
 
@@ -412,15 +415,6 @@ class FakeKvBucket:
         """
         _ = self.stored_messages
         return self._stored_bytes
-
-    async def held_bytes(self) -> int:
-        """the bytes the bucket holds, as :meth:`threetears.nats.NatsKvBucket.held_bytes` reads them.
-
-        :return: :attr:`stored_bytes`
-        :rtype: int
-        """
-        await _YieldOnce()
-        return self.stored_bytes
 
     def _notify(self, update: KvKeyUpdate) -> None:
         """hand one new message to every open watch of its key.
@@ -861,6 +855,243 @@ class FakeKvBucket:
         return self._write(key, value, ttl)
 
 
+# parity-with: threetears.nats.kv.NatsChangeLog
+class FakeChangeLog:
+    """in-memory stand-in for :class:`threetears.nats.NatsChangeLog`: one stream, every key's history kept.
+
+    Sequences are the stream's, shared by every key; an append returns the one it took. A log is absent
+    until declared, and :meth:`vanish` takes it away as a broker restart on memory storage does.
+    """
+
+    def __init__(self, bucket: str) -> None:
+        """start absent: a log exists once declared.
+
+        :param bucket: the bucket name
+        :ptype bucket: str
+        :return: None
+        :rtype: None
+        """
+        self._bucket = bucket
+        self._present = False
+        self._incarnation = ""
+        self._entries: list[ChangeLogEntry] = []
+        self._next_seq = 1
+        self._max_bytes: int | None = None
+        self._max_age: timedelta | None = None
+        self._bytes = 0
+        self._seen_ids: dict[str, int] = {}
+        self._watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
+        self.unreachable: Exception | None = None
+
+    @property
+    def bucket(self) -> str:
+        """the bucket name the log is shaped as.
+
+        :return: the name
+        :rtype: str
+        """
+        return self._bucket
+
+    def _reachable(self) -> None:
+        """raise the failure a test set, as an unreachable broker would.
+
+        :return: None
+        :rtype: None
+        """
+        if self.unreachable is not None:
+            raise self.unreachable
+
+    async def declare(
+        self,
+        *,
+        max_age: timedelta,
+        max_bytes: int,
+        replicas: int | None,
+        incarnation: str | None = None,
+        first_seq: int | None = None,
+    ) -> ChangeLogState:
+        """create the log when absent, and say what it holds; a live log is kept as it is.
+
+        :param max_age: how long a record is kept; recorded
+        :ptype max_age: timedelta
+        :param max_bytes: the most it holds; enforced
+        :ptype max_bytes: int
+        :param replicas: ignored by the fake
+        :ptype replicas: int | None
+        :param incarnation: the incarnation to create it under; ``None`` mints one
+        :ptype incarnation: str | None
+        :param first_seq: the first sequence it assigns; ``None`` starts at one
+        :ptype first_seq: int | None
+        :return: what it holds
+        :rtype: ChangeLogState
+        """
+        self._reachable()
+        if not self._present:
+            self._present = True
+            self._incarnation = incarnation or f"fake-{uuid7()}"
+            self._max_bytes = max_bytes
+            self._max_age = max_age
+            self._entries = []
+            self._bytes = 0
+            self._seen_ids = {}
+            self._next_seq = first_seq or 1
+        state = await self.state()
+        assert state is not None
+        return state
+
+    async def state(self) -> ChangeLogState | None:
+        """what the log holds, or ``None`` when absent.
+
+        :return: the state
+        :rtype: ChangeLogState | None
+        """
+        self._reachable()
+        if not self._present:
+            return None
+        first = self._entries[0].seq if self._entries else self._next_seq
+        return ChangeLogState(
+            first_seq=first,
+            last_seq=self._next_seq - 1,
+            bytes=self._bytes,
+            max_bytes=self._max_bytes,
+            incarnation=self._incarnation,
+        )
+
+    @property
+    def max_bytes(self) -> int | None:
+        """the byte bound it was declared with.
+
+        :return: the bound
+        :rtype: int | None
+        """
+        return self._max_bytes
+
+    @property
+    def max_age(self) -> timedelta | None:
+        """the record lifetime it was declared with.
+
+        :return: the lifetime
+        :rtype: timedelta | None
+        """
+        return self._max_age
+
+    async def append(self, key: str, value: bytes, *, msg_id: str) -> int:
+        """append one record, deduplicated by ``msg_id``, and say its sequence.
+
+        :param key: the key
+        :ptype key: str
+        :param value: the record
+        :ptype value: bytes
+        :param msg_id: the append's identity
+        :ptype msg_id: str
+        :return: the sequence
+        :rtype: int
+        """
+        self._reachable()
+        if not self._present:
+            raise KvBucketNotFoundError(f"change log {self._bucket} is absent", bucket=self._bucket)
+        if msg_id in self._seen_ids:
+            return self._seen_ids[msg_id]
+        size = len(key) + len(value) + _STORED_MESSAGE_OVERHEAD
+        if self._max_bytes is not None and self._bytes + size > self._max_bytes:
+            raise KvFullError(
+                f"change log {self._bucket} refused an append: maximum bytes exceeded", bucket=self._bucket
+            )
+        seq = self._next_seq
+        self._next_seq += 1
+        self._entries.append(ChangeLogEntry(seq=seq, key=key, value=value))
+        self._bytes += size
+        self._seen_ids[msg_id] = seq
+        for queue in self._watchers.get(key, []):
+            queue.put_nowait(KvKeyUpdate(key=key, value=value, revision=seq))
+        await _YieldOnce()
+        return seq
+
+    async def last(self, key: str) -> ChangeLogEntry | None:
+        """the newest record under ``key``.
+
+        :param key: the key
+        :ptype key: str
+        :return: the record, or ``None``
+        :rtype: ChangeLogEntry | None
+        """
+        self._present_or_raise()
+        return next((entry for entry in reversed(self._entries) if entry.key == key), None)
+
+    async def at(self, seq: int) -> ChangeLogEntry | None:
+        """the record at ``seq``.
+
+        :param seq: the sequence
+        :ptype seq: int
+        :return: the record, or ``None``
+        :rtype: ChangeLogEntry | None
+        """
+        self._present_or_raise()
+        return next((entry for entry in self._entries if entry.seq == seq), None)
+
+    async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None:
+        """the first record under ``key`` after ``seq``.
+
+        :param key: the key
+        :ptype key: str
+        :param seq: the sequence to look past
+        :ptype seq: int
+        :return: the record, or ``None``
+        :rtype: ChangeLogEntry | None
+        """
+        self._present_or_raise()
+        return next((entry for entry in self._entries if entry.key == key and entry.seq > seq), None)
+
+    def _present_or_raise(self) -> None:
+        """raise as the real log does when it is absent or unreachable.
+
+        :return: None
+        :rtype: None
+        """
+        self._reachable()
+        if not self._present:
+            raise KvBucketNotFoundError(f"change log {self._bucket} is absent", bucket=self._bucket)
+
+    async def watch(self, key: str) -> AsyncGenerator[KvKeyUpdate]:
+        """the newest record under ``key``, then every later one.
+
+        :param key: the key
+        :ptype key: str
+        :return: the records as key updates
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        """
+        queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
+        self._watchers.setdefault(key, []).append(queue)
+        try:
+            latest = await self.last(key) if self._present else None
+            if latest is not None:
+                yield KvKeyUpdate(key=key, value=latest.value, revision=latest.seq)
+            while True:
+                yield await queue.get()
+        finally:
+            self._watchers[key].remove(queue)
+
+    def age_out(self, upto: int) -> None:
+        """drop every record up to and including sequence ``upto``, oldest first, as retention does.
+
+        :param upto: the newest sequence to drop
+        :ptype upto: int
+        :return: None
+        :rtype: None
+        """
+        gone = [entry for entry in self._entries if entry.seq <= upto]
+        self._entries = [entry for entry in self._entries if entry.seq > upto]
+        self._bytes -= sum(len(entry.key) + len(entry.value) + _STORED_MESSAGE_OVERHEAD for entry in gone)
+        if not self._entries:
+            self._next_seq = max(self._next_seq, upto + 1)
+
+    def vanish(self) -> None:
+        """take the log away, as a broker restart on memory storage does."""
+        self._present = False
+        self._entries = []
+        self._bytes = 0
+
+
 # parity-with: threetears.nats.kv.KvCapable
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
@@ -927,6 +1158,8 @@ class FakeNatsClient:
         self._refills: dict[str, _Refill] = {}
         # bucket name -> the declaration's ``still_wanted``, asked before each restoration
         self._still_wanted: dict[str, Callable[[], Awaitable[bool]]] = {}
+        # change log name -> its in-memory log, shared by every caller of :meth:`change_log`
+        self._change_logs: dict[str, FakeChangeLog] = {}
 
     @property
     def remembered_declarations(self) -> frozenset[str]:
@@ -953,6 +1186,16 @@ class FakeNatsClient:
         """
         bucket = self._buckets.get(name)
         return bucket is not None and not bucket.is_vanished
+
+    def change_log(self, name: str) -> FakeChangeLog:
+        """the change log named ``name``, as :meth:`threetears.nats.NatsClient.change_log` binds it.
+
+        :param name: the bucket name suffix; the fake skips the namespace prefix
+        :ptype name: str
+        :return: the one in-memory log by that name
+        :rtype: FakeChangeLog
+        """
+        return self._change_logs.setdefault(name, FakeChangeLog(name))
 
     async def restart_broker(self) -> None:
         """lose every bucket to a broker restart, put back the remembered ones, then run the reconnect hooks.
