@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at
 
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
@@ -196,7 +197,7 @@ def test_two_arms_that_never_varied_draw_no_interval_on_their_change() -> None:
 def kairo_tables() -> Iterator[dict[str, TableBlock]]:
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     look: PageLook = block_look(held, fact_arms(held))
-    yield {table.name: table for table in every_table(held, look)}
+    yield {table.name: table for table in every_table(held, look, forms=PageForms.of(held))}
 
 
 def test_the_corrected_comparisons_read_each_figure_at_its_measure_s_one_precision(
@@ -227,7 +228,7 @@ def test_a_change_of_float_residue_leaves_its_measure_s_other_changes_at_their_p
     ]
     held = held.model_copy(update={"contrasts": residue})
     look: PageLook = block_look(held, fact_arms(held))
-    (contrasts,) = [table for table in every_table(held, look) if table.name == "contrasts"]
+    (contrasts,) = [table for table in every_table(held, look, forms=PageForms.of(held)) if table.name == "contrasts"]
     said = {
         row["arm"].text: (row["change"].text, row["interval"].text)
         for row in contrasts.rows
@@ -277,7 +278,7 @@ def test_a_measured_figure_reads_on_the_scorecard_as_the_full_results_print_it()
     )
     held = report_input(bundle)
     look: PageLook = block_look(held, fact_arms(held))
-    (arms,) = [table for table in every_table(held, look) if table.name == "arms_by_measure"]
+    (arms,) = [table for table in every_table(held, look, forms=PageForms.of(held)) if table.name == "arms_by_measure"]
     written = {row["aspect"].text: row["measure:total_ms"].text for row in arms.rows}
     assert (
         {aspect: f"{cell.text} ms" for aspect, cell in carded.items()}
@@ -456,7 +457,7 @@ def test_a_written_page_s_change_never_reaches_past_its_measure_s_scale() -> Non
     ]
     held = held.model_copy(update={"contrasts": widened})
     look: PageLook = block_look(held, fact_arms(held))
-    tables = {table.name: table for table in every_table(held, look)}
+    tables = {table.name: table for table in every_table(held, look, forms=PageForms.of(held))}
     said = {(row["arm"].text, row["measure"].text): row["interval"].text for row in tables["contrasts"].rows}
     assert said["qwen3.8-flash", "Outcome (1–5)"] == "-4.00 to +0.10"
     assert said["1017", "Failed-reply notices"] == "-0.0069 notices to +0.0025 notices"
@@ -489,7 +490,7 @@ def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_
     ]
     held = held.model_copy(update={"contrasts": unkinded})
     look: PageLook = block_look(held, fact_arms(held))
-    (contrasts,) = [table for table in every_table(held, look) if table.name == "contrasts"]
+    (contrasts,) = [table for table in every_table(held, look, forms=PageForms.of(held)) if table.name == "contrasts"]
     tabled = {
         row["arm"].text: row["change"].text for row in contrasts.rows if row["measure"].text == "Failed-reply notices"
     }
@@ -525,7 +526,7 @@ def test_a_family_level_under_100_never_reads_100() -> None:
         }
     )
     look: PageLook = block_look(held, fact_arms(held))
-    (contrasts,) = [table for table in every_table(held, look) if table.name == "contrasts"]
+    (contrasts,) = [table for table in every_table(held, look, forms=PageForms.of(held)) if table.name == "contrasts"]
     assert {row["level"].text for row in contrasts.rows} == {"99.95% (95% across 16 comparisons)"}
 
 

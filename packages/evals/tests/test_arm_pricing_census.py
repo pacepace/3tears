@@ -42,6 +42,7 @@ from threetears.evals.analysis.report.parts.words import (
 from threetears.evals.analysis.report_input import Pricing
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 
 #: The arms of the planted campaign: the control and the candidate.
@@ -111,7 +112,7 @@ def test_the_census_reads_an_arms_pricing_off_its_production_usage_rows() -> Non
     assert row.pricing == Pricing(
         sources=["openrouter:reported"], providers=[], tool_providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
     )
-    table = arms_table(built, block_look(built, fact_arms(built)), ())
+    table = arms_table(built, block_look(built, fact_arms(built)), (), forms=PageForms.of(built))
     assert any(
         cell == f"{3 * CASES} of {4 * CASES} calls priced" for cell in (r["cost_per_1k"].value for r in table.rows)
     )
@@ -169,7 +170,7 @@ def test_a_tool_the_model_called_is_tool_spend_and_never_a_provider_of_the_model
     assert (row.pricing.providers, row.pricing.tool_providers) == (["DeepInfra"], ["searxng"])
     assert row.reply_cost_usd == pytest.approx(0.003), "the search spend stays in the report input's cost"
 
-    table = arms_table(built, block_look(built, fact_arms(built)), ())
+    table = arms_table(built, block_look(built, fact_arms(built)), (), forms=PageForms.of(built))
     (fast,) = [r for r in table.rows if r["priced_by"].flag and "DeepInfra" in r["priced_by"].flag]
     assert fast["priced_by"].flag == "; ".join(
         [SERVED_BY_TEMPLATE.format(providers="DeepInfra"), TOOL_SPEND_TEMPLATE.format(providers="searxng")]
@@ -199,7 +200,7 @@ def test_the_options_table_of_an_assembled_campaign_shows_each_arms_source_provi
         for _ in range(CASES)
     ]
     built = report_input(campaign_over(_trials(usage)))
-    table = arms_table(built, block_look(built, fact_arms(built)), ())
+    table = arms_table(built, block_look(built, fact_arms(built)), (), forms=PageForms.of(built))
     assert "priced_by" in {column.key for column in table.columns}
     by_option = {row["option"].value: row for row in table.rows}
     (fast,) = [row for option, row in by_option.items() if option is not None and FAST in str(option)]

@@ -39,7 +39,9 @@ from threetears.evals.analysis.report.parts.charting import interval_level
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput
+from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.harness import read_writer_cases
 from threetears.evals.kernel.numbers import (
     ABSENT,
@@ -69,7 +71,9 @@ _WRITTEN = sorted(_written_inputs())
 
 
 def _tables(held: ReportInput) -> dict[str, TableBlock]:
-    return {table.name: table for table in every_table(held, block_look(held, fact_arms(held)))}
+    return {
+        table.name: table for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+    }
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,10 @@ def test_every_measure_the_input_holds_has_one_form(name: str) -> None:
     forms = PageForms.of(held)
     expected = {(key, "measure") for key in held.measures} | {(key, "judged") for key in held.judged}
     expected |= {(contrast.measure, contrast.kind) for contrast in held.contrasts}
+    # A scoreboard that counts passes states the pass rate, whose form is there whether or not a comparison reads it.
+    boards = [aspect_board(held, None), *(aspect_board(held, aspect.id) for aspect in held.aspects)]
+    if any(row.passed is not None and row.usable for board in boards for row in board.values()):
+        expected.add((TRIAL_PASS_NAME, "trial"))
     assert {(form.key, form.kind) for form in forms.measures} == expected
 
 
@@ -359,6 +367,84 @@ def test_an_absent_figure_reads_as_absent_and_is_recorded() -> None:
     assert forms.level(key, None).text == ABSENT
     assert forms.change(key, math.nan).text == ABSENT
     assert [entry.text for entry in forms.ledger] == [ABSENT, ABSENT]
+
+
+def _with_contrast(held: ReportInput, index: int, contrast: Contrast, **measures: Measure) -> ReportInput:
+    return held.model_copy(
+        update={
+            "measures": {**held.measures, **measures},
+            "contrasts": [*held.contrasts[:index], contrast, *held.contrasts[index + 1 :]],
+        }
+    )
+
+
+def _judged_contrast(held: ReportInput) -> tuple[int, Contrast]:
+    return next((i, c) for i, c in enumerate(held.contrasts) if c.kind == "judged" and c.measure not in held.measures)
+
+
+def _as_a_score_measure(held: ReportInput, key: str) -> Measure:
+    """A measure declared in unit ``score`` on a key that is also a 1–5 judged dimension, holding its figures."""
+    return next(iter(held.measures.values())).model_copy(
+        update={"unit": "score", "label": None, "per_arm": held.judged[key].per_arm}
+    )
+
+
+def test_a_comparison_on_a_score_that_names_no_kind_is_kept_within_the_scale_and_named_by_it() -> None:
+    """A comparison on a 1–5 score stored with no kind takes its measure's one form, read as the Full results read it:
+    its interval kept within the scale's reach and its name carrying the scale, in the forms and the table alike."""
+    held = _written_inputs()[KAIRO]
+    index, contrast = _judged_contrast(held)
+    altered = _with_contrast(held, index, contrast.model_copy(update={"kind": None, "interval": (-9.0, 9.0)}))
+    forms = PageForms.of(altered)
+    row = _tables(altered)["contrasts"].rows[index]
+    assert row["interval"].text == forms.interval(contrast.measure, -9.0, 9.0, kind=None, change=True).text
+    assert row["interval"].text == "-4.00 to +4.00"
+    assert row["measure"].text.endswith("(1–5)")
+
+
+def test_a_comparison_that_names_its_kind_measure_is_never_read_as_a_score() -> None:
+    """On a key both a measure in unit ``score`` and a 1–5 judged dimension, a comparison that names ``measure`` is
+    neither kept within the scale nor named by it, while the measure's own column carries the scale."""
+    held = _written_inputs()[KAIRO]
+    index, contrast = _judged_contrast(held)
+    scored = _as_a_score_measure(held, contrast.measure)
+    named = contrast.model_copy(update={"kind": "measure", "interval": (-9.0, 9.0)})
+    altered = _with_contrast(held, index, named, **{contrast.measure: scored})
+    tables = _tables(altered)
+    row = tables["contrasts"].rows[index]
+    assert row["interval"].text == "-9.00 to +9.00"
+    assert not row["measure"].text.endswith("(1–5)")
+    heads = [column.header for column in tables["arms_by_measure"].columns]
+    assert any(head.endswith("(1–5)") for head in heads), heads
+
+
+def test_a_measure_in_unit_score_on_a_judged_key_is_named_by_its_scale() -> None:
+    """A measure declared in unit ``score`` whose key is also a 1–5 judged dimension heads its column with the scale."""
+    held = _written_inputs()[KAIRO]
+    key = _judged_contrast(held)[1].measure
+    altered = held.model_copy(update={"measures": {**held.measures, key: _as_a_score_measure(held, key)}})
+    table = _tables(altered)["arms_by_measure"]
+    header = next(column.header for column in table.columns if column.key == f"measure:{key}")
+    assert header.endswith("(1–5)"), header
+
+
+def test_a_written_figure_that_is_no_number_reads_as_the_dash_in_its_unit() -> None:
+    """A mean or a change that is not a number reads as the number rule spells it on a written page, the dash in the
+    figure's unit (``— items``, ``— pts``), in the table and the forms alike."""
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    key = next(k for k in held.measures if forms.measure(k).reads_as == "measured" and forms.measure(k).unit)
+    unit = forms.measure(key).unit
+    arm = next(iter(held.measures[key].per_arm))
+    stat = held.measures[key].per_arm[arm].model_copy(update={"mean": math.nan})
+    measure = held.measures[key].model_copy(update={"per_arm": {**held.measures[key].per_arm, arm: stat}})
+    altered = held.model_copy(update={"measures": {**held.measures, key: measure}})
+    texts = {row[f"measure:{key}"].text for row in _tables(altered)["arms_by_measure"].rows}
+    assert f"— {unit}" in texts
+    assert PageForms.of(altered).level(key, math.nan).text == f"— {unit}"
+    index, rate = next((i, c) for i, c in enumerate(held.contrasts) if c.kind == "trial")
+    changed = _with_contrast(held, index, rate.model_copy(update={"delta": math.nan}))
+    assert _tables(changed)["contrasts"].rows[index]["change"].text == "— pts"
 
 
 def test_a_contrast_that_names_no_kind_reads_as_the_measure_s_own_form() -> None:

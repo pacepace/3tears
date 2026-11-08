@@ -41,6 +41,7 @@ from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
 from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel import RoleUsageLedger
@@ -438,7 +439,7 @@ def test_the_overview_of_an_arm_whose_calls_all_came_back_cites_none() -> None:
 
 def _cost_flags(held: ReportInput) -> list[str | None]:
     """Each arm's cost flag in a report document's options table (the arms table) over ``held``."""
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     return [row["cost_per_1k"].flag for row in table.rows]
 
 

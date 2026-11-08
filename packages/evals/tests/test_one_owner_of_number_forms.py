@@ -1246,15 +1246,25 @@ class TestAWrapperIsAPrimitive:
         assert [(site.qualname, site.form) for site in sites] == [("_faded", "f-string spec")]
         assert _ratcheted(sites) == []
 
-    def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self):
+    def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self, tmp_path):
         """A decision moved into ``forms.py`` and called from a surface is decided where it is called, so a module
-        that reroutes through one never reaches zero entries by the move alone."""
-        assert {"at_decimals", "level_decimals", "change_decimals", "measured_decimals"} <= _FORMS_CALLABLES
-        assert _forms(_python_sites("at_decimals(v, 2, '%')")) == [
-            ("<module>", "at_decimals()", "at_decimals(v, 2, '%')")
+        that reroutes through one never reaches zero entries by the move alone. Every public free function there is
+        such a primitive, and nothing private, nor a class or its methods, is."""
+        forms = tmp_path / _FORMS
+        forms.parent.mkdir(parents=True)
+        forms.write_text(
+            "def relocated(v):\n    return v\n\n"
+            "def _kept_inside(v):\n    return v\n\n"
+            "class PageForms:\n    def level(self, v):\n        return v\n",
+            encoding="utf-8",
+        )
+        assert _forms_primitives(tmp_path) == frozenset({"relocated"})
+        assert "measured_decimals" in _FORMS_CALLABLES
+        assert _forms(_python_sites("measured_decimals(cells)")) == [
+            ("<module>", "measured_decimals()", "measured_decimals(cells)")
         ]
-        assert _forms(_python_sites("forms.level_decimals(r, k, d)")) == [
-            ("<module>", "level_decimals()", "forms.level_decimals(r, k, d)")
+        assert _forms(_python_sites("forms.measured_decimals(cells)")) == [
+            ("<module>", "measured_decimals()", "forms.measured_decimals(cells)")
         ]
 
     def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self):

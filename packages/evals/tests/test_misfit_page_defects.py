@@ -37,6 +37,7 @@ from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.report_doc import ReportDoc
 
 #: The acceptance runs the reviews read.
@@ -149,7 +150,9 @@ def test_the_full_gate_grid_reads_a_cell_with_no_figure_as_unknown_never_a_fail(
     assert "Unknown (no figure)" in page
     held = fixture_inputs()["r2 with its gates read in each task"]
     (grid,) = [
-        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "gate_matrix_full"
+        table
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        if table.name == "gate_matrix_full"
     ]
     unknown = [cell for row in grid.rows for cell in row.values() if cell.value == "Unknown"]
     assert unknown and all(cell.status == "neutral" and cell.flag == "no figure" for cell in unknown)

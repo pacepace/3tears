@@ -61,6 +61,7 @@ from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import CENT, MoneyForm, money_form, spell_dollars
 
 #: r1 to r5, and Kairo round 2 frozen from its bundle.
@@ -321,7 +322,7 @@ def test_every_key_of_a_money_family_reads_in_its_sets_one_form(
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_the_options_table_cost_column_reads_in_one_form(name: str) -> None:
     held = INPUTS[name]
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     column = next((column for column in table.columns if column.key == "cost_per_1k"), None)
     if column is None:
         pytest.skip(f"{name} states no cost")
@@ -399,7 +400,7 @@ def _planned(kind: PlanChartKind, query: ChartQuery) -> PlannedChart:
 
 def _engine_tables(held: ReportInput) -> list[TableBlock]:
     look = block_look(held, fact_arms(held))
-    tables = list(every_table(held, look))
+    tables = list(every_table(held, look, forms=PageForms.of(held)))
     for key, measure in held.measures.items():
         if measure.unit in ("usd", "usd_per_1k", "usd_per_1m") and measure.per_arm:
             spec, faults = complete_chart(_planned("table", _query("measures", [key])), held, "block")
@@ -440,7 +441,11 @@ def test_r1s_tasks_table_reads_each_tasks_cost_across_the_arms_in_one_form() -> 
     figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-07), so $58 | $24 | $4.60 | $8.90; its
     count is written as the page writes every count, "per 1,000 conversations", never the input label's "1k"."""
     held = INPUTS["r1"]
-    (tasks,) = [table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "tasks"]
+    (tasks,) = [
+        table
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        if table.name == "tasks"
+    ]
     rows = [[cell.text for cell in row.values()] for row in tasks.rows]
     assert ["Billing & account Q&A", "400", "Cost per 1,000 conversations", "$58", "$24", "$4.60", "$8.90"] in rows
 
@@ -450,7 +455,9 @@ def test_a_cost_still_under_a_cent_at_the_rulers_cap_reads_there_with_no_mark() 
     at that count, each cost to its own two significant figures, and never with the per-1,000 mark beside it."""
     held = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1e6)
     (arms,) = [
-        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "arms_by_measure"
+        table
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        if table.name == "arms_by_measure"
     ]
     (column,) = [column for column in arms.columns if column.key == "cost_per_1k"]
     assert column.header == "Cost per 1,000,000 conversations"
@@ -633,7 +640,7 @@ def test_the_options_table_shows_the_price_source_provider_and_priced_share_besi
         for arm in arms
     }
     moved = _priced(held, pricing, unanswered=arms[1])
-    table = arms_table(moved, block_look(moved, fact_arms(moved)), ())
+    table = arms_table(moved, block_look(moved, fact_arms(moved)), (), forms=PageForms.of(moved))
     keys = [column.key for column in table.columns]
     assert keys.index("pass_rate") < keys.index("cost_per_1k") < keys.index("priced_by")
     for arm in arms:
@@ -651,7 +658,7 @@ def test_a_partly_priced_arm_says_how_many_calls_were_priced_and_shows_no_smalle
     pricing = {arm: Pricing(sources=["openrouter:reported"], calls=897, priced_calls=897) for arm in arms}
     pricing[arms[0]] = Pricing(sources=["openrouter:reported"], calls=897, priced_calls=850)
     moved = _priced(held, pricing, unanswered=arms[0])
-    table = arms_table(moved, block_look(moved, fact_arms(moved)), ())
+    table = arms_table(moved, block_look(moved, fact_arms(moved)), (), forms=PageForms.of(moved))
     cell = _row(table, moved, arms[0])["cost_per_1k"]
     assert cell.value == "850 of 897 calls priced"
     assert "$" not in cell.text
@@ -674,7 +681,7 @@ def test_an_arm_none_of_whose_calls_were_priced_reads_unpriced() -> None:
             "scoreboard": rows,
         }
     )
-    table = arms_table(moved, block_look(moved, fact_arms(moved)), ())
+    table = arms_table(moved, block_look(moved, fact_arms(moved)), (), forms=PageForms.of(moved))
     assert _row(table, moved, arms[0])["cost_per_1k"].value == UNPRICED
 
 
@@ -727,7 +734,7 @@ def test_an_options_table_whose_costs_are_a_cent_or_more_a_run_reads_per_run() -
     held = INPUTS["r4"]
     arms = [arm.id for arm in held.arms]
     planted = _costing(held, {arm: 50.0 + 10 * index for index, arm in enumerate(arms)})
-    table = arms_table(planted, block_look(planted, fact_arms(planted)), ())
+    table = arms_table(planted, block_look(planted, fact_arms(planted)), (), forms=PageForms.of(planted))
     (column,) = [column for column in table.columns if column.key == "cost_per_1k"]
     assert column.header == "Cost per reply"
     cells = [str(row["cost_per_1k"].value) for row in table.rows]
@@ -737,7 +744,7 @@ def test_an_options_table_whose_costs_are_a_cent_or_more_a_run_reads_per_run() -
 
 def test_an_options_table_under_a_cent_per_1000_runs_reads_per_1000000() -> None:
     held = INPUTS["r3"]
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     (column,) = [column for column in table.columns if column.key == "cost_per_1k"]
     assert column.header == "Cost per 1,000,000 turns"
     assert all("/1000" not in str(row["cost_per_1k"].value) for row in table.rows)
@@ -766,7 +773,7 @@ def _part_priced_control() -> tuple[ReportInput, str, str]:
 def test_no_uplift_is_read_against_a_partly_priced_control() -> None:
     moved, control, candidate = _part_priced_control()
     assert moved.arms[0].role == "control"
-    table = arms_table(moved, block_look(moved, fact_arms(moved)), ())
+    table = arms_table(moved, block_look(moved, fact_arms(moved)), (), forms=PageForms.of(moved))
     flag = _row(table, moved, candidate)["cost_per_1k"].flag or ""
     assert "no uplift: the control has 850 of 897 calls priced" in flag
     assert "%" not in flag
@@ -975,7 +982,7 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
                 seen.add(label)
                 drawn.append((label, page))
     # The Full results tables, every one the input holds, with the cost column of the page's one cost rule.
-    for table in every_table(held, look):
+    for table in every_table(held, look, forms=PageForms.of(held)):
         page = PageChart(title="", chart=table, notes=[])
         if _draws_money(page):
             drawn.append((f"full/{table.name}/all/0", page))
@@ -1553,7 +1560,11 @@ def test_r2s_cost_gate_under_a_cent_reads_its_reason_and_line_on_the_criterions_
 
 def test_a_partly_priced_arms_cost_in_the_full_results_says_so_beside_it() -> None:
     moved, arm = _part_priced(INPUTS["r1"])
-    (table,) = [one for one in every_table(moved, block_look(moved, fact_arms(moved))) if one.name == "arms_by_measure"]
+    (table,) = [
+        one
+        for one in every_table(moved, block_look(moved, fact_arms(moved)), forms=PageForms.of(moved))
+        if one.name == "arms_by_measure"
+    ]
     cost = next(
         column.key for column in table.columns if column.key.startswith("measure:cost") or column.key == "cost_per_1k"
     )

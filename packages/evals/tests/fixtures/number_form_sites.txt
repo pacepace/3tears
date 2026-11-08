@@ -11,7 +11,7 @@
 # another form or function, or the callers of a renamed wrapper (a site's form is the wrapper's name, so a rename
 # re-keys every caller).
 #
-# Generated from the tree on 2026-11-08 (evals/reset at ccf3389aa); the ratchet, not this header, holds the counts.
+# Generated from the tree on 2026-11-08 (evals/reset, nf-c3b merge); the ratchet, not this header, holds the counts.
 threetears/evals/actions/analyst.py | <module> | group_thousands() | 1
 threetears/evals/actions/render.py | _cited_body | _cited_field() | 1
 threetears/evals/actions/render.py | _cited_field | _cited_body() | 1
@@ -491,30 +491,8 @@ threetears/evals/analysis/report/parts/charting.py | reference_line | figure_tex
 threetears/evals/analysis/report/parts/charting.py | reference_line | quantity() | 1
 threetears/evals/analysis/report/parts/charting.py | unit_quantities | quantity() | 3
 threetears/evals/analysis/report/parts/charting.py | unit_refusal | quantity() | 1
-threetears/evals/analysis/report/parts/full_results.py | _arms_by_aspect_and_measure | _named() | 2
-threetears/evals/analysis/report/parts/full_results.py | _arms_by_aspect_and_measure | quantity() | 1
-threetears/evals/analysis/report/parts/full_results.py | _arms_by_measure | _named() | 2
-threetears/evals/analysis/report/parts/full_results.py | _arms_by_measure | quantity() | 1
-threetears/evals/analysis/report/parts/full_results.py | _change | at_decimals() | 1
-threetears/evals/analysis/report/parts/full_results.py | _change | change_decimals() | 1
-threetears/evals/analysis/report/parts/full_results.py | _change | change_ends() | 1
-threetears/evals/analysis/report/parts/full_results.py | _change | change_span() | 1
-threetears/evals/analysis/report/parts/full_results.py | _change | figure_text() | 2
-threetears/evals/analysis/report/parts/full_results.py | _changes_drawn | change_quantity() | 1
-threetears/evals/analysis/report/parts/full_results.py | _contrasts | _level() | 1
-threetears/evals/analysis/report/parts/full_results.py | _contrasts | _named() | 1
-threetears/evals/analysis/report/parts/full_results.py | _contrasts | format_number() | 1
 threetears/evals/analysis/report/parts/full_results.py | _gate_cell | format_figure() | 1
 threetears/evals/analysis/report/parts/full_results.py | _gate_matrix_full | format_figure() | 1
-threetears/evals/analysis/report/parts/full_results.py | _level | interval_level() | 1
-threetears/evals/analysis/report/parts/full_results.py | _named | _score_named() | 1
-threetears/evals/analysis/report/parts/full_results.py | _named | level_quantity() | 1
-threetears/evals/analysis/report/parts/full_results.py | _score_named | format_number() | 2
-threetears/evals/analysis/report/parts/full_results.py | _slices_table | _named() | 1
-threetears/evals/analysis/report/parts/full_results.py | _stated | at_decimals() | 1
-threetears/evals/analysis/report/parts/full_results.py | _stated | figure_text() | 1
-threetears/evals/analysis/report/parts/full_results.py | _stated | level_decimals() | 1
-threetears/evals/analysis/report/parts/full_results.py | _stated | level_quantity() | 1
 threetears/evals/analysis/report/parts/full_results.py | _table | percent_columns() | 1
 threetears/evals/analysis/report/parts/look.py | _money_text | format_number() | 1
 threetears/evals/analysis/report/parts/look.py | _money_text | group_thousands() | 1
@@ -674,8 +652,6 @@ threetears/evals/analysis/report/parts/tables.py | _unanswered_marks | _calls() 
 threetears/evals/analysis/report/parts/tables.py | arms_key | _said() | 1
 threetears/evals/analysis/report/parts/tables.py | arms_table | percent_columns() | 1
 threetears/evals/analysis/report/parts/tables.py | pass_rate_cell | _said() | 1
-threetears/evals/analysis/report/parts/tables.py | pass_rate_cell | figure_text() | 1
-threetears/evals/analysis/report/parts/tables.py | pass_rate_cell | quantity() | 1
 threetears/evals/analysis/report/serialize_html.py | _aspect_fold | _block() | 1
 threetears/evals/analysis/report/serialize_html.py | _block | table_html() | 1
 threetears/evals/analysis/report/serialize_html.py | _folded | _block() | 1
