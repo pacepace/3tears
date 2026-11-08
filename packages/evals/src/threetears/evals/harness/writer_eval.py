@@ -45,7 +45,7 @@ editor's own model. ``await WriterEval(...).run()``:
 8. returns a :class:`WriterResult`, each arm's summary read over its batches' runs as one
    (:func:`~threetears.evals.analysis.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
    campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
-   with the side-by-side tables at the head of its Scorecard.
+   with the preference drawn against even and the side-by-side tables at the head of its Scorecard.
 
 **A report budget that cannot admit even one turn is refused before anything runs; one under two turns is warned.**
 The cap holds back the next turn's ceiling against what was actually spent, so the arithmetic proves a budget too small
@@ -129,7 +129,7 @@ import math
 import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, get_args
 
@@ -149,6 +149,7 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.quantities import render_cell
 from threetears.evals.analysis.report.blocks import (
     CellValue,
+    ChartBlock,
     DisclosureBlock,
     ReportBlock,
     TableBlock,
@@ -156,6 +157,7 @@ from threetears.evals.analysis.report.blocks import (
     TableColumn,
     Verdict,
 )
+from threetears.evals.analysis.report.charts import ChartReference, DotIntervalChart, DotIntervalRow
 from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
@@ -263,16 +265,23 @@ _BATCH_SIZE: Final = 4
 #: The stopping rules a writer eval may declare.
 _STOP_WHEN: frozenset[str] = frozenset(get_args(StopWhen))
 
-#: The preference table's columns, by key and header: a row per candidate and the pairs it reads; the interval's header
-#: carries its level when a pass read one.
+#: The preference table's columns, by key and header: a row per candidate and the pairs it reads, every figure on the
+#: share scale a reader sees (the two shares sum to 100%, 50% is even); the interval's header carries its level when a
+#: pass read one.
 _PREFERENCE_COLUMNS: Final = (
     ("candidate", "Candidate"),
     ("pairs", "Pairs"),
     ("reads", "Reads"),
-    ("share", "Share (%)"),
-    ("difference", "Difference (pts)"),
-    ("interval", "Interval (pts)"),
+    ("share", "Candidate's share (%)"),
+    ("control_share", "Control's share (%)"),
+    ("interval", "Interval (%)"),
 )
+
+#: Where a share is even, in percent: the judge preferred neither page.
+_EVEN: Final = 50.0
+
+#: The preference figure's axis ticks, in percent: the whole share scale, even at its middle.
+_SHARE_TICKS: Final = (0.0, 25.0, 50.0, 75.0, 100.0)
 
 #: The judge's checks table's columns, by key and header: a row per candidate.
 _CHECK_COLUMNS: Final = (
@@ -291,13 +300,13 @@ _BOTH_FINISHED: Final = "both pages finished"
 #: The most decimals a side-by-side figure is read to (:func:`_places`).
 _MOST_PLACES: Final = 6
 
-#: What the side-by-side tables say once, above them: what a share, a difference, order consistency and the lean are.
+#: What the side-by-side tables say once, above them: what a share, its interval, order consistency and the lean are.
 _PAIRWISE_LEAD: Final = (
     "Side by side, the judge read each case's two pages in both orders and said how strongly it preferred one: a "
-    "share is the part of its preference it gave the candidate, averaged over the cases (50% is even), and the "
-    "reading over every pair is the promotion's primary reading; a difference is the candidate's share less the "
-    "control's, in points; order consistency is the part of cases whose two orders agreed, and first-slot lean how far "
-    "the judge favoured the page it read first, in points (-50 to 50)."
+    "page's share is the part of its preference it gave that page, averaged over the cases, so the candidate's and the "
+    "control's sum to 100% (50% is even); the interval is on the candidate's share, and the reading over every pair is "
+    "the promotion's primary reading; order consistency is the part of cases whose two orders agreed, and first-slot "
+    "lean how far the judge favoured the page it read first, in points (-50 to 50)."
 )
 
 #: What a promotion decision leads the page's answer with, by decision: the candidate's name and the control's fill it.
@@ -702,14 +711,15 @@ class WriterResult:
 
     def pairwise_text(self) -> str:
         """Each candidate's pairwise pass as two tables under the one sentence defining their terms, then a line for
-        each pass that did not complete: the tables the page's Scorecard opens with (:func:`_side_by_side_blocks`).
+        each pass that did not complete: the tables the page's Scorecard prints under its preference figure
+        (:func:`_side_by_side_blocks`).
 
         The preference table has a row per candidate and the pairs it reads (every pair, a missing page counted as the
         side it leaves, then the pairs whose two pages were both stored finished): what the preference reads (``void``
-        beside it when the order checks void it), the candidate's mean share, its difference from the control's and the
-        interval on it. The judge's checks table has a row per candidate: order consistency, the lean to the page read
-        first, the answers the judge could not tell, the held-out cases like these that would settle a reading that did
-        not separate, and what the pass spent of its part.
+        beside it when the order checks void it), the candidate's mean share, the control's beside it and the interval
+        on the candidate's, all on the share scale (50% is even). The judge's checks table has a row per candidate:
+        order consistency, the lean to the page read first, the answers the judge could not tell, the held-out cases
+        like these that would settle a reading that did not separate, and what the pass spent of its part.
 
         :return: The text, as Markdown.
         :rtype: str
@@ -1717,12 +1727,137 @@ def _places(values: Sequence[float]) -> int:
 
 
 def _in_points(value: float | None) -> float | None:
-    """A side-by-side figure, a part from 0 to 1 or a difference of parts, in percent or points (x 100), at the
-    decimals :func:`_places` reads it to alone: the one figure the tables and the answer print."""
+    """A judge's-check figure, a part from 0 to 1 or a lean of parts, in percent or points (x 100), at the
+    decimals :func:`_places` reads it to alone: the one figure the checks table prints."""
     if value is None:
         return None
     points = value * 100
     return round(points, _places([points]))
+
+
+def _even_places(values: Sequence[float]) -> int:
+    """The fewest decimals at which shares in percent keep their side of none (0), of even (50) and of all (100), and
+    shares that differ still differ (:func:`_places` about each): a lean off even, or an end short of none or all,
+    stays visible whatever the rounding."""
+    return max(_places([value - edge for value in values]) for edge in (0.0, _EVEN, 100.0))
+
+
+@dataclass(frozen=True)
+class _Shares:
+    """A preference on the share scale, in percent, at the one precision the table, the figure, its line and the answer
+    print it at.
+
+    :ivar candidate: The candidate's share.
+    :ivar control: The control's: 100 less the candidate's as printed, so the two printed shares sum to 100.
+    :ivar interval: The interval on the candidate's share; ``None`` where the pass read none.
+    :ivar places: The decimals all three are read to.
+    """
+
+    candidate: float
+    control: float
+    interval: tuple[float, float] | None
+    places: int
+
+    def spell(self, value: float) -> str:
+        """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
+        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``)."""
+        return _unpadded(f"{value:.{self.places}f}")
+
+    def cell(self, value: float) -> CellValue:
+        """A share as a table cell: the number where the one number rule prints it as :meth:`spell` does, so the column
+        reads as numbers; else the text, since that rule keeps four significant figures and this figure needs more."""
+        text = self.spell(value)
+        return value if render_cell(value) == text else text
+
+    @property
+    def ends(self) -> tuple[str, str] | None:
+        """The interval's two ends as text (:meth:`spell`); ``None`` without an interval."""
+        if self.interval is None:
+            return None
+        return (self.spell(self.interval[0]), self.spell(self.interval[1]))
+
+
+def _unpadded(text: str) -> str:
+    """A decimal's text without trailing zeros or a bare point, as the page prints a figure (``70.000`` to ``70``)."""
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _shares(share: float | None, difference: tuple[float, float] | None) -> _Shares | None:
+    """A candidate's share and the interval the pass read on the difference of the two shares, on the share scale:
+    the two shares run 0 to 1 and sum to 1, so a difference ``d`` is the candidate's share ``(1 + d) / 2``. Each end is
+    held within 0 to 100%, the scale a share lies on. ``None`` when nothing was scored."""
+    if share is None:
+        return None
+    points = share * 100
+    ends = None if difference is None else [min(100.0, max(0.0, (1 + end) / 2 * 100)) for end in difference]
+    places = _even_places([points, *(ends or [])])
+    candidate = round(points, places)
+    return _Shares(
+        candidate=candidate,
+        control=round(100 - candidate, places),
+        interval=None if ends is None else (round(ends[0], places), round(ends[1], places)),
+        places=places,
+    )
+
+
+def _primary_reads(read: WriterPairwise) -> str:
+    """What a candidate's primary reading reads, ``void`` beside it when the order checks void it."""
+    reads = _pairwise_reads(read.primary)
+    return reads if read.void is None else f"{reads} (void)"
+
+
+def _level_text(pairwise: Mapping[str, WriterPairwise]) -> str | None:
+    """The level the passes read their intervals at (``95%``); ``None`` when none read one."""
+    level = next((read.primary.interval_level for read in pairwise.values() if read.primary.interval_level), None)
+    return None if level is None else f"{format_number(level * 100)}%"
+
+
+def _preference_figure(
+    control: str, pairwise: Mapping[str, WriterPairwise], candidates: Sequence[str]
+) -> list[ReportBlock]:
+    """The preference drawn at the head of the Scorecard, so a reader sees at once which page the judge preferred, by
+    how much and whether it is settled: each candidate's share as a dot on the 0 to 100% scale, its interval where its
+    pass read one (an open mark where it read none), against a line at even (50%); then one line per candidate saying
+    the same in words, the control's share beside the candidate's. Nothing when no pass scored a pair. An interval is
+    drawn and said only with its level, as every interval on a page is (GENERATOR §5.2)."""
+    level = _level_text(pairwise)
+    # Each share at the precision the table prints it, its interval dropped from the figure where it has no level.
+    drawn = [
+        (arm, read, shares if read.primary.interval_level else replace(shares, interval=None))
+        for arm in candidates
+        if (read := pairwise.get(arm)) is not None and (shares := _shares(read.share, read.primary.interval))
+    ]
+    if not drawn:
+        return []
+    rows = [
+        DotIntervalRow(
+            label=arm,
+            value=shares.candidate,
+            lo=None if shares.interval is None else shares.interval[0],
+            hi=None if shares.interval is None else shares.interval[1],
+            hollow=True if shares.interval is None else None,
+        )
+        for arm, _, shares in drawn
+    ]
+    chart = DotIntervalChart(
+        rows=rows,
+        domain=(0.0, 100.0),
+        fmt="pct",
+        level=level if any(shares.interval is not None for _, _, shares in drawn) else None,
+        ticks=list(_SHARE_TICKS),
+        reference=ChartReference(value=_EVEN, kind="no_preference", label=f"even ({format_number(_EVEN)}%)"),
+    )
+    lines = []
+    for arm, read, shares in drawn:
+        line = f"{arm} {shares.spell(shares.candidate)}% · {control} {shares.spell(shares.control)}% (50% is even)"
+        if shares.ends is not None:
+            low, high = shares.ends
+            line += f", {level} interval {low}% to {high}%"
+        lines.append(
+            DisclosureBlock(section="scorecard", source="comparisons", text=f"{line}; {_primary_reads(read)}.")
+        )
+    title = f"Share of the judge's preference against {control}"
+    return [ChartBlock(section="scorecard", chart="dot_interval", title=title, data=chart), *lines]
 
 
 def _cells(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
@@ -1734,36 +1869,25 @@ def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, Ta
     """A candidate's rows of the preference table: every pair, then the pairs whose two pages were both finished; one
     row of the candidate alone when its pass was not read."""
     if read is None:
-        return [
-            _cells(
-                {"candidate": arm, "pairs": None, "reads": None, "share": None, "difference": None, "interval": None}
-            )
-        ]
+        return [_cells({key: arm if key == "candidate" else None for key, _ in _PREFERENCE_COLUMNS})]
     rows = []
     for pairs, verdict, share in (
         (_EVERY_PAIR, read.primary, read.share),
         (_BOTH_FINISHED, read.finished_only, read.finished_share),
     ):
-        reads = _pairwise_reads(verdict)
-        if pairs == _EVERY_PAIR and read.void is not None:
-            reads = f"{reads} (void)"
-        # The difference and its interval's ends at one precision, the fewest decimals that keep each end's sign and
-        # the three apart.
-        spread = [point * 100 for point in (verdict.delta, *(verdict.interval or ())) if point is not None]
-        places = _places(spread)
-        delta = None if verdict.delta is None else round(verdict.delta * 100, places)
-        interval = verdict.interval
+        reads = _primary_reads(read) if pairs == _EVERY_PAIR else _pairwise_reads(verdict)
+        # Both shares and the interval's ends at one precision, the fewest decimals that keep each on its side of
+        # none, even and all, and the three apart.
+        shares = _shares(share, verdict.interval)
         rows.append(
             _cells(
                 {
                     "candidate": arm,
                     "pairs": pairs,
                     "reads": reads,
-                    "share": _in_points(share),
-                    "difference": delta,
-                    "interval": None
-                    if interval is None
-                    else " to ".join(render_cell(round(end * 100, places)) for end in interval),
+                    "share": None if shares is None else shares.cell(shares.candidate),
+                    "control_share": None if shares is None else shares.cell(shares.control),
+                    "interval": None if shares is None or shares.ends is None else " to ".join(shares.ends),
                 }
             )
         )
@@ -1805,18 +1929,20 @@ def _side_by_side_blocks(
     launch_line: str | None = None,
 ) -> list[ReportBlock]:
     """The side-by-side section the page's Scorecard opens with, whose tables the print and ``pairwise.md`` lay out:
-    the one sentence defining its terms, the preference table (a row per candidate and the pairs it reads), the judge's
+    the preference figure and its line per candidate (:func:`_preference_figure`), the one sentence defining its
+    terms, the preference table (a row per candidate and the pairs it reads), the judge's
     checks table (a row per candidate), a line for each pass that did not complete, and each candidate's promotion
     reading in its own sentence. A run launched in batches (``launch_line``) says where it stopped launching and what
     each pass did against its rule, so the page says how many cases its readings were read on."""
-    level = next((read.primary.interval_level for read in pairwise.values() if read.primary.interval_level), None)
-    interval = "Interval (pts)" if level is None else f"Interval, {format_number(level * 100)}% (pts)"
+    level = _level_text(pairwise)
+    interval = "Interval (%)" if level is None else f"{level} interval (%)"
     preference = [
         TableColumn(key=key, header=interval if key == "interval" else header) for key, header in _PREFERENCE_COLUMNS
     ]
     rows = [row for arm in candidates for row in _preference_rows(arm, pairwise.get(arm))]
     checks = [_check_row(arm, pairwise.get(arm)) for arm in candidates]
     return [
+        *_preference_figure(control, pairwise, candidates),
         DisclosureBlock(section="scorecard", source="comparisons", text=_PAIRWISE_LEAD),
         TableBlock(
             section="scorecard",
@@ -1913,11 +2039,12 @@ def _answer_sentence(
     primary = read.primary
     improved = primary.outcome == "improved" and primary.reason != "too_few_cases" and read.void is None
     regressed = primary.outcome == "regressed" and primary.reason != "too_few_cases" and read.void is None
-    if read.share is None:
+    shares = _shares(read.share, primary.interval)
+    if shares is None:
         preference = f"across {cases} the judge scored no pair of {arm} against {control}"
     else:
         preference = (
-            f"across {cases} the judge gave {arm} {render_cell(_in_points(read.share))}% of its preference over "
+            f"across {cases} the judge gave {arm} {shares.spell(shares.candidate)}% of its preference over "
             f"{control} (50% is even)"
         )
     settle = read.cases_to_settle
@@ -1933,7 +2060,7 @@ def _answer_sentence(
             # A projection that assumes the observed share is the true one: said as conditional and coarse (one
             # significant figure, as a count reads, spell_count), since a share on these few cases moves between two
             # recordings of near-identical pages: ``if the share stayed near 52%, roughly 3,000 cases would settle it``.
-            near = render_cell(_in_points(read.share)) if read.share is not None else None
+            near = shares.spell(shares.candidate) if shares is not None else None
             about = (
                 f"more than {spell_count(PROJECTION_CASE_CAP)}"
                 if settle > PROJECTION_CASE_CAP

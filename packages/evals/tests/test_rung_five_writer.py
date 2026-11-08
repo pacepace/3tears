@@ -131,9 +131,10 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     printed = capsys.readouterr().out
     lines = printed.splitlines()
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
-    # The pairwise preference, the primary reading: lead-first's share, which the evidence cannot tell from shipped's
-    # at 7 cases (the glossary's words, owner ruling Q2), a row with columns; the pass's spend in the money form.
-    assert "| lead-first | every pair | cannot tell apart | 61 | 21 | -47 to 89 |" in lines
+    # The pairwise preference, the primary reading: lead-first's share beside shipped's and the interval on it, all on
+    # the share scale, which the evidence cannot tell from even at 7 cases (the glossary's words, owner ruling Q2), a
+    # row with columns; the pass's spend in the money form.
+    assert "| lead-first | every pair | cannot tell apart | 61 | 39 | 26 to 95 |" in lines
     assert "| lead-first | 86% (6 of 7) | 11 | 0 | 113 | $0.14 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]

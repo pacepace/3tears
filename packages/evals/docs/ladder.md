@@ -503,9 +503,9 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
 | report_writer.evidence_fits_claims (judged) | 4.71 | 4.57 |
 ...
-| Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval, 95% (pts) |
+| Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 61 | 21 | -47 to 89 |
+| lead-first | every pair | cannot tell apart | 61 | 39 | 26 to 95 |
 | lead-first | both pages finished | untested: no pair had both pages finished, 0 of 7 | — | — | — |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
