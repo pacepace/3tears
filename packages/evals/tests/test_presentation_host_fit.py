@@ -87,7 +87,8 @@ from packages.evals.tests.factories import fixture_variant_key, make_campaign, m
 from packages.evals.tests.page_contract_support import links, parsed
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
 from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked, rendered, report_page
-from packages.evals.tests.report_shapes_support import CORRECT_BAR, ArmTrials, AspectTrials, shape_of
+from packages.evals.tests.ladder_support import load, offline_copy
+from packages.evals.tests.report_shapes_support import CORRECT_BAR, ArmTrials, AspectTrials, s3_measurement, shape_of
 
 #: The narrowest frame the host gives the page, and the page's side gutters and its table frame's border.
 FRAME_PX = 688
@@ -1044,6 +1045,32 @@ def test_the_section_nav_paints_over_a_pinned_cell_scrolled_beneath_it(width: in
     assert not errors, errors
     assert hits is not None and len(hits) >= 5, f"the control: pinned header cells scrolled beneath the nav: {hits}"
     assert all(hit["onNav"] for hit in hits), [hit["cell"] for hit in hits if not hit["onNav"]]
+
+
+@pytest.mark.integration
+def test_one_arm_s_turned_scorecard_fits_the_688_px_frame_with_no_scroll(tmp_path: Path) -> None:
+    """Discodon's SearXNG page drew a glyph column per measure for its one arm, wider than the frame. Turned, a row per
+    measure with its value, interval and cases, the scorecard fits the host's 688 px frame without scrolling: its
+    frame's content is no wider than the frame. Held on the shared measurement and on rung 1's triage, whose one arm
+    reads sixteen measures, among them the long money measures' names."""
+    _browser()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        copy = offline_copy("1-triage", tmp_path / "rung1", monkeypatch)
+        triage = asyncio.run(load(copy / "triage.py", "triage", monkeypatch).triage_eval.run(store=":memory:")).page
+    probe = """() => {
+      const frame = document.querySelector('[data-table="scorecard"] .tbl');
+      if (!frame) return null;
+      return {scroll: frame.scrollWidth, client: frame.clientWidth, rows: frame.querySelectorAll('tbody tr').length,
+              glyphs: frame.querySelectorAll('svg.viz-glyph').length};
+    }"""
+    for name, page, rows in (("measurement", s3_measurement().page(), 6), ("triage", triage, 16)):
+        path = tmp_path / f"{name}.html"
+        path.write_text(campaign_report_html(page), encoding="utf-8")
+        drawn, errors = rendered(path, probe, width=FRAME_PX)
+        assert not errors, errors
+        assert drawn is not None and drawn["rows"] == rows, f"the control: {name}'s turned scorecard is drawn: {drawn}"
+        assert drawn["glyphs"] == 0, (name, drawn)
+        assert drawn["scroll"] <= drawn["client"] + 1, (name, drawn)
 
 
 def test_the_nav_stacks_above_every_table_frame_s_pinned_cells() -> None:

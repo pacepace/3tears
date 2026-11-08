@@ -302,25 +302,31 @@ def _measurement(*aspects: tuple[str, tuple[str] | tuple[str, str]]) -> Campaign
     return shape.page()
 
 
-def _scorecard_headers(page: CampaignReport) -> list[str]:
+def _scorecard_checks(page: CampaignReport) -> list[tuple[str, str]]:
+    """Each goal check one arm's turned scorecard reads, a row per aspect: the aspect and the name its row is headed
+    by (visual pass V2: one arm's matrix is a row per measure, never a column per measure)."""
     (matrix,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    return [column.header for column in matrix.columns if column.key.startswith("measure:goal_state:")]
+    defined = {name for name, _ in page.check_glossary}
+    assert [column.key for column in matrix.columns][:2] == ["aspect", "measure"], "the control: the matrix is turned"
+    return [(row["aspect"].text, row["measure"].text) for row in matrix.rows if row["measure"].text in defined]
 
 
 def test_one_expression_has_one_name_on_every_aspect_and_two_aspects_with_one_check_each_read_apart() -> None:
     refund = "state.refund.amount <= state.order.total"
     page = _measurement(("billing", (LONG,)), ("refunds", (refund,)))
-    assert sorted(_scorecard_headers(page)) == [f"{LONG_NAME} (%)", "Refund amount check (%)"]
+    assert _scorecard_checks(page) == [("billing", LONG_NAME), ("refunds", "Refund amount check")]
     alike = _measurement(("billing", (LONG,)), ("refunds", (LONG,)))
-    assert _scorecard_headers(alike) == [f"{LONG_NAME} (%)"]
+    assert _scorecard_checks(alike) == [("billing", LONG_NAME), ("refunds", LONG_NAME)]
     assert [name for name, _ in alike.check_glossary] == [LONG_NAME]
 
 
-def test_two_aspects_checks_that_share_a_name_head_their_columns_by_their_aspects() -> None:
+def test_two_aspects_checks_that_share_a_name_are_told_apart_by_their_aspects() -> None:
     page = _measurement(
         ("billing", ("state.ticket.status == 'open'",)), ("refunds", ("state.ticket.status == 'closed'",))
     )
-    assert sorted(_scorecard_headers(page)) == ["Ticket status check, billing (%)", "Ticket status check, refunds (%)"]
+    # One arm's matrix is turned: each row is told apart by its aspect, beside the name its aspect reads the check by,
+    # and the one glossary entry names each expression with its aspect.
+    assert _scorecard_checks(page) == [("billing", "Ticket status check"), ("refunds", "Ticket status check")]
     (entry,) = page.check_glossary
     assert entry == (
         "Ticket status check",
@@ -328,10 +334,13 @@ def test_two_aspects_checks_that_share_a_name_head_their_columns_by_their_aspect
     )
 
 
-def test_a_check_s_column_header_links_its_glossary_entry() -> None:
+def test_a_check_s_row_header_links_its_glossary_entry() -> None:
     said = campaign_report_html(_measurement(("billing", (LONG, SHORT))))
-    (header,) = re.findall(rf"<th[^>]*>(<a [^>]*>{LONG_NAME} \(%\)</a>)</th>", said)
+    # One arm's turned scorecard heads each measure's row with its name, which links the check's entry as a column's
+    # header does (visual pass V2).
+    (header,) = re.findall(rf'<th scope="row"[^>]*>(<a [^>]*>{LONG_NAME}</a>)</th>', said)
     assert f'title="{escape(CHECK_LINK_TITLE)}"' in header
+    assert 'href="#g-check-' in header
 
 
 def test_a_name_inside_a_longer_one_is_never_linked_as_the_shorter() -> None:
@@ -505,8 +514,10 @@ def test_a_stored_two_arm_document_s_turned_table_heads_each_row_and_links_its_c
     assert '<th scope="col">Measure</th>' in table, "the control: the table is turned, a figure per row"
     rows = re.findall(r"<tr>(.*?)</tr>", table.split("<tbody>", 1)[1])
     assert rows and all(row.startswith('<th scope="row"') for row in rows), rows
+    # A header link after the term's first is plain (``class="seen"``), its link kept.
     assert re.search(
-        r'<th scope="row"[^>]*><a href="#g-check-field-accuracy-check" title="[^"]*">Field accuracy check</a></th>',
+        r'<th scope="row"[^>]*><a (?:class="seen" )?href="#g-check-field-accuracy-check" title="[^"]*">'
+        r"Field accuracy check</a></th>",
         table,
     ), table
 
@@ -552,11 +563,14 @@ def test_a_hyphenated_check_name_links_its_entry_as_a_row_s_label_and_as_a_colum
     markup = grid_html(turned) + grid_html(headed)
     assert '<span class="id">Reply-delivery</span> check' in markup, "the control: the name's word is held whole"
     linked = check_header_links(markup, [_HYPHENATED_CHECK])
-    links = re.findall(r'<th[^>]*><a href="#g-check-reply-delivery-check" title="[^"]*">(.*?)</a></th>', linked)
+    links = re.findall(
+        r'<th[^>]*><a (?:class="(seen)" )?href="#g-check-reply-delivery-check" title="[^"]*">(.*?)</a></th>', linked
+    )
+    # Every header naming the check links it: the first underlined, each later one plain (``class="seen"``).
     assert links == [
-        '<span class="id">Reply-delivery</span> check',
-        '<span class="id">Reply-delivery</span> check',
-        f"{_HYPHENATED_CHECK} (%)",
+        ("", '<span class="id">Reply-delivery</span> check'),
+        ("seen", '<span class="id">Reply-delivery</span> check'),
+        ("seen", f"{_HYPHENATED_CHECK} (%)"),
     ], links
 
 

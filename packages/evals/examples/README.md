@@ -142,9 +142,9 @@ v1 vs v2
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...
-| Aspect | Cases | ▸ v1 (%) | v2 (pts) |
+| Aspect | Cases | ▸ v1 · pass rate | v2 · pass rate vs v1 |
 |---|---|---|---|
-| invoices | 30 | 81 (73 of 90 trials, 30 cases) | 17 (cannot tell apart) |
+| invoices | 30 | 81.1% (73 of 90 trials, 30 cases) | 97.8% · +16.7 pts (cannot tell apart) |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: v2

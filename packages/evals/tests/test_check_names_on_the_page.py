@@ -255,10 +255,12 @@ def test_the_call_names_a_check_bar_by_the_check_s_name_whether_it_overrides_it_
     assert not any(CHECKS[0] in line for line in calls)
 
 
-def _measure_column(page: CampaignReport) -> str:
+def _measure_rows(page: CampaignReport) -> dict[str, str]:
+    """The name one arm's turned scorecard heads the check's row by on each aspect (visual pass V2: a row per measure,
+    each named as its own aspect names it, so no name spans two aspects)."""
     (matrix,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    (column,) = [column for column in matrix.columns if column.key == f"measure:{goal_check_measure(CHECKS[0])}"]
-    return column.header
+    defined = {name for name, _ in page.check_glossary}
+    return {row["aspect"].text: row["measure"].text for row in matrix.rows if row["measure"].text in defined}
 
 
 def _fold_names(page: CampaignReport) -> dict[str, str]:
@@ -276,21 +278,22 @@ def _fold_names(page: CampaignReport) -> dict[str, str]:
     [({CHECKS[0]: "Sum right"}, "Sum right"), ({}, UNNAMED[CHECKS[0]])],
     ids=["named otherwise", "unnamed"],
 )
-def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_each_name(
+def test_a_check_its_aspects_name_apart_heads_each_aspect_s_row_by_that_aspect_s_name(
     returns: dict[str, str], named: str
 ) -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": returns})
     page = build_campaign_report(shape.campaign, shape.readings, shape.reports)
-    # A rate's column names its unit after the name (``(%)``), as every rate header does; each name, in the
-    # campaign's order, and never the expression, which the glossary defines each name by.
-    assert _measure_column(page) == f"Total right / {named} (%)"
+    # Each aspect's row names the check as that aspect does, and never by the expression, which the glossary defines
+    # each name by.
+    assert _measure_rows(page) == {"orders": "Total right", "returns": named}
     # Each folded row still names the check as its own aspect does.
     assert _fold_names(page) == {"orders": "Total right", "returns": named}
 
 
-def test_a_column_whose_aspects_name_its_check_alike_is_headed_by_the_name() -> None:
+def test_a_check_its_aspects_name_alike_heads_each_row_by_the_name() -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": {CHECKS[0]: "Total right"}})
-    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports)) == "Total right (%)"
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports)
+    assert _measure_rows(page) == {"orders": "Total right", "returns": "Total right"}
 
 
 def test_a_call_over_a_check_bar_no_longer_missed_names_the_check_by_its_name() -> None:

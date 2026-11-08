@@ -2,20 +2,26 @@
 
 The matrix's form follows the campaign's kind (:func:`~threetears.evals.analysis.campaign_readings.campaign_kind`):
 
-- **A change**: one row per aspect, one column per candidate. Each cell is the candidate's change against the control
-  in points, its interval drawn against the aspect's margin, and what it shows (shown better, shown worse, no worse
-  than the margin, or unclear), with a floor's status beside it where the floor reads otherwise. The control's column
-  holds its pass rate with the count it is computed over, marked where it cannot move (a rate at or below the margin cannot show a drop; one at 100%
-  cannot show a gain). Under it, folded, the same readings one row per aspect × candidate with their counts; then the
+- **A change**: one row per aspect, one column per candidate, each head naming the measure and the control
+  (``v2 · pass rate vs v1``). Each cell is the candidate's own level, then its change from the control's, signed in
+  points at one decimal (``23.0% · +2.5 pts``), its interval drawn against the aspect's margin, and what it shows
+  (shown better, shown worse, no worse than the margin, or unclear), with a floor's status beside it where the floor
+  reads otherwise. The control's column holds the level the changes are read from, the mean of the cases they read,
+  so the levels close on each change: its trials passed where the two agree, else ``mean of N cases``; marked where it
+  cannot move (a rate at or below the margin cannot show a drop; one at 100% cannot show a gain). The line under the
+  matrix says the glyph's tick is the control and which way is better. Under it, folded, the same readings one row per aspect × candidate with their counts; then the
   lines that change how a cell reads; then one table of what would settle each unclear reading, on the pass rate and
   on every rate a floor reads.
 - **A choice**: one row per aspect, one column per arm, each cell the arm's pass rate with its count and the arms it
   is shown ahead of; folded under it, every pair; then the frontier's reading of which arm clears a bar cheapest.
-- **A measurement**: one row per aspect, one column per measure for its one arm, a pass rate with its count; folded
+- **A measurement**: one row per aspect, one column per measure, where several arms were measured; for one arm, turned:
+  a row per measure on each aspect, its value, interval and cases, with no glyph, a pass rate with its count; folded
   under it, every measure.
 
-A rate in a matrix carries the count it is computed over, beside it (``100 (40 of 40 trials, 20 cases)``): a rate
-the first screen shows is never a bare percent. How the intervals were read is the page's methods, not its scorecard.
+A level in a matrix carries the count it is computed over: the control's and a choice's arm's in its cell
+(``100.0% (40 of 40 trials, 20 cases)``, or ``20.5% (mean of 380 cases)``), a candidate's in its row's Cases cell and,
+counted in trials, in the fold under the matrix. How the intervals were read is the page's methods, not its
+scorecard.
 
 A change's or a choice's matrix carries one more row where
 :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives it each arm's figure across every
@@ -30,7 +36,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import reduce
 
@@ -58,6 +64,8 @@ from threetears.evals.analysis.report.decision import (
     rate_projections,
     read_floor,
 )
+from threetears.evals.analysis.report.blocks import bare_columns
+from threetears.evals.analysis.report.charts import percent_at
 from threetears.evals.analysis.report.model import (
     CellValue,
     DisclosureBlock,
@@ -301,12 +309,20 @@ def _with_equal_weight_row(
     reports: Mapping[str, Report],
     columns: Sequence[TableColumn],
     arms: Mapping[str, tuple[str, str]],
+    levels: Mapping[str, tuple[float, str | None]] | None = None,
 ) -> list[dict[str, TableCell]]:
     """The row across every aspect, each aspect weighed alike, with each arm's cell
     (:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells`) in that arm's column; no row
     where no cell is given. ``arms`` is each arm's column and the unit it holds, by variant key. A figure states its
-    unit, which must be its column's; it is placed without it, since the column's header names it. A withheld figure
-    (no value) carries none.
+    unit, which must be its column's; it is placed without it where the column's header names it (``alpha (%)``),
+    else with it at the unit's one decimal, a change signed. A withheld figure (no value) carries none.
+
+    A change's ``levels`` are each arm's level across the aspects on its change's own basis, by variant key, with any
+    words its cell adds: the equal-weight mean of the levels printed above it (:func:`_across_levels`). The row's
+    change is the equal-weight mean of the aspects' changes, so the control's figure is that mean of its cells, said
+    so once on its cell, and each candidate's change is printed after its own (``23.4% · +1.9 pts``); the arithmetic
+    then closes within rounding. The control's interval is the aggregate's, on its pooled rate, so the cell draws
+    none beside a figure on another basis.
 
     :raises ValueError: A cell names an arm the matrix has no column for, holds words, or states a unit other than its
         column's: the matrix would drop it or print it under the wrong unit.
@@ -321,6 +337,8 @@ def _with_equal_weight_row(
         )
     row = {column.key: TableCell(value=None) for column in columns}
     row["aspect"] = TableCell(value=aggregate.EQUAL_WEIGHT_ROW)
+    bare = bare_columns(columns)
+    held = levels or {}
     for key, cell in across.items():
         column, unit = arms[key]
         if cell.value is not None and (not cell.is_number or cell.unit != unit):
@@ -328,7 +346,23 @@ def _with_equal_weight_row(
             raise ValueError(
                 f"the {aggregate.EQUAL_WEIGHT_ROW!r} cell for arm {key} states {stated}, and its column holds {unit!r}"
             )
-        row[column] = cell.model_copy(update={"unit": ""})
+        if column in bare:
+            row[column] = cell.model_copy(update={"unit": ""})
+        elif cell.value is not None:
+            # A head that names no unit leaves it on each figure, at the unit's one decimal as the column's cells are:
+            # a candidate's change signed, after its level across the aspects, as every change cell reads.
+            update: dict[str, object] = {"decimals": 1, "signed": unit == POINTS}
+            if key in held:
+                level, said = held[key]
+                if unit == POINTS:
+                    update["level"] = round(level, 1)
+                else:
+                    update |= {"value": round(level, 1), "low": None, "high": None}
+                if said is not None:
+                    update["flag"] = said
+            row[column] = cell.model_copy(update=update)
+        else:
+            row[column] = cell
     return [row]
 
 
@@ -413,31 +447,55 @@ def _change_matrix(
     control: str,
 ) -> TableBlock:
     """One row per aspect any candidate was compared on, one column per candidate, the control's pass rate beside the
-    aspect; then the row across every aspect, where one is given."""
+    aspect; then the row across every aspect, where one is given. Each column's head names its arm and the measure, a
+    candidate's what its change is against (``v2 · pass rate vs v1``, three words, a head's most), and each cell states
+    its unit, so a change never reads as a bare number. The line under the matrix says what each glyph's mark is (:func:`_glyph_key`)."""
     labels = readings.arm_labels()
+    named = readings.control_label
     candidates = list(dict.fromkeys(row.arm for row in readings.readings))
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="cases", header="Cases", term="cases"),
-        TableColumn(key=_arm_column(control), header=f"▸ {readings.control_label} (%)", term="control"),
-        *(TableColumn(key=_arm_column(arm), header=f"{labels[arm]} (pts)", term="change") for arm in candidates),
+        TableColumn(key=_arm_column(control), header=f"▸ {named} · {_MEASURE}", term="control"),
+        *(
+            TableColumn(key=_arm_column(arm), header=f"{labels[arm]} · {_MEASURE} vs {named}", term="change")
+            for arm in candidates
+        ),
     ]
     rows: list[dict[str, TableCell]] = []
+    # Each candidate's baseline on each aspect, and whether some aspect's candidates read different cases.
+    stated: dict[str, list[float]] = {}
+    split = False
     for aspect in campaign.aspects:
         on = {row.arm: row for row in readings.on_aspect(aspect.label)}
         if not on:
             continue
+        bundle = reports[aspect.label].bundle
+        baselines = {arm: _baseline(row, bundle, control) for arm, row in on.items()}
+        shown = _control_cell(list(on.values()), bundle, control, baselines)
+        # Where the candidates' changes read different cases, the control's cell is its trials passed, and every
+        # candidate names the baseline its own change is read from.
+        uneven = len({(round(level, 1), cases) for level, cases in baselines.values()}) > 1
+        split = split or uneven
+        for arm, (level, _) in baselines.items():
+            stated.setdefault(arm, []).append(level)
         cells = {
             "aspect": names.cell(aspect.label),
             "cases": TableCell(value=_cases([min(row.control_cases, row.arm_cases) for row in on.values()])),
-            _arm_column(control): _control_cell(list(on.values()), reports[aspect.label].bundle, control),
+            _arm_column(control): shown,
         }
         for arm in candidates:
             row = on.get(arm)
-            cells[_arm_column(arm)] = TableCell(value=None) if row is None else _change_cell(row, campaign, readings)
+            cells[_arm_column(arm)] = (
+                TableCell(value=None)
+                if row is None
+                else _change_cell(row, campaign, readings, baselines[arm][0], stated=uneven)
+            )
         rows.append(cells)
     arms = {control: (_arm_column(control), PERCENT), **{key: (_arm_column(key), POINTS) for key in candidates}}
-    rows += _with_equal_weight_row(campaign, readings, reports, columns, arms)
+    rows += _with_equal_weight_row(
+        campaign, readings, reports, columns, arms, _across_levels(control, named, rows, stated, split=split)
+    )
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
@@ -447,16 +505,116 @@ def _change_matrix(
         rows=rows,
         order="aspect by aspect, each candidate's change against the control",
         total_rows=len(rows),
+        glyph_key=_glyph_key(readings, [labels[arm] for arm in candidates]),
     )
 
 
-def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, control: str) -> TableCell:
-    """The control's pass rate on an aspect (over its trials, as its count reads), marked where it cannot move
-    (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`, the rule the writer's view flags too)."""
+def _across_levels(
+    control: str,
+    named: str,
+    rows: Sequence[Mapping[str, TableCell]],
+    stated: Mapping[str, Sequence[float]],
+    *,
+    split: bool,
+) -> dict[str, tuple[float, str | None]]:
+    """Each arm's level across the aspects for the row under a change's matrix, on its change's own basis: the
+    equal-weight mean of the levels its column prints above (the control's, each its changes' baseline; a
+    candidate's, each its own level), with the words its cell adds. An arm lacking a level on some aspect has none
+    here, as the aggregate withholds its change across them there. Where some aspect's candidates read different
+    cases (``split``), the control's cell there is its trials passed, so each candidate names the equal-weight mean of
+    its own baselines (``stated``), as its cells above name each.
+
+    :param control: The control's variant key.
+    :ptype control: str
+    :param named: The control as the page names it.
+    :ptype named: str
+    :param rows: The matrix's rows, one per aspect.
+    :ptype rows: Sequence[Mapping[str, TableCell]]
+    :param stated: Each candidate's baseline on each aspect it was read on, by variant key.
+    :ptype stated: Mapping[str, Sequence[float]]
+    :param split: Whether some aspect's candidates read different cases.
+    :ptype split: bool
+    :return: Each arm's level and its cell's words (None for none), by variant key.
+    :rtype: dict[str, tuple[float, str | None]]
+    """
+
+    def mean(key: str, read: Callable[[TableCell], float | None]) -> float | None:
+        figures = [read(row[_arm_column(key)]) for row in rows]
+        held = [figure for figure in figures if figure is not None]
+        return math.fsum(held) / len(held) if held and len(held) == len(figures) else None
+
+    levels: dict[str, tuple[float, str | None]] = {}
+    if (base := mean(control, lambda cell: float(cell.value) if cell.is_number else None)) is not None:  # type: ignore[arg-type]
+        levels[control] = (base, _ACROSS_BASIS)
+    for key, baselines in stated.items():
+        if key == control or (level := mean(key, lambda cell: cell.level)) is None:
+            continue
+        own = f"from {named}'s {percent_at(math.fsum(baselines) / len(baselines), 1)}" if split else None
+        levels[key] = (level, own)
+    return levels
+
+
+#: The basis the row under a change's matrix reads its levels on, said once on the control's cell.
+_ACROSS_BASIS = "mean of the aspects above, each weighted equally"
+
+
+#: The measure a change's matrix reads, which every one of its column heads names: the scorecard's own, whatever
+#: measure the question asks, which the lead names.
+_MEASURE = PASS_RATE.lower()
+
+
+def _glyph_key(readings: CampaignReadings, candidates: Sequence[str]) -> str:
+    """What each glyph of a change's matrix draws, which the line under it opens with: whose change, from which
+    control (the tick), the level its interval was read at (every interval drawn's, :func:`_shown_interval`), and
+    which way is better (a pass rate's gain is to the right)."""
+    levels = sorted(
+        {
+            round(level, 4)
+            for row in readings.readings
+            for interval, level in [_shown_interval(row)]
+            if interval is not None and level is not None
+        }
+    )
+    if not levels:
+        interval_said = "its interval"
+    elif len(levels) == 1:
+        interval_said = f"its {_percent(levels[0])} interval"
+    else:
+        interval_said = f"its interval, read at {_percent(levels[0])} to {_percent(levels[-1])}"
+    whose = f"{candidates[0]}'s" if len(candidates) == 1 else "a candidate's"
+    return (
+        f"Each mark is {whose} change from {readings.control_label} (the tick) with {interval_said}; right is better."
+    )
+
+
+def _baseline(row: AspectReading, bundle: AnalysisContextBundle, control: str) -> tuple[float, int | None]:
+    """The control's level a row's change is read from, in percent, and the cases it is a mean over: the mean of the
+    control's per-case shares the change reads (the change is the candidate's mean less this one), so the candidate's
+    level, this plus the change, closes with it on the page. Where no per-case shares were read the change is on the
+    trial counts, and so is its baseline, over no cases named."""
+    rate = aspect_pass_rate(bundle, control, row.arm)
+    if rate is not None and rate.samples is not None and rate.samples[0]:
+        shares = rate.samples[0]
+        return 100 * math.fsum(shares) / len(shares), len(shares)
+    return (100 * row.control_passed / row.control_trials if row.control_trials else 0.0), None
+
+
+def _control_cell(
+    rows: Sequence[AspectReading],
+    bundle: AnalysisContextBundle,
+    control: str,
+    baselines: Mapping[str, tuple[float, int | None]],
+) -> TableCell:
+    """The control's pass rate on an aspect at one decimal, and what it is over: the level every candidate's change on
+    it is read from (``baselines``), which is its trials passed (``18 of 20 cases``) where the two agree, else the mean
+    of the cases the changes read (``mean of 380 cases``), its trial count left to the fold. Where the candidates'
+    changes read different cases, it is its trials passed, and each candidate's cell names its own baseline. Marked
+    where it cannot move (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`, the rule the writer's
+    view flags too)."""
     row = rows[0]
     if not row.control_trials:
         return TableCell(value=None)
-    rate = 100 * row.control_passed / row.control_trials
+    pooled = round(100 * row.control_passed / row.control_trials, 1)
     bounds = control_cannot_show(
         bundle,
         control,
@@ -468,22 +626,40 @@ def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, 
     )
     marks = [f"cannot show a {bound}" for bound in bounds]
     count = _rate_count(row.control_passed, row.control_trials, row.control_cases)
-    return TableCell(value=round(rate, 1), flag=_marks(count, *marks))
+    level = pooled
+    held = {(round(figure, 1), cases) for figure, cases in baselines.values()}
+    if len(held) == 1:
+        ((level, cases),) = held
+        if cases is not None and level != pooled:
+            count = f"mean of {cases} cases"
+    return TableCell(value=level, unit=PERCENT, decimals=1, flag=_marks(count, *marks))
 
 
-def _change_cell(row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings) -> TableCell:
-    """A candidate's change on one aspect: the points, the interval its reading was read on drawn against the margin
-    where two or more cases bound it, the reading, and its floors' status where they read otherwise."""
-    change = round(row.change, 1)
+def _change_cell(
+    row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings, baseline: float, *, stated: bool
+) -> TableCell:
+    """A candidate's change on one aspect: the level it reads at, then its change from the control's, signed and in
+    points at one decimal (``23.0% · +2.5 pts``); the interval its reading was read on, drawn against the margin where
+    two or more cases bound it; the reading, and its floors' status where they read otherwise. Where the aspect's
+    candidates read different baselines (``stated``), the control's cell is its trials passed, so the cell names its
+    own (``from v1's 86.7%``), and its level less that is its change."""
     marks = [_reading_words(row)]
     if (status := _floor_state(row, campaign, readings)) is not None and status != _IMPLIED_FLOOR[row.reading]:
         marks.append(f"floor {status}")
+    if stated:
+        marks.append(f"from {readings.control_label}'s {percent_at(baseline, 1)}")
+    change = TableCell(
+        value=round(row.change, 1),
+        unit=POINTS,
+        decimals=1,
+        signed=True,
+        level=round(baseline + row.change, 1),
+        flag="; ".join(marks),
+    )
     interval, _ = _shown_interval(row)
     if interval is None or min(row.control_cases, row.arm_cases) < 2:
-        return TableCell(value=change, flag="; ".join(marks))
-    return TableCell(
-        value=change, low=interval[0], high=interval[1], margin=row.margin, zero_line=True, flag="; ".join(marks)
-    )
+        return change
+    return change.model_copy(update={"low": interval[0], "high": interval[1], "margin": row.margin, "zero_line": True})
 
 
 def _floor_state(row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings) -> str | None:
@@ -515,7 +691,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
         TableColumn(key="cases", header="Cases", term="cases"),
         TableColumn(key="control", header=f"▸ {control}", term="control"),
         TableColumn(key="passed", header="Arm passed", term="passed"),
-        TableColumn(key="change", header="Change (pts)", term="change"),
+        TableColumn(key="change", header="Change", term="change"),
         TableColumn(key="interval", header="Interval (pts)", term="interval"),
         TableColumn(key="margin", header="Margin (pts)", term="margin"),
         TableColumn(key="reading", header="Reading"),
@@ -531,7 +707,8 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
                     "cases": min(row.control_cases, row.arm_cases),
                     "control": _counted(row.control_passed, row.control_trials, row.control_cases),
                     "passed": _counted(row.arm_passed, row.arm_trials, row.arm_cases),
-                    "change": round(row.change, 1),
+                    # Signed and in points at one decimal, as the matrix cell reads it.
+                    "change": TableCell(value=round(row.change, 1), unit=POINTS, decimals=1, signed=True),
                     "interval": None if interval is None else interval_text(interval[0], interval[1], POINTS),
                     "margin": row.margin,
                     "reading": _reading_words(row),
@@ -1441,16 +1618,87 @@ def _measure_matrix(
                 cells[f"measure:{key}"] = _measure_cell(found, rulers.get(key), rate=key in rates, counts=counts)
             rows.append(cells)
     rows = _one_precision(rows, [f"measure:{key}" for key in measures if key not in rates and key not in rulers])
+    if len(arms) == 1:
+        return _turned_matrix(
+            campaign, rows, list(measures), reports, rulers, rates, shown, title=f"{labels[arms[0]]} by aspect"
+        )
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
         shared_scale=True,
-        title=_MATRIX_TITLE if len(arms) > 1 else f"{labels[arms[0]]} by aspect",
+        title=_MATRIX_TITLE,
         columns=columns,
         rows=rows,
         order="aspect by aspect, each measure its value with its interval",
         total_rows=len(rows),
     )
+
+
+def _turned_matrix(
+    campaign: EvalCampaign,
+    rows: Sequence[Mapping[str, TableCell]],
+    measures: Sequence[str],
+    reports: Mapping[str, Report],
+    rulers: Mapping[str, MoneyRuler],
+    rates: frozenset[str],
+    shown: Sequence[MeasureReading],
+    *,
+    title: str,
+) -> TableBlock:
+    """One arm's matrix turned: a row per measure read on each aspect, its value, its interval and its cases in a
+    column each, with no glyph. One arm has nothing to compare a glyph against, and a column per measure, each on its
+    own scale, outgrows the frame. Each row names its measure as its own aspect does (:func:`_measure_words`), so no
+    name has to span two aspects, and heads its row, so a check's name links its entry as a column's header does.
+    ``rows`` are the matrix's rows by aspect, each measure's cell at its column's one precision; a rate states its
+    percent on the figure, and an interval's ends read in the figure's form."""
+    read = {(reading.aspect, reading.measure): reading for reading in shown}
+    # A measure read under several test setups on an aspect has no one figure here, nor one count; the fold has each.
+    setups = Counter((reading.aspect, reading.measure) for reading in shown)
+    columns = [
+        TableColumn(key="aspect", header="Aspect", term="aspect"),
+        TableColumn(key="measure", header="Measure", term="reading"),
+        TableColumn(key="value", header="Value"),
+        TableColumn(key="interval", header="Interval", term="interval"),
+        TableColumn(key="cases", header="Cases", term="cases"),
+    ]
+    turned: list[dict[str, TableCell]] = []
+    for aspect, row in zip([aspect for aspect in campaign.aspects if _read_on(aspect.label, shown)], rows, strict=True):
+        for key in measures:
+            reading = read.get((aspect.label, key))
+            if reading is None:
+                continue
+            cell = row[f"measure:{key}"]
+            if key in rates and cell.is_number:
+                cell = cell.model_copy(update={"unit": PERCENT})
+            interval = (
+                None
+                if cell.low is None or cell.high is None
+                else f"[{cell.amount(cell.low)}, {cell.amount(cell.high)}]"
+            )
+            named = _measure_words(reading, reports) + (_money_label(rulers[key]) if key in rulers else "")
+            turned.append(
+                {
+                    "aspect": row["aspect"],
+                    "measure": TableCell(value=named),
+                    "value": cell.model_copy(update={"low": None, "high": None}),
+                    "interval": TableCell(value=interval),
+                    "cases": TableCell(value=reading.cases if setups[aspect.label, key] == 1 else None),
+                }
+            )
+    return TableBlock(
+        section="scorecard",
+        name=_SCORECARD_TABLE,
+        title=title,
+        columns=columns,
+        rows=turned,
+        order="aspect by aspect, each measure its value, its interval and its cases",
+        total_rows=len(turned),
+    )
+
+
+def _read_on(aspect: str, shown: Sequence[MeasureReading]) -> bool:
+    """Whether any measure the scorecard shows was read on ``aspect``: the matrix has a row for it."""
+    return any(reading.aspect == aspect for reading in shown)
 
 
 def _measure_cell(

@@ -1067,6 +1067,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there; None for none. |
 | `shared_scale` | `bool` | `False` | Whether HTML draws every glyph in one unit on one scale across all the table's columns, as a matrix's are; otherwise each column has its own. |
 | `key_columns` | `Literal[1, 2]` | `1` | How many leading columns a row is told apart by (2 where one column alone repeats, as a reading's row on each arm): HTML keeps that many in view while the table scrolls sideways. |
+| `glyph_key` | `str \| None` | `None` | What each interval glyph of a table on one scale draws, in a sentence the line under the table opens with before the scale's ends: `Each mark is a candidate's change from v1 (the tick) with its 95% interval; right is better.` None where the line names the columns each range is drawn for alone. |
 
 #### `ChartBlock`
 

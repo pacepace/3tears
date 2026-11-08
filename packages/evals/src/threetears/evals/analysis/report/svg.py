@@ -47,13 +47,14 @@ _GLYPH_DOT = 2.5
 
 #: The glyph's stylesheet: each mark's class, coloured from the kit's tokens (``kit/kit.css``), which define every one
 #: for light and for dark, so a glyph follows the page's theme with no colour of its own: the page's ink, its margin
-#: band the sunken tint, sized in ems so it sits on the row's line of text.
+#: band the rule tint (the sunken one vanishes on a dark ground), sized in ems so it sits on the row's line of text.
+#: The zero tick is the baseline every mark is read from, so it is drawn in full ink and heavier than the margin's.
 GLYPH_STYLE = """
 svg.viz-glyph { width: 7.5em; max-width: 100%; min-width: 4.5em; height: 0.875em; vertical-align: -0.0625em;
   margin-right: 6px; overflow: visible; }
 svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
-svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1.5; }
-svg.viz-glyph .viz-band { fill: var(--sunk); }
+svg.viz-glyph .viz-zero { stroke: var(--ink); stroke-width: 2; }
+svg.viz-glyph .viz-band { fill: var(--line); }
 svg.viz-glyph .viz-margin { stroke: var(--muted); stroke-width: 1; }
 svg.viz-glyph .viz-whisker { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; }
 svg.viz-glyph .viz-point { fill: var(--ink); }

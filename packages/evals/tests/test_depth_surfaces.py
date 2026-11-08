@@ -8,6 +8,7 @@ table would; every surface reads the same depths and the sentence to say once of
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import pytest
@@ -226,7 +227,8 @@ def test_a_campaign_run_three_times_per_case_keeps_its_pass_k_and_precision_tabl
     assert "depth" not in tables
     assert tables["pass_k_depth"].section == "scorecard" and len(tables["pass_k_depth"].rows) == 3
     assert common_depth_sentence("answers", 3, left_out=0) in _lines(page, "scorecard")
-    assert tables["precision"].section == "scorecard"
+    # What limits each interval is a method, folded under the methods (visual pass V2).
+    assert tables["precision"].section == "methods" and tables["precision"].details
     assert [column.key for column in tables["precision"].columns][-1] == "between"
 
 
@@ -246,8 +248,10 @@ def test_precision_read_with_every_arm_run_once_sits_under_the_methods_without_i
     assert "between" not in [column.key for column in precision.columns]
     assert all(set(row) == {column.key for column in precision.columns} for row in precision.rows)
     assert "Between cases" not in campaign_report_markdown(page)
-    # Where a case repeated, the precision stays in the Scorecard with its between-case share.
-    assert _tables(s1_change().page())["precision"].section == "scorecard"
+    # Where a case repeated, the precision keeps its between-case share, folded under the methods too (visual pass V2).
+    repeated = _tables(s1_change().page())["precision"]
+    assert repeated.section == "methods" and repeated.details
+    assert [column.key for column in repeated.columns][-1] == "between"
 
 
 @pytest.mark.parametrize("build", [s1_change, s2_choice], ids=["s1", "s2"])
@@ -256,7 +260,8 @@ def test_what_extra_repeats_cannot_lower_is_said_once_in_design_and_provenance(b
 
     assert _lines(page, "provenance").count(REPEATS_FLOOR) == 1
     assert campaign_report_markdown(page).count(REPEATS_FLOOR) == 1
-    assert campaign_report_html(page).count(REPEATS_FLOOR) == 1
+    # Its words as a reader reads them: the line is where the page first says "between cases", so it links the term.
+    assert re.sub(r"<[^>]+>", "", campaign_report_html(page)).count(REPEATS_FLOOR) == 1
 
 
 @pytest.mark.parametrize("build", [s3_measurement, s4_change], ids=["s3", "s4"])

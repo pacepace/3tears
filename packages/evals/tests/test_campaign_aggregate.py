@@ -126,16 +126,25 @@ def test_the_equal_weight_row_prints_each_arm_s_figure_as_the_matrix_prints_its_
     assert across["aspect"].text == EQUAL_WEIGHT_ROW
     by_arm = {arm.label: across[f"arm:{arm.variant_key}"] for arm in shape.arms}
     assert {label: cell.text for label, cell in by_arm.items()} == {
-        # Each unit's columns at one precision: whole where whole figures keep them apart (C-15, N-4).
-        "production": "47",
-        "v2": "2",
-        "v3": "-2",
-        "v4": "2",
+        # Each figure in its unit at the one decimal the matrix's cells read at, each level the mean of its column's
+        # levels above, the change's own basis, said once on the control's cell; a candidate's level, then its change
+        # signed (visual pass V2).
+        "production": "46.7% (mean of the aspects above, each weighted equally)",
+        "v2": "48.3% · +1.7 pts",
+        "v3": "45.0% · -1.7 pts",
+        "v4": "48.3% · +1.7 pts",
     }
-    # Each figure's interval is drawn beside it; a change's against zero.
-    assert all(cell.low is not None and cell.high is not None for cell in by_arm.values())
+    # Each change's interval is drawn beside it, against zero. The control's level is the mean of its cells above, and
+    # the aggregate's interval is on its pooled rate, another basis, so none is drawn beside it (visual pass V2).
+    assert all(
+        cell.low is not None and cell.high is not None for label, cell in by_arm.items() if label != "production"
+    )
+    assert by_arm["production"].low is None and by_arm["production"].high is None
     assert by_arm["v2"].zero_line and not by_arm["production"].zero_line
-    assert f"| {EQUAL_WEIGHT_ROW} | — | 47 | 2 | -2 | 2 |" in campaign_report_markdown(page)
+    assert (
+        f"| {EQUAL_WEIGHT_ROW} | — | 46.7% (mean of the aspects above, each weighted equally) | 48.3% · +1.7 pts | "
+        "45.0% · -1.7 pts | 48.3% · +1.7 pts |" in campaign_report_markdown(page)
+    )
     # The weighting is said once, in the methods.
     said = [
         block.section for block in page.blocks if isinstance(block, DisclosureBlock) and block.text == WEIGHTING_LINE

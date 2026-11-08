@@ -282,7 +282,9 @@ def _lead_blocks(
     text = " ".join(sentences)
     # Where the lead says the evidence cannot tell arms apart, it links that phrase's one definition at its first use.
     term = CANNOT_TELL_APART if "cannot tell" in text else None
-    return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=decisions)]
+    # Code's own decisions: bold falls away where a host's name would cut a code span, never refusing the page.
+    emphasis = DisclosureBlock.code_emphasis(text, decisions)
+    return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=emphasis)]
 
 
 def _check_lead(lead: Sequence[ReportBlock]) -> None:

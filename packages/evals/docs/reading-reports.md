@@ -108,33 +108,39 @@ A change of two aspects, one regressing past its floor and one improving, with n
 
 ### The campaign's scorecard
 
-**One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each cell the
-candidate's change against the control in points, its interval drawn against the aspect's margin in HTML, and what
-it shows; the control's column holds its pass rate. A choice's columns are its arms, each cell the arm's pass rate
-and the arms it is shown ahead of. A measurement's columns are its one arm's measures. The same readings, one row
-per aspect × candidate (or per pair, or per measure) with their counts, are folded under it. Then, in the same
-section: the lines that change how a cell reads, **To settle** (a change's), the frontier's reading (a choice's),
-how deep each arm ran (**Depth**, **Pass^k depth**, **Precision**), and the **Bars** table, for every kind. A change
-of three candidates on three aspects, one aspect where the control passes nothing:
+**One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each head
+naming the measure and the control (`v2 · pass rate vs production`), each cell the candidate's own pass rate, then
+its change from the control's, signed and in points at one decimal, its interval drawn against the aspect's margin
+in HTML, and what it shows. The control's column holds the level every change on the aspect is read from: its trials
+passed where that is its mean over the cases the changes read, else that mean, said as `mean of N cases`, so a
+candidate's level less the control's is its change. The line under the HTML matrix says the glyph's tick is the
+control and that right is better. A choice's columns are its arms, each cell the arm's pass rate and the arms it is
+shown ahead of. A measurement of one arm is turned, a row per measure on each aspect with its value, interval and
+cases, and no glyph. The same readings, one row per aspect × candidate (or per pair, or per measure) with their
+counts, are folded under it. Then, in the same section: the lines that change how a cell reads, **To settle** (a
+change's), the frontier's reading (a choice's), how deep each arm ran (**Depth**, **Pass^k depth**), and the
+**Bars** table, for every kind. What limits each interval (**Precision**) is folded under the Methods. A change of
+three candidates on three aspects, one aspect where the control passes nothing:
 
 ```markdown
 ## Scorecard
 
 **By aspect**
 
-| Aspect | Cases | ▸ production (%) | v2 (pts) | v3 (pts) | v4 (pts) |
+| Aspect | Cases | ▸ production · pass rate | v2 · pass rate vs production | v3 · pass rate vs production | v4 · pass rate vs production |
 |---|---|---|---|---|---|
-| billing | 20 | 90 (18 of 20 cases) | -60 (shown worse) | -5 (unclear) | 5 (unclear) |
-| tone | 20 | 50 (10 of 20 cases) | 40 (shown better; floor unclear) | 0 (unclear) | -10 (unclear; floor broken) |
-| refunds | 20 | 0 (0 of 20 cases; cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
+| billing | 20 | 90.0% (18 of 20 cases) | 30.0% · -60.0 pts (shown worse) | 85.0% · -5.0 pts (unclear) | 95.0% · +5.0 pts (unclear) |
+| tone | 20 | 50.0% (10 of 20 cases) | 90.0% · +40.0 pts (shown better; floor unclear) | 50.0% · 0 pts (unclear) | 40.0% · -10.0 pts (unclear; floor broken) |
+| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25.0% · +25.0 pts (no worse than the margin) | 0% · 0 pts (unclear) | 10.0% · +10.0 pts (unclear) |
 ```
 
 The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
 cases and trials per aspect, and its fewest, median and most repeats of a case. **Pass^k depth** gives each frontier
 point's planned depth, the cases short of it, the common depth every point reached and its pass^k there.
-**Precision** gives each comparison's half-width, each arm's own, the arm limiting it and the share of spread between
-cases. **Model-based pass^k** appears only when the host asks for it (`HostProfile.model_pass_hat_k`), labelled a
-model. Each table has one sentence under it where it applies; [concepts.md](concepts.md#depth) defines the terms.
+**Precision**, under the Methods, gives each comparison's half-width, each arm's own, the arm limiting it and the share
+of spread between cases. **Model-based pass^k** appears only when the host asks for it
+(`HostProfile.model_pass_hat_k`), labelled a model. Each table has one sentence under it where it applies;
+[concepts.md](concepts.md#depth) defines the terms.
 
 **Marks beside a value.** A cell names its floor's status where the floor reads otherwise than the cell: a floor reads
 every rate its clause names at 95%, the cell the pass rate alone, so v4 above breaks tone's floor on a check while

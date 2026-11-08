@@ -32,6 +32,15 @@ _HEADER_UNIT = re.compile(r"\s*\([^()]*\)$|, per [\d,]+ \w+$")
 _ANCHOR = re.compile(r'<a id="[^"]*"></a>')
 
 
+def _unnamed(header: str, names: Collection[str]) -> str:
+    """A header's own words: each name it holds (an arm heading its column beside the measure and the control, ``v2 ·
+    pass rate vs production``) taken out, longest first, so a name is never counted as a header's words."""
+    for name in sorted(names, key=len, reverse=True):
+        if name:
+            header = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "", header)
+    return header
+
+
 def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
@@ -43,7 +52,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     :ptype markdown: str
     :param question: The declared question, which only its own quoted line may carry.
     :ptype question: str | None
-    :param names: The arms' names, which head a column as a name, not a header's words.
+    :param names: The arms' names, which head a column as a name, or within its header beside its own words, and are
+        never a header's words.
     :ptype names: Collection[str]
     :return: The violations, in page order.
     :rtype: list[StyleViolation]
@@ -66,7 +76,9 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
             if not header_row and not line.startswith("|---"):
                 bare = {_HEADER_UNIT.sub("", name) for name in names}
                 headers = [cell for cell in cells if _HEADER_UNIT.sub("", cell.removeprefix("▸ ")) not in bare]
-                found += [v for cell in headers for v in lint_prose(cell, header=True) if v.rule == "header"]
+                found += [
+                    v for cell in headers for v in lint_prose(_unnamed(cell, bare), header=True) if v.rule == "header"
+                ]
             header_row = True
             continue
         header_row = False
