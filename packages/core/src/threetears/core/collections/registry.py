@@ -46,20 +46,35 @@ __all__ = [
 
 log = get_logger(__name__)
 
-_EPOCHS_APPLIED = counter(
-    "collection_epoch_changes_applied_total",
-    description="epoch change records a follower fetched and applied because it had not heard every row of them",
-    label_names=("table",),
-)
-_EPOCHS_BEHIND = counter(
-    "collection_epoch_behind_total",
-    description="catch-ups that stopped at an epoch whose change record L2 does not hold; the pod serves what it has",
-    label_names=("table",),
-)
-_TABLES_BEHIND = gauge(
-    "collection_epoch_tables_behind",
-    description="followed tables this registry is behind on: an epoch it could not apply, awaiting its record in L2",
-)
+# the epoch catch-up's instruments, fetched where they are moved, never held at import: a module that a
+# fresh import of the package runs again would register them twice
+
+
+def _epochs_applied() -> Any:
+    return counter(
+        "collection_epoch_changes_applied_total",
+        description="epoch change records a follower fetched and applied because it had not heard every row of them",
+        label_names=("table",),
+    )
+
+
+def _epochs_behind() -> Any:
+    return counter(
+        "collection_epoch_behind_total",
+        description=(
+            "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change "
+            "record), keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the "
+            "generation's store was replaced); the pod serves what it has"
+        ),
+        label_names=("table", "reason"),
+    )
+
+
+def _tables_behind() -> Any:
+    return gauge(
+        "collection_epoch_tables_behind",
+        description="followed tables this registry is behind on: an epoch it could not apply, awaiting its record in L2",
+    )
 
 
 def _as_l3_backend(l3_pool: Any) -> Any:
@@ -259,7 +274,7 @@ class CollectionRegistry:
         # table -> every follower's answer to whether its generation watch is running now
         self._watching: dict[str, list[Callable[[], bool]]] = {}
         # table -> why this registry is behind on it: an epoch whose change it could not apply. It keeps
-        # serving what it holds; a derived cache stops trusting the table until the epoch is applied.
+        # serving what it holds, its derived caches included, and says so (log, counter, gauge).
         self._behind: dict[str, str] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
@@ -801,7 +816,7 @@ class CollectionRegistry:
         """
         for table in table_names:
             followers = self._watching.get(table)
-            if not self._generation_marks.follows(table) or not followers or table in self._behind:
+            if not self._generation_marks.follows(table) or not followers:
                 return False
             if not all(watching() for watching in followers):
                 return False
@@ -843,9 +858,8 @@ class CollectionRegistry:
         drops the table.
 
         - :attr:`~GenerationVerdict.CURRENT`: nothing to apply.
-        - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read. A follower
-          starts before it serves the table, so its L1 holds nothing older; its own L2 entries, which
-          outlive it, are each read through L3 once before they are trusted again.
+        - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read, the head.
+          A follower starts before it serves the table, so it holds nothing older; nothing is re-read.
         - :attr:`~GenerationVerdict.MISSED`: each unheard epoch's record is applied and the mark moves.
           A record L2 does not hold holds the mark there, while the epochs after it are still applied:
           the registry is behind on the table, keeps serving what it holds, logs and counts it once,
@@ -872,13 +886,9 @@ class CollectionRegistry:
             self._caught_up(table_name)
             return verdict
         if verdict is GenerationVerdict.FIRST_SIGHT:
+            # the head is the mark: a process starts following before it serves, so it holds nothing
+            # older to bring forward, and nothing is re-read from any tier
             marks.adopt_generation(table_name, token)
-            # this principal's own L2 entries outlive the process, and writes made while no replica of
-            # it was following are on no epoch it will apply: each is read through L3 once before it
-            # is trusted again. A process starts following before it serves, so its L1 holds nothing.
-            collection = self._collections.get(table_name)
-            if collection is not None:
-                collection.drop_cached_table()
             # a cache derived from the table keeps its own marks, and starts them from this one; it
             # holds nothing derived from before the first sight it could vouch for
             for registration in tuple(self._derived_caches.get(table_name, ())):
@@ -888,23 +898,22 @@ class CollectionRegistry:
         if verdict is GenerationVerdict.REPLACED or token is None:
             self._fall_behind(
                 table_name,
-                reason=verdict.value,
+                reason="replaced",
                 detail={"read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
-        missing: str | None = None
+        hole: tuple[str, str] | None = None
         for epoch in marks.unaccounted(table_name, token):
             try:
                 change = None if changes is None else await changes.change(table_name, epoch)
             except GenerationUnavailableError as exc:
-                self._fall_behind(
-                    table_name, reason="epoch change record unreadable", detail={"epoch": epoch, "error": str(exc)}
-                )
+                self._fall_behind(table_name, reason="record_unreadable", detail={"epoch": epoch, "error": str(exc)})
                 raise
-            if change is None:
+            if change is None or change.keys_unknown:
                 # one hole holds the mark, never the epochs after it: they are applied, and wait as
-                # heard until the hole's record can be read
-                missing = missing or epoch
+                # heard until the hole's record can be read. A record whose writer named no rows is a
+                # hole no later read fills; it is told apart in the log and the counter.
+                hole = hole or (epoch, "record_missing" if change is None else "keys_unknown")
                 continue
             if change.whole_table:
                 # the mark moves first, so a cache derived from the table that re-bases on the drop
@@ -914,12 +923,12 @@ class CollectionRegistry:
             else:
                 await self.apply_epoch_change(change)
                 marks.applied(table_name, epoch)
-            _EPOCHS_APPLIED.labels(table=table_name).inc()
-        if missing is not None:
+            _epochs_applied().labels(table=table_name).inc()
+        if hole is not None:
             self._fall_behind(
                 table_name,
-                reason="epoch change record not in L2",
-                detail={"epoch": missing, "read": token, "recorded": marks.recorded(table_name)},
+                reason=hole[1],
+                detail={"epoch": hole[0], "read": token, "recorded": marks.recorded(table_name)},
             )
             return verdict
         self._caught_up(table_name)
@@ -977,8 +986,8 @@ class CollectionRegistry:
             # said once when it began; the gauge says how long it lasts
             return
         self._behind[table_name] = reason
-        _EPOCHS_BEHIND.labels(table=table_name).inc()
-        _TABLES_BEHIND.set(len(self._behind))
+        _epochs_behind().labels(table=table_name, reason=reason).inc()
+        _tables_behind().set(len(self._behind))
         log.error(
             "behind on a table: an epoch's change could not be applied; serving what this process holds "
             "until the record is in L2 again. A record never written or lost with the broker comes back "
@@ -996,7 +1005,7 @@ class CollectionRegistry:
         :rtype: None
         """
         if self._behind.pop(table_name, None) is not None:
-            _TABLES_BEHIND.set(len(self._behind))
+            _tables_behind().set(len(self._behind))
             log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
     def drop_table(self, table_name: str, *, reason: str) -> None:

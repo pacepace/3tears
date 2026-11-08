@@ -201,6 +201,15 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
         class_name="CollectionRegistry",
+        attr_name="_behind",
+        rationale=(
+            "per-table reason THIS process is behind on a followed table: an epoch its own registry "
+            "could not apply, judged against its own marks, so it cannot be shared across pods"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/registry.py",
+        class_name="CollectionRegistry",
         attr_name="_overrides",
         rationale=("per-collection backend overrides, IS the infrastructure"),
     ),

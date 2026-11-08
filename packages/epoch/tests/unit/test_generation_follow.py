@@ -599,14 +599,16 @@ class TestADerivedCacheIsEvictedRowByRow:
         assert cache.entries == {"edsger": "access-of-edsger"}
         assert cache.emptied == 0
 
-    async def test_a_replaced_bucket_empties_nothing_and_the_table_is_untrusted(self, bus: _Lossy) -> None:
+    async def test_a_replaced_bucket_empties_nothing_and_the_cache_keeps_serving(self, bus: _Lossy) -> None:
         _, _, follower, _ = await _two_pods(bus)
         cache = _PersonCache(follower.registry, ("ada",))
         follower.registry.watched_by(_TABLE, lambda: True)
         (await _epochs(bus)).wipe()
         assert await follower.tick() == 0
+        assert follower.registry.behind_on(_TABLE)
         assert cache.emptied == 0
-        assert not follower.registry.tables_trusted([_TABLE])
+        assert cache.entries == {"ada": "access-of-ada"}
+        assert follower.registry.tables_trusted([_TABLE]), "behind is said, never a cache withdrawn"
 
     async def test_an_unreadable_generation_empties_nothing(self, bus: _Lossy) -> None:
         _, _, follower, _ = await _two_pods(bus)

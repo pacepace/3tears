@@ -66,22 +66,35 @@ follower that judges an epoch it did not hear in full (`CollectionRegistry.catch
 its rows; every other row stays cached. A first sight takes the mark and drops nothing.
 
 **Changed (core, epoch):** a record the log does not hold, or a generation from a replaced store, leaves the pod
-behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, logs at error, counts
-`collection_epoch_behind_total` and `collection_epoch_tables_behind`, and a derived cache stops trusting the table
-(`tables_trusted`, `TableFollower.watching`) until the next judgement applies the epoch. The log refuses a record
+behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, derived caches
+included, logs at error once, and counts `collection_epoch_behind_total` and `collection_epoch_tables_behind` until
+the next judgement applies the epoch. The log refuses a record
 past its `max_bytes` (`discard: new`) and the write that advanced raises `GenerationUnavailableError`, counted as
 `collection_epoch_change_refused_total`; it never evicts a record a pod may still need.
 
 **Changed (core):** a write whose reach is the whole table (a truncate, a file load, `announce_unheard_writes`, the
 write-mark reconciler) records the whole table as its change, and a follower applies it as a table invalidation,
 because that is the change, and so is a commit whose rows would make a record past
-`EPOCH_CHANGE_MAX_RECORD_BYTES` (256 KiB). Records are built and checked by `epoch_change_record` and
-`read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table reads
-the process's own L2 entries through L3 once, and a table first seen with no generation follows the first
-incarnation minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
+256 KiB. Records are built and checked by `epoch_change_record` and
+`read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table takes
+the head as its mark and re-reads nothing, and a table first seen with no generation follows the first incarnation
+minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
 
 **Added (nats):** every principal granted the epoch bucket is granted `{ns}-epoch-changes` with the same
 capability: pods and the registry read it, the hub and the gateway write it.
+
+**Added (core):** a change record has a third form, `EpochChange.keys_unknown`, for an advance whose writer named no
+rows and did not change the whole table. `advance_with_change`, `advance_recording` and `epoch_change_record` take
+a keyword-only `keys_unknown=True` (with `rows=None`; anything else raises `ValueError` before anything advances). A
+follower that missed such an epoch is behind on the table for it, said apart from a lost record:
+`collection_epoch_behind_total` carries a `reason` label (`record_missing`, `keys_unknown`, `record_unreadable`,
+`replaced`), as does the log line.
+
+**Added (core):** a pod's collection write names the rows it changes on the request that commits it,
+`CHANGED_ROWS_FIELD` (`"changed_rows"`, `{table: [ChangedRow]}`, `threetears.core.backends.broker_generation`), sent
+by `NatsProxyL3Backend` on `l3.query`, `l3.batch` and `l3.tx.commit` for writes made inside `naming_changed_rows`:
+a save, a delete, a won compare-and-swap's persist, a flushed row. The broker stores them as the epoch's change
+record; a write that names none (raw SQL, `bypassing_write`) sends no field.
 
 ## v0.94.0 -- 2026-11-07
 

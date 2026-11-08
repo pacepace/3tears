@@ -1440,16 +1440,18 @@ fetch epochs `mine+1 .. head`, apply each.
   an advance without its change. A table kept in L2 keeps its records beside its generation,
   `{scope}.{table}-epoch.{incarnation}.{count}`, with a per-entry lifetime of 24h.
 - `CollectionRegistry.catch_up_generation` replaces `settle_generation`. FIRST_SIGHT takes the mark
-  (a follower starts before it serves) and reads the process's own L2 entries through L3 once, since
-  they outlive it; a table first seen with no generation follows the first incarnation minted after
-  it. MISSED reads each unheard epoch's record and applies it through the same path a heard broadcast
+  at the head (a follower starts before it serves, so it holds nothing older) and re-reads nothing
+  from any tier; a table first seen with no generation follows the first incarnation minted after
+  it. A principal's own L2 entries written before a restart, while no replica of it followed, are
+  on no epoch it applies; the L2-first write path is what makes them current. MISSED reads each unheard epoch's record and applies it through the same path a heard broadcast
   takes; a missing record holds the mark there while later epochs are still applied. A record not in
   L2, or a REPLACED generation, leaves the registry behind on the table: it serves what it holds,
-  logs at error once, counts `collection_epoch_behind_total` / `collection_epoch_tables_behind`, and
-  `tables_trusted` and `TableFollower.watching` are false for the table until the epoch is applied.
+  derived caches included, logs at error once, and counts `collection_epoch_behind_total` /
+  `collection_epoch_tables_behind` until the epoch is applied. No cache is withdrawn and no read
+  falls through to another tier for it.
   Until the L3 refill of the epoch log is deployed, a lost record or a REPLACED generation is ended
   only by restarting the process (a first sight).
-- A commit whose rows would make a record past 256 KiB (`EPOCH_CHANGE_MAX_RECORD_BYTES`) is recorded
+- A commit whose rows would make a record past 256 KiB is recorded
   as the whole table. Pods, the registry, the hub and the gateway are granted `{ns}-epoch-changes`
   beside `{ns}-epochs`.
 

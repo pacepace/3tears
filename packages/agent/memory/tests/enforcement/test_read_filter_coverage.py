@@ -103,6 +103,7 @@ INHERITED_UNFILTERED: dict[str, str] = {
         "a save's own row by primary key, read back on the caller's transaction for the saving handle"
     ),
     "l2_write_generation": "reads the table's write generation from L2, for a catch-up pass; reads no row",
+    "l2_epoch_change": "reads one epoch's change record from L2, for a catch-up pass: the keys it changed, no row",
     "read_rows_led_by": "the generic leading-key scan the framework's cascade and cache warmers use",
     "save_entity": "a write of an entity the caller already holds; it returns no other row",
     "save_to_store": "the L3 leg of save_entity; writes the caller's own entity",

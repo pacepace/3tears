@@ -35,6 +35,7 @@ from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
     EpochChange,
+    check_change_form,
     epoch_change_record,
     read_epoch_change,
 )
@@ -54,13 +55,11 @@ if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
-    "DEFAULT_EPOCH_CHANGE_RETENTION",
     "EPOCH_CHANGES_BUCKET",
     "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",
-    "epoch_change_kv_key",
     "generation_kv_key",
 ]
 
@@ -105,11 +104,13 @@ class _Measurable(Protocol):
     async def held_bytes(self) -> int: ...
 
 
-_CHANGES_REFUSED = counter(
-    "collection_epoch_change_refused_total",
-    description="epoch change records the bucket refused (full, or unreachable) after a committed write",
-    label_names=("table",),
-)
+def _changes_refused() -> Any:
+    """the count of change records the log refused, fetched where it is moved, never held at import."""
+    return counter(
+        "collection_epoch_change_refused_total",
+        description="epoch change records the bucket refused (full, or unreachable) after a committed write",
+        label_names=("table",),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,10 +136,10 @@ class EpochChangeRetention:
 
 
 #: what a source keeps unless told otherwise.
-DEFAULT_EPOCH_CHANGE_RETENTION: Final = EpochChangeRetention()
+_DEFAULT_EPOCH_CHANGE_RETENTION: Final = EpochChangeRetention()
 
 
-def epoch_change_kv_key(table_name: str, token: str) -> str:
+def _epoch_change_kv_key(table_name: str, token: str) -> str:
     """the key in :data:`EPOCH_CHANGES_BUCKET` holding the change record of the advance that wrote ``token``.
 
     ``{table}.{incarnation}.{count}``. A table name that is not a legal key token is digested.
@@ -204,7 +205,7 @@ class EpochGenerationSource:
     """reads and advances collection write generations in the epoch KV bucket."""
 
     def __init__(
-        self, nats_client: KvCapable, *, change_retention: EpochChangeRetention = DEFAULT_EPOCH_CHANGE_RETENTION
+        self, nats_client: KvCapable, *, change_retention: EpochChangeRetention = _DEFAULT_EPOCH_CHANGE_RETENTION
     ) -> None:
         """capture the client; no I/O.
 
@@ -247,7 +248,9 @@ class EpochGenerationSource:
         )
         return self._changes_bucket
 
-    async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str:
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
         """advance the table's generation once and store the rows the advance covered as its change record.
 
         The record is written after the compare-and-swap that numbered it, before the caller sends
@@ -259,16 +262,23 @@ class EpochGenerationSource:
         :ptype table_name: str
         :param rows: the rows the committed write changed; ``None`` when it changed the whole table
         :ptype rows: Sequence[ChangedRow] | None
+        :param keys_unknown: the writer named no rows and did not change the whole table (a broker
+            advancing for a commit that sent no ``changed_rows``); requires ``rows=None``
+        :ptype keys_unknown: bool
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the generation could not be advanced or its change
             could not be stored
+        :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
         """
+        check_change_form(rows, keys_unknown=keys_unknown)
         token = await self.advance(table_name)
-        await self._store_change(table_name, token, rows)
+        await self._store_change(table_name, token, rows, keys_unknown=keys_unknown)
         return token
 
-    async def _store_change(self, table_name: str, token: str, rows: Sequence[ChangedRow] | None) -> None:
+    async def _store_change(
+        self, table_name: str, token: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> None:
         """store the change record of the advance that wrote ``token``.
 
         :param table_name: the table
@@ -277,16 +287,18 @@ class EpochGenerationSource:
         :ptype token: str
         :param rows: the rows it covered; ``None`` for the whole table
         :ptype rows: Sequence[ChangedRow] | None
+        :param keys_unknown: the advance's reach is the whole table because nobody listed its rows
+        :ptype keys_unknown: bool
         :return: nothing
         :rtype: None
         :raises GenerationUnavailableError: when the log refused it
         """
-        key = epoch_change_kv_key(table_name, token)
+        key = _epoch_change_kv_key(table_name, token)
         try:
             bucket = await self._changes()
-            await bucket.put(key=key, value=epoch_change_record(table_name, token, rows))
+            await bucket.put(key=key, value=epoch_change_record(table_name, token, rows, keys_unknown=keys_unknown))
         except KvError as exc:
-            _CHANGES_REFUSED.labels(table=table_name).inc()
+            _changes_refused().labels(table=table_name).inc()
             log.error(
                 "an epoch's change record was not stored after a committed write; a follower that missed its "
                 "broadcasts is behind on the table until the record is written",
@@ -334,7 +346,7 @@ class EpochGenerationSource:
         :rtype: EpochChange | None
         :raises GenerationUnavailableError: when the log cannot be read, or holds another epoch's record
         """
-        key = epoch_change_kv_key(table_name, token)
+        key = _epoch_change_kv_key(table_name, token)
         try:
             raw = await (await self._changes()).get(key=key)
         except KvError as exc:
@@ -382,7 +394,7 @@ class EpochGenerationSource:
         try:
             log_bucket = await self._changes()
             for change in changes:
-                key = epoch_change_kv_key(change.table, change.token)
+                key = _epoch_change_kv_key(change.table, change.token)
                 await log_bucket.create(key=key, value=change.model_dump_json().encode("utf-8"))
             value = head if head is not None else f"{uuid7()}:0"
             created = await (await self._bucket()).create(key=generation_kv_key(table_name), value=value.encode())
@@ -587,7 +599,7 @@ class EpochGenerationReader:
         :raises GenerationUnavailableError: when the log cannot be read, or holds something that is
             not this epoch's record
         """
-        key = epoch_change_kv_key(table_name, token)
+        key = _epoch_change_kv_key(table_name, token)
         try:
             bucket = await self._nats.kv_bucket(
                 name=EPOCH_CHANGES_BUCKET, ttl=None, create_if_missing=self._create_if_missing

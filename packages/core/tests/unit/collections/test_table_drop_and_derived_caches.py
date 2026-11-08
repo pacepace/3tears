@@ -83,10 +83,16 @@ class _Source:
         self.count += 1
         return f"inc:{self.count}"
 
-    async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str:
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
         token = await self.advance(table_name)
         self.changes[(table_name, token)] = EpochChange(
-            table=table_name, token=token, whole_table=rows is None, rows=list(rows) if rows is not None else []
+            table=table_name,
+            token=token,
+            whole_table=rows is None and not keys_unknown,
+            keys_unknown=keys_unknown,
+            rows=list(rows) if rows is not None else [],
         )
         return token
 
