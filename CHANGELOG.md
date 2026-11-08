@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.95.0 -- 2026-11-07
+
 ### enforcement: five epoch-discipline gates, each with a list that only shrinks
 
 **Added (enforcement):** `threetears.enforcement.epoch_discipline`, five static gates that hold every collection to
