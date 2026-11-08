@@ -87,7 +87,7 @@ The report writer as the thing under test: its arms, the skill each starts from,
 
 ## The host contract
 
-What a host writes against beyond the rungs: the host and profile, registries, the kind seam, launching, stored documents, the store port and its kits, refusals, versions, vocabularies and negotiation.
+What a host writes against beyond the rungs: the host and profile, registries, the kind seam, launching, stored documents, the store port and its kits, refusals, versions, vocabularies, negotiation, and the export of a campaign a writer case is minted from.
 
 - `threetears.evals`: `__version__`, `PUBLIC_ROOTS`, `ROOT_EXTRAS`, `RootExtra`, `surface_tier`
 - `schema`: `AsyncDocumentStore`, `AsyncStoreClock`, `bind_cell_identity`, `CASSETTE_SCHEMA_VERSION`, `ClientRequestSettings`, `CompletionClient`, `CompletionProtocolDefect`, `CompletionResult`, `CORE_BASELINE_VERSION`, `CORE_SCHEMA_MINOR`, `CORE_SCHEMA_VERSION`, `COST_CAP_ORIGINS`, `current_cell_identity`, `DEFAULT_JOB_LEASE_S`, `DocumentStore`, `DURABLE_BASELINE_VERSION`, `DURABLE_SCHEMA_MINOR`, `DURABLE_SCHEMA_VERSION`, `EvalResult`, `EvalRun`, `EvalTemplate`, `EvalTestCase`, `EvalTrace`, `field_in_values`, `IntervalScale`, `is_builtin_judge_config_id`, `JOB_LEASE_RENEWAL_FRACTION`, `judge_config_of`, `JUDGE_WORDING_CHANGE_SENTENCE`, `JudgedArtifact`, `KnownOutOfRunPurpose`, `KnownRefusalKind`, `KnownSimulatorPurpose`, `KnownUsageRole`, `LEASE_POOL_WORKERS`, `ProviderFailureDescriber`, `REFUSAL_KINDS`, `RefusalKind`, `REGENERABLE_SCHEMA_VERSION`, `RoleUsage`, `sent_settings_of`, `StopReason`, `StoreCalledOnEventLoop`, `StoreClock`, `StoreConflict`, `SubjectSnapshot`, `SweepableValue`, `TraceSink`, `USAGE_ROLES`, `WorldSeed`
@@ -95,6 +95,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 - `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `MemberActsOn`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `TemplateCaseFields`, `TemplateChecks`, `WorldDimension`, `WorldRegistry`
 - `run`: `admit_template`, `Ceilings`, `corpus_digests`, `definition_drift`, `DefinitionReset`, `execute_run`, `JUDGE_REQUEST_SETTINGS`, `KindFactory`, `KindLauncher`, `KindWiring`, `launch_run`, `LaunchableKind`, `LaunchHost`, `LaunchRequest`, `LaunchSettings`, `load_seed_corpus`, `price_subject_call_floor`, `reset_definitions`, `run_blocking`, `RunnerOptions`, `SeedCaseSet`, `SeedJudgeCase`, `SeedTemplateCase`, `SIMULATOR_REQUEST_SETTINGS`, `start_run`, `SubjectResolver`, `UnknownSubject`, `update_template`
 - `analysis`: `check_names`, `DECLARED_NAME_CHARS`, `GOAL_CHECK`, `host_declarations_digest`, `READ_TIER_ROW_BUDGET`
+- `ops`: `campaign_export`, `CampaignExport`
 - `actions`: `definition_drift_actions`, `render_jobs_started`
 - `storage`: `bridge_async_store`, `DocTypeRoute`, `InMemoryDocumentStore`, `RoutedDocumentStore`, `SqliteDocumentStore`
 - `testing`: `check_completion_conformance`, `check_refusal_negotiation`, `CompletionGuard`, `jobs_conformance_cases`, `JobsConformanceHost`, `NegotiationConformanceFailure`, `RecordedCompletions`, `RecordedPrompt`, `RecordingRefused`, `RouterTransport`, `STORE_CONFORMANCE_CASES`, `StoreConformanceCase`

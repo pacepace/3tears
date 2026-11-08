@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the engine exports a campaign for the mint, for every host
+
+**Added:**
+- `ops.campaign_export(host, scope_id, campaign_id, built_by=...)` returns a `CampaignExport`: the campaign's closure
+  (every stored document its links reach, verbatim, in `(doc_type, id)` order), the host's profile declaration
+  (`host_declarations_digest` and `built_by`) and a manifest (what reasoned on the campaign, every document type
+  counted, the links the scope does not hold). `CampaignExport.files()` gives the three files the mint reads. The
+  closure reads judge identities with the package's `judge_config_of` and computes the digest with
+  `host_declarations_digest`, so no host keeps a copy of either.
+- `python -m threetears.evals.harness export --host module:callable --scope SCOPE --campaign ID --out DIR` writes
+  `documents.json`, `profile.json` and `manifest.json`, which `mint` reads. Exits 0, 2 when refused, 3 when the
+  factory raises.
+- The `campaign_export` action (read): the same export for the caller's scope, paged by whole documents for a large
+  closure. Joined, the pages' documents are the single call's.
+- `EvalStorage.stored_documents` reads the engine's documents of one type as stored, never hydrated.
+
+**Fixed:**
+- The mint refused an export of a quick eval's campaign: its runs name no template, and the mint required one.
+  It now requires a template only where a run names one.
+
+**Hosts:** a host that exported its campaigns with its own closure exports with the package's: the command, the
+action, or `campaign_export`. Its manifest names a report document `report <id>: <campaign name>`, never by its
+headline. A case re-minted from a new export records that name in `minted`, so its file differs from one minted from
+an export that named the headline; its snapshot is the same. `ReasonedOn` is defined beside the export now and is
+still imported from `threetears.evals.harness`.
+
 ### evals: a report page reads quiet: five type sizes, readable contrast, ruled tables and one colour per meaning
 
 **Changed:**

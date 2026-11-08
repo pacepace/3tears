@@ -770,6 +770,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
+- **`campaign_export`** · *host contract* · function · Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from.
+  <br>`campaign_export(host: EvalHost, scope_id: str, campaign_id: str, *, built_by: str | None, paged: bool = False, after_doc_type: str | None = None, after_document_id: str | None = None) -> CampaignExport`
 - **`campaign_record`** · *host contract* · function · Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
   <br>`campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None) -> CampaignCallLine`
 - **`campaigns_list`** · function · The scope's campaigns.
@@ -814,6 +816,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
 - **`AnalystLimits`** · dataclass · What the analyst's rounds are held to (plan §4.3).
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
+- **`CampaignExport`** · *host contract* · model · One campaign's closure: its documents, the host's profile declaration and the manifest.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
 - **`CaseRenamed`** · *host contract* · model · A renamed case: which, and its name before and after.
@@ -1506,6 +1509,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `scope_history` | `read` | `metric?`, `min_absolute_change?`, `min_relative_change?`, `subject_filter?`, `run_status?` | Series one measure over time for each contestant in the scope, flagging regressions. |
 | `scope_frontier` | `read` | `bar?`, `subject_filter?`, `run_status?` | Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar. |
 | `scope_export` | `read` | `export_format?`, `run_status?`, `export_run_ids?`, `export_after_run_id?`, `export_after_case_id?` | Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere. |
+| `campaign_export` | `read` | `campaign_id`, `built_by?`, `export_after_doc_type?`, `export_after_document_id?` | Export a campaign's stored documents, its host's profile and a manifest: what a writer case is minted from. |
 
 ### Curate
 
@@ -1547,12 +1551,13 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `bars_overridden` | array of `string` | Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect label holds no slash), the aspect and measure the page's bars table names it by. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
+| `built_by` | `string` or `null` | The module:callable, importable where the host's code is, that returns this host's profile (or the host) with no arguments: the factory the mint rebuilds the profile from. Omitted, the profile names none, and the mint is given one (--host). |
 | `call_reason` | `string` | Why the call was made, in the decider's words. |
 | `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...], short_name?}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. short_name is what a page prints for the arm where space is tight (chart labels, table cells), at most 32 characters and no other arm's label or short name; omitted, the page computes one from what differs from the control. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
-| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `writer_promotion`, `writer_pairwise`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `writer_promotion`, `writer_pairwise`, `campaign_export`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
 | `campaign_id` (on `writer_case_mint`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
 | `candidate` | `string` | The candidate arm, by its label or its variant key; never the control. |
@@ -1580,6 +1585,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `expected` | `integer` or `'pass'` \| `'fail'` | The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on a pass/fail dimension, a score from 1 to 5 on an ordinal one. Refused, naming both, when the dimension's scale cannot hold it. |
 | `exploratory` | `boolean` | True says no aspect of the campaign declares a design: someone learning to run evals, or testing an intuition with no settled question. Its report and analysis say once that its readings confirm nothing, and each aspect's design is inferred from its runs; it names no question, arm, floor or margin. Required when no aspect declares a design, and refused beside one. An assertion checked and never stored: a campaign is exploratory exactly while no aspect declares a design. |
 | `export_after_case_id` | `string` or `null` | The previous page's page.next_after_case_id, beside export_after_run_id: read the page of that run that starts after this case of it; omitted starts at the run after it. |
+| `export_after_doc_type` | `string` or `null` | The previous page's next_after_doc_type; omitted for the first page. |
+| `export_after_document_id` | `string` or `null` | The previous page's next_after_document_id, named with export_after_doc_type. |
 | `export_after_run_id` | `string` or `null` | The previous page's page.next_after_run_id: read the export page that starts after that run, or inside it with export_after_case_id; omitted reads the first page. |
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. Named runs past one page's ceiling are paged as the scope is, the pages holding the named runs alone: follow page.next_after_run_id (and page.next_after_case_id inside a run past the ceiling, so one named run past it is paged by its cases), naming the runs again (page.named_run_ids). |

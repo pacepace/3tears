@@ -18,6 +18,16 @@ the host commands': 0 when the case is written, 2 when the mint is refused (an e
 reads, a profile factory that does not load, a profile whose declarations are not the ones declared, a manifest of
 another campaign, a note the skill does not hold, a malformed command line), 3 when the
 profile factory or the freeze raises an error nothing anticipated, its traceback on stderr.
+
+``python -m threetears.evals.harness export --host module:factory --scope SCOPE --campaign ID --out DIR
+[--built-by module:callable]`` writes the three files ``mint`` reads (``documents.json``, ``profile.json``,
+``manifest.json``) from the host's own store (:func:`~threetears.evals.ops.campaign_export`), read-only. The factory
+returns the host's :class:`~threetears.evals.kernel.host.EvalHost`; the profile declares it as the factory the mint
+rebuilds the profile from, unless ``--built-by`` names another. Its exit codes are the mint's: 0 when the files are
+written, 2 when the export is refused (a campaign the scope does not hold, a ``DIR`` that exists and holds files, a
+factory that does not load or returns no host, a malformed command line), 3 when the factory or the export
+raises an error nothing anticipated, its traceback on stderr. ``DIR`` must not exist yet, or be empty: the three
+files are written into a new sibling directory renamed to ``DIR``, so either all three are there or none is.
 """
 
 from __future__ import annotations
@@ -25,9 +35,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
+import shutil
 import sys
+import tempfile
 import traceback
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -38,6 +50,7 @@ from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX
 from threetears.evals.harness.minting import (
     MintManifest,
     ProfileFile,
+    eval_host_from,
     export_checked,
     host_profile_from,
     read_documents_file,
@@ -46,6 +59,7 @@ from threetears.evals.harness.minting import (
 )
 from threetears.evals.kernel.errors import EvalServiceError, RefusedInput
 from threetears.evals.kernel.eval_file import loading_eval_file
+from threetears.evals.ops import campaign_export
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
 from threetears.evals.quick.files import EVAL_FILES, AfterRun, RunResult, Runnable, run_file
 from threetears.evals.testing import RecordingRefused
@@ -64,6 +78,12 @@ MINT: Final = "mint"
 
 #: Who a minted snapshot names as its freezer when the command line names nobody.
 MINTED_BY: Final = "harness mint"
+
+#: The subcommand that exports a campaign's closure as the files ``mint`` reads.
+EXPORT: Final = "export"
+
+#: The files an export writes, in the order the mint's command line names them.
+_EXPORT_FILES: Final = ("documents.json", "profile.json", "manifest.json")
 
 
 def _say(line: str) -> None:
@@ -219,8 +239,96 @@ def _mint(argv: Sequence[str]) -> int:
     return EXIT_OK
 
 
+def _export_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=f"{PROG} {EXPORT}",
+        description="Export a campaign's closure from the host's store as the three files the mint reads, read-only.",
+    )
+    parser.add_argument(
+        "--host", required=True, help="the host's factory, module:callable, returning the EvalHost whose store is read"
+    )
+    parser.add_argument("--scope", required=True, help="the scope the campaign lives in")
+    parser.add_argument("--campaign", required=True, help="the campaign to export")
+    parser.add_argument("--out", required=True, help="the directory the three files are written to")
+    parser.add_argument(
+        "--built-by",
+        help="the module:callable the mint rebuilds the host's profile from; omitted, --host, which returns the host",
+    )
+    return parser
+
+
+def _write_whole(out: Path, files: Mapping[str, bytes]) -> None:
+    """Write ``files`` as the directory ``out``, all of them or none.
+
+    They are written into a new sibling directory, which is then renamed to ``out``: a write failing part-way leaves
+    no ``out`` behind, so the same command can run again. ``out`` does not exist yet, or is empty, and is replaced.
+
+    :raises RefusedInput: A file or the directory cannot be written; nothing is left at ``out``.
+    """
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        partial = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".partial", dir=out.parent))
+    except OSError as unwritten:
+        raise RefusedInput(
+            f"--out {out} cannot be written: {unwritten}", remedy="name a writable directory"
+        ) from unwritten
+    try:
+        for name, data in files.items():
+            (partial / name).write_bytes(data)
+        if out.is_dir():
+            out.rmdir()  # empty, as checked before the export: the rename puts the whole export in its place
+        partial.rename(out)
+    except OSError as unwritten:
+        shutil.rmtree(partial)
+        raise RefusedInput(
+            f"--out {out} cannot be written: {unwritten}", remedy="name a writable directory"
+        ) from unwritten
+
+
+def _export(argv: Sequence[str]) -> int:
+    """Write a campaign's closure as ``documents.json``, ``profile.json`` and ``manifest.json``, and say what."""
+    try:
+        args = _export_parser().parse_args(list(argv))
+    except SystemExit as stopped:  # argparse's own exit: 0 after --help, 2 on a malformed command line
+        return stopped.code if isinstance(stopped.code, int) else EXIT_REFUSED
+    out = Path(args.out)
+    try:
+        # Checked before the host's module is imported, so a refused directory costs nothing and loses nothing.
+        if held := [name for name in _EXPORT_FILES if (out / name).exists()]:
+            raise RefusedInput(
+                f"{', '.join(held)} already in {out}: an export never writes over one",
+                remedy="name a directory that holds none of documents.json, profile.json and manifest.json",
+            )
+        if out.exists() and (not out.is_dir() or any(out.iterdir())):
+            raise RefusedInput(
+                f"--out {out} already holds other files: an export is written as one new directory",
+                remedy="name a directory that does not exist yet, or an empty one",
+            )
+        host = eval_host_from(args.host)
+        exported = campaign_export(
+            host, args.scope, args.campaign, built_by=args.built_by if args.built_by is not None else args.host
+        )
+        _write_whole(out, exported.files())
+    except (RefusedInput, EvalServiceError) as refused:
+        sys.stderr.write(f"{PROG} {EXPORT}: {refused}\n")
+        return EXIT_REFUSED
+    except Exception as unanticipated:
+        # The distinct exit code is the point: uncaught, Python exits 1, which is a run that did not complete.
+        contain(unanticipated, log=log, what=f"{PROG} {EXPORT}: failed on an unanticipated error", level="error")
+        sys.stderr.write(f"{PROG} {EXPORT}: failed on an unanticipated error\n{traceback.format_exc()}")
+        return EXIT_FAILED
+    counts = ", ".join(
+        f"{doc_type} {count}" for doc_type, count in sorted(exported.manifest.doc_type_counts.items()) if count
+    )
+    unresolved = len(exported.manifest.unresolved)
+    links = f"{unresolved} links unresolved, listed in manifest.json" if unresolved else "every link resolved"
+    _say(f"{out}: {len(exported.documents)} documents of campaign {args.campaign} ({counts}); {links}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run an eval file's evals, then analyse each with the report writer; or, after ``mint``, mint a writer case.
+    """Run an eval file's evals, then analyse each with the report writer; or, after ``mint``, mint a writer case;
+    or, after ``export``, export a campaign as the files a mint reads.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
     :ptype argv: Sequence[str] | None
@@ -230,6 +338,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == [MINT]:
         return _mint(args[1:])
+    if args[:1] == [EXPORT]:
+        return _export(args[1:])
     if not args or Path(args[0]).suffix not in EVAL_FILES:
         return _refuse(f"the first argument is an eval file ({' or '.join(EVAL_FILES)})")
     path, rest = Path(args[0]), args[1:]

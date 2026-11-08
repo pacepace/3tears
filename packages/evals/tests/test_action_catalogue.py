@@ -152,6 +152,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "scope_frontier": "read",
         "scope_out_of_run_spend": "read",
         "scope_export": "read",
+        "campaign_export": "read",
         "run_archive": "write",
         "run_label": "write",
         "campaign_archive": "write",

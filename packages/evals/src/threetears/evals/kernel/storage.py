@@ -3407,6 +3407,42 @@ class EvalStorage:
             ) from e
 
     # =========================================================================
+    # Documents as stored — an export's read
+    # =========================================================================
+
+    def stored_documents(
+        self, doc_type: str, scope_id: str, /, *, ids: Sequence[str] | None = None, **field_eq: Any
+    ) -> list[dict[str, Any]]:
+        """The engine's documents of one type in a scope, verbatim as the store returns them, never hydrated.
+
+        For an export, which hands a document on as stored (under its id, with every field it holds) rather than as
+        this build's model reads it: nothing is validated, settled or projected, so a document this build would
+        refuse is returned too. ``ids`` reads those documents by id (an id the scope does not hold is skipped);
+        otherwise the documents whose scalar fields equal ``field_eq``, every one of the type when none is named.
+
+        :param doc_type: One of the engine's own types (:data:`EVAL_DOC_TYPES`).
+        :ptype doc_type: str
+        :param scope_id: The scope read.
+        :ptype scope_id: str
+        :param ids: The ids to read; ``None`` to read by ``field_eq``.
+        :ptype ids: Sequence[str] | None
+        :param field_eq: Scalar fields every document returned holds, as :meth:`DocumentStore.by_doc_type` compares
+            them; given with ``ids``, refused.
+        :ptype field_eq: Any
+        :return: The documents, in no guaranteed order.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: ``doc_type`` is not one of the engine's own (a host's documents are never read here), or
+            both ``ids`` and ``field_eq`` are given.
+        """
+        if doc_type not in DOC_TYPE_FACTS:
+            raise ValueError(f"{doc_type!r} is not one of the engine's document types; a host's own are its to read")
+        if ids is not None:
+            if field_eq:
+                raise ValueError("stored_documents reads by ids or by fields, not both")
+            return self._store.get_many(doc_type, list(ids), scope_id) if ids else []
+        return self._store.by_doc_type(doc_type, scope_id, **field_eq)
+
+    # =========================================================================
     # Operator action — nuke all eval data
     # =========================================================================
 

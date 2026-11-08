@@ -34,6 +34,9 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
+A campaign's closure is exported by :func:`campaign_export` (a :class:`CampaignExport`): its documents as stored, the
+host's profile declaration and a manifest, the three files a writer case is minted from.
+
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
 """
@@ -84,6 +87,16 @@ from threetears.evals.ops.analysis import (
     insight_get,
     insights_list,
     report_read,
+)
+from threetears.evals.ops.campaign_closure import (
+    CampaignExport,
+    CampaignExportManifest,
+    CampaignExportPage,
+    KindDeclaration,
+    ProfileDeclaration,
+    SweepableDeclaration,
+    UnresolvedLink,
+    campaign_export,
 )
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGeneration, OpsHost
@@ -239,6 +252,14 @@ from threetears.evals.ops.runs import (
 from threetears.evals.analysis.summary import EvalSummary, dollars_text
 
 __all__ = [
+    "CampaignExport",
+    "CampaignExportManifest",
+    "CampaignExportPage",
+    "KindDeclaration",
+    "ProfileDeclaration",
+    "SweepableDeclaration",
+    "UnresolvedLink",
+    "campaign_export",
     "AnalystLimits",
     "EditorLimits",
     "SessionLimits",

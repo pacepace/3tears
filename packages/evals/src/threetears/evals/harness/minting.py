@@ -9,9 +9,10 @@ are loaded into a store in memory, and the campaign is frozen through a reading 
 freezes any campaign.
 
 **What the door needs, by document type** (:data:`REQUIRED_DOC_TYPES`): the campaign named, every run it names, the
-template every run ran, and the runs' results. Each is refused by name when the export lacks it. The traces are
-needed when a result records one (a judge's evidence is read from them). The test cases (their strata) and the
-insights on the campaign's subject are read when present. Any other document is loaded and never read.
+template every run names (a quick eval's run names none), and the runs' results. Each is refused by name when the
+export lacks it. The traces are needed when a result records one (a judge's evidence is read from them). The test
+cases (their strata) and the insights on the campaign's subject are read when present. Any other document is loaded
+and never read.
 
 **The same evidence mints the same case.** A snapshot's id is derived from its campaign and its report input, so
 it does not move with the clock; the freeze's two readings of the clock (the bundle's assembly and the freeze) are
@@ -69,7 +70,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.storage import InMemoryDocumentStore
 
-#: The document types a mint refuses to go without, in the order it checks them.
+#: The document types a mint refuses to go without, in the order it checks them; a template only where a run names one.
 REQUIRED_DOC_TYPES: Final = ("eval_campaign", "eval_run", "eval_template", "eval_result")
 
 #: The remedy every refusal of an incomplete export names.
@@ -145,6 +146,31 @@ class ProfileFile:
     digest: str
 
 
+def _made_by(spec: str, wanted: str) -> object:
+    """What a ``module:callable`` spec's callable returns, called with no arguments; ``wanted`` names it in a refusal."""
+    module_name, colon, attribute = spec.partition(":")
+    if not colon or not module_name or not attribute:
+        raise RefusedInput(
+            f"a {wanted} factory is named module:factory, a module path and a callable in it, not {spec!r}",
+            remedy="name it as package.module:callable, a callable that module defines",
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as missing:
+        raise RefusedInput(
+            f"{spec}: cannot import {module_name!r}: {missing}",
+            remedy="run the command in the host's own environment, where its module imports",
+        ) from missing
+    factory = getattr(module, attribute, None)
+    if not callable(factory):
+        raise RefusedInput(
+            f"{spec}: module {module_name!r} has no callable {attribute!r}",
+            remedy=f"name a zero-argument callable returning the host's {wanted}",
+        )
+    made: object = factory()
+    return made
+
+
 def host_profile_from(spec: str) -> HostProfile:
     """The profile a ``module:factory`` spec builds: the factory's profile, or the profile of the host it returns.
 
@@ -157,26 +183,7 @@ def host_profile_from(spec: str) -> HostProfile:
     :raises RefusedInput: The spec is not ``module:attribute``, the module does not import, it has no such callable,
         or what it returns is neither a profile nor a host.
     """
-    module_name, colon, attribute = spec.partition(":")
-    if not colon or not module_name or not attribute:
-        raise RefusedInput(
-            f"a profile factory is named module:factory, a module path and a callable in it, not {spec!r}",
-            remedy="name it as package.module:callable, a callable that module defines",
-        )
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as missing:
-        raise RefusedInput(
-            f"{spec}: cannot import {module_name!r}: {missing}",
-            remedy="run the mint in the host's own environment, where its module imports",
-        ) from missing
-    factory = getattr(module, attribute, None)
-    if not callable(factory):
-        raise RefusedInput(
-            f"{spec}: module {module_name!r} has no callable {attribute!r}",
-            remedy="name a zero-argument callable returning the host's profile or its host",
-        )
-    made = factory()
+    made = _made_by(spec, "profile")
     if isinstance(made, EvalHost):
         return made.profile
     if isinstance(made, HostProfile):
@@ -184,6 +191,26 @@ def host_profile_from(spec: str) -> HostProfile:
     raise RefusedInput(
         f"{spec} returned a {type(made).__name__}, not a HostProfile or an EvalHost",
         remedy="return the profile the host's runs were measured under, or the host carrying it",
+    )
+
+
+def eval_host_from(spec: str) -> EvalHost:
+    """The host a ``module:factory`` spec builds, for an export: its store and the profile its runs were measured under.
+
+    :param spec: ``package.module:callable``, a zero-argument callable returning an
+        :class:`~threetears.evals.kernel.host.EvalHost`; the export only reads its store.
+    :ptype spec: str
+    :return: The host.
+    :rtype: EvalHost
+    :raises RefusedInput: The spec is not ``module:attribute``, the module does not import, it has no such callable,
+        or what it returns is not a host.
+    """
+    made = _made_by(spec, "host")
+    if isinstance(made, EvalHost):
+        return made
+    raise RefusedInput(
+        f"{spec} returned a {type(made).__name__}, not an EvalHost: an export reads the host's store",
+        remedy="return the host whose store holds the campaign, the one its operations are served from",
     )
 
 
@@ -336,7 +363,8 @@ def _evidence(documents: Iterable[Mapping[str, Any]], campaign_id: str, as_of: s
     store, loaded = _store(documents)
     present = {document["doc_type"] for document in loaded}
     for doc_type in REQUIRED_DOC_TYPES:
-        if doc_type not in present:
+        # A template is needed only where a run names one, which the runs, read below, say.
+        if doc_type not in present and doc_type != "eval_template":
             raise RefusedInput(f"the export holds no {doc_type} document", remedy=_EXPORT_REMEDY)
     scopes = sorted(
         {
@@ -361,7 +389,10 @@ def _evidence(documents: Iterable[Mapping[str, Any]], campaign_id: str, as_of: s
     runs = storage.load_eval_runs(campaign.run_ids, scope_id)
     if unresolved := set(campaign.run_ids) - {run.id for run in runs}:
         raise _missing("eval_run", unresolved, campaign_id)
-    template_ids = {run.template_id for run in runs if run.template_id is not None}
+    # A quick eval's run names no template (its template_id is blank), and its freeze reads none.
+    template_ids = {run.template_id for run in runs if run.template_id}
+    if template_ids and "eval_template" not in present:
+        raise RefusedInput("the export holds no eval_template document", remedy=_EXPORT_REMEDY)
     if untemplated := template_ids - {
         template.id for template in storage.load_templates(sorted(template_ids), scope_id)
     }:
@@ -519,6 +550,7 @@ __all__ = [
     "MintManifest",
     "export_checked",
     "ProfileFile",
+    "eval_host_from",
     "host_profile_from",
     "read_documents_file",
     "read_profile_file",
