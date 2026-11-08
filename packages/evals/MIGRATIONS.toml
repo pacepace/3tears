@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.95.0"
+since = "v0.94.0"
+summary = """
+An L2 failure a collection falls through on is counted by reason, and a full KV bucket raises its own type: no
+3tears-evals name has moved or been removed since 0.94.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.94.0"
 since = "v0.93.1"
 summary = """
