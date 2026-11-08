@@ -306,14 +306,14 @@ async def test_a_key_watcher_is_pushed_each_advance_and_applies_only_a_missed_br
         try:
             # the key's latest value is pushed first: this pod's first sight of the table
             await _until(lambda: marks.follows(_TABLE) and marks.recorded(_TABLE) is not None, "the first push")
-            assert emptied == ["ALL"], "a derived cache re-bases its own marks on the first sight"
+            assert emptied == [], "a first sight takes the mark and empties no derived cache"
             assert await _member_id(follower, "m1") == "ada"
 
             await _save(writer, "m2", "grace")
             await _heard_everything(follower)
             # long enough for the watcher to have judged the push it was sent for that write
             await asyncio.sleep(0.5)
-            assert emptied == ["ALL"], "a write whose broadcast arrived dropped the table"
+            assert emptied == [], "a write whose broadcast arrived dropped the table"
             assert follower.members.exists_in_cache_sync("m1")
             assert await _member_id(follower, "m2") == "grace"
 
@@ -322,7 +322,7 @@ async def test_a_key_watcher_is_pushed_each_advance_and_applies_only_a_missed_br
             await _until(
                 lambda: not follower.members.exists_in_cache_sync("m1"), "the watcher to apply the missed epoch"
             )
-            assert emptied == ["ALL"], "a missed write emptied the derived cache"
+            assert emptied == [], "a missed write emptied the derived cache"
             assert follower.members.exists_in_cache_sync("m2")
             assert await _member_id(follower, "m1") == "edsger"
         finally:

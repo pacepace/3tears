@@ -1,10 +1,12 @@
 """an L2-first collection commits its writes in NATS, and a saver makes L3 match.
 
 **The commit.** A collection that declares :attr:`~threetears.core.collections.base.BaseCollection.l2_first`
-writes a row to L2 (its key's compare-and-swap) and then advances the table's epoch with a record naming
-that key (:meth:`L2FirstEpochs.advance_continuing`). The record landing in the epoch change log is the
-commit: a follower that hears the broadcast, or fetches the record after missing it, reads the row from
-L2. Every L2 bucket is memory storage, replicated three ways; nothing here is on disk.
+first appends one epoch record carrying the row and the revision of its L2 key the writer read
+(:meth:`L2FirstEpochs.advance_continuing`): that record landing in the epoch change log is the commit. Only
+then is the row applied to L2, at that revision; a writer that dies between the two leaves the key where it
+was, and the saver applies the row from the record. A follower that hears the broadcast, or fetches the
+record after missing it, reads the row from L2. Every L2 bucket is memory storage, replicated three ways;
+nothing here is on disk.
 
 **The save.** L3 is made to match L2 key by key: a row L2 holds is upserted, a key L2 no longer holds is
 deleted, and the epoch record itself is written to the L3 epoch log (:class:`EpochLogStore`). Doing it
@@ -220,12 +222,10 @@ class L2FirstEpochs(Protocol):
         """
         ...
 
-    async def current(self, table_name: str) -> str:
-        """the table's generation, declaring a fresh log when the broker holds none.
+    async def start_log(self) -> str:
+        """declare a fresh log where the broker holds none: the refiller's step when L3 holds no epoch to restore.
 
-        :param table_name: the table
-        :ptype table_name: str
-        :return: the generation token
+        :return: the log's incarnation
         :rtype: str
         :raises GenerationUnavailableError: when the log can be neither read nor declared
         """
@@ -716,7 +716,7 @@ class L2Refiller:
         heads = {c.table_name: await self._log.head(c.table_name) for c in collections}
         known = {table: _parts(table, head) for table, head in heads.items() if head is not None}
         if not known:
-            await self._epochs.current(collections[0].table_name)
+            await self._epochs.start_log()
             return
         # every table's newest epoch is under the log's one incarnation; the latest is the highest sequence
         incarnation = max(known.values(), key=lambda parts: parts[1])[0]
@@ -731,7 +731,9 @@ class L2Refiller:
             changes.extend(await self._newest_records(table, f"{each}:{top}"))
         restored = await self._epochs.restore_epochs(changes)
         log.warning(
-            "the epoch change log was put back from the L3 epoch log; a pod behind on it catches up from here",
+            "the epoch change log was put back from the L3 epoch log at its old sequences. A follower catches up "
+            "from it on an L2-first table; on any table whose lost epochs L3 does not hold (every table that is "
+            "not L2-first) it is behind (record_lost) until it restarts",
             extra={"extra_data": {"records": len(changes), "incarnation": incarnation, "restored": restored}},
         )
 

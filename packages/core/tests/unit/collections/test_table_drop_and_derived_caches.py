@@ -502,12 +502,12 @@ class TestDroppingATable:
         cache = _PersonCache(bare, ("ada",))
         bare.follow_generation(_TABLE)
         assert await bare.catch_up_generation(_TABLE, "inc:3", changes=None) is GenerationVerdict.FIRST_SIGHT
-        # a derived cache keeps its own marks and re-bases them on the first sight
-        assert cache.dropped_all == 1
+        # a first sight takes the mark and drops nothing, a derived cache included
+        assert cache.dropped_all == 0
         bare.drop_table(_TABLE, reason="the whole table changed")
-        assert cache.dropped_all == 2
+        assert cache.dropped_all == 1
         assert await bare.catch_up_generation(_TABLE, "inc:3", changes=None) is GenerationVerdict.CURRENT
-        assert cache.dropped_all == 2
+        assert cache.dropped_all == 1
 
     async def test_every_l1_change_listener_hears_each_row_go(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {}

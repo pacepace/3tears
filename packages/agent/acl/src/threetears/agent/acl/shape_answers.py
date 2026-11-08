@@ -249,6 +249,7 @@ class ShapeDependencies:
                     on_row=functools.partial(self._on_row, table),
                     on_table_dropped=functools.partial(self._on_dropped, table),
                     on_caught_up=functools.partial(self._on_caught_up, table),
+                    on_first_sight=functools.partial(self._on_first_sight, table),
                 )
             )
 
@@ -340,6 +341,17 @@ class ShapeDependencies:
         """
         with self._lock:
             self._marks.adopt(table, self._registry.generation_marks)
+
+    def _on_first_sight(self, table: str) -> None:
+        """start ``table`` from the registry's mark at its first sight; nothing derived is dropped.
+
+        :param table: the table first sighted
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._adopt(table)
 
     def _on_dropped(self, table: str) -> None:
         """start ``table`` again from the registry's judged mark: nothing derived before is trusted.

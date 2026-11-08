@@ -53,12 +53,22 @@ from threetears.agent.acl.types import (
 )
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import tier_reads_total
+from threetears.core.collections.generation import GenerationMarks, GenerationVerdict
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 from .fake_loaders import FakeBatchingStore
+
+
+def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
+    """judge ``token`` and take it as the mark unless current: a catch-up whose epochs all applied."""
+    verdict = marks.judge(table, token)
+    if verdict is not GenerationVerdict.CURRENT:
+        marks.adopt_generation(table, token)
+    return verdict
+
 
 _SCOPE = "hub-shapes"
 _TABLE = "access_shape_answers"
@@ -172,7 +182,7 @@ class _Replica:
 def _sighted(registry: CollectionRegistry, token: str = "inc:0") -> None:
     for table in _TABLES:
         registry.generation_marks.follow(table)
-        registry.generation_marks.settle(table, token)
+        _settle(registry.generation_marks, table, token)
 
 
 async def _replica(bus: FakeNatsClient, store: _Store, *, token: str = "inc:0") -> _Replica:

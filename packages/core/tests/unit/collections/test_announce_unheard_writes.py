@@ -14,6 +14,14 @@ from threetears.core.collections.generation import GenerationMarks, GenerationVe
 from threetears.core.exceptions import GenerationUnavailableError
 
 
+def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
+    """judge ``token`` and take it as the mark unless current: a catch-up whose epochs all applied."""
+    verdict = marks.judge(table, token)
+    if verdict is not GenerationVerdict.CURRENT:
+        marks.adopt_generation(table, token)
+    return verdict
+
+
 class _Source:
     """counts per table under one incarnation; refuses the tables it is told to."""
 
@@ -41,11 +49,11 @@ async def test_each_table_is_advanced_once_and_its_token_returned() -> None:
 async def test_a_follower_that_heard_no_rows_drops_the_table() -> None:
     marks = GenerationMarks()
     marks.follow("group_members")
-    assert marks.settle("group_members", "inc-a:0") is GenerationVerdict.FIRST_SIGHT
+    assert _settle(marks, "group_members", "inc-a:0") is GenerationVerdict.FIRST_SIGHT
     tokens = await announce_unheard_writes(_Source(), ["group_members"])
-    verdict = marks.settle("group_members", tokens["group_members"])
+    verdict = _settle(marks, "group_members", tokens["group_members"])
     assert verdict is GenerationVerdict.MISSED
-    assert verdict.drops
+    assert verdict is not GenerationVerdict.CURRENT
 
 
 async def test_every_table_is_attempted_and_the_failures_are_raised_together() -> None:

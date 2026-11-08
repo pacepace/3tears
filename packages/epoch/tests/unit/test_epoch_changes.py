@@ -7,17 +7,22 @@ the real generation source, the real reader and the real pass. The contract this
   the follower holds stays cached;
 - an epoch whose change record L2 does not hold leaves the follower behind -- serving what it has,
   counted, untrusted by derived caches -- and the next pass that can read the record catches up;
-- a write whose reach is the whole table invalidates the table, because that is the change;
+- a write whose reach is the whole table invalidates the table, because that is the change; a large
+  commit is several keyed records, never a whole-table one;
+- a restore that could not put an epoch back leaves every follower whose walk spans it behind
+  (``record_lost``), and a lost log waits for its restore rather than starting under a new incarnation;
 - a follower's first sight of a generation takes it as its mark and drops nothing;
 - the change log refuses a record past its cap, loudly, rather than evicting one.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -31,7 +36,15 @@ from threetears.core.collections import (
     CollectionRegistry,
     announce_unheard_writes,
 )
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, advance_recording
+from threetears.core.collections.epoch_change import (
+    ChangedRow,
+    EpochChange,
+    EpochWalk,
+    advance_recording,
+    changed_row_runs,
+    walk_by_count,
+)
+from threetears.core.collections.generation import L2_WRITE_GENERATION
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
@@ -46,6 +59,7 @@ from threetears.epoch import (
 from threetears.nats import set_default_namespace
 
 _TABLE = "group_members"
+_KEPT = "precincts"
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +97,8 @@ class _Members(BaseCollection[_Row]):
 
     def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]]) -> None:
         self._rows = rows
+        #: the L3 rows every pod of the test shares, for a test that writes L3 behind the collection's back
+        self.l3_rows = rows
         super().__init__(registry, DefaultCoreConfig())
 
     @property
@@ -112,6 +128,25 @@ class _Members(BaseCollection[_Row]):
     def deserialize(self, data: bytes) -> dict[str, Any]:
         row: dict[str, Any] = json.loads(data)
         return row
+
+
+class _L2Members(_Members):
+    """the same table, its generation and each epoch's record kept in L2 beside its rows."""
+
+    write_generation = L2_WRITE_GENERATION
+
+
+@dataclass
+class _L2Kept:
+    """an L2-kept table's records, read through its collection."""
+
+    collection: _L2Members
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        return await self.collection.l2_epoch_change(table_name, token)
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        return await walk_by_count(self, table_name, after, upto)
 
 
 class _Lossy(FakeNatsClient):
@@ -358,14 +393,156 @@ class TestAHoleHoldsOnlyTheMark:
 
 
 class TestARecordStaysWithinItsBound:
-    async def test_a_commit_too_large_to_record_by_row_is_recorded_as_the_whole_table(self, bus: _Lossy) -> None:
+    async def test_a_commit_too_large_for_one_record_is_recorded_as_keyed_records_only(self, bus: _Lossy) -> None:
         source = EpochGenerationSource(bus)
         rows = [ChangedRow(ids=[f"row-{each:06d}"], columns={"member_id": "x" * 64}) for each in range(5000)]
+        before = await source.current(_TABLE)
         token = await source.advance_with_change(_TABLE, rows)
-        record = await EpochGenerationReader(bus).change(_TABLE, token)
+        walk = await EpochGenerationReader(bus).changes_after(_TABLE, before, token)
+        assert walk.complete
+        assert len(walk.changes) > 1, "one record could not hold them all"
+        assert not any(change.whole_table or change.keys_unknown for change in walk.changes)
+        assert [row for change in walk.changes for row in change.rows] == rows, "every row, in order, by key"
+        assert walk.changes[-1].token == token, "the write's epoch is its last record"
+
+    async def test_a_pod_that_missed_it_applies_the_keys_and_drops_nothing(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        rows = [ChangedRow(ids=[f"row-{each:06d}"], columns={"member_id": "x" * 64}) for each in range(5000)]
+        rows.append(ChangedRow(ids=["m1"], columns={"member_id": "edsger"}))
+        writing.l3_rows["m1"]["member_id"] = "edsger"  # the shared L3 the commit changed
+        await advance_recording(EpochGenerationSource(bus), _TABLE, rows)
+        assert await _member_id(reading, "m1") == "ada", "nothing told the follower"
+
+        await follower.tick()
+
+        assert not follower.registry.behind_on(_TABLE)
+        assert not reading.exists_in_cache_sync("m1"), "the row the commit named was evicted"
+        assert reading.exists_in_cache_sync("m2"), "the row it did not name stays: no table drop"
+        assert await _member_id(reading, "m1") == "edsger"
+
+    async def test_a_table_kept_in_l2_records_a_large_commit_as_keyed_records_too(self, bus: _Lossy) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        writer, follower = _Pod(bus, scope="shared"), _Pod(bus, scope="shared")
+        writing, reading = _L2Members(writer.registry, rows), _L2Members(follower.registry, rows)
+        await _save(writing, "m1", "ada")
+        await _save(writing, "m2", "grace")
+        follower.registry.follow_generation(_TABLE)
+        await follower.registry.catch_up_l2_generations()
+        assert await _member_id(reading, "m1") == "ada"
+        assert await _member_id(reading, "m2") == "grace"
+        before = await writing.l2_write_generation()
+        assert before is not None
+
+        bus.deaf = True
+        ids = [f"row-{each:06d}" for each in range(5000)] + ["m1"]
+        async with writing.bypassing_write(*ids):
+            rows["m1"]["member_id"] = "edsger"
+        bus.deaf = False
+
+        head = await writing.l2_write_generation()
+        assert head is not None
+        walk = await walk_by_count(_L2Kept(writing), _TABLE, before, head)
+        assert walk.complete and len(walk.changes) > 1
+        assert not any(change.whole_table for change in walk.changes), "keyed records only"
+        await follower.registry.catch_up_l2_generations()
+        assert not follower.registry.behind_on(_TABLE)
+        assert reading.exists_in_cache_sync("m2"), "the row it did not name stays: no table drop"
+        assert await _member_id(reading, "m1") == "edsger"
+
+    def test_one_row_past_the_bound_is_refused_loudly(self) -> None:
+        with pytest.raises(GenerationUnavailableError, match="record bound"):
+            changed_row_runs(_TABLE, [ChangedRow(ids=["x" * (300 * 1024)])])
+
+
+class TestARestoreNamesWhatItLost:
+    async def test_a_table_whose_epochs_l3_did_not_hold_is_behind_after_the_restore(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        source, reader = EpochGenerationSource(bus), EpochGenerationReader(bus)
+        kept: list[EpochChange] = []
+        for each in range(2):
+            change = await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=[f"k{each}"])]))
+            assert change is not None
+            kept.append(change)
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")  # its record is not in L3: the table is not L2-first
+        bus.deaf = False
+        change = await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=["k9"])]))
+        assert change is not None
+        kept.append(change)
+
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_epochs(kept)
+        lost = await reader.read(_TABLE)
+        assert lost is not None and _seq(lost) > 0, "a table with no restored record never reads below what was lost"
+
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+            await follower.tick()
+        assert follower.registry.behind_on(_TABLE), "the missed epoch is said, never read as current"
+        said = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert [each["reason"] for each in said] == ["record_lost"], "said once, as lost"
+        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds"
+        assert reading.exists_in_cache_sync("m2"), "and drops nothing"
+
+    async def test_a_filler_inside_a_restored_tables_walk_holds_its_mark(self, bus: _Lossy) -> None:
+        source, reader = EpochGenerationSource(bus), EpochGenerationReader(bus)
+        first = await source.advance_with_change(_KEPT, [ChangedRow(ids=["k0"])])
+        follower = CollectionRegistry()
+        follower.follow_generation(_KEPT)
+        await follower.catch_up_generation(_KEPT, first, changes=reader)
+        kept = [await reader.change(_KEPT, first)]
+        await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])  # not in L3: a filler once restored
+        kept.append(await reader.change(_KEPT, await source.advance_with_change(_KEPT, [ChangedRow(ids=["k1"])])))
+        _log(bus).vanish()
+        assert await EpochGenerationSource(bus).restore_epochs([each for each in kept if each is not None])
+
+        head = await reader.read(_KEPT)
+        assert head is not None
+        await follower.catch_up_generation(_KEPT, head, changes=reader)
+        assert follower.behind_on(_KEPT), "an epoch of unknown table lies inside the walk"
+        assert follower.generation_marks.recorded(_KEPT) == first, "the mark never moves past it"
+
+
+class TestALostLogWaitsForItsRestore:
+    async def test_a_write_after_the_loss_never_starts_a_log_ahead_of_the_restore(self, bus: _Lossy) -> None:
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(0))
+        reader = EpochGenerationReader(bus)
+        incarnation = await source.start_log()
+        written = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])])
+        record = await reader.change(_TABLE, written)
         assert record is not None
-        assert record.whole_table
-        assert record.rows == []
+
+        _log(bus).vanish()
+        with pytest.raises(GenerationUnavailableError, match="restore"):
+            await source.advance_with_change(_TABLE, [ChangedRow(ids=["m2"])])
+        with pytest.raises(GenerationUnavailableError, match="restore"):
+            await source.current(_TABLE)
+        assert await _log(bus).state() is None, "no log was started under a new incarnation"
+
+        assert await source.restore_epochs([record])
+        after = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m3"])])
+        assert after.rpartition(":")[0] == incarnation, "the restored incarnation carries on"
+        assert _seq(after) > _seq(written)
+
+    async def test_a_write_waits_for_the_restore_and_lands_in_the_restored_log(self, bus: _Lossy) -> None:
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=5))
+        reader = EpochGenerationReader(bus)
+        incarnation = await source.start_log()
+        record = await reader.change(_TABLE, await source.advance_with_change(_TABLE, [ChangedRow(ids=["m1"])]))
+        assert record is not None
+        _log(bus).vanish()
+
+        async def restore() -> bool:
+            await asyncio.sleep(0.2)
+            return await EpochGenerationSource(bus).restore_epochs([record])
+
+        written, restored = await asyncio.gather(
+            source.advance_with_change(_TABLE, [ChangedRow(ids=["m2"])]), restore()
+        )
+        assert restored, "the restore ran first: the waiting write started no log"
+        assert written.rpartition(":")[0] == incarnation
 
 
 class TestBehindIsSaidOnce:

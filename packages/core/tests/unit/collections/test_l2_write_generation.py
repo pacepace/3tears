@@ -146,5 +146,5 @@ class TestAnOnDemandPass:
             await bucket.put(key=key, value=b"not a generation")
         registry = _registry(answers)
         assert await registry.catch_up_l2_generations() == 0
-        assert registry.l2_catch_up_age is None, "a pass that judged nothing quieted the overdue warning"
+        assert registry.l2_catch_up_age is None, "a pass that judged nothing does not count as run"
         await registry.stop_invalidation_listener()

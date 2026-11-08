@@ -48,7 +48,7 @@ from threetears.core.collections import (
     CollectionRegistry,
     tables_with_write_generation,
 )
-from threetears.core.collections.generation import GenerationMarks
+from threetears.core.collections.generation import GenerationMarks, GenerationVerdict
 from threetears.core.collections.schema_backed import STRING_TYPE, SchemaBackedCollection, TableSchema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
@@ -60,6 +60,15 @@ from threetears.core.exceptions import (
     GenerationUnavailableError,
 )
 from threetears.core.testing.kv import FakeNatsClient
+
+
+def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
+    """judge ``token`` and take it as the mark unless current: a catch-up whose epochs all applied."""
+    verdict = marks.judge(table, token)
+    if verdict is not GenerationVerdict.CURRENT:
+        marks.adopt_generation(table, token)
+    return verdict
+
 
 _TABLE = "group_members"
 _TX_ID = "019d9a00-0000-7000-8000-000000000000"
@@ -506,7 +515,7 @@ def _follower_at(token: str) -> GenerationMarks:
     """a follower of the table whose mark stands at ``token``."""
     marks = GenerationMarks()
     marks.follow(_TABLE)
-    marks.settle(_TABLE, token)
+    _settle(marks, _TABLE, token)
     return marks
 
 

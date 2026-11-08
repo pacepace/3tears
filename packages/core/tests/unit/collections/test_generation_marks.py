@@ -23,6 +23,15 @@ from threetears.core.collections.generation import (
     split_generation_token,
 )
 
+
+def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
+    """judge ``token`` and take it as the mark unless current: a catch-up whose epochs all applied."""
+    verdict = marks.judge(table, token)
+    if verdict is not GenerationVerdict.CURRENT:
+        marks.adopt_generation(table, token)
+    return verdict
+
+
 _TABLE = "role_assignments"
 
 
@@ -30,7 +39,7 @@ def _followed(start: str | None = "inc-a:0") -> GenerationMarks:
     """marks following the table, already past their first sight of it at ``start``."""
     marks = GenerationMarks()
     marks.follow(_TABLE)
-    assert marks.settle(_TABLE, start) is GenerationVerdict.FIRST_SIGHT
+    assert _settle(marks, _TABLE, start) is GenerationVerdict.FIRST_SIGHT
     return marks
 
 
@@ -47,23 +56,23 @@ class TestTheFirstGenerationSeenDropsTheTable:
     def test_a_mark_that_never_saw_a_generation_cannot_vouch_for_the_cache(self) -> None:
         marks = GenerationMarks()
         marks.follow(_TABLE)
-        verdict = marks.settle(_TABLE, "inc-a:4")
+        verdict = _settle(marks, _TABLE, "inc-a:4")
         assert verdict is GenerationVerdict.FIRST_SIGHT
-        assert verdict.drops
+        assert verdict is not GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-a:4"
 
     def test_the_same_generation_again_is_current(self) -> None:
         marks = _followed("inc-a:4")
-        verdict = marks.settle(_TABLE, "inc-a:4")
+        verdict = _settle(marks, _TABLE, "inc-a:4")
         assert verdict is GenerationVerdict.CURRENT
-        assert not verdict.drops
+        assert verdict is GenerationVerdict.CURRENT
 
 
 class TestAnAdvanceIsAccountedForWhenEveryRowWasHeard:
     def test_one_row_of_one_moves_the_mark(self) -> None:
         marks = _followed()
         marks.hear(_TABLE, "inc-a:1", 1)
-        assert marks.settle(_TABLE, "inc-a:1") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:1") is GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-a:1"
 
     def test_some_rows_of_many_do_not(self) -> None:
@@ -80,55 +89,55 @@ class TestAnAdvanceIsAccountedForWhenEveryRowWasHeard:
         marks.hear(_TABLE, "inc-a:2", 1)
         assert marks.judge(_TABLE, "inc-a:3") is GenerationVerdict.MISSED
         marks.hear(_TABLE, "inc-a:1", 1)
-        assert marks.settle(_TABLE, "inc-a:3") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:3") is GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-a:3"
 
     def test_an_advance_never_heard_is_a_missed_broadcast(self) -> None:
         marks = _followed()
         marks.hear(_TABLE, "inc-a:1", 1)
         marks.hear(_TABLE, "inc-a:3", 1)
-        verdict = marks.settle(_TABLE, "inc-a:3")
+        verdict = _settle(marks, _TABLE, "inc-a:3")
         assert verdict is GenerationVerdict.MISSED
-        assert verdict.drops
+        assert verdict is not GenerationVerdict.CURRENT
         # the drop accounts for everything up to the generation read
-        assert marks.settle(_TABLE, "inc-a:3") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:3") is GenerationVerdict.CURRENT
 
     def test_a_broadcast_that_outran_the_read_still_counts_after_a_drop(self) -> None:
         marks = _followed()
         marks.hear(_TABLE, "inc-a:3", 1)
-        assert marks.settle(_TABLE, "inc-a:2") is GenerationVerdict.MISSED
-        assert marks.settle(_TABLE, "inc-a:3") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:2") is GenerationVerdict.MISSED
+        assert _settle(marks, _TABLE, "inc-a:3") is GenerationVerdict.CURRENT
 
     def test_an_older_generation_than_the_mark_is_already_accounted_for(self) -> None:
         marks = _followed()
         marks.hear(_TABLE, "inc-a:1", 1)
         marks.hear(_TABLE, "inc-a:2", 1)
-        assert marks.settle(_TABLE, "inc-a:1") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:1") is GenerationVerdict.CURRENT
 
     def test_a_pods_own_advance_needs_no_broadcast(self) -> None:
         marks = _followed()
         marks.account(_TABLE, "inc-a:1")
-        assert marks.settle(_TABLE, "inc-a:1") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:1") is GenerationVerdict.CURRENT
 
 
 class TestAnotherIncarnationIsAReplacedStore:
     def test_a_new_incarnation_drops_whatever_its_count(self) -> None:
         marks = _followed("inc-a:9")
-        verdict = marks.settle(_TABLE, "inc-b:9")
+        verdict = _settle(marks, _TABLE, "inc-b:9")
         assert verdict is GenerationVerdict.REPLACED
-        assert verdict.drops
+        assert verdict is not GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-b:9"
 
     def test_hearing_every_row_of_the_new_incarnation_does_not_excuse_the_old_ones_missed(self) -> None:
         marks = _followed("inc-a:9")
         marks.hear(_TABLE, "inc-b:1", 1)
-        assert marks.settle(_TABLE, "inc-b:1") is GenerationVerdict.REPLACED
+        assert _settle(marks, _TABLE, "inc-b:1") is GenerationVerdict.REPLACED
 
     def test_a_store_that_lost_the_generation_is_a_replaced_store(self) -> None:
         marks = _followed("inc-a:9")
-        assert marks.settle(_TABLE, None) is GenerationVerdict.REPLACED
+        assert _settle(marks, _TABLE, None) is GenerationVerdict.REPLACED
         assert marks.recorded(_TABLE) is None
-        assert marks.settle(_TABLE, None) is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, None) is GenerationVerdict.CURRENT
 
     def test_the_first_generation_after_none_is_the_marks_own_and_its_advances_are_missed(self) -> None:
         # the store held no generation when the mark was taken, so the first incarnation minted since
@@ -140,8 +149,8 @@ class TestAnotherIncarnationIsAReplacedStore:
 
     def test_a_token_that_is_not_a_count_only_ever_equals_itself(self) -> None:
         marks = _followed("opaque-1")
-        assert marks.settle(_TABLE, "opaque-1") is GenerationVerdict.CURRENT
-        assert marks.settle(_TABLE, "opaque-2") is GenerationVerdict.REPLACED
+        assert _settle(marks, _TABLE, "opaque-1") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "opaque-2") is GenerationVerdict.REPLACED
 
 
 class TestWhatIsNotFollowedCostsNothing:
@@ -155,7 +164,7 @@ class TestWhatIsNotFollowedCostsNothing:
 
     def test_judging_a_table_nobody_follows_is_refused(self) -> None:
         with pytest.raises(KeyError):
-            GenerationMarks().settle(_TABLE, "inc-a:1")
+            _settle(GenerationMarks(), _TABLE, "inc-a:1")
 
     def test_following_twice_keeps_the_mark(self) -> None:
         marks = _followed("inc-a:2")
@@ -167,8 +176,8 @@ class TestWhatIsNotFollowedCostsNothing:
         # advance 1 is never heard, so nothing after it is contiguous with the mark
         for count in range(2, 6000):
             marks.hear(_TABLE, f"inc-a:{count}", 1)
-        assert marks.settle(_TABLE, "inc-a:5999") is GenerationVerdict.MISSED
-        assert marks.settle(_TABLE, "inc-a:5999") is GenerationVerdict.CURRENT
+        assert _settle(marks, _TABLE, "inc-a:5999") is GenerationVerdict.MISSED
+        assert _settle(marks, _TABLE, "inc-a:5999") is GenerationVerdict.CURRENT
 
 
 class TestTheOptOutCarriesAReason:

@@ -11,7 +11,10 @@ missed broadcast, after a pod restart and after a partition is the same operatio
 A gap never drops a table. A record that cannot be read leaves the pod serving what it holds,
 counted and logged as behind, until the record can be read. A record that names the whole table
 (:attr:`EpochChange.whole_table`) is the change itself -- a truncate, a file load, a migration
-whose rows nobody listed -- and invalidates the table because that is what the write did.
+whose rows nobody listed -- and invalidates the table because that is what the write did. Only a
+write whose caller changed the whole table records one: a commit of many rows is recorded as
+several consecutive keyed records (:func:`changed_row_runs`), each within the record bound, and its
+epoch is the last of them.
 
 The records live in L2 (a memory bucket, replicated); the writer that advances writes them, and
 core holds only the format and the two protocols, as it does for the generation itself.
@@ -42,6 +45,7 @@ __all__ = [
     "read_epoch_change_body",
     "walk_by_count",
     "advance_recording",
+    "changed_row_runs",
     "check_change_form",
     "epoch_change_record",
     "read_epoch_change",
@@ -51,10 +55,13 @@ __all__ = [
 #: up from it. A record gone is a pod behind, never a drop.
 EPOCH_CHANGE_MAX_AGE: Final = timedelta(hours=24)
 
-#: the largest record of a commit's rows that is stored as rows. A commit whose rows would not fit is
-#: recorded as a change to the whole table: one record that always fits, where a refused one would
-#: leave every follower that missed it behind for good. Well under a broker's default message limit.
+#: the largest record of a commit's rows. A commit whose rows would not fit in one is recorded as
+#: several consecutive records, each naming its run of the rows (:func:`changed_row_runs`); never as
+#: the whole table. Well under a broker's default message limit.
 _EPOCH_CHANGE_MAX_RECORD_BYTES: Final = 256 * 1024
+
+#: what a record holds beside its rows (the table, the token, the field names), kept free under the bound.
+_RECORD_OVERHEAD_BYTES: Final = 1024
 
 
 class ChangedRow(BaseModel):
@@ -165,11 +172,15 @@ class EpochWalk:
         aged out -- so the follower is behind on the table even after applying :attr:`changes`
     :ivar first_missing: the oldest epoch known or suspected missing, for the log line; ``None`` when
         :attr:`complete`
+    :ivar reason: why the walk is not complete, for the behind log line and counter:
+        ``record_missing`` (a record the log does not hold) or ``record_lost`` (an epoch of unknown table
+        lost with the broker, which a restore could not put back)
     """
 
     changes: tuple[EpochChange, ...]
     complete: bool
     first_missing: str | None = None
+    reason: str = "record_missing"
 
 
 async def walk_by_count(reader: EpochChangeReader, table_name: str, after: str, upto: str) -> EpochWalk:
@@ -272,13 +283,68 @@ async def advance_recording(
     return await source.advance(table_name)
 
 
+def changed_row_runs(table_name: str, rows: Sequence[ChangedRow]) -> list[list[ChangedRow]]:
+    """split a commit's rows into consecutive runs whose records each fit the record bound.
+
+    A commit of more rows than one record holds is recorded as one epoch per run, in order, so a
+    follower that missed it applies every row by key; nothing becomes a whole-table change for its size.
+
+    :param table_name: the table, for the error
+    :ptype table_name: str
+    :param rows: the rows the commit changed, at least one
+    :ptype rows: Sequence[ChangedRow]
+    :return: the runs, in order; one run when every row fits in one record
+    :rtype: list[list[ChangedRow]]
+    :raises GenerationUnavailableError: when one row alone is past the bound, so no record can name it
+    """
+    budget = _EPOCH_CHANGE_MAX_RECORD_BYTES - _RECORD_OVERHEAD_BYTES
+    runs: list[list[ChangedRow]] = []
+    run: list[ChangedRow] = []
+    used = 0
+    for row in rows:
+        # measured as the fullest form any record stores it in, so every record of the run fits
+        size = len(row.model_dump_json()) + 1
+        if size > budget:
+            raise GenerationUnavailableError(
+                f"a changed row of {table_name!r} is {size} bytes, past the {budget}-byte record bound: no epoch "
+                f"record can name it"
+            )
+        if run and used + size > budget:
+            runs.append(run)
+            run, used = [], 0
+        run.append(row)
+        used += size
+    if run:
+        runs.append(run)
+    return runs
+
+
+def _within_bound(stored: bytes, table_name: str) -> bytes:
+    """``stored``, refused when it is past the record bound.
+
+    :param stored: a record as stored
+    :ptype stored: bytes
+    :param table_name: the table, for the error
+    :ptype table_name: str
+    :return: ``stored``
+    :rtype: bytes
+    :raises GenerationUnavailableError: when it is past the bound; the caller splits with :func:`changed_row_runs`
+    """
+    if len(stored) > _EPOCH_CHANGE_MAX_RECORD_BYTES:
+        raise GenerationUnavailableError(
+            f"an epoch record of {table_name!r} is {len(stored)} bytes, past the {_EPOCH_CHANGE_MAX_RECORD_BYTES}-byte "
+            f"bound: split its rows with changed_row_runs"
+        )
+    return stored
+
+
 def epoch_change_record(
     table_name: str, token: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
 ) -> bytes:
     """the stored form of the change one advance made.
 
-    Rows that would make a record past :data:`_EPOCH_CHANGE_MAX_RECORD_BYTES` are recorded as the
-    whole table instead.
+    A record past :data:`_EPOCH_CHANGE_MAX_RECORD_BYTES` is refused: the caller records a large
+    commit as one advance per run of :func:`changed_row_runs`.
 
     :param table_name: the table
     :ptype table_name: str
@@ -291,6 +357,7 @@ def epoch_change_record(
     :return: the record, as stored
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows
+    :raises GenerationUnavailableError: when the record is past the bound
     """
     check_change_form(rows, keys_unknown=keys_unknown)
     record = EpochChange(
@@ -300,10 +367,7 @@ def epoch_change_record(
         keys_unknown=keys_unknown,
         rows=list(rows) if rows is not None else [],
     )
-    stored = record.model_dump_json().encode("utf-8")
-    if len(stored) > _EPOCH_CHANGE_MAX_RECORD_BYTES:
-        stored = EpochChange(table=table_name, token=token, whole_table=True).model_dump_json().encode("utf-8")
-    return stored
+    return _within_bound(record.model_dump_json().encode("utf-8"), table_name)
 
 
 def read_epoch_change(raw: bytes, table_name: str, token: str) -> EpochChange:
@@ -346,9 +410,9 @@ class _EpochBody(BaseModel):
 def epoch_change_body(table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
-    Rows that would make a record past the record bound are stored as the whole table, as
-    :func:`epoch_change_record` stores them -- unless they carry their values: that record is the commit,
-    so it is stored whole or refused.
+    A record past the record bound is refused, as :func:`epoch_change_record` refuses it: the caller
+    splits a large commit's rows with :func:`changed_row_runs`. A record whose rows carry their values is
+    the commit itself, so it is stored whole, and the log refuses it if it is past the log's own limit.
 
     :param table_name: the table
     :ptype table_name: str
@@ -359,6 +423,7 @@ def epoch_change_body(table_name: str, rows: Sequence[ChangedRow] | None, *, key
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows
+    :raises GenerationUnavailableError: when a record naming rows without their values is past the bound
     """
     check_change_form(rows, keys_unknown=keys_unknown)
     body = _EpochBody(
@@ -369,9 +434,7 @@ def epoch_change_body(table_name: str, rows: Sequence[ChangedRow] | None, *, key
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
-    if len(stored) > _EPOCH_CHANGE_MAX_RECORD_BYTES and not carries_values:
-        stored = _EpochBody(table=table_name, whole_table=True).model_dump_json().encode("utf-8")
-    return stored
+    return stored if carries_values else _within_bound(stored, table_name)
 
 
 def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChange:

@@ -15,10 +15,18 @@ from threetears.core.collections.generation import GenerationMarks, GenerationVe
 from threetears.core.collections.registry import CollectionRegistry
 
 
+def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
+    """judge ``token`` and take it as the mark unless current: a catch-up whose epochs all applied."""
+    verdict = marks.judge(table, token)
+    if verdict is not GenerationVerdict.CURRENT:
+        marks.adopt_generation(table, token)
+    return verdict
+
+
 def test_an_advance_heard_past_a_gap_waits_as_pending() -> None:
     marks = GenerationMarks()
     marks.follow("namespaces")
-    marks.settle("namespaces", "inc:1")
+    _settle(marks, "namespaces", "inc:1")
     marks.hear("namespaces", "inc:3", 1)
     assert marks.pending("namespaces") == ("inc:3 (1/1)",)
     assert marks.pending("not_followed") == ()

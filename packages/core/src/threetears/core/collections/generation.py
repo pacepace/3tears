@@ -291,18 +291,6 @@ class GenerationVerdict(StrEnum):
     REPLACED = "replaced"
     MISSED = "missed"
 
-    @property
-    def drops(self) -> bool:
-        """whether this verdict moves the mark without the broadcasts that would have moved it.
-
-        A follower never drops a table for it: it catches up epoch by epoch, or is behind
-        (``CollectionRegistry.catch_up_generation``).
-
-        :return: ``True`` for every verdict but :attr:`CURRENT`
-        :rtype: bool
-        """
-        return self is not GenerationVerdict.CURRENT
-
 
 #: how many advances one table's mark remembers as heard but not yet contiguous with the mark. A
 #: follower nobody runs a pass for would otherwise remember every advance after the first one it
@@ -349,7 +337,7 @@ class GenerationMarks:
     One per :class:`~threetears.core.collections.registry.CollectionRegistry`. Nothing here does
     I/O, awaits or drops anything: the registry feeds it every row broadcast that names a
     generation (:meth:`hear`) and every advance its own writes made (:meth:`account`), and a
-    catch-up pass asks it to judge the generation it just read (:meth:`settle`). A table nobody
+    catch-up pass asks it to judge the generation it just read (:meth:`judge`). A table nobody
     asked to follow costs nothing: its broadcasts are not recorded.
     """
 
@@ -688,27 +676,6 @@ class GenerationMarks:
             verdict = GenerationVerdict.REPLACED
         elif count > mark.accounted or mark.overflowed:
             verdict = GenerationVerdict.MISSED
-        return verdict
-
-    def settle(self, table_name: str, token: str | None) -> GenerationVerdict:
-        """judge a generation just read, and take it as the mark unless every advance up to it was heard.
-
-        A verdict of :attr:`~GenerationVerdict.CURRENT` leaves the mark where the broadcasts moved it;
-        any other adopts the generation (:meth:`adopt_generation`). A follower catches up through
-        ``CollectionRegistry.catch_up_generation`` instead, which applies each missed epoch first.
-
-        :param table_name: the followed table
-        :ptype table_name: str
-        :param token: the table's generation as its store holds it now, or ``None`` when the store
-            holds none
-        :ptype token: str | None
-        :return: the verdict
-        :rtype: GenerationVerdict
-        :raises KeyError: when ``table_name`` is not followed
-        """
-        verdict = self.judge(table_name, token)
-        if verdict.drops:
-            self.adopt_generation(table_name, token)
         return verdict
 
     @staticmethod

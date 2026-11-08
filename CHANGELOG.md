@@ -45,6 +45,12 @@ deletes a mark on an L2-first table without a whole-table advance, and the trigg
 
 **Added (epoch):** `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75), at which `observe_change_log_fill` warns.
 
+**Added (epoch):** a lost change log has one owner. `EpochGenerationSource(restored_from_l3=True, restore_wait=...)`,
+for every process of a deployment that runs the L2-first worker, never declares a log: while it is absent a write
+waits for the refiller (then fails, logged), and `current()` raises so its caller asks L3. The refiller restores it
+at its old incarnation, or starts it (`start_log`) when the L3 epoch log holds nothing. Without the flag a lost log
+is declared again under a new incarnation, as before.
+
 Operations: [docs/l2-first-operations.md](docs/l2-first-operations.md).
 
 ### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
@@ -86,8 +92,9 @@ stamps with the registry's mark is told when it moves (`register_derived_cache(o
 
 **Added (epoch):** `EpochGenerationSource.advance_continuing` (an L2-first commit: never declares the log, raises
 `threetears.core.exceptions.L2LostError` when it is absent), `restore_epochs` (the refiller's put-back: the log is
-created at the oldest record's sequence under its incarnation and every record keeps its number), and
-`observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.8). `ChangedRow.value` carries a
+created under its incarnation and every record keeps its number; a sequence L3 holds no record for is a filler, an
+epoch whose table nobody can name, and a follower whose walk spans one is behind as `record_lost`), and
+`observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.75). `ChangedRow.value` carries a
 row's stored bytes for a record that is the commit. `follow_l2_kept_tables` follows `L2_WRITE_GENERATION` tables by
 their generation keys (`BaseCollection.watch_l2_write_generation`); the registry's timed "no catch-up pass" warning
 (`L2_CATCH_UP_OVERDUE`) is removed. `TableTemplateCollection` declares a write generation.
@@ -96,11 +103,12 @@ their generation keys (`BaseCollection.watch_l2_write_generation`); the registry
 
 **Changed (core, epoch):** a pod that misses a cache-invalidation broadcast no longer drops the table. Each advance
 of a table's write generation now stores the rows it covered as the epoch's change record (`EpochChange`,
-`threetears.core.collections.epoch_change`), in a memory, replicated bucket beside the epoch bucket
-(`EPOCH_CHANGES_BUCKET`, kept per `EpochChangeRetention`), or beside the generation in L2 for a table kept there. A
+`threetears.core.collections.epoch_change`), in the epoch change log (`EPOCH_CHANGES_BUCKET`, kept per
+`EpochChangeRetention`), or beside the generation in L2 for a table kept there. A
 follower that judges an epoch it did not hear in full (`CollectionRegistry.catch_up_generation`, run by
 `generation_catchup_tick`, `follow_generation_key` and `TableFollower`) reads that epoch's record and evicts exactly
-its rows; every other row stays cached. A first sight takes the mark and drops nothing.
+its rows; every other row stays cached. A first sight takes the mark and drops nothing, a derived cache included
+(it re-bases its own marks through `register_derived_cache(on_first_sight=...)`, else `on_caught_up`).
 
 **Changed (core, epoch):** a record the log does not hold, or a generation from a replaced store, leaves the pod
 behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, derived caches
@@ -111,8 +119,9 @@ past its `max_bytes` (`discard: new`) and the write that advanced raises `Genera
 
 **Changed (core):** a write whose reach is the whole table (a truncate, a file load, `announce_unheard_writes`, the
 write-mark reconciler) records the whole table as its change, and a follower applies it as a table invalidation,
-because that is the change, and so is a commit whose rows would make a record past
-256 KiB. Records are built and checked by `epoch_change_record` and
+because that is the change. Nothing else does: a commit whose rows would make a record past 256 KiB is recorded as
+several consecutive keyed records (`changed_row_runs`), its epoch the last, and one row alone past the bound is
+refused with `GenerationUnavailableError`. Records are built and checked by `epoch_change_record` and
 `read_epoch_change`, kept for `EPOCH_CHANGE_MAX_AGE` (24h) wherever they are kept. A first sight of a table takes
 the head as its mark and re-reads nothing, and a table first seen with no generation follows the first incarnation
 minted after it. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
@@ -125,7 +134,7 @@ rows and did not change the whole table. `advance_with_change`, `advance_recordi
 a keyword-only `keys_unknown=True` (with `rows=None`; anything else raises `ValueError` before anything advances). A
 follower that missed such an epoch is behind on the table for it, said apart from a lost record:
 `collection_epoch_behind_total` carries a `reason` label (`record_missing`, `keys_unknown`, `record_unreadable`,
-`replaced`), as does the log line.
+`replaced`, `record_lost`), as does the log line.
 
 **Added (core):** a pod's collection write names the rows it changes on the request that commits it,
 `CHANGED_ROWS_FIELD` (`"changed_rows"`, `{table: [ChangedRow]}`, `threetears.core.backends.broker_generation`), sent

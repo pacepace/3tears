@@ -213,11 +213,15 @@ class DerivedCacheRegistration:
     :ivar on_caught_up: called when this registry's mark for the table moves after a catch-up: every
         epoch up to it is applied here, so a cache that stamps what it derives with the mark may take
         it; ``None`` for a cache that keeps no stamp
+    :ivar on_first_sight: called when this registry first sights the table's generation and takes it as
+        its mark: a cache that keeps its own marks starts them from it. Nothing is dropped: what the
+        cache holds was derived after following began. ``None`` falls back to :attr:`on_caught_up`
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
     on_caught_up: Callable[[], None] | None = None
+    on_first_sight: Callable[[], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -292,7 +296,6 @@ class CollectionRegistry:
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
         self._l2_caught_up_at: float | None = None
-        #: how long a followed L2-kept table may go unjudged before the registry warns
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -648,9 +651,9 @@ class CollectionRegistry:
 
         A followed table's row broadcasts are counted against the generation each names, and a
         catch-up pass (``threetears.epoch.generation_catchup_tick``, or the key watcher beside it)
-        judges the mark against the table's current generation and drops the table here when a
-        broadcast was missed. Following alone drops nothing: whoever follows a table also
-        schedules the pass. The table need not be registered as a collection -- an agent pod
+        judges the mark against the table's current generation and, when a broadcast was missed,
+        applies the missed epochs' rows (:meth:`catch_up_generation`); never a drop. Whoever follows a
+        table also schedules the pass. The table need not be registered as a collection -- an agent pod
         follows the access tables it holds only derived caches of.
 
         :param table_name: the table to follow
@@ -857,10 +860,12 @@ class CollectionRegistry:
             # the head is the mark: a process starts following before it serves, so it holds nothing
             # older to bring forward, and nothing is re-read from any tier
             marks.adopt_generation(table_name, token)
-            # a cache derived from the table keeps its own marks, and starts them from this one; it
-            # holds nothing derived from before the first sight it could vouch for
+            # a cache derived from the table keeps its own marks, and starts them from this one; like the
+            # table's own rows, what it holds was derived after following began, so nothing is dropped
             for registration in tuple(self._derived_caches.get(table_name, ())):
-                registration.on_table_dropped()
+                first_sight = registration.on_first_sight or registration.on_caught_up
+                if first_sight is not None:
+                    first_sight()
             self._caught_up(table_name)
             return verdict
         if verdict is GenerationVerdict.REPLACED or token is None:
@@ -885,7 +890,7 @@ class CollectionRegistry:
         # one hole holds the mark, never the epochs after it: they are applied, and the next walk skips
         # them as heard. A record whose writer named no rows is a hole no later read fills; it is told
         # apart in the log and the counter from a record the log does not hold.
-        hole: tuple[str, str] | None = None if walk.complete else (walk.first_missing or token, "record_missing")
+        hole: tuple[str, str] | None = None if walk.complete else (walk.first_missing or token, walk.reason)
         reached: str | None = None
         applied_any = False
         for change in walk.changes:
@@ -978,9 +983,9 @@ class CollectionRegistry:
         _tables_behind().set(len(self._behind))
         log.error(
             "behind on a table: an epoch's change could not be applied; serving what this process holds "
-            "until the record is in L2 again. A record never written or lost with the broker comes back "
-            "only through the L3 refill of the epoch log; until that is deployed, restarting this process "
-            "(a first sight of the table) is what ends it",
+            "until the record can be read. An L2-first table's records come back through the L2-first "
+            "refiller's restore from L3 (check the worker runs); any other record lost with the broker, a "
+            "replaced log or keys unknown is ended by restarting this process (a first sight of the table)",
             extra={"extra_data": {"table": table_name, "reason": reason, **detail}},
         )
 
@@ -1055,6 +1060,7 @@ class CollectionRegistry:
         on_row: Callable[[CacheInvalidationMessage], None],
         on_table_dropped: Callable[[], None],
         on_caught_up: Callable[[], None] | None = None,
+        on_first_sight: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1085,11 +1091,14 @@ class CollectionRegistry:
         :param on_caught_up: told when the registry's mark for the table moves after a catch-up, so a
             cache stamping what it derives with the mark takes the new one; ``None`` for none
         :ptype on_caught_up: Callable[[], None] | None
+        :param on_first_sight: told when the registry first sights the table and takes its mark, so a cache
+            keeping its own marks starts them there; ``None`` uses ``on_caught_up``. A first sight drops nothing
+        :ptype on_first_sight: Callable[[], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
         registration = DerivedCacheRegistration(
-            on_row=on_row, on_table_dropped=on_table_dropped, on_caught_up=on_caught_up
+            on_row=on_row, on_table_dropped=on_table_dropped, on_caught_up=on_caught_up, on_first_sight=on_first_sight
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)

@@ -44,6 +44,7 @@ from threetears.core.collections.epoch_change import (
     ChangedRow,
     EpochChange,
     advance_recording,
+    changed_row_runs,
     epoch_change_record,
     read_epoch_change,
 )
@@ -2005,6 +2006,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         This process's advances of the table take turns, so its own writes never contend for the key; a
         peer's do, and lose a round to it at most. The change record goes under
         :meth:`_l2_epoch_key`, so a replica that misses the write's broadcast applies exactly its rows.
+        Rows too many for one record advance once per run
+        (:func:`~threetears.core.collections.epoch_change.changed_row_runs`), each run its own record; the
+        write's generation is the last.
 
         :param registry: this collection's registry, which accounts for the advance
         :ptype registry: CollectionRegistry
@@ -2015,18 +2019,25 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: _Bump
         """
         rows = 1 if changed is None else len(changed)
+        token = ""
         try:
-            async with self._l2_generation_lock:
-                token = await self._advance_l2_generation_key()
+            runs: list[list[ChangedRow] | None] = (
+                [None] if changed is None else list(changed_row_runs(self.table_name, changed))
+            )
             kv = await self._ensure_kv()
             if kv is None:
                 raise KvError(f"{self.table_name}: no L2 client to keep the epoch's change in")
-            await kv.put(
-                key=self._l2_epoch_key(token),
-                value=epoch_change_record(self.table_name, token, changed),
-                ttl=EPOCH_CHANGE_MAX_AGE,
-            )
-        except (KvError, ConcurrentModificationError) as exc:
+            for run in runs:
+                async with self._l2_generation_lock:
+                    token = await self._advance_l2_generation_key()
+                await kv.put(
+                    key=self._l2_epoch_key(token),
+                    value=epoch_change_record(self.table_name, token, run),
+                    ttl=EPOCH_CHANGE_MAX_AGE,
+                )
+                # each run's advance is this registry's own: it needs no broadcast to be counted
+                registry.account_generation(self.table_name, token)
+        except (KvError, ConcurrentModificationError, GenerationUnavailableError) as exc:
             failure = GenerationUnavailableError(
                 f"write generation for {self.table_name!r} could not be advanced in L2: {exc}"
             )
@@ -2036,7 +2047,6 @@ class BaseCollection(ABC, Generic[EntityT]):
                 extra={"extra_data": {"table": self.table_name, "rows": rows, "error": str(exc)}},
             )
             return _Bump(failure=failure)
-        registry.account_generation(self.table_name, token)
         return _Bump(token=token, rows=rows)
 
     async def _advance_l2_generation_key(self) -> str:
@@ -2055,7 +2065,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             entry = await kv.get_entry(key=key)
             parts = None if entry is None else split_generation_token(entry[0].decode("utf-8", errors="replace"))
             if parts is None:
-                # none yet, or a value no follower can count: a new incarnation, so every follower drops
+                # none yet, or a value no follower can count: a new incarnation, which every follower
+                # past its first sight judges REPLACED and is behind on
                 written = f"{uuid7()}:1"
             else:
                 written = f"{parts[0]}:{parts[1] + 1}"

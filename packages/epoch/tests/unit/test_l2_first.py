@@ -20,7 +20,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -39,7 +39,7 @@ from threetears.core.collections.l2_first import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import L2LostError
+from threetears.core.exceptions import GenerationUnavailableError, L2LostError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -216,8 +216,12 @@ class _Pod:
         self.bus = bus
         self.registry = CollectionRegistry()
         self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-        self.source = (
-            EpochGenerationSource(bus) if retention is None else EpochGenerationSource(bus, change_retention=retention)
+        # every process of a deployment running the L2-first worker: the refiller alone starts a lost log
+        self.source = EpochGenerationSource(
+            bus,
+            change_retention=retention or EpochChangeRetention(),
+            restored_from_l3=True,
+            restore_wait=timedelta(0),
         )
         self.registry.set_generation_source(self.source)
         self.registry.set_epoch_log(log)
@@ -453,6 +457,28 @@ class TestL2Lost:
         assert fleet.reading.l3_reads == 0, "no pod read L3"
         await _save(fleet.writing, "precinct-4", "40")
         assert await _votes(fleet.reading, "precinct-4") == "40"
+
+    async def test_an_ordinary_write_after_the_loss_does_not_shut_out_the_restore(self, fleet: _Fleet) -> None:
+        await _save(fleet.writing, "precinct-1", "10")
+        assert await _votes(fleet.reading, "precinct-1") == "10"
+        await fleet.follower.registry.stop_invalidation_listener()
+        await _save(fleet.writing, "precinct-1", "11")
+        incarnation = (await fleet.writer.source.read(_TABLE) or "").rpartition(":")[0]
+        await fleet.lose_nats()
+
+        # a table that is not L2-first writes before the refiller's pass: it waits, and starts no log
+        with pytest.raises(GenerationUnavailableError, match="restore"):
+            await fleet.writer.source.advance_with_change("other_table", [ChangedRow(ids=["o1"])])
+        assert await fleet.bus.change_log(EPOCH_CHANGES_BUCKET).state() is None
+
+        await fleet.refiller.run_pass()
+        head = await fleet.writer.source.read(_TABLE)
+        assert head is not None and head.rpartition(":")[0] == incarnation, "restored at its old incarnation"
+        await fleet.follower.tick()
+        assert not fleet.follower.registry.behind_on(_TABLE)
+        assert await _votes(fleet.reading, "precinct-1") == "11"
+        written = await fleet.writer.source.advance_with_change("other_table", [ChangedRow(ids=["o1"])])
+        assert written.rpartition(":")[0] == incarnation
 
     async def test_a_missed_epoch_is_restored_and_applied_through_the_normal_path(self, fleet: _Fleet) -> None:
         await _save(fleet.writing, "precinct-1", "10")

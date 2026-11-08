@@ -664,7 +664,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
         async with _watching(follower, _TABLE, grace=timedelta(seconds=30)):
             # the key's latest value is pushed first, and is this pod's first sight of the table
             await _until(lambda: marks.follows(_TABLE) and marks.recorded(_TABLE) is not None)
-            assert cache.emptied == 1, "a derived cache re-bases its own marks on the first sight"
+            assert cache.emptied == 0, "a first sight takes the mark and empties no derived cache"
             cache.entries.update({"ada": "access-of-ada", "grace": "access-of-grace"})
             assert await _member_id(reading, "seed") == "ada"
 
@@ -673,7 +673,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
             await _until(lambda: marks.recorded(_TABLE) == f"{marks.recorded(_TABLE).rpartition(':')[0]}:2")  # type: ignore[union-attr]
             await asyncio.sleep(0)
             assert cache.entries == {"ada": "access-of-ada"}
-            assert cache.emptied == 1
+            assert cache.emptied == 0
             assert reading.exists_in_cache_sync("seed")
 
         async with _watching(follower, _TABLE, grace=timedelta(0)):
@@ -682,7 +682,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
             await _save(writing, "seed", "edsger")
             bus.deaf = False
             await _until(lambda: not reading.exists_in_cache_sync("seed"))
-            assert cache.emptied == 1, "a missed write is applied row by row, never by emptying the cache"
+            assert cache.emptied == 0, "a missed write is applied row by row, never by emptying the cache"
             assert cache.entries == {"ada": "access-of-ada"}
             assert await _member_id(reading, "seed") == "edsger"
 
