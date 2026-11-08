@@ -30,6 +30,34 @@ uv run python scripts/measure-epoch-write-cost.py --nats nats://localhost:4222 -
 
 No settings or secrets: with no URLs it starts its own containers. No test lane runs it.
 
+### YugabyteDB on Docker Desktop
+
+On a Linux kernel from 6.19 up to 7.0.14 on arm64 (Docker Desktop's linuxkit kernel on Apple silicon is one),
+YugabyteDB's tcmalloc corrupts its heap through its per-CPU caches (yugabyte-db #33458) and the tserver
+SIGSEGVs under ordinary concurrent writes. Block the `rseq` syscall for the container: Docker's default
+seccomp profile with `rseq` answered `ENOSYS`.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/moby/profiles/main/seccomp/default.json -o /tmp/seccomp-default.json
+python3 - <<'PY'
+import json
+d = json.load(open("/tmp/seccomp-default.json"))
+for rule in d["syscalls"]:
+    if "rseq" in rule.get("names", []):
+        rule["names"].remove("rseq")
+d["syscalls"] = [rule for rule in d["syscalls"] if rule.get("names")]
+d["syscalls"].append({"names": ["rseq"], "action": "SCMP_ACT_ERRNO", "errnoRet": 38})
+json.dump(d, open("/tmp/seccomp-no-rseq.json", "w"))
+PY
+docker run -d --name yb --security-opt seccomp=/tmp/seccomp-no-rseq.json -p 15433:5433 \
+  yugabytedb/yugabyte:2026.1.0.0-b118 bin/yugabyted start --background=false --tserver_flags="ysql_max_connections=400"
+# must print "TCMalloc per cpu caches active: 0"
+docker exec yb bash -c 'grep -rh "per cpu caches active" /root/var/logs/'
+uv run python scripts/measure-epoch-write-cost.py --db postgresql://yugabyte:yugabyte@localhost:15433/yugabyte
+```
+
+Bench against the version production runs (2026.1.0.0-b118 on 2026-11-08).
+
 ## What it measures
 
 Three tables, one per variant, all on one broker and one database. Each writer is its own process
@@ -41,7 +69,7 @@ the same table, so they contend only where the platform makes them.
 | `undeclared` | nothing (today's default) |
 | `declared` | one append of the epoch's change record to the change log (its stream sequence is the epoch; there is no counter to contend for) |
 | `declared+marks` | the same, plus the write-mark trigger's insert in the write's transaction and the read and delete of the marks the advance covered: the hub's production shape |
-| `declared+notes` | `declared`, plus the change-note trigger's note row in the write's transaction. A keeper process runs the note ring beside the writers with a 200 ms fence and a switch size of a fifth of the run's records, so the ring switches and `TRUNCATE`s its oldest table mid-run |
+| `declared+notes` | `declared`, plus the change-note trigger's note row in the write's transaction. A keeper process runs the note ring beside the writers with a 1 s fence (`--fence-seconds`) and a switch size of a fifth of the run's records, so the ring switches and empties its idle table (batched deletes) mid-run. Each writer's pool carries the cached ring slot, as the hub's does |
 
 Pick variants with `--variants` (e.g. `--variants declared declared+notes`).
 
@@ -67,6 +95,65 @@ table really has. Count writers per table, not per pod: on the platform every ag
 table is advanced by the hub's broker, so the hub's concurrent commits to one table are the writers.
 
 ## Recorded results
+
+### The cached slot and batched-delete emptying, 2026-11-08 (3tears 44216b89e)
+
+Apple M4 (10 cores), Docker Desktop, `nats:2.14.2-alpine`, 1000 saves per writer, keeper fence 1 s (a writer's
+slot is re-read every 0.25 s; with production's 10 min fence it is every 2.5 min), each cell its own process
+run. Read each notes row against the `declared` row above it.
+
+**YugabyteDB 2026.1.0.0-b118** (the version production runs), local `yugabyted` with `rseq` blocked
+(`TCMalloc per cpu caches active: 0`), one node, one tablet per table. No tserver crash in either run.
+
+| run | writers | variant | p50 ms | p99 ms | writes/s | failed | switches | emptied | saves during deletes | their p99 ms | their max ms | slot refreshes | notes that read the ring |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | declared | 2.59 | 3.91 | 362 | 0 | - | - | - | - | - | 12 | - |
+| 1 | 1 | declared+notes | 3.21 | 6.53 | 297 | 0 | 3 | 3 | 72 | 4.56 | 4.56 | 14 | 0 |
+| 1 | 8 | declared | 5.77 | 10.47 | 1308 | 0 | - | - | - | - | - | 200 | - |
+| 1 | 8 | declared+notes | 6.91 | 13.78 | 1076 | 0 | 5 | 5 | 611 | 11.13 | 13.00 | 240 | 0 |
+| 1 | 32 | declared | 18.36 | 44.97 | 1573 | 0 | - | - | - | - | - | 2470 | - |
+| 1 | 32 | declared+notes | 20.79 | 52.35 | 1371 | 0 | 2 | 2 | 7678 | 69.30 | 162.41 | 2816 | 0 |
+| 2 | 1 | declared | 2.85 | 3.95 | 337 | 0 | - | - | - | - | - | 13 | - |
+| 2 | 1 | declared+notes | 3.15 | 5.15 | 307 | 0 | 3 | 3 | 70 | 4.30 | 4.30 | 14 | 0 |
+| 2 | 8 | declared | 5.63 | 9.54 | 1350 | 0 | - | - | - | - | - | 192 | - |
+| 2 | 8 | declared+notes | 8.25 | 15.18 | 907 | 0 | 5 | 5 | 1261 | 13.62 | 49.99 | 281 | 0 |
+| 2 | 32 | declared | 27.33 | 83.40 | 1011 | 0 | - | - | - | - | - | 3693 | - |
+| 2 | 32 | declared+notes | 34.88 | 85.49 | 836 | 0 | 3 | 3 | 10622 | 79.09 | 127.05 | 4504 | 0 |
+
+**Postgres 17** (`postgres:17-alpine`):
+
+| run | writers | variant | p50 ms | p99 ms | writes/s | failed | switches | emptied | saves during deletes | their p99 ms | their max ms | slot refreshes | notes that read the ring |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | declared | 1.90 | 3.12 | 503 | 0 | - | - | - | - | - | 8 | - |
+| 1 | 1 | declared+notes | 2.37 | 3.75 | 406 | 0 | 3 | 3 | 75 | 3.57 | 3.57 | 10 | 0 |
+| 1 | 8 | declared | 5.66 | 10.71 | 1315 | 0 | - | - | - | - | - | 200 | - |
+| 1 | 8 | declared+notes | 7.26 | 28.67 | 957 | 0 | 4 | 4 | 438 | 64.49 | 74.07 | 267 | 0 |
+| 1 | 32 | declared | 21.28 | 86.87 | 1269 | 0 | - | - | - | - | - | 3017 | - |
+| 1 | 32 | declared+notes | 18.24 | 83.96 | 1446 | 0 | 3 | 3 | 6525 | 94.36 | 186.41 | 2613 | 0 |
+| 2 | 1 | declared | 1.57 | 2.28 | 619 | 0 | - | - | - | - | - | 7 | - |
+| 2 | 1 | declared+notes | 1.72 | 3.31 | 539 | 0 | 2 | 2 | 59 | 2.35 | 2.35 | 8 | 0 |
+| 2 | 8 | declared | 4.86 | 9.50 | 1537 | 0 | - | - | - | - | - | 168 | - |
+| 2 | 8 | declared+notes | 5.49 | 12.56 | 1345 | 0 | 3 | 3 | 471 | 17.17 | 17.73 | 192 | 0 |
+| 2 | 32 | declared | 16.64 | 79.64 | 1581 | 0 | - | - | - | - | - | 2343 | - |
+| 2 | 32 | declared+notes | 18.10 | 83.94 | 1467 | 0 | 2 | 2 | 798 | 76.79 | 115.33 | 2560 | 0 |
+
+What it says:
+
+- No save failed and no note read the ring row: every write took the cached slot. The slot refreshes are the
+  bench's 1 s fence (about 4 per writer per second); the ring row is otherwise never read.
+- YugabyteDB: the note's p50 cost is +0.3 to +0.6 ms at one writer, +1.1 to +2.6 ms at eight and +2.4 to
+  +7.5 ms at 32, against +0.8 / +2 / +4 to 5 ms with the per-statement ring read. Lower at one and eight
+  writers; at 32 the two runs' `declared` rows alone differ by 9 ms, so the change is inside the noise. It
+  still grows with writers here. Locally every table is one tablet, so every writer's note insert lands on
+  the note table's one tablet, the same shape the ring row had; on a cluster with several tablets per table
+  that insert spreads. The slot refreshes add, at 32 writers, one ring read per 7 to 11 saves, which
+  production's fence makes one per 2.5 min per process.
+- Postgres: +0.2 to +0.5 ms at one writer, +0.6 to +1.6 ms at eight, -3 to +1.5 ms at 32: flat.
+- Emptying by batched deletes: at one and eight writers on YugabyteDB the saves that overlapped a delete
+  batch had a p99 at or below the run's (13.6 against 15.2 ms, 11.1 against 13.8 ms). At 32 writers run 1's
+  overlapping saves reached 69 ms against the run's 52 ms; run 2's did not (79 against 85 ms). On Postgres at
+  eight writers run 1's overlapping saves rose to a 64 ms p99 against the run's 29 ms; run 2's to 17 against
+  13 ms. Each emptying here deletes a fifth of the run's notes in 1000-row batches with a 20 ms pause.
 
 ### The change note (`declared+notes`), 2026-11-08
 
@@ -94,13 +181,18 @@ not separable from noise. During an emptying on Postgres the overlapping saves s
 1 and rose to an 18.8 ms p99 (40 ms max) in run 2 at eight writers: `TRUNCATE` invalidates every session's
 cached plan of the note function, so each replans once.
 
-**YugabyteDB 2026.1.0.0-b118 (local `yugabyted`): crashes on `TRUNCATE` under writes.** The tserver
-SIGSEGVed during the noted run at eight writers, and a probe with no notes and no triggers at all -- eight
-writers inserting into one table while a loop `TRUNCATE`s another -- crashed it four times in two minutes. The
-same probe on **2026.1.3.0** ran 84 truncates with no error and no crash. Production must run a YB that passes
-the probe before the keeper empties a note table there.
+**Correction (2026-11-08): the local YugabyteDB crashes were the kernel, not `TRUNCATE` and not b118.** An
+earlier version of this page said 2026.1.0.0-b118 crashes on `TRUNCATE` under writes. It does not. The tserver
+SIGSEGVs were yugabyte-db issue #33458: on Linux kernels from 6.19 up to the fix (7.0.14 on arm64), YugabyteDB's
+bundled tcmalloc corrupts its heap through its per-CPU caches (`rseq`). Docker Desktop on this machine runs
+kernel 7.0.12-linuxkit on aarch64, inside that range. With no `TRUNCATE` at all -- the `declared` variant alone,
+plain upserts -- the same container crashed four to six times in two minutes. Dev and prod run amd64 on kernel
+6.12 and are not affected. **Every local YugabyteDB number on this page taken before this correction, the
+2026.1.3.0 table below included, was taken on that heap-corrupting kernel.** Run a local YugabyteDB with `rseq`
+blocked (see "YugabyteDB on Docker Desktop" below) and check that its tserver log says
+`TCMalloc per cpu caches active: 0`.
 
-YugabyteDB 2026.1.3.0 (local `yugabyted`, one node), same machine, two runs:
+YugabyteDB 2026.1.3.0 (local `yugabyted`, one node), same machine, two runs, **on the heap-corrupting kernel, before the cached slot** (kept as the baseline the slot was built against):
 
 | run | writers | variant | p50 ms | p99 ms | writes/s | switches | emptied | saves during an emptying | their p99 ms | their max ms |
 |---|---|---|---|---|---|---|---|---|---|---|

@@ -98,8 +98,8 @@ Each pass, in order:
    batches, each its own short transaction, with a pause between, for at most `empty_budget` per pass; the
    next pass carries on. It was current two switches back, at least one wait ago, so no cached slot that
    names it is still valid and no statement that took it is still running. `emptied` is set when a read
-   finds no note left. Never `TRUNCATE` (YugabyteDB 2026.1.0.0-b118, which dev and prod run, crashes on a
-   `TRUNCATE` under concurrent writes).
+   finds no note left. Never `TRUNCATE`: it takes an exclusive lock and bumps the catalog version, which
+   replans every session's note function; deletes on an idle table touch no writer.
 5. **Switch**: when the wait has passed, the idle table's emptying has finished, and the current table has
    taken one log's worth of records (bytes per sequence the log holds, times sequences since the switch),
    make the idle table current. The ring row refuses a switch into a table not yet emptied: a due switch

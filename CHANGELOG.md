@@ -23,8 +23,8 @@ switches at most once per wait (`wait_seconds`, at least the fence told now and 
 table is emptied only a full wait after it stopped being current, so every copy naming it has expired.
 
 **Changed (core):** the keeper empties the idle note table with batched deletes (`empty_batch`, `empty_pause`,
-`empty_budget`), each batch its own short transaction, spread over passes; never `TRUNCATE` (YugabyteDB
-2026.1.0.0-b118 crashes on a `TRUNCATE` under concurrent writes). The emptying is done in one function,
+`empty_budget`), each batch its own short transaction, spread over passes; never `TRUNCATE` (an exclusive lock
+and a catalog version bump that replans every writer's note function). The emptying is done in one function,
 `ChangeNoteKeeper._empty_slot`. `emptied` in the ring row is set only once a read finds the table empty, and the
 switch's update requires it: a due switch into a table still being emptied waits, logged once and counted
 (`threetears_change_notes_switch_waits_total`). The `whole-drop` waiver for the keeper's `TRUNCATE` is gone.
