@@ -203,7 +203,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 8`
+  <br>`= 9`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -475,7 +475,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
-  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, overwrite_customized: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
+  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, overwrite_customized: bool = False, carry_live_cases: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · *host contract* · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.

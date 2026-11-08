@@ -2720,6 +2720,18 @@ class EvalTestCase(DurableDocumentModel):
             "`content_hash` is what was seeded), and one seeded before `.32`."
         ),
     )
+    carried_from: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The id of the case this one is a copy of, when a definition reset carried it into its template's next "
+            "revision (`run.reset_definitions(..., carry_live_cases=True)`): a live case of the superseded revision "
+            "the seed corpus does not carry, copied with its content, payload, labels, stratum, name and seed record "
+            "unchanged. The source stays on the archived revision with every run measured against it; the copy's "
+            "own runs are the new revision's, and the two never pool. In no digest pre-image and no identity key. "
+            "None for a case written any other way."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("doc_type")

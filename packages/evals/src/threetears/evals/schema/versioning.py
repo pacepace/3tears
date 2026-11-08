@@ -787,7 +787,14 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   and earlier) reading a campaign at this minor keeps the list opaquely, writes it back, and leads its page as it
 #:   did before the field.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 8
+#: - **v16.9** — a test case may name the case it is a copy of: ``EvalTestCase.carried_from`` (default None), the id
+#:   of the live case a definition reset carried into its template's next revision (``carry_live_cases``), the copy
+#:   holding the source's content, payload, stratum, name and seed record unchanged. Written only on such a copy, so
+#:   every case stored before reads as a copy of nothing. In no digest pre-image and no identity key, so it changes no
+#:   reading, pool or drift. An older build (v16.8 and earlier) reading a copy keeps the field opaquely and writes it
+#:   back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 9
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

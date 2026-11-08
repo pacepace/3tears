@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a definition reset carries live cases the corpus does not carry into the new revision
+
+**Added:**
+- `run.reset_definitions(..., carry_live_cases=True)`, and `carry_live_cases` on the `definitions_reset` action. A
+  judge template, or a template the corpus gives cases, whose revision holds live cases the corpus does not carry
+  (cases frozen from people's ratings, an operator's own) was reset only under `overwrite_customized`, which left them
+  out of the new revision. Under the new flag the new revision holds the corpus's cases written afresh and a copy of
+  each such case, its content, payload, labels, stratum and name unchanged. The old revision is archived as before,
+  and the corpus's case sets are minted over the new one. The template then reads `current`, and the same reset again
+  writes nothing. Results of the two revisions still never pool.
+- `EvalTestCase.carried_from` names the case a copy was carried from (durable v16.9, additive).
+- `DefinitionReset.carried` maps each source case to its copy. `DefinitionReset.stranded_case_sets` names, one line
+  each, every case set outside the corpus whose newest version lists cases of a revision the reset archived: it is
+  not minted again and still points there.
+
+**Changed:**
+- The refusal for live cases the corpus does not carry names `carry_live_cases` as the remedy first (it keeps them
+  all) and `overwrite_customized` second (it leaves them on the archived revision).
+- Under `carry_live_cases` alone, a corpus case of such a template reading `unknown` is refused: a carried case may be
+  an unrecorded seeding of it. Supplied `seeded_digests` answer it, or `overwrite_customized`.
+- A judge-case freeze names a case a reset carried into its template, by the identity it derives a case's id from
+  (source, dimension and content), as the stored case.
+
+**Hosts:** for every caller, with or without the flag: a reset of any template now fills
+`DefinitionReset.stranded_case_sets`, and `render()` prints its lines before the drift summary. The refusal for live
+cases the corpus does not carry has a new reason and remedy text. A host matching either text must update the match.
+A corpus case's own predecessor that the drift read finds (a case the host's seed stored under its name, recording no
+seed) is no longer counted among those live cases: it is that case's old copy, refused as `unknown` unless
+`overwrite_customized` writes over it. Only under `carry_live_cases=True`: the cases are copied into the new revision,
+and `carried` is filled. The flag never accepts a `customized` or `unknown` definition; that still needs
+`overwrite_customized`, and the two together write the corpus over it and carry the cases. A freeze of the same labels,
+results or authored cases into the new revision (`freeze_judge_cases`, `judge_cases_freeze`) names the copy rather
+than storing the case again, so a repeated calibration freeze after a carry adds nothing. Re-mint each case set the
+result names in `stranded_case_sets` over the copies (`carried` maps old ids to new) if it should follow the new
+revision. During a rolling deploy, a pod before v16.9 reads a carried copy and keeps its `carried_from` on write; it
+does not know the copy's identity, so a freeze run on such a pod adds the case again beside the copy.
+
 ### evals: the writer calibration script rereads its judge's anchor cases to catch a judge change
 
 `writer_calibration.py --reread`, a test-fixture script no host imports, asks one judge the 42 anchor pair cases
