@@ -35,6 +35,8 @@ from typing import Any, Final
 
 import asyncpg
 
+from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
+
 __all__ = ["session_settings_connection_class"]
 
 #: the two settings a borrower changes on a pooled platform connection
@@ -50,7 +52,9 @@ _PLAIN_SET_RE: Final = re.compile(
 _CHANGES_SESSION_RE: Final = re.compile(r"search_path|statement_timeout|\bRESET\b|\bDISCARD\b", re.IGNORECASE)
 
 
-def session_settings_connection_class(*, search_path: str) -> type[asyncpg.Connection]:
+def session_settings_connection_class(
+    *, search_path: str, note_slot: ChangeNoteSlot | None = None
+) -> type[asyncpg.Connection]:
     """a connection class whose ``search_path`` returns to ``search_path`` on release, sent only when it moved.
 
     Pass it as ``connection_class`` to ``asyncpg.create_pool``; it replaces asyncpg's ``RESET ALL``
@@ -59,13 +63,20 @@ def session_settings_connection_class(*, search_path: str) -> type[asyncpg.Conne
 
     :param search_path: the pool's own ``search_path``, as a ``SET search_path TO`` takes it
     :ptype search_path: str
+    :param note_slot: the process's cached change-note slot for this database, carried on each connection
+        (:func:`~threetears.core.utils.change_note_slot.change_note_slot_connection_class`); ``None`` carries none
+    :ptype note_slot: ChangeNoteSlot | None
     :return: the connection class
     :rtype: type[asyncpg.Connection]
     """
     home = search_path.strip()
     reset_query = f"SET search_path TO {home}"
 
-    class _SessionSettingsConnection(asyncpg.Connection):  # type: ignore[misc]
+    base: type[asyncpg.Connection] = (
+        asyncpg.Connection if note_slot is None else change_note_slot_connection_class(note_slot)
+    )
+
+    class _SessionSettingsConnection(base):  # type: ignore[misc]
         """an asyncpg connection that holds what it last set ``search_path`` and ``statement_timeout`` to."""
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:

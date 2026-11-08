@@ -21,8 +21,12 @@ Four variants, each over its own table, all on the SAME broker, database and mac
 ``declared+notes``
     ``WRITE_GENERATION`` with the change-note trigger installed: one note row per changed row, in the
     write's transaction. While the writers write, a keeper process runs the note ring with a short fence
-    and a small switch size, so the ring switches and ``TRUNCATE``\\ s its oldest table in the middle of
-    the run; the saves that overlap each emptying are reported on their own.
+    and a small switch size, so the ring switches and empties its idle table (batched deletes) in the
+    middle of the run; the saves that overlap the emptying are reported on their own.
+
+Every writer's pool is built as the hub's is (``session_settings_connection_class``: no ``RESET ALL`` or
+``pg_advisory_unlock_all`` on release) and carries the process's cached change-note slot, so a save reads no
+ring row; the ring-read column counts the ones that did.
 
 Each writer is its own process with its own NATS connection, database pool, L1 and registry, as
 concurrent writers are separate pods; they write distinct rows of one table, so they contend
@@ -71,7 +75,10 @@ from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.collections.write_marks import install_write_mark_triggers, write_marks_ddl
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.change_notes import note_table
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.utils.change_note_slot import ChangeNoteSlot
+from threetears.core.utils.session_settings import session_settings_connection_class
 from threetears.epoch import EpochGenerationSource
 from threetears.nats import NatsClient, set_default_namespace
 
@@ -79,8 +86,9 @@ _VARIANTS = ("undeclared", "declared", "declared+marks", "declared+notes")
 _WARMUP = 5
 _PAYLOAD = "x" * 200
 
-#: the keeper's fence in the bench: far beyond a bench statement, short enough to switch several times a run
-_BENCH_FENCE = timedelta(milliseconds=200)
+#: the keeper's fence in the bench: far beyond a bench statement, short enough to switch several times a run.
+#: A writer's cached slot is read again every quarter of it, so a shorter fence means more ring reads.
+_BENCH_FENCE = timedelta(seconds=1)
 
 #: the bytes one bench epoch record takes in the change log, for sizing the ring's switch
 _RECORD_BYTES = 180
@@ -165,6 +173,7 @@ class _Job:
     db_url: str
     db_schema: str
     namespace: str
+    fence: timedelta = _BENCH_FENCE
 
 
 @dataclass(frozen=True)
@@ -178,6 +187,7 @@ class _Result:
     advance_ms: list[float]
     advance_failures: int
     failures: int
+    slot_reads: int
 
 
 async def _write(job: _Job, barrier: Barrier) -> _Result:
@@ -191,7 +201,15 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
     :rtype: _Result
     """
     set_default_namespace(job.namespace)
-    pool = await asyncpg.create_pool(job.db_url, min_size=1, max_size=2, server_settings={"search_path": job.db_schema})
+    slot = ChangeNoteSlot(notes_schema=job.db_schema)
+    pool = await asyncpg.create_pool(
+        job.db_url,
+        min_size=1,
+        max_size=2,
+        server_settings={"search_path": job.db_schema},
+        # the hub's pool shape: no asyncpg RESET ALL / pg_advisory_unlock_all on release, and the slot carried
+        connection_class=session_settings_connection_class(search_path=job.db_schema, note_slot=slot),
+    )
     assert pool is not None
     tally = _Tally()
     try:
@@ -232,7 +250,9 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
                     failures += 1
                 samples.append((time.perf_counter() - began) * 1000)
             finished = time.perf_counter()
-            return _Result(samples, began_at, started, finished, list(tally.samples_ms), tally.failures, failures)
+            return _Result(
+                samples, began_at, started, finished, list(tally.samples_ms), tally.failures, failures, slot.reads
+            )
     finally:
         await pool.close()
 
@@ -274,7 +294,7 @@ async def _keep(job: _Job, switch_bytes: int, stop: Event) -> list[tuple[str, fl
         ) as nats:
             source = EpochGenerationSource(nats)
             keeper = ChangeNoteKeeper(
-                pool, notes_schema=job.db_schema, log=source, fence=_BENCH_FENCE, switch_bytes=switch_bytes
+                pool, notes_schema=job.db_schema, log=source, fence=job.fence, switch_bytes=switch_bytes
             )
             # the writers declare this run's log as they warm up; a keeper that found it absent would restore
             while await source.log_state() is None:
@@ -285,8 +305,10 @@ async def _keep(job: _Job, switch_bytes: int, stop: Event) -> list[tuple[str, fl
                 ended = time.time()
                 if done.switched_to is not None:
                     events.append(("switch", began, ended))
+                if done.emptied_rows:
+                    events.append(("deleting", began, ended))
                 if done.emptied is not None:
-                    events.append(("empty", began, ended))
+                    events.append(("emptied", began, ended))
                 await asyncio.sleep(0.02)
     finally:
         await pool.close()
@@ -310,7 +332,7 @@ def _keeper_main(job: _Job, switch_bytes: int, stop: Event, results: Any) -> Non
     results.put(asyncio.run(_keep(job, switch_bytes, stop)))
 
 
-async def _prepare(db_url: str, nats_url: str) -> str:
+async def _prepare(db_url: str, nats_url: str, fence: timedelta) -> str:
     """create a throwaway schema with every variant's table, the marks queue, the note ring and their triggers.
 
     :param db_url: the database
@@ -335,7 +357,7 @@ async def _prepare(db_url: str, nats_url: str) -> str:
         async with await NatsClient.connect(
             nats_url=nats_url, nats_subject_namespace="benchprep", client_name="bench-prepare"
         ) as nats:
-            keeper = ChangeNoteKeeper(pool, notes_schema=db_schema, log=EpochGenerationSource(nats))
+            keeper = ChangeNoteKeeper(pool, notes_schema=db_schema, log=EpochGenerationSource(nats), fence=fence)
             await keeper.install()
             await keeper.install_triggers([NotedTable(table=_schema_for("declared+notes").name, keys=("id",))])
     finally:
@@ -354,7 +376,31 @@ def _p99(samples: list[float]) -> float:
     return samples[min(len(samples) - 1, int(len(samples) * 0.99))] if samples else 0.0
 
 
-def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db_schema: str) -> dict[str, Any]:
+def _ring_reads(db_url: str, db_schema: str) -> int:
+    """notes in the ring whose statement read the ring row (no valid cached slot), all tables together.
+
+    :return: the count
+    :rtype: int
+    """
+
+    async def count() -> int:
+        conn = await asyncpg.connect(db_url)
+        try:
+            total = 0
+            for index in range(3):
+                total += int(
+                    await conn.fetchval(f"SELECT count(*) FROM {db_schema}.{note_table(index)} WHERE ring_read")  # noqa: S608
+                )
+            return total
+        finally:
+            await conn.close()
+
+    return asyncio.run(count())
+
+
+def _run(
+    variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db_schema: str, fence: timedelta
+) -> dict[str, Any]:
     """run ``writers`` writer processes on one variant and pool what they measured.
 
     :return: one row of the table
@@ -367,7 +413,7 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
     processes = [
         ctx.Process(
             target=_writer_main,
-            args=(_Job(variant, w, rounds, nats_url, db_url, db_schema, namespace), barrier, results),
+            args=(_Job(variant, w, rounds, nats_url, db_url, db_schema, namespace, fence), barrier, results),
         )
         for w in range(writers)
     ]
@@ -378,7 +424,7 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
         switch_bytes = max(4096, writers * rounds * _RECORD_BYTES // (_SWITCHES_PER_RUN + 1))
         keeper = ctx.Process(
             target=_keeper_main,
-            args=(_Job(variant, -1, 0, nats_url, db_url, db_schema, namespace), switch_bytes, stop, keeping),
+            args=(_Job(variant, -1, 0, nats_url, db_url, db_schema, namespace, fence), switch_bytes, stop, keeping),
         )
         keeper.start()
     for process in processes:
@@ -394,7 +440,7 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
     samples = sorted(s for r in collected for s in r.samples_ms)
     wall = max(r.finished for r in collected) - min(r.started for r in collected)
     advances = sorted(a for r in collected for a in r.advance_ms)
-    empties = [(began, ended) for kind, began, ended in events if kind == "empty"]
+    empties = [(began, ended) for kind, began, ended in events if kind == "deleting"]
     around = sorted(
         duration
         for r in collected
@@ -414,31 +460,36 @@ def _run(variant: str, writers: int, rounds: int, nats_url: str, db_url: str, db
         "advance_failures": sum(r.advance_failures for r in collected),
         "failures": sum(r.failures for r in collected),
         "switches": sum(1 for kind, _, _ in events if kind == "switch"),
-        "empties": len(empties),
+        "empties": sum(1 for kind, _, _ in events if kind == "emptied"),
+        "ring_reads": _ring_reads(db_url, db_schema) if variant == "declared+notes" else 0,
+        "slot_reads": sum(r.slot_reads for r in collected),
         "around": len(around),
         "around_p99": _p99(around),
         "around_max": around[-1] if around else 0.0,
     }
 
 
-def _measure(nats_url: str, db_url: str, writer_counts: list[int], rounds: int, variants: list[str]) -> None:
+def _measure(
+    nats_url: str, db_url: str, writer_counts: list[int], rounds: int, variants: list[str], fence: timedelta
+) -> None:
     """run every variant at every writer count and print the comparison table.
 
     :return: nothing
     :rtype: None
     """
-    db_schema = asyncio.run(_prepare(db_url, nats_url))
+    db_schema = asyncio.run(_prepare(db_url, nats_url, fence))
     rows: list[dict[str, Any]] = []
     for writers in writer_counts:
         for variant in variants:
-            rows.append(_run(variant, writers, rounds, nats_url, db_url, db_schema))
+            rows.append(_run(variant, writers, rounds, nats_url, db_url, db_schema, fence))
             row = rows[-1]
             print(f"  done: {variant} x{writers} p50={row['p50']:.2f}ms p99={row['p99']:.2f}ms", flush=True)
 
     print(
         "\n| writers | variant | writes | p50 ms | p99 ms | writes/s | append p50 ms | append p99 ms | advances "
-        "| append failed | failed | switches | emptied | saves during an emptying | their p99 ms | their max ms |\n"
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        "| append failed | failed | switches | emptied | saves during an emptying | their p99 ms | their max ms "
+        "| slot refreshes | notes that read the ring |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     )
     for r in rows:
         noted = r["variant"] == "declared+notes"
@@ -447,9 +498,10 @@ def _measure(nats_url: str, db_url: str, writer_counts: list[int], rounds: int, 
             f"{r['per_sec']:.0f} | {r['advance_p50']:.2f} | {r['advance_p99']:.2f} | {r['advances']} | "
             f"{r['advance_failures']} | {r['failures']} | "
             + (
-                f"{r['switches']} | {r['empties']} | {r['around']} | {r['around_p99']:.2f} | {r['around_max']:.2f} |"
+                f"{r['switches']} | {r['empties']} | {r['around']} | {r['around_p99']:.2f} | {r['around_max']:.2f} | "
+                f"{r['slot_reads']} | {r['ring_reads']} |"
                 if noted
-                else "- | - | - | - | - |"
+                else f"- | - | - | - | - | {r['slot_reads']} | - |"
             )
         )
     print(f"\n{rounds} saves per writer after {_WARMUP} warm-up saves; one broker, one database, same machine.\n")
@@ -467,10 +519,14 @@ def main() -> None:
     parser.add_argument("--writers", type=int, nargs="+", default=[1, 8, 32], help="concurrent writer counts")
     parser.add_argument("--rounds", type=int, default=200, help="saves per writer")
     parser.add_argument("--variants", nargs="+", choices=_VARIANTS, default=list(_VARIANTS), help="variants to run")
+    parser.add_argument(
+        "--fence-seconds", type=float, default=_BENCH_FENCE.total_seconds(), help="the note keeper's fence"
+    )
     args = parser.parse_args()
+    fence = timedelta(seconds=args.fence_seconds)
 
     if args.nats and args.db:
-        _measure(args.nats, args.db, args.writers, args.rounds, args.variants)
+        _measure(args.nats, args.db, args.writers, args.rounds, args.variants, fence)
         return
 
     from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415 - only needed without live URLs
@@ -482,7 +538,7 @@ def main() -> None:
         PostgresContainer("postgres:17-alpine").with_command("postgres -c max_connections=200") as postgres,
     ):
         url = postgres.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
-        _measure(args.nats or nats_server_uri(nats), args.db or url, args.writers, args.rounds, args.variants)
+        _measure(args.nats or nats_server_uri(nats), args.db or url, args.writers, args.rounds, args.variants, fence)
 
 
 if __name__ == "__main__":

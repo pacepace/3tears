@@ -12,28 +12,46 @@ nothing counts, no index is kept on a rising value, and no constraint spans writ
 ordered and need not be: a restore needs every note, not their order.
 
 **Which table is current.** The ring row names it, and only the keeper writes that row, once per switch.
-A writer reads it once per statement (:data:`_RING_FUNCTION`), at the statement's first noted row, and
-keeps it for the rest of that statement in a transaction-local setting: no writer contends for it, and a
-statement that began before a switch finishes writing into the table it started with. That bound -- a
-statement's own duration -- is what the keeper's fence waits out before it empties a table.
+No save reads it. A writing process keeps a cached copy (:class:`threetears.core.utils.change_note_slot.ChangeNoteSlot`)
+and hands it to each connection as a session setting, :data:`NOTE_SLOT_SETTING`: ``"<slot>:<valid until>"``,
+the slot the ring named when the process last read it and the database clock after which the copy may no
+longer be used (the read's ``now()`` plus :func:`slot_max_age` of the fence). At a statement's first noted row
+the trigger (:data:`_RING_FUNCTION`) takes the slot from that setting while the database clock is before its
+``valid until``, and keeps it for the rest of the statement in a transaction-local setting. Only when the
+setting is absent, malformed or expired (raw SQL outside 3tears, a process that could not refresh) does it
+read the ring row, and the note it writes then says so (``ring_read``): the keeper counts those at each switch.
+
+**Why a cached slot is safe.** A copy names a table that was current when it was read, and is used only
+until ``valid until``: at most :func:`slot_max_age` (half the fence) after. The ring never switches twice
+within its wait (at least the fence the writers were told, ``fence_seconds``), and the keeper empties a
+table only after the second switch away from it. So a statement that took its slot from a copy writes
+into the current or the previous table, never into one being emptied, as long as the statement (its
+transaction) ends within the other half of the fence. Clocks: the validity is read and checked on the
+database's clock, so no process clock enters it; between YugabyteDB nodes the skew is bounded far below
+the margin.
 """
 
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Final
 
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
+    "DEFAULT_NOTE_FENCE",
+    "NOTE_PUT_FUNCTION",
     "NOTE_RING_SIZE",
+    "NOTE_SLOT_SETTING",
     "NOTE_TRIGGER",
     "NOTE_TRUNCATE_TRIGGER",
     "NOTE_WHOLE_SETTING",
     "RING_TABLE",
     "change_notes_ddl",
     "note_function_name",
+    "slot_max_age",
     "note_table",
     "note_trigger_sql",
     "trigger_function_body",
@@ -43,6 +61,13 @@ __all__ = [
 #: how many note tables the ring keeps: the current one, the previous one, and one emptied and waiting
 NOTE_RING_SIZE: Final = 3
 
+#: how long after a switch the ring may switch again, and so how long before the table two switches back is
+#: emptied: well beyond any transaction's run time plus a cached slot's age (:func:`slot_max_age`)
+DEFAULT_NOTE_FENCE: Final = timedelta(minutes=10)
+
+#: the session setting a writing connection carries: ``"<slot>:<valid until, database epoch seconds>"``
+NOTE_SLOT_SETTING: Final = "threetears.change_note_slot"
+
 #: the ring's note tables are this name and their place in the ring: ``threetears_change_notes_0`` ..
 _NOTE_TABLE_PREFIX: Final = "threetears_change_notes_"
 
@@ -51,6 +76,9 @@ RING_TABLE: Final = "threetears_change_note_ring"
 
 #: the function every table's trigger writes a note through; it reads the ring once per statement
 _RING_FUNCTION: Final = "threetears_change_note_put"
+
+#: the same, by its public name: a schema holding it holds the ring
+NOTE_PUT_FUNCTION: Final = _RING_FUNCTION
 
 #: the function a whole-table note is written through, once per transaction and table
 _WHOLE_FUNCTION: Final = "threetears_change_note_whole"
@@ -70,6 +98,19 @@ _TABLE_FUNCTION_PREFIX: Final = "threetears_note_"
 NOTE_WHOLE_SETTING: Final = "threetears.note_whole"
 
 
+def slot_max_age(fence: timedelta) -> timedelta:
+    """how long a cached copy of the ring's current slot may be used after it was read: half the fence.
+
+    The other half is the margin a writing transaction must end within (the module docstring's argument).
+
+    :param fence: the fence the writers were told (the ring row's ``fence_seconds``)
+    :ptype fence: timedelta
+    :return: the copy's longest use
+    :rtype: timedelta
+    """
+    return fence / 2
+
+
 def note_table(index: int) -> str:
     """the name of the ring's note table at ``index``.
 
@@ -84,7 +125,7 @@ def note_table(index: int) -> str:
     return f"{_NOTE_TABLE_PREFIX}{index}"
 
 
-def change_notes_ddl(schema: str) -> tuple[str, ...]:
+def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> tuple[str, ...]:
     """the statements that create the ring in ``schema``: its note tables, its ring row and its functions.
 
     Each is idempotent, and a ring row already there keeps its state. Run them one at a time (YugabyteDB
@@ -92,6 +133,8 @@ def change_notes_ddl(schema: str) -> tuple[str, ...]:
 
     :param schema: the schema holding the ring (the platform schema), a TRUSTED identifier
     :ptype schema: str
+    :param fence: the fence a new ring row tells the writers; an existing row keeps its own
+    :ptype fence: timedelta
     :return: the statements, in order
     :rtype: tuple[str, ...]
     """
@@ -106,7 +149,9 @@ def change_notes_ddl(schema: str) -> tuple[str, ...]:
         "keys TEXT[], "
         "columns JSONB, "
         # the clock at the insert, not the transaction's start: a late note is told by it
-        "noted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"
+        "noted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), "
+        # TRUE when the writer had no valid cached slot and read the ring row; NULL (stored as nothing) otherwise
+        "ring_read BOOLEAN)"
         for index in range(NOTE_RING_SIZE)
     )
     return (
@@ -120,9 +165,14 @@ def change_notes_ddl(schema: str) -> tuple[str, ...]:
         "floor TEXT, "
         "fence_seq TEXT, "
         "emptied BOOLEAN NOT NULL, "
-        "log_incarnation TEXT)",
-        f"INSERT INTO {ring} (id, current_ring, switch_no, switched_at, emptied) "
-        "VALUES (1, 0, 0, now(), TRUE) ON CONFLICT (id) DO NOTHING",
+        "log_incarnation TEXT, "
+        # the fence the writers were told: a cached slot is used at most slot_max_age(fence) after its read
+        "fence_seconds DOUBLE PRECISION NOT NULL, "
+        # the least time from the last switch to the next: covers the fence told before it as well
+        "wait_seconds DOUBLE PRECISION NOT NULL)",
+        f"INSERT INTO {ring} (id, current_ring, switch_no, switched_at, emptied, fence_seconds, wait_seconds) "
+        f"VALUES (1, 0, 0, now(), TRUE, {float(fence.total_seconds())!r}, {float(fence.total_seconds())!r}) "
+        "ON CONFLICT (id) DO NOTHING",
         _put_function_sql(schema),
         _whole_function_sql(schema),
         _truncate_function_sql(schema),
@@ -130,7 +180,11 @@ def change_notes_ddl(schema: str) -> tuple[str, ...]:
 
 
 def _put_function_sql(schema: str) -> str:
-    """the function that writes one note into the ring's current table, reading the ring once per statement.
+    """the function that writes one note into the ring's current table.
+
+    At a statement's first note it takes the slot from the connection's cached copy
+    (:data:`NOTE_SLOT_SETTING`) while that copy is valid by the database's clock, and reads the ring row
+    only when it is not; either way it keeps the slot for the rest of the statement.
 
     :param schema: the schema holding the ring
     :ptype schema: str
@@ -139,28 +193,44 @@ def _put_function_sql(schema: str) -> str:
     """
     owner = quote_identifier(schema)
     ring = f"{owner}.{quote_identifier(RING_TABLE)}"
+    slots = f"[0-{NOTE_RING_SIZE - 1}]"
     inserts = []
     for index in range(NOTE_RING_SIZE):
         table = f"{owner}.{quote_identifier(note_table(index))}"
         keyword = "IF" if index == 0 else "ELSIF"
         inserts.append(
             f"  {keyword} ring = {index} THEN\n"
-            f"    INSERT INTO {table} (table_name, keys, columns) VALUES (noted_table, noted_keys, noted_columns);\n"
+            f"    INSERT INTO {table} (table_name, keys, columns, ring_read) "
+            "VALUES (noted_table, noted_keys, noted_columns, read_ring);\n"
         )
-    return (
+    return (  # one line: plpgsql source; each interpolated piece is a fixed name or pattern this module builds
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_RING_FUNCTION)}("
         "noted_table TEXT, noted_keys TEXT[], noted_columns JSONB) RETURNS void LANGUAGE plpgsql AS $put$\n"
         "DECLARE\n"
         "  ring SMALLINT;\n"
+        "  cached TEXT;\n"
+        "  read_ring BOOLEAN;\n"
+        "  kept TEXT;\n"
         "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
-        # the ring is read at a statement's first note and kept for the rest of that statement
+        # the slot is decided at a statement's first note and kept for the rest of that statement
         "  IF current_setting('threetears.note_ring_at', true) IS DISTINCT FROM statement_timestamp()::text THEN\n"
-        f"    SELECT current_ring INTO ring FROM {ring} WHERE id = 1;\n"
-        "    ring := coalesce(ring, 0);\n"
-        "    PERFORM set_config('threetears.note_ring', ring::text, true);\n"
+        f"    cached := current_setting('{NOTE_SLOT_SETTING}', true);\n"
+        f"    IF cached ~ '^{slots}:[0-9]+(\\.[0-9]+)?$' "
+        "AND split_part(cached, ':', 2)::float8 > extract(epoch FROM clock_timestamp()) THEN\n"
+        "      ring := split_part(cached, ':', 1)::smallint;\n"
+        "      read_ring := NULL;\n"
+        "    ELSE\n"
+        # the rare path: no valid cached copy on this connection
+        f"      SELECT current_ring INTO ring FROM {ring} WHERE id = 1;\n"
+        "      ring := coalesce(ring, 0);\n"
+        "      read_ring := TRUE;\n"
+        "    END IF;\n"
+        "    PERFORM set_config('threetears.note_ring', ring::text || CASE WHEN read_ring THEN 'r' ELSE '' END, true);\n"
         "    PERFORM set_config('threetears.note_ring_at', statement_timestamp()::text, true);\n"
         "  ELSE\n"
-        "    ring := current_setting('threetears.note_ring')::smallint;\n"
+        "    kept := current_setting('threetears.note_ring');\n"
+        "    ring := left(kept, 1)::smallint;\n"
+        "    read_ring := CASE WHEN length(kept) > 1 THEN TRUE END;\n"
         "  END IF;\n" + "".join(inserts) + "  END IF;\n"
         "END\n"
         "$put$"

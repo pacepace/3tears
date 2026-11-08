@@ -8,6 +8,27 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core: no save reads the change-note ring row, and the keeper empties by batched deletes
+
+**Changed (core):** the note trigger no longer reads the one-row ring table on every statement (one hot tablet
+every writer hit: on YugabyteDB the note's cost grew with writers). A writing process keeps a cached copy of the
+current slot, `threetears.core.utils.ChangeNoteSlot`, read at most every quarter of the fence the ring tells
+writers (`fence_seconds`, new in the ring row) and never used past half of it. Each pool connection carries it
+as the session setting `threetears.change_note_slot` (`"<slot>:<valid until>"` on the database's clock), sent
+only when it changed: `change_note_slot_connection_class(slot)`, or
+`session_settings_connection_class(..., note_slot=slot)`. The trigger uses the setting while the database's
+clock is before its `valid until` and reads the ring row only otherwise; such a note is flagged (`ring_read`)
+and counted per table at each switch (`threetears_change_notes_ring_reads_total{table}`). Safety: the ring
+switches at most once per wait (`wait_seconds`, at least the fence told now and the one told before), and a
+table is emptied only a full wait after it stopped being current, so every copy naming it has expired.
+
+**Changed (core):** the keeper empties the idle note table with batched deletes (`empty_batch`, `empty_pause`,
+`empty_budget`), each batch its own short transaction, spread over passes; never `TRUNCATE` (YugabyteDB
+2026.1.0.0-b118 crashes on a `TRUNCATE` under concurrent writes). The emptying is done in one function,
+`ChangeNoteKeeper._empty_slot`. `emptied` in the ring row is set only once a read finds the table empty, and the
+switch's update requires it: a due switch into a table still being emptied waits, logged once and counted
+(`threetears_change_notes_switch_waits_total`). The `whole-drop` waiver for the keeper's `TRUNCATE` is gone.
+
 ### registry: the rbac pool proves its token at the hub's l3 door
 
 **Added (registry):** the hub's `l3` door requires a proof of possession from 2027-01-05, and the registry's
@@ -34,9 +55,9 @@ the only catch-up path; followers never read the notes.
 note tables (`threetears_change_notes_0..2`, ring row `threetears_change_note_ring`): current, previous, and one
 emptied and waiting. It switches the ring when the current table has taken one change log's worth (the log's
 `max_bytes`, measured from the log as bytes per sequence times sequences since the switch, never by counting in
-L3), never within its fence (10 min) of the last switch, and empties the oldest table with `TRUNCATE` right after a
-switch: a statement reads the ring once and writes every note into the table it read, so the table emptied was
-current two switches back, at least a fence ago, and no write can still reach it. The fence's log position becomes
+L3), never within its fence (10 min) of the last switch, and empties the idle table after a switch (batched deletes,
+see the entry above): the table emptied was current two switches back, at least a fence ago, and no write can still
+reach it. The fence's log position becomes
 the coverage's floor at the next switch: every epoch after it has its note in the current or previous table.
 
 **Added (core):** a regular scrub in each keeper pass checks that every epoch the log holds after the floor has its

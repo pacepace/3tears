@@ -47,6 +47,8 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.ddl.session import MigrationSession
+from threetears.core.collections.generation import noted_tables
+from threetears.core.data.migrations.change_notes import give_noted_tables_their_note_trigger
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
 from threetears.core.data.store import DataStore
 from threetears.observe import contain, get_logger, traced
@@ -556,6 +558,12 @@ class MigrationRunner:
         tables = sorted({name for package in ordered for name in package.write_generation_tables})
         if tables:
             await give_switched_tables_their_trigger(store, tables)
+            # and each of them this process's classes note carries its change-note triggers from this run,
+            # where the ring is installed (the keeper's install gives them otherwise)
+            declared = set(tables)
+            noted = [each for each in noted_tables() if each.table in declared]
+            if noted:
+                await give_noted_tables_their_note_trigger(store, noted)
         return count
 
     async def _apply_package_pending(

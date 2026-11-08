@@ -18,20 +18,32 @@ waiting. The current and the previous are the coverage. One keeper (this module'
 :class:`ChangeNoteKeeper`, under a lease) switches the ring when the current table has taken one change
 log's worth -- the bytes the log is configured to hold (``max_bytes``), measured from the log itself as the
 bytes per sequence it holds times the sequences taken since the switch, never by counting in L3 -- and
-empties the oldest with ``TRUNCATE``, never with deletes. The ring row in L3 names the current table; only
-the keeper writes it, once per switch, and a writer reads it once per statement.
+empties the oldest with batched deletes (:meth:`ChangeNoteKeeper._empty_slot`), never ``TRUNCATE``. The ring
+row in L3 names the current table; only the keeper writes it, once per switch.
 
-**Why emptying is safe.** A statement reads the ring once, at its first noted row, and writes every note of
-that statement into the table it read. So the only notes that can still be heading for a table the ring has
-switched away from are those of statements that began before the switch. The keeper never switches again
-until its **fence** has passed since the last switch -- a grace period well beyond any statement's run time
-(ten minutes by default) -- and it empties the oldest table only right after a switch. The table it empties
-was switched away from two switches back, at least one fence ago: no statement that read it as current is
-still running.
+**No save reads the ring row.** Each writing process keeps a cached copy of the current slot
+(:class:`threetears.core.utils.change_note_slot.ChangeNoteSlot`), read at most every quarter of the fence and
+never used once half the fence old, and each connection carries it as a session setting with its expiry
+on the database's clock. The trigger takes its slot from that setting at a statement's first noted row,
+and reads the ring row only when the setting is missing or expired; such a note is flagged
+(``ring_read``), and the keeper counts them per table at each switch
+(``threetears_change_notes_ring_reads_total``).
 
-**What the coverage vouches for.** When the fence after a switch has passed, the keeper reads the log's
-position (``fence_seq``): every epoch appended after it is of a statement that began after the switch, so
-its note is in the current table or a later one. At the next switch that position becomes the coverage's
+**Why emptying is safe.** A note goes into the slot its statement took at its first noted row, from a copy
+read at most half the fence earlier (:func:`~threetears.core.ddl.change_notes.slot_max_age`, enforced by the
+database's clock) or from the ring row itself. The ring row names a table current at the read. The keeper
+never switches again until its **wait** has passed since the last switch -- at least the fence the writers
+were told (``fence_seconds``, ten minutes by default), and at least the one told before the last switch,
+so a copy read under an older fence is covered too -- and it empties only the idle table, the one switched
+away from two switches back, at least one wait ago. So a copy naming it expired at least half a fence
+before the emptying began, and any statement that took it had the other half to end: no write can still
+reach the table being emptied. The emptying is recorded in the ring row (``emptied``), and the ring never
+switches into a table whose emptying has not finished: such a switch waits, logged and counted
+(``threetears_change_notes_switch_waits_total``).
+
+**What the coverage vouches for.** When the wait after a switch has passed, the keeper reads the log's
+position (``fence_seq``): every epoch appended after it is of a statement whose slot was read after the
+switch, so its note is in the current table or a later one. At the next switch that position becomes the coverage's
 **floor**: every epoch after the floor has its note in the current or the previous table, the two a
 restore reads. An epoch whose writer stalled between its commit and its append for longer than the fence
 breaks that promise, and the scrub reports it.
@@ -69,6 +81,7 @@ from threetears.observe.metrics import counter, gauge
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.generation import NotedTable, split_generation_token
 from threetears.core.ddl.change_notes import (
+    DEFAULT_NOTE_FENCE,
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
@@ -100,16 +113,20 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: how long after a switch the keeper waits before it may switch again, and so before the table two
-#: switches back is emptied: well beyond any statement's run time, since a statement writes every note
-#: into the table it read as current when it began
-_DEFAULT_NOTE_FENCE: Final = timedelta(minutes=10)
+#: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
+_EMPTY_BATCH: Final = 1000
+
+#: the pause between two delete batches, so the emptying never crowds the writers
+_EMPTY_PAUSE: Final = timedelta(milliseconds=20)
+
+#: how long one keeper pass keeps emptying before it hands over to the next pass (a restore must not wait)
+_EMPTY_BUDGET: Final = timedelta(seconds=1)
 
 #: the pause between keeper passes: a write waits for a lost log's restore up to one pass, well inside
 #: a source's ``restore_wait``
 _DEFAULT_KEEPER_EVERY: Final = timedelta(seconds=1)
 
-#: how long an install or an emptying waits for the database's DDL lock before deferring to the next pass
+#: how long a trigger install waits for the database's DDL lock before deferring to the next call
 _LOCK_POLICY: Final = DdlLockPolicy(poll_interval=0.5, max_wait=5.0)
 
 #: epochs the scrub checks per pass
@@ -132,7 +149,20 @@ _SWITCHES = counter(
 )
 _EMPTIED = counter(
     "threetears_change_notes_emptied_total",
-    description="note tables the keeper emptied (TRUNCATE) once nothing could still write to them",
+    description="note tables the keeper emptied (batched deletes) once nothing could still write to them",
+)
+_EMPTIED_ROWS = counter(
+    "threetears_change_notes_emptied_rows_total",
+    description="notes the keeper deleted while emptying the ring's idle table",
+)
+_SWITCH_WAITS = counter(
+    "threetears_change_notes_switch_waits_total",
+    description="ring switches that were due but waited because the table to switch into was not yet empty",
+)
+_RING_READS = counter(
+    "threetears_change_notes_ring_reads_total",
+    description="notes written by a statement that read the ring row (no valid cached slot), counted at each switch",
+    label_names=("table",),
 )
 _RESTORES = counter(
     "threetears_change_notes_restores_total",
@@ -243,6 +273,8 @@ class NoteRingState:
     :ivar emptied: whether the table after the current one has been emptied since the switch
     :ivar log_incarnation: the change log's incarnation the keeper last saw; the one a restore continues
     :ivar now: the database's clock at the read
+    :ivar fence_seconds: the fence the writers are told: a cached slot is used at most half of it after its read
+    :ivar wait_seconds: the least time from the last switch to the next, covering the fence told before it too
     """
 
     current: int
@@ -254,6 +286,8 @@ class NoteRingState:
     emptied: bool
     log_incarnation: str | None
     now: datetime
+    fence_seconds: float = DEFAULT_NOTE_FENCE.total_seconds()
+    wait_seconds: float = DEFAULT_NOTE_FENCE.total_seconds()
 
     @property
     def previous(self) -> int:
@@ -297,7 +331,9 @@ class KeeperPass:
     :ivar restored: the incarnation of a lost log the keeper put back from the notes
     :ivar adopted: the incarnation of a log the keeper found that it had not seen before
     :ivar fenced: the fence after the last switch passed in this pass
-    :ivar emptied: the note table this pass emptied
+    :ivar emptied: the note table this pass finished emptying
+    :ivar emptied_rows: notes this pass deleted from the idle table
+    :ivar switch_waited: a switch was due but the table to switch into was not yet empty
     :ivar switched_to: the note table this pass made current
     :ivar scrub: what the scrub found
     """
@@ -307,6 +343,8 @@ class KeeperPass:
     adopted: str | None = None
     fenced: bool = False
     emptied: int | None = None
+    emptied_rows: int = 0
+    switch_waited: bool = False
     switched_to: int | None = None
     scrub: ScrubPass = field(default_factory=ScrubPass)
 
@@ -459,9 +497,12 @@ class ChangeNoteKeeper:
         *,
         notes_schema: str,
         log: _ChangeLogKeeping,
-        fence: timedelta = _DEFAULT_NOTE_FENCE,
+        fence: timedelta = DEFAULT_NOTE_FENCE,
         scrub_batch: int = _SCRUB_BATCH,
         switch_bytes: int | None = None,
+        empty_batch: int = _EMPTY_BATCH,
+        empty_pause: timedelta = _EMPTY_PAUSE,
+        empty_budget: timedelta = _EMPTY_BUDGET,
     ) -> None:
         """capture what the keeper works between; no I/O.
 
@@ -471,7 +512,9 @@ class ChangeNoteKeeper:
         :ptype notes_schema: str
         :param log: the change log the notes cover
         :ptype log: _ChangeLogKeeping
-        :param fence: how long after a switch the ring may switch again: well beyond any statement's run time
+        :param fence: how long after a switch the ring may switch again, and the fence the writers are told
+            at each switch: a cached slot is used at most half of it, and a writing transaction must end
+            within the other half
         :ptype fence: timedelta
         :param scrub_batch: epochs the scrub checks per pass; at least one
         :ptype scrub_batch: int
@@ -479,13 +522,25 @@ class ChangeNoteKeeper:
             switches; ``None`` (the default) is one change log's worth, the log's own ``max_bytes``. A
             smaller ring keeps less coverage: never less than the log can hold between two keeper passes
         :ptype switch_bytes: int | None
+        :param empty_batch: notes deleted per statement while emptying the idle table; at least one
+        :ptype empty_batch: int
+        :param empty_pause: the pause between two delete batches
+        :ptype empty_pause: timedelta
+        :param empty_budget: how long one pass keeps emptying; it always deletes at least one batch
+        :ptype empty_budget: timedelta
         :return: nothing
         :rtype: None
-        :raises ValueError: when the fence is not positive, the batch is under one or the switch size is
+        :raises ValueError: when the fence is not positive, a batch is under one or the switch size is
         """
-        if fence <= timedelta(0) or scrub_batch < 1 or (switch_bytes is not None and switch_bytes < 1):
+        if (
+            fence <= timedelta(0)
+            or scrub_batch < 1
+            or empty_batch < 1
+            or (switch_bytes is not None and switch_bytes < 1)
+        ):
             raise ValueError(
-                "a keeper's fence is positive, its scrub checks at least one epoch a pass and its switch size is positive"
+                "a keeper's fence is positive, its scrub checks and its emptying deletes at least one a batch, "
+                "and its switch size is positive"
             )
         self._pool = pool
         self._schema = notes_schema
@@ -495,6 +550,11 @@ class ChangeNoteKeeper:
         self._fence = fence
         self._scrub_batch = scrub_batch
         self._switch_bytes = switch_bytes
+        self._empty_batch = empty_batch
+        self._empty_pause = empty_pause
+        self._empty_budget = empty_budget
+        #: the switch number whose due switch already waited for an emptying, so it is logged once
+        self._waited_switch: int | None = None
         #: the newest epoch the scrub has checked, and the log's head at the previous pass (what it checks up to)
         self._scrubbed: tuple[str, int] | None = None
         self._seen: tuple[str, int] | None = None
@@ -518,7 +578,7 @@ class ChangeNoteKeeper:
         :rtype: None
         """
         async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-            for statement in change_notes_ddl(self._schema):
+            for statement in change_notes_ddl(self._schema, fence=self._fence):
                 await conn.execute(statement)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
@@ -632,7 +692,7 @@ class ChangeNoteKeeper:
         """
         rows = await self._pool.fetch(
             "SELECT current_ring, switch_no, switched_at, switched_seq, floor, fence_seq, emptied, log_incarnation, "  # noqa: S608 - trusted identifiers
-            f"now() AS now FROM {self._ring} WHERE id = 1"
+            f"fence_seconds, wait_seconds, now() AS now FROM {self._ring} WHERE id = 1"
         )
         if not rows:
             raise GenerationUnavailableError(f"the change-note ring of {self._schema!r} is not installed")
@@ -647,7 +707,19 @@ class ChangeNoteKeeper:
             emptied=bool(row["emptied"]),
             log_incarnation=row["log_incarnation"],
             now=row["now"],
+            fence_seconds=float(row["fence_seconds"]),
+            wait_seconds=float(row["wait_seconds"]),
         )
+
+    def _wait(self, ring: NoteRingState) -> timedelta:
+        """the least time from the ring's last switch to its next: this keeper's fence, and the one told before.
+
+        :param ring: the ring
+        :ptype ring: NoteRingState
+        :return: the wait
+        :rtype: timedelta
+        """
+        return max(self._fence, timedelta(seconds=ring.wait_seconds))
 
     async def _update(self, ring: NoteRingState, **fields: Any) -> NoteRingState:
         """write ``fields`` to the ring row, only while it is still at the switch ``ring`` read, and read it again.
@@ -688,25 +760,27 @@ class ChangeNoteKeeper:
         if ring.log_incarnation != state.incarnation:
             ring = await self._adopt(ring, state)
             result.adopted = state.incarnation
-        if ring.fence_seq is None and ring.now >= ring.switched_at + self._fence:
-            # every statement that read the ring before the last switch has ended: an epoch appended from here
-            # on has its note in the current table or a later one
+        if ring.fence_seq is None and ring.now >= ring.switched_at + self._wait(ring):
+            # every slot copy read before the last switch has expired and its statements have ended: an epoch
+            # appended from here on has its note in the current table or a later one
             ring = await self._update(ring, fence_seq=_token(state.incarnation, state.last_seq))
             result.fenced = True
         if not ring.emptied:
-            emptied = ring.oldest
-            if await self._empty(emptied):
+            idle = ring.oldest
+            done, result.emptied_rows = await self._empty_slot(idle)
+            if done:
                 ring = await self._update(ring, emptied=True)
-                result.emptied = emptied
+                result.emptied = idle
         switch_at = self._switch_bytes or state.max_bytes
-        if (
-            ring.fence_seq is not None
-            and ring.emptied
-            and switch_at
-            and _taken_bytes(state, ring.switched_seq) >= switch_at
-        ):
-            ring = await self._switch(ring, state)
-            result.switched_to = ring.current
+        if ring.fence_seq is not None and switch_at and _taken_bytes(state, ring.switched_seq) >= switch_at:
+            if ring.emptied:
+                switched = await self._switch(ring, state)
+                if switched is not None:
+                    ring = switched
+                    result.switched_to = ring.current
+            else:
+                result.switch_waited = True
+                self._switch_waits(ring)
         result.scrub = await self._scrub(ring, state)
         return result
 
@@ -738,52 +812,124 @@ class ChangeNoteKeeper:
             fence_seq=None if ring.fence_seq is None else start,
         )
 
-    async def _empty(self, index: int) -> bool:
-        """``TRUNCATE`` the note table at ``index``, under the DDL lock; never row by row.
+    async def _empty_slot(self, index: int) -> tuple[bool, int]:
+        """empty the ring's idle note table at ``index`` with batched deletes; never ``TRUNCATE``.
 
-        Called only right after a switch, for the table after the new current one: the ring switched away
-        from it two switches back, and never switches again within a fence of the last, so every statement
-        that read it as current has ended (the module docstring's argument).
+        The one place the ring's emptying is done, so how it is done is one change. Called only for the
+        idle table (the one after the current), which the ring switched away from two switches back, at
+        least one wait ago: no write can still reach it (the module docstring's argument). Each batch of
+        ``empty_batch`` notes is its own short transaction, with ``empty_pause`` between batches; a pass
+        stops after ``empty_budget`` and the next pass carries on. The table counts as empty only once a
+        read finds no note left in it.
 
-        :param index: the table
+        :param index: the idle table
         :ptype index: int
-        :return: whether it was emptied; ``False`` when the DDL lock stayed busy (the next pass retries)
-        :rtype: bool
+        :return: whether it is now empty, and how many notes this call deleted
+        :rtype: tuple[bool, int]
         """
-        async with self._pool.acquire() as conn:
-            try:
-                async with database_ddl_lock(ConnectionSession(conn), _LOCK_POLICY):
-                    await conn.execute(f"TRUNCATE TABLE {self._ring_table(index)}")
-            except DdlLockTimeoutError:
-                log.info("emptying a change-note table deferred: the database's DDL lock is busy")
-                return False
+        table = self._ring_table(index)
+        deleted = 0
+        began = time.monotonic()
+        while True:
+            status = await self._pool.execute(
+                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} LIMIT $1)",  # noqa: S608 - trusted identifiers
+                self._empty_batch,
+            )
+            count = int(status.rpartition(" ")[2]) if status.rpartition(" ")[2].isdigit() else 0
+            deleted += count
+            if count < self._empty_batch:
+                break
+            if time.monotonic() - began >= self._empty_budget.total_seconds():
+                break
+            await asyncio.sleep(self._empty_pause.total_seconds())
+        if deleted:
+            _EMPTIED_ROWS.inc(deleted)
+        left = await self._pool.fetch(f"SELECT 1 FROM {table} LIMIT 1")  # noqa: S608 - trusted identifiers
+        if left:
+            return False, deleted
         _EMPTIED.inc()
-        return True
+        log.info(
+            "a change-note table was emptied",
+            extra={"extra_data": {"table": note_table(index), "deleted": deleted}},
+        )
+        return True, deleted
 
-    async def _switch(self, ring: NoteRingState, state: ChangeLogState) -> NoteRingState:
-        """make the emptied table current; the fence's position becomes the coverage's floor.
+    def _switch_waits(self, ring: NoteRingState) -> None:
+        """say once per switch that it is due but waits for the idle table's emptying.
+
+        :param ring: the ring
+        :ptype ring: NoteRingState
+        :return: nothing
+        :rtype: None
+        """
+        if self._waited_switch == ring.switch_no:
+            return
+        self._waited_switch = ring.switch_no
+        _SWITCH_WAITS.inc()
+        log.warning(
+            "a change-note ring switch is due but waits: the table it would switch into is still being emptied",
+            extra={"extra_data": {"switch": ring.switch_no, "waiting_on": note_table(ring.oldest)}},
+        )
+
+    async def _switch(self, ring: NoteRingState, state: ChangeLogState) -> NoteRingState | None:
+        """make the emptied idle table current; the fence's position becomes the coverage's floor.
+
+        The update names the switch it read and requires the idle table's emptying finished, so it never
+        lands on a table still being emptied. It tells the writers this keeper's fence, and keeps the wait
+        until the next switch at least the fence told before, which copies read until now were used under.
 
         :param ring: the ring
         :ptype ring: NoteRingState
         :param state: the log
         :ptype state: ChangeLogState
-        :return: the ring after
-        :rtype: NoteRingState
+        :return: the ring after; ``None`` when the ring row was not as read (another keeper, or not emptied)
+        :rtype: NoteRingState | None
         """
-        await self._pool.execute(
+        fence = self._fence.total_seconds()
+        status = await self._pool.execute(
             f"UPDATE {self._ring} SET current_ring = $2, switch_no = switch_no + 1, switched_at = now(), "  # noqa: S608 - trusted identifiers
-            "switched_seq = $3, floor = fence_seq, fence_seq = NULL, emptied = FALSE WHERE id = 1 AND switch_no = $1",
+            "switched_seq = $3, floor = fence_seq, fence_seq = NULL, emptied = FALSE, "
+            "fence_seconds = $4, wait_seconds = greatest($4, fence_seconds) "
+            "WHERE id = 1 AND switch_no = $1 AND emptied",
             ring.switch_no,
             ring.oldest,
             _token(state.incarnation, state.last_seq),
+            fence,
         )
+        if status.rpartition(" ")[2] != "1":
+            return None
         after = await self.ring()
         _SWITCHES.inc()
         log.info(
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
         )
+        await self._count_ring_reads(ring.current)
         return after
+
+    async def _count_ring_reads(self, index: int) -> None:
+        """count, per table, the notes of the table just switched away from whose statement read the ring row.
+
+        Once per switch: those writers had no valid cached slot (raw SQL outside 3tears, or a process that
+        could not refresh its copy). They are correct, only slower; a steady count names the table whose
+        writers bypass the cache.
+
+        :param index: the table the ring just switched away from
+        :ptype index: int
+        :return: nothing
+        :rtype: None
+        """
+        rows = await self._pool.fetch(
+            f"SELECT table_name, count(*) AS notes FROM {self._ring_table(index)} WHERE ring_read GROUP BY 1"  # noqa: S608 - trusted identifiers
+        )
+        counted = {str(row["table_name"]): int(row["notes"]) for row in rows}
+        for table, notes in counted.items():
+            _RING_READS.labels(table=table).inc(notes)
+        if counted:
+            log.info(
+                "change notes written without a cached slot (the statement read the ring row)",
+                extra={"extra_data": {"note_table": note_table(index), "tables": counted}},
+            )
 
     async def _read_notes(self, indexes: Sequence[int]) -> list[Any]:
         """every note of the ring's tables at ``indexes``.

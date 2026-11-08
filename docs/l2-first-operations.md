@@ -17,17 +17,22 @@ This page is for whoever wires, runs and watches it. The design is in the module
 | What | Value |
 |---|---|
 | Note tables | `threetears_change_notes_0`, `_1`, `_2` in the platform schema: one current, one previous, one emptied and waiting |
-| Ring row | `threetears_change_note_ring` (one row; only the keeper writes it, once per switch) |
+| Ring row | `threetears_change_note_ring` (one row; only the keeper writes it, once per switch; no save reads it) |
+| Cached slot | each writing process: `ChangeNoteSlot(notes_schema=...)`, carried on every pool connection as the session setting `threetears.change_note_slot` (`"<slot>:<valid until>"`, database clock) |
+| Slot copy's age | read again every fence / 4; never used past fence / 2 (`slot_max_age`); the database refuses it after its `valid until` |
 | Which tables are noted | every table a class declares `write_generation`, absence caching or `l2_first` for: `noted_tables()` |
 | Triggers | `threetears_change_note` (row) and `threetears_change_note_truncate` on each noted table, in every schema |
 | Keeper | `ChangeNoteKeeper(pool, notes_schema=..., log=source)`, run by `run_change_note_keeper(held_lease, keeper)` |
 | Ring switch | when the current table has taken one change log's worth (the log's `max_bytes`, 64 MiB on the hub) |
-| Fence | the keeper's `fence`, 10 min by default: the least time between switches, and so before a table is emptied |
+| Fence | the keeper's `fence`, 10 min by default, told to writers in the ring row (`fence_seconds`) at each switch. The least time between switches (`wait_seconds` = the larger of this fence and the one told before) |
+| Emptying | batched deletes of the idle table (`empty_batch` 1000 per statement, `empty_pause` 20 ms between, at most `empty_budget` 1 s per pass); never `TRUNCATE`. `emptied` in the ring row is set only once a read finds the table empty |
 | Restore reads | the current and the previous note tables |
 | Every source of the deployment | `EpochGenerationSource(..., restored_from_l3=True)` |
 | Follower quiet pass | every `quiet_pass_interval()`: the log's retention (24 h) / 4 = 6 h |
 | Missing notes | `threetears_change_notes_missing_total{table}`: alert on any increase |
-| Ring | `threetears_change_notes_switches_total`, `threetears_change_notes_emptied_total`, `threetears_change_notes_restores_total` |
+| Ring | `threetears_change_notes_switches_total`, `threetears_change_notes_emptied_total`, `threetears_change_notes_emptied_rows_total`, `threetears_change_notes_restores_total` |
+| Switch held by an emptying | `threetears_change_notes_switch_waits_total`, with one WARNING per held switch |
+| Writes without a cached slot | `threetears_change_notes_ring_reads_total{table}` (counted at each switch); `threetears_change_note_slot_refreshes_total{outcome}` per process |
 | Scrub lag | `threetears_change_notes_scrub_behind` (epochs the log holds after the scrub's position) |
 | Quiet marks moved | `collection_epoch_quiet_marks_moved_total{table}` |
 | Pods behind | `collection_epoch_tables_behind`; `collection_epoch_behind_total{reason}` |
@@ -47,7 +52,19 @@ source = EpochGenerationSource(
     nats_client, change_retention=EpochChangeRetention(replicas=3), restored_from_l3=True
 )
 registry.set_generation_source(source)
+
+# the cached ring slot: one per process and database, carried on every connection of the L3 pool
+from threetears.core.utils import ChangeNoteSlot, session_settings_connection_class
+
+slot = ChangeNoteSlot(notes_schema="platform")
+pool = await asyncpg.create_pool(
+    dsn, connection_class=session_settings_connection_class(search_path="platform", note_slot=slot)
+)
 ```
+
+A pool without the slot still writes correct notes: each noted statement then reads the ring row itself (one
+hot row every writer reads, which is what the slot removes), and its notes are flagged and counted at the
+next switch on `threetears_change_notes_ring_reads_total{table}`.
 
 A source without `restored_from_l3` declares a lost log again under a new incarnation, and every follower
 is then behind (`replaced`) until it restarts. With it, a write while the log is lost waits up to
@@ -75,22 +92,47 @@ Each pass, in order:
 
 1. **Log absent** (NATS lost it): put it back from the notes (see "After NATS loses the change log").
 2. **New log** the keeper did not put back: take it; its notes cover it from its start.
-3. **Fence**: once the fence has passed since the last switch, record the log's position. Every epoch
+3. **Fence**: once the wait has passed since the last switch, record the log's position. Every epoch
    after it has its note in the current table or a later one.
-4. **Empty**: right after a switch, `TRUNCATE` the table after the new current one. It was current two
-   switches back, at least one fence ago, so no statement that read it as current is still running. Never
-   row by row.
-5. **Switch**: when the fence has passed, the waiting table is empty, and the current table has taken
-   one log's worth of records (bytes per sequence the log holds, times sequences since the switch), make
-   the waiting table current. The fence's position becomes the coverage's **floor**: every epoch after it
-   has its note in the current or the previous table.
+4. **Empty**: after a switch, delete the idle table's notes (the table after the new current one) in
+   batches, each its own short transaction, with a pause between, for at most `empty_budget` per pass; the
+   next pass carries on. It was current two switches back, at least one wait ago, so no cached slot that
+   names it is still valid and no statement that took it is still running. `emptied` is set when a read
+   finds no note left. Never `TRUNCATE` (YugabyteDB 2026.1.0.0-b118, which dev and prod run, crashes on a
+   `TRUNCATE` under concurrent writes).
+5. **Switch**: when the wait has passed, the idle table's emptying has finished, and the current table has
+   taken one log's worth of records (bytes per sequence the log holds, times sequences since the switch),
+   make the idle table current. The ring row refuses a switch into a table not yet emptied: a due switch
+   waits, logged once and counted on `threetears_change_notes_switch_waits_total`. The fence's position
+   becomes the coverage's **floor**: every epoch after it has its note in the current or the previous
+   table. The switch tells writers this keeper's fence, and counts the notes of the table it left that
+   read the ring row.
 6. **Scrub**: check up to `scrub_batch` (1000) epochs after the floor, up to the log's head one pass
    ago, against the notes. Report each one whose note is not where the coverage needs it. Never repair.
 
 Two keepers at once never switch twice (every ring update names the switch it read), but empty and scrub
-twice; the lease keeps it to one. Tuning: `fence` (keep it far beyond the longest statement any writer
-runs), `switch_bytes` (default: the log's `max_bytes`; never set it below what the log takes between two
-passes), `every`.
+twice; the lease keeps it to one. Tuning: `fence` (a writer's cached slot is used up to half of it, so keep
+the other half far beyond the longest transaction any writer runs), `switch_bytes` (default: the log's
+`max_bytes`; never set it below what the log takes between two passes), `empty_batch`, `empty_pause`,
+`empty_budget`, `every`.
+
+### Why a cached slot never writes into a table being emptied
+
+A process's copy names a table that was current when the copy was read, and the database uses it only
+until `valid until` = the read's `now()` + fence / 2. The ring switches at most once per wait (at least
+the fence the writers were told, and the one told before), and empties a table only after the second
+switch away from it, at least one full wait after it stopped being current. By then every copy naming it
+expired at least half a fence ago, and a statement that took it had that half to end. The validity is
+written and checked on the database's clock, so process clocks do not enter it. A process that cannot
+refresh keeps no usable copy past fence / 2; its connections then read the ring row (correct, slower).
+
+### Alert: a ring switch waits on an emptying
+
+`threetears_change_notes_switch_waits_total` increased: a switch was due, but the idle table still held
+notes. Normal for a pass or two on a large table. If it keeps rising, the current table keeps growing past
+one log's worth, and the coverage with it. Check the keeper's ERROR lines (a failing delete), and
+`threetears_change_notes_emptied_rows_total` moving; raise `empty_batch` or `empty_budget` if the deletes run
+but too slowly.
 
 ## After NATS loses the change log
 
@@ -200,6 +242,8 @@ Do: fix the row at its source and send it again.
 - **The keeper.** One process (the hub, under a lease) runs `run_change_note_keeper`, calls
   `keeper.install()` at start and `install_triggers(noted_tables())` periodically beside the write-mark
   install, and builds every source with `restored_from_l3=True`.
+- **The cached slot.** Every process that writes noted tables gives its L3 pool a `ChangeNoteSlot`
+  (`session_settings_connection_class(..., note_slot=slot)`), so no save reads the ring row.
 - **The broker's file loads.** The hub's `l3.load_files` copies on its own connection; it should set
   `NOTE_WHOLE_SETTING` (`SELECT set_config('threetears.note_whole', '1', true)`) in each load transaction,
   as `SqlL3Backend.load_files` does, so a load is one whole-table note rather than one per row.
