@@ -61,7 +61,8 @@ _RUNGS: dict[str, tuple[str, str, str | None]] = {
 
 #: A candidate's change cell as every serializer prints it: its level, then its change signed in points at one
 #: decimal (an exact zero reads ``0``, which states no precision), then its marks.
-_CHANGE = re.compile(r"^(?P<level>\d+(?:\.\d)?)% · (?P<change>[+-]\d+\.\d|0) pts(?: \((?P<marks>.+)\))?$")
+#: A zero change reads at the column's one decimal, unsigned (``0.0 pts``, beside ``-5.0 pts``).
+_CHANGE = re.compile(r"^(?P<level>\d+(?:\.\d)?)% · (?P<change>[+-]\d+\.\d|0\.0) pts(?: \((?P<marks>.+)\))?$")
 
 #: The baseline a candidate's cell states, where its aspect's candidates read different cases.
 _STATED = re.compile(r"from .+'s (?P<level>\d+(?:\.\d)?)%")

@@ -69,6 +69,7 @@ __all__ = [
     "EXPLORE_TITLE",
     "FIGURES_BY_ASPECT_ORDER",
     "FIGURES_TABLE_ORDER",
+    "FAMILY_LEVEL_TEMPLATE",
     "FULL_RESULTS_HEADERS",
     "FULL_RESULTS_TITLES",
     "GATE_UNKNOWN",
@@ -357,16 +358,20 @@ ZERO_STARTS_CROSS = "no change from each move's start, or between the moves"
 GROUP_LEVEL_TEMPLATE = "{group} · {reference} {level}"
 #: Where a chart's rows each have their own reference level, each change's note carries its own.
 FROM_LEVEL_TEMPLATE = "{change} from {level}"
-#: A reference level and what it counts: a pass rate's passes of its trials, a figure's mean over its cases.
+#: A reference level and what it counts: a pass rate's passes of its trials, a figure's mean of its cases, as the scorecard says it.
 LEVEL_COUNT_TEMPLATE = "{level}, {count}"
 TRIALS_COUNT_TEMPLATE = "{passed} of {trials} trials"
-CASES_MEAN_TEMPLATE = "mean over {cases} cases"
+CASES_MEAN_TEMPLATE = "mean of {cases} cases"
 
 #: A change chart drawn as dots where some row carries no interval: its open mark says so.
 OPEN_MARKS_NOTE = "Open marks: no interval."
 
 #: A forest's margin line, and what its shaded band means.
 MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
+
+#: An interval's level where its family is corrected together: each interval's level, and what the family holds at
+#: once (``99.7% (95% across 16 comparisons)``), so a reader never meets a bare ``99.69%``.
+FAMILY_LEVEL_TEMPLATE = "{level} ({joint} across {size} comparisons)"
 
 #: A forest of contrasts corrected together: the level each interval is drawn at, and what it holds as a family.
 FAMILY_LEVEL_NOTE = (

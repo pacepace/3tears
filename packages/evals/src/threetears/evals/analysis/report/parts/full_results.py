@@ -56,8 +56,15 @@ import math
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace
 
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.kernel.numbers import (
+    POINT_PLACES,
+    SCORE_PLACES,
+    ends_places,
+    format_number,
+    set_places,
+    spell_at,
+)
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns, bare_columns, percent_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
@@ -67,7 +74,9 @@ from threetears.evals.analysis.report.figure_keys import (
     cost_ruler,
     format_figure,
     held_figure,
+    RUBRIC_SCALE,
     resolve,
+    rubric_score,
 )
 from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
@@ -90,6 +99,7 @@ from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,
+    FAMILY_LEVEL_TEMPLATE,
     FIGURES_BY_ASPECT_ORDER,
     FIGURES_TABLE_ORDER,
     FULL_RESULTS_HEADERS,
@@ -135,18 +145,22 @@ def _table(
     """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
     where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
     that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
-    carries the per-1,000 mark beside it."""
+    carries the per-1,000 mark beside it. An interval's level is no rate: it reads as :func:`_level` wrote it, never
+    rounded to a column's whole percents."""
+    laid = percent_columns(money_columns(rows, by_row=by_row, reconciles=reconciles), bare=bare_columns(list(columns)))
     return TableBlock(
         section=WRITER_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=percent_columns(
-            money_columns(rows, by_row=by_row, reconciles=reconciles), bare=bare_columns(list(columns))
-        ),
+        rows=[{**row, **({_LEVEL: written[_LEVEL]} if _LEVEL in written else {})} for row, written in zip(laid, rows)],
         order=order,
         total_rows=len(rows),
     )
+
+
+#: The comparisons table's column holding each interval's level.
+_LEVEL = "level"
 
 
 def _column(key: str, header: str | None = None) -> TableColumn:
@@ -177,8 +191,10 @@ def _drawn(report_input: ReportInput, key: str, *, kind: str | None = None) -> Q
 def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
     """A measure's reader name, with the count its money is drawn per in it (the one owner of money's words: the
     label's own count replaced, never a second), as every chart names it, starting with a capital as every measure
-    name does (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`)."""
-    return money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
+    name does (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`); a judged score with its
+    scale (``Outcome (1–5)``), so its two decimals read on a scale a reader knows."""
+    named = money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
+    return _score_named(named) if _is_score(report_input, key, kind=kind) else named
 
 
 def _stated(
@@ -198,7 +214,41 @@ def _stated(
     if drawn.unit == MONEY:
         # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
         return TableCell(value=value * drawn.factor, unit=MONEY, flag=flag)
+    places = _level_places(report_input, key, drawn, kind=kind)
+    if places is not None and statistic == "mean":
+        return TableCell(value=_at(value * drawn.factor, places, drawn.unit), flag=flag)
     return TableCell(value=figure_text(value * drawn.factor, drawn), flag=flag)
+
+
+def _at(value: float, places: int, unit: str, *, signed: bool = False) -> str:
+    """A figure at its set's decimals (:func:`~threetears.evals.kernel.numbers.spell_at`), its unit spaced as the
+    package writes it (``1.4 notices``, ``4.75``, ``-6.0 pts``). A level that is exactly zero reads ``0`` (nothing
+    happened, which no precision qualifies, as ``0%`` reads in a column of percents); a change reads its zero at its
+    set's decimals (``0.0 pts`` beside ``-5.0 pts``)."""
+    text = "0" if value == 0 and not signed else spell_at(value, places, signed=signed)
+    if not unit:
+        return text
+    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
+
+
+def _is_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
+    """Whether a figure is a judged score on the 1–5 rubric (:func:`~threetears.evals.analysis.report.figure_keys.
+    rubric_score`), not a share, nor a figure an input calls ordinal but holds off the scale."""
+    return kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
+
+
+def _level_places(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
+    """The decimals every figure of a measure reads at in every Full results table (owner rulings O4 and O5): a judged
+    score at two, any other measured figure (a count per trial, a time) at two significant figures of the least of
+    every mean the input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate,
+    whose column rule spells it, and for money, whose form does."""
+    if drawn.unit in (MONEY, PERCENT, POINTS):
+        return None
+    if _is_score(report_input, key, kind=kind):
+        return SCORE_PLACES
+    if kind == "judged":
+        return None
+    return set_places(mean * drawn.factor for mean in held_means(report_input, key))
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
@@ -409,29 +459,101 @@ def _change(
     """A comparison's change and its interval, in its measure's unit (a rate's in points), money in the table's one
     form for its unit."""
     drawn = drawn_as[contrast.measure, contrast.kind]
+    places = _change_places(report_input, contrast, drawn)
+    if places is None:
+        change = (
+            TableCell(value=figure_text(float(contrast.delta) * drawn.factor, drawn))
+            if contrast.delta is not None
+            else TableCell(value=None)
+        )
+        if contrast.interval is None:
+            return change, TableCell(value=None)
+        low, high = (figure_text(float(end) * drawn.factor, drawn) for end in contrast.interval)
+        return change, TableCell(value=f"{low} to {high}")
     change = (
-        TableCell(value=figure_text(float(contrast.delta) * drawn.factor, drawn))
+        TableCell(value=_at(float(contrast.delta) * drawn.factor, places, drawn.unit, signed=True))
         if contrast.delta is not None
         else TableCell(value=None)
     )
     if contrast.interval is None:
         return change, TableCell(value=None)
-    low, high = (figure_text(float(end) * drawn.factor, drawn) for end in contrast.interval)
+    ends = [float(end) * drawn.factor for end in contrast.interval]
+    if (span := _change_span(report_input, contrast, drawn)) is not None:
+        # A change never reaches past what its measure can move: a score's by its scale's width, a rate's by 100 points.
+        ends = [max(ends[0], -span), min(ends[1], span)]
+    at = ends_places(ends[0], ends[1], places)
+    low, high = (_at(end, at, drawn.unit, signed=True) for end in ends)
     return change, TableCell(value=f"{low} to {high}")
 
 
+def _change_places(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> int | None:
+    """The decimals a comparison's change and its interval's ends read at (owner rulings O4 and O5): a rate's in
+    points at one decimal (``-6.0 pts`` beside ``-7.6 pts``), a score's at two, any other measured change at two
+    significant figures of the least change the table states of its measure; None for money, whose form spells it."""
+    if drawn.unit == MONEY:
+        return None
+    if drawn.unit == POINTS:
+        return POINT_PLACES
+    if _is_score(report_input, contrast.measure, kind=contrast.kind):
+        return SCORE_PLACES
+    changes = [
+        float(held.delta) * drawn.factor
+        for held in report_input.contrasts
+        if (held.measure, held.kind) == (contrast.measure, contrast.kind) and held.delta is not None
+    ]
+    return set_places(changes)
+
+
+def _change_span(report_input: ReportInput, contrast: Contrast, drawn: Quantity) -> float | None:
+    """How far a change can reach either way, drawn: a rate's 100 points, a score's the width of its scale (4 on 1–5);
+    None for any other measure, whose range the input does not bound."""
+    if drawn.unit == POINTS:
+        return 100.0
+    if _is_score(report_input, contrast.measure, kind=contrast.kind):
+        return RUBRIC_SCALE[1] - RUBRIC_SCALE[0]
+    return None
+
+
+def _score_named(name: str) -> str:
+    """A judged score's name with its scale (``Outcome (1–5)``), so its two decimals read on a scale a reader knows."""
+    return f"{name} ({format_number(RUBRIC_SCALE[0])}–{format_number(RUBRIC_SCALE[1])})"
+
+
 def _level(report_input: ReportInput, contrast: Contrast) -> str | None:
-    """A comparison's interval level: its own, else its family's (the family on its aspect)."""
-    if contrast.level:
-        return contrast.level
-    return next(
-        (
-            family.level
-            for family in report_input.contrast_families
-            if family.aspect == contrast.aspect and family.level
-        ),
+    """A comparison's interval level as a reader reads it: its own, else its family's (the family on its aspect), to
+    one decimal at most (``99.7%``, never ``99.69%``), and, where its family corrects its comparisons together, what
+    the family holds at once (``99.7% (95% across 16 comparisons)``)."""
+    family = next(
+        (family for family in report_input.contrast_families if family.aspect == contrast.aspect and family.level),
         None,
     )
+    level = contrast.level or (family.level if family is not None else None)
+    if not level:
+        return None
+    shown = _readable_level(level)
+    corrected = family is not None and (family.correction or "").strip().lower() not in ("", "none")
+    if family is None or not corrected or not family.family_size or family.family_size < 2 or family.alpha is None:
+        return shown
+    if family.level != level:
+        return shown
+    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
+    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
+
+
+def _readable_level(level: str) -> str:
+    """A level as stored (``99.69%``) to one decimal (``99.7%``), more only where one would round a level under 100 to
+    ``100%`` (``99.95%`` stays ``99.95%``), which no interval holds at; one that is no percentage, as stored."""
+    number = level.strip().removesuffix("%")
+    try:
+        value = float(number)
+    except ValueError:
+        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
+        return level
+    places = 1
+    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
+        places += 1
+    text = spell_at(value, places)
+    return f"{text.rstrip('0').rstrip('.')}%"
 
 
 def _verdict(contrast: Contrast) -> TableCell:

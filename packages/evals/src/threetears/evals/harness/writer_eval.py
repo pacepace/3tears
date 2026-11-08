@@ -157,7 +157,12 @@ from threetears.evals.analysis.report.blocks import (
     TableColumn,
     Verdict,
 )
-from threetears.evals.analysis.report.charts import ChartReference, DotIntervalChart, DotIntervalRow
+from threetears.evals.analysis.report.charts import (
+    ChartReference,
+    DotIntervalChart,
+    DotIntervalPanel,
+    DotIntervalRow,
+)
 from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
@@ -1760,14 +1765,23 @@ class _Shares:
 
     def spell(self, value: float) -> str:
         """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
-        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``)."""
-        return _unpadded(f"{value:.{self.places}f}")
+        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
+        three are one set, so each keeps the set's decimals, a whole one too (``80.000`` beside ``99.998``, owner
+        ruling O5)."""
+        return f"{value:.{self.places}f}"
 
     def cell(self, value: float) -> CellValue:
-        """A share as a table cell: the number where the one number rule prints it as :meth:`spell` does, so the column
-        reads as numbers; else the text, since that rule keeps four significant figures and this figure needs more."""
-        text = self.spell(value)
-        return value if render_cell(value) == text else text
+        """A share as a table cell, decided once for both shares: numbers where the set reads whole (the one number
+        rule prints a whole share as :meth:`spell` does), else the text of both, since that rule drops a whole share's
+        decimals and keeps four significant figures where the set needs its own decimals. The two share columns of a
+        row are always one kind."""
+        return value if self.places == 0 else self.spell(value)
+
+    @property
+    def fmt(self) -> str:
+        """The kit's format a chart draws the shares in, at the set's decimals, so its values table and its tooltips
+        read each share as the line under it does (``pct:3`` for ``49.998%``); ``pct`` where they read whole."""
+        return "pct" if self.places == 0 else f"pct:{self.places}"
 
     @property
     def ends(self) -> tuple[str, str] | None:
@@ -1775,11 +1789,6 @@ class _Shares:
         if self.interval is None:
             return None
         return (self.spell(self.interval[0]), self.spell(self.interval[1]))
-
-
-def _unpadded(text: str) -> str:
-    """A decimal's text without trailing zeros or a bare point, as the page prints a figure (``70.000`` to ``70``)."""
-    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _shares(share: float | None, difference: tuple[float, float] | None) -> _Shares | None:
@@ -1830,20 +1839,30 @@ def _preference_figure(
     ]
     if not drawn:
         return []
-    rows = [
-        DotIntervalRow(
+
+    # Each candidate's share reads at its own precision everywhere it appears: its table row, its line, the answer and
+    # its mark. Where the candidates' precisions differ, each is a panel of its own, with its own format, so no share
+    # is padded to another's decimals (``61.000%`` beside ``49.998%``).
+    def row(arm: str, shares: _Shares) -> DotIntervalRow:
+        return DotIntervalRow(
             label=arm,
             value=shares.candidate,
             lo=None if shares.interval is None else shares.interval[0],
             hi=None if shares.interval is None else shares.interval[1],
             hollow=True if shares.interval is None else None,
         )
-        for arm, _, shares in drawn
-    ]
+
+    formats = {shares.fmt for _, _, shares in drawn}
+    panels = (
+        None
+        if len(formats) == 1
+        else [DotIntervalPanel(title=arm, rows=[row(arm, shares)], fmt=shares.fmt) for arm, _, shares in drawn]
+    )
     chart = DotIntervalChart(
-        rows=rows,
+        rows=[row(arm, shares) for arm, _, shares in drawn] if panels is None else None,
+        panels=panels,
         domain=(0.0, 100.0),
-        fmt="pct",
+        fmt=drawn[0][2].fmt,
         level=level if any(shares.interval is not None for _, _, shares in drawn) else None,
         ticks=list(_SHARE_TICKS),
         reference=ChartReference(value=_EVEN, kind="no_preference", label=f"even ({format_number(_EVEN)}%)"),
@@ -2052,7 +2071,8 @@ def _answer_sentence(
         )
     settle = read.cases_to_settle
     if read.void is not None:
-        preference += f", but its two reading orders disagreed too often for that to count ({read.void})"
+        # The reason carries its own count in parentheses, so it follows a colon, never nested in another pair.
+        preference += f", but its two reading orders disagreed too often for that to count: {read.void}"
     elif primary.reason == "too_few_cases":
         preference += ", too few cases to read"
     elif improved or regressed:

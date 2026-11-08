@@ -142,7 +142,7 @@ def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     heads = list(dict.fromkeys(row.group for row in passes.data.rows))
     assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91.5%"], heads
     assert rate == "85.3%"
-    assert cost.data.zero_label == "no change vs P · September ($1.89, mean over 294 cases)"
+    assert cost.data.zero_label == "no change vs P · September ($1.89, mean of 294 cases)"
     assert "Production cost, per 1,000 replies, in dollars." in cost_notes
 
 
@@ -233,7 +233,9 @@ def test_the_margin_band_is_named_and_the_family_level_said() -> None:
     """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why."""
     drawn, notes = _one("prototype5/kairo", "contrasts")
     assert isinstance(drawn.data, ForestChart) and drawn.data.reference is not None
-    assert drawn.data.reference.label == "margin -15 pts; shaded: no worse than the margin"
+    # The margin's label is one of the chart's labels, read at their one precision beside its rows' ``-7.6 pts``
+    # (owner ruling O5).
+    assert drawn.data.reference.label == "margin -15.0 pts; shaded: no worse than the margin"
     assert "Each interval is at 99.69%, so the 16 comparisons corrected together hold at 95% at once." in notes
 
 

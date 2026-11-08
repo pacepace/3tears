@@ -253,10 +253,11 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    # The decision, then the figures it rests on.
+    # The decision, then the figures it rests on, the interval's two ends at one precision (owner ruling O5): the near
+    # end of 0.0129 points takes the decimals that keep it off zero, and the far end reads at them too.
     assert lead == (
         f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
-        "Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+        "Over 30 paired cases, the interval puts same between 0.01 and 43.33 points better.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
@@ -291,7 +292,7 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
     lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
     assert lead == (
         f"**Pass rate: same against current {READING_WORDS[row.reading]}. Of 30 cases each, current passed 20 and same "
-        "26. The interval puts same between 0.0129 and 43.3 points better.**"
+        "26. The interval puts same between 0.01 and 43.33 points better.**"
     )
     led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
     assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
@@ -324,7 +325,7 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     assert accuracy.heading == "Accuracy"
     assert lead == (
         f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
-        "same. Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+        "same. Over 30 paired cases, the interval puts same between 0.01 and 43.33 points better.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same may do worse than current on the No secret score guardrail")
@@ -375,7 +376,7 @@ def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_g
         (
             6,
             "the evidence cannot tell v2 and production apart",
-            "The interval allows v2 to be as much as 19 points worse or 19 better.",
+            "The interval allows v2 to be as much as 19.0 points worse or 19.0 better.",
         ),
     ],
     ids=["shown-better", "shown-worse", "undecided"],

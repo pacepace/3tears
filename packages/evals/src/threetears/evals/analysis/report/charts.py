@@ -31,10 +31,13 @@ from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler
 
 from threetears.evals.kernel.numbers import (
     MONEY_FIGURES,
+    POINT_PLACES,
     WHOLE_FROM,
     MoneyForm,
+    ends_places,
     format_number,
     group_thousands,
+    spell_at,
 )
 from threetears.evals.analysis.quantities import (
     MONEY,
@@ -112,7 +115,7 @@ _PER_THOUSAND_FORMAT = "usdpk"
 _FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::(\d))?$")
 
 
-def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = False) -> str:
+def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = False, places: int | None = None) -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
     never rounds away what the value holds, but money: a money format with digits (``usd:2``) is the chart's one money
@@ -135,6 +138,9 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
     :param finer: Whether money is written to one significant figure more: an interval whose two ends would otherwise
         read alike.
     :ptype finer: bool
+    :param places: The decimals a change in points reads at where its interval needs more than a point's one (an end
+        of -0.037 reads ``-0.04``, never a ``0.0`` that hides which side of zero it is on); None for one decimal.
+    :ptype places: int | None
     :return: The value as text.
     :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
@@ -152,6 +158,15 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
         decimals = int(match[3])
         form = MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)
         return form.spell(value, signed=bool(match[1]))
+    if unit in (PERCENT, POINTS) and match[3] is not None:
+        # A format naming its digits is the set's one precision (owner ruling O5): a share read to three decimals near
+        # even prints ``49.998%`` in the table as in the line under the chart, never ``50%``.
+        text = spell_at(value, int(match[3]), signed=bool(match[1]))
+        return f"{text}{unit}" if unit == PERCENT else f"{text} {unit}"
+    if (not unit and read_at == POINTS) or unit == POINTS:
+        # A change in points reads at a point's one decimal, a whole one too (``-3.0``, never ``-3`` beside ``-7.6``).
+        text = spell_at(value, POINT_PLACES if places is None else places, signed=bool(match[1]))
+        return text if not unit else f"{text} {unit}"
     if not unit and read_at:
         text = number_in(value, read_at)
         # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
@@ -564,6 +579,13 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
     one: :func:`_formatted`), empty without one."""
     if low is None or high is None:
         return ""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    if match is not None and (
+        _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
+    ):
+        # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
+        at = ends_places(low, high, POINT_PLACES)
+        return f"{_formatted(spec, low, read_at, places=at)} to {_formatted(spec, high, read_at, places=at)}"
     said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
     if said[0] == said[1] and low != high:
         # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
@@ -598,12 +620,13 @@ def _bar_interval(spec: str, low: float | None, high: float | None, read_at: str
     return _interval(spec, low, high, read_at)
 
 
-def _reference_row(reference: ChartReference | None, spec: str, width: int) -> list[list[str]]:
-    """A chart's reference line as a last table row: its label (or kind) and its value, padded to ``width``."""
+def _reference_row(reference: ChartReference | None, spec: str, width: int, read_at: str = "") -> list[list[str]]:
+    """A chart's reference line as a last table row: its label (or kind) and its value, padded to ``width``, at the
+    precision its rows read at (``read_at``), so a margin reads ``-15.0`` in the table its label says it in."""
     if reference is None or reference.kind == "no_preference":
         return []
     name = reference.label or reference.kind
-    return [[name, _formatted(spec, reference.value), *([""] * (width - 2))]]
+    return [[name, _formatted(spec, reference.value, read_at), *([""] * (width - 2))]]
 
 
 def _need_level(level: str | None, intervals: bool) -> None:
@@ -742,7 +765,7 @@ class _BarsFields(_Kind):
                     *([note or ""] if notes else []),
                 ]
             )
-        reference = _reference_row(self.reference, self._format, len(headers) - grouped)
+        reference = _reference_row(self.reference, self._format, len(headers) - grouped, read_at)
         return headers, body + [[""] * grouped + line for line in reference]
 
 
@@ -824,7 +847,7 @@ class ForestChart(_Drawable):
             ]
             for row, text, note in zip(self.rows, said, kept, strict=True)
         ]
-        reference = _reference_row(self.reference, self.fmt, len(headers) - grouped)
+        reference = _reference_row(self.reference, self.fmt, len(headers) - grouped, read_at)
         return headers, body + [[""] * grouped + line for line in reference]
 
 
@@ -1086,7 +1109,7 @@ class _DotIntervalFields(_Kind):
             ]
             for row, text, note in zip(rows, said, kept, strict=True)
         ]
-        return headers, body + _reference_row(self.reference, self._format, len(headers))
+        return headers, body + _reference_row(self.reference, self._format, len(headers), read_at)
 
 
 class DotIntervalPanel(_DotIntervalFields, _PanelText):
@@ -1143,11 +1166,11 @@ class RangeBarsChart(_Drawable):
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["Group", "Row", "From", "To"]
         body = [
-            [group.label, row.label, _formatted(self.fmt, row.from_), _formatted(self.fmt, row.to)]
+            [group.label, row.label, _formatted(self.fmt, row.from_, read_at), _formatted(self.fmt, row.to, read_at)]
             for group in self.groups
             for row in group.rows
         ]
-        reference = _reference_row(self.reference, self.fmt, 3)
+        reference = _reference_row(self.reference, self.fmt, 3, read_at)
         return headers, body + [["", *line] for line in reference]
 
 

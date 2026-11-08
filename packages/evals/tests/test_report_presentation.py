@@ -366,10 +366,10 @@ async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
 
 async def test_a_money_contrasts_interval_reads_in_its_changes_form() -> None:
     """A cost contrast's change and its interval's ends are one set, in one form: never $0.51 beside [$0.4107,
-    $0.606]."""
+    $0.606]. The change carries its sign, as every change does (visual pass, chunk V5)."""
     pages = await _money_pages()
-    assert "| $0.47 | [$0.35, $0.60] |" in pages["contrast"]
-    assert "| $0.00047 | [$0.00035, $0.00060] |" in pages["contrast under a cent per 1,000"]
+    assert "| +$0.47 | [$0.35, $0.60] |" in pages["contrast"]
+    assert "| +$0.00047 | [$0.00035, $0.00060] |" in pages["contrast under a cent per 1,000"]
 
 
 async def test_a_partly_priced_total_says_so_in_its_own_row() -> None:

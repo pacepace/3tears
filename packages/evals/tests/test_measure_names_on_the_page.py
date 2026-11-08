@@ -592,7 +592,10 @@ def test_every_measure_a_written_page_s_full_results_name_starts_with_a_capital(
     named += [
         row["measure"].text for table in page.doc_page.full_results for row in laid_out(table).rows if "measure" in row
     ]
-    assert "extraction layout fidelity" in [name.casefold() for name in named], "the control: the judged dimension"
+    # A judged score is named with its scale (owner ruling O4).
+    assert "extraction layout fidelity (1–5)" in [name.casefold() for name in named], (
+        "the control: the judged dimension"
+    )
     assert [name for name in named if name[:1].isalpha() and not name[:1].isupper()] == []
     assert "extraction layout fidelity" not in body
 

@@ -24,7 +24,7 @@ from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money, number_in, with_unit
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import POINT_PLACES, ends_places, format_number, spell_at
 from threetears.evals.schema.hashing import round_floats
 
 #: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
@@ -361,6 +361,14 @@ class _Scale:
             return self.cell.amount(number)
         return with_unit(number, self.unit)
 
+    def figure(self, number: float) -> str:
+        """A figure on the scale as its interval's ends read: in points at the cell's decimals, a point's one where
+        it names none (``-5.0 pts``), the cell's own figure and its declared margin alike (``±15.0 pts``, as the
+        chart's margin line reads it); any other as :meth:`spell` writes it."""
+        if self.unit == POINTS and (self.cell.decimals is None or not self.cell.unit):
+            return f"{spell_at(number, POINT_PLACES if self.cell.decimals is None else self.cell.decimals)} {POINTS}"
+        return self.spell(number)
+
     def _on_number(self) -> bool:
         """Whether the scale's unit is written on each number (a percent, money) or once after them (``pts``)."""
         return self.unit == PERCENT or is_money(self.unit) or not self.unit
@@ -371,6 +379,14 @@ class _Scale:
         would print its ends alike (the review's P45)."""
         if self.cell.unit and (self.unit == PERCENT or is_money(self.unit)):
             return f"{self.spell(self.low)} to {self.spell(self.high)}"
+        if (places := self._places()) is not None and self.unit != PERCENT:
+            # The ends of a set, at its one precision (`-12.8 to 10.0 pts`, never `10 pts` beside `-12.8`).
+            if self.unit == POINTS:
+                # A scale in points, its margin's ends among them, reads at a point's one decimal, as the chart's
+                # margin line and the glyph's title do (``-15.0 to 15.0 pts``).
+                places = max(POINT_PLACES, places)
+            at = ends_places(self.low, self.high, places)
+            return f"{spell_at(self.low, at)} to {spell_at(self.high, at)}" + (f" {self.unit}" if self.unit else "")
         if self.unit in (PERCENT, POINTS):
             ends = f"{number_in(self.low, self.unit)} to {number_in(self.high, self.unit)}"
             return (
@@ -379,8 +395,22 @@ class _Scale:
         low, high = _two_figures(self.low, self.high)
         return f"{low} to {high}" + (f" {self.unit}" if self.unit else "")
 
+    def _places(self) -> int | None:
+        """The decimals the scale's cells read at: their own, a point's one decimal for a change in a rate; None where
+        the cells leave it to the number rule (a percent's column rule, money's form)."""
+        if is_money(self.unit) or (self.unit == PERCENT and self.cell.unit):
+            return None
+        if self.cell.decimals is not None:
+            return self.cell.decimals
+        return POINT_PLACES if self.unit == POINTS else None
+
     def interval(self, low: float, high: float) -> str:
-        """An interval on the scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``."""
+        """An interval on the scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``, both
+        ends at the cells' one precision (``[-6.9, 11.0] pts``, never ``11``)."""
+        if (places := self._places()) is not None and self.unit != PERCENT:
+            at = ends_places(low, high, places)
+            ends = f"[{spell_at(low, at)}, {spell_at(high, at)}]"
+            return ends if self._on_number() or not self.unit else f"{ends} {self.unit}"
         if self._on_number():
             return f"[{self.spell(low)}, {self.spell(high)}]"
         return f"[{number_in(low, self.unit)}, {number_in(high, self.unit)}] {self.unit}"
@@ -495,9 +525,9 @@ def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale]) -> 
     if cell.low is None or cell.high is None or not cell.is_number:
         return '<span class="no-glyph"></span>'
     scale = scales[(key, cell.unit)]
-    said = f"{scale.spell(float(cell.value))}, interval {scale.interval(cell.low, cell.high)}"  # type: ignore[arg-type]
+    said = f"{scale.figure(float(cell.value))}, interval {scale.interval(cell.low, cell.high)}"  # type: ignore[arg-type]
     if cell.margin is not None:
-        said += f", margin ±{scale.spell(cell.margin)}"
+        said += f", margin ±{scale.figure(cell.margin)}"
     first, last = scale.track
     return interval_glyph_svg(
         float(cell.value),  # type: ignore[arg-type]

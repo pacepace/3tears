@@ -282,8 +282,8 @@ v1 vs v2
 **Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +16.7 pts | [-1.5, 25.9] | — | cannot tell apart |
-| Number score | 83.3% [66.8%, 92.5%] | 100.0% [88.1%, 100.0%] | 16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
-| No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
+| Number score | 83.3% [66.8%, 92.5%] | 100.0% [88.1%, 100.0%] | +16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
+| No invented total score | v2 | 99% | 99% | 30 paired | 0.0 pts | [-13.4, 13.4] pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 
@@ -522,14 +522,14 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 43% of its preference over shipped (50% is even), but its two reading orders disagreed too often for that to count (order consistency below 0.7 (3 of 7 cases scored in both orders picked the same side)).**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 43% of its preference over shipped (50% is even), but its two reading orders disagreed too often for that to count: order consistency below 0.7 (3 of 7 cases scored in both orders picked the same side).**
 ```
 
 Further down it reads the two code measures that moved most:
 
 ```text
-| Report finished | 14% [3%, 51%] | 43% [16%, 75%] | 28.6 pts | [-74.6, 100] pts | cannot tell apart | 7 paired |
-| Must-fix findings open | 0.4286 [0, 0.9229] | 0.2857 [0, 0.9848] | -0.1429 | [-1.313, 1.027] | cannot tell apart | 7 paired |
+| Report finished | 14% [3%, 51%] | 43% [16%, 75%] | +28.6 pts | [-74.6, 100.0] pts | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.43 [0, 0.92] | 0.29 [0, 0.98] | -0.14 | [-1.31, 1.03] | cannot tell apart | 7 paired |
 ```
 
 | What | Recorded |

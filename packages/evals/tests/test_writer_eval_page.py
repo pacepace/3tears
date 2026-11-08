@@ -19,7 +19,7 @@ import socket
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
@@ -30,7 +30,9 @@ from threetears.evals.ops.report_writer.writer_pairwise import resolution_line
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report import ChartBlock, DisclosureBlock, DotIntervalChart, TableBlock
 from threetears.evals.harness import Writer, WriterEval, WriterResult
+from threetears.evals.harness import writer_eval as writer_eval_module
 from threetears.evals.harness.writer_turns import writer_turns
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 
 #: The writer every arm names.
 WRITER: Final = "report-writer-candidate"
@@ -89,11 +91,12 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     assert isinstance(answer, DisclosureBlock) and (answer.section, answer.source) == ("answer", "verdict")
     assert answer.tone == "open", "undecided is no decision"
     assert isinstance(question, DisclosureBlock) and question.text == f'"{QUESTION}"'
-    # Its words are the result's: the decision, the judge's share as the table prints it, and why it cannot count.
+    # Its words are the result's: the decision, the judge's share as the table prints it, and why it cannot count, the
+    # reason after a colon, so its own count's parentheses never nest in another pair.
     share = round(read.share * 100)
     assert answer.text == (
         f"Undecided, so shipped stays: across 1 held-out case the judge gave variant {share}% of its preference over "
-        f"shipped (50% is even), but its two reading orders disagreed too often for that to count ({read.void})."
+        f"shipped (50% is even), but its two reading orders disagreed too often for that to count: {read.void}."
     )
     # The promotion's own sentence is on the page, one step down, as the print says it.
     said = [block.text for block in result.page.blocks if isinstance(block, DisclosureBlock)]
@@ -175,14 +178,126 @@ async def test_both_shares_print_at_the_interval_s_decimals_sum_to_100_and_stay_
         return candidate, control, ends
 
     # An interval end of 99.998% needs three decimals to stay short of all; both shares print at those decimals, past
-    # the four significant figures a lone figure keeps, so the two sum to exactly 100 as printed.
+    # the four significant figures a lone figure keeps, so the two sum to exactly 100 as printed. The three are one
+    # set, so the whole end keeps the set's decimals too (owner ruling O5).
     candidate, control, ends = shares(0.910714, (0.6, 0.99996))
-    assert (candidate, control, ends) == ("91.071", "8.929", "80 to 99.998")
+    assert (candidate, control, ends) == ("91.071", "8.929", "80.000 to 99.998")
     assert Decimal(candidate) + Decimal(control) == 100
     # A share just under even stays under it, and the control's just over, never both printed as 50.
     candidate, control, ends = shares(0.499996, (-0.2, 0.2))
-    assert (candidate, control, ends) == ("49.9996", "50.0004", "40 to 60")
+    assert (candidate, control, ends) == ("49.9996", "50.0004", "40.0000 to 60.0000")
     assert Decimal(candidate) + Decimal(control) == 100
+
+
+async def test_the_share_reads_alike_in_the_table_the_figure_s_values_its_line_and_the_answer(
+    tmp_path: Path, offline: None
+) -> None:
+    """V6's review: the table's share is one set with the figure drawn above it, the line under that figure and the
+    page's answer, so each prints it alike: the figure's values table and tooltips in its format's digits (``pct``
+    where the set reads whole, ``pct:3`` at three decimals), never coarser than the line, and both share columns of a
+    row one kind."""
+    result = await _replayed(tmp_path)
+    side = next(block for block in result.page.blocks if isinstance(block, TableBlock) and block.name == "side_by_side")
+    row = side.rows[0]
+    share, control = row["share"].text, row["control_share"].text
+    assert type(row["share"].value) is type(row["control_share"].value), "both share columns one kind"
+    figure = next(block for block in result.page.blocks if isinstance(block, ChartBlock))
+    assert isinstance(figure.data, DotIntervalChart)
+    places = len(share.partition(".")[2])
+    assert figure.data.fmt == ("pct" if places == 0 else f"pct:{places}")
+    _, values = figure.values_table()
+    assert values[0][1] == f"{share}%", (values, share)
+    said = [block.text for block in result.page.blocks if isinstance(block, DisclosureBlock)]
+    assert f"variant {share}% · shipped {control}% (50% is even)" in " ".join(said)
+    answer = next(text for text in said if text.startswith("Undecided"))
+    assert f"gave variant {share}% of its preference" in answer, answer
+
+
+#: Two candidates' readings as their passes report them, shaped so their shares need different precisions: whole
+#: percents for one, three decimals for the other, a share 0.002 points under even.
+_SHAPED: Final = {"wide": (0.61, (-0.4, 0.8)), "near": (0.49998, (-0.2, 0.2))}
+
+
+async def _two_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> WriterResult:
+    """The replay over Kairo's case with two candidates beside the control, each pass's reading shaped as
+    :data:`_SHAPED` says where the completed job hands it to the eval (``await_job``), so the page is built on it."""
+    skill = load_skill()
+    arms = {"shipped": Writer(WRITER, skill=skill)}
+    for name, suffix in (("wide", "\n"), ("near", "\n\n")):
+        files = dict(skill.files)
+        files["SKILL.md"] = f"{files['SKILL.md']}{suffix}"
+        arms[name] = Writer(WRITER, skill=AnalystSkill(files=files))
+    kairo = kairo_case(tmp_path / "cases")
+    for arm, writer in arms.items():
+        routed = writer_turns(
+            tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
+        )
+        lay_recording(routed.path(WRITER, None, kairo.snapshot.id), kairo_report(WRITER, WRITER))
+    awaited = writer_eval_module.await_job
+
+    async def shaped(*args: Any, **kwargs: Any) -> Any:
+        statuses = await awaited(*args, **kwargs)
+        out = []
+        for status in statuses:
+            result = status.result
+            if isinstance(result, dict) and result.get("candidate") in _SHAPED and "whole" in result:
+                report = WriterPairwiseReport.model_validate(result)
+                share, interval = _SHAPED[report.candidate]
+                verdict = report.whole.verdict.model_copy(update={"interval": interval, "interval_level": 0.95})
+                whole = report.whole.model_copy(update={"candidate_share": share, "verdict": verdict})
+                status = status.model_copy(update={"result": report.model_copy(update={"whole": whole}).model_dump()})
+            out.append(status)
+        return out
+
+    monkeypatch.setattr(writer_eval_module, "await_job", shaped)
+    writer_eval = WriterEval(
+        tmp_path / "cases",
+        arms=arms,
+        judge=FakeScoringJudge(),
+        recordings=tmp_path / "turns",
+        budget_usd=0.75,
+        max_cost_usd=12.0,
+        held_out_fraction=0.35,
+        question=QUESTION,
+        store=tmp_path / "evals.sqlite",
+    )
+    return await writer_eval.run()
+
+
+async def test_each_candidate_s_share_reads_at_its_own_precision_in_its_panel_its_line_its_row_and_the_answer(
+    tmp_path: Path, offline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V5's review (O-9): with two candidates the figure drew every share at the finest one's decimals, so ``61``
+    read ``61.000%`` beside the table's ``61``. Where the candidates' precisions differ, each is a panel of its own in
+    its own format, and each share reads alike in its panel's values table, its line, its table row and the answer."""
+    result = await _two_candidates(tmp_path, monkeypatch)
+    figure = next(block for block in result.page.blocks if isinstance(block, ChartBlock))
+    assert isinstance(figure.data, DotIntervalChart) and figure.data.panels is not None, "one panel per candidate"
+    assert [(panel.title, panel.fmt) for panel in figure.data.panels] == [("wide", "pct"), ("near", "pct:3")]
+    expected = {"wide": ("61", "39", "30", "90"), "near": ("49.998", "50.002", "40.000", "60.000")}
+    _, values = figure.values_table()
+    assert values == [
+        ["wide", "wide", "61%", "30% to 90%"],
+        ["near", "near", "49.998%", "40.000% to 60.000%"],
+    ], values
+    side = next(block for block in result.page.blocks if isinstance(block, TableBlock) and block.name == "side_by_side")
+    said = " ".join(block.text for block in result.page.blocks if isinstance(block, DisclosureBlock))
+    (answer,) = [
+        block.text
+        for block in result.page.blocks
+        if isinstance(block, DisclosureBlock) and (block.section, block.source) == ("answer", "verdict")
+    ]
+    for arm, (share, control, low, high) in expected.items():
+        (row,) = [row for row in side.rows if row["candidate"].text == arm and row["pairs"].text == "every pair"]
+        assert (row["share"].text, row["control_share"].text, row["interval"].text) == (
+            share,
+            control,
+            f"{low} to {high}",
+        )
+        assert f"{arm} {share}% · shipped {control}% (50% is even), 95% interval {low}% to {high}%" in said, said
+        assert f"gave {arm} {share}% of its preference" in answer, answer
+    # Each end of the axis names the candidate in words, never one candidate's name for both.
+    assert figure.data.better == ("prefers shipped", "prefers the candidate")
 
 
 async def test_an_interval_end_near_even_keeps_its_side_and_two_near_ends_stay_apart(
@@ -200,7 +315,7 @@ async def test_an_interval_end_near_even_keeps_its_side_and_two_near_ends_stay_a
     # The pass reads its interval on the difference of the two shares; the page prints it on the candidate's share.
     # A low end of -0.004 points of difference is 49.998% of the preference: never printed as 50, so the crossing of
     # even stays on the page, and the shares print at the interval's precision, summing to 100.
-    assert row(0.6, (-0.00004, 0.4)).endswith("| 60 | 40 | 49.998 to 70 |")
+    assert row(0.6, (-0.00004, 0.4)).endswith("| 60.000 | 40.000 | 49.998 to 70.000 |")
     # Two ends that whole percents would print alike take the decimals that tell them apart.
     assert row(0.6702, (0.3402, 0.3406)).endswith("| 67.02 | 32.98 | 67.01 to 67.03 |")
 
