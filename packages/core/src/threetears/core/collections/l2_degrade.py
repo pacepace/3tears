@@ -36,11 +36,10 @@ type _Reason = Literal["full", "exhausted", "too_large", "transport", "other"]
 #: the fewest seconds between two WARNINGs for one table, operation and reason
 _LOG_INTERVAL_SECONDS: Final = 60.0
 
-_DEGRADED: Final = counter(
-    "threetears_l2_degraded_total",
-    description="L2 (NATS KV) failures a collection fell through to L3 on, or raised where L2 is the store",
-    label_names=("table", "op", "reason"),
-)
+#: the counter's name and help. Fetched where it is incremented, never held at import: a module that a
+#: test re-imports would otherwise register the same name in the process's registry a second time.
+_DEGRADED_NAME: Final = "threetears_l2_degraded_total"
+_DEGRADED_HELP: Final = "L2 (NATS KV) failures a collection fell through to L3 on, or raised where L2 is the store"
 
 
 class _LogWindow:
@@ -127,7 +126,9 @@ def degrade_l2(
     :raises Exception: ``refused_as``, where L2 is the store
     """
     reason = _reason(exc)
-    _DEGRADED.labels(table=table, op=op, reason=reason).inc()
+    counter(_DEGRADED_NAME, description=_DEGRADED_HELP, label_names=("table", "op", "reason")).labels(
+        table=table, op=op, reason=reason
+    ).inc()
     if l2_is_the_store:
         if refused_as is not None:
             raise refused_as from exc

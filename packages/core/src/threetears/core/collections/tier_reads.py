@@ -61,11 +61,10 @@ _counts: Counter[tuple[str, str]] = Counter()
 _totals: Counter[tuple[str, str]] = Counter()
 _lock = threading.Lock()
 
-_READS: Final = counter(
-    "threetears_tier_reads_total",
-    description="collection key reads, by table and the tier that answered (l1, l2, l3)",
-    label_names=("table", "tier"),
-)
+#: the counter's name and help. Fetched where it is incremented, never held at import: a module that a
+#: test re-imports would otherwise register the same name in the process's registry a second time.
+_READS_NAME: Final = "threetears_tier_reads_total"
+_READS_HELP: Final = "collection key reads, by table and the tier that answered (l1, l2, l3)"
 
 
 def record_tier_read(table: str, tier: ReadTier) -> None:
@@ -81,7 +80,9 @@ def record_tier_read(table: str, tier: ReadTier) -> None:
     with _lock:
         _counts[(table, tier.value)] += 1
         _totals[(table, tier.value)] += 1
-    _READS.labels(table=table, tier=tier.value).inc()
+    counter(_READS_NAME, description=_READS_HELP, label_names=("table", "tier")).labels(
+        table=table, tier=tier.value
+    ).inc()
 
 
 def _by_table(counts: Counter[tuple[str, str]]) -> dict[str, dict[str, int]]:
