@@ -12,6 +12,7 @@ answers an empty object: no report is written in any role but the analyst's.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.actions.report_writing import campaign_report_writer
@@ -27,22 +28,32 @@ from threetears.evals.ops import (
     await_job,
     job_poll,
 )
-from threetears.evals.run import LaunchSettings
-from threetears.evals.schema import DEFAULT_JOB_LEASE_S, DocumentStore
+from threetears.evals.run import LaunchSettings, build_judge_service
+from threetears.evals.schema import (
+    DEFAULT_JOB_LEASE_S,
+    CatalogRubricDim,
+    DocumentStore,
+    JudgeConfig,
+    JudgedArtifact,
+    RubricDim,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.doc_writer_support import ANALYST_MODEL, FakeAnalystClient
+from packages.evals.tests.factories import declared
 from packages.evals.tests.fixtured_client import FIXTURED_CALL_CEILING_USD, FixturedClient
 from packages.evals.tests.writer_host_support import CALLER
 
 __all__ = [
     "CALLER",
+    "LaunchedJudges",
     "REPORT_BUDGET_USD",
     "WRITER",
     "generate",
+    "judged_as_launched",
     "launched_runs",
     "RUN_MODELS",
     "TOYHOST_SCOPE",
@@ -165,3 +176,63 @@ async def launched_runs(host: OpsHost, started: JobsStarted, scope_id: str = TOY
     """A launch's runs, once its job has ended: awaited in the foreground, and read off its final status."""
     (status,) = await await_job(host, started, scope_id)
     return list(status.run_ids)
+
+
+@dataclass(frozen=True)
+class LaunchedJudges:
+    """A configured judge and a built-in one, recorded on the corpus campaign's runs and results as a launch records them.
+
+    :ivar config: The stored config that judges ``toy.dim``.
+    :ivar dim: The stored catalog dim the config names.
+    :ivar run: What each run records (``EvalRun.judge_config_ids``): the config set it committed to, bare config ids.
+    :ivar result: What each result records (``EvalResult.judge_config_ids``): ``<config id>@<sha12>`` for the
+        configured dim and ``builtin:<sha12>`` for the built-in one.
+    """
+
+    config: JudgeConfig
+    dim: CatalogRubricDim
+    run: dict[str, str]
+    result: dict[str, str]
+
+
+def judged_as_launched(fixture: OpsFixture, store: DocumentStore) -> LaunchedJudges:
+    """Record a configured judge on every run and result of the fixture's campaign, the way a launch records it.
+
+    The corpus campaign's runs were judged by no config, so they show nothing of the two shapes a launch writes. Both
+    maps come from the launch's own judge build (:func:`~threetears.evals.run.build_judge_service`) over a template
+    declaring one dim configured and one built-in: the run's from :attr:`RunJudge.config_ids`, each result's from its
+    service's :meth:`~threetears.evals.run.judge_service.JudgeService.judge_config_ids`.
+
+    :param fixture: The fixture whose campaign's runs and results are written.
+    :ptype fixture: OpsFixture
+    :param store: The document store under the fixture's storage.
+    :ptype store: DocumentStore
+    :return: The config, its dim, and the two maps as recorded.
+    :rtype: LaunchedJudges
+    """
+    eval_host = fixture.host.eval_host
+    config = JudgeConfig(scope_id=TOYHOST_SCOPE, name="toy", rubric_dim_id="toy.dim", prompt_template="Judge it.")
+    dim = CatalogRubricDim(
+        scope_id=TOYHOST_SCOPE,
+        key="toy_dim",
+        dim=RubricDim(name="toy.dim", description="A toy dim.", scale="pass_fail"),
+    )
+    eval_host.storage.save_judge_config(config)
+    eval_host.storage.save_rubric_dim(dim)
+    rubric = [
+        declared(dim.dim, "configured"),
+        declared(RubricDim(name="toy.plain", description="A dim the built-in prompt judges.", scale="pass_fail")),
+    ]
+    template = toyhost_template().model_copy(update={"rubric": rubric})
+    built = build_judge_service(eval_host, template, "judge/toy", judged_artifact=JudgedArtifact.DOCUMENT)
+    judges = LaunchedJudges(
+        config=config,
+        dim=dim,
+        run=built.config_ids,
+        result=built.service.judge_config_ids(rubric, judged_artifact=JudgedArtifact.DOCUMENT),
+    )
+    for run_id in fixture.campaign.run_ids:
+        assert store.merge_fields(run_id, TOYHOST_SCOPE, {"judge_config_ids": judges.run})
+        for result in store.by_doc_type("eval_result", TOYHOST_SCOPE, eval_run_id=run_id):
+            assert store.merge_fields(result["id"], TOYHOST_SCOPE, {"judge_config_ids": judges.result})
+    return judges

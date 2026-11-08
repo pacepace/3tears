@@ -10,6 +10,9 @@ Over the toy host's corpus campaign, its store held in hand so a test writes wha
 - **a recorded judge identity is read by the package's reader**, over Discodon's table of identities, verdict for
   verdict and refusal for refusal; a configured judge reaches its config and the config's dim, a deleted one its
   tombstone, a built-in one is listed;
+- **a run's judge configs are read as the config set it committed to**: the bare config id a launch records, never a
+  result's ``<config id>@<sha12>``, so a campaign launched with a configured judge exports (production's refusal of
+  2026-11-08);
 - **every type the engine stores is reached by the closure or declared unreachable**, read from the module's source;
 - **the profile's digest is the package's**, the one the courier's committed case records;
 - **pages joined are the single call's export**, through the operation and through the action.
@@ -30,7 +33,14 @@ import pytest
 import threetears.evals.ops.campaign_closure as campaign_closure_module
 from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import held_out_path
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, settled
+from packages.evals.tests.ops_support import (
+    CALLER,
+    TOYHOST_SCOPE,
+    generate,
+    judged_as_launched,
+    ops_fixture,
+    settled,
+)
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import host_declarations_digest
 from threetears.evals.harness import ReasonedOn, WriterCaseFile
@@ -323,11 +333,67 @@ def test_a_recorded_judge_identity_is_read_as_the_packages_reader_reads_it(recor
         with pytest.raises(UnreadableRecordError) as refused:
             toy.export()
         assert repr(recorded) in refused.value.message and result["id"] in refused.value.message
+        assert "an eval_result records <config id>@<sha12> or builtin:<sha12>" in refused.value.message
         return
     manifest = toy.export().manifest
     assert manifest.builtin_judge_config_ids == ([recorded] if verdict == "builtin" else [])
     judges = [link for link in manifest.unresolved if link.doc_type == "judge_config"]
     assert judges == ([UnresolvedLink(doc_type="judge_config", id=str(read))] if verdict == "config" else [])
+
+
+#: What a run records per dim (``EvalRun.judge_config_ids``), each with the export's verdict: the bare config id a
+#: launch commits to, a built-in prompt's identity, a dim no judge asked, and the refusals: a result's identity, which
+#: names the prompt sent rather than the config committed to, and an empty string, which names no config.
+RUN_JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
+    ("01a15a15-f896-70a5-946f-b987ea7c2276", "config"),
+    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
+    (None, "none"),
+    ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "refused"),
+    ("", "refused"),
+)
+
+
+@pytest.mark.parametrize(("recorded", "verdict"), RUN_JUDGE_IDENTITIES, ids=lambda value: repr(value))
+def test_a_run_s_recorded_judge_config_is_read_as_the_config_set_it_committed_to(
+    recorded: str | None, verdict: str
+) -> None:
+    """A run records the bare config id it committed to (``EvalRun.judge_config_ids``), which the export follows (here
+    unresolved, since none is stored); a built-in identity is listed and an unasked dim skipped; a result's form, or
+    no id at all, refuses, naming the run and the form a run records."""
+    toy = Toy()
+    run_id = toy.campaign()["aspects"][0]["run_ids"][0]
+    assert toy.store.merge_fields(run_id, SCOPE, {"judge_config_ids": {"toy.dim": recorded}})
+    if verdict == "refused":
+        with pytest.raises(UnreadableRecordError) as refused:
+            toy.export()
+        message = refused.value.message
+        assert repr(recorded) in message and f"the eval_run {run_id!r}" in message
+        assert "an eval_run records the bare config id it committed to" in message and "builtin" not in message
+        return
+    manifest = toy.export().manifest
+    assert manifest.builtin_judge_config_ids == ([recorded] if verdict == "builtin" else [])
+    judges = [link for link in manifest.unresolved if link.doc_type == "judge_config"]
+    assert judges == ([UnresolvedLink(doc_type="judge_config", id=str(recorded))] if verdict == "config" else [])
+
+
+def test_a_campaign_launched_with_a_configured_judge_exports_reaching_its_config_and_dim() -> None:
+    """Production's shape (2026-11-08): each run records the bare config id it committed to, each of its results the
+    configured judge's identity, ``<config id>@<sha12>``, both as the launch's own judge build writes them. Every such
+    campaign's export was refused for the run's bare id; now the run's is read as the config it names, so the export
+    reaches the config and its dim and lists the built-in judge beside it."""
+    toy = Toy()
+    judges = judged_as_launched(toy.fixture, toy.store)
+    config_id = judges.config.id
+    assert judges.run == {"toy.dim": config_id}, "a run records the bare config id"
+    assert judge_config_of(judges.result["toy.dim"]) == config_id != judges.result["toy.dim"]
+
+    exported = toy.export()
+    observed = set(_keys(exported.documents))
+    assert ("judge_config", config_id) in observed and ("rubric_dim", judges.dim.id) in observed
+    assert exported.manifest.builtin_judge_config_ids == [judges.result["toy.plain"]]
+    assert not [link for link in exported.manifest.unresolved if link.doc_type in {"judge_config", "rubric_dim"}]
+    runs = [document for document in exported.documents if document["doc_type"] == "eval_run"]
+    assert len(runs) == 2 and all(run["judge_config_ids"] == judges.run for run in runs), "runs export as stored"
 
 
 def test_the_judge_identity_table_reaches_every_verdict() -> None:

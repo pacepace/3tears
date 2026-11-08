@@ -749,7 +749,7 @@ python -m threetears.evals.harness export --host module:callable --scope SCOPE -
 writes them into a new sibling directory and renames that to `DIR`, so either all three are there or none is, and a
 run that fails part-way can simply run again. It exits 0 when the files are written, 2 when the export is refused (a
 campaign the scope does not hold, a `DIR` holding files, a factory that does not load or returns no host, a stored
-judge identity the package does not read), and 3 when the factory raises.
+judge value in a form its document's type does not record), and 3 when the factory raises.
 
 A host whose code serves the engine's actions exports with no code of its own: `campaign_export` (read) takes
 `campaign_id` and, optionally, `built_by`, reads the caller's scope, and returns `documents`, `profile` and `manifest`
@@ -788,9 +788,11 @@ What the closure holds:
 
 - the campaign, the runs its aspects name, and each run's template, test cases, case set, cassettes and sweep;
 - each run's results and traces, calibration ratings, second judge passes, temperature checks and out-of-run spend;
-- the judge configs its runs' and results' recorded identities name (read with the package's `judge_config_of`), a
-  deleted config's tombstone, and each config's rubric dim; a built-in judge's identity is listed in the manifest's
-  `builtin_judge_config_ids` and names no document;
+- the judge configs its runs and results record, a deleted config's tombstone, and each config's rubric dim. A run
+  records the bare config id it committed to at launch; a result records the configured judge's identity,
+  `<config id>@<sha12>` (read with the package's `judge_config_of`), the config and a fingerprint of the reply format
+  it was sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
+  listed in the manifest's `builtin_judge_config_ids` and names no document;
 - the campaign's analyses, report snapshots, report documents and their sessions and analyst gaps;
 - every insight on the campaign's subject in the scope, whichever campaign minted it;
 - the launches and judge profiles naming its runs.
