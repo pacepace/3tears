@@ -52,7 +52,8 @@ from typing import Any, Final, Protocol
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.collections.epoch_change import advance_recording
+from threetears.core.collections.change_notes import NotedRows, noted_rows_since
+from threetears.core.collections.epoch_change import ChangedRow, advance_recording
 from threetears.core.collections.generation import GenerationSource, tables_written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
@@ -125,6 +126,17 @@ _PENDING = gauge(
 _OLDEST_AGE = gauge(
     "collection_write_marks_oldest_age_seconds",
     description="age of the oldest queued write mark (of the capped sample), read on every pass; 0 when empty",
+)
+
+
+#: the most rows one reconciled table's epoch names from the change notes; more advance the whole table
+_MAX_NOTED_ROWS: Final = 10_000
+
+_WHOLE_TABLE = counter(
+    "collection_write_marks_whole_table_total",
+    description="reconciled tables advanced as the whole table, by why: whole_note (a truncate or load), "
+    "not_covered, no_notes, too_many_rows, notes_unavailable",
+    label_names=("table", "reason"),
 )
 
 
@@ -369,6 +381,9 @@ class WriteMarkReconciler:
     :param lease: one pass at a time across replicas; a replica that finds it held skips its drain.
         ``None`` drains on every pass, which is also safe
     :ptype lease: KVLease | None
+    :param notes_schema: the schema holding the change-note ring the marked writes' notes are read from;
+        ``None`` is ``marks_schema``
+    :ptype notes_schema: str | None
     """
 
     def __init__(
@@ -381,6 +396,7 @@ class WriteMarkReconciler:
         page_size: int = _PAGE_SIZE,
         max_pages: int = _MAX_PAGES_PER_PASS,
         lease: KVLease | None = None,
+        notes_schema: str | None = None,
     ) -> None:
         if page_size < 1 or max_pages < 1:
             raise ValueError("a reconcile pass reads at least one page of at least one mark")
@@ -388,6 +404,7 @@ class WriteMarkReconciler:
         self._source = generation_source
         self._marks = f"{quote_identifier(marks_schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         self._marks_schema = marks_schema
+        self._notes_schema = notes_schema or marks_schema
         self._tables = tables
         self._page_size = page_size
         self._max_pages = max_pages
@@ -447,7 +464,7 @@ class WriteMarkReconciler:
         started = time.monotonic()
         for _ in range(self._max_pages):
             page = await self._pool.fetch(
-                f"SELECT id, table_name FROM {self._marks} WHERE NOT (table_name = ANY($2::text[])) LIMIT $1",
+                f"SELECT id, table_name, date_created FROM {self._marks} WHERE NOT (table_name = ANY($2::text[])) LIMIT $1",
                 self._page_size,
                 sorted(failed),
             )
@@ -480,6 +497,36 @@ class WriteMarkReconciler:
             )
         return MarkPass(applied=applied, advanced=tuple(sorted(advanced)), failed=tuple(sorted(failed)), behind=behind)
 
+    async def _rows_of(self, table: str, since: Any) -> list[ChangedRow] | None:
+        """the rows the marked writes changed, from the change notes they left; ``None`` for the whole table.
+
+        A mark names its table, not its rows, but every committed write to a noted table also left a note of
+        its keys. The epoch names those rows, so followers evict them rather than dropping the table. It names
+        the whole table only when a note does (a truncate, a file load) or the notes cannot say: said at
+        WARNING and counted, by why, on ``collection_write_marks_whole_table_total``.
+
+        :param table: the marked table
+        :ptype table: str
+        :param since: the oldest mark's time
+        :ptype since: Any
+        :return: the rows, or ``None`` for a whole-table epoch
+        :rtype: list[ChangedRow] | None
+        """
+        noted = await noted_rows_since(
+            self._pool, notes_schema=self._notes_schema, table=table, since=since, cap=_MAX_NOTED_ROWS
+        )
+        if isinstance(noted, NotedRows) and not noted.whole_table:
+            return list(noted.rows)
+        reason = "whole_note" if isinstance(noted, NotedRows) else noted
+        _WHOLE_TABLE.labels(table=table, reason=reason).inc()
+        if reason != "whole_note":
+            log.warning(
+                "a marked table's missed writes are advanced as the whole table: the change notes cannot name "
+                "their rows, so every follower drops the table",
+                extra={"extra_data": {"table": table, "reason": reason}},
+            )
+        return None
+
     async def _advance(self, page: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
         """advance, once each, every table the page marks.
 
@@ -498,8 +545,8 @@ class WriteMarkReconciler:
                 done.add(table)
                 continue
             try:
-                # a mark names its table, not its rows: the reach of the writes it covers is the table
-                await advance_recording(self._source, table, None)
+                since = min(row["date_created"] for row in page if str(row["table_name"]) == table)
+                await advance_recording(self._source, table, await self._rows_of(table, since))
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)

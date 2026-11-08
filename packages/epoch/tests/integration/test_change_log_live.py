@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
@@ -33,6 +33,18 @@ from threetears.epoch import (
     generation_kv_key,
 )
 from threetears.nats import NatsClient, set_default_namespace
+
+
+async def _restore(
+    source: EpochGenerationSource, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
+) -> str | None:
+    """put a lost log back as the keeper does: declare it, then append the changes and label it."""
+    restored = await source.begin_restore(lost)
+    if restored is None:
+        return None
+    await source.finish_restore(changes, incarnation=restored, lost=lost, covered_from=covered_from)
+    return restored
+
 
 pytestmark = pytest.mark.integration
 
@@ -111,7 +123,7 @@ async def test_a_lost_log_is_put_back_from_notes_under_a_new_incarnation_continu
             await source.advance_continuing(_TABLE, [ChangedRow(ids=["m9"])])
 
         notes = [NotedChange(table=_TABLE, rows=tuple(ChangedRow(ids=[f"m{i}"]) for i in range(3)))]
-        restored = await source.restore_from_notes(notes, lost=lost, covered_from=_seq(mark))
+        restored = await _restore(source, notes, lost=lost, covered_from=_seq(mark))
         assert restored is not None and restored != lost
         head = await reader.read(_TABLE)
         assert head is not None and head.rpartition(":")[0] == restored
@@ -120,7 +132,7 @@ async def test_a_lost_log_is_put_back_from_notes_under_a_new_incarnation_continu
         assert walk.complete
         assert sorted(row.ids[0] for change in walk.changes for row in change.rows) == ["m0", "m1", "m2"]
         assert (await source.epoch_at(_seq(head))) == walk.changes[-1], "the scrub reads a record by sequence"
-        assert await source.restore_from_notes(notes, lost=lost, covered_from=0) is None, (
+        assert await _restore(source, notes, lost=lost, covered_from=0) is None, (
             "a log that is there is never restored over"
         )
 

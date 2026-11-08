@@ -20,6 +20,7 @@ YugabyteDB) and, where the follower's catch-up is the point, a real broker. What
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import logging
 import uuid
@@ -30,6 +31,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import MetaData
 
 from threetears.core.backends.sql import SqlL3Backend
@@ -38,6 +40,8 @@ from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
+from threetears.core.collections.l2_first import run_l2_first_worker
+from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
@@ -531,6 +535,13 @@ class TestARestoreTooBigForTheLogPutsBackItsNewestPart:
         await asyncio.sleep(_FENCE.total_seconds())
         await keeper.run_pass()
         mark = (await writer.source.log_state()).last_seq  # type: ignore[union-attr]
+        state_lost = (await writer.source.log_state()).incarnation  # type: ignore[union-attr]
+        # many later marks, each vouching for less: the binary search must still take the oldest that fits
+        await pool.executemany(
+            f"INSERT INTO {schema}.threetears_change_note_marks (log_incarnation, seq, at) "
+            "VALUES ($1, $2, now() + make_interval(secs => $3))",
+            [(state_lost, mark + n, float(n)) for n in range(1, 41)],
+        )
         new.registry.follow_generation(table)
         await generation_catchup_tick(new.registry, new.reader)  # its mark: at the mark's position
         await writer.rows.save_entity(writer.rows.create({"id": "w2", "owner": "o", "n": "after"}))
@@ -576,3 +587,178 @@ class TestTheSwitchSizeIsDerivedFromTheRestoreBudget:
                 assert state.bytes < threshold * 1.2, "it would have switched by now"
         assert state.bytes < max_bytes / 2, "far before one whole log's worth"
         assert state.bytes >= threshold * 0.8
+
+
+class TestALivingKeeperAndWorkerSayWhenTheyLastPassed:
+    async def test_a_keeper_pass_and_a_worker_pass_move_their_heartbeats(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        source = EpochGenerationSource(FakeNatsClient())
+        await source.start_log()
+        keeper = await _keeper(pool, schema, table, source)
+        before = time.time()
+        await keeper.run_pass()
+        beat = REGISTRY.get_sample_value("threetears_change_notes_keeper_last_pass_timestamp_seconds")
+        assert beat is not None and beat >= before
+
+        class _OnePass:
+            lost_reason: object = None
+
+        held = _OnePass()
+
+        class _Pass:
+            async def run_pass(self) -> None:
+                held.lost_reason = "done"  # one pass, then the lease is gone
+
+        worker_before = time.time()
+        await run_l2_first_worker(held, saver=_Pass(), refiller=_Pass(), every=timedelta(0))  # type: ignore[arg-type]
+        worker_beat = REGISTRY.get_sample_value("threetears_l2_first_worker_last_pass_timestamp_seconds")
+        assert worker_beat is not None and worker_beat >= worker_before
+
+
+class TestARestoreStreamsTheNotes:
+    async def test_far_more_notes_than_the_log_s_bytes_imply_restore_as_their_distinct_rows(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+        await source.start_log()
+        keeper = await _fenced(pool, schema, table, source)
+        await pool.execute(f"INSERT INTO {table} SELECT 'k' || g, 'o', '0' FROM generate_series(1, 10) g")
+        # one raw-SQL statement per round, twenty thousand notes over ten rows, and one small epoch
+        for round_ in range(2000):
+            await pool.execute(f"UPDATE {table} SET n = $1", str(round_))
+        await source.advance(table)
+        notes = await pool.fetchval(f"SELECT count(*) FROM {schema}.{note_table((await keeper.ring()).current)}")
+        assert notes >= 20_000
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+
+        assert (await keeper.run_pass()).restored is not None
+        reader = EpochGenerationReader(bus)
+        state = await source.log_state()
+        assert state is not None and state.continues is not None
+        walk = await reader.changes_after(table, f"{state.incarnation}:0", f"{state.incarnation}:{state.last_seq}")
+        restored = sorted(row.ids[0] for change in walk.changes for row in change.rows)
+        assert restored == sorted(f"k{g}" for g in range(1, 11)), "each distinct row once"
+
+    async def test_the_keeper_declares_then_reads_the_notes_then_appends(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+        await source.start_log()
+        steps: list[str] = []
+
+        class _Ordered:
+            """the keeper's log, saying in which order the keeper used it."""
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(source, name)
+
+            async def begin_restore(self, lost: str) -> str | None:
+                restored = await source.begin_restore(lost)
+                steps.append("declared")
+                # a writer, as soon as the log is there: its row is written after the declaration
+                await pool.execute(f"INSERT INTO {table} VALUES ('after-declare', 'o', '1')")
+                await source.advance_with_change(table, [ChangedRow(ids=["after-declare"])])
+                return restored
+
+            async def finish_restore(self, changes: object, **kwargs: object) -> int:
+                steps.append("appended")
+                return await source.finish_restore(changes, **kwargs)  # type: ignore[arg-type]
+
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=_Ordered(), fence=_FENCE, scrub_every=timedelta(0))  # type: ignore[arg-type]
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",))])
+        await keeper.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        await keeper.run_pass()
+        await pool.execute(f"INSERT INTO {table} VALUES ('before', 'o', '1')")
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+
+        restored = (await keeper.run_pass()).restored
+        assert restored is not None
+        assert steps == ["declared", "appended"]
+        state = await source.log_state()
+        assert state is not None
+        walk = await EpochGenerationReader(bus).changes_after(table, f"{restored}:0", f"{restored}:{state.last_seq}")
+        named = [row.ids[0] for change in walk.changes for row in change.rows]
+        assert named[0] == "after-declare", "the writer's record landed in the declared log first"
+        assert "before" in named[1:] and "after-declare" in named[1:], "the notes were read after the declaration"
+
+
+class TestTheRingSwitchesOnNotesToo:
+    async def test_a_bulk_write_with_one_small_epoch_switches_the_ring(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        source = EpochGenerationSource(
+            FakeNatsClient(), change_retention=EpochChangeRetention(max_bytes=64 * 1024 * 1024)
+        )
+        await source.start_log()
+        keeper = ChangeNoteKeeper(
+            pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0), switch_notes=500
+        )
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",))])
+        await keeper.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        await keeper.run_pass()
+        await pool.execute(f"INSERT INTO {table} SELECT 'b' || g, 'o', '1' FROM generate_series(1, 600) g")
+        await source.advance(table)  # one small record: far from the bytes the ring switches at
+        await asyncio.sleep(_FENCE.total_seconds() / 10)  # past the count's interval
+        assert (await keeper.run_pass()).switched_to == 1
+
+
+class TestTheReconcilerNamesTheRowsTheNotesName:
+    async def test_a_missed_write_s_epoch_names_its_rows_and_a_truncate_s_the_whole_table(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await _keeper(pool, schema, table, source)
+        for statement in write_marks_ddl(schema):
+            await pool.execute(statement)
+        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reader = EpochGenerationReader(bus)
+
+        async def last() -> Any:
+            token = await reader.read(table)
+            assert token is not None
+            return await reader.change(table, token)
+
+        # raw SQL: a mark and a note, and no advance
+        await pool.execute(f"INSERT INTO {table} VALUES ('raw-1', 'ada', '1'), ('raw-2', 'bea', '1')")
+        assert (await reconciler.run_pass()).advanced == (table,)
+        record = await last()
+        assert not record.whole_table
+        assert sorted((row.ids[0], (row.columns or {}).get("owner")) for row in record.rows) == [
+            ("raw-1", "ada"),
+            ("raw-2", "bea"),
+        ], "the rows the notes name, with their invalidation columns: no follower drops the table"
+
+        # a truncate leaves no mark of its own, but a whole-table note: the next marked write's notes carry it
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(f"TRUNCATE {table}")
+            await conn.execute(f"INSERT INTO {table} VALUES ('reloaded', 'o', '1')")
+        await reconciler.run_pass()
+        assert (await last()).whole_table, "a truncate's note names the whole table, and so does its epoch"
+
+        # a mark older than the coverage (the ring has switched since): the notes cannot vouch for it, so the
+        # whole table, said and counted
+        await pool.execute(
+            f"UPDATE {schema}.threetears_change_note_ring SET switch_no = switch_no + 1, previous_switched_at = now()"
+        )
+        await pool.execute(f"INSERT INTO {table} VALUES ('old', 'cy', '1')")
+        await pool.execute(f"UPDATE {schema}.collection_write_marks SET date_created = now() - interval '1 day'")
+        with caplog.at_level(logging.WARNING):
+            await reconciler.run_pass()
+        assert (await last()).whole_table
+        said = [r.__dict__["extra_data"] for r in caplog.records if "advanced as the whole table" in r.getMessage()]
+        assert said == [{"table": table, "reason": "not_covered"}]

@@ -175,10 +175,8 @@ class EpochWalk:
         aged out -- so the follower is behind on the table even after applying :attr:`changes`
     :ivar first_missing: the oldest epoch known or suspected missing, for the log line; ``None`` when
         :attr:`complete`
-    :ivar reason: why the walk is not complete, for the behind log line and counter:
-        ``record_missing`` (a record the log does not hold), ``aged_out`` (retention took the epochs after
-        the mark) or ``record_lost`` (the log was lost with the broker, and the change notes that put it
-        back do not reach back to the mark)
+    :ivar reason: why the walk is not complete: the reason the registry falls behind with, one of
+        :data:`threetears.core.collections.registry.BEHIND_REASONS`
     """
 
     changes: tuple[EpochChange, ...]

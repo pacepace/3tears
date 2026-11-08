@@ -200,6 +200,8 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "current_ring SMALLINT NOT NULL, "
         "switch_no BIGINT NOT NULL, "
         "switched_at TIMESTAMPTZ NOT NULL, "
+        # when the previous table became current: the coverage's notes start there (NULL before a first switch)
+        "previous_switched_at TIMESTAMPTZ, "
         "switched_seq TEXT, "
         "floor TEXT, "
         "fence_seq TEXT, "

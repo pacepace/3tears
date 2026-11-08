@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
@@ -52,6 +52,18 @@ from threetears.epoch import (
     generation_catchup_tick,
 )
 from threetears.nats import set_default_namespace
+
+
+async def _restore(
+    source: EpochGenerationSource, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
+) -> str | None:
+    """put a lost log back as the keeper does: declare it, then append the changes and label it."""
+    restored = await source.begin_restore(lost)
+    if restored is None:
+        return None
+    await source.finish_restore(changes, incarnation=restored, lost=lost, covered_from=covered_from)
+    return restored
+
 
 _TABLE = "results"
 _FEED = "results_feed"
@@ -244,7 +256,7 @@ class _Fleet:
             for table, l3 in ((_TABLE, self.l3), (_FEED, self.feed_l3))
             if l3.notes
         ]
-        return await self.worker.source.restore_from_notes(notes, lost=self.lost, covered_from=0)
+        return await _restore(self.worker.source, notes, lost=self.lost, covered_from=0)
 
 
 async def _save(collection: _Results, entity_id: str, votes: str) -> None:

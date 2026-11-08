@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import re
 from typing import Any
 
@@ -81,12 +83,17 @@ class _Queue:
                 for schema, table in self.missing
                 if named is None or table in named
             ]
+        if "current_ring" in query:
+            # no change-note ring in this database: a reconciled table is advanced whole, said and counted
+            return []
         if "count(*)" in query:
             return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
         limit, failed = int(args[0]), set(args[1])
-        page = [{"id": key, "table_name": value} for key, value in sorted(self.marks.items()) if value not in failed][
-            :limit
-        ]
+        page = [
+            {"id": key, "table_name": value, "date_created": datetime.now(UTC)}
+            for key, value in sorted(self.marks.items())
+            if value not in failed
+        ][:limit]
         if self.on_read is not None:
             self.on_read()
         return page

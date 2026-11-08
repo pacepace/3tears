@@ -54,8 +54,17 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
     ),
     "epoch-bypass": frozenset(
         {
-            # the collection write path: every save, delete and L2 put the rule routes writes into
-            f"{_CORE}/collections/base.py::BaseCollection",
+            # the collection write path: every save, delete and L2 put the rule routes writes into, method by
+            # method, so a raw write added anywhere else in BaseCollection is a finding
+            f"{_CORE}/collections/base.py::BaseCollection.save_entity",
+            f"{_CORE}/collections/base.py::BaseCollection.delete",
+            f"{_CORE}/collections/base.py::BaseCollection._write_l2_at",
+            f"{_CORE}/collections/base.py::BaseCollection._cache_committed_row",
+            f"{_CORE}/collections/base.py::BaseCollection._async_propagate_write",
+            f"{_CORE}/collections/base.py::BaseCollection._drop_unread_row",
+            f"{_CORE}/collections/base.py::BaseCollection._clear_marks",
+            f"{_CORE}/collections/base.py::BaseCollection._withdraw_from_caches",
+            f"{_CORE}/collections/base.py::BaseCollection.invalidate_cache_many",
             # the schema-backed collection's keyed bulk writes, which name every row they change
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.save_rows",
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.delete_rows",

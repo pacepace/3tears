@@ -23,7 +23,9 @@ This page is for whoever wires, runs and watches it. The design is in the module
 | Which tables are noted | every table a class declares `write_generation`, absence caching or `l2_first` for: `noted_tables()` |
 | Triggers | `threetears_change_note` (row) and `threetears_change_note_truncate` on each noted table, in every schema |
 | Keeper | `ChangeNoteKeeper(pool, notes_schema=..., log=source)`, run by `run_change_note_keeper(held_lease, keeper)` |
-| Ring switch | when the current table has taken half the restore budget: `max_bytes` × 75 % / 2 (24 MiB of the hub's 64 MiB log), so the current and previous tables fit a restore whole |
+| Ring switch | when the current table has taken half the restore budget in log bytes, `switch_bytes` = `max_bytes` × 75 % / 2 (24 MiB of the hub's 64 MiB log), or holds `switch_notes` = `switch_bytes` / 64 notes (393 216 on the hub; counted every fence / 20, stopping at the threshold), whichever comes first: so the current and previous tables fit a restore whole, and a bulk raw-SQL write with one small epoch cannot pile notes behind the log's bytes |
+| Keeper alive | `threetears_change_notes_keeper_last_pass_timestamp_seconds`, set by every whole keeper pass: alert when its max across processes is older than 3 fences (30 min) |
+| L2-first worker alive | `threetears_l2_first_worker_last_pass_timestamp_seconds`, set by every whole worker pass: alert when its max across processes is older than 10 passes |
 | Marks | `threetears_change_note_marks`: the log's position every fence / 20 (30 s), pruned at each switch; a restore too big for the log starts at one |
 | Fence | the keeper's `fence`, 10 min by default, told to writers in the ring row (`fence_seconds`) at each switch. The least time between switches (`wait_seconds` = the larger of this fence and the one told before) |
 | Emptying | batched deletes of the idle table (`empty_batch` 1000 per statement, `empty_pause` 20 ms between, at most `empty_budget` 1 s per pass); never `TRUNCATE`. `emptied` in the ring row is set only once a read finds the table empty |
@@ -122,8 +124,9 @@ Each pass, in order:
 
 Two keepers at once never switch twice (every ring update names the switch it read), but empty and scrub
 twice; the lease keeps it to one. Tuning: `fence` (a writer's cached slot is used up to half of it, so keep
-the other half far beyond the longest transaction any writer runs), `switch_bytes` (default: the log's
-`max_bytes`; never set it below what the log takes between two passes), `empty_batch`, `empty_pause`,
+the other half far beyond the longest transaction any writer runs), `switch_bytes` and
+`switch_notes` (defaults in the facts table's "Ring switch" row; never set `switch_bytes` below what the log
+takes between two passes, nor above the default, or a restore fits only in part), `empty_batch`, `empty_pause`,
 `empty_budget`, `every`.
 
 ### Why a cached slot never writes into a table being emptied
@@ -140,7 +143,8 @@ refresh keeps no usable copy past fence / 2; its connections then read the ring 
 
 `threetears_change_notes_switch_waits_total` increased: a switch was due, but the idle table still held
 notes. Normal for a pass or two on a large table. If it keeps rising, the current table keeps growing past
-one log's worth, and the coverage with it. Check the keeper's ERROR lines (a failing delete), and
+its switch size (the facts table's "Ring switch" row), and the coverage with it, until a restore fits only in
+part. Check the keeper's ERROR lines (a failing delete), and
 `threetears_change_notes_emptied_rows_total` moving; raise `empty_batch` or `empty_budget` if the deletes run
 but too slowly.
 
@@ -150,10 +154,10 @@ but too slowly.
    L2-first writes raise `L2LostError`; other writes wait for the restore, and no process starts a log.
 2. The keeper's next pass first declares a new log under a NEW incarnation, marked as being restored
    (`threetears_restoring` in the stream's metadata) and continuing nothing yet: writes waiting for the log
-   append to it at once. It then reads the current and previous note tables, folds them into one record per
-   table (each distinct key once, with its invalidation columns; a truncate or file load as one whole-table
-   record), checks they fit (what the log holds plus every record stays under 75 % of `max_bytes`),
-   appends them, and only then labels the log as continuing the lost one from the floor (`continues`,
+   append to it at once. It then sizes the current and previous note tables' distinct rows in the database
+   (what the log holds plus every record must stay under 75 % of `max_bytes`), streams them a page at a time
+   folded into records (each distinct key once, with its invalidation columns; a truncate or file load as one
+   whole-table record; at most 5000 rows of one table held at once), appends them, and only then labels the log as continuing the lost one from the floor (`continues`,
    `covered_from`). It logs one WARNING with the counts and counts `threetears_change_notes_restores_total`.
    Until the label is written every follower of the lost log is behind (`replaced`), never current.
    - A restore that stops part-way (a refused append, a NATS error, the keeper losing its lease or its

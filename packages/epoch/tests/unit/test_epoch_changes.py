@@ -20,6 +20,8 @@ the real generation source, the real reader and the real pass. The contract this
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import asyncio
 import json
 import logging
@@ -65,6 +67,18 @@ from threetears.epoch import (
     quiet_pass_interval,
 )
 from threetears.nats import set_default_namespace
+
+
+async def _restore(
+    source: EpochGenerationSource, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
+) -> str | None:
+    """put a lost log back as the keeper does: declare it, then append the changes and label it."""
+    restored = await source.begin_restore(lost)
+    if restored is None:
+        return None
+    await source.finish_restore(changes, incarnation=restored, lost=lost, covered_from=covered_from)
+    return restored
+
 
 _TABLE = "group_members"
 _KEPT = "precincts"
@@ -298,9 +312,7 @@ class TestAMissingRecordLeavesThePodBehindAndServing:
         assert mark is not None
         _log(bus).vanish()
         notes = [_noted(_TABLE, "m1", "m2")]
-        assert await EpochGenerationSource(bus).restore_from_notes(
-            notes, lost=mark.rpartition(":")[0], covered_from=_seq(mark)
-        )
+        assert await _restore(EpochGenerationSource(bus), notes, lost=mark.rpartition(":")[0], covered_from=_seq(mark))
         assert await follower.tick() == 1
         assert not follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m1") == "edsger"
@@ -523,8 +535,11 @@ class TestARestoreFromNotesCarriesACoveredFollowerOver:
         bus.deaf = False
 
         _log(bus).vanish()
-        restored = await EpochGenerationSource(bus).restore_from_notes(
-            [_noted(_TABLE, "m1", columns={"member_id": "edsger"})], lost=lost, covered_from=_seq(floor)
+        restored = await _restore(
+            EpochGenerationSource(bus),
+            [_noted(_TABLE, "m1", columns={"member_id": "edsger"})],
+            lost=lost,
+            covered_from=_seq(floor),
         )
         assert restored is not None and restored != lost
         assert await reader.continues(restored) == (lost, _seq(floor))
@@ -548,7 +563,7 @@ class TestARestoreFromNotesCarriesACoveredFollowerOver:
 
         _log(bus).vanish()
         notes = [_noted(_KEPT, "k0", "k1"), _noted(_TABLE, "m1", columns={"member_id": "edsger"})]
-        assert await source.restore_from_notes(notes, lost=floor.rpartition(":")[0], covered_from=_seq(floor))
+        assert await _restore(source, notes, lost=floor.rpartition(":")[0], covered_from=_seq(floor))
         await follower.tick()
         assert not follower.registry.behind_on(_TABLE)
         assert await _member_id(reading, "m1") == "edsger"
@@ -568,8 +583,8 @@ class TestARestoreFromNotesCarriesACoveredFollowerOver:
 
         _log(bus).vanish()
         # the notes reach back only to an epoch after the follower's mark
-        assert await EpochGenerationSource(bus).restore_from_notes(
-            [_noted(_TABLE, "m1")], lost=floor.rpartition(":")[0], covered_from=_seq(head)
+        assert await _restore(
+            EpochGenerationSource(bus), [_noted(_TABLE, "m1")], lost=floor.rpartition(":")[0], covered_from=_seq(head)
         )
         with caplog.at_level(logging.ERROR):
             await follower.tick()
@@ -585,7 +600,7 @@ class TestARestoreFromNotesCarriesACoveredFollowerOver:
         floor = follower.registry.generation_marks.recorded(_TABLE)
         assert floor is not None
         _log(bus).vanish()
-        assert await EpochGenerationSource(bus).restore_from_notes([], lost=floor.rpartition(":")[0], covered_from=None)
+        assert await _restore(EpochGenerationSource(bus), [], lost=floor.rpartition(":")[0], covered_from=None)
         await follower.tick()
         assert follower.registry.behind_on(_TABLE)
         assert reading.exists_in_cache_sync("m2")
@@ -604,7 +619,7 @@ class TestALostLogWaitsForItsRestore:
             await source.current(_TABLE)
         assert await _log(bus).state() is None, "no log was started under a new incarnation"
 
-        assert await source.restore_from_notes([_noted(_TABLE, "m1")], lost=incarnation, covered_from=0)
+        assert await _restore(source, [_noted(_TABLE, "m1")], lost=incarnation, covered_from=0)
         after = await source.advance_with_change(_TABLE, [ChangedRow(ids=["m3"])])
         assert await source.continues(after.rpartition(":")[0]) == (incarnation, 0), (
             "the restored log continues the lost one"
@@ -619,9 +634,7 @@ class TestALostLogWaitsForItsRestore:
 
         async def restore() -> str | None:
             await asyncio.sleep(0.2)
-            return await EpochGenerationSource(bus).restore_from_notes(
-                [_noted(_TABLE, "m1")], lost=incarnation, covered_from=0
-            )
+            return await _restore(EpochGenerationSource(bus), [_noted(_TABLE, "m1")], lost=incarnation, covered_from=0)
 
         written, restored = await asyncio.gather(
             source.advance_with_change(_TABLE, [ChangedRow(ids=["m2"])]), restore()
@@ -742,3 +755,23 @@ class TestTheLogRefusesPastItsCap:
         assert _log(bus).max_bytes == 600
         state = await _log(bus).state()
         assert state is not None and state.first_seq == 1, "the records already written were kept, not evicted"
+
+
+class TestAWriterFollowsALogAnotherProcessPutBack:
+    async def test_its_next_token_names_the_restored_incarnation_not_the_one_it_cached(self) -> None:
+        bus = FakeNatsClient()
+        writer = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+        await writer.start_log()
+        first = await writer.advance_with_change(_TABLE, [ChangedRow(ids=["a"])])
+        lost = first.rpartition(":")[0]
+
+        # NATS loses the log and another process -- the keeper, with its own source -- puts it back, while this
+        # writer writes nothing
+        _log(bus).vanish()
+        restored = await _restore(EpochGenerationSource(bus), [_noted(_TABLE, "a")], lost=lost, covered_from=0)
+        assert restored is not None and restored != lost
+
+        after = await writer.advance_with_change(_TABLE, [ChangedRow(ids=["b"])])
+        assert after.rpartition(":")[0] == restored, "the token names the log the append landed in"
+        record = await EpochGenerationReader(bus).change(_TABLE, after)
+        assert record is not None and [row.ids for row in record.rows] == [["b"]]

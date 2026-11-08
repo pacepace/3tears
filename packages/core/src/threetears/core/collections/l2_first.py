@@ -46,6 +46,7 @@ only wasteful.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -53,7 +54,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.observe import contain, get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk
 from threetears.core.collections.generation import split_generation_token
@@ -78,6 +79,15 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+
+def _worker_last_pass() -> Any:
+    return gauge(
+        "threetears_l2_first_worker_last_pass_timestamp_seconds",
+        description="unix time of the L2-first worker's last whole pass (refill and save) in this process; alert when "
+        "no process has moved it for several passes",
+    )
+
 
 #: rows the refiller reads from L3 per statement, under the L3 rail's row cap.
 _REFILL_PAGE_ROWS: Final = 500
@@ -613,6 +623,7 @@ async def run_l2_first_worker(
         try:
             await refiller.run_pass()
             await saver.run_pass()
+            _worker_last_pass().set(time.time())
         # prawduct:allow prawduct/broad-except -- the worker outlives one failed pass; the next resumes where it stopped
         except Exception as exc:
             contain(exc, log=log, what="an L2-first worker pass failed; the next pass resumes", level="error")

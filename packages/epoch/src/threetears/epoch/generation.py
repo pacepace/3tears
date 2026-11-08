@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import timedelta
@@ -490,6 +490,22 @@ def _restored_bytes(records: Sequence[tuple[str, bytes]]) -> int:
     return sum(len(key) + len(body) + _RESTORED_RECORD_OVERHEAD for key, body in records)
 
 
+async def _each(changes: Sequence[NotedChange] | AsyncIterable[NotedChange]) -> AsyncIterator[NotedChange]:
+    """the changes one at a time, whether held or streamed.
+
+    :param changes: the changes
+    :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+    :return: each change
+    :rtype: AsyncIterator[NotedChange]
+    """
+    if isinstance(changes, Sequence):
+        for change in changes:
+            yield change
+        return
+    async for change in changes:
+        yield change
+
+
 class EpochGenerationSource(_ChangeLogReading):
     """advances collection write generations by appending each epoch's change to the change log.
 
@@ -583,9 +599,9 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(f"the epoch change log could not be declared: {exc}") from exc
         if self._declared is not None and self._declared.incarnation != state.incarnation:
             log.warning(
-                "the epoch change log was lost and declared again under a new incarnation; every follower is behind "
-                "(replaced) until it restarts. A deployment whose L3 epoch log can put it back builds its sources "
-                "with restored_from_l3=True",
+                "the epoch change log was lost and declared again under a new incarnation, not put back from the "
+                "change notes; every follower is behind (replaced) until it restarts. A deployment that runs the "
+                "change-note keeper builds every source with restored_from_l3=True, so only the keeper declares it",
                 extra={"extra_data": {"was": self._declared.incarnation, "now": state.incarnation}},
             )
         self._declared = state
@@ -660,7 +676,19 @@ class EpochGenerationSource(_ChangeLogReading):
                     raise GenerationUnavailableError(
                         f"the epoch change log vanished as {table_name!r} advanced"
                     ) from exc
-        return _token(state.incarnation, seq)
+        # the log this source last declared may have been put back since by another process (the keeper's
+        # restore, under a new incarnation): the append landed in whichever log is there now, so its token
+        # names that log's incarnation, read after the append
+        after = await self._state()
+        if after is None:
+            raise GenerationUnavailableError(f"the epoch change log vanished as {table_name!r} advanced")
+        if after.incarnation != state.incarnation:
+            log.info(
+                "the epoch change log is under a new incarnation since this source last read it",
+                extra={"extra_data": {"was": state.incarnation, "now": after.incarnation}},
+            )
+        self._declared = after
+        return _token(after.incarnation, seq)
 
     async def advance_continuing(self, table_name: str, rows: Sequence[ChangedRow]) -> str:
         """append one epoch that IS a write's commit, never declaring a log: an L2-first collection's commit.
@@ -749,22 +777,30 @@ class EpochGenerationSource(_ChangeLogReading):
         return restored
 
     async def finish_restore(
-        self, changes: Sequence[NotedChange], *, incarnation: str, lost: str, covered_from: int | None
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        *,
+        incarnation: str,
+        lost: str,
+        covered_from: int | None,
     ) -> int:
         """append one record per change into the log :meth:`begin_restore` declared, then label it restored.
 
         Each change is appended as the record a write would append: its distinct rows, split into runs
-        within the record bound, or the whole table. Only after the last append is the log labelled as
-        continuing ``lost`` from ``covered_from``, so a follower never carries its mark over to a partial
-        restore. Safe to run again after an interrupted run: every append carries a fresh id (the broker
-        would drop a repeated one inside its dedup window), and a record appended twice is evicted twice.
+        within the record bound, or the whole table. ``changes`` may be streamed (the keeper reads the notes
+        a page at a time), so memory stays bounded by one change. Only after the last append is the log
+        labelled as continuing ``lost`` from ``covered_from``, so a follower never carries its mark over to a
+        partial restore. Safe to run again after an interrupted run: every append carries a fresh id (the
+        broker would drop a repeated one inside its dedup window), and a record appended twice is evicted
+        twice.
 
-        The restore is sized first, against the log's own bound: if what the log holds plus every record
-        would pass :data:`RESTORE_BUDGET_RATIO` of ``max_bytes``, nothing is appended. The keeper sizes
-        first (:meth:`restore_bytes`) and hands only what fits.
+        The restore may fill at most :data:`RESTORE_BUDGET_RATIO` of ``max_bytes``, what the log already holds
+        included. A sequence is sized first and nothing is appended when it would pass; a stream is counted as
+        it goes, and the restore stops, unlabelled, before the append that would pass it (the keeper's next
+        pass sizes again, from the log as it then is).
 
         :param changes: what the notes say changed, per table (:mod:`threetears.core.collections.change_notes`)
-        :ptype changes: Sequence[NotedChange]
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
         :param incarnation: the log :meth:`begin_restore` declared
         :ptype incarnation: str
         :param lost: the lost log's incarnation
@@ -774,8 +810,7 @@ class EpochGenerationSource(_ChangeLogReading):
         :ptype covered_from: int | None
         :return: the records appended
         :rtype: int
-        :raises RestoreTooLargeError: when the restore would not fit with headroom (:data:`RESTORE_BUDGET_RATIO`);
-            nothing was appended
+        :raises RestoreTooLargeError: when the restore would pass its budget; the log is left unlabelled
         :raises GenerationUnavailableError: when the log is not the one being restored, or cannot be written
         """
         state = await self._state()
@@ -783,57 +818,33 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(
                 f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
             )
-        records = _restored_records(changes)
-        needed = _restored_bytes(records)
-        if state.max_bytes and state.bytes + needed > state.max_bytes * RESTORE_BUDGET_RATIO:
-            raise RestoreTooLargeError(
-                f"the restore of {lost!r} needs {needed} bytes and the log holds {state.bytes} of {state.max_bytes}; "
-                f"it may fill at most {RESTORE_BUDGET_RATIO:.0%}"
-            )
+        budget = None if not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
+        if isinstance(changes, Sequence):
+            needed = _restored_bytes(_restored_records(changes))
+            if budget is not None and needed > budget:
+                raise RestoreTooLargeError(
+                    f"the restore of {lost!r} needs {needed} bytes and the log holds {state.bytes} of "
+                    f"{state.max_bytes}; it may fill at most {RESTORE_BUDGET_RATIO:.0%}"
+                )
         attempt = uuid7().hex
+        appended = 0
+        used = 0
         try:
-            for index, (key, body) in enumerate(records):
-                await self._log().append(key, body, msg_id=f"restore-{incarnation}-{attempt}-{index}")
+            async for change in _each(changes):
+                for key, body in _restored_records([change]):
+                    used += _restored_bytes([(key, body)])
+                    if budget is not None and used > budget:
+                        raise RestoreTooLargeError(
+                            f"the restore of {lost!r} passed its budget of {int(budget)} bytes after {appended} "
+                            "records; left unlabelled"
+                        )
+                    await self._log().append(key, body, msg_id=f"restore-{incarnation}-{attempt}-{appended}")
+                    appended += 1
             labelled = await self._log().label_restored(continues=(lost, covered_from))
         except KvError as exc:
             raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
         self._declared = labelled
-        return len(records)
-
-    def restore_bytes(self, changes: Sequence[NotedChange]) -> int:
-        """the bytes the records of ``changes`` would take in the log, as :meth:`finish_restore` sizes them.
-
-        :param changes: what the notes say changed, per table
-        :ptype changes: Sequence[NotedChange]
-        :return: the estimate
-        :rtype: int
-        """
-        return _restored_bytes(_restored_records(changes))
-
-    async def restore_from_notes(
-        self, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
-    ) -> str | None:
-        """put a lost log back in one call: :meth:`begin_restore`, then :meth:`finish_restore`.
-
-        The keeper reads the notes between the two (so writers waiting for the log are not held up); this is
-        for a caller that already holds them.
-
-        :param changes: what the notes say changed, per table
-        :ptype changes: Sequence[NotedChange]
-        :param lost: the lost log's incarnation
-        :ptype lost: str
-        :param covered_from: the lost log's sequence from which the notes cover every epoch
-        :ptype covered_from: int | None
-        :return: the new log's incarnation; ``None`` when a log was already there
-        :rtype: str | None
-        :raises RestoreTooLargeError: when the restore would not fit with headroom
-        :raises GenerationUnavailableError: when the log cannot be created or written
-        """
-        restored = await self.begin_restore(lost)
-        if restored is None:
-            return None
-        await self.finish_restore(changes, incarnation=restored, lost=lost, covered_from=covered_from)
-        return restored
+        return appended
 
     async def epoch_at(self, seq: int) -> EpochChange | None:
         """the record the log holds at ``seq`` under its current incarnation, of whichever table.

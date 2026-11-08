@@ -736,16 +736,18 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         super().__init_subclass__(**kwargs)
         # the switch is the table's declaration (TableSchema.write_generation): a class over a
-        # switched-on schema is switched on, so every reader of ``write_generation`` -- this release's
+        # declaring schema carries its declaration, so every reader of ``write_generation`` -- this release's
         # and one before it -- sees what the schema says. A class that caches absences keeps that
         # path; its table is switched on through the absence cache already.
         schema = getattr(cls, "schema", None)
+        described = getattr(schema, "write_generation", None)
         if (
-            isinstance(getattr(schema, "write_generation", None), WriteGeneration)
+            isinstance(described, WriteGeneration | L2WriteGeneration | NoWriteGeneration)
             and cls.negative_cache_max_age is None
             and isinstance(cls.write_generation, UndeclaredWriteGeneration)
         ):
-            cls.write_generation = WRITE_GENERATION
+            # whichever the schema declares -- switched on, kept in L2, or opted out with its reason
+            cls.write_generation = described
         if not isinstance(
             cls.write_generation, WriteGeneration | L2WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration
         ):

@@ -8,6 +8,31 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch: the keeper streams its restore, the reconciler names rows, writers follow a restored log
+
+**Changed (core):** the write-mark reconciler records a row-level epoch for a missed write: it reads the marked
+table's change notes since its oldest mark (`noted_rows_since`) and names their keys and invalidation columns, so
+followers evict those rows instead of dropping the table. It names the whole table only for a whole-table note (a
+truncate, a load) or when the notes cannot say, said at WARNING and counted
+(`collection_write_marks_whole_table_total{reason}`).
+
+**Changed (core):** the keeper's restore sizes the coverage in the database and streams its notes a page at a time
+(at most 5000 rows of one table held), and the ring also switches when the current table holds its switch size over
+64 bytes in notes (`switch_notes`), so a bulk raw-SQL write with one small epoch cannot pile up notes. A mark's time
+is the database's clock read before the log's state. `threetears_change_notes_keeper_last_pass_timestamp_seconds`
+and `threetears_l2_first_worker_last_pass_timestamp_seconds` say when each last passed, for a liveness alert.
+
+**Fixed (epoch):** a writer whose cached log was put back by another process stamped the lost incarnation on every
+later token. `advance_with_change` reads the log's state after its append and names the incarnation the append
+landed in. `restore_from_notes` is removed: the keeper's restore is `begin_restore`, the notes, `finish_restore`.
+
+**Changed (core):** a collection's ERROR on falling behind names the reason and what ends it, from one list
+(`BEHIND_REASONS`) that `collection_epoch_behind_total`'s description is built from too.
+
+**Fixed (core):** `collection_for_schema` gives the built class whichever `write_generation` its schema declares
+(`NoWriteGeneration` with its reason too, not only `WRITE_GENERATION`), and says the class (and its entity) is
+defined in the calling module (or `module=`), so a collection census of a consumer's modules counts it.
+
 ### core, epoch, nats: a restored change log is labelled only once it is whole
 
 **Fixed (epoch, core):** a restore wrote "continues the lost log" when it declared the new log, before any record
@@ -16,7 +41,7 @@ a carried-over follower walked a partial log as current. Now the keeper declares
 restored (`ChangeLogState.restoring`; writers waiting for the log append to it at once), reads and sizes the notes,
 appends them, and only then labels it (`NatsChangeLog.label_restored`). Until then followers of the lost log are
 behind. An unlabelled restore is done again in full by the next pass under fresh append ids
-(`EpochGenerationSource.begin_restore` / `finish_restore`; `restore_from_notes` runs both). A restore that would
+(`EpochGenerationSource.begin_restore` / `finish_restore`). A restore that would
 take the log past 75 % of `max_bytes` (`RESTORE_BUDGET_RATIO`) puts back its newest part that fits: the notes since
 a mark of the log's position (`threetears_change_note_marks`, every fence / 20), with that position as
 `covered_from`, said at ERROR and counted (`threetears_change_notes_restore_truncated_total`); followers older than
@@ -49,7 +74,7 @@ table is emptied only a full wait after it stopped being current, so every copy 
 and a catalog version bump that replans every writer's note function). The emptying is done in one function,
 `ChangeNoteKeeper._empty_slot`. `emptied` in the ring row is set only once a read finds the table empty, and the
 switch's update requires it: a due switch into a table still being emptied waits, logged once and counted
-(`threetears_change_notes_switch_waits_total`). The `whole-drop` waiver for the keeper's `TRUNCATE` is gone.
+(`threetears_change_notes_switch_waits_total`).
 
 ### registry: the rbac pool proves its token at the hub's l3 door
 
@@ -87,20 +112,19 @@ note where the coverage needs it; a miss is logged at ERROR and counted on `thre
 It never writes a note or repairs anything.
 
 **Changed (epoch):** a lost change log is put back from the notes, for every table, not only L2-first ones.
-`EpochGenerationSource.restore_from_notes` declares a new incarnation that names the lost one and the floor
+`EpochGenerationSource.begin_restore` / `finish_restore` declare a new incarnation that names the lost one and the floor
 (`ChangeLogState.continues`, `covered_from`) and appends one record per table: each distinct noted key once, or one
 whole-table record for a truncate or load. A follower whose mark is at or past the floor carries it to the start of
 the restored log and walks every record, so it catches up with no `record_lost`; an older mark is behind
-(`record_lost`). `restore_epochs`, the restore filler and its `record_lost` walk are gone, which closes the boundary
-review's open blocker (non-L2-first records lost after a NATS loss). `EpochGenerationSource.log_state`, `epoch_at`
+(`record_lost`). `restore_epochs`, the restore filler and its `record_lost` walk are gone: a non-L2-first table's records come
+back after a NATS loss too. `EpochGenerationSource.log_state`, `epoch_at`
 and `EpochGenerationReader.newest_epochs` are added; `ChangeLogState.continues_through` is replaced by
 `covered_from`, and `max_age` is added.
 
 **Removed (core):** the per-table rising-key L3 epoch log: `EpochLogStore`, `SqlEpochLogStore`,
 `threetears_epoch_log`, `CollectionRegistry.set_epoch_log`/`epoch_log`, `L2FirstTableStatus.l3_logged`, the `log=`
 argument of `L3Saver`, `L2Refiller` and `l2_first_status`, and `L2FirstEpochs.restore_epochs`/`start_log`. An
-L2-first table's L3 writes leave notes like any other's, and the keeper restores its log. The epoch log's pruning
-gap (review R-18) goes with it: the ring bounds the notes by size. `BaseCollection.delete_l2_entry` is now a no-op on
+L2-first table's L3 writes leave notes like any other's, and the keeper restores its log. The ring bounds the notes by size. `BaseCollection.delete_l2_entry` is now a no-op on
 an L2-first collection, whose L2 entry is the row, never a cache of it.
 
 **Added (epoch):** a quiet table never ages out. `quiet_marks_tick` reads only the change log (its state and every
@@ -198,7 +222,7 @@ the follower behind. `GenerationMarks.heard_in_full` and `advance_to` replace `u
 stamps with the registry's mark is told when it moves (`register_derived_cache(on_caught_up=...)`).
 
 **Added (epoch):** `EpochGenerationSource.advance_continuing` (an L2-first commit: never declares the log, raises
-`threetears.core.exceptions.L2LostError` when it is absent), `restore_from_notes` (the change-note keeper's
+`threetears.core.exceptions.L2LostError` when it is absent), `begin_restore` / `finish_restore` (the change-note keeper's
 put-back, above), and
 `observe_change_log_fill` (`threetears_epoch_changes_fill_ratio`, WARNING from 0.75). `ChangedRow.value` carries a
 row's stored bytes for a record that is the commit. `follow_l2_kept_tables` follows `L2_WRITE_GENERATION` tables by

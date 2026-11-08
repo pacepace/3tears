@@ -1458,8 +1458,15 @@ fetch epochs `mine+1 .. head`, apply each.
   records, its epoch the last; never as the whole table. Pods, the registry, the hub and the gateway
   are granted `{ns}-epoch-changes` beside `{ns}-epochs`.
 
-**Still owed.** The write-mark reconciler's and migrations' whole-table records become row records
-once the write path names their rows. Declarations on every collection (hub, SDK).
+**Done (2026-11-08).** The write-mark reconciler names the rows of a missed write: every committed write to a
+noted table leaves a change note with its keys in L3 (`threetears.core.collections.change_notes`), and the
+reconciler reads the marked table's notes since its oldest mark (`noted_rows_since`) and records a row-level
+epoch. It records the whole table only when a note does (a truncate, a file load) or the notes cannot say
+(the coverage starts after the mark, no note, more than 10 000 rows, no ring), each said at WARNING and
+counted on `collection_write_marks_whole_table_total{reason}`.
+
+**Still owed.** Migrations' whole-table records become row records once the migration path names their
+rows. Declarations on every collection (hub, SDK).
 
 ### The Epoch Is the Change Log's Sequence (Owner, 2026-11-08)
 

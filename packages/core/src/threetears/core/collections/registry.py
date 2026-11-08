@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid7
 
 from pydantic import BaseModel, ValidationError
@@ -62,13 +62,35 @@ def _epochs_applied() -> Any:
     )
 
 
+#: every reason a followed table falls behind, and what ends it: the one list the metric's description and the
+#: ERROR are built from, so neither can leave a reason out
+BEHIND_REASONS: Final[dict[str, str]] = {
+    "record_missing": (
+        "the change log holds no record for an epoch after the mark; ends on its own once the record can be read "
+        "(after a NATS loss, when the change-note keeper's restore is labelled), otherwise at a restart"
+    ),
+    "record_unreadable": "a record could not be read; the next catch-up pass reads it again",
+    "keys_unknown": "an epoch's writer named no rows; ends at a restart (a first sight of the table)",
+    "replaced": (
+        "the log is under another incarnation that does not continue the mark's; ends on its own when the "
+        "change-note keeper labels its restore of the lost log and the mark is at or past covered_from, "
+        "otherwise at a restart"
+    ),
+    "record_lost": (
+        "the mark is older than the restored log's covered_from, so an epoch it missed may be one no change note "
+        "names; ends at a restart"
+    ),
+    "aged_out": "the log's retention passed the mark; ends at a restart",
+}
+
+
 def _epochs_behind() -> Any:
     return counter(
         "collection_epoch_behind_total",
         description=(
-            "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change "
-            "record), keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the "
-            "generation's store was replaced); the pod serves what it has"
+            "times a followed table fell behind, by why ("
+            + "; ".join(f"{reason}: {what}" for reason, what in BEHIND_REASONS.items())
+            + "); the pod serves what it holds"
         ),
         label_names=("table", "reason"),
     )
@@ -1025,10 +1047,8 @@ class CollectionRegistry:
         _epochs_behind().labels(table=table_name, reason=reason).inc()
         _tables_behind().set(len(self._behind))
         log.error(
-            "behind on a table: an epoch's change could not be applied; serving what this process holds "
-            "until the record can be read. An L2-first table's records come back through the L2-first "
-            "refiller's restore from L3 (check the worker runs); any other record lost with the broker, a "
-            "replaced log or keys unknown is ended by restarting this process (a first sight of the table)",
+            "behind on a table: an epoch's change could not be applied; serving what this process holds. "
+            f"{reason}: {BEHIND_REASONS.get(reason, 'see collection_epoch_behind_total')}",
             extra={"extra_data": {"table": table_name, "reason": reason, **detail}},
         )
 

@@ -1,18 +1,18 @@
 # epoch-discipline allowlist, rule l2-swallow: today's violations, each with the fix that removes it.
 # <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
 # Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
-packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor._claim :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor._release_claim :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor.check_rate_limit :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/channels/src/threetears/channels/presence/sweeper.py :: PresenceSweeper.run_sweep :: except KvError :: 2 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/collections/base.py :: BaseCollection._advance_l2_generation :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/collections/base.py :: BaseCollection._async_propagate_write :: except KvError :: 2 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/collections/base.py :: BaseCollection._withdraw_unpersisted_cas :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._put_chunk :: except ObjectStoreFullError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/security/door_request.py :: DoorRequestDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/core/src/threetears/core/security/service_envelope.py :: ServiceEnvelopeDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/registry/src/threetears/registry/health.py :: HeartbeatSubscriber.handle_heartbeat :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/registry/src/threetears/registry/health.py :: HeartbeatSubscriber.run_health_check :: except KvError :: 3 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/scheduled-jobs/src/threetears/scheduled_jobs/background.py :: BackgroundDispatch._run :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/scheduled-jobs/src/threetears/scheduled_jobs/background.py :: _release_in_flight_lock :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
-packages/scheduled-jobs/src/threetears/scheduled_jobs/tick.py :: scheduled_tick_job :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...) (feat/l2-degraded-loud), or re-raise
+packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor._claim :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor._release_claim :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/agent/memory/src/threetears/agent/memory/extraction.py :: MemoryExtractor.check_rate_limit :: except NatsClientError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/channels/src/threetears/channels/presence/sweeper.py :: PresenceSweeper.run_sweep :: except KvError :: 2 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/collections/base.py :: BaseCollection._advance_l2_generation :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/collections/base.py :: BaseCollection._async_propagate_write :: except KvError :: 2 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/collections/base.py :: BaseCollection._withdraw_unpersisted_cas :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._put_chunk :: except ObjectStoreFullError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/security/door_request.py :: DoorRequestDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/core/src/threetears/core/security/service_envelope.py :: ServiceEnvelopeDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/registry/src/threetears/registry/health.py :: HeartbeatSubscriber.handle_heartbeat :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/registry/src/threetears/registry/health.py :: HeartbeatSubscriber.run_health_check :: except KvError :: 3 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/scheduled-jobs/src/threetears/scheduled_jobs/background.py :: BackgroundDispatch._run :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/scheduled-jobs/src/threetears/scheduled_jobs/background.py :: _release_in_flight_lock :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
+packages/scheduled-jobs/src/threetears/scheduled_jobs/tick.py :: scheduled_tick_job :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
