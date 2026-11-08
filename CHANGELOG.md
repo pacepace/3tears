@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.95.0 -- 2026-11-07
+
 ### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
 
 **Added (nats):** `KvFullError` (a bucket's `max_bytes`, or the account's storage limit: JetStream 10077 "maximum
