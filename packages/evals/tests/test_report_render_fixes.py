@@ -30,6 +30,7 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.style import check_names
 from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import UNPRICED
 
 #: A world as a case gave it, cut short by the snapshot: its last value ends mid-word, its last pair mid-list.
@@ -181,7 +182,7 @@ def test_a_goal_check_with_no_declared_name_is_named_alike_by_every_reader() -> 
 
 
 def _cost_cells(held: ReportInput) -> dict[str, str | None]:
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     assert any(column.key == "cost_per_1k" for column in table.columns)
     return {arm.id: row["cost_per_1k"].value for arm, row in zip(held.arms, table.rows, strict=True)}  # type: ignore[misc]
 

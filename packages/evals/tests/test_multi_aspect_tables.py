@@ -27,6 +27,7 @@ from threetears.evals.analysis.report.parts.look import figure_text, quantity
 from threetears.evals.analysis.report.parts.tables import arms_key, arms_table
 from threetears.evals.analysis.report_input import Aspect, Measure, ReportInput, ScoreboardRow, Stat
 from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.forms import PageForms
 
 #: The cost measure the r5 input's cost is read from, and the measure only the second aspect reads.
 _COST = "production_replicating_cost"
@@ -100,7 +101,7 @@ def _key_count(report_input: ReportInput, aspect: str, arm: str, statistic: str)
 
 def test_the_arms_table_lays_out_a_column_group_per_aspect_in_the_inputs_order() -> None:
     held = _three_aspects()
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     keys = [column.key for column in table.columns]
     aspects = [aspect.id for aspect in held.aspects]
     grouped = [key for key in keys if "@" in key]
@@ -119,7 +120,7 @@ def test_the_arms_table_lays_out_a_column_group_per_aspect_in_the_inputs_order()
 
 def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -> None:
     held = _three_aspects()
-    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    table = arms_table(held, block_look(held, fact_arms(held)), (), forms=PageForms.of(held))
     for aspect in (aspect.id for aspect in held.aspects):
         costs = aspect_costs_per_thousand(held, aspect)
         for arm in (arm.id for arm in held.arms):
@@ -143,7 +144,9 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
 def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_figures() -> None:
     held = _three_aspects()
     (table,) = [
-        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "arms_by_measure"
+        table
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        if table.name == "arms_by_measure"
     ]
     keys = [column.key for column in table.columns]
     assert keys[:3] == ["arm", "aspect", "pass_rate"]
@@ -184,7 +187,11 @@ def test_a_dash_where_an_arm_recorded_none_says_so_and_one_where_the_aspect_read
         per_arm={arm: Stat(mean=0.0, n=4, n_cases=4) for arm in candidates},
     )
     one = held.model_copy(update={"measures": {**held.measures, "delivered_items": delivered}})
-    (table,) = [t for t in every_table(one, block_look(one, fact_arms(one))) if t.name == "arms_by_measure"]
+    (table,) = [
+        t
+        for t in every_table(one, block_look(one, fact_arms(one)), forms=PageForms.of(one))
+        if t.name == "arms_by_measure"
+    ]
     said = [_row(table, one, arm)["measure:delivered_items"].text for arm in (control, *candidates)]
     assert said == ["— (not recorded)", "0 items", "0 items"], said
     # More than one aspect: an arm missing on the one aspect that reads the figure says so; the others stay bare.
@@ -196,7 +203,11 @@ def test_a_dash_where_an_arm_recorded_none_says_so_and_one_where_the_aspect_read
         }
     )
     three = three.model_copy(update={"measures": {**three.measures, _ARRIVAL_ONLY: missing}})
-    (table,) = [t for t in every_table(three, block_look(three, fact_arms(three))) if t.name == "arms_by_measure"]
+    (table,) = [
+        t
+        for t in every_table(three, block_look(three, fact_arms(three)), forms=PageForms.of(three))
+        if t.name == "arms_by_measure"
+    ]
     cells = {(row["aspect"].value, row["arm"].text): row[f"measure:{_ARRIVAL_ONLY}"] for row in table.rows}
     assert cells["arrival", "1017"].text == "— (not recorded)"
     assert {cell.flag for (aspect, _), cell in cells.items() if aspect != "arrival"} == {None}, "not read there"
@@ -215,6 +226,6 @@ def test_an_input_whose_other_aspects_hold_no_figures_lays_its_tables_out_for_on
     held = fixture_inputs()["r5"]
     bare = held.model_copy(update={"aspects": [*held.aspects, Aspect(id="arrival", name="arrival", readings=[])]})
     look = block_look(held, fact_arms(held))
-    assert arms_table(bare, look, ()) == arms_table(held, look, ())
+    assert arms_table(bare, look, (), forms=PageForms.of(bare)) == arms_table(held, look, (), forms=PageForms.of(held))
     assert arms_key(bare, look) == arms_key(held, look)
-    assert every_table(bare, look) == every_table(held, look)
+    assert every_table(bare, look, forms=PageForms.of(bare)) == every_table(held, look, forms=PageForms.of(held))

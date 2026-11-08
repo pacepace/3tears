@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
 
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, percent_columns
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
@@ -52,7 +53,8 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     held_figure,
 )
-from threetears.evals.analysis.report.parts.look import ArmLook, PageLook, figure_text, quantity
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.parts.look import ArmLook, PageLook
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION, PageArmsKey
 from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
@@ -128,7 +130,9 @@ def _runs(report_input: ReportInput, option: str) -> str:
     return settings
 
 
-def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection[str]) -> TableBlock:
+def arms_table(
+    report_input: ReportInput, look: PageLook, recommends: Collection[str], *, forms: PageForms
+) -> TableBlock:
     """The arms table, a report document's options table (this module's account).
 
     :param report_input: The report input the document was written from.
@@ -137,18 +141,23 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
     :ptype look: PageLook
     :param recommends: The arms the document recommends, by id; empty for no call.
     :ptype recommends: Collection[str]
+    :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of` over the same
+        input), which state each arm's pass rate.
+    :ptype forms: PageForms
     :return: The table, a row per arm in the input's order.
     :rtype: TableBlock
     """
     arms = [arm.id for arm in report_input.arms]
     described = any(_runs(report_input, arm) for arm in arms)
     aspects = _laid_out_aspects(report_input)
-    quality = {arm: pass_rate_cell(report_input, arm) for arm in arms}
+    quality = {arm: pass_rate_cell(report_input, arm, forms=forms) for arm in arms}
     rated = not aspects and any(cell.value is not None for cell in quality.values())
     header, cells = _arm_costs(report_input, look)
     costed = not aspects and any(cell.value is not None for cell in cells.values())
     cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
-    grouped, by_aspect = _aspect_groups(report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1)
+    grouped, by_aspect = _aspect_groups(
+        report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1, forms=forms
+    )
     priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
     sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
@@ -343,11 +352,11 @@ def _aspect_header(aspect: Aspect, header: str) -> str:
     return ASPECT_HEADER_TEMPLATE.format(aspect=name[:1].upper() + name[1:], header=header[:1].lower() + header[1:])
 
 
-def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = None) -> TableCell:
+def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = None, *, forms: PageForms) -> TableCell:
     """An arm's pass rate on one aspect, as its scoreboard counts it, its passes over its usable trials beside it; on
     the lead aspect, an arm its scoreboard counts no passes for reads the ``pass_rate.<arm>`` figure, which falls back
     to the input's ``pass_rate`` measure where no arm's scoreboard counts passes. Every table's pass-rate cell is this
-    one, so the options, arms and full-results tables state one rate for an arm.
+    one, so the options, arms and full-results tables state one rate for an arm, in the pass rate's form on the page.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -356,15 +365,16 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     :param aspect: The aspect, by id (:func:`~threetears.evals.analysis.report_margins.aspect_board`); None for the
         lead aspect's, the input's own scoreboard.
     :ptype aspect: str | None
+    :param forms: The page's forms, which hold the pass rate's wherever a scoreboard counts passes.
+    :ptype forms: PageForms
     :return: The cell; a dash where neither the scoreboard nor, on the lead aspect, the figure states a rate.
     :rtype: TableCell
     """
     row = aspect_board(report_input, aspect).get(arm)
     if row is None or row.passed is None or not row.usable:
         return TableCell(value=_said(held_figure(f"pass_rate.{arm}", report_input)) if aspect is None else None)
-    drawn = quantity("share")
     return TableCell(
-        value=figure_text(row.passed / row.usable * drawn.factor, drawn),
+        value=forms.level(TRIAL_PASS_NAME, row.passed / row.usable, kind="trial").text,
         flag=PASSES_TEMPLATE.format(passed=row.passed, usable=row.usable),
     )
 
@@ -378,16 +388,29 @@ def _trials(report_input: ReportInput, arm: str, aspect: str | None = None) -> T
 
 
 def _aspect_groups(
-    report_input: ReportInput, look: PageLook, aspects: list[Aspect], families: Collection[str], *, per: int
+    report_input: ReportInput,
+    look: PageLook,
+    aspects: list[Aspect],
+    families: Collection[str],
+    *,
+    per: int,
+    forms: PageForms | None,
 ) -> tuple[list[TableColumn], dict[str, dict[str, TableCell]]]:
     """Each laid-out aspect's column group, in the input's aspect order, of the families asked (``pass_rate``,
     ``cost_per_1k``, ``usable``, in that order within a group), and each arm's cells, by arm; a column no arm fills is
-    left out, and a cost column that some arm fills says ``unpriced`` for an arm it states no cost for."""
+    left out, and a cost column that some arm fills says ``unpriced`` for an arm it states no cost for. A pass rate
+    is stated in the page's ``forms``, so a group that asks for one is handed them; one that asks for none (the arms
+    key's) needs none.
+
+    :raises ValueError: A pass rate is asked for, and no forms are handed in.
+    """
+    if _PASS_RATE in families and forms is None:
+        raise ValueError("a column group of pass rates is stated in the page's forms, and none were handed in")
     if not aspects:
         return [], {arm.id: {} for arm in report_input.arms}
     cost_header, costs, ruler = _costs(report_input, [aspect.id for aspect in aspects], per=per)
     readers: dict[str, tuple[str, Callable[[Aspect, str], TableCell]]] = {
-        _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: pass_rate_cell(report_input, arm, aspect.id)),
+        _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms)),
         _COST: (cost_header, lambda aspect, arm: _cost_cell(arm, report_input, look, costs, ruler, aspect.id)),
         "usable": (ARM_HEADERS["usable"], lambda aspect, arm: _trials(report_input, arm, aspect.id)),
     }
@@ -407,6 +430,12 @@ def _aspect_groups(
             for arm, cell in column.items():
                 cells[arm][key] = cell
     return columns, cells
+
+
+def _aspect_pass_rate(report_input: ReportInput, arm: str, aspect: Aspect, forms: PageForms | None) -> TableCell:
+    """One aspect's pass-rate cell (:func:`pass_rate_cell`), in the forms :func:`_aspect_groups` checked it holds."""
+    assert forms is not None
+    return pass_rate_cell(report_input, arm, aspect.id, forms=forms)
 
 
 def _setting_name(report_input: ReportInput, setting: str) -> str:
@@ -447,7 +476,7 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
     }
     keys = ["arm", "role", *(key for key, shown in present.items() if shown)]
     # With more than one aspect, each aspect's usable trials, a column per aspect.
-    grouped, by_aspect = _aspect_groups(report_input, look, aspects, ("usable",), per=1)
+    grouped, by_aspect = _aspect_groups(report_input, look, aspects, ("usable",), per=1, forms=None)
     columns = [*(TableColumn(key=key, header=ARM_HEADERS[key]) for key in keys), *grouped]
     rows = []
     for arm in arms:

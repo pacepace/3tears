@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.harness import WriterResult
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 
@@ -265,7 +266,9 @@ def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
         and evidence.chart.chart.data.level
     }
     (contrasts,) = [
-        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "contrasts"
+        table
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        if table.name == "contrasts"
     ]
     return heads, {row["level"].text for row in contrasts.rows}
 

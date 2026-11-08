@@ -93,6 +93,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.model import (
@@ -633,6 +634,8 @@ def build(
     arms = fact_arms(report_input)
     reader = _Reader(report_input=report_input, arm_names={arm.id: arm.name for arm in arms}, strict=strict)
     look = block_look(report_input, arms)
+    # Every figure the page's tables state is in one form per measure, decided once here for the whole page.
+    forms = PageForms.of(report_input)
     held = {arm.id for arm in report_input.arms}
     for index, arm in enumerate(doc.recommends):
         if arm not in held:
@@ -669,7 +672,7 @@ def build(
             )
             for index, entry in enumerate(doc.decision)
         ],
-        options=arms_table(report_input, look, doc.recommends),
+        options=arms_table(report_input, look, doc.recommends, forms=forms),
         recommended_rows=[index for index, arm in enumerate(report_input.arms) if arm.id in doc.recommends],
         claims=claims,
         explore=_explore(doc, reader),
@@ -681,7 +684,7 @@ def build(
             for index, step in enumerate(doc.next)
         ],
         arms_key=arms_key(report_input, look),
-        full_results=every_table(report_input, look),
+        full_results=every_table(report_input, look, forms=forms),
         omitted=[
             DocOmitted(
                 what=reader.written(item.what, f"omitted[{index}].what"),

@@ -64,6 +64,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.chart_query import ChartSpec
 
 #: The Kairo reference plan.
@@ -697,7 +698,7 @@ _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 @functools.cache
 def _tables(name: str, path: str) -> tuple[TableBlock, ...]:
     report_input = _input(name)
-    return tuple(every_table(report_input, anchor_look(_plan(path), report_input)))
+    return tuple(every_table(report_input, anchor_look(_plan(path), report_input), forms=PageForms.of(report_input)))
 
 
 def _full(name: str, path: str, table: str) -> TableBlock:

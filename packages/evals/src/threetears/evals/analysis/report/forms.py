@@ -51,6 +51,7 @@ from threetears.evals.analysis.report.blocks import TableCell, interval_text
 from threetears.evals.analysis.report.parts.charting import figure_unit, interval_level, interval_words, is_rubric_score
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report_input import Contrast, ContrastFamily, ReportInput
+from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
     MoneyForm,
@@ -74,13 +75,6 @@ __all__ = [
     "PrintedInterval",
     "ReadsAs",
     "Role",
-    "at_decimals",
-    "change_decimals",
-    "change_ends",
-    "change_quantity",
-    "change_span",
-    "level_decimals",
-    "level_quantity",
     "measured_decimals",
 ]
 
@@ -202,6 +196,10 @@ class MeasureForm:
     :ivar levels: How the written page draws a level (its unit, its factor, its money); None on a code page.
     :ivar changes: How the written page draws a change; None on a code page.
     :ivar ruler: The code page's money ruler; None elsewhere.
+    :ivar scale: The scale a score's name carries on a written page (``1–5``); empty for any other measure.
+    :ivar unnamed_span: How far a change can reach for a comparison that names no kind, which the written page reads
+        by its measure's figures alone (:func:`~threetears.evals.analysis.report.parts.charting.is_rubric_score` with
+        no kind), where one that names ``measure`` is never read as a score; the same as ``span`` for any other kind.
     """
 
     key: str
@@ -219,6 +217,8 @@ class MeasureForm:
     levels: Quantity | None = field(default=None, compare=False)
     changes: Quantity | None = field(default=None, compare=False)
     ruler: MoneyRuler | None = field(default=None, compare=False)
+    scale: str = ""
+    unnamed_span: float | None = None
 
 
 class PageForms:
@@ -238,7 +238,9 @@ class PageForms:
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
         """A written page's forms: one per measure, judged dimension and the pass rate its input holds a figure of,
-        each as the page's Full results decide it.
+        each as the page's Full results decide it. A slice (a stratum, a task, a cell) can hold a figure on a key the
+        input declares no measure for, which its table prints as a measure's; and a scoreboard that counts passes
+        states the pass rate, so each has its form too.
 
         :param report_input: The page's report input.
         :ptype report_input: ReportInput
@@ -252,6 +254,18 @@ class PageForms:
             kinds[key, "judged"] = None
         for contrast in report_input.contrasts:
             kinds[contrast.measure, _measure_kind(contrast.kind)] = None
+        slices = [
+            *(stratum.per_arm for stratum in report_input.strata),
+            *(task.per_arm for task in report_input.tasks),
+            *(cell.per_arm for cell in report_input.cells.values()),
+        ]
+        for per_arm in slices:
+            for figures in per_arm.values():
+                for key in figures:
+                    judged_only = key in report_input.judged and key not in report_input.measures
+                    kinds.setdefault((key, "judged" if judged_only else "measure"), None)
+        if _counts_passes(report_input):
+            kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
         measures = {(key, kind): _written_form(report_input, key, kind) for key, kind in kinds}
         return cls("written", measures)
 
@@ -326,7 +340,8 @@ class PageForms:
         :rtype: Printed
         """
         form = self.measure(key, kind=kind)
-        if value is None or not math.isfinite(value):
+        if value is None or not (math.isfinite(value) or self.page == "written"):
+            # A written page spells a figure that is no number as its rule does, the dash in its unit (``— ms``).
             return self._issue(form.key, form.kind, "level", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
         if self.page == "written":
             text = _written_level(form, value, alone=alone)
@@ -349,7 +364,8 @@ class PageForms:
         :rtype: Printed
         """
         form = self.measure(key, kind=kind)
-        if value is None or not math.isfinite(value):
+        if value is None or not (math.isfinite(value) or self.page == "written"):
+            # As a level: a written page spells a change that is no number in its unit (``— pts``).
             return self._issue(form.key, form.kind, "change", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
         if self.page == "written":
             text = _written_change(form, value, alone=alone)
@@ -378,7 +394,8 @@ class PageForms:
         """
         form = self.measure(key, kind=kind)
         if self.page == "written":
-            low_text, high_text, text = _written_interval(form, low, high, change=change)
+            span = form.unnamed_span if kind is None else form.span
+            low_text, high_text, text = _written_interval(form, low, high, change=change, span=span)
         else:
             low_text, high_text, text = _code_interval(form, low, high, change=change)
         unit = form.change_unit if change else form.unit
@@ -557,6 +574,17 @@ def _interval_join(page: PageKind, low: str, high: str) -> str:
     return f"[{low}, {high}]" if page == "code" else f"{low} to {high}"
 
 
+def _counts_passes(report_input: ReportInput) -> bool:
+    """Whether some scoreboard (the lead aspect's, or another aspect's own) counts an arm's passes over its usable
+    trials, which a table then states as the arm's pass rate."""
+    aspects = (None, *(aspect.id for aspect in report_input.aspects))
+    return any(
+        row.passed is not None and bool(row.usable)
+        for aspect in aspects
+        for row in aspect_board(report_input, aspect).values()
+    )
+
+
 def _measure_kind(kind: MeasureKind) -> str:
     """A measure's kind as its forms are keyed: a contrast that names none is a measure's own, as every decision reads
     it, so one measure never takes two forms."""
@@ -566,7 +594,7 @@ def _measure_kind(kind: MeasureKind) -> str:
 # --- the written page: the Full results' decisions ---------------------------------------------------------------------
 
 
-def level_quantity(report_input: ReportInput, key: str, *, kind: str | None = None) -> Quantity:
+def _level_quantity(report_input: ReportInput, key: str, *, kind: str | None = None) -> Quantity:
     """How a measure's levels are drawn on a written page, its Full results' every table and its forms alike: by the
     one owner of money's scale over every figure the input holds of it, so its money is drawn per one count everywhere
     (per 1,000 replies for money per reply, per 1,000,000 where it is under a cent per 1,000); any other unit as it is.
@@ -584,10 +612,10 @@ def level_quantity(report_input: ReportInput, key: str, *, kind: str | None = No
     return quantity_of(unit, held_means(report_input, key)) if kind != "judged" else quantity(unit)
 
 
-def change_quantity(
+def _change_quantity(
     report_input: ReportInput, measure: str, kind: str | None, contrasts: Sequence[Contrast]
 ) -> Quantity:
-    """How a measure's changes are drawn on a written page: on its levels' own ruler (:func:`level_quantity`), so a
+    """How a measure's changes are drawn on a written page: on its levels' own ruler (:func:`_level_quantity`), so a
     change is drawn per the count its measure's name says, in the changes' own form capped by their widest interval
     (#993); any other unit's change quantity as it is.
 
@@ -602,7 +630,7 @@ def change_quantity(
     :return: The quantity its changes are drawn as.
     :rtype: Quantity
     """
-    amounts = level_quantity(report_input, measure, kind=kind)
+    amounts = _level_quantity(report_input, measure, kind=kind)
     if amounts.unit != MONEY:
         return quantity(figure_unit(report_input, measure, kind=kind), change=True)
     return in_change_form(
@@ -616,7 +644,7 @@ def change_quantity(
     )
 
 
-def level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
+def _level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
     """The decimals every level of a measure reads at in every Full results table, by the one owner the keys citing it
     read too (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`), as drawn: a judged score at two,
     any other measured figure (a count per trial, a time) at two significant figures of the least of every mean the
@@ -627,7 +655,7 @@ def level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind
     :ptype report_input: ReportInput
     :param key: The measure's or judged dimension's key.
     :ptype key: str
-    :param drawn: How its levels are drawn (:func:`level_quantity`).
+    :param drawn: How its levels are drawn (:func:`_level_quantity`).
     :ptype drawn: Quantity
     :param kind: A contrast's kind where the key is one's; None for a measure's.
     :ptype kind: str | None
@@ -639,7 +667,7 @@ def level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind
     return figure_places(report_input, key, judged=kind == "judged", factor=drawn.factor)
 
 
-def change_decimals(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> int | None:
+def _change_decimals(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> int | None:
     """The decimals a comparison's change and its interval's ends read at: a rate's in points at one decimal (``-6.0
     pts`` beside ``-7.6 pts``); a score's at two and any other measured change at two significant figures of the least
     change the page states of its measure, as drawn, by the one owner the keys citing it read too
@@ -651,7 +679,7 @@ def change_decimals(report_input: ReportInput, measure: str, kind: str | None, d
     :ptype measure: str
     :param kind: The comparison's kind.
     :ptype kind: str | None
-    :param drawn: How its changes are drawn (:func:`change_quantity`).
+    :param drawn: How its changes are drawn (:func:`_change_quantity`).
     :ptype drawn: Quantity
     :return: The decimals, or None.
     :rtype: int | None
@@ -663,7 +691,7 @@ def change_decimals(report_input: ReportInput, measure: str, kind: str | None, d
     return figure_places(report_input, measure, change=True, judged=kind == "judged", factor=drawn.factor)
 
 
-def change_span(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> float | None:
+def _change_span(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> float | None:
     """How far a change can reach either way, drawn: a rate's 100 points, a score's the width of its scale (4 on 1–5);
     None for any other measure, whose range the input does not bound.
 
@@ -685,7 +713,7 @@ def change_span(report_input: ReportInput, measure: str, kind: str | None, drawn
     return None
 
 
-def at_decimals(value: float, places: int, unit: str, *, signed: bool = False) -> str:
+def _at_decimals(value: float, places: int, unit: str, *, signed: bool = False) -> str:
     """A figure at its set's decimals (:func:`~threetears.evals.kernel.numbers.spell_at`), its unit spaced as the
     package writes it (``1.4 notices``, ``4.75``, ``-6.0 pts``). A level that is exactly zero reads ``0`` (nothing
     happened, which no precision qualifies, as ``0%`` reads in a column of percents); a change reads its zero at its
@@ -706,7 +734,7 @@ def at_decimals(value: float, places: int, unit: str, *, signed: bool = False) -
     return _joined(text, unit)
 
 
-def change_ends(low: float, high: float, places: int, unit: str, *, span: float | None) -> tuple[str, str]:
+def _change_ends(low: float, high: float, places: int, unit: str, *, span: float | None) -> tuple[str, str]:
     """A change's interval's two ends, as drawn, at one precision: kept within how far the measure can move (``span``),
     at the set's decimals or more where those would print a non-zero end as zero or two ends alike
     (:func:`~threetears.evals.kernel.numbers.ends_places`), each signed in its unit.
@@ -728,15 +756,15 @@ def change_ends(low: float, high: float, places: int, unit: str, *, span: float 
         # A change never reaches past what its measure can move: a score's by its scale's width, a rate's by 100 points.
         low, high = max(low, -span), min(high, span)
     at = ends_places(low, high, places)
-    return at_decimals(low, at, unit, signed=True), at_decimals(high, at, unit, signed=True)
+    return _at_decimals(low, at, unit, signed=True), _at_decimals(high, at, unit, signed=True)
 
 
 def _written_form(report_input: ReportInput, key: str, kind: MeasureKind) -> MeasureForm:
     """One measure's form on a written page, from the Full results' decisions; a measure's own kind is None there."""
     stated: str | None = None if kind == "measure" else kind
-    levels = level_quantity(report_input, key, kind=stated)
+    levels = _level_quantity(report_input, key, kind=stated)
     held = [c for c in report_input.contrasts if (c.measure, _measure_kind(c.kind)) == (key, kind)]
-    changes = change_quantity(report_input, key, kind, held)
+    changes = _change_quantity(report_input, key, kind, held)
     reads_as: ReadsAs = (
         "money"
         if levels.unit == MONEY
@@ -754,14 +782,20 @@ def _written_form(report_input: ReportInput, key: str, kind: MeasureKind) -> Mea
         change_unit=changes.unit,
         factor=levels.factor,
         change_factor=changes.factor,
-        level_decimals=level_decimals(report_input, key, levels, kind=stated),
-        change_decimals=change_decimals(report_input, key, kind, changes),
+        level_decimals=_level_decimals(report_input, key, levels, kind=stated),
+        change_decimals=_change_decimals(report_input, key, kind, changes),
         money=levels.money,
         change_money=changes.money,
-        span=change_span(report_input, key, kind, changes),
+        span=_change_span(report_input, key, kind, changes),
         levels=levels,
         changes=changes,
+        scale=_RUBRIC_SCALE_TEXT if reads_as == "score" else "",
+        unnamed_span=_change_span(report_input, key, stated, changes),
     )
+
+
+#: The 1–5 rubric as a score's name carries it (``Outcome (1–5)``), so its two decimals read on a scale a reader knows.
+_RUBRIC_SCALE_TEXT = f"{format_number(RUBRIC_SCALE[0])}–{format_number(RUBRIC_SCALE[1])}"
 
 
 def _drawn(form: MeasureForm, *, change: bool) -> Quantity:
@@ -776,7 +810,7 @@ def _written_level(form: MeasureForm, value: float, *, alone: bool) -> str:
     note rule (:func:`~threetears.evals.analysis.report.parts.look.figure_text`)."""
     drawn = _drawn(form, change=False)
     if form.level_decimals is not None and not alone:
-        return at_decimals(value * drawn.factor, form.level_decimals, drawn.unit)
+        return _at_decimals(value * drawn.factor, form.level_decimals, drawn.unit)
     return figure_text(value * drawn.factor, drawn)
 
 
@@ -785,11 +819,13 @@ def _written_change(form: MeasureForm, value: float, *, alone: bool) -> str:
     quantity's note rule."""
     drawn = _drawn(form, change=True)
     if form.change_decimals is not None and not alone:
-        return at_decimals(value * drawn.factor, form.change_decimals, drawn.unit, signed=True)
+        return _at_decimals(value * drawn.factor, form.change_decimals, drawn.unit, signed=True)
     return figure_text(value * drawn.factor, drawn)
 
 
-def _written_interval(form: MeasureForm, low: float, high: float, *, change: bool) -> tuple[str, str, str]:
+def _written_interval(
+    form: MeasureForm, low: float, high: float, *, change: bool, span: float | None
+) -> tuple[str, str, str]:
     """An interval as the written page states it, ``low to high``: a change's as the Full results' comparisons do, its
     ends kept within how far the measure can move and read at one precision; a level's as a chart's tooltip does."""
     drawn = _drawn(form, change=change)
@@ -797,8 +833,8 @@ def _written_interval(form: MeasureForm, low: float, high: float, *, change: boo
         scaled = (low * drawn.factor, high * drawn.factor)
         text = interval_words(scaled[0], scaled[1], drawn)
         return figure_text(scaled[0], drawn), figure_text(scaled[1], drawn), text
-    low_text, high_text = change_ends(
-        low * drawn.factor, high * drawn.factor, form.change_decimals, drawn.unit, span=form.span
+    low_text, high_text = _change_ends(
+        low * drawn.factor, high * drawn.factor, form.change_decimals, drawn.unit, span=span
     )
     return low_text, high_text, _interval_join("written", low_text, high_text)
 
