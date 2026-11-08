@@ -8,7 +8,6 @@ through ``VersionedAnswers``, whose answers and index both declare it, over 3tea
 
 from __future__ import annotations
 
-import asyncio
 import gzip
 import uuid
 from datetime import timedelta
@@ -138,34 +137,7 @@ class TestReadingTheGeneration:
         assert answers.get_row_sync(answers.key_of("v1", "page")) is not None, "an unreadable generation dropped L1"
 
 
-class TestAHostThatNeverSchedulesThePass:
-    async def test_the_registry_warns_while_no_pass_judges_the_tables(self, caplog: pytest.LogCaptureFixture) -> None:
-        registry = CollectionRegistry()
-        registry.l2_catch_up_overdue = timedelta(seconds=0.02)
-        bus = FakeNatsClient()
-        registry.configure(l1_backend=None, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-        VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name=_TABLE)
-        with caplog.at_level("WARNING", logger="threetears.core.collections.registry"):
-            await asyncio.sleep(0.05)
-        assert any("no catch-up pass has judged them" in r.getMessage() for r in caplog.records)
-        assert registry.l2_catch_up_age is None
-        await registry.stop_invalidation_listener()
-
-    async def test_a_host_that_runs_the_pass_hears_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
-        registry = CollectionRegistry()
-        registry.l2_catch_up_overdue = timedelta(seconds=0.05)
-        bus = FakeNatsClient()
-        registry.configure(l1_backend=None, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-        VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name=_TABLE)
-        with caplog.at_level("WARNING", logger="threetears.core.collections.registry"):
-            for _ in range(6):
-                await registry.catch_up_l2_generations()
-                await asyncio.sleep(0.02)
-        assert not any("no catch-up pass" in r.getMessage() for r in caplog.records)
-        age = registry.l2_catch_up_age
-        assert age is not None and age < timedelta(seconds=1)
-        await registry.stop_invalidation_listener()
-
+class TestAnOnDemandPass:
     async def test_a_pass_that_reads_no_generation_does_not_count_as_run(self) -> None:
         bus = FakeNatsClient()
         answers = await _replica(bus)

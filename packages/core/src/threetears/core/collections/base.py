@@ -22,7 +22,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -31,6 +31,7 @@ from uuid import uuid7
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.core._bridge import fire_and_forget, sync_await
+from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.cache import MISSING
@@ -38,6 +39,14 @@ from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
+from threetears.core.collections.epoch_change import (
+    EPOCH_CHANGE_MAX_AGE,
+    ChangedRow,
+    EpochChange,
+    advance_recording,
+    epoch_change_record,
+    read_epoch_change,
+)
 from threetears.core.collections.delete_cascade import (
     DeleteCascade,
     announce_delete_cascade,
@@ -1605,9 +1614,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
             return None
 
-    async def _advance_generation(self) -> GenerationUnavailableError | None:
+    async def _advance_generation(self, changed: Sequence[ChangedRow] | None) -> GenerationUnavailableError | None:
         """advance this table's write generation after a committed write, when negative caching is on.
 
+        :param changed: the rows the write changed, stored as the epoch's change; ``None`` for the whole table
+        :ptype changed: Sequence[ChangedRow] | None
         :return: the failure, for the caller to raise once the rest of the write path has run, or
             ``None`` when the generation advanced or nothing needed advancing
         :rtype: GenerationUnavailableError | None
@@ -1621,7 +1632,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if source is None:
             return None
         try:
-            token = await source.advance(self.table_name)
+            token = await advance_recording(source, self.table_name, changed)
             if token is None:
                 # a source that advanced nothing (a pod whose broker names no generation for the
                 # table). A switched-on table may write on regardless; an absence cache may not,
@@ -1652,41 +1663,47 @@ class BaseCollection(ABC, Generic[EntityT]):
             and registry.generation_source is not None
         )
 
-    async def _bump_generation(self, rows: int) -> _Bump:
-        """advance this table's write generation once, for one commit that changed ``rows`` rows.
+    async def _bump_generation(self, changed: Sequence[ChangedRow] | None) -> _Bump:
+        """advance this table's write generation once, for one commit that changed ``changed``.
 
         Only a switched-on collection advances here (:attr:`_write_generation_on`). The advance is
-        this registry's own, so its mark for the table accounts for it without a broadcast.
+        this registry's own, so its mark for the table accounts for it without a broadcast. The
+        rows are the epoch's change: a source that keeps the epoch change log stores them with the
+        advance (:func:`~threetears.core.collections.epoch_change.advance_recording`), so a pod that
+        misses a broadcast applies exactly them.
 
-        :param rows: how many row messages the commit publishes; inside a settling transaction that
-            more than one instance of the table wrote, the shared advance's count is stamped instead
-        :ptype rows: int
+        :param changed: the rows the commit publishes a message for, one each; ``None`` when it
+            changed the whole table and publishes none. Inside a settling transaction that more than
+            one instance of the table wrote, the shared advance covers every instance's rows
+        :ptype changed: Sequence[ChangedRow] | None
         :return: the generation written and the row count to stamp on those messages; a failure for
             the caller to raise once its write path has run; or nothing, when nothing was advanced
         :rtype: _Bump
         """
         registry = self.registry
+        rows = 1 if changed is None else len(changed)
         if self.keeps_write_generation_in_l2 and registry is not None and rows >= 1:
-            return await self._advance_l2_generation(registry, rows)
+            return await self._advance_l2_generation(registry, changed)
         if not self._write_generation_on or registry is None or rows < 1:
             return _NO_BUMP
         shared = shared_advance_for(self.table_name)
         if shared is None:
-            return await self._advance_for_commit(registry, rows)
+            return await self._advance_for_commit(registry, changed)
         if not isinstance(shared.bump, _Bump):
             # the first instance of the table to settle advances it for every instance's rows
-            shared.bump = await self._advance_for_commit(registry, shared.rows)
+            shared.bump = await self._advance_for_commit(registry, shared.changed)
         elif shared.bump.token is not None:
             registry.account_generation(self.table_name, shared.bump.token)
         return shared.bump
 
-    async def _advance_for_commit(self, registry: CollectionRegistry, rows: int) -> _Bump:
-        """advance this table's write generation once, for a commit whose messages number ``rows``.
+    async def _advance_for_commit(self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None) -> _Bump:
+        """advance this table's write generation once, for a commit that changed ``changed``.
 
         :param registry: this collection's registry, which carries a generation source
         :ptype registry: CollectionRegistry
-        :param rows: how many row messages the commit publishes, across every instance of the table
-        :ptype rows: int
+        :param changed: the rows the commit publishes a message for, across every instance of the
+            table; ``None`` when it changed the whole table
+        :ptype changed: Sequence[ChangedRow] | None
         :return: what the advance came to
         :rtype: _Bump
         """
@@ -1694,8 +1711,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         assert source is not None  # narrow: _write_generation_on
         # read before the advance, so every mark read was committed before it and the advance covers it
         covered = await self._marks_before_advance(registry)
+        rows = 1 if changed is None else len(changed)
         try:
-            token = await source.advance(self.table_name)
+            token = await advance_recording(source, self.table_name, changed)
         except GenerationNotCommittedError as exc:
             # the commit did not land (a rolled-back transaction settling): nothing to advance
             log.info(
@@ -1815,6 +1833,72 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         return f"{scope}.{self.table_name}-generation"
 
+    def _l2_epoch_key(self, token: str) -> str:
+        """the L2 key the change record of the advance that wrote ``token`` is kept under.
+
+        :param token: the generation that advance wrote, ``{incarnation}:{count}``
+        :ptype token: str
+        :return: ``{scope}.{table}-epoch.{incarnation}.{count}``
+        :rtype: str
+        :raises GenerationUnavailableError: when ``token`` is not followable
+        """
+        parts = split_generation_token(token)
+        if parts is None:
+            raise GenerationUnavailableError(f"generation {token!r} of {self.table_name!r} names no epoch change")
+        generation_key = self._l2_generation_key()
+        return f"{generation_key.removesuffix('-generation')}-epoch.{parts[0]}.{parts[1]}"
+
+    async def l2_epoch_change(self, table_name: str, token: str) -> EpochChange | None:
+        """the change record of this L2-kept table's advance that wrote ``token``, as L2 holds it.
+
+        The reader a registry catches an L2-kept table up through
+        (:meth:`CollectionRegistry.catch_up_l2_generations`); it has the shape of
+        :meth:`~threetears.core.collections.epoch_change.EpochChangeReader.change`.
+
+        :param table_name: the table; this collection's
+        :ptype table_name: str
+        :param token: the generation that advance wrote
+        :ptype token: str
+        :return: the record, or ``None`` when L2 does not hold it
+        :rtype: EpochChange | None
+        :raises GenerationUnavailableError: when L2 cannot be read, or holds no record of this epoch there
+        """
+        try:
+            kv = await self._ensure_kv()
+            raw = None if kv is None else await kv.get(key=self._l2_epoch_key(token))
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"the change of {table_name!r} at {token!r} could not be read from L2: {exc}"
+            ) from exc
+        if raw is None:
+            return None
+        return read_epoch_change(raw, table_name, token)
+
+    async def watch_l2_write_generation(self) -> AsyncIterator[str | None]:
+        """this L2-kept table's write generation as it stands, then each value it takes, until the caller stops.
+
+        Pushed through the bucket's key watch on the generation key, so a replica follows the table by
+        each advance rather than by a timed pass (``threetears.epoch.follow_l2_kept_tables``).
+
+        :return: the generation tokens, in order; ``None`` when the key was deleted
+        :rtype: AsyncIterator[str | None]
+        :raises GenerationUnavailableError: when the bucket cannot be opened or cannot watch the key
+        """
+        try:
+            kv = await self._ensure_kv()
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {self.table_name!r} could not be watched: {exc}"
+            ) from exc
+        watch_key = getattr(kv, "watch_key", None)
+        if kv is None or watch_key is None:
+            raise GenerationUnavailableError(f"write generation for {self.table_name!r} has no key to watch")
+        # sender-posture: own-consumer -- a generation counts only through the KV key watch, which takes an update only with its own consumer's ack reply
+        async with aclosing(watch_key(key=self._l2_generation_key())) as updates:
+            async for update in updates:
+                value = update.value
+                yield None if value is None else value.decode("utf-8", errors="replace")
+
     async def l2_write_generation(self) -> str | None:
         """this table's write generation as L2 holds it, for the pass that judges a follower's mark.
 
@@ -1846,23 +1930,33 @@ class BaseCollection(ABC, Generic[EntityT]):
             raise GenerationUnavailableError(f"write generation for {self.table_name!r} is malformed: {raw!r}")
         return token
 
-    async def _advance_l2_generation(self, registry: CollectionRegistry, rows: int) -> _Bump:
-        """advance this table's write generation in L2 by compare-and-swap, for one write of ``rows`` rows.
+    async def _advance_l2_generation(self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None) -> _Bump:
+        """advance this table's write generation in L2 by compare-and-swap, and store the epoch's change beside it.
 
         This process's advances of the table take turns, so its own writes never contend for the key; a
-        peer's do, and lose a round to it at most.
+        peer's do, and lose a round to it at most. The change record goes under
+        :meth:`_l2_epoch_key`, so a replica that misses the write's broadcast applies exactly its rows.
 
         :param registry: this collection's registry, which accounts for the advance
         :ptype registry: CollectionRegistry
-        :param rows: how many row messages the write publishes
-        :ptype rows: int
+        :param changed: the rows the write publishes a message for; ``None`` for the whole table
+        :ptype changed: Sequence[ChangedRow] | None
         :return: the generation written and the row count to stamp; a failure for the caller to raise
-            once its write path has run, when the key could not be advanced
+            once its write path has run, when the key could not be advanced or its change not stored
         :rtype: _Bump
         """
+        rows = 1 if changed is None else len(changed)
         try:
             async with self._l2_generation_lock:
                 token = await self._advance_l2_generation_key()
+            kv = await self._ensure_kv()
+            if kv is None:
+                raise KvError(f"{self.table_name}: no L2 client to keep the epoch's change in")
+            await kv.put(
+                key=self._l2_epoch_key(token),
+                value=epoch_change_record(self.table_name, token, changed),
+                ttl=EPOCH_CHANGE_MAX_AGE,
+            )
         except (KvError, ConcurrentModificationError) as exc:
             failure = GenerationUnavailableError(
                 f"write generation for {self.table_name!r} could not be advanced in L2: {exc}"
@@ -1905,20 +1999,58 @@ class BaseCollection(ABC, Generic[EntityT]):
             await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
         raise ConcurrentModificationError(self.table_name, key, datetime.min)
 
-    async def _bump_after_commit(self) -> _Bump:
-        """advance the generation after one row's L3 commit, on the paths that always have.
+    async def _bump_after_commit(self, changed: Sequence[ChangedRow] | None) -> _Bump:
+        """advance the generation after one commit to L3, on the paths that always have.
 
         :meth:`save_entity` and :meth:`l2_cas_mutate` advanced the generation for a collection
         that caches absences before any table could be switched on, and still do, exactly as
         before, when the collection is not.
 
+        :param changed: the rows the commit changed; ``None`` when it changed the whole table
+        :ptype changed: Sequence[ChangedRow] | None
         :return: what the advance came to; for a collection not switched on, at most a failure
         :rtype: _Bump
         """
         if self._write_generation_on or self.keeps_write_generation_in_l2:
-            return await self._bump_generation(1)
-        failure = await self._advance_generation()
+            return await self._bump_generation(changed)
+        failure = await self._advance_generation(changed)
         return _NO_BUMP if failure is None else _Bump(failure=failure)
+
+    def _naming_changed(self, rows: Sequence[ChangedRow]) -> AbstractContextManager[None]:
+        """name ``rows`` on every L3 write request made inside the block (``CHANGED_ROWS_FIELD``).
+
+        A pod's broker advances the table's generation after it commits the write and stores the
+        epoch's change record from these rows; a write that names none leaves the epoch's keys unknown.
+
+        :param rows: the rows the write changes
+        :ptype rows: Sequence[ChangedRow]
+        :return: the naming context
+        :rtype: AbstractContextManager[None]
+        """
+        return naming_changed_rows(self.table_name, [row.model_dump(exclude_none=True) for row in rows])
+
+    def changed_row(
+        self, entity_id: Any, row: dict[str, Any] | None = None, *, l2_key_current: bool = False
+    ) -> ChangedRow:
+        """one row a commit changed, as its epoch's change record names it and its row message would.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared column order
+        :ptype entity_id: Any
+        :param row: the row the write saw, for the declared invalidation columns; ``None`` when none
+        :ptype row: dict[str, Any] | None
+        :param l2_key_current: whether a revision-fenced write left this registry's scoped L2 key
+            holding the newest value
+        :ptype l2_key_current: bool
+        :return: the changed row
+        :rtype: ChangedRow
+        """
+        values = entity_id if isinstance(entity_id, tuple) else (entity_id,)
+        registry = self.registry
+        return ChangedRow(
+            ids=[str(value) for value in values],  # convert at border: epoch change record pk values
+            l2_current_scope=registry.kv_key_scope if l2_key_current and registry is not None else None,
+            columns=self._invalidation_values(row),
+        )
 
     def _invalidation_values(self, row: dict[str, Any] | None) -> dict[str, str | None] | None:
         """the declared :attr:`invalidation_columns`' values in ``row``, as a row message carries them.
@@ -3492,7 +3624,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
             before = await self._l2_revision_before_write(entity_id)
             try:
-                rows_affected = await self.save_to_store(data)
+                with self._naming_changed([self.changed_row(entity_id, data)]):
+                    rows_affected = await self.save_to_store(data)
             # BaseException, not Exception: a cancelled write's outcome is as unknown as a failed
             # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
             # path is fire-and-forget, so there is no caller to hand it to.
@@ -3540,7 +3673,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             # is the row L3 holds, never the row as sent.
             # the row is committed. This path has no caller to raise to, so an advance that fails
             # is logged where it failed and the write carries on.
-            bump = await self._bump_generation(1)
+            bump = await self._bump_generation([self.changed_row(entity_id, data)])
             stored = await self._stored_row(entity_id, data)
             if stored is None:
                 await self._withdraw_from_caches(entity_id, bump=bump, row=data)
@@ -3964,7 +4097,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # touched the key since (see _cache_committed_row).
                 before = await self._l2_revision_before_write(entity_id)
                 try:
-                    rows_affected = await self.save_to_store(data, original_timestamp)
+                    with self._naming_changed([self.changed_row(entity_id, data)]):
+                        rows_affected = await self.save_to_store(data, original_timestamp)
                 # BaseException, not Exception: a cancellation mid-write leaves the outcome as
                 # unknown as any failure does, and CancelledError is not an Exception.
                 except BaseException:
@@ -3980,7 +4114,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # the row is committed: advance the generation before anything else, so an absence
                 # a reader recorded from an L3 read that predated this commit stops answering as
                 # soon as possible. a failure is raised only once L1, L2 and the broadcast have run.
-                bump = await self._bump_after_commit()
+                bump = await self._bump_after_commit([self.changed_row(entity_id, data)])
                 # the database may have filled in columns the row did not name; what every tier
                 # and the handle keep is the row L3 holds, never the row as sent.
                 stored = await self._stored_row(entity_id, data)
@@ -4059,7 +4193,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises RuntimeError: when an insert affects no row
         """
         try:
-            rows_affected = await self.save_to_store(data, original_timestamp, conn=conn)
+            with self._naming_changed([self.changed_row(entity_id, data)]):
+                rows_affected = await self.save_to_store(data, original_timestamp, conn=conn)
         # BaseException, not Exception: CancelledError is not an Exception, and a cancelled write
         # leaves the outcome as unknown as any failure does.
         except BaseException:
@@ -4277,10 +4412,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: int
         """
         rows: int
-        if self.persists_l2_order and l2_order_of(data) is not None:
-            rows = await self.save_ordered_to_store(data, conn=conn)
-        else:
-            rows = await self.save_to_store(data, conn=conn)
+        key = tuple(data[column] for column in self.primary_key_columns)
+        # a flushed row is announced as leaving this scope's L2 key current, and named so
+        with self._naming_changed([self.changed_row(key if len(key) > 1 else key[0], data, l2_key_current=True)]):
+            if self.persists_l2_order and l2_order_of(data) is not None:
+                rows = await self.save_ordered_to_store(data, conn=conn)
+            else:
+                rows = await self.save_to_store(data, conn=conn)
         return rows
 
     @traced()
@@ -4374,8 +4512,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         cascaded = await read_delete_cascade(self, [entity_id])
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        await self.delete_from_store(entity_id)
-        bump = await self._bump_generation(1)
+        with self._naming_changed([self.changed_row(entity_id, row)]):
+            await self.delete_from_store(entity_id)
+        bump = await self._bump_generation([self.changed_row(entity_id, row)])
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._announce_row(entity_id, bump=bump, row=row)
@@ -4976,17 +5115,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises RuntimeError: when a synchronous L3 write affects no row and no newer order is
             stored in its place
         """
+        changed = [self.changed_row(entity_id, new_row, l2_key_current=True)]
         if self.l3_pool is None or action == "delete":
-            return await self._bump_generation(1)
+            return await self._bump_generation(changed)
         assert new_row is not None  # narrow: "upsert" always carries a row
         if self._defers_l3_writes:
             assert self._write_buffer is not None  # narrow: deferral requires one
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(new_row))
             return _NO_BUMP
-        if await self.save_ordered_to_store(new_row) == 0:
+        with self._naming_changed(changed):
+            stored = await self.save_ordered_to_store(new_row)
+        if stored == 0:
             await self._confirm_superseded(entity_id, new_row)
             return _NO_BUMP
-        return await self._bump_after_commit()
+        return await self._bump_after_commit(changed)
 
     async def _confirm_superseded(self, entity_id: Any, new_row: dict[str, Any]) -> None:
         """confirm that an ordered persist which wrote nothing was refused for a newer stored order.
@@ -5086,7 +5228,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._set_span_table()
         # a caller evicts a key because a row changed where the collection did not see it, so on a
         # switched-on table this is a commit like any other and advances the generation for it.
-        bump = await self._bump_generation(1)
+        bump = await self._bump_generation([self.changed_row(entity_id)])
         await self._withdraw_from_caches(entity_id, bump=bump)
         if bump.failure is not None:
             raise bump.failure
@@ -5156,7 +5298,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             return
         seen: Sequence[dict[str, Any] | None] = rows if rows is not None else (None,) * len(entity_ids)
         # with or without a bus: the caches this advance tells are other pods'.
-        bump = await self._bump_generation(len(entity_ids))
+        # the rows are an epoch's change only where the call advances a generation: a collection that
+        # advances none is handed none, so evicting many keys builds nothing per key on the loop
+        advances = self._write_generation_on or self.keeps_write_generation_in_l2
+        bump = await self._bump_generation(
+            [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)]
+            if advances
+            else []
+        )
         if self._nats_client is None:
             self._warn_missing_nats_client_once()
             if self._registry is not None:
@@ -5205,9 +5354,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if not rows or not self._write_generation_on:
             return
-        bump = await self._bump_generation(len(rows))
-        for row in rows:
-            key = tuple(row[column] for column in self.primary_key_columns)
+        keys = [tuple(row[column] for column in self.primary_key_columns) for row in rows]
+        bump = await self._bump_generation(
+            [
+                self.changed_row(key if len(key) > 1 else key[0], row, l2_key_current=True)
+                for key, row in zip(keys, rows, strict=True)
+            ]
+        )
+        for row, key in zip(rows, keys, strict=True):
             await self._announce_row(key if len(key) > 1 else key[0], l2_key_current=True, bump=bump, row=row)
         if bump.failure is not None:
             raise bump.failure

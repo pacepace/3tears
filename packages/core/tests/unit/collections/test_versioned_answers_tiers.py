@@ -205,7 +205,7 @@ class TestTheIndexIsReadFromL1BetweenMoves:
 
 
 class TestAMissedBroadcastIsCaughtUp:
-    async def test_a_replica_that_missed_a_retirement_drops_its_l1_at_the_next_catch_up(self) -> None:
+    async def test_a_replica_that_missed_a_retirement_corrects_its_l1_at_the_next_catch_up(self) -> None:
         bus = FakeNatsClient()
         a, b = await _replica(bus), await _replica(bus)
         b_registry = b.registry
@@ -213,7 +213,7 @@ class TestAMissedBroadcastIsCaughtUp:
         await a.answer("v1", "page", _Computer(), order=1)
         await b_registry.catch_up_l2_generations()  # B's first sight of the tables: its marks are taken
         await b.answer("v1", "page", _Computer(), order=1)  # B holds the answer in its L1
-        assert await b_registry.catch_up_l2_generations() == 0, "B dropped tables it had heard every write of"
+        assert await b_registry.catch_up_l2_generations() == 0, "B caught up on tables it had heard every write of"
 
         await b_registry.stop_invalidation_listener()  # B's listener is down: it misses what follows
         await a.answer("v2", "page", _Computer(), order=2)
@@ -229,7 +229,7 @@ class TestAMissedBroadcastIsCaughtUp:
         assert caught_up.calls == 1, "B still answered a retired version from its L1"
         assert given.outcome is AnswerOutcome.RETIRED
 
-    async def test_a_replica_that_heard_every_write_drops_nothing(self) -> None:
+    async def test_a_replica_that_heard_every_write_applies_nothing(self) -> None:
         bus = FakeNatsClient()
         a, b = await _replica(bus), await _replica(bus)
         b_registry = b.registry

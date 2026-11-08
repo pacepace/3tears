@@ -8,7 +8,9 @@ the follower missed.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -19,7 +21,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.versioned_answers import AnswerOutcome, VersionedAnswers
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch import EpochGenerationReader, generation_catchup_tick
+from threetears.epoch import EpochGenerationReader, follow_l2_kept_tables, generation_catchup_tick
 from threetears.nats import set_default_namespace
 
 _SCOPE = "tool_pod-followl2"
@@ -104,3 +106,41 @@ class TestAnUnexpectedErrorInTheL2Pass:
         bucket.get = broken  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="a bug in the read"):
             await generation_catchup_tick(registry, _ReadsRecorded(bus))
+
+
+class TestTheTablesAreFollowedByTheirKeysWithNoPass:
+    async def test_a_missed_retirement_is_applied_when_its_advance_is_pushed(self) -> None:
+        bus = FakeNatsClient()
+        writer, follower = await _replica(bus), await _replica(bus)
+        registry = follower.registry
+        assert registry is not None
+        await writer.answer("v1", "page", _text, order=1)
+        following = follow_l2_kept_tables(registry, grace=timedelta(0))
+        try:
+            await _until(lambda: following.healthy)
+            await follower.answer("v1", "page", _text, order=1)
+            await registry.stop_invalidation_listener()  # the follower misses every broadcast after this
+            await writer.answer("v2", "page", _text, order=2)
+            await writer.retire_older_than(2)
+            await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+
+            async def retired() -> bool:
+                given = await follower.answer_with_outcome("v1", "page", _text, order=1)
+                return given.outcome is AnswerOutcome.RETIRED
+
+            for _ in range(200):
+                if await retired():
+                    break
+                await asyncio.sleep(0.005)
+            assert await retired(), "the pushed advance was not applied: the follower answered a retired version"
+            assert not registry.behind_on(_TABLE)
+        finally:
+            await following.stop()
+
+
+async def _until(condition: Any) -> None:
+    for _ in range(400):
+        if condition():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the follower never became healthy")

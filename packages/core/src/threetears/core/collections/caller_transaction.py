@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
 
@@ -67,12 +68,22 @@ class SharedAdvance:
     later one stamps its broadcasts with that same advance. A follower then counts the advance
     complete only once it has heard every row's broadcast, whichever instance sent it.
 
-    :ivar rows: how many rows of the table the transaction settles, across every instance
+    :ivar changed: every row of the table the transaction settles, across every instance: the
+        advance's change record and its row count
     :ivar bump: the advance, once the first instance has made it; ``None`` before
     """
 
-    rows: int
+    changed: list[ChangedRow]
     bump: object | None = None
+
+    @property
+    def rows(self) -> int:
+        """how many rows of the table the transaction settles, across every instance.
+
+        :return: the count
+        :rtype: int
+        """
+        return len(self.changed)
 
 
 #: the shared advances of the transaction settling in this context, by table.
@@ -273,10 +284,16 @@ class CallerTransaction:
             _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
             keys.append(entity_id)
             rows.append(row)
-        per_table: dict[str, list[int]] = {}
-        for collection, keys, _ in by_collection.values():
-            per_table.setdefault(collection.table_name, []).append(len(keys))
-        shared = {table: SharedAdvance(rows=sum(counts)) for table, counts in per_table.items() if len(counts) > 1}
+        per_table: dict[str, list[list[ChangedRow]]] = {}
+        for collection, keys, rows in by_collection.values():
+            per_table.setdefault(collection.table_name, []).append(
+                [collection.changed_row(key, row) for key, row in zip(keys, rows, strict=True)]
+            )
+        shared = {
+            table: SharedAdvance(changed=[row for each in changed for row in each])
+            for table, changed in per_table.items()
+            if len(changed) > 1
+        }
         sharing = _SHARED.set(shared)
         try:
             failure = await self._settle_each(by_collection)
