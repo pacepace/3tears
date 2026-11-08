@@ -57,9 +57,9 @@ from threetears.evals.analysis.report.parts.charting import (
     KindResolver,
     chart_block,
     money_drawn,
-    count_text,
     criterion_line,
     drawn_keys,
+    figure_kind,
     figure_unit,
     measure_words,
     money_words,
@@ -71,8 +71,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.figure_keys import INTERVAL_TEMPLATE
-from threetears.evals.analysis.report.parts.look import Quantity, band_domain, figure_text, in_change_form, quantity
+from threetears.evals.analysis.report.parts.look import Quantity, band_domain
 from threetears.evals.analysis.report.parts.words import (
     BELOW_TEMPLATE,
     CASES_TEMPLATE,
@@ -143,9 +142,18 @@ def _arm_name(context: ChartContext, arm: str) -> str:
     return context.look.arm(arm).name if arm in context.look.arms else arm
 
 
-def _cell_tip(place: str, value: float, n: float | None, drawn: Quantity, line: ChartReference | None) -> list[str]:
-    said = figure_text(value, drawn)
-    tip = [place, CASES_TEMPLATE.format(value=said, n=count_text(n)) if n is not None else said]
+def _cell_tip(
+    context: ChartContext,
+    key: str,
+    place: str,
+    value: float,
+    n: float | None,
+    drawn: Quantity,
+    line: ChartReference | None,
+) -> list[str]:
+    forms = context.forms
+    said = forms.chart_note(value, drawn, measure=key, kind=figure_kind(context, key)).text
+    tip = [place, CASES_TEMPLATE.format(value=said, n=forms.chart_count(n).text) if n is not None else said]
     if line is not None and line.kind == "floor" and value < line.value:
         tip.append(BELOW_TEMPLATE.format(line=line.label or line.kind))
     return tip
@@ -179,7 +187,7 @@ def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], lis
         ]
         for key in keys
     }
-    quantities = unit_quantities(context.report_input, values)
+    quantities = unit_quantities(context, values)
     matrices: list[_Matrix] = []
     missing: list[str] = []
     counts: list[float] = []
@@ -235,7 +243,7 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], li
         ]
         for key in keys
     }
-    quantities = unit_quantities(context.report_input, values)
+    quantities = unit_quantities(context, values)
     where: CriterionWhere | None = "tasks" if context.query.source == "tasks" else None
     matrices: list[_Matrix] = []
     missing: list[str] = []
@@ -299,14 +307,15 @@ def _spot(
     """One place as drawn: its value, its cases and its tip, and its interval where the figure drawn is its mean and
     carries one (a criterion's statistic, a p95, carries none), on its tip too."""
     shown = value * drawn.factor
-    tip = _cell_tip(place, shown, n, drawn, line)
+    tip = _cell_tip(context, key, place, shown, n, drawn, line)
     read = stat_value(context.report_input, key, stat)
     interval = stat_interval(stat) if read is not None and read[1] == "mean" else None
     if interval is None:
         return _Spot(shown, n, tip)
     low, high = interval[0] * drawn.factor, interval[1] * drawn.factor
     level = context.spec.level
-    said = INTERVAL_TEMPLATE.format(low=figure_text(low, drawn), high=figure_text(high, drawn))
+    # The interval's text as the ledger records it, ``low to high``, is the text the tip prints.
+    said = context.forms.chart_interval(low, high, drawn, measure=key, kind=figure_kind(context, key)).text
     return _Spot(shown, n, [*tip, f"{level} interval {said}".strip().capitalize()], low, high)
 
 
@@ -467,7 +476,7 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
     for _, line in places:
         for key, theirs, ours, _ in line:
             figures[key] += [value for stat in (theirs, ours) if (value := _value(context, key, stat)) is not None]
-    levels = unit_quantities(report_input, figures)
+    levels = unit_quantities(context, figures)
     level = levels[keys[0]]
     renamed: dict[str, str] = {}
     if columns == [measure_words(report_input, key) for key in keys]:
@@ -486,23 +495,26 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             pairs[row_name, column] = (pair[0] * factor, pair[1] * factor)
     # The differences on the amounts' own ruler, in the changes' form (#993): never the amounts' decimals alone, which
     # would read a $0.004 difference between $0.30 and $0.304 as $0.00.
-    change = in_change_form(level, [mine - other for mine, other in pairs.values()])
+    forms = context.forms
+    lead, lead_kind = keys[0], figure_kind(context, keys[0])
+    change = forms.chart_changes(level, [mine - other for mine, other in pairs.values()], measure=lead, kind=lead_kind)
     if level.money is None:
-        change = quantity(figure_unit(report_input, keys[0]), change=True)
+        change = forms.chart_quantity(figure_unit(report_input, lead), change=True, measure=lead, kind=lead_kind)
     rows: list[DiffHeatmapRow] = []
     for row_name, line in places:
         drawn_cells = []
-        for _, _, _, column in line:
+        for key, _, _, column in line:
             mine, other = pairs[row_name, column]
+            kind = figure_kind(context, key)
             drawn_cells.append(
                 DiffHeatmapCell(
                     value=mine - other,
                     detail=mine,
                     tip=[
                         f"{row_name} · {renamed.get(column, column)}",
-                        f"{base_name} {figure_text(other, level)}",
-                        f"{compared_name} {figure_text(mine, level)}",
-                        figure_text(mine - other, change),
+                        f"{base_name} {forms.chart_note(other, level, measure=key, kind=kind).text}",
+                        f"{compared_name} {forms.chart_note(mine, level, measure=key, kind=kind).text}",
+                        forms.chart_note(mine - other, change, measure=key, kind=kind).text,
                     ],
                 )
             )

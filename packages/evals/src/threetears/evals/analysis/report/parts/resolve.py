@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts import (
     resolve_cells,
     resolve_changes,
@@ -75,6 +76,7 @@ def resolve_chart(
     *,
     title: str,
     fallback_title: str = "",
+    forms: PageForms | None = None,
 ) -> PageChart:
     """Draw one stored chart: its kind's resolver reads its query off the input.
 
@@ -88,6 +90,8 @@ def resolve_chart(
     :ptype title: str
     :param fallback_title: What the chart's block is titled where the plan's title is empty: the section's headline.
     :ptype fallback_title: str
+    :param forms: The page's number forms; None for the forms of ``report_input`` alone.
+    :ptype forms: PageForms | None
     :return: The chart as the page draws it.
     :rtype: PageChart
     :raises UnresolvableReference: No resolver draws the chart's kind, or its resolver cannot draw it from the input.
@@ -97,9 +101,12 @@ def resolve_chart(
         raise UnresolvableReference(
             f"no resolver draws a {spec.kind!r} chart over {spec.query.source!r} yet ({title or fallback_title!r})"
         )
+    page_forms = forms if forms is not None else PageForms.of(report_input)
     if spec.query.source == "configs":
         # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings.
         report_input = config_grid(report_input)
-    context = ChartContext(spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind)
+    context = ChartContext(
+        spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind, forms=page_forms
+    )
     drawn = resolver(context)
     return PageChart(title=title, chart=drawn.block, notes=list(drawn.notes))

@@ -67,9 +67,10 @@ import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY
@@ -78,7 +79,6 @@ from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
     NamedKind,
-    format_figure,
     held_means,
     input_check_name,
     resolve,
@@ -112,8 +112,12 @@ from threetears.evals.analysis.report_input import (
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
-from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
+
+if TYPE_CHECKING:
+    # A page's forms are decided over the chart rules here, so the module that decides them reads this one: named for
+    # the checker alone.
+    from threetears.evals.analysis.report.forms import PageForms
 
 __all__ = [
     "COMPUTED",
@@ -136,8 +140,10 @@ __all__ = [
     "factor_legend",
     "factor_token",
     "figure_interval",
+    "figure_kind",
     "figure_stat",
     "figure_unit",
+    "held_kind",
     "is_rubric_score",
     "interval_level",
     "interval_words",
@@ -172,12 +178,14 @@ class ChartContext:
     :ivar report_input: The report input the plan was written against.
     :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
+    :ivar forms: The page's number forms, which every figure the chart draws is spelled by.
     """
 
     spec: ChartSpec
     report_input: ReportInput
     look: PageLook
     title: str
+    forms: PageForms
 
     @property
     def query(self) -> ChartQuery:
@@ -336,6 +344,40 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
     if judged is not None:
         return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
     return ""
+
+
+def figure_kind(context: ChartContext, key: str) -> str:
+    """The kind a chart's figures on ``key`` are keyed under in the page's forms: ``judged`` on a chart of judged
+    dimensions, else as the input holds the key (:func:`held_kind`).
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param key: The measure or judged dimension drawn.
+    :ptype key: str
+    :return: ``judged``, ``trial`` or ``measure``.
+    :rtype: str
+    """
+    return "judged" if context.query.source == "judged" else held_kind(context.report_input, key)
+
+
+def held_kind(report_input: ReportInput, key: str) -> str:
+    """The kind a figure on ``key`` is keyed under in the page's forms (one of the kinds
+    :meth:`~threetears.evals.analysis.report.forms.PageForms.of` keys), by what the input holds it as: ``judged`` where
+    it holds the key only as a judged dimension; ``trial`` for the pass rate (how each trial ended) where no measure
+    takes its key; ``measure`` otherwise. A scoreboard figure (a reply's cost, a count) and an aspect a criterion reads
+    are measured figures of an arm, neither judged nor a contrast's trial, so they key as a measure's. The one rule for
+    a criterion's kind, whether its threshold is a gate's line or a chart's.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure, judged dimension, scoreboard figure or aspect.
+    :ptype key: str
+    :return: ``judged``, ``trial`` or ``measure``.
+    :rtype: str
+    """
+    if key in report_input.judged and key not in report_input.measures:
+        return "judged"
+    return "trial" if key == TRIAL_PASS_NAME and key not in report_input.measures else "measure"
 
 
 def is_rubric_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
@@ -824,15 +866,19 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
     if stored.kind == "margin":
         # A margin is in points, on the change axis below zero, whatever the chart's own quantity scales.
         value = -figure.value
-        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, quantity("points")))
+        # A margin is read on the pass rate's readings, so its line is a figure of the pass rate.
+        points = context.forms.chart_quantity("points", change=True, measure=TRIAL_PASS_NAME, kind="trial")
+        said = context.forms.chart_note(value, points, measure=TRIAL_PASS_NAME, kind="trial").text
+        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=said)
     else:
         value = figure.value * drawn.factor
         criterion = _keyed_criterion(stored.key, context.report_input)
-        label = (
-            criterion_label(context, criterion, value, drawn)
-            if criterion is not None
-            else REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, drawn))
-        )
+        if criterion is not None:
+            label = criterion_label(context, criterion, value, drawn)
+        else:
+            # A stored line no criterion keys is tied to no measure the input names.
+            said = context.forms.chart_note(value, drawn).text
+            label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=said)
     return ChartReference(value=value, label=label, kind=stored.kind)
 
 
@@ -885,7 +931,11 @@ def criterion_label(context: ChartContext, criterion: Criterion, value: float, d
     return CRITERION_LINE_TEMPLATE.format(
         name=context.look.reader("criterion", criterion.id),
         kind=criterion.kind,
-        side=LINE_TEMPLATES[criterion.direction].format(line=figure_text(value, drawn)),
+        side=LINE_TEMPLATES[criterion.direction].format(
+            line=context.forms.chart_note(
+                value, drawn, measure=criterion.measure, kind=held_kind(context.report_input, criterion.measure)
+            ).text
+        ),
         where=where,
     )
 
@@ -953,7 +1003,9 @@ def criterion_line(
     label = (
         criterion_label(context, reading[0], value, drawn)
         if len(reading) == 1
-        else REFERENCE_TEMPLATE.format(kind=kind, value=figure_text(value, drawn))
+        else REFERENCE_TEMPLATE.format(
+            kind=kind, value=context.forms.chart_note(value, drawn, measure=key, kind=held_kind(held, key)).text
+        )
     )
     return ChartReference(value=value, label=label, kind=kind)
 
@@ -1097,36 +1149,44 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
     return held if len(held) == 1 else []
 
 
-def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[float]]) -> dict[str, Quantity]:
+def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]) -> dict[str, Quantity]:
     """Each measure's quantity on a chart that draws it in its own unit (this module's one unit per axis): its unit's
     (:func:`figure_unit`), at its own factor, so each figure is drawn at its own scale; and the measures drawn alike (a
     share beside a percent) share one quantity but for the factor, its format following every figure the chart draws
     of them, so they read alike on one axis.
 
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
     :param values: Each measure the chart draws, by key, to the figures it draws of it, in the input's units.
     :ptype values: Mapping[str, Sequence[float]]
     :return: Each measure's quantity, by key.
     :rtype: dict[str, Quantity]
     """
-    units = {key: figure_unit(report_input, key) for key in values}
+    forms = context.forms
+    units = {key: figure_unit(context.report_input, key) for key in values}
     # A quantity's equality ignores its factor, so the quantity a unit draws as is the class of the units drawn alike.
-    alike = {key: quantity(units[key]) for key in values}
+    kinds = {key: figure_kind(context, key) for key in values}
+    alike = {key: forms.chart_quantity(units[key], measure=key, kind=kinds[key]) for key in values}
     shown: dict[Quantity, list[float]] = {}
     lead: dict[Quantity, str] = {}
+    first: dict[Quantity, str] = {}
     for key, figures in values.items():
         lead.setdefault(alike[key], units[key])
+        first.setdefault(alike[key], key)
         shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
-    drawn = {each: quantity(lead[each], shown[each]) for each in shown}
+    # The measures drawn alike share one quantity, decided today over all of their figures and named by the first.
+    drawn = {
+        each: forms.chart_quantity(lead[each], shown[each], measure=first[each], kind=kinds[first[each]])
+        for each in shown
+    }
     # Each figure at its own factor, times what the class's money is drawn at past it (a thousand where some amount is
     # under a cent: look's money), so every figure on the axis is drawn as its one form reads it.
-    return {
-        key: dataclasses.replace(
-            drawn[alike[key]], factor=alike[key].factor * drawn[alike[key]].factor / quantity(lead[alike[key]]).factor
-        )
-        for key in values
-    }
+    quantities = {}
+    for key in values:
+        lead_factor = forms.chart_quantity(lead[alike[key]], measure=key, kind=kinds[key]).factor
+        factor = alike[key].factor * drawn[alike[key]].factor / lead_factor
+        quantities[key] = dataclasses.replace(drawn[alike[key]], factor=factor)
+    return quantities
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:

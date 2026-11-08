@@ -28,6 +28,8 @@ another module (a measure's unit, its set's places by
 :func:`~threetears.evals.analysis.report.figure_keys.figure_places`), the form calls it. The
 differences between surfaces that reproduce today's page (a chart's note spelling a figure alone, ``alone``) are named
 where they are taken, so the flip removes them in one place.
+A chart's forms (``PageForms.chart_*``) still decide over a chart's own drawn values, as today; each takes the measure
+and kind of a measure's figure (``chart_amounts`` its measures' keys), and C5 re-decides them by measure there.
 
 **Why at page assembly.** The bundle is fingerprinted evidence and the report input a stored snapshot that recorded
 writer runs replay, so neither carries presentation. Page assembly is the first place that sees the whole page, and
@@ -38,19 +40,27 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Literal, overload
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_readings import CampaignReadings, MeasureReading
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
-from threetears.evals.analysis.report.figure_keys import RUBRIC_SCALE, figure_places, held_means
+from threetears.evals.analysis.report.figure_keys import RUBRIC_SCALE, figure_places, format_figure, held_means, resolve
 from threetears.evals.analysis.report.blocks import TableCell, interval_text
-from threetears.evals.analysis.report.parts.charting import figure_unit, interval_level, interval_words, is_rubric_score
+from threetears.evals.analysis.report.parts.charting import (
+    count_text,
+    figure_unit,
+    held_kind,
+    interval_level,
+    interval_words,
+    is_rubric_score,
+)
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
-from threetears.evals.analysis.report_input import Contrast, ContrastFamily, ReportInput
+from threetears.evals.analysis.report_gates import criterion_ruler
+from threetears.evals.analysis.report_input import Contrast, ContrastFamily, Criterion, ReportInput
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
     MoneyForm,
@@ -498,6 +508,298 @@ class PageForms:
         text = spell_dollars(amount)
         return self._issue("", "", "money_total", amount, text, _digits_of(text, MONEY), MONEY)
 
+    # --- a chart's forms: today's, each chart deciding over its own drawn values -----------------------------------
+    #
+    # A written page's chart draws each quantity in the form its own drawn values give it (a money ruler from the
+    # amounts it draws, a note by its quantity's rule), not yet its measure's across the page. These hold that
+    # decision, relocated. A measure's figure names its measure and kind, which the ledger records it under; a figure
+    # of no measure names neither. The flip re-decides them by measure here.
+
+    @overload
+    def chart_quantity(self, unit: str, values: Sequence[float] = (), *, change: bool = False) -> Quantity: ...
+
+    @overload
+    def chart_quantity(
+        self, unit: str, values: Sequence[float] = (), *, change: bool = False, measure: str, kind: MeasureKind
+    ) -> Quantity: ...
+
+    def chart_quantity(
+        self,
+        unit: str,
+        values: Sequence[float] = (),
+        *,
+        change: bool = False,
+        measure: str = "",
+        kind: MeasureKind = None,
+    ) -> Quantity:
+        """How a chart draws a quantity in ``unit`` (:func:`~threetears.evals.analysis.report.parts.look.quantity`):
+        its factor, the kit's format, its unit, and money's one form from the values it draws.
+
+        :param unit: The figures' unit, as the page reads it.
+        :ptype unit: str
+        :param values: The drawn values, after the unit's own factor; money's form is chosen from them today.
+        :ptype values: Sequence[float]
+        :param change: Whether the values are changes, read signed.
+        :ptype change: bool
+        :param measure: The measure the quantity draws figures of, by key; omitted for a figure of no measure (a
+            preference, how often a rerun settles a line, a price per point, an empty chart's axis, a fallback
+            format), whose ledger key is ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The quantity.
+        :rtype: Quantity
+        """
+        return quantity(unit, values, change=change)
+
+    @overload
+    def chart_quantity_of(self, unit: str, figures: Iterable[float], *, change: bool = False) -> Quantity: ...
+
+    @overload
+    def chart_quantity_of(
+        self, unit: str, figures: Iterable[float], *, change: bool = False, measure: str, kind: MeasureKind
+    ) -> Quantity: ...
+
+    def chart_quantity_of(
+        self,
+        unit: str,
+        figures: Iterable[float],
+        *,
+        change: bool = False,
+        measure: str = "",
+        kind: MeasureKind = None,
+    ) -> Quantity:
+        """How a chart draws a quantity in ``unit`` from the figures it draws as the input states them, before any
+        factor (:func:`~threetears.evals.analysis.report.parts.look.quantity_of`).
+
+        :param unit: The figures' unit.
+        :ptype unit: str
+        :param figures: Every figure drawn in it, in the input's units.
+        :ptype figures: Iterable[float]
+        :param change: Whether the figures are changes.
+        :ptype change: bool
+        :param measure: The measure the figures are of, by key; omitted for a figure of no measure, whose ledger key is
+            ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The quantity.
+        :rtype: Quantity
+        """
+        return quantity_of(unit, figures, change=change)
+
+    def chart_amounts(self, report_input: ReportInput, keys: Sequence[str]) -> Quantity:
+        """The one ruler a change chart's money is drawn on: money's scale over every mean the input holds of every
+        money measure the chart draws (``keys``, the measures themselves, each a measure's own), read in the first
+        one's unit.
+
+        :param report_input: The report input the chart reads.
+        :ptype report_input: ReportInput
+        :param keys: The money measures the chart draws, at least one.
+        :ptype keys: Sequence[str]
+        :return: The quantity their amounts are drawn as.
+        :rtype: Quantity
+        """
+        means = [mean for key in keys for mean in held_means(report_input, key)]
+        return quantity_of(figure_unit(report_input, keys[0]), means)
+
+    @overload
+    def chart_changes(self, amounts: Quantity, changes: Iterable[float], widths: Iterable[float] = ()) -> Quantity: ...
+
+    @overload
+    def chart_changes(
+        self,
+        amounts: Quantity,
+        changes: Iterable[float],
+        widths: Iterable[float] = (),
+        *,
+        measure: str,
+        kind: MeasureKind,
+    ) -> Quantity: ...
+
+    def chart_changes(
+        self,
+        amounts: Quantity,
+        changes: Iterable[float],
+        widths: Iterable[float] = (),
+        *,
+        measure: str = "",
+        kind: MeasureKind = None,
+    ) -> Quantity:
+        """How a chart draws changes between money amounts: on the amounts' ruler, in the changes' own form
+        (:func:`~threetears.evals.analysis.report.parts.look.in_change_form`).
+
+        :param amounts: The quantity the compared amounts are drawn as.
+        :ptype amounts: Quantity
+        :param changes: Every change drawn, at the amounts' factor.
+        :ptype changes: Iterable[float]
+        :param widths: Their intervals' widths, at the amounts' factor.
+        :ptype widths: Iterable[float]
+        :param measure: The measure the changes are of, by key; omitted for a figure of no measure, whose ledger key is
+            ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The changes' quantity.
+        :rtype: Quantity
+        """
+        return in_change_form(amounts, changes, widths)
+
+    @overload
+    def chart_note(self, value: float, drawn: Quantity) -> Printed: ...
+
+    @overload
+    def chart_note(self, value: float, drawn: Quantity, *, measure: str, kind: MeasureKind) -> Printed: ...
+
+    def chart_note(self, value: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """A drawn value as a chart's note, tooltip or line label writes it, by its quantity's rule
+        (:func:`~threetears.evals.analysis.report.parts.look.figure_text`): a change where its quantity draws changes,
+        a level otherwise, as the ledger records it.
+
+        :param value: The value, as drawn.
+        :ptype value: float
+        :param drawn: Its quantity.
+        :ptype drawn: Quantity
+        :param measure: The measure the value is of, by key; omitted for a figure of no measure (a preference, how
+            often a rerun settles a line, a price per point, a stored line no criterion keys), whose ledger key is
+            ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The value.
+        :rtype: Printed
+        """
+        text = figure_text(value, drawn)
+        return self._chart_issue(measure, kind, "change" if drawn.change else "level", value, text, drawn.unit)
+
+    @overload
+    def chart_level(self, value: float, drawn: Quantity) -> Printed: ...
+
+    @overload
+    def chart_level(self, value: float, drawn: Quantity, *, measure: str, kind: MeasureKind) -> Printed: ...
+
+    def chart_level(self, value: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None) -> Printed:
+        """A level (not a change) on a change chart, unsigned in its quantity's unit: money in its ruler's form at no
+        fewer decimals than the chart's ticks, so a tooltip's two levels differ by its bar; any other unit by its
+        quantity's rule.
+
+        :param value: The level, as drawn.
+        :ptype value: float
+        :param drawn: The quantity the chart's levels are drawn as.
+        :ptype drawn: Quantity
+        :param measure: The measure the level is of, by key; omitted for a figure of no measure, whose ledger key is
+            ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The level.
+        :rtype: Printed
+        """
+        form = drawn.money
+        if drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
+            places = max(form.places(value), form.decimals)
+            text = MoneyForm(per_thousand=form.per_thousand, decimals=places).spell(value)
+        else:
+            text = figure_text(value, replace(drawn, change=False))
+        return self._chart_issue(measure, kind, "level", value, text, drawn.unit)
+
+    @overload
+    def chart_interval(self, low: float, high: float, drawn: Quantity) -> PrintedInterval: ...
+
+    @overload
+    def chart_interval(
+        self, low: float, high: float, drawn: Quantity, *, measure: str, kind: MeasureKind
+    ) -> PrintedInterval: ...
+
+    def chart_interval(
+        self, low: float, high: float, drawn: Quantity, *, measure: str = "", kind: MeasureKind = None
+    ) -> PrintedInterval:
+        """An interval as a chart's tooltip writes it, ``low to high``, each end by its quantity's rule
+        (:func:`~threetears.evals.analysis.report.parts.charting.interval_words`).
+
+        :param low: Its low end, as drawn.
+        :ptype low: float
+        :param high: Its high end, as drawn.
+        :ptype high: float
+        :param drawn: The quantity drawn.
+        :ptype drawn: Quantity
+        :param measure: The measure the interval is on, by key; omitted for one of no measure (a preference's),
+            whose ledger key is ``("", "")``.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``), required with a measure.
+        :ptype kind: MeasureKind
+        :return: The interval.
+        :rtype: PrintedInterval
+        """
+        low_text, high_text = figure_text(low, drawn), figure_text(high, drawn)
+        text = interval_words(low, high, drawn)
+        self._issued.append(Issued(*_chart_keyed(measure, kind), "interval", (low, high), text))
+        low_digits, high_digits = _digits_of(low_text, drawn.unit), _digits_of(high_text, drawn.unit)
+        return PrintedInterval(
+            low=low,
+            high=high,
+            text=text,
+            low_text=low_text,
+            high_text=high_text,
+            unit=drawn.unit,
+            low_digits=low_digits,
+            high_digits=high_digits,
+            digits=_interval_join("written", low_digits, high_digits),
+        )
+
+    def chart_count(self, count: float) -> Printed:
+        """A count as a chart's words print it, whole and grouped
+        (:func:`~threetears.evals.analysis.report.parts.charting.count_text`). A count of cases is no measure's
+        figure, so it takes none.
+
+        :param count: The count.
+        :ptype count: float
+        :return: The count.
+        :rtype: Printed
+        """
+        text = count_text(count)
+        return self._issue("", "", "count", count, text, text, "")
+
+    def count_alone(self, value: float | None) -> Printed:
+        """A count as a chart's words print one today where they spell it by the lone figure rule, ungrouped
+        (``1234``), unlike :meth:`count`. A count of passes, trials or cases is no measure's figure, so it takes none.
+
+        :param value: The count; None for none.
+        :ptype value: float | None
+        :return: The count.
+        :rtype: Printed
+        """
+        text = format_number(value)
+        return self._issue("", "", "count", value, text, text, "")
+
+    def gate_line(self, report_input: ReportInput, criterion: Criterion) -> Printed:
+        """A criterion's threshold as a gate row's line states it: as its figure key reads it, money on its
+        criterion's ruler with its count named once. It is a figure of what the criterion reads
+        (``criterion.measure``), which the ledger records it under by the one rule for a criterion's kind
+        (:func:`~threetears.evals.analysis.report.parts.charting.held_kind`).
+
+        :param report_input: The report input.
+        :ptype report_input: ReportInput
+        :param criterion: The criterion.
+        :ptype criterion: Criterion
+        :return: The threshold.
+        :rtype: Printed
+        """
+        line = resolve(f"criteria.{criterion.id}.threshold", report_input)
+        threshold = float(criterion.threshold)
+        key = (criterion.measure, held_kind(report_input, criterion.measure))
+        if line.scale not in ("usd", "usd_per_1k", "usd_per_1m"):
+            text = format_figure(line)
+            return self._issue(*key, "declared", threshold, text, text, "")
+        ruler, _own = criterion_ruler(report_input, criterion, line)
+        amount = ruler.spell(threshold)
+        text = f"{amount} {ruler.words(line.per)}"
+        return self._issue(*key, "declared", threshold, text, _digits_of(amount, MONEY), MONEY)
+
+    def _chart_issue(self, measure: str, kind: MeasureKind, role: Role, value: float, text: str, unit: str) -> Printed:
+        """A chart's figure recorded under its measure and role, or under ``("", "")`` where it is of no measure."""
+        return self._issue(*_chart_keyed(measure, kind), role, value, text, _digits_of(text, unit), unit)
+
     # --- the ledger --------------------------------------------------------------------------------------------------
 
     @property
@@ -555,6 +857,12 @@ def _interval_join(page: PageKind, low: str, high: str) -> str:
     """Two ends joined as the page joins an interval: ``low to high`` on a written page, ``[low, high]`` on a code
     page's scorecard."""
     return f"[{low}, {high}]" if page == "code" else f"{low} to {high}"
+
+
+def _chart_keyed(measure: str, kind: MeasureKind) -> tuple[str, str]:
+    """The key a chart's figure is held under in the ledger: its measure and kind, or neither for a figure of no
+    measure, as the fixed forms are held."""
+    return (measure, _measure_kind(kind)) if measure else ("", "")
 
 
 def _measure_kind(kind: MeasureKind) -> str:
