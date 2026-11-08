@@ -202,7 +202,7 @@ def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], lis
                     drawn_row.append(_spot(context, key, stat, value, n, f"{row_name} · {column_name}", drawn, line))
                 rows.append((row_name, drawn_row))
             if not whole:
-                missing.append(f"{_arm_name(context, arm)}, {measure_words(context.report_input, key)}")
+                missing.append(f"{_arm_name(context, arm)}, {measure_words(context.report_input, key, prose=True)}")
                 continue
             counts += [spot.n for _, spots in rows for spot in spots if spot.n is not None]
             matrices.append(
@@ -254,7 +254,7 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], li
             holders = [arm for arm in arms_held if any(held(arm, item) for item in slices)]
             kept = [item for item in slices if all(held(arm, item) for arm in holders)]
             whole = holders if kept else []
-        name = measure_words(context.report_input, key)
+        name = measure_words(context.report_input, key, prose=True)
         missing += [f"{_arm_name(context, arm)}, {name}" for arm in arms_held if arm not in whole]
         missing += [f"{slice_name(context, item)}, {name}" for item in slices if whole and item not in kept]
         if not whole:

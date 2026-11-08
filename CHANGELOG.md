@@ -43,6 +43,29 @@ result names in `stranded_case_sets` over the copies (`carried` maps old ids to 
 revision. During a rolling deploy, a pod before v16.9 reads a carried copy and keeps its `carried_from` on write; it
 does not know the copy's identity, so a freeze run on such a pod adds the case again beside the copy.
 
+### evals: a report page fits a host's frame first, and says when a table still runs past it
+
+**Changed:**
+- A table cell of words wraps at its spaces, so a table narrows to its frame before it scrolls; the aim is that a
+  code-only scorecard and a written report's tables fit a host's 1104 px frame. A number column, an id, a pill and a
+  hyphenated word outside prose hold their line; inside a frame that scrolls anyway a cell keeps its line. An interval
+  glyph gives way to its column between 4.5em and its full width.
+- A table still wider than its frame fades its right edge, over every cell, headers and highlighted rows included,
+  until it is scrolled to its end; the frame's own scroll drives the fade, with no script.
+- A pinned label the column's floor would set in more than three lines (a long aspect label with no short name) gets
+  the width that sets it in three, up to the cap.
+- A written report's first screen reads at one measure: the masthead, the callouts under it (a draft's line), the
+  headline, the lede and the confidence share the prose column; the cards and tables keep the page's width. The HTML
+  masthead's first line is the campaign's name; the Markdown masthead keeps the kind first.
+- A turned Every arm by measure heads each row with its figure (`<th scope="row">`), so a goal check named there links
+  its Checks entry, a hyphenated check name included. Every measure name a written report prints, in its tables and
+  its charts' titles and series alike, starts with a capital.
+- The nav names an aspect by its declared short name, one line, cut with an ellipsis; its fold keeps the full label.
+  A fold's "·" binds to the words after it. The line under a glyph table names the columns each range is drawn for.
+  The verdict line links no term of art but the undecided reading.
+- `scripts/check.py` renders at 1104 px too, and fails a table that overflows its frame with no cue and a first screen
+  read at more than one measure.
+
 ### evals: the writer calibration script rereads its judge's anchor cases to catch a judge change
 
 `writer_calibration.py --reread`, a test-fixture script no host imports, asks one judge the 42 anchor pair cases

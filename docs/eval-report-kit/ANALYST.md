@@ -173,7 +173,7 @@ This list is fixed. It doesn't grow with new eval types.
 4. The confidence form matches: no plain `high` while caveats are open.
 5. No internal id, hash or measure key appears above the appendix.
 6. The full-results appendix and Method are present.
-7. `check.py` passes at 1200 and 390 px, in light and dark. Held by the integration tests, not at storage: no browser runs when a report is stored.
+7. `check.py` passes at 1200, 1104, 688 and 390 px, in light and dark. Held by the integration tests, not at storage: no browser runs when a report is stored.
 
 ### Editor rubric (each item scored 0–2 with a reason)
 

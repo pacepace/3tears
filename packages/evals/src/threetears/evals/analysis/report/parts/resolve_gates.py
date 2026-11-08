@@ -387,7 +387,9 @@ def _reading_cell(context: ChartContext, aspect: Aspect, reading: Reading | None
         if floor.aspect == aspect.id and floor.arm == reading.arm and floor.reading:
             status = FLOOR_WORDS.get(floor.status, floor.status)
             reasons.append(
-                FLOOR_ON_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading), status=status)
+                FLOOR_ON_TEMPLATE.format(
+                    rate=measure_words(context.report_input, floor.reading, prose=True), status=status
+                )
             )
     return GateCell(status=_READING_STATUS[direction], label=reading_words(direction, within), reasons=reasons)
 
@@ -439,7 +441,7 @@ def _floor_cell(context: ChartContext, floor: FloorRead | None) -> GateCell:
             )
         )
     if floor.reading:
-        reasons.append(FLOOR_READS_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading)))
+        reasons.append(FLOOR_READS_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading, prose=True)))
     return GateCell(
         status=_FLOOR_STATUS.get(floor.status, "neutral"),
         label=FLOOR_WORDS.get(floor.status, floor.status),

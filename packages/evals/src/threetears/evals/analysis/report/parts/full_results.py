@@ -175,7 +175,8 @@ def _drawn(report_input: ReportInput, key: str, *, kind: str | None = None) -> Q
 
 def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
     """A measure's reader name, with the count its money is drawn per in it (the one owner of money's words: the
-    label's own count replaced, never a second), as every chart names it."""
+    label's own count replaced, never a second), as every chart names it, starting with a capital as every measure
+    name does (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`)."""
     return money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
 
 

@@ -24,7 +24,7 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 | `kit/kit.css`, `kit/kit.js`, `kit/API.md` | Visual system and chart helpers |
 | `references/rN-*.src.html` + `.json` | Page source and its data; `.html` is the built page |
 | `scripts/build.py` | Inline the kit and data into a page |
-| `scripts/check.py` | Render at 1200 and 390 px, light and dark; report overflow, label overlaps and errors |
+| `scripts/check.py` | Render at 1200, 1104, 688 and 390 px, light and dark; report overflow, label overlaps, a table that overflows with no cue, a first screen at more than one measure, and errors |
 
 ## The references
 

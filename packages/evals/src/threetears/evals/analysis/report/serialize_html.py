@@ -191,9 +191,15 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
     before, after = report.headed_sections
     titles = report.section_titles
-    # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
+    # Each nav link names the section itself, whose heading every browser shows, a closed one's included. An aspect's
+    # link names it by its declared short name where it has one (its fold's heading keeps the full label); a link is
+    # one line, cut with an ellipsis where it is still too long. A label is a host's text, which no attribute carries,
+    # so its whole is the heading of the fold the link lands on, never a title.
     links = [(section, titles[section]) for section in before]
-    links += [(fold_anchor(slug), fold.heading) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [
+        (fold_anchor(slug), fold.report.bundle.short_name or fold.heading)
+        for fold, slug in zip(report.aspects, slugs, strict=True)
+    ]
     links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.glossary else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{escape(text)}</a>' for href, text in links) + "</nav>")
@@ -218,6 +224,11 @@ _TITLE = re.compile(r'\btitle="([^"]*)"')
 #: (a header links its own term where it names one, and a cell links only where it says), the navigation, a chart,
 #: the head of the page, or the declared question (``_QUOTED``, the author's words).
 _QUOTED = "quoted:"
+
+#: Where no term of art is linked but the undecided reading: the verdict line, the page's answer in one bold sentence,
+#: which a link on its every term would break up; its undecided reading is the one term of art a reader must have
+#: defined to read it. A goal check's name there still links the check's entry, which says what the name stands for.
+_VERDICT = "verdict:"
 _UNLINKED_IN: frozenset[str] = frozenset(
     {"a", "code", "pre", "summary", "h1", "h2", "h3", "h4", "h5", "h6", "th", "td", "nav", "svg", "script", "style"}
     | {"title", f"{_QUOTED}p"}
@@ -227,9 +238,9 @@ _UNLINKED_IN: frozenset[str] = frozenset(
 def _first_uses(markup: str, report: Report | CampaignReport) -> str:
     """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
-    own). Each term is linked once this way; the glossary at the foot defines it. A goal check's name is matched whole
-    and in its own case, never inside a longer one (``Goal check`` in ``Goal check 2``); a name that is a term of art's
-    words (``Outcome``) is left to the term."""
+    own), the verdict line linking no term of art but the undecided reading. Each term is linked once this way; the
+    glossary at the foot defines it. A goal check's name is matched whole and in its own case, never inside a longer
+    one (``Goal check`` in ``Goal check 2``); a name that is a term of art's words (``Outcome``) is left to the term."""
     terms = list(report.terms)
     of_art = {term.casefold() for term in terms}
     checks = [name for name, _ in report.check_glossary if name.casefold() not in of_art]
@@ -248,7 +259,22 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
     for token in _TAG.split(markup):
         if not token.startswith("<"):
             if token and pending and not any(name in _UNLINKED_IN for name in opened):
-                token = _linked_once(token, pending)
+                if any(name.startswith(_VERDICT) for name in opened):
+                    held = {
+                        term: pattern
+                        for term, pattern in pending.items()
+                        if term == CANNOT_TELL_APART or term not in GLOSSARY
+                    }
+                    token = _linked_once(token, held)
+                    # A term linked here is pending no longer.
+                    for term in [
+                        term
+                        for term in pending
+                        if (term == CANNOT_TELL_APART or term not in GLOSSARY) and term not in held
+                    ]:
+                        pending.pop(term)
+                else:
+                    token = _linked_once(token, pending)
             out.append(token)
             continue
         out.append(token)
@@ -257,14 +283,16 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
             continue
         name = found.group(1).lower()
         if token.startswith("</"):
-            while opened and opened.pop().removeprefix(_QUOTED) != name:
+            while opened and opened.pop().removeprefix(_QUOTED).removeprefix(_VERDICT) != name:
                 pass
             continue
         if name == "a" and (title := _TITLE.search(token)) is not None:
             pending.pop(by_definition.get(html.unescape(title.group(1)), ""), None)
         if name not in _VOID_ELEMENTS and not token.endswith("/>"):
-            # The question is the author's words, quoted whole: nothing is linked inside it.
-            opened.append(f"{_QUOTED}{name}" if 'class="question"' in token else name)
+            # The question is the author's words, quoted whole: nothing is linked inside it; the verdict line links its
+            # undecided reading alone.
+            prefix = _QUOTED if 'class="question"' in token else _VERDICT if 'class="verdict"' in token else ""
+            opened.append(f"{prefix}{name}")
     return "".join(out)
 
 
@@ -356,8 +384,9 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[s
     inner = _prefixed("\n".join(body), prefix)
     return [
         f'<section id="{fold_anchor(slug)}">',
+        # The separator binds to the words after it (a no-break space), so a line never ends on it.
         f'<details class="section"><summary><h2>{escape(fold.heading)}</h2> '
-        f'<span class="count">· {escape(fold.shows)}</span></summary>',
+        f'<span class="count">·\u00a0{escape(fold.shows)}</span></summary>',
         f'<div class="section-body" id="{fold_anchor(slug)}--body">',
         inner,
         "</div></details>",
@@ -440,7 +469,7 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
     heading = f"<h2>{escape(title)}</h2>"
     if section not in FOLDED_SECTIONS:
         return [heading, *body]
-    size = f' <span class="count">· {count}</span>' if count is not None else ""
+    size = f' <span class="count">·\u00a0{count}</span>' if count is not None else ""
     return [
         f'<details class="section"><summary>{heading}{size}</summary>',
         f'<div class="section-body" id="{section}-body">',

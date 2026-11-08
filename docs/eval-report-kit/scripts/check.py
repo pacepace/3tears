@@ -9,15 +9,18 @@ SVG text boxes that overlap each other inside one chart; a table wider than its 
 column does not stay in view (sticky); a pinned (sticky) column drawn narrower than its floor (its
 min-width), or a word in it broken across lines (it wraps at spaces and after a hyphen or a slash; only
 a cell classed unbroken, an id-like token, may break anywhere); a pinned cell painted over the page's
-sticky nav. A table that fits its frame by crushing its key column does not fit. 688 px is the narrowest
-frame a host gives the page (Discodon's iframe at a 1024 px window). Writes a full-page PNG per run.
-Exit code 1 when any check fails.
+sticky nav. A table that fits its frame by crushing its key column does not fit. A table wider than its
+frame with no visible cue: its frame's right edge must fade while more of it lies past the edge, and not
+once it is scrolled to its end. A first screen read at more than one measure: the masthead, the callouts
+under it, the headline, the lede and the confidence share one maximum width. 1104 px and 688 px are the
+frames a host gives the page (Discodon's iframe at a 1440 and a 1024 px window). Writes a full-page PNG
+per run. Exit code 1 when any check fails.
 """
 
 import asyncio, pathlib, sys
 from playwright.async_api import async_playwright
 
-PROBE = r"""() => {
+PROBE = r"""async () => {
   const vw = innerWidth, out = [];
   for (const e of document.querySelectorAll('body *')) {
     if (e.closest('.tbl') || e.closest('#tip')) continue;
@@ -73,8 +76,32 @@ PROBE = r"""() => {
     }
     window.scrollTo(0, 0);
   }
+  // a table wider than its frame fades the frame's right edge (a mask, over every cell) until it is scrolled to its
+  // end, and a frame that fits shows none
+  const frame = () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+  const uncued = [];
+  for (const f of document.querySelectorAll('.tbl')) {
+    if (!f.offsetParent || f.clientWidth <= 2 || f.closest('details:not([open])')) continue;
+    const name = `"${(f.querySelector('tr > :first-child')?.textContent||'').trim().slice(0,24)}"`;
+    const faded = () => getComputedStyle(f).maskImage !== 'none';
+    if (f.scrollWidth > f.clientWidth + 1) {
+      f.scrollLeft = 0; await frame(); const start = faded();
+      f.scrollLeft = f.scrollWidth; await frame(); const end = faded();
+      f.scrollLeft = 0; await frame();
+      if (!start) uncued.push(`${name} overflows its frame with no cue`);
+      if (end) uncued.push(`${name} still fades scrolled to its end`);
+    } else if (faded()) uncued.push(`${name} fits its frame but fades`);
+  }
+  // the first screen's text reads at one measure: every part of it there is, one maximum width
+  const measures = [], widths = new Set();
+  const top = '.mast, .mast ~ .callout, .bluf > h1, .bluf > .lede, .bluf > [data-part="confidence"]';
+  for (const e of document.querySelectorAll(top)) {
+    const said = getComputedStyle(e).maxWidth;
+    widths.add(said); measures.push(`${e.className || e.tagName.toLowerCase()} ${said}`);
+  }
   return {scrollWidth: document.documentElement.scrollWidth, past: out.slice(0, 8), overlaps: overlaps.slice(0, 12),
-          unpinned: unpinned.slice(0, 8), crushed: crushed.slice(0, 8), under: under.slice(0, 8)};
+          unpinned: unpinned.slice(0, 8), crushed: crushed.slice(0, 8), under: under.slice(0, 8),
+          uncued: uncued.slice(0, 8), measures: widths.size > 1 ? measures : []};
 }"""
 
 
@@ -82,7 +109,7 @@ async def run(page_path, out_dir):
     failed = False
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        for width in (1200, 688, 390):
+        for width in (1200, 1104, 688, 390):
             for scheme in ("light", "dark"):
                 pg = await browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
                 errors = []
@@ -101,12 +128,14 @@ async def run(page_path, out_dir):
                     or res["unpinned"]
                     or res["crushed"]
                     or res["under"]
+                    or res["uncued"]
+                    or res["measures"]
                 )
                 failed |= bool(bad)
                 print(
                     f"{'FAIL' if bad else 'ok  '} {width}px {scheme:5}  scrollWidth={res['scrollWidth']}  screenshot={shot}"
                 )
-                for k in ("past", "overlaps", "unpinned", "crushed", "under"):
+                for k in ("past", "overlaps", "unpinned", "crushed", "under", "uncued", "measures"):
                     for line in res[k]:
                         print(f"       {k}: {line}")
                 for e in errors:

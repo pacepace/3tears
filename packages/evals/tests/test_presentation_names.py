@@ -74,7 +74,7 @@ from threetears.evals.analysis.report.model import (
     TrialBlock,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY, lint_prose
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CHECK_LINK_TITLE, GLOSSARY, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -254,7 +254,7 @@ def _first_uses(page: str) -> dict[str, str]:
                 continue
             name = found.group(1).lower()
             if token.startswith("</"):
-                while opened and opened.pop() not in (name, "question" if name == "p" else name):
+                while opened and opened.pop() not in (name, *(("question", "verdict") if name == "p" else ())):
                     pass
                 continue
             if name == "a" and (title := _LINK_TITLE.match(token)) is not None:
@@ -265,12 +265,16 @@ def _first_uses(page: str) -> dict[str, str]:
                 naming = said == CHECK_LINK_TITLE
             if name not in _VOID and not token.endswith("/>"):
                 # The declared question is the author's words, quoted whole and never linked.
-                opened.append("question" if 'class="question"' in token else name)
+                # The verdict line links no term of art but the undecided reading: no other is first used there.
+                quoted = "question" if 'class="question"' in token else "verdict" if 'class="verdict"' in token else ""
+                opened.append(quoted or name)
             continue
         if any(name in _UNREAD for name in opened):
             continue
         text = html.unescape(token)
-        for term in defined:
+        for term in [
+            term for term in defined if "verdict" not in opened or term == CANNOT_TELL_APART or term not in GLOSSARY
+        ]:
             if term not in seen and re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text, re.IGNORECASE):
                 seen[term] = "bare"
     return {term: seen.get(term, "unused") for term in defined}
@@ -307,6 +311,28 @@ def test_the_lead_links_the_undecided_reading_and_the_verdict_header_links_verdi
     headers = re.findall(r"<th[^>]*>(.*?)</th>", page, flags=re.DOTALL)
     verdicts = [cell for cell in headers if re.sub(r"<[^>]+>", "", cell).strip() == "Verdict"]
     assert verdicts and all(f'title="{html.escape(GLOSSARY["verdict"])}"' in cell for cell in verdicts)
+
+
+def test_the_verdict_line_links_no_term_but_the_undecided_reading(rungs: dict[str, _Rung]) -> None:
+    """Discodon's 0.94.0 pass: a one-arm page's bold verdict ("deepseek-v4.1-flash passed 152 of 180 trials on 60
+    cases") linked "passed" and "cases", a link inside the page's answer. The verdict links no term of art but the
+    undecided reading (rung 3's, which the lead must define where it is first read); each other term is linked at its
+    next use. A goal check's name there still links the check's entry
+    (``test_a_lead_s_name_links_its_glossary_entry_and_no_attribute_carries_the_expression``)."""
+    page = rungs["rung1"].html
+    header = page[page.index("<header>") : page.index("</header>")]
+    verdicts = re.findall(r'<p class="verdict"[^>]*>.*?</p>', header, flags=re.DOTALL)
+    assert verdicts and any(" passed " in re.sub(r"<[^>]+>", "", verdict) for verdict in verdicts), verdicts
+    definitions = {html.escape(said) for said in GLOSSARY.values()}
+    assert not [
+        link for verdict in verdicts for link in re.findall(r'<a [^>]*title="([^"]*)"', verdict) if link in definitions
+    ], verdicts
+    assert _first_uses(page).get("passed") == "linked", "passed is linked where it is next read"
+    undecided = html.escape(GLOSSARY[CANNOT_TELL_APART])
+    rung3 = rungs["rung3"].html
+    (lead,) = re.findall(r'<p class="verdict"[^>]*>.*?</p>', rung3[: rung3.index("</header>")], flags=re.DOTALL)
+    links = [link for link in re.findall(r'<a [^>]*title="([^"]*)"', lead) if link in definitions]
+    assert links and set(links) == {undecided}, links
 
 
 def test_the_first_screen_s_judge_line_links_the_judged_scale(rungs: dict[str, _Rung]) -> None:
@@ -417,6 +443,25 @@ def test_a_document_s_masthead_dates_in_one_form_and_names_its_aspect_once() -> 
         ReportDoc.model_validate(_record("prototype5/kairo")["doc"]), _input("prototype5/kairo"), strict=False
     )
     assert re.search(r"Run \d{4}-\d{2}-\d{2}", doc_page_text(kairo))
+
+
+def test_a_document_s_masthead_opens_on_the_campaign_s_name() -> None:
+    """Discodon's 0.94.0 pass: a written report's masthead named the kind, the system and the counts but never the
+    campaign, which only the browser's tab carried. Its first line is the campaign's name, as a code page's title is,
+    on its own line; the kind and the counts follow."""
+    for name in ("prototype5/kairo", "prototype2/s2"):
+        record_input = _input(name)
+        doc = ReportDoc.model_validate(_record(name)["doc"]) if name.startswith("prototype5") else _converted(name)
+        page = build(doc, record_input, strict=False)
+        campaign = record_input.meta.campaign
+        assert campaign and campaign == page.title, "the control: the campaign has a name"
+        written = doc_page_html(page)
+        mast = written[
+            written.index('<div class="mast">') : written.index("</div>", written.index('<div class="mast">'))
+        ]
+        spans = re.findall(r'<span(?: class="([^"]*)")?>(.*?)</span>', mast)
+        assert spans[0] == ("name", html.escape(campaign)), spans
+        assert spans[1][0] == "kind", spans
 
 
 def _converted(name: str) -> ReportDoc:

@@ -375,6 +375,39 @@ def test_a_margin_s_ticks_sit_strictly_inside_the_glyph_s_track() -> None:
     assert '<p class="axis">Each column drawn from -15 to 15 pts</p>' in drawn
 
 
+def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> None:
+    """Discodon's 0.94.0 pass: a one-arm scorecard read two scales besides money, a percent's and a turn time's, and
+    its line said "Each column drawn from 47.2% to 100% and from 973 to 1029", leaving a reader to guess which column
+    is which range. Each range names its columns; "Each column" stays only where one range is every glyph column's."""
+    columns = [
+        ("pass", "Pass rate (%)", TableCell(value=70.0, low=47.2, high=86.0)),
+        ("check", "Reply cites policy check (%)", TableCell(value=100.0, low=94.0, high=100.0)),
+        ("turn", "Turn time", TableCell(value=1001.0, low=973.0, high=1029.0)),
+        ("spend", "Measuring spend", TableCell(value=2.7, low=2.57, high=2.83, unit="usd")),
+    ]
+    block = TableBlock(
+        section="scorecard",
+        name="scorecard",
+        title="solo by aspect",
+        shared_scale=True,
+        columns=[
+            {"key": "aspect", "header": "Aspect"},
+            *({"key": key, "header": header} for key, header, _ in columns),
+        ],  # type: ignore[list-item]
+        order="aspect by aspect",
+        rows=[{"aspect": TableCell(value="research"), **{key: cell for key, _, cell in columns}}],
+        total_rows=1,
+    )
+    (line,) = _AXIS.findall(grid_html(block))
+    said = html.unescape(re.sub(r"<[^>]+>", "", line))
+    assert "Each column" not in said and " and from " not in said, said
+    ranges = said.split(" · ")
+    assert len(ranges) == 3, ranges
+    assert ranges[0].startswith("Pass rate (%) and Reply cites policy check (%) drawn from "), ranges
+    assert any(part.startswith("Turn time drawn from 973 to 1") for part in ranges), ranges
+    assert any(part.startswith("Measuring spend drawn from $") for part in ranges), ranges
+
+
 def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: str) -> None:
     """P34: a note too wide for the margin (``-3 pts not separated``) once fell back to the axis's whole-number format
     (``-3``, ``-8`` beside ``-7.6`` in the prose). The end label is the note, wrapped at its spaces where it does not
@@ -422,6 +455,62 @@ def _kairo_text() -> str:
 
 #: The retired words for an undecided reading (owner ruling Q2).
 _RETIRED = re.compile(r"\bnot separated\b", re.IGNORECASE)
+
+
+def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_its_case_inside_a_sentence() -> None:
+    """Kairo's judged dimensions declare no label, so each is named by its humanized key ("persona holds character").
+    Where the name is the label (its forest's and its table's title, series and cells) it starts with a capital, as
+    every label on a written page does; set inside a sentence (a compare chart's note, "... on persona holds
+    character") it keeps its own case."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+    key = "persona.holds_character"
+    assert held.judged[key].label is None, "the control: the dimension declares no label"
+    look = block_look(held, fact_arms(held))
+    said: list[str] = []
+    # A forest draws one unit (the dimension alone); a table holds the dimension beside another.
+    for kind, measures in (("forest", [key]), ("table", [key, "__outcome__"])):
+        query = ChartQuery.model_validate(
+            {
+                "source": "contrasts",
+                "aspect": "",
+                "measures": measures,
+                "arms": [],
+                "strata": [],
+                "limit": 0,
+                "transform": "none",
+                "small_multiples_by": "none",
+            }
+        )
+        spec, faults = complete_chart(
+            PlannedChart(kind=kind, title="", query=query, reference=[], emphasis=""), held, "block"
+        )
+        assert not faults, faults
+        drawn = resolve_chart(spec, held, look, title="", fallback_title="")
+        said += re.findall(r"'([^']*holds character[^']*)'", str(drawn.chart.model_dump()))
+    assert said, "the control: the charts name the dimension"
+    assert not [text for text in said if "persona holds character" in text], said
+    assert any(text.startswith("Persona holds character") for text in said), said
+    arms = [arm.id for arm in held.arms]
+    query = ChartQuery.model_validate(
+        {
+            "source": "compare",
+            "aspect": "",
+            "measures": [key],
+            "arms": [arms[1], arms[0]],
+            "strata": ["overall"],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none",
+        }
+    )
+    spec, faults = complete_chart(
+        PlannedChart(kind="diverging_bars", title="", query=query, reference=[], emphasis=""), held, "block"
+    )
+    assert not faults, faults
+    compared = resolve_chart(spec, held, look, title="", fallback_title="")
+    notes = [note for note in compared.notes if "holds character" in note]
+    assert notes, "the control: the compare chart's note names the dimension"
+    assert all(" on persona holds character" in note for note in notes), notes
 
 
 def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_words() -> None:

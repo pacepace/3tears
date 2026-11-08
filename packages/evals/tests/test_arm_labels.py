@@ -313,9 +313,17 @@ def _assert_every_output_prints(report: Report, names: set[str]) -> None:
     assert set(_arm_column(report, "scoreboard")) == names
     for name in names:
         assert f"| {name} |" in markdown or f"| ▸ {name} |" in markdown, name
-        # A cell of 40 characters or more wraps (``class="wrap"``), as every long cell of a table does.
+        # A cell of 40 characters or more wraps (``class="wrap"``), as every long cell of a table does; a hyphenated
+        # name is held whole, as one word (``span.id``), its spelling as it is.
+        spelled = [
+            html.escape(name),
+            *(f'<span class="{held}">{html.escape(name)}</span>' for held in ("id", "id long") if "-" in name),
+        ]
         cells = [
-            f"{td}{marker}{html.escape(name)}</td>" for td in ("<td>", '<td class="wrap">') for marker in ("", "▸ ")
+            f"{td}{marker}{said}</td>"
+            for td in ("<td>", '<td class="wrap">')
+            for marker in ("", "▸ ")
+            for said in spelled
         ]
         assert any(cell in page for cell in cells), name
 

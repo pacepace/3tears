@@ -5,8 +5,8 @@ values).
 The page is the kit's, as the retired planned page laid it out,
 with no class, style or script of its own:
 
-- ``.page`` > ``.mast``; on a page read from evidence of an earlier shape this build reads as stored, code's one line
-  saying so, as a ``.callout`` (``data-part="stored-shape"``), first after the masthead; on a draft, code's one line
+- ``.page`` > ``.mast``, the campaign's name its first line; on a page read from evidence of an earlier shape this
+  build reads as stored, code's one line saying so, as a ``.callout`` (``data-part="stored-shape"``), first after the masthead; on a draft, code's one line
   saying its editor's review left findings open, as a ``.callout.warn`` (``data-part="draft"``); on a finished page
   with findings open, code's
   one line counting them, as a ``.callout`` (``data-part="open"``) linked to where they are listed; where part of a
@@ -104,10 +104,12 @@ def _prose(text: str) -> str:
     return "<br>".join(inline_html(line.strip()) for line in text.splitlines() if line.strip())
 
 
-def _masthead(masthead: PageMasthead) -> str:
-    # Each part as a reader's page prints it (masthead_parts): the kind, the system in bold, then the rest.
+def _masthead(masthead: PageMasthead, campaign: str) -> str:
+    # The campaign's name its own first line, as a code page's title is; then each part as a reader's page prints it
+    # (masthead_parts): the kind, the system in bold, then the rest.
     kind, system, *rest = masthead_parts(masthead)
     spans = [
+        f'<span class="name">{escape(one_line(campaign))}</span>',
         f'<span class="kind">{escape(kind)}</span>',
         f"<span><b>{escape(system)}</b></span>",
         *(f"<span>{escape(part)}</span>" for part in rest),
@@ -278,7 +280,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         "<body>",
         '<div class="page">',
         '<article data-page="doc">',
-        _masthead(page.masthead),
+        _masthead(page.masthead, page.title),
         *(
             [f'<p class="callout" data-part="stored-shape">{escape(page.stored_shape)}</p>']
             if page.stored_shape

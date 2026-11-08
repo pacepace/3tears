@@ -10,7 +10,6 @@ field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``j
 
 from __future__ import annotations
 
-import functools
 import html
 import json
 import math
@@ -77,7 +76,8 @@ article > header > h1 { max-width: var(--col); }
 a.term { font-size: var(--t-xs); color: var(--muted); text-decoration: underline dotted; }
 nav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
   font-size: var(--t-sm); background: var(--bg); border-bottom: 1px solid var(--line); }
-nav a { color: var(--ink-2); text-decoration: none; }
+nav a { color: var(--ink-2); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: min(100%, 22rem); }
 nav a:hover { color: var(--accent); }
 section > *, .section-body > * { min-width: 0; }
 .section-body { display: grid; gap: 1rem; padding-top: 1rem; }
@@ -98,14 +98,15 @@ details.expr[open] > summary { display: none; }
 th { text-transform: none; letter-spacing: normal; }
 th a { color: inherit; text-decoration: underline dotted; }
 th code { font-size: 1em; }
-td { vertical-align: top; }
+td, tbody th { vertical-align: top; }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num { white-space: nowrap; }
 td.key { font-weight: 600; }
 [data-table="scoreboard"] table { font-size: var(--t-base); }
 td.wrap { max-width: 32rem; }
-td.glyph { white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.glyph { font-variant-numeric: tabular-nums; }
 td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
-td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+td.glyph .no-glyph { display: inline-block; width: 7.5em; max-width: 100%; min-width: 4.5em; margin-right: 6px; }
 td:target, tr:target > td { background: var(--accent-wash); }
 figure { margin: 0; }
 .fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
@@ -152,6 +153,10 @@ TRIAL_ID = re.compile(r"\bT\d+\b")
 _TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {("cases", "trials"), ("trials", "trial"), ("finding_facts", "trials")}
 )
+
+#: The columns whose cells head their rows (``<th scope="row">``): a turned Every arm by measure's figure, which names
+#: what each row reads, so a header link (a goal check's, :func:`check_header_links`) reaches it as a column's does.
+_ROW_HEADER_COLUMNS: frozenset[tuple[str, str]] = frozenset({("arms_by_measure", "measure")})
 
 #: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
 #: by its name (``case-double-charge``).
@@ -246,6 +251,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     (the planned page's options table) lays out as it is. Its first column stays in view as it scrolls, and a table a
     row is told apart in by two columns (``TableBlock.key_columns``) is framed ``tbl keys-2``, which keeps both.
 
+    A turned Every arm by measure heads each row with its figure (``<th scope="row">``, which reads as a body cell).
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
     of prose is classed ``wrap`` (the kit's) so it wraps at a measure instead of widening its column. A column whose cells carry
     an interval is classed ``glyph``: each such cell draws its interval beside its number
@@ -303,7 +309,11 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
                 css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
             pin = column.key in pinned
-            cells.append(f"<td{anchor}{_pinned_class(css, cell.text, pin)}>{_pinned_text(text, pin)}</td>")
+            tag, scope = ("th", ' scope="row"') if (block.name, column.key) in _ROW_HEADER_COLUMNS else ("td", "")
+            # A cell holds a hyphenated word whole, as a pinned one does, so it wraps at its spaces alone; a prose cell
+            # (wrap) wraps as a paragraph does.
+            held = _one_word(text) if pin or css != ' class="wrap"' else text
+            cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{held}</{tag}>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -474,21 +484,36 @@ def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale]) -> 
 
 
 def _scale_line(block: TableBlock, scales: dict[tuple[str, str], _Scale]) -> str:
-    """One quiet line under a table with glyphs: each glyph column's scale, its ends written once per unit, in the
-    cells' own form and with the unit on every span (``Each column drawn from -7.8 to 35.4 pts and from $0.031 to
-    $0.10``)."""
+    """One quiet line under a table with glyphs: each scale's ends, written once, in the cells' own form and with the
+    unit on every span, each range naming the columns drawn on it (``Pass rate (%) and Reply cites policy check (%)
+    drawn from 47.2% to 100% · Turn time drawn from 973 to 1,029``); where one range is every glyph column's, it says
+    so (``Each column drawn from -7.8 to 35.4 pts``)."""
     if not scales:
         return ""
     headers = {column.key: column.header for column in block.columns}
-    spans: dict[str, list[str]] = {}
+    # Each range: the columns drawn on it (a table on one scale pools every column of a unit but money's), its spans.
+    ranges: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
     for (key, _), scale in scales.items():
         pooled = block.shared_scale and not is_money(scale.unit)
-        said = spans.setdefault("" if pooled else key, [])
-        if scale.span() not in said:
-            said.append(scale.span())
-    headers[""] = "Each column"
-    lines = [f"{code_html(headers[key])} drawn from {' and from '.join(ends)}" for key, ends in spans.items()]
+        keys, spans = ranges.setdefault(("", scale.unit) if pooled else (key, ""), ([], []))
+        if key not in keys:
+            keys.append(key)
+        if scale.span() not in spans:
+            spans.append(scale.span())
+    if len(ranges) == 1:
+        (((pool, _), (keys, spans)),) = ranges.items()
+        named = "Each column" if not pool else code_html(headers[keys[0]])
+        return f'<p class="axis">{named} drawn from {" and from ".join(spans)}</p>'
+    lines = [
+        f"{_and([code_html(headers[key]) for key in keys])} drawn from {' and from '.join(spans)}"
+        for keys, spans in ranges.values()
+    ]
     return f'<p class="axis">{" · ".join(lines)}</p>'
+
+
+def _and(names: Sequence[str]) -> str:
+    """Names in a run: ``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 #: The longest run a pinned cell holds without a place to wrap (a space, or after a hyphen or a slash) that its floor
@@ -591,7 +616,56 @@ def _frame_widths(block: TableBlock) -> str:
         rem = _id_rem(block, column.key)
         if rem is not None:
             widths.append(f"--id{at}:{rem}rem")
+    if block.key_columns == 1 and block.columns and (lines := _lines_rem(block, block.columns[0].key)) is not None:
+        widths.append(f"--lines1:{lines}rem")
     return f' style="{";".join(widths)}"' if widths else ""
+
+
+#: The most lines a pinned label (a long aspect's name) takes where the column's cap leaves room for it.
+_PINNED_LINES = 3
+
+
+def _lines_rem(block: TableBlock, key: str) -> float | None:
+    """The width, in rem, a one-key table's pinned column needs for its longest label to set in at most
+    :data:`_PINNED_LINES` lines, its words wrapped at its spaces, up to the cap; ``None`` where the floor already
+    sets every label in that many lines. The frame sets it as its pinned column's floor (``--lines1``), which the
+    columns past it never crush, so a long label reads in three lines in a host's 688 px frame, not five.
+
+    :param block: The table, keyed by one column.
+    :ptype block: TableBlock
+    :param key: The pinned column's key.
+    :ptype key: str
+    :return: The width, to two places, or ``None``.
+    :rtype: float | None
+    """
+    low, high = _KEY_REM
+    at_floor = int((low - _CELL_PAD_REM) / _CELL_REM_PER_CHAR)
+    widest = 0.0
+    for row in block.rows:
+        words = row[key].text.split()
+        if _set_lines(words, at_floor) <= _PINNED_LINES:
+            continue
+        chars = next(
+            width
+            for width in range(max(len(word) for word in words), len(" ".join(words)) + 1)
+            if _set_lines(words, width) <= _PINNED_LINES
+        )
+        widest = max(widest, chars * _CELL_REM_PER_CHAR + (_CHIP_REM if row[key].tag is not None else 0.0))
+    if not widest:
+        return None
+    return round(min(max(widest + _CELL_PAD_REM, low), high), 2)
+
+
+def _set_lines(words: Sequence[str], width: int) -> int:
+    """How many lines ``words`` set in at ``width`` characters a line, each line filled before the next; a word longer
+    than a line takes one of its own."""
+    lines, used = 0, 0
+    for word in words:
+        if lines and used + 1 + len(word) <= width:
+            used += 1 + len(word)
+        else:
+            lines, used = lines + 1, len(word)
+    return lines
 
 
 def _id_rem(block: TableBlock, key: str) -> float | None:
@@ -736,9 +810,11 @@ def glossary_slug(term: str) -> str:
 
 
 def check_header_links(markup: str, names: Sequence[str]) -> str:
-    """``markup`` with each column header that names one of the goal checks ``names`` linked to that check's entry: a
-    header is where a reader first meets a check's name, as a term of art's header links its term. A header naming a
-    check reads its name, then its unit in brackets or the aspects it reads after a comma.
+    """``markup`` with each header cell (a column's, or a row's: a turned table's figure) that names one of the goal
+    checks ``names`` linked to that check's entry: a header is where a reader first meets a check's name, as a term of
+    art's header links its term. A header naming a check reads its name, then its unit in brackets or the aspects it
+    reads after a comma. A hyphenated word in it is held whole by a span (``span.id``), which the name is matched
+    through and the link keeps.
 
     :param markup: The page's markup.
     :ptype markup: str
@@ -747,15 +823,28 @@ def check_header_links(markup: str, names: Sequence[str]) -> str:
     :return: The markup, each such header linked.
     :rtype: str
     """
-    for name in names:
-        header = re.compile(rf"(<th\b[^>]*>)({re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?)(</th>)")
-        markup = header.sub(functools.partial(_check_header, name), markup)
-    return markup
+    if not names:
+        return markup
+    named = [(name, re.compile(rf"{re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?", re.S)) for name in names]
+
+    def linked(found: re.Match[str]) -> str:
+        said = _HELD.sub(r"\1", found[2])
+        if "<" in said:
+            # A header holding other markup (a term's link, code) is not a check's bare name.
+            return found[0]
+        for name, header in named:
+            if header.fullmatch(said):
+                return f"{found[1]}{term_link(name, found[2])}{found[3]}"
+        return found[0]
+
+    return _HEADER_CELL.sub(linked, markup)
 
 
-def _check_header(name: str, found: re.Match[str]) -> str:
-    """A matched header cell naming the check ``name``, its text linked to the check's entry."""
-    return f"{found[1]}{term_link(name, found[2])}{found[3]}"
+#: A header cell, its opening tag, its content and its closing tag.
+_HEADER_CELL = re.compile(r"(<th\b[^>]*>)(.*?)(</th>)", re.S)
+
+#: A hyphenated word held whole in a cell (:func:`_one_word`), its text the group.
+_HELD = re.compile(r'<span class="id(?: long)?">([^<]*)</span>')
 
 
 #: The namespace of a goal check's glossary row's id (:func:`check_anchor`).

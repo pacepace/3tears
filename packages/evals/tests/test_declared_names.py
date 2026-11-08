@@ -23,6 +23,7 @@ stored reason at render time (:func:`~threetears.evals.analysis.report.words.rea
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 from typing import Any
@@ -39,6 +40,7 @@ from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
+from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import reason_words
 from threetears.evals.analysis.stats import (
@@ -668,6 +670,25 @@ class TestThePagePrintsDeclaredNames:
         cells = _cells(page)
         assert any(cell in LABELS for cell in cells)
         assert not [cell for cell in cells if any(name in cell for name in SHORT_NAMES.values())]
+
+    def test_the_nav_names_each_aspect_by_its_short_name_and_its_fold_keeps_the_full_label(self) -> None:
+        # Discodon's 0.94.0 pass: the nav printed an aspect's fold heading, its full label, so a declared short name
+        # never reached it. Its link names the aspect by its short name; the fold it lands on keeps the full label as
+        # its heading. A label is a host's text, which no attribute carries (test_report_html_no_script).
+        _, page = _page(named=True)
+        served = campaign_report_html(page)
+        nav = served[served.index("<nav>") : served.index("</nav>")]
+        for label in LABELS:
+            assert f">{html.escape(SHORT_NAMES[label])}</a>" in nav, nav
+            assert html.escape(label) not in nav
+            assert f"<summary><h2>{html.escape(label)}</h2>" in served, "the fold's heading keeps the full label"
+
+    def test_with_no_name_the_nav_prints_the_full_label(self) -> None:
+        _, page = _page(named=False)
+        served = campaign_report_html(page)
+        nav = served[served.index("<nav>") : served.index("</nav>")]
+        for label in LABELS:
+            assert f">{html.escape(label)}</a>" in nav, nav
 
     def test_the_legend_pairs_each_short_name_with_its_label(self) -> None:
         named, _ = _page(named=True)

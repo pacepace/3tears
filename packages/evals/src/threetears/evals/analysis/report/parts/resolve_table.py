@@ -292,9 +292,11 @@ def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             )
             if value is None and not context.query.measures:
                 continue
+            # A figure's name is the row's label, so it starts with a capital as every label does.
+            named = humanize("dimension", key)
             yield {
                 "arm": _arm(context, arm),
-                "figure": _words(humanize("dimension", key)),
+                "figure": _words(named[:1].upper() + named[1:]),
                 "value": TableCell(value=value),
             }
 
