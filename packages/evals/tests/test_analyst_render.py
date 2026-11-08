@@ -43,14 +43,16 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
-from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
+from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
-from threetears.evals.analysis.report.parts.charting import figure_unit, held_means, money_words
-from threetears.evals.analysis.report.parts.look import quantity_of
+from threetears.evals.analysis.report.parts.charting import figure_stat, figure_unit, held_means, money_words
+from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
-from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE
+from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE, GROUP_LEVEL_TEMPLATE
+from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
@@ -464,7 +466,11 @@ def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_wher
     arm on one measure key, the table and the change charts keep both, each under the measure's words naming its
     aspect, never one in place of the other; a measure whose contrasts sit on one aspect keeps its plain words. Bars
     asked for in panels by aspect draw a panel per aspect the measure's contrasts sit on, each titled by its name; a
-    dot strip asked for them draws a strip per aspect, each naming it."""
+    dot strip asked for them draws a strip per aspect, each naming it. A change chart's group head (a strip's title)
+    also carries the
+    level each of its rows is compared with, the control's figure on that aspect, where the aspects' levels differ:
+    the measure's words naming its aspect, then the control and that level (where every row shares one level, the
+    chart's zero line says it and the heads keep their words)."""
     held = _aspect_contrasts()[name]
     names = {aspect.id: aspect.name for aspect in held.aspects}
     assert all(c.aspect is not None and names[c.aspect] for c in held.contrasts), "the control: every aspect is named"
@@ -485,6 +491,33 @@ def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_wher
         split = len(on[contrast.measure]) > 1
         return ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect]) if split else plain
 
+    control = block_look(held, fact_arms(held)).control
+    assert control is not None, "the control: the input names a control"
+
+    def level(contrast: Contrast) -> str | None:
+        # The control's own figure on the contrast's aspect, as the input states it, in its unit; None where it holds
+        # none there.
+        assert contrast.aspect is not None
+        if contrast.kind == "trial":
+            # The pass rate's level is the control's passes of its usable trials on that aspect.
+            board = aspect_board(held, contrast.aspect).get(control.id)
+            if board is None or board.passed is None or not board.usable:
+                return None
+            return figure_text(board.passed / board.usable * 100, quantity("percent"))
+        stat = figure_stat(held, contrast.measure, control.id, contrast.aspect)
+        if stat is None or stat.mean is None:
+            return None
+        drawn = quantity(figure_unit(held, contrast.measure, kind=contrast.kind))
+        return figure_text(float(stat.mean) * drawn.factor, drawn)
+
+    def heads(contrasts: list[Contrast]) -> Counter[str]:
+        levels = {level(c) for c in contrasts}
+        if len(levels) == 1 or None in levels:
+            return Counter(words(c) for c in contrasts)
+        return Counter(
+            GROUP_LEVEL_TEMPLATE.format(group=words(c), reference=control.name, level=level(c)) for c in contrasts
+        )
+
     table = block_render(held, block_kind="table", query=_query("contrasts"), limit=200)
     assert table.total == len(held.contrasts)
     measured = table.columns.index("Measure")
@@ -497,7 +530,7 @@ def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_wher
         assert bars.total == len(stated), key
         if len(aspects) > 1:
             grouped = bars.columns.index("Group")
-            assert Counter(row.cells[grouped] for row in bars.rows) == Counter(words(c) for c in stated), key
+            assert Counter(row.cells[grouped] for row in bars.rows) == heads(stated), key
         else:
             assert "Group" not in bars.columns, key
         query = _query("contrasts", measures=[key], small_multiples_by="aspect")
@@ -512,7 +545,7 @@ def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_wher
         assert strips.total == len(stated), key
         if len(aspects) > 1:
             stripped = strips.columns.index("Panel")
-            assert Counter(row.cells[stripped] for row in strips.rows) == Counter(words(c) for c in stated), key
+            assert Counter(row.cells[stripped] for row in strips.rows) == heads(stated), key
 
 
 #: The sources that read one aspect where a query names none, and a kind that panels each.

@@ -156,12 +156,14 @@ class _Dot:
     tip: list[str]
     strong: bool | None = None
     hollow: bool = False
+    short_label: str | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
 class _Strip:
-    """One strip (a panel, or the whole chart): its title, the arm it stands for (for a chip), its dots and line, and
-    the quantity its dots are drawn as."""
+    """One strip (a panel, or the whole chart): its title, the arm it stands for (for a chip), its dots and line, the
+    quantity its dots are drawn as, and, on a strip of changes, what its zero is and which way is better."""
 
     title: str
     arm: str
@@ -169,6 +171,8 @@ class _Strip:
     line: ChartReference | None
     drawn: Quantity
     key: str = ""
+    zero_label: str | None = None
+    better: Literal["right", "left"] | tuple[str, str] | None = None
 
 
 def _declared_level(context: ChartContext, keys: Iterable[str]) -> str:
@@ -213,8 +217,10 @@ def _dot(
 
 
 def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
-    """readings or contrasts: the diverging chart's rows as dots, a strip per group (a measure, where several, and the
-    aspect too where a measure's contrasts sit on several). The strips are the small multiples, so the bars are read
+    """readings, contrasts, two arms compared or lever effects: the diverging chart's rows as dots, a strip per group (a
+    measure, where several, and the aspect too where a measure's contrasts sit on several; a setting), each naming its
+    zero and which way is better as the diverging chart does, a row with no interval an open mark, its note (the level
+    it is from, where it is its own) and short label kept. The strips are the small multiples, so the bars are read
     unpanelled: a strip already names the aspect wherever two aspects' contrasts share it."""
     query = context.spec.query.model_copy(update={"small_multiples_by": "none"})
     as_bars = dataclasses.replace(
@@ -239,11 +245,20 @@ def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
                 interval=interval,
                 tip=list(row.tip or [row.label]),
                 strong=row.strong,
+                # A change with no interval reads as an open mark, never surer than one whose interval holds zero.
+                hollow=interval is None and bool(data.dots),
+                short_label=row.short_label,
+                note=row.note if data.dots else None,
             )
         )
     fmt_unit = Quantity(1.0, data.fmt or unit.fmt, unit.unit, change=True)
     line = data.reference
-    strips = [_Strip(title=title, arm="", dots=dots, line=line, drawn=fmt_unit) for title, dots in grouped.items()]
+    strips = [
+        _Strip(
+            title=title, arm="", dots=dots, line=line, drawn=fmt_unit, zero_label=data.zero_label, better=data.better
+        )
+        for title, dots in grouped.items()
+    ]
     return strips, context.level, drawn.notes, True
 
 
@@ -490,6 +505,8 @@ def _dot_row(context: ChartContext, dot: _Dot, line: ChartReference | None) -> D
         shape=look.shape if look is not None else None,
         hollow=True if hollow else None,
         strong=dot.strong,
+        short_label=dot.short_label,
+        note=dot.note,
         tip=dot.tip,
     )
 
@@ -544,6 +561,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
             fmt=first.fmt,
             level=level,
             reference=strip.line,
+            zero_label=strip.zero_label,
+            better=strip.better,
             emphasis=context.emphasis,
         )
         return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
@@ -561,7 +580,16 @@ def _dot_interval(context: ChartContext) -> Drawn:
                 fmt=strip.drawn.fmt if several else None,
             )
         )
-    data = DotIntervalChart(domain=spans[first], fmt=first.fmt, level=level, emphasis=context.emphasis, panels=panels)
+    # A strip of changes names its zero and which way is better once, for every panel: the diverging chart's own.
+    data = DotIntervalChart(
+        domain=spans[first],
+        fmt=first.fmt,
+        level=level,
+        zero_label=strips[0].zero_label,
+        better=strips[0].better,
+        emphasis=context.emphasis,
+        panels=panels,
+    )
     return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
 
 
@@ -694,16 +722,9 @@ def _range_bars(context: ChartContext) -> Drawn:
 def _higher_is_better(context: ChartContext, key: str) -> bool | None:
     """Which way a scatter's measure is better: its declaration, a judged dimension's always up, a scoreboard
     figure's by what it counts, else the criteria on it; None where nothing says."""
-    report_input = context.report_input
     if context.query.source == "scoreboard":
         return key not in _SCOREBOARD_LOWER
-    measure = report_input.measures.get(key)
-    if measure is not None and measure.higher_is_better is not None:
-        return measure.higher_is_better
-    if key in report_input.judged and measure is None:
-        return True
-    directions = {criterion.direction for criterion in report_input.criteria if criterion.measure == key}
-    return directions.pop() == "higher_is_better" if len(directions) == 1 else None
+    return resolve_changes.higher_is_better(context.report_input, key)
 
 
 def _axes(context: ChartContext, keys: Sequence[str]) -> tuple[str, str]:

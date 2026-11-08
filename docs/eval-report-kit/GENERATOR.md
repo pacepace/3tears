@@ -148,7 +148,7 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 | One rate per candidate against a floor | Dot + interval strips, floor dashed (r1 `dims`) | Bars from zero hiding a 3-point gap |
 | Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures, `placeLabels()` | A dual-axis chart |
 | Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget | Pass rates on a truncated axis: chart failure rate from zero instead |
-| Deltas per stratum or lever | `barsH()` diverging about zero; muted where the evidence cannot tell it from zero | A before-and-after table |
+| Deltas per stratum, task, place or lever | Dots with intervals about a named zero (`barsH()` with `dots`): a row with no interval an open mark, said in a caption; a row with an interval never faded | Solid bars, whose length reads surer than the one row that has an interval; a before-and-after table |
 | Ordered x (turn depth, version, date, input length) | `lineChart()`, bands on at most two series, end labels | Lines over unordered categories |
 | Latency distributions | p50–p95 range bars with the budget line | Mean only |
 | Two crossed factors | Lattice of tiles with metric, cost, latency, pill | Grouped bars hiding the interaction |
@@ -176,6 +176,7 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 - **Labels.** Use `placeLabels()`, which avoids other labels, markers and reference text. On phone widths, label only the recommended point and the extremes, and use letter tags.
 - **Hover adds detail but is never the only way to read a value;** Full results carries everything.
 - **Charts render at the container's real pixel width** (`chart()`), so text stays readable on a phone.
+- **A change carries its baseline.** Every change chart names its zero: no change against the control as a row names it (`no change vs P · September`), against the second of two arms compared, against each factor's first level, or from each lever move's start. The level the change is from, as the input states it, is on the figure: in the zero label where every row shares it (`no change vs P · September ($1.89, mean over 294 cases)`), in each group's head where each measure's rows do (`Pass rate · September 85.3%`), else in each row's note (`+1.7 pts from 88%`). A chart over measures better one way marks which under its axis (`← worse · better →`), from the measure's declared direction.
 - **Descriptive versus inferential.** Per-stratum deltas computed on the page or by a tool (not the pipeline) are descriptive: say "uncorrected", bold only rows separated at 95%, and call them leads.
 
 ### 5.3 Summary charts (the reference pages)

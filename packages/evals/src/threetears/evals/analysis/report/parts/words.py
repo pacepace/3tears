@@ -11,6 +11,20 @@ from __future__ import annotations
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 
 __all__ = [
+    "ZERO_TEMPLATE",
+    "ZERO_LEVEL_TEMPLATE",
+    "ZERO_FIRST_LEVELS",
+    "ZERO_STARTS",
+    "ZERO_STARTS_CROSS",
+    "GROUP_LEVEL_TEMPLATE",
+    "FROM_LEVEL_TEMPLATE",
+    "LEVEL_COUNT_TEMPLATE",
+    "TRIALS_COUNT_TEMPLATE",
+    "CASES_MEAN_TEMPLATE",
+    "OPEN_MARKS_NOTE",
+    "MARGIN_BAND_TEMPLATE",
+    "FAMILY_LEVEL_NOTE",
+    "BETTER_WORDS",
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
     "PAIRED_BASIS_TEMPLATE",
@@ -328,6 +342,39 @@ REPEAT_TEMPLATE = "repeat {repeat}"
 #: A chart's caption naming each comparison its query asks for that the input does not hold (GENERATOR §2: never
 #: fill it in).
 MISSING_TEMPLATE = "Not in the evidence: {missing}."
+
+#: What a change chart's zero line is: no change against what every row is compared with, named as a chart row names
+#: it, with that reference's level where every row shares one (``85.3%, 765 of 897 trials``).
+ZERO_TEMPLATE = "no change vs {reference}"
+ZERO_LEVEL_TEMPLATE = "no change vs {reference} ({level})"
+#: Zero on a chart of lever effects: each level against its factor's first, or each move against where it starts,
+#: and, where it draws interactions, two moves whose effects agree.
+ZERO_FIRST_LEVELS = "no change vs each factor's first level"
+ZERO_STARTS = "no change from each move's start"
+ZERO_STARTS_CROSS = "no change from each move's start, or between the moves"
+
+#: Where every row of a group shares one reference level and the groups differ, the group's head carries it.
+GROUP_LEVEL_TEMPLATE = "{group} · {reference} {level}"
+#: Where a chart's rows each have their own reference level, each change's note carries its own.
+FROM_LEVEL_TEMPLATE = "{change} from {level}"
+#: A reference level and what it counts: a pass rate's passes of its trials, a figure's mean over its cases.
+LEVEL_COUNT_TEMPLATE = "{level}, {count}"
+TRIALS_COUNT_TEMPLATE = "{passed} of {trials} trials"
+CASES_MEAN_TEMPLATE = "mean over {cases} cases"
+
+#: A change chart drawn as dots where some row carries no interval: its open mark says so.
+OPEN_MARKS_NOTE = "Open marks: no interval."
+
+#: A forest's margin line, and what its shaded band means.
+MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
+
+#: A forest of contrasts corrected together: the level each interval is drawn at, and what it holds as a family.
+FAMILY_LEVEL_NOTE = (
+    "Each interval is at {level}, so the {size} comparisons corrected together hold at {joint} at once."
+)
+
+#: The words under a change chart's two ends, the left end's first, by whether higher is better.
+BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}
 
 #: A reference line's label: its kind and where it sits.
 REFERENCE_TEMPLATE = "{kind} {value}"
