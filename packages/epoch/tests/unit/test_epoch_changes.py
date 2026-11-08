@@ -15,6 +15,7 @@ the real generation source, the real reader and the real pass. The contract this
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, ClassVar
@@ -266,17 +267,82 @@ class TestAWholeTableChangeIsTheChange:
         assert not follower.registry.behind_on(_TABLE)
 
 
-class TestFirstSightDropsNothing:
-    async def test_a_follower_that_starts_with_rows_cached_keeps_them(self, bus: _Lossy) -> None:
+class TestFirstSight:
+    async def test_the_pods_own_l2_entries_are_read_through_l3_once(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
         writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
         writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
         await _save(writing, "m1", "ada")
-        assert await _member_id(reading, "m1") == "ada"
+        assert await _member_id(reading, "m1") == "ada"  # now in the follower's own L2 key, which outlives it
+        rows["m1"] = {**rows["m1"], "member_id": "changed-while-nobody-followed"}
         follower.registry.follow_generation(_TABLE)
         await follower.tick()
-        assert reading.exists_in_cache_sync("m1")
         assert not follower.registry.behind_on(_TABLE)
+        assert await _member_id(reading, "m1") == "changed-while-nobody-followed"
+
+    async def test_a_table_first_seen_with_no_generation_follows_its_first_incarnation(self, bus: _Lossy) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
+        writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
+        await bus.kv_bucket(name="epochs")  # the hub declared the bucket; nothing has written the table
+        follower.registry.follow_generation(_TABLE)
+        await follower.tick()
+        await follower.registry.start_invalidation_listener(follower.bus)  # type: ignore[arg-type]
+        await _save(writing, "m1", "ada")
+        assert await _member_id(reading, "m1") == "ada"
+        await follower.tick()
+        assert not follower.registry.behind_on(_TABLE), "the first incarnation is the mark's own, not a replaced store"
+        bus.deaf = True
+        await _save(writing, "m1", "grace")
+        bus.deaf = False
+        assert await follower.tick() == 1
+        assert await _member_id(reading, "m1") == "grace"
+
+
+class TestAHoleHoldsOnlyTheMark:
+    async def test_the_epochs_after_a_missing_record_are_still_applied(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        first = await EpochGenerationReader(bus).read(_TABLE)
+        await _save(writing, "m2", "barbara")
+        bus.deaf = False
+        assert first is not None
+        await (await _changes(bus)).delete(key=epoch_change_kv_key(_TABLE, first))
+        await follower.tick()
+        assert follower.registry.behind_on(_TABLE)
+        assert await _member_id(reading, "m2") == "barbara", "the epoch after the hole was applied"
+        assert await _member_id(reading, "m1") == "ada", "the hole's own row waits for its record"
+
+
+class TestARecordStaysWithinItsBound:
+    async def test_a_commit_too_large_to_record_by_row_is_recorded_as_the_whole_table(self, bus: _Lossy) -> None:
+        source = EpochGenerationSource(bus)
+        rows = [ChangedRow(ids=[f"row-{each:06d}"], columns={"member_id": "x" * 64}) for each in range(5000)]
+        token = await source.advance_with_change(_TABLE, rows)
+        record = await EpochGenerationReader(bus).change(_TABLE, token)
+        assert record is not None
+        assert record.whole_table
+        assert record.rows == []
+
+
+class TestBehindIsSaidOnce:
+    async def test_a_table_that_stays_behind_is_logged_once(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, _ = await _two_pods(bus)
+        bus.deaf = True
+        await _save(writing, "m1", "edsger")
+        bus.deaf = False
+        token = await EpochGenerationReader(bus).read(_TABLE)
+        assert token is not None
+        await (await _changes(bus)).delete(key=epoch_change_kv_key(_TABLE, token))
+        with caplog.at_level(logging.ERROR):
+            for _ in range(3):
+                await follower.tick()
+        said = [r for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert len(said) == 1
+        assert follower.registry.behind_on(_TABLE)
 
 
 class TestTheLogRefusesPastItsCap:

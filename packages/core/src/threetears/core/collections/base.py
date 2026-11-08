@@ -28,7 +28,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
 from uuid import uuid7
 
-from pydantic import ValidationError
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.core._bridge import fire_and_forget, sync_await
@@ -39,7 +38,14 @@ from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, advance_recording
+from threetears.core.collections.epoch_change import (
+    EPOCH_CHANGE_MAX_AGE,
+    ChangedRow,
+    EpochChange,
+    advance_recording,
+    epoch_change_record,
+    read_epoch_change,
+)
 from threetears.core.collections.delete_cascade import (
     DeleteCascade,
     announce_delete_cascade,
@@ -152,10 +158,6 @@ _CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
 
 #: compare-and-swap rounds an advance of an L2-kept write generation takes before it gives up
 _L2_GENERATION_CAS_ATTEMPTS: Final = 16
-
-#: how long an L2-kept table's epoch change record stays beside its generation: long enough for a
-#: replica that was partitioned to catch up from it; one gone is a replica behind, never a drop
-L2_EPOCH_CHANGE_RETENTION: Final = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1869,13 +1871,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             ) from exc
         if raw is None:
             return None
-        try:
-            record = EpochChange.model_validate_json(raw)
-        except ValidationError as exc:
-            raise GenerationUnavailableError(f"the change record of {table_name!r} at {token!r} is malformed") from exc
-        if record.table != table_name or record.token != token:
-            raise GenerationUnavailableError(f"the record under {table_name!r} at {token!r} is of another epoch")
-        return record
+        return read_epoch_change(raw, table_name, token)
 
     async def l2_write_generation(self) -> str | None:
         """this table's write generation as L2 holds it, for the pass that judges a follower's mark.
@@ -1930,16 +1926,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             kv = await self._ensure_kv()
             if kv is None:
                 raise KvError(f"{self.table_name}: no L2 client to keep the epoch's change in")
-            record = EpochChange(
-                table=self.table_name,
-                token=token,
-                whole_table=changed is None,
-                rows=list(changed) if changed is not None else [],
-            )
             await kv.put(
                 key=self._l2_epoch_key(token),
-                value=record.model_dump_json().encode("utf-8"),
-                ttl=L2_EPOCH_CHANGE_RETENTION,
+                value=epoch_change_record(self.table_name, token, changed),
+                ttl=EPOCH_CHANGE_MAX_AGE,
             )
         except (KvError, ConcurrentModificationError) as exc:
             failure = GenerationUnavailableError(

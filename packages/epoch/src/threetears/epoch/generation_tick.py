@@ -104,7 +104,7 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
 
     **A table whose generation is kept in L2** (``L2_WRITE_GENERATION``) has none in the epoch bucket:
     it is judged by ``CollectionRegistry.catch_up_l2_generations``, which this pass runs after the
-    others; it keeps no change records yet, so a missed epoch there leaves the table behind.
+    others, reading each missed epoch's change record from beside the generation in L2.
 
     :param registry: the registry whose followed tables this pass judges
     :ptype registry: CollectionRegistry

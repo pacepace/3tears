@@ -1744,6 +1744,8 @@ def _agent_pod(
             # fleet sequences its caches by. No platform pod process opens it today; the grant is
             # the read a pod-side listener's catch-up needs, and nothing more.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the agent-config HOT CACHE. The hub's ``agents`` table is the source of an agent's config and
             # the hub fills this bucket from it; the pod reads and watches its OWN key and writes
             # nothing. A write would let a pod rewrite the cache the agent router reads its turn
@@ -2043,6 +2045,8 @@ def _tool_pod(
             # today: ``KV_KEY_READ`` names one key that is one subject token, and a generation key
             # is four; and its read is the direct get, which this bucket is not declared for.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
             # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
             # key id, as the collections scope above is -- so replicas share one key and no pod can
@@ -2144,6 +2148,8 @@ def _registry(
             # advances every generation. The whole bucket, for the reason the tool pod's grant
             # gives: nothing narrower can name a four-token key.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
+            # each epoch's change record, read for an epoch whose row broadcasts it missed: its rows alone
+            JsResource.kv_bucket_keys(f"{ns}-epoch-changes", writable=False),
             # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
             # publishes each agent's reply, so it needs the JetStream control-plane grant for this
             # stream in both roles. it is also the process that DECLARES the stream at startup,
@@ -2263,6 +2269,8 @@ def _hub(
             # permission problem, so this is the kind of omission that costs a
             # day. the epoch client opens the bucket on its first bump.
             JsResource.kv(f"{ns}-epochs", scope=None, writable=True),
+            # the epoch change log, written beside every generation this principal advances
+            JsResource.kv(f"{ns}-epoch-changes", scope=None, writable=True),
             # THE UNDERSCORE SPELLING IS NOT NECESSARILY A TYPO, and that is the whole reason
             # these are here. A bucket created by a DIRECT ``js.create_key_value(bucket=...)``
             # never receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that
@@ -2376,6 +2384,8 @@ def _gateway(
             # permission problem, so this is the kind of omission that costs a
             # day. the epoch client opens the bucket on its first bump.
             JsResource.kv(f"{ns}-epochs", scope=None, writable=True),
+            # the epoch change log, written beside every generation this principal advances
+            JsResource.kv(f"{ns}-epoch-changes", scope=None, writable=True),
             # the gateway builds two registries that carry L2 collections (``gateway/acl.py`` and
             # ``gateway/service.py``), so it is a full participant in the shared bucket.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),

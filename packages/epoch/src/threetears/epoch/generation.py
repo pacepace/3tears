@@ -31,8 +31,13 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from pydantic import ValidationError
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.collections.epoch_change import (
+    EPOCH_CHANGE_MAX_AGE,
+    ChangedRow,
+    EpochChange,
+    epoch_change_record,
+    read_epoch_change,
+)
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.nats.errors import KvBucketNotFoundError, KvError
@@ -93,10 +98,12 @@ class EpochChangeRetention:
     :ivar max_age: how long a record is kept
     :ivar max_bytes: the most the bucket holds, per replica
     :ivar replicas: how many servers hold it; ``None`` keeps a live bucket's count and creates on
-        one (a local single-node broker). A platform declares three.
+        one (a local single-node broker). A platform declares three: durable state is never in a
+        one-replica bucket, and the hub's source passes them (its start and reconnect sweep raises
+        any stream it finds below three as well).
     """
 
-    max_age: timedelta = timedelta(hours=24)
+    max_age: timedelta = EPOCH_CHANGE_MAX_AGE
     max_bytes: int = 64 * 1024 * 1024
     replicas: int | None = None
 
@@ -184,20 +191,27 @@ class EpochGenerationSource:
         """
         self._nats = nats_client
         self._change_retention = change_retention
+        self._changes_bucket: KvBucketLike | None = None
 
     async def _changes(self) -> KvBucketLike:
-        """the epoch change log, declared with its retention by the principal that writes it.
+        """the epoch change log, declared with its retention once per source by the principal that writes it.
+
+        Every writer of the log holds the platform's one retention (the hub and the gateway build
+        their sources from the same declaration), so a second writer's declaration reconciles
+        nothing; the handle is kept so a write makes no declaration round trip.
 
         :return: the bucket
         :rtype: KvBucketLike
         :raises GenerationUnavailableError: when the client cannot declare a bucket
         """
+        if self._changes_bucket is not None:
+            return self._changes_bucket
         if not isinstance(self._nats, KvDeclaring):
             raise GenerationUnavailableError(
                 f"{type(self._nats).__name__} cannot declare the epoch change log, so no epoch's change can be stored"
             )
         retention = self._change_retention
-        return await self._nats.ensure_kv_bucket(
+        self._changes_bucket = await self._nats.ensure_kv_bucket(
             name=EPOCH_CHANGES_BUCKET,
             ttl=retention.max_age,
             storage="memory",
@@ -205,6 +219,7 @@ class EpochGenerationSource:
             replicas=retention.replicas,
             owns_bucket=True,
         )
+        return self._changes_bucket
 
     async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str:
         """advance the table's generation once and store the rows the advance covered as its change record.
@@ -224,13 +239,10 @@ class EpochGenerationSource:
             could not be stored
         """
         token = await self.advance(table_name)
-        record = EpochChange(
-            table=table_name, token=token, whole_table=rows is None, rows=list(rows) if rows is not None else []
-        )
         key = epoch_change_kv_key(table_name, token)
         try:
             bucket = await self._changes()
-            await bucket.put(key=key, value=record.model_dump_json().encode("utf-8"))
+            await bucket.put(key=key, value=epoch_change_record(table_name, token, rows))
         except KvError as exc:
             _CHANGES_REFUSED.labels(table=table_name).inc()
             log.error(
@@ -414,18 +426,7 @@ class EpochGenerationReader:
             ) from exc
         if raw is None:
             return None
-        try:
-            record = EpochChange.model_validate_json(raw)
-        except ValidationError as exc:
-            raise GenerationUnavailableError(
-                f"the change record of {table_name!r} at {token!r} is malformed: {exc}"
-            ) from exc
-        if record.table != table_name or record.token != token:
-            raise GenerationUnavailableError(
-                f"the change record under {key!r} is of {record.table!r} at {record.token!r}, "
-                f"not {table_name!r} at {token!r}"
-            )
-        return record
+        return read_epoch_change(raw, table_name, token)
 
     async def watch(self, table_name: str) -> AsyncGenerator[str | None]:
         """the table's write generation as it stands, then each value it takes, until the caller stops.

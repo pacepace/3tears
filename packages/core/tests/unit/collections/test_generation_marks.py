@@ -130,9 +130,12 @@ class TestAnotherIncarnationIsAReplacedStore:
         assert marks.recorded(_TABLE) is None
         assert marks.settle(_TABLE, None) is GenerationVerdict.CURRENT
 
-    def test_the_first_generation_after_none_is_a_new_incarnation(self) -> None:
+    def test_the_first_generation_after_none_is_the_marks_own_and_its_advances_are_missed(self) -> None:
+        # the store held no generation when the mark was taken, so the first incarnation minted since
+        # replaces nothing: its advances are ones this pod may have missed, each with its record
         marks = _followed(None)
-        assert marks.settle(_TABLE, "inc-a:1") is GenerationVerdict.REPLACED
+        assert marks.judge(_TABLE, "inc-a:1") is GenerationVerdict.MISSED
+        assert marks.unaccounted(_TABLE, "inc-a:2") == ("inc-a:1", "inc-a:2")
 
     def test_a_token_that_is_not_a_count_only_ever_equals_itself(self) -> None:
         marks = _followed("opaque-1")

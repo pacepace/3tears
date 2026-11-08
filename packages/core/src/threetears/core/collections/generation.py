@@ -13,8 +13,9 @@ The same generation answers a second question: "is this pod's cache of the table
 that follows a table keeps a :class:`GenerationMarks` mark for it -- the last generation whose
 writes it has accounted for -- and every row broadcast names the generation its write advanced to
 and how many rows that advance covered. A pod that has heard every row of every advance up to the
-table's current generation is not behind; one that has not must drop what it holds of the table,
-because it cannot say which row it missed.
+table's current generation is not behind; one that has not reads the change record of each advance
+it missed (:mod:`threetears.core.collections.epoch_change`) and evicts exactly those rows. It never
+drops the table for a gap; a record it cannot read leaves it behind, serving what it holds.
 
 The protocol, the declaration and the mark live here, in core, because
 :class:`~threetears.core.collections.base.BaseCollection` and
@@ -90,7 +91,7 @@ class GenerationSource(Protocol):
         on the row broadcasts of the commit it advanced for, and a follower counts those rows
         against exactly that advance. A source whose tokens are ``{incarnation}:{count}``
         (:func:`split_generation_token`) can be followed; any other token only ever compares
-        unequal, so a follower drops the table whenever it moves.
+        unequal, so a follower is behind on the table whenever it moves.
 
         :param table_name: the collection's table
         :ptype table_name: str
@@ -108,9 +109,9 @@ async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str
 
     For a writer that changes rows it cannot list -- a schema migration, a restore, a bulk repair
     in SQL. Nothing is published for the advance, so every process following a table finds a count
-    it did not hear and drops the table and everything derived from it: the reach is unknown, so
-    that is the right answer, and the only one the epoch system can give. Call it after the writes
-    have committed, never before: a follower that dropped first would re-read the old rows.
+    it did not hear and applies its change record, which names the whole table: the reach is unknown,
+    so every row of the table, and everything derived from it, is the change. Call it after the writes
+    have committed, never before: a follower that applied it first would re-read the old rows.
 
     Every table is attempted even when one fails, and the failures are raised together after,
     because a table left unadvanced keeps every follower's stale rows with nothing to correct them.
@@ -205,7 +206,7 @@ class L2WriteGeneration:
     write that changes a row -- each won compare-and-set, delete and eviction -- and followed by every
     registry holding the collection (:meth:`CollectionRegistry.catch_up_l2_generations`). Tokens are
     ``{incarnation}:{count}``: the incarnation is minted when the key is first written, so a wiped
-    bucket starts another and every follower drops the table.
+    bucket starts another and every follower is behind on the table until its epochs are restored.
     """
 
     __slots__ = ()
@@ -260,8 +261,8 @@ class UndeclaredWriteGeneration:
 WRITE_GENERATION: Final = WriteGeneration()
 
 #: declare on a collection class kept in L2 alone to keep its write generation in L2 beside its rows
-#: (:class:`L2WriteGeneration`), so a replica that missed a row broadcast drops its L1 copy at the
-#: next catch-up pass.
+#: (:class:`L2WriteGeneration`), with each advance's change record beside it, so a replica that missed
+#: a row broadcast evicts exactly that row at the next catch-up pass.
 L2_WRITE_GENERATION: Final = L2WriteGeneration()
 
 #: the default: the collection has declared nothing, and writes as it did before. See
@@ -290,7 +291,10 @@ class GenerationVerdict(StrEnum):
 
     @property
     def drops(self) -> bool:
-        """whether this verdict means the pod must drop what it holds of the table.
+        """whether this verdict moves the mark without the broadcasts that would have moved it.
+
+        A follower never drops a table for it: it catches up epoch by epoch, or is behind
+        (``CollectionRegistry.catch_up_generation``).
 
         :return: ``True`` for every verdict but :attr:`CURRENT`
         :rtype: bool
@@ -520,6 +524,10 @@ class GenerationMarks:
         """
         mark = self._tables[table_name]
         parts = split_generation_token(token)
+        if parts is not None and mark.sighted and mark.incarnation is None:
+            # the first incarnation since a mark taken over no generation: counted from its start
+            mark.incarnation = parts[0]
+            mark.accounted = 0
         if parts is None or not mark.sighted or parts[0] != mark.incarnation:
             return ()
         incarnation, count = parts
@@ -647,6 +655,10 @@ class GenerationMarks:
         verdict = GenerationVerdict.CURRENT
         if not mark.sighted:
             verdict = GenerationVerdict.FIRST_SIGHT
+        elif mark.incarnation is None and incarnation is not None:
+            # the store held no generation when the mark was taken, so the first incarnation minted
+            # since is this mark's own: every advance of it is one this pod may have missed
+            verdict = GenerationVerdict.MISSED
         elif incarnation != mark.incarnation:
             verdict = GenerationVerdict.REPLACED
         elif count > mark.accounted or mark.overflowed:
@@ -654,10 +666,11 @@ class GenerationMarks:
         return verdict
 
     def settle(self, table_name: str, token: str | None) -> GenerationVerdict:
-        """judge a generation just read, and record it as the mark when the table must be dropped.
+        """judge a generation just read, and take it as the mark unless every advance up to it was heard.
 
-        The caller drops the table when the verdict :attr:`~GenerationVerdict.drops`. A verdict of
-        :attr:`~GenerationVerdict.CURRENT` leaves the mark where the broadcasts moved it.
+        A verdict of :attr:`~GenerationVerdict.CURRENT` leaves the mark where the broadcasts moved it;
+        any other adopts the generation (:meth:`adopt_generation`). A follower catches up through
+        ``CollectionRegistry.catch_up_generation`` instead, which applies each missed epoch first.
 
         :param table_name: the followed table
         :ptype table_name: str
@@ -670,15 +683,7 @@ class GenerationMarks:
         """
         verdict = self.judge(table_name, token)
         if verdict.drops:
-            mark = self._tables[table_name]
-            incarnation, count = self._parts(token)
-            mark.sighted = True
-            mark.incarnation = incarnation
-            mark.accounted = count
-            mark.overflowed = False
-            # advances already heard beyond the generation read stay: their broadcasts outran it.
-            mark.heard = {key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}
-            self._move_on(mark)
+            self.adopt_generation(table_name, token)
         return verdict
 
     @staticmethod
