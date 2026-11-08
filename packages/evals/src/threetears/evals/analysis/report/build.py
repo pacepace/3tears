@@ -60,7 +60,18 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
-from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form, spell_count, spell_stored_counts
+from threetears.evals.kernel.numbers import (
+    POINT_PLACES,
+    SCORE_PLACES,
+    MoneyForm,
+    ends_places,
+    format_number,
+    money_form,
+    set_places,
+    spell_at,
+    spell_count,
+    spell_stored_counts,
+)
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.blocks import bare_columns, money_columns, percent_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
@@ -167,6 +178,8 @@ from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LE
 from threetears.evals.analysis.quantities import (
     MONEY,
     PERCENT,
+    POINTS,
+    UNSPACED_UNITS,
     delta_unit,
     is_money,
     number_in,
@@ -496,6 +509,17 @@ def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str 
     forms = _change_forms(
         rulers, ((name, reading, held.delta, held.interval) for (_, name, reading, _), held in tested.items())
     )
+    # The figures at the contrasts table's precision: its set is the contrasts it shows, every one with the cases.
+    places_of = _comparison_places(
+        bundle,
+        surface,
+        rulers,
+        (
+            comparison
+            for comparison in tested.values()
+            if min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and _small_n(comparison) is None
+        ),
+    )
 
     def figures(verdict: Verdict) -> str | None:
         comparison = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
@@ -505,12 +529,18 @@ def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str 
             return None
         ruler = rulers.of(comparison.name, comparison.reading)
         form = forms.get((comparison.name, comparison.reading))
+        places = places_of.get((comparison.name, comparison.reading))
         sides = [
-            (verdict.control, *_side_reading(bundle, surface, comparison, comparison.control, ruler)),
-            (verdict.arm, *_side_reading(bundle, surface, comparison, comparison.contrast, ruler)),
+            (verdict.control, *_side_reading(bundle, surface, comparison, comparison.control, ruler, places)),
+            (verdict.arm, *_side_reading(bundle, surface, comparison, comparison.contrast, ruler, places)),
         ]
         said = [_sides_sentence(sides, verdict.heading, comparison.reading)]
         low, high = (end * ruler.factor for end in comparison.interval)
+        if places is not None and places.change is not None:
+            # The interval's ends as its cell prints them: within what a change can be, at one precision.
+            if (span := places.span()) is not None:
+                low, high = max(low, -span), min(high, span)
+            places = places._replace(change=ends_places(low, high, places.change))
         paired = (
             comparison.test == "paired" and not comparison.control.n_left_out and not comparison.contrast.n_left_out
         )
@@ -518,10 +548,13 @@ def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str 
             verdict.arm,
             low,
             high,
-            amount=lambda value: _amount(value, ruler, form),
+            amount=lambda value: _amount(value, ruler, form, places),
             unit=" points" if ruler.unit == PERCENT else "",
             higher_is_better=comparison.higher_is_better,
         )
+        if _no_variation(surface, comparison, ruler, places) is not None:
+            # Neither arm varied, so the table draws no interval, and the sentence claims none either.
+            allows = "Neither arm varied over these cases, so no interval is drawn on the change."
         if paired:
             said.append(f"Over {comparison.control.n_cases} paired cases, {allows[:1].lower()}{allows[1:]}")
         else:
@@ -552,13 +585,18 @@ def _sides_sentence(sides: Sequence[tuple[str, str, int | None, int | None]], he
     )
 
 
-def _amount(value: float, ruler: MeasureRuler, form: MoneyForm | None) -> str:
+def _amount(value: float, ruler: MeasureRuler, form: MoneyForm | None, places: _Places | None = None) -> str:
     """A change's size as a sentence states it, unsigned, on the measure's ruler as the contrasts table prints it:
-    points bare (the sentence names them once), money in its form, any other unit beside the number."""
+    points bare (the sentence names them once), money in its form, any other unit beside the number; at the table's
+    precision for changes where ``places`` gives it (``6.0 points``, never ``6 points`` beside ``-6.0 pts``)."""
     if form is not None and is_money(ruler.unit):
         return form.spell(abs(value))
     unit = delta_unit(ruler.unit)
-    number = number_in(abs(value), unit)
+    number = (
+        spell_at(abs(value), places.change)
+        if places is not None and places.change is not None
+        else number_in(abs(value), unit)
+    )
     return number if ruler.unit == PERCENT or not unit else f"{number} {unit}"
 
 
@@ -568,12 +606,13 @@ def _side_reading(
     comparison: FamilyComparison,
     side: ComparedCell,
     ruler: MeasureRuler,
+    places: _Places | None = None,
 ) -> tuple[str, int | None, int | None]:
     """One arm's figure on a contrast's reading as the contrasts table prints it, without its own interval, and for a
     rate the trials it passed and the trials it is over: the pass rate's from the scoreboard, a pass/fail measure's
     from the arm's cell; None for each where no count is read."""
-    _, figure = _side_text(surface, comparison, side, ruler)
-    text = _mean_text(figure if figure is not None else side.mean or 0.0, ruler)
+    _, figure = _side_text(surface, comparison, side, ruler, places)
+    text = _mean_text(figure if figure is not None else side.mean or 0.0, ruler, places)
     if ruler.unit != PERCENT:
         return text, None, None
     if comparison.reading == "trial":
@@ -1548,6 +1587,129 @@ def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str
     ]
 
 
+class _Places(NamedTuple):
+    """How one reading's figures read wherever a page states its contrasts: the contrasts table, the verdict line's
+    figures and a program's rows alike (owner rulings O4 and O5, 2026-11-08). A set keeps one precision: every level of
+    the reading (both arms' figures and their intervals' ends) reads at ``level`` decimals, every change and its
+    interval's ends at ``change``. A rate's level reads by its column's percent rule and money by its form, so either
+    is None there. ``floor`` and ``ceiling`` are what a level can take, drawn, so an interval never runs past them (a
+    count never below zero, a score never past its scale); ``scale`` names a score's scale for its row (``1–5``)."""
+
+    level: int | None
+    change: int | None
+    floor: float | None = None
+    ceiling: float | None = None
+    scale: str = ""
+
+    def span(self) -> float | None:
+        """How far a change can reach either way: the range a level can take; None where it is open."""
+        if self.floor is None or self.ceiling is None:
+            return None
+        return self.ceiling - self.floor
+
+
+def _reading_places(
+    bundle: AnalysisContextBundle,
+    surface: DecisionSurface,
+    ruler: MeasureRuler,
+    name: str,
+    reading: str,
+    levels: Iterable[float],
+    changes: Iterable[float],
+) -> _Places:
+    """One reading's :class:`_Places`, from every level and change of it the page states, drawn on its ruler.
+
+    A rate reads its changes in points at one decimal; a judged score (a dimension on a scale other than 0 to 1) at
+    two decimals, its levels and changes alike; money by its own form; every other measured figure (a count per
+    trial, a time) at two significant figures of its set's least figure but zero (:func:`set_places`), its levels and
+    its changes each a set of their own.
+    """
+    if is_money(ruler.unit):
+        return _Places(None, None, floor=0.0)
+    if ruler.unit == PERCENT:
+        return _Places(None, POINT_PLACES, floor=0.0, ceiling=100.0)
+    if reading == "judged":
+        facts = surface.dimensions.get(name)
+        bounds = facts.value_range if facts is not None else None
+        if bounds is not None:
+            low, high = (bound * ruler.factor for bound in bounds)
+            scale = f"{format_number(low)}–{format_number(high)}"
+            return _Places(SCORE_PLACES, SCORE_PLACES, floor=low, ceiling=high, scale=scale)
+    described = bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name) if reading == "measure" else None
+    floor = described.interval_floor if described is not None else None
+    ceiling = described.value_range[1] if described is not None and described.value_range is not None else None
+    return _Places(
+        set_places(levels),
+        set_places(changes),
+        floor=floor * ruler.factor if floor is not None else None,
+        ceiling=ceiling * ruler.factor if ceiling is not None else None,
+    )
+
+
+def _comparison_places(
+    bundle: AnalysisContextBundle, surface: DecisionSurface, rulers: Rulers, comparisons: Iterable[FamilyComparison]
+) -> dict[tuple[str, str], _Places]:
+    """Each reading's :class:`_Places` over ``comparisons``: its set is every arm's figure and every change on it.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param surface: Its decision surface.
+    :ptype surface: DecisionSurface
+    :param rulers: The report's rulers.
+    :ptype rulers: Rulers
+    :param comparisons: The contrasts a surface states.
+    :ptype comparisons: Iterable[FamilyComparison]
+    :return: Each reading's places, by name and reading.
+    :rtype: dict[tuple[str, str], _Places]
+    """
+    held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+    for comparison in comparisons:
+        ruler = rulers.of(comparison.name, comparison.reading)
+        levels, changes = held.setdefault((comparison.name, comparison.reading), ([], []))
+        levels += [
+            side.mean * ruler.factor for side in (comparison.control, comparison.contrast) if side.mean is not None
+        ]
+        if comparison.delta is not None:
+            changes.append(comparison.delta * ruler.factor)
+    return {
+        (name, reading): _reading_places(bundle, surface, rulers.of(name, reading), name, reading, levels, changes)
+        for (name, reading), (levels, changes) in held.items()
+    }
+
+
+def _with_scale(heading: str, places: _Places | None) -> str:
+    """A reading's heading with its score's scale, where it is a score: ``outcome (judged, 1–5)``."""
+    if places is None or not places.scale:
+        return heading
+    if heading.endswith(")"):
+        return f"{heading[:-1]}, {places.scale})"
+    return f"{heading} ({places.scale})"
+
+
+def _no_variation(
+    surface: DecisionSurface, comparison: FamilyComparison, ruler: MeasureRuler, places: _Places | None
+) -> str | None:
+    """The words a contrast's interval reads as where neither arm varied: each arm's own interval is a point, so no
+    interval on their change says anything (``no variation (all 5)``, where both read one figure); None where an arm
+    varied, or a side holds no interval of its own to tell."""
+    said: list[str] = []
+    for side in (comparison.control, comparison.contrast):
+        if side.n_left_out or comparison.reading not in ("measure", "judged"):
+            return None
+        try:
+            resolved = resolve_reading(
+                surface, cell_ref(side.variant_key, side.apparatus_class_id), comparison.name, comparison.reading
+            )
+        except UnresolvableReference:
+            # NOSILENT: a side the surface holds no reading for has no interval of its own to tell; the row keeps its own.
+            return None
+        if resolved.ci_low is None or resolved.ci_low != resolved.ci_high or resolved.ci_low != resolved.mean:
+            return None
+        said.append(_mean_text(resolved.mean, ruler, places))
+    figures = list(dict.fromkeys(said))
+    return f"no variation (all {figures[0]})" if len(figures) == 1 else f"no variation ({' vs '.join(said)})"
+
+
 def _small_n(comparison: FamilyComparison) -> int | None:
     """The fewer of a contrast's two case counts when it is below :data:`MIN_CASES`; None when both reach it."""
     n = min(comparison.control.n_cases, comparison.contrast.n_cases)
@@ -1571,11 +1733,15 @@ def _comparison_cases(comparison: FamilyComparison) -> str:
     return text
 
 
-def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
+def _figure(value: float | None, ruler: MeasureRuler, places: _Places | None = None) -> TableCell:
     """One figure of a measure as a table cell: restated onto the measure's ruler and carrying its unit, money in the
-    form its ruler chose over every figure of the measure (so two arms' means in one row read alike, #993)."""
+    form its ruler chose over every figure of the measure (so two arms' means in one row read alike, #993), any other
+    unit but a percent at its reading's one precision for levels where ``places`` gives it, as the contrasts table
+    prints the same mean."""
     if value is None:
         return TableCell(value=None)
+    if places is not None and places.level is not None and not is_money(ruler.unit) and ruler.unit != PERCENT:
+        return TableCell(value=value * ruler.factor, unit=ruler.unit, decimals=places.level)
     if ruler.money is not None and is_money(ruler.unit):
         form = ruler.money
         drawn = value * ruler.factor
@@ -1626,8 +1792,11 @@ def _change(
     interval: tuple[float, float] | None = None,
     margin: float | None = None,
     form: MoneyForm | None = None,
+    places: int | None = None,
 ) -> TableCell:
-    """A change in a measure as a table cell: on the measure's ruler, in the unit a change in it is stated in.
+    """A change in a measure as a table cell: on the measure's ruler, in the unit a change in it is stated in, signed
+    (its direction is half the fact), at its reading's one precision for changes where ``places`` gives it (``-6.0
+    pts`` beside ``+3.6 pts``, never ``-6 pts``).
 
     Handed the interval on the delta, the cell carries it, with the declared margin, on the same ruler, read against
     zero — what HTML draws beside the figure as the row's glyph; the row's interval column spells it. Handed the form
@@ -1636,8 +1805,10 @@ def _change(
     if delta is None:
         return TableCell(value=None)
     unit = delta_unit(ruler.unit)
+    if places is None and ruler.unit == PERCENT:
+        places = POINT_PLACES
     if interval is None:
-        cell = TableCell(value=delta * ruler.factor, unit=unit)
+        cell = TableCell(value=delta * ruler.factor, unit=unit, decimals=places, signed=True)
     else:
         cell = TableCell(
             value=delta * ruler.factor,
@@ -1646,6 +1817,8 @@ def _change(
             high=interval[1] * ruler.factor,
             margin=abs(margin) * ruler.factor if margin is not None else None,
             zero_line=True,
+            decimals=places,
+            signed=True,
         )
     if form is None:
         return cell
@@ -1687,19 +1860,28 @@ def _change_forms(
 
 
 def _side_cell(
-    surface: DecisionSurface, comparison: FamilyComparison, side: ComparedCell, ruler: MeasureRuler
+    surface: DecisionSurface,
+    comparison: FamilyComparison,
+    side: ComparedCell,
+    ruler: MeasureRuler,
+    places: _Places | None = None,
 ) -> TableCell:
     """One arm's figure on a contrast's reading (:func:`_side_text`), carrying the id a finding's figure lands on where
     it is the cell's own."""
-    text, figure = _side_text(surface, comparison, side, ruler)
+    text, figure = _side_text(surface, comparison, side, ruler, places)
     return _at(TableCell(value=text), surface, side, comparison.name, comparison.reading, figure)
 
 
 def _side_text(
-    surface: DecisionSurface, comparison: FamilyComparison, side: ComparedCell, ruler: MeasureRuler
+    surface: DecisionSurface,
+    comparison: FamilyComparison,
+    side: ComparedCell,
+    ruler: MeasureRuler,
+    places: _Places | None = None,
 ) -> tuple[str | None, float | None]:
     """One arm's figure on a contrast's reading, with its own interval where the cell has one: ``98.9% [88.1%,
-    100%]``.
+    100%]``, at the reading's one precision for levels (``places``). An interval with no width (every case read
+    one figure) is no interval, and the figure stands alone: ``5.00``, never ``5 [5, 5]``.
 
     The figure and its interval are the arm's cell's (:func:`~threetears.evals.analysis.references.resolve_reading`)
     where the test read every case the cell holds, so the pair is one estimate; where cases were left out, or the
@@ -1718,8 +1900,11 @@ def _side_text(
         except UnresolvableReference:
             resolved = None
         if resolved is not None and resolved.ci_low is not None and resolved.ci_high is not None:
-            return _mean_text(resolved.mean, ruler) + _interval(resolved.ci_low, resolved.ci_high, ruler), resolved.mean
-    return _mean_text(side.mean, ruler), side.mean
+            text = _mean_text(resolved.mean, ruler, places)
+            if resolved.ci_low == resolved.ci_high:
+                return text, resolved.mean
+            return text + _interval(resolved.ci_low, resolved.ci_high, ruler, places), resolved.mean
+    return _mean_text(side.mean, ruler, places), side.mean
 
 
 def _bar_interval(interval: tuple[float, float], ruler: MeasureRuler) -> str:
@@ -1730,6 +1915,17 @@ def _bar_interval(interval: tuple[float, float], ruler: MeasureRuler) -> str:
     if is_money(ruler.unit) and ruler.money is not None:
         return "[{}, {}]".format(*ruler.money.spell_ends(low, high))
     return _interval_cell(low, high, ruler.unit)
+
+
+def _ends_cell(low: float, high: float, places: int, unit: str, *, level: bool = False) -> str:
+    """An interval's two ends at one precision (:func:`~threetears.evals.kernel.numbers.ends_places`), its unit as
+    :func:`_interval_cell` places it: ``[-6.9, 11.0] pts``, ``[62.3%, 65.1%]``. A level's end of exactly zero reads
+    ``0`` (``[0, 0.92]``), as a level of zero does."""
+    at = ends_places(low, high, places)
+    ends = tuple("0" if level and end == 0 else spell_at(end, at) for end in (low, high))
+    if unit in UNSPACED_UNITS:
+        return f"[{ends[0]}{unit}, {ends[1]}{unit}]"
+    return f"[{ends[0]}, {ends[1]}]" + (f" {unit}" if unit else "")
 
 
 def _interval_cell(low: float, high: float, unit: str) -> str:
@@ -1746,9 +1942,12 @@ def _interval_on_delta(
     level: float | None = None,
     *,
     form: MoneyForm | None = None,
+    places: _Places | None = None,
 ) -> str | None:
     """An interval on a delta, on the measure's ruler in the unit a change is stated in: money's ends in the form its
-    change reads in (``form``, :func:`_change_forms`).
+    change reads in (``form``, :func:`_change_forms`); any other unit's at its reading's one precision for changes
+    (``places``), both ends alike (``[-6.9, 11.0] pts``), and never past what a change can be (a score's from -4 to
+    4 on a 1–5 scale).
 
     The level it holds at is said once, in the table's header, so a cell carries it only where a caller asks — a
     program's row (:func:`contrast_rows`), which has no header to carry it.
@@ -1758,6 +1957,12 @@ def _interval_on_delta(
     low, high = (bound * ruler.factor for bound in interval)
     if form is not None and is_money(ruler.unit):
         text = "[{}, {}]".format(*form.spell_ends(low, high))
+    elif ruler.unit == PERCENT and (places is None or places.change is None):
+        text = _ends_cell(max(low, -100.0), min(high, 100.0), POINT_PLACES, POINTS)
+    elif places is not None and places.change is not None:
+        if (span := places.span()) is not None:
+            low, high = max(low, -span), min(high, span)
+        text = _ends_cell(low, high, places.change, delta_unit(ruler.unit))
     else:
         text = _interval_cell(low, high, delta_unit(ruler.unit))
     return text if level is None else f"{text} at {_level_text(level)}"
@@ -1951,6 +2156,17 @@ def _comparison_blocks(
             if min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and _small_n(comparison) is None
         ),
     )
+    places_of = _comparison_places(
+        bundle,
+        surface,
+        rulers,
+        (
+            comparison
+            for family in comparisons.families
+            for comparison in family.comparisons
+            if min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and _small_n(comparison) is None
+        ),
+    )
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
@@ -1962,8 +2178,15 @@ def _comparison_blocks(
                 continue
             heading = ruler.scaled(verdict.heading)
             form = forms.get((comparison.name, comparison.reading))
-            interval = _interval_on_delta(
-                comparison.interval, ruler, None if len(levels) == 1 else family.interval_level, form=form
+            places = places_of.get((comparison.name, comparison.reading))
+            # Where neither arm varied, an interval on their change says nothing, and the cell says so instead.
+            unvaried = _no_variation(surface, comparison, ruler, places)
+            interval = unvaried or _interval_on_delta(
+                comparison.interval,
+                ruler,
+                None if len(levels) == 1 else family.interval_level,
+                form=form,
+                places=places,
             )
             # The interval is drawn in the row only where both arms have the cases and one was computed.
             arm_ok = charts.drawable(
@@ -1977,17 +2200,18 @@ def _comparison_blocks(
             )
             shown.append(
                 {
-                    "reading": TableCell(value=heading),
+                    "reading": TableCell(value=_with_scale(heading, places)),
                     "contrast": TableCell(value=verdict.arm),
                     "control_label": TableCell(value=verdict.control),
-                    "control": _side_cell(surface, comparison, comparison.control, ruler),
-                    "arm": _side_cell(surface, comparison, comparison.contrast, ruler),
+                    "control": _side_cell(surface, comparison, comparison.control, ruler, places),
+                    "arm": _side_cell(surface, comparison, comparison.contrast, ruler, places),
                     "change": _change(
                         comparison.delta,
                         ruler,
-                        interval=comparison.interval if arm_ok and control_ok else None,
+                        interval=comparison.interval if arm_ok and control_ok and unvaried is None else None,
                         margin=_contrast_margin(bundle, comparison),
                         form=form,
+                        places=places.change if places is not None else None,
                     ),
                     "interval": TableCell(value=interval),
                     "verdict": TableCell(value=_verdict_cell(verdict)),
@@ -1999,8 +2223,8 @@ def _comparison_blocks(
                     "question": TableCell(value="Q1" if family.aspect is not None else "campaign-wide"),
                     "reading": TableCell(value=heading),
                     "contrast": TableCell(value=verdict.arm),
-                    "control_mean": _figure(comparison.control.mean, ruler),
-                    "arm_mean": _figure(comparison.contrast.mean, ruler),
+                    "control_mean": _figure(comparison.control.mean, ruler, places),
+                    "arm_mean": _figure(comparison.contrast.mean, ruler, places),
                     "hedges_g": TableCell(value=comparison.hedges_g),
                     "pairing_r": TableCell(
                         value=comparison.pairing_correlation.r if comparison.pairing_correlation is not None else None
@@ -2126,14 +2350,30 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
             if _small_n(comparison) is None
         ),
     )
+    places_of = _comparison_places(
+        bundle,
+        surface,
+        rulers,
+        (
+            comparison
+            for family in bundle.multiple_comparisons.families
+            for comparison in family.comparisons
+            if min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and _small_n(comparison) is None
+        ),
+    )
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             verdict = next(verdicts)
             ruler = rulers.of(comparison.name, comparison.reading)
             small = _small_n(comparison)
             form = forms.get((comparison.name, comparison.reading))
-            # A program's row has no header to carry the interval's level, so the cell says it.
-            interval = _interval_on_delta(comparison.interval, ruler, family.interval_level, form=form)
+            places = places_of.get((comparison.name, comparison.reading))
+            # A program's row has no header to carry the interval's level, so the cell says it; where neither arm
+            # varied, it says so, as the page's row does.
+            unvaried = _no_variation(surface, comparison, ruler, places) if small is None else None
+            interval = unvaried or _interval_on_delta(
+                comparison.interval, ruler, family.interval_level, form=form, places=places
+            )
             rows.append(
                 {
                     "question": (
@@ -2150,7 +2390,10 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
                     "delta": None if small is not None else _change(comparison.delta, ruler).value,
                     "change": None
                     if small is not None or comparison.delta is None
-                    else _change(comparison.delta, ruler, form=form).text + (f" {interval}" if interval else ""),
+                    else _change(
+                        comparison.delta, ruler, form=form, places=places.change if places is not None else None
+                    ).text
+                    + (f" {interval}" if interval else ""),
                     "interval": None if small is not None else interval,
                     "hedges_g": None if small is not None else comparison.hedges_g,
                     "pairing_r": comparison.pairing_correlation.r
@@ -2836,10 +3079,15 @@ def _spread_text(sem: float, ruler: MeasureRuler) -> str:
     return number_in(sem * ruler.factor, ruler.unit)
 
 
-def _mean_text(value: float, ruler: MeasureRuler) -> str:
+def _mean_text(value: float, ruler: MeasureRuler, places: _Places | None = None) -> str:
     """A mean on its ruler, the unit on the figure where the unit sits there (``98.9%``, ``$0.0459``), bare where the
-    row's heading names it (a latency's ``950`` under ``Turn time (ms)``)."""
+    row's heading names it (a latency's ``950`` under ``Turn time (ms)``); at its reading's one precision for levels
+    where ``places`` gives one (``2.83``, ``1.4``)."""
     scaled = value * ruler.factor
+    if places is not None and places.level is not None and not is_money(ruler.unit) and ruler.unit != PERCENT:
+        # A level of exactly zero reads ``0`` (nothing happened, which no precision qualifies), as the written page's
+        # Full results and a column of percents (``0%``) read it.
+        return "0" if scaled == 0 else spell_at(scaled, places.level)
     if is_money(ruler.unit) and ruler.money is not None:
         # In the measure's one form, by the one owner of money's scale (#993).
         return ruler.money.spell(scaled)
@@ -2848,10 +3096,19 @@ def _mean_text(value: float, ruler: MeasureRuler) -> str:
     return number_in(scaled, ruler.unit)
 
 
-def _interval(low: float | None, high: float | None, ruler: MeasureRuler) -> str:
-    """An interval as ``[low, high]`` on its ruler, or nothing when either end is unestimated."""
+def _interval(low: float | None, high: float | None, ruler: MeasureRuler, places: _Places | None = None) -> str:
+    """An interval as ``[low, high]`` on its ruler, or nothing when either end is unestimated; where ``places`` gives
+    the reading's precision for levels, both ends at it and never past what the level can take (a count's never below
+    zero, a score's within its scale)."""
     if low is None or high is None:
         return ""
+    if places is not None and places.level is not None and not is_money(ruler.unit) and ruler.unit != PERCENT:
+        drawn = [low * ruler.factor, high * ruler.factor]
+        if places.floor is not None:
+            drawn = [max(end, places.floor) for end in drawn]
+        if places.ceiling is not None:
+            drawn = [min(end, places.ceiling) for end in drawn]
+        return f" {_ends_cell(drawn[0], drawn[1], places.level, ruler.unit, level=True)}"
     if is_money(ruler.unit) and ruler.money is not None:
         return " [{}, {}]".format(*ruler.money.spell_ends(low * ruler.factor, high * ruler.factor))
     return f" {_interval_cell(low * ruler.factor, high * ruler.factor, ruler.unit)}"

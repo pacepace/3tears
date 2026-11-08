@@ -158,8 +158,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
         "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 43% of its preference over "
-        "shipped (50% is even), but its two reading orders disagreed too often for that to count (order consistency "
-        "below 0.7 (3 of 7 cases scored in both orders picked the same side)).**"
+        "shipped (50% is even), but its two reading orders disagreed too often for that to count: order consistency "
+        "below 0.7 (3 of 7 cases scored in both orders picked the same side).**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
     # No surface of the page prints the retired words (owner ruling Q2).

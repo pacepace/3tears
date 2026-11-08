@@ -21,6 +21,7 @@ from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, 
 from threetears.evals.analysis.quantities import (
     PERCENT,
     POINTS,
+    UNSPACED_UNITS,
     is_money,
     number_in,
     render_cell,
@@ -48,7 +49,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
-from threetears.evals.kernel.numbers import MoneyForm, money_form
+from threetears.evals.kernel.numbers import POINT_PLACES, MoneyForm, money_form, spell_at
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -463,7 +464,8 @@ class TableCell(EvalDocumentModel):
             "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); for a "
             "percentage, the decimals its column reads at (0, or 1 where whole percents would print two of its values "
             "alike), which a builder that sets them keeps; for points, the decimals the change reads at (`-7.6 pts`, "
-            "never `-8 pts`); None for none, and the number rule spells the number."
+            "never `-8 pts`, and `0.0 pts` for a zero change); for any other number, the decimals its set reads at "
+            "(a judged score's two, a count's `1.4`); None for none, and the number rule spells the number."
         ),
     )
     signed: bool = Field(
@@ -583,11 +585,18 @@ class TableCell(EvalDocumentModel):
         if self.decimals is not None and self.is_number and self.unit == PERCENT:
             return percent_at(number, self.decimals)
         if self.decimals is not None and self.is_number and not self.unit:
-            # A bare figure under a (%) or (pts) head, at its column's one precision.
-            return bare_at(number, self.decimals)
+            # A bare figure under a (%) or (pts) head, at its column's one precision; a change's zero at it too.
+            return spell_at(number, self.decimals) if self.signed and number == 0 else bare_at(number, self.decimals)
         if self.decimals is not None and self.is_number and self.unit == POINTS:
-            # A change at its unit's precision: a whole one keeps its decimal beside its siblings (`10.0 pts`).
-            return f"{bare_at(number, self.decimals)} {POINTS}"
+            # A change at its unit's precision: a whole one keeps its decimal beside its siblings (`10.0 pts`), and so
+            # does a zero (`0.0 pts` beside `-5.0 pts`).
+            return f"{spell_at(number, self.decimals) if number == 0 else bare_at(number, self.decimals)} {POINTS}"
+        if self.decimals is not None and self.is_number and self.unit:
+            # Any other unit at its set's one precision (a count's `1.4 notices`, a time's `0.028 s`).
+            # A level of exactly zero reads `0 notices`, as a level does wherever it is printed; a change keeps its
+            # set's decimals.
+            shown = "0" if number == 0 and not self.signed else spell_at(number, self.decimals)
+            return f"{shown}{self.unit}" if self.unit in UNSPACED_UNITS else f"{shown} {self.unit}"
         return with_unit(number, self.unit)
 
     @property
@@ -610,7 +619,9 @@ class TableCell(EvalDocumentModel):
             said = self.amount(float(self.value))
         else:
             said = render_cell(self.value)
-        if self.signed and self.is_number and float(self.value) > 0 and not said.startswith(("+", "<", ">")):  # type: ignore[arg-type]
+        # A change that reads as zero at its precision (`0.0 pts`) shows no direction, so it carries no `+`.
+        shown = re.search(r"[1-9]", said) is not None
+        if self.signed and self.is_number and float(self.value) > 0 and shown and not said.startswith(("+", "<", ">")):  # type: ignore[arg-type]
             said = f"+{said}"
         return said if self.level is None else f"{percent_at(self.level, 1)} · {said}"
 
@@ -735,6 +746,11 @@ def percent_columns(
     by_unit = {
         unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
         for unit in set(bare.values())
+    }
+    # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
+    # unit's precision, which whole percents' rule for levels never coarsens (owner ruling O5).
+    by_unit = {
+        unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
     }
     figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
     return [

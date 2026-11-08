@@ -112,7 +112,18 @@ from typing import Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import CENT, format_number, group_thousands, spell_multiple
+from threetears.evals.kernel.numbers import (
+    CENT,
+    POINT_PLACES,
+    SCORE_PLACES,
+    WHOLE_FROM,
+    ends_places,
+    format_number,
+    group_thousands,
+    set_places,
+    spell_at,
+    spell_multiple,
+)
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
 from threetears.evals.analysis.report.cost_unit import (
     REPLIES,
@@ -331,7 +342,9 @@ class Figure:
     (:class:`~threetears.evals.kernel.numbers.MoneyForm`). None of these takes part in a figure's equality: they say
     how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
     arm whose cost counts only part of its calls, the words its pricing gives (``850 of 897 calls priced``), which
-    :func:`format_figure` prints after the amount, so no key states a smaller total bare.
+    :func:`format_figure` prints after the amount, so no key states a smaller total bare. Nor does ``places``: the
+    decimals the page's tables print a plain figure at (owner rulings O4 and O5), a judged score's two and a measure's
+    set's (:func:`figure_places`), so a key reads its figure as the table beside it does; None for the number rule.
     """
 
     path: str
@@ -349,6 +362,7 @@ class Figure:
     priced_in_part: str = field(default="", compare=False, repr=False)
     total: bool = field(default=False, compare=False, repr=False)
     reconciles: bool = field(default=False, compare=False, repr=False)
+    places: int | None = field(default=None, compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -6408,7 +6422,99 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
         figure.scale in _PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
     ):
         figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
+    if figure.kind in ("number", "interval") and figure.scale == "plain" and figure.unit not in _KEPT_UNITS:
+        figure = replace(figure, places=_plain_places(reading, figure, report_input))
     return replace(figure, derived=figure.derived or _is_derived(reading))
+
+
+def _plain_places(reading: _Reading, figure: Figure, report_input: ReportInput) -> int | None:
+    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names at, for the
+    statistics the tables print (:data:`_TABLED`), or for a key naming none, which reads its family's own figure: a
+    judged score's two, a measure's its set's
+    (:func:`figure_places`), as the Full results print them. Every other statistic (an adjusted p, a pairing r, a
+    count of repeats) keeps its own form, the number rule's; so does a key naming neither."""
+    statistics = [
+        value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if isinstance(slot, _Statistic)
+    ]
+    # A key naming no statistic reads its family's own figure (a dimension's mean), which the table prints.
+    if statistics and statistics[-1] not in _TABLED:
+        return None
+    for value in reading.values:
+        if rubric_score(report_input, value):
+            return SCORE_PLACES
+        if value in report_input.measures:
+            return figure_places(report_input, value, change=figure.change)
+    return None
+
+
+#: The statistics the page's tables print of a measure or a judged score, which a key reading one reads at the table's
+#: precision: a mean, a contrast's delta, its interval and that interval's two ends. No other statistic is the
+#: table's figure: an adjusted p of 0.0031 is never a score to two decimals.
+_TABLED = frozenset({"mean", "delta", "interval", "low", "high"})
+
+
+def figure_places(report_input: ReportInput, key: str, *, change: bool = False) -> int | None:
+    """The decimals every plain figure of a measure reads at in the page's tables (owner rulings O4 and O5): two
+    significant figures of the least of its set, its levels (every mean the input holds of it) or its changes (every
+    corrected comparison's), each a set of its own; a judged score's two. None for a key that is neither.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure's or judged dimension's key.
+    :ptype key: str
+    :param change: Whether the figures are changes.
+    :ptype change: bool
+    :return: The decimals, or None.
+    :rtype: int | None
+    """
+    if rubric_score(report_input, key):
+        return SCORE_PLACES
+    if key in report_input.judged or key not in report_input.measures:
+        return None
+    if change:
+        return set_places(
+            float(contrast.delta)
+            for contrast in report_input.contrasts
+            if contrast.measure == key and contrast.kind != "judged" and contrast.delta is not None
+        )
+    return set_places(_measure_means(report_input, key))
+
+
+#: A judged score's rubric scale (``ordinal``): the two decimals and the ``(1–5)`` a page prints it with.
+RUBRIC_SCALE = (1.0, 5.0)
+
+
+def rubric_score(report_input: ReportInput, key: str) -> bool:
+    """Whether a judged dimension is a score on the 1–5 rubric: not pass/fail, and every mean the input holds of it on
+    the scale (an input that states a dimension ``ordinal`` but holds 92 is read by the number rule, never as a 1–5
+    score at two decimals).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The judged dimension's key; any other key is no score.
+    :ptype key: str
+    :return: Whether it is a 1–5 score.
+    :rtype: bool
+    """
+    judged = report_input.judged.get(key)
+    if judged is None or judged.scale == "pass_fail":
+        return False
+    stats = [*judged.per_arm.values(), *(stat for figures in judged.by_aspect.values() for stat in figures.values())]
+    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
+    for held in slices:
+        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
+    low, high = RUBRIC_SCALE
+    return all(low <= float(stat.mean) <= high for stat in stats if stat.mean is not None)
+
+
+def _measure_means(report_input: ReportInput, key: str) -> list[float]:
+    """Every mean the input holds of a measure: overall, per aspect, and in each task, stratum and cell."""
+    measure = report_input.measures[key]
+    stats = [*measure.per_arm.values(), *(stat for figures in measure.by_aspect.values() for stat in figures.values())]
+    slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
+    for held in slices:
+        stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
+    return [float(stat.mean) for stat in stats if stat.mean is not None]
 
 
 def _beside_its_month(reading: _Reading, figure: Figure, report_input: ReportInput) -> bool:
@@ -6762,7 +6868,8 @@ class _Spelled:
 def _plus(text: str, value: float) -> str:
     """``text`` with the ``+`` a positive change carries, as :func:`~threetears.evals.kernel.numbers.format_signed`
     places it: never on a bound, never on a zero."""
-    return f"+{text}" if value > 0 and not text.startswith(("<", "+")) and text != "0" else text
+    shown = re.search(r"[1-9]", text) is not None
+    return f"+{text}" if value > 0 and not text.startswith(("<", "+")) and shown else text
 
 
 #: How many of what it counts a figure on each dollar scale is per, as the one owner of money's scale reads it.
@@ -6893,7 +7000,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer
         return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
     if figure.unit in _KEPT_UNITS:
         return _Spelled(f"{spell_multiple(value)} {figure.unit}")
-    text = format_number(value)
+    # A plain figure the page's tables print at a set's decimals reads at them here too (a score's ``-0.21``).
+    text = format_number(value) if figure.places is None else spell_at(value, figure.places)
     # A count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
     text = group_thousands(text) if figure.scale == "count" else text
     text = _plus(text, value) if signed else text
@@ -6950,6 +7058,10 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
     if ends[0] == ends[1] and low != high:
         # Two ends that differ never read alike: one significant figure more, for this interval alone (owner ruling Q3).
         ends = [_spell(end, figure, spelling, absolute, finer=True) for end in (low, high)]
+    if spelling == "plain":
+        ends = _one_precision(ends, (low, high), figure, absolute)
+    if spelling == "pts":
+        ends = _points_ends(ends, (low, high), figure, absolute)
     if ends[0] == ends[1]:
         return ends[0].number + ends[0].suffix
     if ends[0].suffix == ends[1].suffix and ends[0].suffix.startswith(" per "):
@@ -6959,6 +7071,46 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
     if "interval" in chosen or signed or ends[0].suffix != ends[1].suffix:
         return INTERVAL_TEMPLATE.format(low=ends[0].number + ends[0].suffix, high=ends[1].number + ends[1].suffix)
     return RANGE_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[1].suffix
+
+
+def _one_precision(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
+    """An interval's two plain ends at one precision (owner ruling O5): the decimals the page's tables print the
+    figure's set at (``figure.places``), else two significant figures of the interval's width, which is what its ends
+    can tell apart (``2.84–3.00`` for 2.839 to 3), never padded to its finer end's digits; more only where
+    an end that is not zero would read as one. An end from
+    :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up, or one read as a bound, is left as it is."""
+    unit = f" {figure.unit}" if figure.unit else ""
+    numbers = [end.number.removesuffix(unit) if unit else end.number for end in ends]
+    if any(abs(value) >= WHOLE_FROM for value in values) or any(not _PLAIN_END.fullmatch(n) for n in numbers):
+        return ends
+    shown = [abs(value) if absolute else value for value in values]
+    places = figure.places if figure.places is not None else set_places([shown[1] - shown[0]])
+    places = ends_places(shown[0], shown[1], places)
+    respelled = []
+    for end, value in zip(ends, shown, strict=True):
+        text = spell_at(value, places)
+        signed = figure.change and not absolute
+        text = _plus(text, value) if signed and float(text) != 0 else text
+        respelled.append(_Spelled(text + unit, end.suffix))
+    return respelled
+
+
+def _points_ends(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
+    """An interval in points with both ends at one precision (owner ruling O5): a point's one decimal, a whole end too
+    (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never ``-2.2 to
+    0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule, which writes a
+    whole one whole."""
+    hundred = [value * 100 if figure.scale == "share" else value for value in values]
+    at = ends_places(hundred[0], hundred[1], POINT_PLACES)
+    respelled = []
+    for end, value in zip(ends, hundred, strict=True):
+        text = spell_at(abs(value) if absolute else value, at)
+        respelled.append(_Spelled(text if absolute else _plus(text, value), end.suffix))
+    return respelled
+
+
+#: A plain end's digits: a sign, the digits and a decimal part, never a bound or grouped thousands.
+_PLAIN_END = re.compile(r"[+\-]?\d+(?:\.\d+)?")
 
 
 def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:

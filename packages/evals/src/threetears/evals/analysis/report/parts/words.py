@@ -356,10 +356,10 @@ ZERO_STARTS_CROSS = "no change from each move's start, or between the moves"
 GROUP_LEVEL_TEMPLATE = "{group} · {reference} {level}"
 #: Where a chart's rows each have their own reference level, each change's note carries its own.
 FROM_LEVEL_TEMPLATE = "{change} from {level}"
-#: A reference level and what it counts: a pass rate's passes of its trials, a figure's mean over its cases.
+#: A reference level and what it counts: a pass rate's passes of its trials, a figure's mean of its cases, as the scorecard says it.
 LEVEL_COUNT_TEMPLATE = "{level}, {count}"
 TRIALS_COUNT_TEMPLATE = "{passed} of {trials} trials"
-CASES_MEAN_TEMPLATE = "mean over {cases} cases"
+CASES_MEAN_TEMPLATE = "mean of {cases} cases"
 
 #: A change chart drawn as dots where some row carries no interval: its open mark says so.
 OPEN_MARKS_NOTE = "Open marks: no interval."
@@ -367,8 +367,9 @@ OPEN_MARKS_NOTE = "Open marks: no interval."
 #: A forest's margin line, and what its shaded band means.
 MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 
-#: A forest of contrasts corrected together, its level as the chart's head prints it: each interval's level, then what
-#: the family's intervals hold at together (the kit prints "99.7% intervals (95% across 16 comparisons)").
+#: An interval's level where its family is corrected together: each interval's level, then what the family's intervals
+#: hold at together, as a chart's head and a table both print it (``99.7% (95% across 16 comparisons)``), so a reader
+#: never meets a bare ``99.69%``.
 FAMILY_LEVEL_TEMPLATE = "{level} ({joint} across {size} comparisons)"
 
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.

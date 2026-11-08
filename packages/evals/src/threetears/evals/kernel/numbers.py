@@ -36,6 +36,12 @@ A browser renderer that restates this rule pins itself to the same cases this pa
 - Rounding is half-to-even, which is what Python's float formatting does and what the browser
   implements explicitly.
 - An absent or non-finite value is an em dash, never a zero.
+
+**A set reads at one precision** (owner rulings O4 and O5, 2026-11-08). The rule above is a lone figure's. Figures a
+reader compares (an interval's two ends, a column of one measure, a chart's labels) share their decimals
+(:func:`set_places`, :func:`spell_at`, :func:`ends_places`): a judged score at two decimals, a change in points at one,
+any other measured figure at two significant figures of the set's least figure but zero, so ``-29.0 to +57.6`` and
+``1.4`` beside ``1.5`` read alike, and a whole member keeps the set's decimals the lone rule would drop.
 """
 
 from __future__ import annotations
@@ -471,6 +477,102 @@ def spell_multiple(ratio: float) -> str:
     text = f"{magnitude:.{decimals}f}"
     return sign + (text.rstrip("0").rstrip(".") if float(text) < 1 else "1.0")
 
+
+#: The significant figures a set of measured figures (neither a rate, money nor a judged score) reads to: a count per
+#: trial, a time, any other measured unit (owner ruling O4, 2026-11-08, which host pass 6's rule for a scorecard's
+#: measured columns already took). Two, of the set's least figure but zero, so every member reads at the decimals that
+#: figure needs: ``1.4`` beside ``1.5`` items, ``99`` beside ``100`` ms.
+SET_FIGURES = 2
+
+#: The decimals a judged score on a rubric scale (1–5) reads at, its figures and its changes alike (owner ruling O4):
+#: a hundredth of a point is the step a mean over tens of cases distinguishes, and two decimals keep ``4.86`` beside
+#: ``5.00`` one precision.
+SCORE_PLACES = 2
+
+#: The decimals a percent or a point reads at in a set: a change in a rate (``-7.6 pts``, ``0.0 pts``), an interval's
+#: ends (``-6.9 to +11.0``), whatever its members' digits.
+POINT_PLACES = 1
+
+
+def set_places(values: Iterable[float | None], *, figures: int = SET_FIGURES) -> int:
+    """The decimals one set of figures reads at, so its members share their precision (owner ruling O5, 2026-11-08):
+    those that give the set's least magnitude but zero ``figures`` significant figures, and never fewer than none
+    (``99`` and ``100``, never ``100`` rounded to ``1.0e2``).
+
+    A set is the figures a reader compares: an interval's two ends, a column of one measure, an axis, a chart's end
+    labels. The lone figure keeps :func:`format_number`'s rule, where a whole value drops its decimal; a member of a set
+    keeps the set's decimals, so ``-29.0 to +57.6`` and ``1.4`` beside ``1.5`` read alike.
+
+    :param values: The set's figures, as they are drawn; ``None``, zero and non-finite ones say nothing of its precision.
+    :ptype values: Iterable[float | None]
+    :param figures: The significant figures its least member reads to.
+    :ptype figures: int
+    :return: The decimals; none for a set with no figure but zero.
+    :rtype: int
+    """
+    stated = [abs(value) for value in values if value is not None and math.isfinite(value) and value != 0]
+    if not stated:
+        return 0
+    least = min(stated)
+    # Placed by the least figure as rounded to its figures, so 0.0996 (two figures: 0.10) reads at two decimals.
+    exponent = int(f"{least:.{figures - 1}e}".split("e")[1])
+    return max(0, figures - 1 - exponent)
+
+
+def spell_at(value: float | None, places: int, *, signed: bool = False) -> str:
+    """One member of a set at the set's decimals (:func:`set_places`): ``-6.0``, ``0.0``, ``4.86``; :data:`ABSENT` for
+    an absent or non-finite value.
+
+    A zero reads at the set's decimals too (``0.0`` beside ``-5.0``), and a value that rounds to zero there carries no
+    sign: ``+0.0`` would claim a direction the digits do not show.
+
+    :param value: The figure, as drawn.
+    :ptype value: float | None
+    :param places: The set's decimals.
+    :ptype places: int
+    :param signed: Whether a positive figure carries its ``+`` (a change).
+    :ptype signed: bool
+    :return: Its text.
+    :rtype: str
+    """
+    if value is None or not math.isfinite(value):
+        return ABSENT
+    text = f"{abs(value):.{max(0, places)}f}"
+    if float(text) == 0:
+        # A figure under WRITTEN_FROM that is not zero reads as the bound it is under, as a lone one does, never as a
+        # zero the digits would claim.
+        return format_number(value) if value != 0 and abs(value) < WRITTEN_FROM else text
+    return f"-{text}" if value < 0 else f"+{text}" if signed else text
+
+
+def ends_places(low: float, high: float, places: int) -> int:
+    """The decimals an interval's two ends read at: the set's, or more where the set's would print a non-zero end as a
+    zero (``-0.0`` for -0.03, an interval that excludes zero reading as if it touched it) or two ends that differ alike;
+    both ends take them, so the interval still reads at one precision (as money's ends take one figure more, owner
+    ruling Q3).
+
+    :param low: The low end, as drawn.
+    :ptype low: float
+    :param high: The high end, as drawn.
+    :ptype high: float
+    :param places: The set's decimals.
+    :ptype places: int
+    :return: The decimals.
+    :rtype: int
+    """
+    needed = places
+    for end in (low, high):
+        # An end under WRITTEN_FROM reads as its bound (:func:`spell_at`), so it asks for no decimals: float noise of
+        # 1e-9 never spells the interval to nine places.
+        if abs(end) >= WRITTEN_FROM and math.isfinite(end) and float(f"{abs(end):.{needed}f}") == 0:
+            needed = max(needed, set_places([end], figures=1))
+    if low != high and abs(high - low) >= WRITTEN_FROM and spell_at(low, needed) == spell_at(high, needed):
+        needed = max(needed, set_places([high - low], figures=1))
+    return min(needed, _WRITTEN_PLACES)
+
+
+#: The most decimals a set reads at: :data:`WRITTEN_FROM`'s, past which a figure reads as its bound.
+_WRITTEN_PLACES = 6
 
 #: :data:`WRITTEN_FROM` as the bound a smaller value reads as.
 _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"

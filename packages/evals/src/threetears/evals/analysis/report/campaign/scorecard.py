@@ -43,8 +43,8 @@ from functools import reduce
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import format_number, group_thousands
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money, number_in
+from threetears.evals.kernel.numbers import POINT_PLACES, ends_places, format_number, group_thousands, spell_at
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -210,12 +210,15 @@ def row_figures(row: AspectReading, control: str) -> str:
         ]
     interval, _ = _shown_interval(row)
     if interval is not None:
+        # Both ends at one precision, as the interval's cell prints them: a point's one decimal, more where an end that
+        # is not zero would read as one (owner ruling O5).
+        places = ends_places(interval[0], interval[1], POINT_PLACES)
         said.append(
             interval_words(
                 row.arm_label,
                 interval[0],
                 interval[1],
-                amount=lambda value: number_in(abs(value), POINTS),
+                amount=lambda value: spell_at(abs(value), places),
                 unit=" points",
             )
         )

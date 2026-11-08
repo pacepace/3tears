@@ -61,7 +61,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, spell_dollars
+from threetears.evals.kernel.numbers import POINT_PLACES, MoneyForm, format_number, group_thousands, spell_at, spell_dollars
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
@@ -554,6 +554,10 @@ def figure_text(value: float, drawn: Quantity) -> str:
     """
     if drawn.unit == MONEY:
         return _money_text(value, drawn)
+    if drawn.unit == POINTS:
+        # A change in points at a point's one decimal, a whole one and a zero too (``-3.0 pts``, ``0.0 pts``), as its
+        # table, its values table and the keys citing it read it (owner ruling O5).
+        return f"{spell_at(value, POINT_PLACES, signed=drawn.change)} {POINTS}"
     return signed_with_unit(value, drawn.unit) if drawn.change else with_unit(value, drawn.unit)
 
 
