@@ -9,13 +9,15 @@ replayed page, where the preference is read and does not separate, is held in ``
 Mutations that turn this file red: the answer missing, or not directly under the question; its decision word, share or reason
 not the result's; the promotion's own sentence missing from the page; the side-by-side table laid out as key and value;
 the campaign filed dated after its arms ran, so its criteria read as set after its results; an interval end
-rounded onto zero, or two ends rounded alike.
+rounded onto even, or two ends rounded alike; a share printed at fewer decimals than its interval's ends, so the two
+shares miss 100 or a share just off even reads as even; a share drawn with no interval as a solid mark.
 """
 
 from __future__ import annotations
 
 import socket
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
@@ -26,7 +28,7 @@ from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
 from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.ops.report_writer.writer_pairwise import resolution_line
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis.report import ChartBlock, DisclosureBlock, DotIntervalChart, TableBlock
 from threetears.evals.harness import Writer, WriterEval, WriterResult
 from threetears.evals.harness.writer_turns import writer_turns
 
@@ -98,12 +100,29 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     assert f"Promotion of variant: {result.promotion_why['variant']}" in said
     assert f"promotion of variant: {result.promotion_why['variant']}" in result.render()
 
-    # The side-by-side table opens the Scorecard: a row per candidate and the pairs it reads, a column per figure.
+    # The preference figure opens the Scorecard, its line under it, then the side-by-side table: a row per candidate
+    # and the pairs it reads, a column per figure.
     tables = {block.name: block for block in result.page.blocks if isinstance(block, TableBlock)}
     side = tables["side_by_side"]
     scorecard = [block for block in result.page.blocks if block.section == "scorecard"]
-    assert scorecard.index(side) == 1, "the sentence defining its terms, then the table"
-    assert [column.key for column in side.columns] == ["candidate", "pairs", "reads", "share", "difference", "interval"]
+    figure, line, terms = scorecard[:3]
+    assert scorecard.index(side) == 3, "the figure, its line, the sentence defining its terms, then the table"
+    assert isinstance(terms, DisclosureBlock) and terms.text.startswith("Side by side, the judge read")
+    # One case reads no interval: the share is an open mark, and the figure states no level.
+    assert isinstance(figure, ChartBlock) and isinstance(figure.data, DotIntervalChart)
+    assert [(row.value, row.lo, row.hi, row.hollow) for row in figure.data.rows or []] == [(share, None, None, True)]
+    assert figure.data.level is None
+    assert isinstance(line, DisclosureBlock) and line.text == (
+        f"variant {share}% · shipped {100 - share}% (50% is even); untested: {read.primary.reason_detail} (void)."
+    )
+    assert [column.key for column in side.columns] == [
+        "candidate",
+        "pairs",
+        "reads",
+        "share",
+        "control_share",
+        "interval",
+    ]
     values = side.values()
     assert [(row["candidate"], row["pairs"]) for row in values] == [
         ("variant", "every pair"),
@@ -119,7 +138,7 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     written = result.write(tmp_path / "report")
     pairwise = written["pairwise"].read_text(encoding="utf-8")
     assert result.pairwise_text() in pairwise and result.pairwise_text() in result.render()
-    assert "| Candidate | Pairs | Reads | Share (%) | Difference (pts) |" in pairwise
+    assert "| Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) |" in pairwise
     assert "| share |" not in pairwise and "| reads |" not in pairwise
 
     # The written page opens on the question under the title, then what it compares (presentation chunk 4), then the
@@ -142,22 +161,48 @@ async def test_a_replay_of_a_declared_eval_reads_its_criteria_as_set_before_its_
     assert "set after the results" not in page and "Criteria set late" not in page
 
 
-async def test_an_interval_end_near_zero_keeps_its_sign_and_two_near_ends_stay_apart(
+async def test_both_shares_print_at_the_interval_s_decimals_sum_to_100_and_stay_off_even(
     tmp_path: Path, offline: None
 ) -> None:
     result = await _replayed(tmp_path)
     read = result.pairwise["variant"]
 
-    def row(delta: float, interval: tuple[float, float]) -> str:
-        primary = read.primary.model_copy(update={"delta": delta, "interval": interval})
-        shown = replace(result, pairwise={"variant": replace(read, primary=primary)}).pairwise_text()
+    def shares(share: float, interval: tuple[float, float]) -> tuple[str, str, str]:
+        primary = read.primary.model_copy(update={"interval": interval})
+        shown = replace(result, pairwise={"variant": replace(read, share=share, primary=primary)}).pairwise_text()
+        (line,) = [line for line in shown.splitlines() if line.startswith("| variant | every pair |")]
+        candidate, control, ends = line.removesuffix(" |").split(" | ")[-3:]
+        return candidate, control, ends
+
+    # An interval end of 99.998% needs three decimals to stay short of all; both shares print at those decimals, past
+    # the four significant figures a lone figure keeps, so the two sum to exactly 100 as printed.
+    candidate, control, ends = shares(0.910714, (0.6, 0.99996))
+    assert (candidate, control, ends) == ("91.071", "8.929", "80 to 99.998")
+    assert Decimal(candidate) + Decimal(control) == 100
+    # A share just under even stays under it, and the control's just over, never both printed as 50.
+    candidate, control, ends = shares(0.499996, (-0.2, 0.2))
+    assert (candidate, control, ends) == ("49.9996", "50.0004", "40 to 60")
+    assert Decimal(candidate) + Decimal(control) == 100
+
+
+async def test_an_interval_end_near_even_keeps_its_side_and_two_near_ends_stay_apart(
+    tmp_path: Path, offline: None
+) -> None:
+    result = await _replayed(tmp_path)
+    read = result.pairwise["variant"]
+
+    def row(share: float, interval: tuple[float, float]) -> str:
+        primary = read.primary.model_copy(update={"interval": interval})
+        shown = replace(result, pairwise={"variant": replace(read, share=share, primary=primary)}).pairwise_text()
         (line,) = [line for line in shown.splitlines() if line.startswith("| variant | every pair |")]
         return line
 
-    # A low end of -0.004 points crosses zero: it is never printed as 0, so the crossing stays on the page.
-    assert row(0.2, (-0.00004, 0.4)).endswith("| 20 | -0.004 to 40 |")
-    # Two ends that whole points would print alike take the decimals that tell them apart.
-    assert row(0.3402, (0.3401, 0.3404)).endswith("| 34.02 | 34.01 to 34.04 |")
+    # The pass reads its interval on the difference of the two shares; the page prints it on the candidate's share.
+    # A low end of -0.004 points of difference is 49.998% of the preference: never printed as 50, so the crossing of
+    # even stays on the page, and the shares print at the interval's precision, summing to 100.
+    assert row(0.6, (-0.00004, 0.4)).endswith("| 60 | 40 | 49.998 to 70 |")
+    # Two ends that whole percents would print alike take the decimals that tell them apart.
+    assert row(0.6702, (0.3402, 0.3406)).endswith("| 67.02 | 32.98 | 67.01 to 67.03 |")
 
 
 async def test_a_count_of_cases_to_settle_reads_with_its_thousands_separated(tmp_path: Path, offline: None) -> None:

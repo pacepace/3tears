@@ -688,11 +688,11 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     table = result.pairwise_text()
     assert table in text
     lines = [line for line in table.splitlines() if line.startswith("| ")]
-    assert lines[0] == "| Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval (pts) |"
+    assert lines[0] == ("| Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | Interval (%) |")
     # One case is too few for the test to run, and the orders' disagreement voids it besides.
     assert read.primary.outcome == "untested"
     every, finished, checks = [line for line in lines if line.startswith("| variant | ")]
-    assert every.startswith(f"| variant | every pair | untested: {read.primary.reason_detail} (void) | 50 | ")
+    assert every.startswith(f"| variant | every pair | untested: {read.primary.reason_detail} (void) | 50 | 50 | ")
     assert read.primary.reason_detail == "1 case with a share, and the test needs two"
     assert finished.startswith("| variant | both pages finished | ")
     assert (
