@@ -48,19 +48,34 @@ switch, so its note is in the current table or a later one. At the next switch t
 restore reads. An epoch whose writer stalled between its commit and its append for longer than the fence
 breaks that promise, and the scrub reports it.
 
-**Putting a lost log back.** When the keeper finds the log absent it reads the notes of the current and the
-previous tables, folds them into one record per table (each distinct key once; a whole-table note as a
-whole-table record), and declares a new log under a NEW incarnation that names the lost one and the
-coverage's floor (``continues``, ``covered_from``). A follower whose mark under the lost incarnation is at or
-past the floor missed nothing the notes do not cover: it carries its mark to the start of the new log and
-walks every record in it, evicting each key once more than it strictly needed. One whose mark is older is
-behind (``record_lost``), serving what it holds, until it restarts. Nothing drops a table it did not
-change; a whole-table record is the truncate or load that made it, re-applied.
+**Putting a lost log back.** When the keeper finds the log absent it first declares a new log under a NEW
+incarnation, marked as being restored from the lost one and continuing nothing yet, so a write waiting for
+the log appends at once. Then it reads the notes of the current and the previous tables, folds them into
+one record per table (each distinct key once; a whole-table note as a whole-table record), sizes them
+against the log's bound, appends them, and only then labels the log as continuing the lost one from the
+coverage's floor (``continues``, ``covered_from``). The label is the restore's completion: until it is
+written a follower of the lost log is behind (``replaced``), never carried over to a partial log. A restore
+interrupted before its label (a refused append, a lost lease, a crash) is found by the next pass and done
+again in full into the same log, under fresh append ids. One that would not fit the log with headroom is
+not attempted: said at ERROR, counted, and the new log taken as fresh, so followers of the lost log stay
+behind until they restart. Once labelled, a follower whose mark under the lost incarnation is at or past
+the floor missed nothing the notes do not cover: it carries its mark to the start of the new log and walks
+every record in it, the writes made during the restore included, evicting each key once more than it
+strictly needed. One whose mark is older is behind (``record_lost``), serving what it holds, until it
+restarts. Nothing drops a table it did not change; a whole-table record is the truncate or load that made
+it, re-applied.
 
-**The scrub.** Each pass checks that the epochs the log holds after the floor have their notes: one whose
-note is not where the coverage needs it is logged at ERROR and counted
-(``threetears_change_notes_missing_total``), for an alert. It only checks and reports; it never writes a
-note, reloads anything or repairs.
+**The scrub.** Every tenth of the fence (``scrub_every``), not every pass, it checks that the epochs the
+log holds after the floor have their notes: one whose note is not where the coverage needs it is logged at
+ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It reads up to ``scrub_batch``
+records from the log, a few dozen at a time, and looks their notes up through the note tables'
+``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
+checks and reports; it never writes a note, reloads anything or repairs.
+
+**Which columns can be noted.** A note carries its key and invalidation columns as text, and a restore
+names rows by that text, as an epoch record does. Only uuid, text, varchar and integer columns spell a
+value exactly one way; a noted table with any other key or invalidation column gets no trigger, and an
+ERROR names it.
 """
 
 from __future__ import annotations
@@ -87,6 +102,7 @@ from threetears.core.ddl.change_notes import (
     NOTE_TRUNCATE_TRIGGER,
     RING_TABLE,
     change_notes_ddl,
+    inexact_note_columns,
     note_function_name,
     note_table,
     note_trigger_sql,
@@ -96,7 +112,7 @@ from threetears.core.ddl.change_notes import (
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.exceptions import GenerationUnavailableError, RestoreTooLargeError
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
@@ -131,6 +147,12 @@ _LOCK_POLICY: Final = DdlLockPolicy(poll_interval=0.5, max_wait=5.0)
 
 #: epochs the scrub checks per pass
 _SCRUB_BATCH: Final = 1000
+
+#: how many scrubs run per fence by default: every minute at the 10 min fence
+_SCRUBS_PER_FENCE: Final = 10
+
+#: how many log records the scrub reads at once
+_SCRUB_READS_AT_ONCE: Final = 64
 
 #: the separator a note's key columns are joined with to compare them in SQL: never in a key's text form
 _KEY_SEPARATOR: Final = "\x1f"
@@ -167,6 +189,10 @@ _RING_READS = counter(
 _RESTORES = counter(
     "threetears_change_notes_restores_total",
     description="lost change logs the keeper put back from the change notes",
+)
+_RESTORES_REFUSED = counter(
+    "threetears_change_notes_restores_refused_total",
+    description="lost change logs NOT restored because the restore would not fit the log with headroom; alert on any",
 )
 _SCRUB_BEHIND = gauge(
     "threetears_change_notes_scrub_behind",
@@ -222,21 +248,35 @@ class _ChangeLogKeeping(Protocol):
         """
         ...
 
-    async def restore_from_notes(
-        self, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
-    ) -> str | None:
-        """declare a new log continuing ``lost`` and append one record per change, where the broker holds none.
+    async def begin_restore(self, lost: str) -> str | None:
+        """declare the log a restore of ``lost`` fills, marked as being restored and continuing nothing yet.
+
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :return: the new log's incarnation; ``None`` when a log was already there
+        :rtype: str | None
+        :raises GenerationUnavailableError: when the log cannot be declared
+        """
+        ...
+
+    async def finish_restore(
+        self, changes: Sequence[NotedChange], *, incarnation: str, lost: str, covered_from: int | None
+    ) -> int:
+        """append one record per change into the restoring log, then label it as continuing ``lost``.
 
         :param changes: what the notes say changed, per table
         :ptype changes: Sequence[NotedChange]
+        :param incarnation: the restoring log
+        :ptype incarnation: str
         :param lost: the lost log's incarnation
         :ptype lost: str
         :param covered_from: the lost log's sequence from which the notes cover every epoch; ``None``
             when they vouch for none
         :ptype covered_from: int | None
-        :return: the new log's incarnation; ``None`` when a log was already there
-        :rtype: str | None
-        :raises GenerationUnavailableError: when the log cannot be declared or written
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the restore would not fit with headroom; nothing was appended
+        :raises GenerationUnavailableError: when the log cannot be written
         """
         ...
 
@@ -462,6 +502,12 @@ FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.
 WHERE g.tgname::text = ANY($1::text[])
 """
 
+_COLUMN_TYPES_SQL: Final = """
+SELECT c.table_schema::text AS table_schema, c.table_name::text AS table_name, c.column_name::text AS column_name,
+       c.data_type::text AS data_type
+FROM information_schema.columns c WHERE c.table_name::text = ANY($1::text[])
+"""
+
 _FUNCTIONS_SQL: Final = """
 SELECT p.proname::text AS name, p.prosrc AS body FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname::text = $1 AND p.proname::text = ANY($2::text[])
@@ -499,6 +545,7 @@ class ChangeNoteKeeper:
         log: _ChangeLogKeeping,
         fence: timedelta = DEFAULT_NOTE_FENCE,
         scrub_batch: int = _SCRUB_BATCH,
+        scrub_every: timedelta | None = None,
         switch_bytes: int | None = None,
         empty_batch: int = _EMPTY_BATCH,
         empty_pause: timedelta = _EMPTY_PAUSE,
@@ -518,6 +565,9 @@ class ChangeNoteKeeper:
         :ptype fence: timedelta
         :param scrub_batch: epochs the scrub checks per pass; at least one
         :ptype scrub_batch: int
+        :param scrub_every: the least time between two scrubs; ``None`` (the default) is a tenth of the fence.
+            The scrub reads the log and the note tables, so it runs on its own interval, not every pass
+        :ptype scrub_every: timedelta | None
         :param switch_bytes: how many bytes of change records the current table takes before the ring
             switches; ``None`` (the default) is one change log's worth, the log's own ``max_bytes``. A
             smaller ring keeps less coverage: never less than the log can hold between two keeper passes
@@ -549,6 +599,10 @@ class ChangeNoteKeeper:
         self._log = log
         self._fence = fence
         self._scrub_batch = scrub_batch
+        #: the noted tables refused a trigger for a column type, so each is said once
+        self._refused: set[str] = set()
+        self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
+        self._scrubbed_at: float | None = None
         self._switch_bytes = switch_bytes
         self._empty_batch = empty_batch
         self._empty_pause = empty_pause
@@ -643,11 +697,20 @@ class ChangeNoteKeeper:
             (str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"]))
             for row in await reader.fetch(_TRIGGERS_SQL, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
         }
+        types: dict[tuple[str, str], dict[str, str]] = {}
+        for row in await reader.fetch(_COLUMN_TYPES_SQL, sorted(noted)):
+            types.setdefault((str(row["table_schema"]), str(row["table_name"])), {})[str(row["column_name"])] = str(
+                row["data_type"]
+            )
         names = [note_function_name(schema, table) for schema, table in present]
         bodies = {str(row["name"]): str(row["body"]) for row in await reader.fetch(_FUNCTIONS_SQL, self._schema, names)}
         work: list[_Install] = []
         for schema, table in present:
             each = noted[table]
+            refused = inexact_note_columns(types.get((schema, table), {}), (*each.keys, *each.columns))
+            if refused:
+                self._refuse(schema, table, refused)
+                continue
             wanted = trigger_function_body(notes_schema=self._schema, keys=each.keys, columns=each.columns)
             stale = bodies.get(note_function_name(schema, table)) != wanted
             missing = tuple(
@@ -656,6 +719,30 @@ class ChangeNoteKeeper:
             if stale or missing:
                 work.append(_Install(table_schema=schema, noted=each, function=stale, triggers=missing))
         return work
+
+    def _refuse(self, schema: str, table: str, refused: Sequence[tuple[str, str]]) -> None:
+        """say, once per table, that it gets no note trigger: a key or invalidation column is of a type whose
+        text form does not round-trip exactly, so its note could name a row another way than its epoch.
+
+        :param schema: the table's schema
+        :ptype schema: str
+        :param table: the table
+        :ptype table: str
+        :param refused: each refused column and its type
+        :ptype refused: Sequence[tuple[str, str]]
+        :return: nothing
+        :rtype: None
+        """
+        name = f"{schema}.{table}"
+        if name in self._refused:
+            return
+        self._refused.add(name)
+        log.error(
+            "a noted table gets no change-note trigger: a key or invalidation column is not uuid, text, varchar or "
+            "an integer, so its text form does not name the value exactly. Change the column or what the class "
+            "declares; the scrub reports its epochs as missing notes",
+            extra={"extra_data": {"table": name, "columns": [f"{column} ({kind})" for column, kind in refused]}},
+        )
 
     async def _give(self, conn: Any, install: _Install) -> None:
         """create one table's function, when stale, and its missing triggers.
@@ -757,6 +844,11 @@ class ChangeNoteKeeper:
             else:
                 result.restored = await self._restore(ring)
             return result
+        if state.restoring is not None and state.restoring == ring.log_incarnation and state.continues is None:
+            # a restore of the ring's lost log was declared and never labelled whole (a failed append, a lost
+            # lease, a crash): it is finished, or done again, before anything else
+            result.restored = await self._restore(ring, incarnation=state.incarnation)
+            return result
         if ring.log_incarnation != state.incarnation:
             ring = await self._adopt(ring, state)
             result.adopted = state.incarnation
@@ -781,7 +873,10 @@ class ChangeNoteKeeper:
             else:
                 result.switch_waited = True
                 self._switch_waits(ring)
-        result.scrub = await self._scrub(ring, state)
+        now = time.monotonic()
+        if self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds():
+            self._scrubbed_at = now
+            result.scrub = await self._scrub(ring, state)
         return result
 
     async def _adopt(self, ring: NoteRingState, state: ChangeLogState) -> NoteRingState:
@@ -801,6 +896,14 @@ class ChangeNoteKeeper:
         if ring.log_incarnation is None:
             return await self._update(ring, log_incarnation=state.incarnation)
         start = _token(state.incarnation, 0)
+        if state.continues is not None and state.continues == ring.log_incarnation:
+            # this keeper's own restore, labelled whole, whose ring update did not happen
+            return await self._update(
+                ring,
+                log_incarnation=state.incarnation,
+                floor=start,
+                fence_seq=None if ring.fence_seq is None else start,
+            )
         log.warning(
             "the change log is under an incarnation the note keeper did not put back; its notes cover it from its start",
             extra={"extra_data": {"was": ring.log_incarnation, "now": state.incarnation}},
@@ -950,32 +1053,59 @@ class ChangeNoteKeeper:
                     notes.append(note)
         return notes
 
-    async def _restore(self, ring: NoteRingState) -> str | None:
+    async def _restore(self, ring: NoteRingState, *, incarnation: str | None = None) -> str | None:
         """put the lost log back from the notes of the current and the previous tables.
+
+        In order: declare the new log first (so writers waiting for it append at once), then read the notes,
+        then append them and label the log as continuing the lost one. The label is the restore's completion:
+        until it is written a follower of the lost log is behind, never carried over. ``incarnation`` names a
+        restore declared earlier and never labelled; it is done again, in full, into that log.
+
+        A restore that would not fit the log with headroom is not attempted: logged at ERROR and counted
+        (``threetears_change_notes_restores_refused_total``), and the new log is taken as a fresh one, so
+        every follower of the lost log stays behind until it restarts. Never a reload.
 
         :param ring: the ring
         :ptype ring: NoteRingState
-        :return: the new log's incarnation; ``None`` when a log was there by the time it was declared
+        :param incarnation: the restoring log to finish; ``None`` declares one
+        :ptype incarnation: str | None
+        :return: the new log's incarnation; ``None`` when a log was there and it was not this restore's
         :rtype: str | None
+        :raises GenerationUnavailableError: when the log cannot be declared or written; the next pass redoes it
         """
         lost = ring.log_incarnation
         assert lost is not None  # narrow: the caller restores only a log the ring has seen
+        if incarnation is None:
+            incarnation = await self._log.begin_restore(lost)
+            if incarnation is None:
+                return None
         covered = _seq_under(ring.floor, lost)
         if covered is None:
             covered = _seq_under(ring.fence_seq, lost)
         began = time.monotonic()
         notes = await self._read_notes((ring.current, ring.previous))
         changes = _changes_from_notes(notes)
-        restored = await self._log.restore_from_notes(changes, lost=lost, covered_from=covered)
-        if restored is None:
+        try:
+            appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=covered)
+        except RestoreTooLargeError as exc:
+            _RESTORES_REFUSED.inc()
+            log.error(
+                "the lost epoch change log was NOT restored from the change notes: the restore would not fit the "
+                "log with headroom. Every follower of the lost log is behind (replaced) until it restarts; the new "
+                "log is taken as a fresh one",
+                extra={"extra_data": {"lost": lost, "restored": incarnation, "notes": len(notes), "error": str(exc)}},
+            )
+            await self._update(ring, log_incarnation=incarnation, floor=_token(incarnation, 0), fence_seq=None)
+            self._scrubbed = None
+            self._seen = None
             return None
         state = await self._log.log_state()
-        head = state.last_seq if state is not None and state.incarnation == restored else 0
+        head = state.last_seq if state is not None and state.incarnation == incarnation else 0
         await self._update(
             ring,
-            log_incarnation=restored,
-            floor=_token(restored, 0),
-            fence_seq=None if ring.fence_seq is None else _token(restored, head),
+            log_incarnation=incarnation,
+            floor=_token(incarnation, 0),
+            fence_seq=None if ring.fence_seq is None else _token(incarnation, head),
         )
         self._scrubbed = None
         self._seen = None
@@ -987,15 +1117,16 @@ class ChangeNoteKeeper:
             extra={
                 "extra_data": {
                     "lost": lost,
-                    "restored": restored,
+                    "restored": incarnation,
                     "covered_from": covered,
                     "notes": len(notes),
                     "tables": len(changes),
+                    "records": appended,
                     "seconds": round(time.monotonic() - began, 3),
                 }
             },
         )
-        return restored
+        return incarnation
 
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.
@@ -1025,7 +1156,7 @@ class ChangeNoteKeeper:
         if end <= start:
             _SCRUB_BEHIND.set(max(0, state.last_seq - start))
             return ScrubPass(position=_token(incarnation, start))
-        records = [record for seq in range(start + 1, end + 1) if (record := await self._log.epoch_at(seq)) is not None]
+        records = await self._epochs_between(start, end)
         fence = _seq_under(ring.fence_seq, incarnation)
         found = await self._found(ring, records)
         result = ScrubPass(checked=len(records), position=_token(incarnation, end))
@@ -1053,8 +1184,29 @@ class ChangeNoteKeeper:
         _SCRUB_BEHIND.set(max(0, state.last_seq - end))
         return result
 
+    async def _epochs_between(self, start: int, end: int) -> list[EpochChange]:
+        """the records the log holds after ``start`` up to ``end``, read :data:`_SCRUB_READS_AT_ONCE` at a time.
+
+        :param start: the sequence after which to read
+        :ptype start: int
+        :param end: the last sequence to read
+        :ptype end: int
+        :return: the records held, in sequence order
+        :rtype: list[EpochChange]
+        """
+        records: list[EpochChange] = []
+        for first in range(start + 1, end + 1, _SCRUB_READS_AT_ONCE):
+            batch = range(first, min(end, first + _SCRUB_READS_AT_ONCE - 1) + 1)
+            read = await asyncio.gather(*(self._log.epoch_at(seq) for seq in batch))
+            records.extend(record for record in read if record is not None)
+        return records
+
     async def _found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
         """the notes the coverage tables hold for ``records``, by table.
+
+        Each query is led by the notes' ``(key_text, table_name)`` index, so its cost follows the epochs
+        checked, not the size of the coverage. Only a record that names no rows (a whole-table or keys-unknown
+        epoch) asks whether its table has any note at all, which stops at the first one found.
 
         :param ring: the ring
         :ptype ring: NoteRingState
@@ -1065,22 +1217,32 @@ class ChangeNoteKeeper:
         """
         tables = sorted({record.table for record in records})
         keys = sorted({_KEY_SEPARATOR.join(row.ids) for record in records for row in record.rows})
+        rowless = sorted({record.table for record in records if not record.rows})
         found: dict[int, _Found] = {}
         for index in (ring.current, ring.previous):
-            rows = await self._pool.fetch(
-                f"SELECT DISTINCT table_name, array_to_string(keys, $3) AS joined FROM {self._ring_table(index)} "  # noqa: S608 - trusted identifiers
-                "WHERE table_name = ANY($1::text[]) AND (keys IS NULL OR array_to_string(keys, $3) = ANY($2::text[]))",
+            table = self._ring_table(index)
+            keyed = await self._pool.fetch(
+                f"SELECT DISTINCT table_name, key_text FROM {table} "  # noqa: S608 - trusted identifiers
+                "WHERE key_text = ANY($2::text[]) AND table_name = ANY($1::text[])",
                 tables,
                 keys,
-                _KEY_SEPARATOR,
             )
-            any_rows = await self._pool.fetch(
-                f"SELECT DISTINCT table_name FROM {self._ring_table(index)} WHERE table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
+            whole = await self._pool.fetch(
+                f"SELECT DISTINCT table_name FROM {table} WHERE key_text IS NULL AND table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
                 tables,
             )
+            any_rows = (
+                await self._pool.fetch(
+                    f"SELECT noted AS table_name FROM unnest($1::text[]) AS noted "  # noqa: S608 - trusted identifiers
+                    f"WHERE EXISTS (SELECT 1 FROM {table} n WHERE n.table_name = noted)",
+                    rowless,
+                )
+                if rowless
+                else []
+            )
             found[index] = _Found(
-                keyed={(str(row["table_name"]), str(row["joined"])) for row in rows if row["joined"] is not None},
-                whole={str(row["table_name"]) for row in rows if row["joined"] is None},
+                keyed={(str(row["table_name"]), str(row["key_text"])) for row in keyed},
+                whole={str(row["table_name"]) for row in whole},
                 any_note={str(row["table_name"]) for row in any_rows},
             )
         return found

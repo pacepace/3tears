@@ -30,6 +30,8 @@ This page is for whoever wires, runs and watches it. The design is in the module
 | Every source of the deployment | `EpochGenerationSource(..., restored_from_l3=True)` |
 | Follower quiet pass | every `quiet_pass_interval()`: the log's retention (24 h) / 4 = 6 h |
 | Missing notes | `threetears_change_notes_missing_total{table}`: alert on any increase |
+| Restore refused | `threetears_change_notes_restores_refused_total`: the restore would not fit the log; alert on any increase |
+| Noted columns | key and invalidation columns are uuid, text, varchar or an integer; a table with any other gets no trigger, with an ERROR |
 | Ring | `threetears_change_notes_switches_total`, `threetears_change_notes_emptied_total`, `threetears_change_notes_emptied_rows_total`, `threetears_change_notes_restores_total` |
 | Switch held by an emptying | `threetears_change_notes_switch_waits_total`, with one WARNING per held switch |
 | Writes without a cached slot | `threetears_change_notes_ring_reads_total{table}` (counted at each switch); `threetears_change_note_slot_refreshes_total{outcome}` per process |
@@ -107,8 +109,13 @@ Each pass, in order:
    becomes the coverage's **floor**: every epoch after it has its note in the current or the previous
    table. The switch tells writers this keeper's fence, and counts the notes of the table it left that
    read the ring row.
-6. **Scrub**: check up to `scrub_batch` (1000) epochs after the floor, up to the log's head one pass
-   ago, against the notes. Report each one whose note is not where the coverage needs it. Never repair.
+6. **Scrub**, every `scrub_every` (a tenth of the fence: 1 min), not every pass: check up to `scrub_batch`
+   (1000) epochs after the floor, up to the log's head one scrub ago, against the notes. Report each one
+   whose note is not where the coverage needs it. Never repair. Its cost: one log read per epoch checked
+   (64 at a time), and per note table two index lookups led by `(key_text, table_name)`, sized by the
+   epochs checked, not by the coverage. Only an epoch that names no rows (a whole-table or keys-unknown
+   one) asks whether its table has any note at all, which stops at the first note found and scans the
+   table only when none is there: the case the alert is for.
 
 Two keepers at once never switch twice (every ring update names the switch it read), but empty and scrub
 twice; the lease keeps it to one. Tuning: `fence` (a writer's cached slot is used up to half of it, so keep
@@ -138,13 +145,23 @@ but too slowly.
 
 1. Pods keep serving what they hold. Followers count themselves on `collection_epoch_tables_behind`.
    L2-first writes raise `L2LostError`; other writes wait for the restore, and no process starts a log.
-2. The keeper's next pass reads the current and previous note tables, folds them into one record per
-   table (each distinct key once, with its invalidation columns; a truncate or file load as one
-   whole-table record), and declares a new log under a NEW incarnation that names the lost one and the
-   floor (`continues`, `covered_from`). It logs one WARNING with the counts and counts
-   `threetears_change_notes_restores_total`.
-3. A follower whose mark under the lost incarnation is at or past the floor carries its mark to the start
-   of the new log and walks every restored record: it evicts each noted key once (some it already held
+2. The keeper's next pass first declares a new log under a NEW incarnation, marked as being restored
+   (`threetears_restoring` in the stream's metadata) and continuing nothing yet: writes waiting for the log
+   append to it at once. It then reads the current and previous note tables, folds them into one record per
+   table (each distinct key once, with its invalidation columns; a truncate or file load as one whole-table
+   record), checks they fit (what the log holds plus every record stays under 75 % of `max_bytes`),
+   appends them, and only then labels the log as continuing the lost one from the floor (`continues`,
+   `covered_from`). It logs one WARNING with the counts and counts `threetears_change_notes_restores_total`.
+   Until the label is written every follower of the lost log is behind (`replaced`), never current.
+   - A restore that stops part-way (a refused append, a NATS error, the keeper losing its lease or its
+     process) is unlabelled: the next pass, by any keeper, does it again in full into the same log, under
+     fresh append ids. A key appended twice is evicted twice.
+   - A restore that would not fit is not attempted: one ERROR (`was NOT restored`), the counter
+     `threetears_change_notes_restores_refused_total` (alert on any), and the new log is taken as a fresh
+     one. Every follower of the lost log stays behind until it restarts. Nothing reloads.
+3. Once the label is written, a follower whose mark under the lost incarnation is at or past the floor
+   carries its mark to the start of the new log and walks every record, the writes made during the restore
+   included: it evicts each noted key once (some it already held
    current) and is caught up. Nothing is dropped except a table a restored whole-table record names: that
    is a truncate or load that happened in the coverage, re-applied.
 4. A follower whose mark is older than the floor is behind (`record_lost`), serving what it holds, until it

@@ -10,7 +10,11 @@ YugabyteDB) and, where the follower's catch-up is the point, a real broker. What
   behind as ``record_lost``;
 - the ring switches and empties its oldest table while writers write, and no note the coverage still
   needs is lost;
-- the scrub reports an epoch the log holds whose note is not in L3.
+- the scrub reports an epoch the log holds whose note is not in L3, on its own interval, through an index;
+- a restore is labelled as continuing the lost log only after its last append: one refused part-way leaves
+  the follower behind, and the next pass redoes it under fresh append ids; a write made meanwhile lands at
+  once and is walked too; a restore that would not fit is refused, said, and leaves followers behind;
+- a noted column whose text form is not exact gets no trigger, with an error naming it.
 """
 
 from __future__ import annotations
@@ -31,13 +35,14 @@ from sqlalchemy import MetaData
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_notes import ChangeNoteKeeper, ScrubPass
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import NOTE_RING_SIZE, note_table
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -47,6 +52,7 @@ from threetears.epoch import (
     generation_catchup_tick,
 )
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.nats.errors import KvError
 
 pytestmark = pytest.mark.integration
 
@@ -71,7 +77,7 @@ async def ring(db_container: str) -> AsyncIterator[tuple[asyncpg.Pool, str, str]
 
 
 async def _keeper(pool: asyncpg.Pool, schema: str, table: str, log: Any) -> ChangeNoteKeeper:
-    keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=log, fence=_FENCE)
+    keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=log, fence=_FENCE, scrub_every=timedelta(0))
     await keeper.install()
     assert await keeper.install_triggers([NotedTable(table=table, keys=("id",), columns=("owner",))]) == [
         f"{schema}.{table}"
@@ -308,3 +314,181 @@ class TestTheScrubReportsAMissingNote:
         said = [r.__dict__["extra_data"] for r in caplog.records if "no change note" in r.getMessage()]
         assert [each["missing"] for each in said] == ["unnoted"]
         assert len(await _notes(pool, schema)) == notes_before, "the scrub only checks; it writes no note"
+
+
+async def _fenced(pool: asyncpg.Pool, schema: str, table: str, source: EpochGenerationSource) -> ChangeNoteKeeper:
+    """a keeper whose ring has seen the log and passed its fence, so the coverage vouches from the log's start."""
+    keeper = await _keeper(pool, schema, table, source)
+    await keeper.run_pass()
+    await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+    await keeper.run_pass()
+    assert (await keeper.ring()).fence_seq is not None
+    return keeper
+
+
+class TestARestoreIsWholeOrNotTakenAtAll:
+    """the label "continues the lost log" is written only after the restore's last append."""
+
+    async def test_a_restore_refused_part_way_leaves_the_follower_behind_until_it_is_redone(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        writer, follower = _Pod(bus, pool, table, "writer"), _Pod(bus, pool, table, "follower")  # type: ignore[arg-type]
+        await writer.source.start_log()
+        keeper = await _fenced(pool, schema, table, writer.source)
+        await writer.rows.save_entity(writer.rows.create({"id": "w1", "owner": "ada", "n": "1"}))
+        follower.registry.follow_generation(table)
+        await generation_catchup_tick(follower.registry, follower.reader)
+        assert (await follower.rows.ensure("w1") or {}).get("n") == "1"
+        # unheard by the follower, then NATS loses the log
+        await writer.rows.save_entity(writer.rows.create({"id": "w1", "owner": "ada", "n": "2"}))
+        await writer.rows.save_entity(writer.rows.create({"id": "w2", "owner": "bea", "n": "1"}))
+        # another table's note, so the restore is two records and the second can be refused
+        current = (await keeper.ring()).current
+        await pool.execute(
+            f"INSERT INTO {schema}.{note_table(current)} (table_name, keys, key_text) VALUES ('zz_other', ARRAY['x'], 'x')"
+        )
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        lost = (await writer.source.log_state()).incarnation  # type: ignore[union-attr]
+        log.vanish()
+
+        ids: list[str] = []
+
+        def refuse_after_the_first(msg_id: str) -> Exception | None:
+            if not msg_id.startswith("restore-"):
+                return None
+            ids.append(msg_id)
+            return KvError("refused") if len(ids) > 1 else None
+
+        log.refuse_append = refuse_after_the_first
+        with pytest.raises(GenerationUnavailableError):
+            await keeper.run_pass()
+        state = await writer.source.log_state()
+        assert state is not None and state.restoring == lost and state.continues is None, "declared, not labelled"
+
+        # a write meanwhile lands in the declared log at once: it does not wait out the restore
+        await writer.rows.save_entity(writer.rows.create({"id": "w3", "owner": "cy", "n": "1"}))
+
+        await generation_catchup_tick(follower.registry, follower.reader)
+        assert follower.registry.behind_on(table), "a partial restore never makes the follower current"
+        assert (await follower.rows.ensure("w1") or {}).get("n") == "1", "nothing was applied from it"
+
+        # the next pass redoes the restore into the same log, with fresh append ids, and labels it
+        log.refuse_append = None
+        restored = (await keeper.run_pass()).restored
+        assert restored == state.incarnation
+        relabelled = await writer.source.log_state()
+        assert relabelled is not None and relabelled.continues == lost and relabelled.restoring is None
+        assert (await keeper.ring()).log_incarnation == restored
+
+        await generation_catchup_tick(follower.registry, follower.reader)
+        assert not follower.registry.behind_on(table)
+        assert (await follower.rows.ensure("w1") or {}).get("n") == "2", "every noted key was applied"
+        assert (await follower.rows.ensure("w2") or {}).get("owner") == "bea"
+        assert (await follower.rows.ensure("w3") or {}).get("owner") == "cy", "the write made meanwhile too"
+
+    async def test_a_rerun_appends_under_fresh_ids(self, ring: tuple[asyncpg.Pool, str, str]) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+        await source.start_log()
+        keeper = await _fenced(pool, schema, table, source)
+        current = (await keeper.ring()).current
+        for other in ("t_a", "t_b", "t_c"):  # three tables' notes: three restored records
+            await pool.execute(
+                f"INSERT INTO {schema}.{note_table(current)} (table_name, keys, key_text) VALUES ($1, ARRAY['k'], 'k')",
+                other,
+            )
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        log.vanish()
+        seen: list[str] = []
+
+        def refuse_the_third(msg_id: str) -> Exception | None:
+            seen.append(msg_id)
+            return KvError("refused") if len(seen) == 2 else None
+
+        log.refuse_append = refuse_the_third
+        with pytest.raises(GenerationUnavailableError):
+            await keeper.run_pass()
+        first = set(seen)
+        seen.clear()
+        log.refuse_append = lambda msg_id: seen.append(msg_id) or None  # type: ignore[func-returns-value]
+        assert (await keeper.run_pass()).restored is not None
+        assert seen and not first & set(seen), "a re-run's appends are never dropped as repeats"
+
+    async def test_a_restore_that_would_not_fit_is_refused_said_and_leaves_followers_behind(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(
+            bus,
+            change_retention=EpochChangeRetention(max_bytes=4096),
+            restored_from_l3=True,
+            restore_wait=timedelta(seconds=1),
+        )
+        await source.start_log()
+        keeper = await _fenced(pool, schema, table, source)
+        # many distinct keys: their records fold to far more than the log's bound
+        await pool.execute(
+            f"INSERT INTO {table} SELECT 'k' || g, 'o', '1' FROM generate_series(1, 400) g",
+        )
+        lost = (await source.log_state()).incarnation  # type: ignore[union-attr]
+        bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+
+        with caplog.at_level(logging.ERROR):
+            assert (await keeper.run_pass()).restored is None
+        assert any("NOT restored" in record.getMessage() for record in caplog.records)
+        state = await source.log_state()
+        assert state is not None and state.continues is None, "never labelled as continuing the lost log"
+        assert state.last_seq == 0, "no record of the refused restore was appended"
+        ring_state = await keeper.ring()
+        assert ring_state.log_incarnation == state.incarnation != lost, "the new log is taken as a fresh one"
+        # the next pass does not try again
+        again = await keeper.run_pass()
+        assert again.restored is None
+
+
+class TestAColumnWhoseTextIsNotExactGetsNoTrigger:
+    async def test_a_boolean_key_or_a_timestamp_column_is_refused_with_an_error(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool, schema, table = ring
+        odd = f"{table}_odd"
+        await pool.execute(f"CREATE TABLE {schema}.{odd} (id BOOLEAN PRIMARY KEY, at TIMESTAMPTZ)")
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE)
+        await keeper.install()
+        with caplog.at_level(logging.ERROR):
+            given = await keeper.install_triggers(
+                [NotedTable(table=odd, keys=("id",), columns=("at",)), NotedTable(table=table, keys=("id",))]
+            )
+        assert given == [f"{schema}.{table}"], "the exact table is given its trigger, the other is refused"
+        said = [r.__dict__["extra_data"] for r in caplog.records if "no change-note trigger" in r.getMessage()]
+        assert said == [{"table": f"{schema}.{odd}", "columns": ["id (boolean)", "at (timestamp with time zone)"]}]
+
+
+class TestTheScrubRunsOnItsOwnInterval:
+    async def test_a_pass_inside_the_interval_does_not_scrub_and_the_notes_are_indexed(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        source = EpochGenerationSource(FakeNatsClient())
+        await source.start_log()
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=timedelta(minutes=10))
+        await keeper.install()
+        first = await keeper.run_pass()
+        second = await keeper.run_pass()
+        assert first.scrub is not second.scrub
+        assert second.scrub == ScrubPass(), "a minute (a tenth of the fence) has not passed"
+        indexed = {
+            str(row["indexdef"])
+            for row in await pool.fetch("SELECT indexdef FROM pg_indexes WHERE schemaname = $1", schema)
+        }
+        for index in range(NOTE_RING_SIZE):
+            # Postgres says "(key_text, table_name)", YugabyteDB "lsm (key_text HASH, table_name ASC)"
+            assert any(
+                note_table(index) in each
+                and 0 <= each.find("key_text") < each.find("table_name", each.find("key_text"))
+                for each in indexed
+            ), index

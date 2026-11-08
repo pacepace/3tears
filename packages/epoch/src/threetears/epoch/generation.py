@@ -20,9 +20,11 @@ window records once.
 
 **A token is ``"{incarnation}:{sequence}"``.** The incarnation is the log's own, carried in its stream
 metadata, minted when the log is declared. A log put back after the broker lost it is a new incarnation
-that names the lost one and the sequence from which the L3 change notes cover it (``continues``,
-``covered_from``; :mod:`threetears.core.collections.change_notes`): a pod whose mark is at or past it walks
-every restored record and catches up, and one older is behind. A table's generation is the sequence of
+that, once its last restored record is appended and not before, names the lost one and the sequence from
+which the L3 change notes cover it (``continues``, ``covered_from``;
+:mod:`threetears.core.collections.change_notes`): a pod whose mark is at or past it walks every record and
+catches up, and one older is behind. While the restore is under way the log is marked ``restoring`` and
+continues nothing, so every pod of the lost log is behind until it is whole. A table's generation is the sequence of
 its newest record (``:0`` for a table with none): it moves with every write to the table, which is all
 an absence's stamp needs. A table's sequences are not consecutive -- other tables' records sit between
 them -- so a follower catches up by walking the table's records after its mark
@@ -53,7 +55,7 @@ from threetears.core.collections.epoch_change import (
     read_logged_epoch_change,
 )
 from threetears.core.collections.generation import split_generation_token
-from threetears.core.exceptions import GenerationUnavailableError, L2LostError
+from threetears.core.exceptions import GenerationUnavailableError, L2LostError, RestoreTooLargeError
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
 from threetears.nats.subjects import Subjects
@@ -87,6 +89,10 @@ EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 #: to raise it or find what fills it. Alert on ``threetears_epoch_changes_fill_ratio`` above this.
 EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
 _FILL_WARN_RATIO: Final = EPOCH_CHANGES_FILL_WARN_RATIO
+
+#: the bytes a restored record takes in the log beyond its key and body, as a sizing estimate: subject
+#: prefix, the dedup header and the stream's own per-message overhead, rounded up
+_RESTORED_RECORD_OVERHEAD: Final = 160
 
 #: how long a write waits for the change-note keeper to put a lost log back, where the keeper owns it
 _RESTORE_WAIT: Final = timedelta(seconds=10)
@@ -161,9 +167,12 @@ class _ChangeLogLike(Protocol):
         incarnation: str | None = None,
         first_seq: int | None = None,
         continues: tuple[str, int | None] | None = None,
+        restoring: str | None = None,
     ) -> ChangeLogState: ...
 
     async def state(self) -> ChangeLogState | None: ...
+
+    async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState: ...
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int: ...
 
@@ -459,7 +468,7 @@ class EpochGenerationSource(_ChangeLogReading):
     never declares a log. While the log is absent a write waits up to ``restore_wait`` for the keeper, then
     fails (its rows and their notes committed, its epoch not appended, logged and counted as any refused
     append); a read of the generation fails at once, so its caller asks L3. The keeper alone starts the log
-    (:meth:`restore_from_notes`, or :meth:`start_log` when its ring has never seen one). Elsewhere a lost
+    (:meth:`begin_restore` and :meth:`finish_restore`, or :meth:`start_log` when its ring has never seen one). Elsewhere a lost
     log is declared again under a new incarnation, and every follower is behind (``replaced``) until it
     restarts.
     """
@@ -672,59 +681,123 @@ class EpochGenerationSource(_ChangeLogReading):
             )
             raise GenerationUnavailableError(f"the epoch of {table_name!r} could not be appended: {exc}") from exc
 
-    async def restore_from_notes(
-        self, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
-    ) -> str | None:
-        """put a lost log back from the L3 change notes: a new incarnation, one record per table's change.
+    async def begin_restore(self, lost: str) -> str | None:
+        """declare the log a restore of ``lost`` fills, before the notes are read, where the broker holds none.
 
-        Only where the broker holds no log. The log is declared under a NEW incarnation that names the lost
-        one and the lost log's sequence from which the notes cover every epoch (``continues``,
-        ``covered_from``), and each change is appended as the record a write would append: its distinct
-        rows, split into runs within the record bound, or the whole table. Their order does not matter: a
-        follower carried over walks every one. A write waiting for the log (``restored_from_l3``) appends
-        among them as soon as the log is declared, and is walked like any other.
+        Declared at once so a write waiting for the log (``restored_from_l3``, up to ``restore_wait``) appends
+        to it rather than timing out while the notes are read. The log is marked as being restored from
+        ``lost`` and continues nothing yet: a follower of ``lost`` stays behind (``replaced``) until
+        :meth:`finish_restore` labels it, and then walks every record from the log's start, the writes that
+        landed meanwhile included.
 
-        :param changes: what the notes say changed, per table (:mod:`threetears.core.collections.change_notes`)
-        :ptype changes: Sequence[NotedChange]
         :param lost: the lost log's incarnation
         :ptype lost: str
-        :param covered_from: the lost log's sequence from which the notes cover every epoch; ``None`` when
-            they vouch for none of it, so every follower of the lost log is behind
-        :ptype covered_from: int | None
         :return: the new log's incarnation; ``None`` when a log was already there
         :rtype: str | None
-        :raises GenerationUnavailableError: when the log cannot be created or written
+        :raises GenerationUnavailableError: when the log cannot be created or read
         """
         if await self._state() is not None:
             return None
         retention = self._change_retention
         restored = str(uuid7())
-        appended = 0
         try:
-            await self._log().declare(
+            state = await self._log().declare(
                 max_age=retention.max_age,
                 max_bytes=retention.max_bytes,
                 replicas=retention.replicas,
                 incarnation=restored,
-                continues=(lost, covered_from),
+                restoring=lost,
             )
-            for change in changes:
-                if change.whole_table:
-                    bodies = [epoch_change_body(change.table, None)]
-                elif change.rows:
-                    bodies = [
-                        epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)
-                    ]
-                else:
-                    continue
-                for body in bodies:
-                    await self._log().append(
-                        generation_kv_key(change.table), body, msg_id=f"restore-{restored}-{appended}"
-                    )
-                    appended += 1
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"the epoch change log could not be declared for its restore: {exc}"
+            ) from exc
+        if state.incarnation != restored:
+            return None
+        self._declared = state
+        return restored
+
+    async def finish_restore(
+        self, changes: Sequence[NotedChange], *, incarnation: str, lost: str, covered_from: int | None
+    ) -> int:
+        """append one record per change into the log :meth:`begin_restore` declared, then label it restored.
+
+        Each change is appended as the record a write would append: its distinct rows, split into runs
+        within the record bound, or the whole table. Only after the last append is the log labelled as
+        continuing ``lost`` from ``covered_from``, so a follower never carries its mark over to a partial
+        restore. Safe to run again after an interrupted run: every append carries a fresh id (the broker
+        would drop a repeated one inside its dedup window), and a record appended twice is evicted twice.
+
+        The restore is sized first, against the log's own bound: if what the log holds plus every record
+        would pass :data:`EPOCH_CHANGES_FILL_WARN_RATIO` of ``max_bytes``, nothing is appended.
+
+        :param changes: what the notes say changed, per table (:mod:`threetears.core.collections.change_notes`)
+        :ptype changes: Sequence[NotedChange]
+        :param incarnation: the log :meth:`begin_restore` declared
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param covered_from: the lost log's sequence from which the notes cover every epoch; ``None`` when
+            they vouch for none of it, so every follower of the lost log is behind
+        :ptype covered_from: int | None
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the restore would not fit with headroom; nothing was appended
+        :raises GenerationUnavailableError: when the log is not the one being restored, or cannot be written
+        """
+        state = await self._state()
+        if state is None or state.incarnation != incarnation or state.restoring != lost:
+            raise GenerationUnavailableError(
+                f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
+            )
+        records: list[tuple[str, bytes]] = []
+        for change in changes:
+            if change.whole_table:
+                bodies = [epoch_change_body(change.table, None)]
+            elif change.rows:
+                bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
+            else:
+                continue
+            records.extend((generation_kv_key(change.table), body) for body in bodies)
+        needed = sum(len(key) + len(body) + _RESTORED_RECORD_OVERHEAD for key, body in records)
+        if state.max_bytes and state.bytes + needed > state.max_bytes * EPOCH_CHANGES_FILL_WARN_RATIO:
+            raise RestoreTooLargeError(
+                f"the restore of {lost!r} needs {needed} bytes and the log holds {state.bytes} of {state.max_bytes}; "
+                f"it may fill at most {EPOCH_CHANGES_FILL_WARN_RATIO:.0%}"
+            )
+        attempt = uuid7().hex
+        try:
+            for index, (key, body) in enumerate(records):
+                await self._log().append(key, body, msg_id=f"restore-{incarnation}-{attempt}-{index}")
+            labelled = await self._log().label_restored(continues=(lost, covered_from))
         except KvError as exc:
             raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
-        self._declared = await self._state()
+        self._declared = labelled
+        return len(records)
+
+    async def restore_from_notes(
+        self, changes: Sequence[NotedChange], *, lost: str, covered_from: int | None
+    ) -> str | None:
+        """put a lost log back in one call: :meth:`begin_restore`, then :meth:`finish_restore`.
+
+        The keeper reads the notes between the two (so writers waiting for the log are not held up); this is
+        for a caller that already holds them.
+
+        :param changes: what the notes say changed, per table
+        :ptype changes: Sequence[NotedChange]
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param covered_from: the lost log's sequence from which the notes cover every epoch
+        :ptype covered_from: int | None
+        :return: the new log's incarnation; ``None`` when a log was already there
+        :rtype: str | None
+        :raises RestoreTooLargeError: when the restore would not fit with headroom
+        :raises GenerationUnavailableError: when the log cannot be created or written
+        """
+        restored = await self.begin_restore(lost)
+        if restored is None:
+            return None
+        await self.finish_restore(changes, incarnation=restored, lost=lost, covered_from=covered_from)
         return restored
 
     async def epoch_at(self, seq: int) -> EpochChange | None:

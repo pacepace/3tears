@@ -8,6 +8,22 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch, nats: a restored change log is labelled only once it is whole
+
+**Fixed (epoch, core):** a restore wrote "continues the lost log" when it declared the new log, before any record
+was appended, so a restore that stopped part-way (a full log, a NATS error, a lost lease) was taken as complete and
+a carried-over follower walked a partial log as current. Now the keeper declares the new log first, marked as being
+restored (`ChangeLogState.restoring`; writers waiting for the log append to it at once), reads and sizes the notes,
+appends them, and only then labels it (`NatsChangeLog.label_restored`). Until then followers of the lost log are
+behind. An unlabelled restore is done again in full by the next pass under fresh append ids
+(`EpochGenerationSource.begin_restore` / `finish_restore`; `restore_from_notes` runs both). A restore that would
+take the log past 75 % of `max_bytes` is refused (`RestoreTooLargeError`), said at ERROR and counted
+(`threetears_change_notes_restores_refused_total`), and its followers stay behind.
+
+**Changed (core):** the scrub runs on its own interval (`scrub_every`, a tenth of the fence), reads the log 64
+records at a time, and looks notes up through a new `(key_text, table_name)` index on each note table. A noted
+table whose key or invalidation column is not uuid, text, varchar or an integer gets no note trigger, with an ERROR.
+
 ### core: no save reads the change-note ring row, and the keeper empties by batched deletes
 
 **Changed (core):** the note trigger no longer reads the one-row ring table on every statement (one hot tablet

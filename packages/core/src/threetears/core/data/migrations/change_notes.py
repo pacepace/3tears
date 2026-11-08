@@ -23,6 +23,7 @@ from threetears.core.ddl.change_notes import (
     NOTE_PUT_FUNCTION,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
+    inexact_note_columns,
     note_function_name,
     note_trigger_sql,
     trigger_function_body,
@@ -49,6 +50,11 @@ _TRIGGERS_HERE = """
 SELECT c.relname AS table_name, g.tgname AS trigger_name
 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = current_schema() AND g.tgname::text = ANY($1::text[])
+"""
+
+_COLUMN_TYPES_HERE = """
+SELECT c.table_name::text AS table_name, c.column_name::text AS column_name, c.data_type::text AS data_type
+FROM information_schema.columns c WHERE c.table_schema = current_schema() AND c.table_name::text = ANY($1::text[])
 """
 
 _FUNCTION_BODIES = """
@@ -94,11 +100,22 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
         (str(row["table_name"]), str(row["trigger_name"]))
         for row in await store.query(_TRIGGERS_HERE, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
     }
+    types: dict[str, dict[str, str]] = {}
+    for row in await store.query(_COLUMN_TYPES_HERE, present):
+        types.setdefault(str(row["table_name"]), {})[str(row["column_name"])] = str(row["data_type"])
     names = [note_function_name(here, table) for table in present]
     bodies = {str(row["name"]): str(row["body"]) for row in await store.query(_FUNCTION_BODIES, notes_schema, names)}
     given: list[str] = []
     for table in present:
         each = noted[table]
+        refused = inexact_note_columns(types.get(table, {}), (*each.keys, *each.columns))
+        if refused:
+            log.error(
+                "a noted table gets no change-note trigger: a key or invalidation column's text form does not "
+                "name its value exactly (only uuid, text, varchar and integers do)",
+                extra={"extra_data": {"table": f"{here}.{table}", "columns": [f"{c} ({k})" for c, k in refused]}},
+            )
+            continue
         wanted = trigger_function_body(notes_schema=notes_schema, keys=each.keys, columns=each.columns)
         stale = bodies.get(note_function_name(here, table)) != wanted
         missing = [name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (table, name) not in triggers]

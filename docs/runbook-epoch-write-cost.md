@@ -94,6 +94,17 @@ declared p99 stays within a few milliseconds of the undeclared p99 at the most c
 table really has. Count writers per table, not per pod: on the platform every agent pod's write to a
 table is advanced by the hub's broker, so the hub's concurrent commits to one table are the writers.
 
+## The scrub's cost
+
+The keeper's scrub is not on any write's path. It runs every tenth of the fence (1 min at the 10 min
+default), on the keeper's replica only, and per run reads at most `scrub_batch` (1000) records from the
+change log, 64 at a time, plus, per note table in the coverage (two), one index lookup of the checked keys
+and one of whole-table notes, both led by the `(key_text, table_name)` index: a run's cost follows the
+epochs it checks, not how many notes the coverage holds. The index is one more entry per note on the write
+path; the recorded results below were taken before it was added (3tears 44216b89e). One query is not indexed: an epoch that names no rows
+(a whole-table or keys-unknown write) asks whether its table has any note, which stops at the first one and
+scans the note table only when there is none (the missing-note alert case).
+
 ## Recorded results
 
 ### The cached slot and batched-delete emptying, 2026-11-08 (3tears 44216b89e)

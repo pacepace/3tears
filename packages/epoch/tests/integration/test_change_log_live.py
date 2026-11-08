@@ -24,7 +24,7 @@ import pytest
 
 from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
-from threetears.core.exceptions import GenerationUnavailableError, L2LostError
+from threetears.core.exceptions import RestoreTooLargeError, GenerationUnavailableError, L2LostError
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
     EpochChangeRetention,
@@ -123,6 +123,40 @@ async def test_a_lost_log_is_put_back_from_notes_under_a_new_incarnation_continu
         assert await source.restore_from_notes(notes, lost=lost, covered_from=0) is None, (
             "a log that is there is never restored over"
         )
+
+
+async def test_a_restoring_log_continues_nothing_until_its_last_append_and_is_sized_first(
+    nats_container: str,
+) -> None:
+    async with _client(nats_container) as nc:
+        source = EpochGenerationSource(nc, change_retention=EpochChangeRetention(max_bytes=8192))
+        await source.current(_TABLE)
+        lost = (await source.log_state()).incarnation  # type: ignore[union-attr]
+        await nc.jetstream_context().delete_stream(f"KV_{nc.namespace}-{EPOCH_CHANGES_BUCKET}")
+        reader = EpochGenerationReader(nc)
+
+        restoring = await source.begin_restore(lost)
+        assert restoring is not None
+        state = await reader.log_state()
+        assert state is not None and state.restoring == lost and state.continues is None
+        assert await reader.continues(restoring) is None, "a follower is not carried over to it yet"
+        # a write meanwhile appends to the declared log at once
+        await source.advance_with_change(_TABLE, [ChangedRow(ids=["meanwhile"])])
+
+        too_many = [NotedChange(table=f"t{i}", rows=(ChangedRow(ids=["x" * 200]),)) for i in range(60)]
+        with pytest.raises(RestoreTooLargeError):
+            await source.finish_restore(too_many, incarnation=restoring, lost=lost, covered_from=0)
+        assert (await reader.log_state()).last_seq == 1, "nothing of the refused restore was appended"  # type: ignore[union-attr]
+
+        appended = await source.finish_restore(
+            [NotedChange(table=_TABLE, rows=(ChangedRow(ids=["m0"]),))],
+            incarnation=restoring,
+            lost=lost,
+            covered_from=0,
+        )
+        assert appended == 1
+        assert await reader.continues(restoring) == (lost, 0), "labelled only now"
+        assert (await reader.log_state()).restoring is None  # type: ignore[union-attr]
 
 
 async def test_a_full_log_refuses_and_its_fill_is_measured(nats_container: str) -> None:

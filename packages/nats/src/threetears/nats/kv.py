@@ -86,6 +86,7 @@ from threetears.nats.errors import (
 from threetears.nats import kv_watch
 from threetears.nats.change_log import (
     CHANGE_LOG_CONTINUES_METADATA,
+    CHANGE_LOG_RESTORING_METADATA,
     CHANGE_LOG_COVERED_FROM_METADATA,
     CHANGE_LOG_INCARNATION_METADATA,
     ChangeLogEntry,
@@ -3532,6 +3533,7 @@ class NatsChangeLog:
         incarnation: str | None = None,
         first_seq: int | None = None,
         continues: tuple[str, int | None] | None = None,
+        restoring: str | None = None,
     ) -> ChangeLogState:
         """create the log when absent, and say what it holds; a live log is kept as it is.
 
@@ -3550,6 +3552,9 @@ class NatsChangeLog:
         :param continues: for a restore, the lost log's incarnation and its sequence from which the restore's
             notes cover every epoch; ``None`` for that sequence when they cover none
         :ptype continues: tuple[str, int | None] | None
+        :param restoring: for a restore not yet finished, the lost log's incarnation; it continues nothing
+            until :meth:`label_restored`
+        :ptype restoring: str | None
         :return: what it holds
         :rtype: ChangeLogState
         :raises KvError: when it can be neither created nor read
@@ -3587,6 +3592,7 @@ class NatsChangeLog:
                             CHANGE_LOG_COVERED_FROM_METADATA: "" if continues[1] is None else str(continues[1]),
                         }
                     ),
+                    **({} if restoring is None else {CHANGE_LOG_RESTORING_METADATA: restoring}),
                 },
             )
 
@@ -3629,6 +3635,7 @@ class NatsChangeLog:
         max_bytes = info.config.max_bytes
         continues = metadata.get(CHANGE_LOG_CONTINUES_METADATA) or None
         covered = metadata.get(CHANGE_LOG_COVERED_FROM_METADATA) or ""
+        restoring = metadata.get(CHANGE_LOG_RESTORING_METADATA) or None
         return ChangeLogState(
             first_seq=int(info.state.first_seq or 0),
             last_seq=int(info.state.last_seq or 0),
@@ -3638,7 +3645,45 @@ class NatsChangeLog:
             continues=str(continues) if continues else None,
             covered_from=int(covered) if continues and covered.isdigit() else None,
             max_age=timedelta(seconds=float(info.config.max_age)) if info.config.max_age else None,
+            restoring=str(restoring) if restoring else None,
         )
+
+    async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState:
+        """say the restore is whole: the log now continues ``continues``, and is no longer being restored.
+
+        Written only after a restore's last append, so a follower carries its mark over only to a log that
+        holds everything the notes name. Idempotent.
+
+        :param continues: the lost log's incarnation and its sequence from which the notes cover every epoch
+        :ptype continues: tuple[str, int | None]
+        :return: what it holds after
+        :rtype: ChangeLogState
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the stream cannot be read or updated
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await self._call(lambda: js.stream_info(self._stream), "change log info")
+        except NatsNotFoundError as exc:
+            raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket) from exc
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} could not be read: {exc}") from exc
+        metadata = {
+            key: value for key, value in (info.config.metadata or {}).items() if key != CHANGE_LOG_RESTORING_METADATA
+        }
+        metadata[CHANGE_LOG_CONTINUES_METADATA] = continues[0]
+        metadata[CHANGE_LOG_COVERED_FROM_METADATA] = "" if continues[1] is None else str(continues[1])
+        updated = dataclasses.replace(info.config, metadata=metadata)
+        try:
+            await self._call(lambda: js.update_stream(updated), "change log label")
+        except APIError as exc:
+            raise KvError(f"change log {self._stream} could not be labelled restored: {exc}") from exc
+        except _BOUNDED_CALL_FAILURES as exc:
+            raise KvError(f"change log {self._stream} could not be labelled restored: {exc}") from exc
+        state = await self.state()
+        if state is None:
+            raise KvBucketNotFoundError(f"change log {self._stream} vanished as it was labelled", bucket=self._bucket)
+        return state
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int:
         """append one record under ``key``, and say the sequence the stream gave it.

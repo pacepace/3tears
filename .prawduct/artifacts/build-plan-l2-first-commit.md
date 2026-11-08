@@ -39,8 +39,12 @@ Owner decisions of 2026-11-08 (Pace), from the reports design `design-streaming-
 
 ## Chunks
 
-1. Core: `l2_first` module (declaration, protocols, saver, refiller, SQL epoch log), `ChangedRow.l3_pending`,
-   BaseCollection write/read/delete branches, `SchemaBackedCollection.l3_pages`.
+1. Core: `l2_first` module (declaration, protocols, saver, refiller), `ChangedRow.l3_pending`,
+   BaseCollection write/read/delete branches, `SchemaBackedCollection.l3_pages`. The SQL epoch log
+   (`SqlEpochLogStore`) this chunk first named was built and then replaced, 2026-11-08, by the L3 change
+   notes (`threetears.core.collections.change_notes`): every noted table's write leaves a note in its own
+   transaction, and the keeper puts a lost change log back from them. R-18 is met by the ring of note tables;
+   see docs/l2-first-operations.md.
 2. Epoch: `EpochGenerationSource` implements `L2FirstEpochs`; change-log fill gauge and warning.
 3. NATS: `held_bytes()` on the KV bucket and the fake.
 

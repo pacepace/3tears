@@ -8,6 +8,7 @@ from threetears.nats.errors import KvError
 
 __all__ = [
     "ConcurrentModificationError",
+    "RestoreTooLargeError",
     "CorruptCacheEntry",
     "DataLayerUnavailableError",
     "DataVersionNotReadyError",
@@ -29,6 +30,15 @@ class GenerationUnavailableError(Exception):
     A reader treats it as "cannot trust a cached absence": it neither serves a negative-cache
     marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
     advance leaves older markers valid over the write it just committed.
+    """
+
+
+class RestoreTooLargeError(GenerationUnavailableError):
+    """Raised when a lost change log's restore from the change notes would not fit the log with headroom.
+
+    The restore is not attempted: no record of it is appended and the log is not labelled as continuing
+    the lost one, so every follower of the lost log stays behind (said and counted) rather than walking a
+    partial log as current.
     """
 
 

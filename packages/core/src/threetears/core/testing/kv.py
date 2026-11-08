@@ -875,6 +875,7 @@ class FakeChangeLog:
         self._present = False
         self._incarnation = ""
         self._continues: tuple[str, int | None] | None = None
+        self._restoring: str | None = None
         self._entries: list[ChangeLogEntry] = []
         self._next_seq = 1
         self._max_bytes: int | None = None
@@ -883,6 +884,8 @@ class FakeChangeLog:
         self._seen_ids: dict[str, int] = {}
         self._watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
         self.unreachable: Exception | None = None
+        #: a test sets it to fail appends: called with each msg_id, it returns the error to raise, or None
+        self.refuse_append: Callable[[str], Exception | None] | None = None
 
     @property
     def bucket(self) -> str:
@@ -911,6 +914,7 @@ class FakeChangeLog:
         incarnation: str | None = None,
         first_seq: int | None = None,
         continues: tuple[str, int | None] | None = None,
+        restoring: str | None = None,
     ) -> ChangeLogState:
         """create the log when absent, and say what it holds; a live log is kept as it is.
 
@@ -926,6 +930,8 @@ class FakeChangeLog:
         :ptype first_seq: int | None
         :param continues: for a restore, the lost log's incarnation and the sequence its notes cover it from
         :ptype continues: tuple[str, int | None] | None
+        :param restoring: for a restore not yet finished, the lost log's incarnation
+        :ptype restoring: str | None
         :return: what it holds
         :rtype: ChangeLogState
         """
@@ -933,6 +939,7 @@ class FakeChangeLog:
         if not self._present:
             self._present = True
             self._continues = continues
+            self._restoring = restoring
             self._incarnation = incarnation or f"fake-{uuid7()}"
             self._max_bytes = max_bytes
             self._max_age = max_age
@@ -963,7 +970,23 @@ class FakeChangeLog:
             continues=None if self._continues is None else self._continues[0],
             covered_from=None if self._continues is None else self._continues[1],
             max_age=self._max_age,
+            restoring=self._restoring,
         )
+
+    async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState:
+        """say the restore is whole: the log continues ``continues`` and is no longer being restored.
+
+        :param continues: the lost log's incarnation and the sequence its notes cover it from
+        :ptype continues: tuple[str, int | None]
+        :return: what it holds after
+        :rtype: ChangeLogState
+        """
+        self._present_or_raise()
+        self._continues = continues
+        self._restoring = None
+        state = await self.state()
+        assert state is not None
+        return state
 
     @property
     def max_bytes(self) -> int | None:
@@ -998,6 +1021,8 @@ class FakeChangeLog:
         self._reachable()
         if not self._present:
             raise KvBucketNotFoundError(f"change log {self._bucket} is absent", bucket=self._bucket)
+        if self.refuse_append is not None and (refusal := self.refuse_append(msg_id)) is not None:
+            raise refusal
         if msg_id in self._seen_ids:
             return self._seen_ids[msg_id]
         size = len(key) + len(value) + _STORED_MESSAGE_OVERHEAD

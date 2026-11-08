@@ -16,6 +16,7 @@ __all__ = [
     "CHANGE_LOG_CONTINUES_METADATA",
     "CHANGE_LOG_COVERED_FROM_METADATA",
     "CHANGE_LOG_INCARNATION_METADATA",
+    "CHANGE_LOG_RESTORING_METADATA",
     "ChangeLogEntry",
     "ChangeLogState",
 ]
@@ -28,6 +29,11 @@ CHANGE_LOG_INCARNATION_METADATA: Final = "threetears_incarnation"
 #: follower whose mark is at or past it walks every restored record and has missed nothing
 CHANGE_LOG_CONTINUES_METADATA: Final = "threetears_continues"
 CHANGE_LOG_COVERED_FROM_METADATA: Final = "threetears_covered_from"
+
+#: the metadata key a log being restored names the lost incarnation under, from its declaration until the
+#: restore's last append: the continuation (:data:`CHANGE_LOG_CONTINUES_METADATA`) is written only then, so a
+#: follower never carries its mark over to a log that does not yet hold everything the notes name
+CHANGE_LOG_RESTORING_METADATA: Final = "threetears_restoring"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +51,8 @@ class ChangeLogState:
         epoch, so a follower whose mark is at or past it misses nothing by walking the restored log;
         ``None`` when the notes cover none of it, or the log continues none
     :ivar max_age: how long the log keeps a record, as declared; ``None`` when unbounded or not said
+    :ivar restoring: for a log whose restore has not finished, the incarnation of the lost log it is being
+        restored from; ``None`` otherwise. Such a log continues nothing yet
     """
 
     first_seq: int
@@ -55,6 +63,7 @@ class ChangeLogState:
     continues: str | None = None
     covered_from: int | None = None
     max_age: timedelta | None = None
+    restoring: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -50,6 +50,7 @@ __all__ = [
     "NOTE_WHOLE_SETTING",
     "RING_TABLE",
     "change_notes_ddl",
+    "inexact_note_columns",
     "note_function_name",
     "slot_max_age",
     "note_table",
@@ -111,6 +112,25 @@ def slot_max_age(fence: timedelta) -> timedelta:
     return fence / 2
 
 
+#: the column types whose text form a note carries exactly as an epoch record names the value: a note's
+#: key and invalidation columns are written as ``column::text``, and anything else (bool, timestamp, numeric,
+#: float, json, char padding ...) can name the same value in another spelling than the record
+_EXACT_NOTE_TYPES: Final = frozenset({"uuid", "text", "character varying", "smallint", "integer", "bigint"})
+
+
+def inexact_note_columns(types: dict[str, str], columns: Sequence[str]) -> list[tuple[str, str]]:
+    """the columns among ``columns`` whose type's text form does not round-trip exactly, with their types.
+
+    :param types: each column's ``information_schema`` ``data_type``
+    :ptype types: dict[str, str]
+    :param columns: the key and invalidation columns a note would carry
+    :ptype columns: Sequence[str]
+    :return: ``(column, type)`` for each refused column; a column the table does not have is refused too
+    :rtype: list[tuple[str, str]]
+    """
+    return [(column, types.get(column, "missing")) for column in columns if types.get(column) not in _EXACT_NOTE_TYPES]
+
+
 def note_table(index: int) -> str:
     """the name of the ring's note table at ``index``.
 
@@ -147,6 +167,8 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "table_name TEXT NOT NULL, "
         # NULL keys: the note is of the whole table (a truncate, a file load)
         "keys TEXT[], "
+        # the keys joined by chr(31), the scrub's lookup: led by the (key_text, table_name) index
+        "key_text TEXT, "
         "columns JSONB, "
         # the clock at the insert, not the transaction's start: a late note is told by it
         "noted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), "
@@ -154,8 +176,14 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "ring_read BOOLEAN)"
         for index in range(NOTE_RING_SIZE)
     )
+    indexes = tuple(
+        f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_key')} "
+        f"ON {owner}.{quote_identifier(note_table(index))} (key_text, table_name)"
+        for index in range(NOTE_RING_SIZE)
+    )
     return (
         *tables,
+        *indexes,
         f"CREATE TABLE IF NOT EXISTS {ring} ("
         "id SMALLINT PRIMARY KEY CHECK (id = 1), "
         "current_ring SMALLINT NOT NULL, "
@@ -200,8 +228,8 @@ def _put_function_sql(schema: str) -> str:
         keyword = "IF" if index == 0 else "ELSIF"
         inserts.append(
             f"  {keyword} ring = {index} THEN\n"
-            f"    INSERT INTO {table} (table_name, keys, columns, ring_read) "
-            "VALUES (noted_table, noted_keys, noted_columns, read_ring);\n"
+            f"    INSERT INTO {table} (table_name, keys, key_text, columns, ring_read) "
+            "VALUES (noted_table, noted_keys, array_to_string(noted_keys, chr(31)), noted_columns, read_ring);\n"
         )
     return (  # one line: plpgsql source; each interpolated piece is a fixed name or pattern this module builds
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_RING_FUNCTION)}("
