@@ -455,7 +455,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when writer_promotion's result gained stopping_line (the declared stopping rule's line),
 #: and when scope_export's help and export_run_ids' description came to say named runs past the ceiling page as the
 #: scope does, where two or more were refused.
-_EVALS_BYTES = "b014d6e25c053873f4d67c2beb06fc0b1edefc456290ba651bf2fef6fe60160f"
+#: The evals tool moved again when campaign_export joined it: a read action that pages a campaign's closure, the
+#: documents, profile and manifest the writer-case mint reads.
+_EVALS_BYTES = "393d913010580306388d07bc3e100dca4f0929af381106ecd91592101b36ee8b"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
