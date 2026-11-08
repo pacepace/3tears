@@ -550,8 +550,8 @@ async def test_each_accepted_document_reads_back_whole_and_its_static_page_runs_
 async def test_each_accepted_document_s_static_page_as_the_report_read_reads_it_passes_the_render_checks(
     name: str, tmp_path: Path
 ) -> None:
-    """``scripts/check.py`` at 1200, 688 and 390 px, light and dark, on the static page of each accepted run, replayed
-    and stored, then read back as the report read reads a stored document (``read_report_doc``, then the static
+    """``scripts/check.py`` at 1200, 1104, 688 and 390 px, light and dark, on the static page of each accepted run,
+    replayed and stored, then read back as the report read reads a stored document (``read_report_doc``, then the static
     writer ``campaign_report_html`` calls for a document's page)."""
     reason = chromium_unavailable()
     if reason is not None:
@@ -562,7 +562,7 @@ async def test_each_accepted_document_s_static_page_as_the_report_read_reads_it_
     checked, runs = render_checked(page, tmp_path / "screenshots")
 
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert len(runs) == 6 and all(line.startswith("ok") for line in runs), checked.stdout
-    # every render at its own width, the host frame (688 px) among them, overflowing none, light and dark
-    widths = (1200, 1200, 688, 688, 390, 390)
+    assert len(runs) == 8 and all(line.startswith("ok") for line in runs), checked.stdout
+    # every render at its own width, the host's frames (1104 and 688 px) among them, overflowing none, light and dark
+    widths = (1200, 1200, 1104, 1104, 688, 688, 390, 390)
     assert all(f" {w}px " in run and f"scrollWidth={w} " in run for w, run in zip(widths, runs, strict=True))

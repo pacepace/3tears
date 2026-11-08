@@ -32,8 +32,17 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.report.md_parts import code_span
-from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.html_parts import check_header_links, grid_html
+from threetears.evals.analysis.report.model import (
+    CampaignReport,
+    DisclosureBlock,
+    ReportBlock,
+    TableBlock,
+    TableCell,
+    TableColumn,
+)
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
+from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.metrics import goal_check_measure
@@ -430,6 +439,101 @@ def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form:
         assert re.search(
             r'<th[^>]*><a href="#g-check-field-accuracy-check" title="[^"]*">Field accuracy check</a></th>', body
         )
+
+
+def _laid_out_table(body: str, name: str) -> str:
+    """The table ``name`` as an HTML page lays it out, from its block's opening to its table's end."""
+    start = body.index(f'data-table="{name}"')
+    return body[start : body.index("</table>", start)]
+
+
+def test_a_stored_two_arm_document_s_turned_table_heads_each_row_and_links_its_check() -> None:
+    # toyhost_doc, read stored as Discodon reads its draft: two arms on more figures than arms, so Every arm by measure
+    # is turned a figure per row, and its check is named only as a row's label there. Each label heads its row
+    # (scope="row"), so the check's links its Checks entry as a column header naming it does (0.94.0 linked none: the
+    # label was a <td>, and the Checks list had no link to it on the stored page).
+    body, page = _written("html")
+    assert page.doc_page is not None and len(page.doc_page.options.rows) == 2, "the control: two arms"
+    table = _laid_out_table(body, "arms_by_measure")
+    assert '<th scope="col">Measure</th>' in table, "the control: the table is turned, a figure per row"
+    rows = re.findall(r"<tr>(.*?)</tr>", table.split("<tbody>", 1)[1])
+    assert rows and all(row.startswith('<th scope="row"') for row in rows), rows
+    assert re.search(
+        r'<th scope="row"[^>]*><a href="#g-check-field-accuracy-check" title="[^"]*">Field accuracy check</a></th>',
+        table,
+    ), table
+
+
+#: A check named with a hyphenated word, as Discodon's stored draft names "the reply-delivery check".
+_HYPHENATED_CHECK = "Reply-delivery check"
+
+
+def test_a_hyphenated_check_name_links_its_entry_as_a_row_s_label_and_as_a_column_s_header() -> None:
+    # A cell holds a hyphenated word whole (``span.id``), in a turned table's row label and in a pinned column's
+    # header; the check's link is made on the name through it, as on a header holding no span.
+    turned = TableBlock(
+        section="contrasts",
+        name="arms_by_measure",
+        title="Every arm by measure",
+        columns=[
+            TableColumn(key="measure", header="Measure"),
+            TableColumn(key="arm:0", header="P · control"),
+            TableColumn(key="arm:1", header="A · candidate"),
+        ],
+        rows=[
+            {
+                "measure": TableCell(value=_HYPHENATED_CHECK),
+                "arm:0": TableCell(value="70%"),
+                "arm:1": TableCell(value="80%"),
+            }
+        ],
+        order="a figure per row",
+        total_rows=1,
+    )
+    headed = TableBlock(
+        section="contrasts",
+        name="probe",
+        title="Probe",
+        columns=[
+            TableColumn(key="first", header=_HYPHENATED_CHECK),
+            TableColumn(key="rate", header=f"{_HYPHENATED_CHECK} (%)"),
+        ],
+        rows=[{"first": TableCell(value="All cases"), "rate": TableCell(value=80.0)}],
+        order="as built",
+        total_rows=1,
+    )
+    markup = grid_html(turned) + grid_html(headed)
+    assert '<span class="id">Reply-delivery</span> check' in markup, "the control: the name's word is held whole"
+    linked = check_header_links(markup, [_HYPHENATED_CHECK])
+    links = re.findall(r'<th[^>]*><a href="#g-check-reply-delivery-check" title="[^"]*">(.*?)</a></th>', linked)
+    assert links == [
+        '<span class="id">Reply-delivery</span> check',
+        '<span class="id">Reply-delivery</span> check',
+        f"{_HYPHENATED_CHECK} (%)",
+    ], links
+
+
+@pytest.mark.parametrize("form", ["markdown", "html"])
+def test_every_measure_a_written_page_s_full_results_name_starts_with_a_capital(form: str) -> None:
+    # toyhost_doc's judged dimension has no label, so its name was the humanized key ("extraction layout fidelity")
+    # beside "Pass rate" and the engine's labels: every measure name, as a row label or a column header, starts with
+    # a capital whatever its source.
+    body, page = _written(form)
+    assert page.doc_page is not None
+    named = [
+        name
+        for table in page.doc_page.full_results
+        for name in [
+            *(column.header for column in table.columns if column.key.startswith(("measure:", "judged:"))),
+            *(row["measure"].text for row in table.rows if "measure" in row),
+        ]
+    ]
+    named += [
+        row["measure"].text for table in page.doc_page.full_results for row in laid_out(table).rows if "measure" in row
+    ]
+    assert "extraction layout fidelity" in [name.casefold() for name in named], "the control: the judged dimension"
+    assert [name for name in named if name[:1].isalpha() and not name[:1].isupper()] == []
+    assert "extraction layout fidelity" not in body
 
 
 def test_the_text_the_judge_reads_carries_no_checks_list() -> None:

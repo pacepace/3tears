@@ -87,6 +87,7 @@ from packages.evals.tests.factories import fixture_variant_key, make_campaign, m
 from packages.evals.tests.page_contract_support import links, parsed
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
 from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked, rendered, report_page
+from packages.evals.tests.report_shapes_support import CORRECT_BAR, ArmTrials, AspectTrials, shape_of
 
 #: The narrowest frame the host gives the page, and the page's side gutters and its table frame's border.
 FRAME_PX = 688
@@ -381,6 +382,89 @@ def test_a_scrolling_frame_shows_its_overflow_and_keeps_its_first_column_in_view
     assert pinned["background"].startswith("var("), "a pinned column is opaque, or the scrolled cells show through"
     (header,) = [rule for rule in rules if rule.selector == "th" and not rule.at and "white-space" in rule.body]
     assert header.declarations()["white-space"] == "normal", "a header wraps rather than widen its column"
+
+
+def test_a_frame_fades_its_right_edge_over_every_cell_while_more_of_its_table_lies_past_it() -> None:
+    """Discodon's 0.94.0 pass: the Arms table at 688 px and a code-only scorecard at 688 and 1104 px were cut at their
+    frame's edge with no cue, since the frame's shadow is painted under its cells and a header's or a highlighted row's
+    background hides it. The frame's own scroll position drives a fade of its right edge, a mask over every cell: none
+    on a frame that fits (its timeline is inactive, so no frame of the fade applies), the fade until the last of the
+    scroll, none at its end. The shadow stays under the cells for a browser without scroll-driven animations."""
+    rules = _rules(_style(_served()["doc"]))
+    (frame,) = [rule for rule in rules if rule.selector == ".tbl" and not rule.at]
+    declared = frame.declarations()
+    assert not [name for name in declared if name.startswith(("mask", "-webkit-mask"))], "a frame that fits has no cue"
+    assert declared["animation-timeline"] == "scroll(self inline)", "the frame's own scroll drives it, no script"
+    name = declared["animation"].split()[0]
+    assert {"linear", "both"} <= set(declared["animation"].split()[1:])
+    steps = {rule.selector: rule.declarations() for rule in rules if rule.at == f"@keyframes {name}"}
+    assert steps, "the control: the fade's keyframes are on the page"
+    (end,) = [said for selector, said in steps.items() if "100%" in selector.split(",")]
+    assert end == {"mask-image": "none"}, "scrolled to its end, the frame shows all of its table"
+    before = [(selector, said) for selector, said in steps.items() if "100%" not in selector.split(",")]
+    assert "from" in ",".join(selector for selector, _ in before).split(","), "from the start of the scroll"
+    for _, said in before:
+        fade = said["mask-image"]
+        assert fade.startswith("linear-gradient(to left,transparent"), "the right edge fades out, over every cell"
+
+
+def test_a_cell_of_words_wraps_at_its_spaces_and_a_number_or_an_id_holds_its_line() -> None:
+    """Fit first: a table narrows to its frame by wrapping its cells of words at their spaces before it scrolls (the
+    code-only scorecard and every written-report table fit a host's 1104 px frame so). A number column, an id and a
+    pill hold their line; a hyphenated word is held whole in every cell, not only a pinned one; inside a frame that
+    scrolls anyway a cell keeps its line, as wrapping there would only crush its column, but for prose and a glyph's
+    figure. An interval glyph gives way to the frame between a floor and its full width."""
+    rules = _rules(_style(_served()["campaign"]))
+    by = {(rule.at, rule.selector): rule.declarations() for rule in rules}
+    assert by[("", "th,td")].get("white-space", "normal") == "normal", "a cell of words wraps"
+    assert by[("", "td.num")] == {"white-space": "nowrap"}, "a number column holds its line"
+    assert by[("", "td.r")] == {"white-space": "nowrap"}
+    assert by[("", ".pill")]["white-space"] == "nowrap" and by[("", ".tbl .id")] == {"white-space": "nowrap"}
+    scrolling = by[("@container scroll-state(scrollable:x)", ".tbl td:not(.wrap,.glyph,:first-child)")]
+    assert scrolling == {"white-space": "nowrap"}
+    assert "white-space" not in by[("", "td.glyph")], "a glyph's figure wraps under its glyph"
+    glyph = by[("", "svg.viz-glyph")]
+    assert (glyph["width"], glyph["max-width"], glyph["min-width"]) == ("7.5em", "100%", "4.5em")
+    for (_, selector), said in by.items():
+        if re.search(r"(^|[\s,])(td|th)\b", selector) and "unbroken" not in selector:
+            assert said.get("overflow-wrap", "normal") == "normal", selector
+            assert said.get("word-break", "normal") == "normal", selector
+    held = table_html(
+        TableBlock(
+            section="contrasts",
+            name="held",
+            title="Held",
+            columns=[TableColumn(key="key", header="Stratum"), TableColumn(key="reading", header="Reading")],
+            rows=[{"key": TableCell(value="All cases"), "reading": TableCell(value="Failed-reply notices")}],
+            order="as read",
+            total_rows=1,
+        )
+    )
+    assert '<td><span class="id">Failed-reply</span> notices</td>' in held, held
+
+
+def test_a_row_s_label_heads_its_row_and_reads_as_a_body_cell() -> None:
+    """A turned Every arm by measure heads each row with its figure (``<th scope="row">``), which a check's header
+    link reaches; it reads as the body cell it was: the header row's look is the header row's alone."""
+    page = _served()["doc"]
+    rules = _rules(_style(page))
+    by = {(rule.at, rule.selector): rule.declarations() for rule in rules}
+    body = by[("", "tbody th")]
+    assert body == {
+        "font-weight": "inherit",
+        "color": "inherit",
+        "font-size": "inherit",
+        "text-transform": "none",
+        "letter-spacing": "normal",
+        "background": "none",
+        "min-width": "0",
+    }
+    assert ("", ".tbl th:first-child") not in by and by[("", ".tbl thead th:first-child")][
+        "background"
+    ] == "var(--sunk)"
+    assert by[("", ".tbl.keys-2 thead th:nth-child(2)")]["background"] == "var(--sunk)"
+    turned = page.split('data-table="arms_by_measure"', 1)[1].split("</table>", 1)[0]
+    assert '<th scope="row"' in turned and "<td" in turned, "the control: the page's turned table heads its rows"
 
 
 #: A table's scrolling frame: its classes, and the widths its pinned columns are laid out at, when it sets any.
@@ -959,7 +1043,7 @@ def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp
     good = tmp_path / "good.html"
     good.write_text(_kairo_campaign_html(), encoding="utf-8")
     checked, runs = render_checked(good, tmp_path / "shots")
-    assert checked.returncode == 0 and len(runs) == 6, checked.stdout + checked.stderr
+    assert checked.returncode == 0 and len(runs) == 8, checked.stdout + checked.stderr
     crushed = tmp_path / "crushed.html"
     crushed.write_text(
         _kairo_campaign_html().replace(
@@ -969,6 +1053,26 @@ def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp
     )
     checked, runs = render_checked(crushed, tmp_path / "shots")
     assert checked.returncode == 1 and "crushed:" in checked.stdout, checked.stdout
+
+
+@pytest.mark.integration
+def test_the_render_check_fails_a_frame_with_no_cue_and_a_first_screen_at_two_measures(tmp_path: Path) -> None:
+    """``scripts/check.py`` passes Kairo's written report, and fails it with its frames' fade taken away (a table
+    overflows its frame at 688 px with no cue) and with its masthead let run the page's width (the first screen at two
+    measures, as at 0.94.0)."""
+    _browser()
+    good = tmp_path / "good.html"
+    good.write_text(_served()["doc"], encoding="utf-8")
+    checked, runs = render_checked(good, tmp_path / "shots")
+    assert checked.returncode == 0 and len(runs) == 8, checked.stdout + checked.stderr
+    for name, rule, said in (
+        ("uncued", ".tbl{animation:none!important}", "uncued:"),
+        ("wide", ".mast{max-width:none!important}", "measures:"),
+    ):
+        bad = tmp_path / f"{name}.html"
+        bad.write_text(_served()["doc"].replace("</style>", f"{rule}</style>", 1), encoding="utf-8")
+        checked, _ = render_checked(bad, tmp_path / "shots")
+        assert checked.returncode == 1 and said in checked.stdout, checked.stdout
 
 
 # =============================================================================
@@ -1007,8 +1111,9 @@ def _keyed_table(keys: list[str], *, key_columns: int = 1, figures: int = 6, nam
 
 def test_a_hyphenated_id_in_a_pinned_cell_is_one_word_and_only_its_text_is_read() -> None:
     """A pinned cell sets each hyphenated word of its text as one word (``span.id``), ``long`` past what the floor
-    holds; one past any cap, a link's ``href`` and a code span are left as they are, and so is every column but the
-    pinned one. The frame gives a column holding a long id the width that holds it whole (``--id1``)."""
+    holds; one past any cap, a link's ``href`` and a code span are left as they are. A column past the pinned one,
+    whose words now wrap at their spaces, holds its ids whole alike, its links as built. The frame gives a column
+    holding a long id the width that holds it whole (``--id1``)."""
     table = _keyed_table([SHORT_ID, f"\u25b8 {LONG_ID}", TOO_LONG_ID, "`a-b-c`", "All cases"]).model_copy(
         update={
             "columns": [*_keyed_table([]).columns[:1], TableColumn(key="arm", header="Arm")],
@@ -1032,8 +1137,8 @@ def test_a_hyphenated_id_in_a_pinned_cell_is_one_word_and_only_its_text_is_read(
     assert firsts[:2] == [f'<span class="id">{SHORT_ID}</span>', f'\u25b8 <span class="id long">{LONG_ID}</span>']
     assert firsts[2] == TOO_LONG_ID, "past any cap, an id wraps after its hyphens"
     assert firsts[3] == "<code>a-b-c</code>" and firsts[4] == "All cases"
-    # The column past the pinned one is left as built: its link and its text.
-    assert markup.count('<a href="#case-deepseek-v4-1-flash">deepseek-v4.1-flash</a>') == 5
+    # The column past the pinned one keeps its link as built, its id held whole inside it.
+    assert markup.count('<a href="#case-deepseek-v4-1-flash"><span class="id long">deepseek-v4.1-flash</span></a>') == 5
     widths = _frame_style(page, "probe")
     assert set(widths) == {"--id1"}, widths
     assert 8 <= float(widths["--id1"].removesuffix("rem")) < 14
@@ -1169,3 +1274,147 @@ def test_no_pinned_id_breaks_after_its_hyphen_in_a_host_s_frame_and_one_too_long
         assert frame["scrolls"] and drawn["page"] == at, (at, frame)
         assert set(frame["broken"]) == broken, (at, frame)
         assert frame["keys"][0] <= 224.5, (at, frame)
+
+
+# =============================================================================
+# Fit first, then a cue; a long label in three lines; a nav link on one line
+# =============================================================================
+
+#: An aspect's label at length, with no short name declared: Discodon's SearXNG campaigns'.
+_LONG_LABEL = "research judgement on SearXNG search with Extract page text"
+
+
+@cache
+def _long_label_page() -> str:
+    """A measurement of one arm on one aspect labelled at length, read on its pass rate, two goal checks, a judge's
+    two dimensions, cost and turn time: the many-column code-only scorecard Discodon's SearXNG campaigns draw."""
+    scores = {
+        "answer.correct": [1 if case < 15 else 0 for case in range(20)],
+        "answer.clear": [5 if case < 9 else 3 for case in range(20)],
+    }
+    shape = shape_of(
+        "SearXNG research check",
+        [
+            AspectTrials(
+                _LONG_LABEL,
+                [ArmTrials("deepseek-v4.1-flash", k=3, passing=14, cost=0.0027, latency_ms=900.0, scores=scores)],
+                margin=None,
+                bars=(CORRECT_BAR,),
+            )
+        ],
+        control=False,
+        question="How well does it research?",
+    )
+    return campaign_report_html(shape.page())
+
+
+def test_a_long_pinned_label_gets_the_width_that_sets_it_in_three_lines() -> None:
+    """Discodon's 0.94.0 pass: a code-only scorecard's aspect, a 59-character label with no short name, set in five
+    lines at 688 px, its column held at the floor. A pinned label the floor would set in more than three lines gives
+    its column the width that sets it in three (``--lines1``), up to the cap, as the column's floor, which the columns
+    past it never crush; a short one leaves the floor as it is."""
+    page = _long_label_page()
+    widths = _frame_style(page, "scorecard")
+    px = float(widths["--lines1"].removesuffix("rem")) * 16
+    assert 8 * 16 < px <= min(14 * 16, 0.35 * FRAME_PX), widths
+    # At the kit's table text, a generous 7.8 px a character, the label sets in at most three lines at that width.
+    per_line, lines, used = int((px - 2 * 11.2) / 7.8), 0, 0
+    for word in _LONG_LABEL.split():
+        if lines and used + 1 + len(word) <= per_line:
+            used += 1 + len(word)
+        else:
+            lines, used = lines + 1, len(word)
+    assert lines <= 3, (px, per_line, lines)
+    rules = _rules(_style(page))
+    (floor,) = [rule for rule in rules if "--lines1" in rule.selector]
+    assert floor.declarations() == {"min-width": "min(var(--lines1),35vw)"}
+    assert _specificity(floor.selector) > _specificity(".tbl :is(th,td):first-child"), "it wins over the floor"
+    assert "--lines1" not in _frame_style(report_page([_keyed_table(["All cases", SHORT_ID])]), "probe")
+
+
+def test_a_nav_link_is_one_line_cut_with_an_ellipsis() -> None:
+    """Discodon's 0.94.0 pass: an aspect's full label took a nav line of its own at 688 px. Each nav link is one line,
+    cut with an ellipsis where it is longer than its cap; the whole label is the heading of the fold it lands on (a
+    label is a host's text, which no attribute carries)."""
+    page = _long_label_page()
+    by = {(rule.at, rule.selector): rule.declarations() for rule in _rules(_style(page))}
+    link = by[("", "nav a")]
+    assert (link["white-space"], link["overflow"], link["text-overflow"]) == ("nowrap", "hidden", "ellipsis")
+    assert link["max-width"].startswith("min(100%,"), link
+    nav = page[page.index("<nav>") : page.index("</nav>")]
+    assert f">{html.escape(_LONG_LABEL)}</a>" in nav and "title=" not in nav
+
+
+def test_a_fold_s_summary_never_ends_a_line_on_its_separator() -> None:
+    """Discodon's 0.94.0 pass at 688 px: an aspect's fold heading wrapped after its "·", which ended its line. The
+    separator is bound to the words after it by a no-break space, so a line breaks before it, never after."""
+    page = _long_label_page()
+    counts = re.findall(r'<span class="count">(.*?)</span>', page)
+    assert counts, "the control: the page's folds count what they hold"
+    assert all(count.startswith("· ") for count in counts), counts
+
+
+#: Every table frame a page draws in sight once its folds are open: its table's name, how wide its table is, how wide
+#: the frame shows it, and whether its right edge fades, at its start and scrolled to its end.
+_FRAMES_PROBE = """async (names) => {
+  const frame = () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+  document.querySelectorAll('details').forEach(d => { d.open = true; });
+  await frame();
+  const out = [];
+  for (const f of document.querySelectorAll('.tbl')) {
+    const name = f.closest('[data-table]')?.dataset.table;
+    if (!f.offsetParent || f.clientWidth <= 2 || (names.length && !names.includes(name))) continue;
+    const faded = () => getComputedStyle(f).maskImage !== 'none';
+    f.scrollLeft = 0; await frame(); const start = faded();
+    f.scrollLeft = f.scrollWidth; await frame(); const end = faded();
+    f.scrollLeft = 0;
+    out.push({table: name, scroll: f.scrollWidth, client: f.clientWidth, start, end});
+  }
+  return out;
+}"""
+
+
+@pytest.mark.integration
+def test_the_scorecard_and_every_written_report_table_fit_a_1104_px_frame(tmp_path: Path) -> None:
+    """Discodon's 0.94.0 pass: a code-only scorecard was cut at its frame's edge at 1104 px as well as 688. Fit first:
+    at 1104 px the many-column scorecard and every table of a written report fit their frames, their words wrapped."""
+    _browser()
+    pages = {"scorecard": (_long_label_page(), ["scorecard"]), "doc": (_served()["doc"], [])}
+    for name, (page, tables) in pages.items():
+        path = tmp_path / f"{name}.html"
+        path.write_text(page, encoding="utf-8")
+        frames, errors = rendered(path, f"() => ({_FRAMES_PROBE})({json.dumps(tables)})", width=1104)
+        assert not errors, errors
+        assert frames, f"the control: {name} draws its tables"
+        over = [frame for frame in frames if frame["scroll"] > frame["client"] + 1]
+        assert over == [], (name, over)
+        assert not [frame for frame in frames if frame["start"] or frame["end"]], "a frame that fits shows no cue"
+
+
+@pytest.mark.integration
+def test_a_frame_that_still_overflows_fades_its_edge_until_it_is_scrolled_to_its_end(tmp_path: Path) -> None:
+    """At 688 px a written report's arms key and its every corrected comparison still overflow: each fades its right
+    edge, over its header and every row, until it is scrolled to its end; a frame that fits shows none."""
+    _browser()
+    path = tmp_path / "doc.html"
+    path.write_text(_served()["doc"], encoding="utf-8")
+    frames, errors = rendered(path, f"() => ({_FRAMES_PROBE})([])", width=FRAME_PX)
+    assert not errors, errors
+    over = [frame for frame in frames if frame["scroll"] > frame["client"] + 1]
+    assert over, "the control: a table overflows its frame at 688 px"
+    assert all(frame["start"] and not frame["end"] for frame in over), over
+    assert not [frame for frame in frames if frame not in over and (frame["start"] or frame["end"])]
+
+
+@pytest.mark.integration
+def test_a_long_aspect_label_sets_in_at_most_three_lines_in_the_scorecard_at_688_px(tmp_path: Path) -> None:
+    _browser()
+    path = tmp_path / "scorecard.html"
+    path.write_text(_long_label_page(), encoding="utf-8")
+    probe = """() => { const cell = document.querySelector('[data-table="scorecard"] tbody tr > :first-child');
+      const range = document.createRange(); range.selectNodeContents(cell);
+      return {text: cell.textContent.trim(),
+              lines: new Set([...range.getClientRects()].filter(r => r.width).map(r => Math.round(r.top))).size}; }"""
+    drawn, errors = rendered(path, probe, width=FRAME_PX)
+    assert not errors, errors
+    assert drawn["text"] == _LONG_LABEL and drawn["lines"] <= 3, drawn

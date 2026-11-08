@@ -328,7 +328,7 @@ def _missing_contrasts(context: ChartContext, contrasts: Sequence[Contrast]) -> 
     held = {(contrast.arm, contrast.measure) for contrast in contrasts}
     kinds = {contrast.measure: contrast.kind for contrast in context.report_input.contrasts}
     missing = [
-        f"{context.look.arm(arm).name}, {measure_words(context.report_input, key, kind=kinds.get(key))}"
+        f"{context.look.arm(arm).name}, {measure_words(context.report_input, key, kind=kinds.get(key), prose=True)}"
         for key in context.query.measures
         for arm in context.arm_order(arm for arm in asked_arms if arm != control.id)
         if (arm, key) not in held
@@ -687,7 +687,7 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
     named = COMPARE_NOTE.format(
         first=_arm_name(context, first),
         second=_arm_name(context, second),
-        measure=money_words(context.report_input, key, drawn),
+        measure=money_words(context.report_input, key, drawn, prose=True),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
     return changes, drawn, (named, *basis, *narrow_notes(context))
@@ -761,7 +761,7 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     return PAIRED_BASIS_TEMPLATE.format(
         paired=_paired_cases(context, row, candidate),
         arm=_arm_name(context, candidate),
-        measure=measure_words(context.report_input, key),
+        measure=measure_words(context.report_input, key, prose=True),
         corrected=correction_words(context.report_input, contrast),
     )
 
@@ -882,7 +882,7 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
         changes = [_with_group(change, None) for change in changes]
     crossed = LEVERS_INTERACTION_NOTE if any(isinstance(row.item, InteractionRow) for row in rows) else ""
     changes, drawn = _in_one_form(context, [key], changes, drawn)
-    note = LEVERS_NOTE.format(measure=money_words(context.report_input, key, drawn), interactions=crossed)
+    note = LEVERS_NOTE.format(measure=money_words(context.report_input, key, drawn, prose=True), interactions=crossed)
     return changes, drawn, (f"{note} {LEVERS_READ_NOTE}",)
 
 

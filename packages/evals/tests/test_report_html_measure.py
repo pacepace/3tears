@@ -13,7 +13,12 @@ import re
 import pytest
 
 from threetears.evals.analysis import report_html
+from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.html import doc_page_html
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.kernel.report_doc import ReportDoc
 from packages.evals.tests.g2_support import g2_report
+from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 
 #: The prose blocks the page lays out: paragraphs (the basis and verdict lines among them), list items, a disclosure
 #: and a caveat.
@@ -26,6 +31,7 @@ _READABLE = range(45, 81)
 def _rules(page: str) -> dict[str, dict[str, str]]:
     """Each selector the page's stylesheet names, with every declaration any rule gives it."""
     style = page.split("<style>", 1)[1].split("</style>", 1)[0]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
     style = re.sub(r"@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", style)
     rules: dict[str, dict[str, str]] = {}
     for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", style):
@@ -72,3 +78,28 @@ def test_tables_and_figures_keep_the_pages_width(page: str) -> None:
 def test_the_stylesheet_reader_sees_a_cap_that_is_missing(page: str) -> None:
     page = page.replace("max-width: 78ch;", "")
     assert "max-width" not in _rules(page).get("p", {})
+
+
+#: A written report's first screen, read top to bottom: its masthead, the callouts under it (a draft's line among
+#: them), its headline, its lede and its confidence, each by the rule that sets its width.
+_TOP_BLOCK = (".mast", ".callout", ".bluf>h1", ".bluf .lede", ".flag")
+
+
+def test_a_written_report_s_first_screen_reads_at_one_measure_and_its_cards_at_the_page_s_width() -> None:
+    """Discodon's 0.94.0 pass at 1104 px: the masthead ran the page's width, the draft's line stopped at 78ch, the
+    headline ran uncapped, and the lede and the confidence stopped at the prose column, four measures in one block.
+    Each takes the prose column (``--col``); the decision cards and the options table keep the page's width."""
+    name = "prototype3/kairo"
+    doc = build(
+        ReportDoc.model_validate(converted_doc(name)),
+        ReportInput.model_validate(snapshot_of(name).report_input),
+        strict=True,
+    )
+    # Drawn as a draft, so its page carries the draft's line under the masthead.
+    page = doc_page_html(doc.model_copy(update={"draft": True}))
+    assert '<p class="callout warn" data-part="draft">' in page and "<h1>" in page, "the control: a draft's top block"
+    rules = _rules(page)
+    for selector in _TOP_BLOCK:
+        assert rules.get(selector, {}).get("max-width") == "var(--col)", (selector, rules.get(selector))
+    for selector in (".decision", ".decision>div", ".tbl", "table"):
+        assert "max-width" not in rules.get(selector, {}), f"{selector} is narrowed like prose"

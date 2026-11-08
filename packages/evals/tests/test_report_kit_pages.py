@@ -50,4 +50,4 @@ def test_a_shape_campaign_s_page_passes_the_render_checks(name: str, tmp_path: P
     page.write_text(campaign_report_html(SHAPES[name]().page()), encoding="utf-8")
     checked, runs = render_checked(page, tmp_path / "screenshots")
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert len(runs) == 6 and all(line.startswith("ok") for line in runs), checked.stdout
+    assert len(runs) == 8 and all(line.startswith("ok") for line in runs), checked.stdout

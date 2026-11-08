@@ -337,11 +337,14 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
     return ""
 
 
-def measure_words(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
+def measure_words(report_input: ReportInput, key: str, *, kind: str | None = None, prose: bool = False) -> str:
     """What a reader calls a measure or judged dimension: its label, else the package's name for it; how each trial
     ended (a contrast of kind ``trial``) is the pass rate. A goal check whose label is its bare expression (the input
     declares it no display name) is named as the package names an undeclared check, its expression set as code
     (:func:`~threetears.evals.analysis.style.measure_name`), so it reads as the check it is, never as a stray key.
+    Where the name is the label (a header, a chart's title, a series, a cell) it starts with a capital, whatever its
+    source (a judged dimension's humanized key, an engine label, the pass rate), so a page's labels read in one
+    register; set inside a sentence (``prose``), it keeps its own case.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -349,9 +352,17 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     :ptype key: str
     :param kind: A contrast's kind, where the key is a contrast's.
     :ptype kind: str | None
+    :param prose: Whether the name sits inside a sentence, where it keeps its own case.
+    :ptype prose: bool
     :return: The name.
     :rtype: str
     """
+    named = _reader_name(report_input, key, kind=kind)
+    return named if prose else named[:1].upper() + named[1:]
+
+
+def _reader_name(report_input: ReportInput, key: str, *, kind: str | None) -> str:
+    """:func:`measure_words`'s name, as its source spells it."""
     if kind == "trial":
         return "pass rate"
     if key in report_input.measures and kind != "judged":
@@ -382,7 +393,7 @@ def money_noun(report_input: ReportInput, key: str) -> str:
 
 
 def money_words(
-    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = ""
+    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = "", prose: bool = False
 ) -> str:
     """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
     count its money is drawn per in it, as the one owner of money's words writes it
@@ -399,10 +410,14 @@ def money_words(
     :ptype kind: str | None
     :param name: The words the chart names it by, where not its measure's.
     :ptype name: str
+    :param prose: Whether the words sit inside a sentence, where the measure's name keeps its own case
+        (:func:`measure_words`).
+    :ptype prose: bool
     :return: The words.
     :rtype: str
     """
-    return drawn.label(name or _money_name(report_input, key, kind=kind), money_noun(report_input, key))
+    named = name or _money_name(report_input, key, kind=kind, prose=prose)
+    return drawn.label(named, money_noun(report_input, key))
 
 
 #: The units a money measure declares, whose key's currency word no reader name keeps.
@@ -415,13 +430,13 @@ _REPLY_COST_NAME = "Cost per reply"
 _CURRENCY_WORD = re.compile(r"[\s_]+usd$", re.I)
 
 
-def _money_name(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
+def _money_name(report_input: ReportInput, key: str, *, kind: str | None = None, prose: bool = False) -> str:
     """What a reader calls a money figure: its measure's words, the scoreboard's cost per reply by its reader name,
     and a name made of its key without the currency its key ends on (``cost usd`` reads ``cost``), so no line under a
     chart names a code key or says ``usd`` beside ``dollars``."""
     if key == _SCOREBOARD_PER_REPLY:
         return _REPLY_COST_NAME
-    return measure_words(report_input, key, kind=kind)
+    return measure_words(report_input, key, kind=kind, prose=prose)
 
 
 def money_notes(report_input: ReportInput, drawn: Iterable[tuple[str, Quantity]]) -> list[str]:

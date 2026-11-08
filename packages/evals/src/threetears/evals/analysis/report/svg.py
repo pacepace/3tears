@@ -49,7 +49,8 @@ _GLYPH_DOT = 2.5
 #: for light and for dark, so a glyph follows the page's theme with no colour of its own: the page's ink, its margin
 #: band the sunken tint, sized in ems so it sits on the row's line of text.
 GLYPH_STYLE = """
-svg.viz-glyph { width: 7.5em; height: 0.875em; vertical-align: -0.0625em; margin-right: 6px; overflow: visible; }
+svg.viz-glyph { width: 7.5em; max-width: 100%; min-width: 4.5em; height: 0.875em; vertical-align: -0.0625em;
+  margin-right: 6px; overflow: visible; }
 svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
 svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1.5; }
 svg.viz-glyph .viz-band { fill: var(--sunk); }

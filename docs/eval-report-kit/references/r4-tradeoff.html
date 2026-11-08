@@ -77,12 +77,16 @@ a{color:var(--link)}
 code,.mono{font-family:var(--f-mono);font-size:.92em}
 .num{font-variant-numeric:tabular-nums}
 
-/* masthead */
+/* masthead: the campaign's name its own first line, then the kind, the system and the counts. The first screen's
+   text (masthead, the callouts under it, headline, lede, confidence) keeps one measure, the prose column; its cards
+   and tables take the page's width. */
 .mast{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline;padding-block:1.5rem .75rem;border-bottom:1px solid var(--line);
-  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;max-width:var(--col)}
 .mast b{color:var(--ink-2);font-weight:600}
+.mast .name{flex-basis:100%;color:var(--ink);font-weight:600}
 .mast .kind{color:var(--accent);font-weight:600}
 .bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
+.bluf>h1{max-width:var(--col)}
 .bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
 /* cards wrap and the last row's stretch to fill it, so a short card never leaves an empty cell beside it */
 .decision{display:flex;flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
@@ -132,14 +136,20 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 #tip b{font-weight:600}
 
 /* tables */
-/* A table wider than its frame scrolls inside it: a shadow shows at an edge only while more lies past it (the covers
-   scroll with the content, the shadows stay with the frame), and the first column stays in view. */
+/* A table fits its frame where its words can wrap; one wider than its frame still scrolls inside it, its first column
+   in view. While more of it lies past the frame's right edge, that edge fades out over every cell, headers and
+   highlighted rows included: the frame's own scroll position drives the fade, so it shows only on a frame that
+   overflows, goes once the frame is scrolled to its end, and needs no script. A browser without scroll-driven
+   animations runs the fade to its end at once (no fade) and keeps the shadow under the cells, which shows at an edge
+   only while more lies past it (the covers scroll with the content, the shadows stay with the frame). */
 .tbl{overflow-x:auto;isolation:isolate;container-type:scroll-state;border:1px solid var(--line);border-radius:var(--r);
   background:linear-gradient(to right,var(--surface) 40%,transparent) left/2.5rem 100% no-repeat local,
     linear-gradient(to left,var(--surface) 40%,transparent) right/2.5rem 100% no-repeat local,
     radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
-    var(--surface)}
+    var(--surface);
+  animation:tbl-more linear both;animation-timeline:scroll(self inline)}
+@keyframes tbl-more{from,98%{mask-image:linear-gradient(to left,transparent,var(--ink) 3rem)}100%{mask-image:none}}
 /* the pinned column is at least a floor and at most about a third of the frame wide, so a long label never hides
    the columns past it and the columns past it never crush it: it wraps at its spaces (after a hyphen only in a word too long for its cap), never inside
    a word; only an id-like cell (an expression, a digest, a token longer than the floor holds: classed unbroken)
@@ -148,7 +158,10 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
   white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw);
   width:min(var(--id1),35vw)}
 .tbl :is(th,td):first-child .armchip{white-space:normal}
-.tbl th:first-child{z-index:2;background:var(--sunk)}
+/* a long label sets in at most three lines where the cap leaves room: the frame's --lines1, the width that holds its
+   longest label so, is the pinned column's floor (a frame without one keeps the floor above) */
+.tbl[style*="--lines1"] :is(th,td):first-child{min-width:min(var(--lines1),35vw)}
+.tbl thead th:first-child{z-index:2;background:var(--sunk)}
 /* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its width, its text's between
    the floor and the cap (the frame's --key; the cap without one), so the second pins where the first ends; the second
    has a floor of its own */
@@ -158,7 +171,7 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
   box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;
   min-width:min(8rem,22vw);max-width:min(9rem,22vw);width:min(var(--id2),9rem,22vw)}
 .tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
-.tbl.keys-2 th:nth-child(2){z-index:2;background:var(--sunk)}
+.tbl.keys-2 thead th:nth-child(2){z-index:2;background:var(--sunk)}
 .tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken{overflow-wrap:anywhere}
 /* a hyphenated word (a model id, a case id) in a pinned cell is one word. One the floor holds is never broken after a
    hyphen. A longer one (long) sets its column's width (--id1, --id2), which the table gives that column before the
@@ -172,15 +185,23 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 @container scroll-state(scrollable:x){.tbl .id.long{white-space:nowrap}}
 @media (max-width:639px){.tbl .id.long{white-space:normal}}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
-th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+/* a cell of words wraps at its spaces, never inside a word, so a table narrows to its frame before it scrolls; a
+   column of numbers, an id and a pill hold on one line. A table too wide to fit even so scrolls, and there a cell
+   keeps its line, as wrapping would only crush its column; a prose cell (wrap) and a glyph's figure still wrap. */
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
+@container scroll-state(scrollable:x){.tbl td:not(.wrap,.glyph,:first-child){white-space:nowrap}}
 /* a header row scrolls away with a tall table: its frame scrolls sideways, so it is the header's scroll container and
    a sticky header would stick to the frame, never the page; a header that stays visible inside a tall table needs the
    frame capped at the viewport's height with its own vertical scroll, a design choice to take with the host later */
 th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);white-space:normal;min-width:4.5rem}
+/* a row's label (a turned table's figure) is the row's header and reads as a body cell */
+tbody th{font-weight:inherit;color:inherit;font-size:inherit;text-transform:none;letter-spacing:normal;background:none;
+  min-width:0}
 td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-tr:last-child td{border-bottom:0}
-tr.hl td{background:var(--accent-wash)}
-tr.hl td:first-child{background:var(--accent-wash);box-shadow:inset 3px 0 0 var(--accent),inset -1px 0 0 var(--line)}
+td.r{white-space:nowrap}
+tr:last-child td,tbody tr:last-child th{border-bottom:0}
+tr.hl :is(td,th){background:var(--accent-wash)}
+tr.hl :is(td,th):first-child{background:var(--accent-wash);box-shadow:inset 3px 0 0 var(--accent),inset -1px 0 0 var(--line)}
 td.wrap{white-space:normal;min-width:min(14rem,60vw)}
 th.sort{cursor:pointer;user-select:none}
 th.sort:hover{color:var(--ink)}
@@ -210,7 +231,8 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .toggle input{accent-color:var(--accent);width:1rem;height:1rem}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .result{display:grid;gap:.75rem}
-.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2)}
+.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2);
+  max-width:var(--col)}
 .callout.warn{border-color:var(--warn)}
 .stat{display:grid;gap:.1rem}
 .stat .big{font-size:var(--t-xl);font-weight:600;line-height:1.1}
