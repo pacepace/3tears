@@ -668,6 +668,7 @@ def _page(
             source="verdict",
             text=verdict.text,
             tone=DisclosureBlock.verdict_tone(verdict.rule),
+            emphasis=list(verdict.decisions),
             # A verdict that offers leads links the word that says why they are not decisions: the exploratory rule's
             # line, and the too-small rule's where no question was declared, which is when it leads "Exploratory:".
             term=(

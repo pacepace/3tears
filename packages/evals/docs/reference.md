@@ -1103,6 +1103,7 @@ Something code must tell the reader that no author wrote — one idea.
 | `text` | `str` | required | The disclosure, one sentence or a few. |
 | `term` | `str \| None` | `None` | The glossary term the line links to, where it uses one; None for none. |
 | `tone` | `Literal['decided', 'open', 'failed', 'summary'] \| None` | `None` | On the verdict line, what kind of verdict it is — decided, open, failed (the test setup) or summary (one arm) — which HTML sets the line apart by. |
+| `emphasis` | `list[str]` | `[]` | The phrases of `text` a page sets in bold, in the order `text` says them, none empty and none cutting a code span: on the verdict line, each decision, its figures and guardrails left regular. |
 
 <a id="analysis-bundle"></a>
 ### `AnalysisContextBundle`

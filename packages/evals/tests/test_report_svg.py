@@ -144,7 +144,8 @@ def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> No
         "lost: judge truncated 3",
         "lost: setup fault 1",
     ]
-    assert second["segments"] == [{"value": 12, "color": "--good"}]
+    # Passed is drawn in ink, never the status green, so green on a page means a status pill alone (owner ruling O1).
+    assert second["segments"] == [{"value": 12, "color": "--ink-2"}]
 
 
 def test_every_outcome_count_is_in_the_chart_s_table() -> None:
@@ -222,7 +223,7 @@ def test_five_failure_causes_are_five_looks() -> None:
     passed, failed, lost = looks[0], looks[1:6], looks[6:]
     assert len(set(failed)) == len(causes), "each failure cause a look of its own"
     assert all(colour == "--bad" and pattern is not None for colour, pattern in failed)
-    assert passed == ("--good", None)
+    assert passed == ("--ink-2", None)
     assert all(colour in {"--base", "--muted"} for colour, _ in lost) and len(set(lost)) == 2
     assert len(set(looks)) == len(looks), "passed, every failure and every loss, each a look of its own"
     assert not _SERIES & {colour for colour, _ in looks}
@@ -244,7 +245,7 @@ def test_the_marks_are_coloured_by_kit_tokens_set_for_light_and_dark() -> None:
     _, data = _drawn(_bar_chart())
     used = set(re.findall(r"var\((--[\w-]+)\)", GLYPH_STYLE)) | {item["color"] for item in data["legend"]}
     used |= {row["color"] for row in _drawn(_tagged_bars())[1]["rows"]}
-    assert {"--good", "--bad", "--base", "--ink", "--ink-2", "--s1", "--s2"} <= used
+    assert {"--bad", "--base", "--ink", "--ink-2", "--s1", "--s2"} <= used
     for variable in used:
         assert all(f"{variable}:" in root for root in roots), variable
 

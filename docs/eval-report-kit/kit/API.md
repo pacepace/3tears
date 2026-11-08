@@ -9,14 +9,16 @@
 | `--host-font-body`, `--host-font-mono`, `--host-color-text`, `--host-color-muted`, `--host-color-surface`, `--host-color-link`, `--host-color-accent` | **The tokens a host sets**, on the page's `<html>` tag. The kit reads each with its own value as the fallback and declares none of them, so a host's value wins in either theme. They set `--f-body`/`--f-display`, `--f-mono`, `--ink`, `--muted`, `--bg`/`--surface`, `--link` and `--accent`. |
 | `--bg --surface --ink --muted --accent --link` | Neutrals and the accent, read from the host tokens. |
 | `--ink-2 --sunk --line --base --accent-wash --shade` | Mixed from those by `color-mix`, so a host's palette carries through: secondary text, the sunken tint, rules, the accent's wash, a scroll shadow. |
-| `--on-fill` | Text set on a filled mark (a pressed segment, an arm's tag square, a count inside a bar). |
-| `--s1 … --s5` | Series colors in fixed order: blue, orange, aqua, gold, violet. The control uses `--ink-2`. |
+| `--on-fill` `--on-accent` | Text set on a filled mark (an arm's tag square, a count inside a bar), and on the accent (a pressed segment). A tag's letter and a difference cell's figure take whichever of two inks reads better on their own fill (`kInk`): on-fill or the surface on a tag, ink or the surface on a cell. |
+| `--s1 … --s5` | Series colors in fixed order: blue, magenta, teal, indigo, violet, each at 3:1 or more on the page in both themes and 40 degrees or more in hue from the status colours, so an arm never reads as a verdict. The control uses `--ink-2`. |
 | `--good --warn --bad` and `*-wash` | Status. Always shown with ✓ ! ✕ and a word (`pill()`). |
 | `--seq-0 … --seq-5`, `--seq-t0 … --seq-t5` | Sequential ramp and the matching text color for each step. The dark ramp runs light-on-dark. |
 | `--div-neg --div-mid --div-pos` | Diverging ramp for difference heatmaps. |
+| `--ground` | The ground a table sits on: the page's `--bg`, a card's or a figure's `--surface`. A table is ruled, never boxed: no frame border, no header fill, a rule in `--ink-2` under its header. |
+| `--t-xs --t-sm --t-base --t-lg --t-hero` | The type scale's five steps: 12 px (ticks, captions, chart labels), 14 (tables, notes), 16 (body), 20 (h2, a code page's title, a headline over 90 characters) and 28 (the headline). Nothing is set between them. |
 | `--f-display --f-body --f-mono` | Plex Sans Condensed, Plex Sans, Plex Mono, each then the system's faces and a generic family. |
 
-**Outcomes** (how each trial ended, as a stacked bar draws them) take status colours, never a series color, since series colors name arms: passed is `--good`, solid; every failure cause is `--bad` under a texture of its own (`pattern`: `hatch`, `cross`, `dots`, `rows`, `cols`, in that order), so five causes read as five looks and no failure reads as a pass even without color; a loss cause is a neutral, `--base` then `--muted` solid, then each textured. The legend names every cause in its look.
+**Outcomes** (how each trial ended, as a stacked bar draws them) never take a series color, since series colors name arms: passed is ink (`--ink-2`), solid, so green means a status pill alone; every failure cause is `--bad` under a texture of its own (`pattern`: `hatch`, `cross`, `dots`, `rows`, `cols`, in that order), so five causes read as five looks and no failure reads as a pass even without color; a loss cause is a neutral, `--base` then `--muted` solid, then each textured. The legend names every cause in its look.
 
 **Arms** take one color for the whole page, by their letter tag (GENERATOR.md §6.1): the control (`P`) `--ink-2`, the candidates (`A`, `B`, …) `--s1 … --s5` in order, plus a shape (scatter) or the tag in a square (bars), so color is never the only cue.
 

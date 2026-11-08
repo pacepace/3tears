@@ -632,6 +632,9 @@ _FLAG_ICON = '<b aria-hidden="true">!</b>'
 
 def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
+    if block.source == "verdict":
+        tone = f' data-tone="{escape(block.tone)}"' if block.tone is not None else ""
+        return f'<p class="verdict"{tone}>{_verdict_markup(block)}</p>'
     text = code_html(block.text)
     if block.term is not None:
         text += " " + term_link(block.term, f"({escape(block.term)})", css="term")
@@ -649,12 +652,33 @@ def _disclosure(block: DisclosureBlock) -> str:
     if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
         # Every other report-wide caveat, once: a plain line under the flag, never a callout of the same weight.
         return f'<p class="line report-caveat"{anchor} data-source="{escape(block.source)}">{text}</p>'
-    if block.source == "verdict":
-        tone = f' data-tone="{escape(block.tone)}"' if block.tone is not None else ""
-        return f'<p class="verdict"{tone}><strong>{text}</strong></p>'
     if block.section in FIRST_SCREEN:
         return f'<p class="line" data-source="{escape(block.source)}">{text}</p>'
     return f'<p class="disclosure" data-source="{escape(block.source)}">{text}</p>'
+
+
+def _verdict_markup(block: DisclosureBlock) -> str:
+    """The verdict line's markup: each piece of its raw text escaped on its own (:meth:`DisclosureBlock.emphasis_pieces`),
+    its decisions set in bold, its figures and guardrails regular, so one weight carries the one emphasis. The
+    undecided reading is linked where its sentence form stands whole in one piece; where it does not (a phrase cut by
+    the bold, or longer than the form allows), the line links the term after its words, as every other line does."""
+    linked = block.term != CANNOT_TELL_APART
+    out = []
+    for piece, bold in block.emphasis_pieces():
+        said = code_html(piece)
+        found = None if linked else CANNOT_TELL_APART_PHRASE.search(piece)
+        # linked only outside a code span, so neither half of the piece cuts one
+        if found is not None and "`" not in found.group(0) and not piece.count("`", 0, found.start()) % 2:
+            said = (
+                code_html(piece[: found.start()])
+                + term_link(CANNOT_TELL_APART, escape(found.group(0)))
+                + code_html(piece[found.end() :])
+            )
+            linked = True
+        out.append(f"<strong>{said}</strong>" if bold else said)
+    if block.term is not None and (block.term != CANNOT_TELL_APART or not linked):
+        out.append(" " + term_link(block.term, f"({escape(block.term)})", css="term"))
+    return "".join(out)
 
 
 #: Elements HTML never closes, which hold nothing.

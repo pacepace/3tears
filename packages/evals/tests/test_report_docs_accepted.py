@@ -169,7 +169,7 @@ def test_each_stored_document_passes_every_invariant_and_renders_strict(name: st
     """The stored record checked on its page as the store built it, then that page drawn as HTML and Markdown."""
     page = _stored_page(name)
 
-    assert doc_page_html(page).count("<h1>") == 1
+    assert doc_page_html(page).count("<h1") == 1
     assert sum(line.startswith("# ") for line in doc_page_markdown(page).splitlines()) == 1
 
 

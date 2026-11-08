@@ -262,7 +262,7 @@ The renderer applies the kit (`kit/kit.css`, `kit/kit.js`). Don't restyle per re
 
 ## 8. Definition of done
 
-A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade and a first screen read at more than one measure; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
+A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade, a first screen read at more than one measure, text under 4.5:1 or an axis under 3:1 against its ground in either theme, a font size off the scale (12, 14, 16, 20, 28 px) and a table drawn in a box or under a filled header; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
 
 1. It renders at every width `scripts/check.py` draws, in light and dark, with no console errors.
 2. `document.documentElement.scrollWidth` equals the viewport width at every width (nothing scrolls sideways).

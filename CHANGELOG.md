@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a report page reads quiet: five type sizes, readable contrast, ruled tables and one colour per meaning
+
+**Changed:**
+- Text reads at 4.5:1 or more on every ground in both themes, and an axis and an arm's colour at 3:1. The quiet text
+  colour (`--muted`) is darker in light (`#5f6774`) and a step lighter in dark (`#8a93a1`); `scripts/check.py` computes
+  contrast in both themes and fails a page under it.
+- Five type sizes, 12, 14, 16, 20 and 28 px, and nothing between. A code page's title and a written headline over 90
+  characters set at 20 px; a short headline keeps 28.
+- Tables are ruled, never boxed: no frame border, no header fill, a rule under the header, headers in `--ink-2` at the
+  table's size and weight 600 (they were small capitals in the faint text colour). A table sits on its page's ground,
+  not a white panel. A header term's dotted underline marks its first header on the page; later ones keep the link.
+- Arms take blue, magenta, teal, indigo and violet, none within 40 degrees of hue of pass, warn or fail; an outcome
+  bar draws "passed" in ink, so green on a page is a status pill alone. A tag's letter and a difference cell's figure
+  take whichever ink reads best on their own fill.
+- A verdict line sets its decisions in bold and its figures and guardrails regular, and links the undecided reading
+  once, inline (after the line where it cannot stand whole in one piece of it).
+- A scatter's y title sits above the plot, never under a mark.
+
+**Hosts:** every page's colours move: the arm palette, "passed" drawn in `--ink-2`, table headers in `--ink-2` at
+weight 600, and the `--host-color-muted` default (`#5f6774` light, `#8a93a1` dark) for a host that sets none. The kit
+declares two new tokens, `--ground` (the ground a table sits on) and `--on-accent` (text on the accent); a host sets
+neither. `DisclosureBlock.emphasis` (new, default empty) names the phrases of a line's text to set in bold; a lead a
+caller supplies to `build_campaign_report(lead=...)` renders without bold unless it sets them, and one that names a
+phrase its text does not say, says out of order, or cuts a code span is refused.
+
 ### evals: a definition reset carries live cases the corpus does not carry into the new revision
 
 **Added:**

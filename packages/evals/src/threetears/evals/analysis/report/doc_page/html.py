@@ -253,6 +253,11 @@ def _evidence_record(record: Sequence[str]) -> list[str]:
     ]
 
 
+#: The most characters a headline sets in at the hero size: a longer one is a paragraph's worth, which sets in at the
+#: scale's 20 px step (``h1.long``) rather than run six lines at a 1104 px frame.
+_LONG_HEADLINE = 90
+
+
 def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] = ()) -> str:
     """Write a report document's page as one standalone HTML page (this module's account).
 
@@ -268,8 +273,10 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
     :rtype: str
     """
     highlighted = page.recommended_rows
+    headline = one_line(page.headline)
+    opened = '<h1 class="long">' if len(headline) > _LONG_HEADLINE else "<h1>"
     bluf = [
-        f"<h1>{_prose(one_line(page.headline))}</h1>",
+        f"{opened}{_prose(headline)}</h1>",
         f'<p class="lede">{_prose(page.lede)}</p>',
         *(
             [f'<div class="flag" data-part="flag">{_FLAG_MARK}<div>{_prose(page.flag)}</div></div>']

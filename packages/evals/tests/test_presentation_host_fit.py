@@ -109,7 +109,7 @@ HOST_TOKENS = frozenset(
 #: Each page colour a host token sets, the token, and the page's own value in light and in dark.
 HOST_COLOURS: dict[str, tuple[str, str, str]] = {
     "--ink": ("--host-color-text", "#11151b", "#eef1f5"),
-    "--muted": ("--host-color-muted", "#7f8896", "#828b99"),
+    "--muted": ("--host-color-muted", "#5f6774", "#8a93a1"),
     "--bg": ("--host-color-surface", "#f5f6f8", "#0e1115"),
     "--surface": ("--host-color-surface", "#ffffff", "#161a20"),
     "--accent": ("--host-color-accent", "#1f5fbf", "#6aa2f0"),
@@ -459,10 +459,11 @@ def test_a_row_s_label_heads_its_row_and_reads_as_a_body_cell() -> None:
         "background": "none",
         "min-width": "0",
     }
+    # a pinned header paints its frame's ground, as its column's body cells do, the header row's look its rule's alone
     assert ("", ".tbl th:first-child") not in by and by[("", ".tbl thead th:first-child")][
         "background"
-    ] == "var(--sunk)"
-    assert by[("", ".tbl.keys-2 thead th:nth-child(2)")]["background"] == "var(--sunk)"
+    ] == "var(--ground)"
+    assert by[("", ".tbl.keys-2 thead th:nth-child(2)")]["background"] == "var(--ground)"
     turned = page.split('data-table="arms_by_measure"', 1)[1].split("</table>", 1)[0]
     assert '<th scope="row"' in turned and "<td" in turned, "the control: the page's turned table heads its rows"
 
@@ -475,7 +476,7 @@ def test_a_header_row_sets_its_labels_from_the_top_and_a_long_label_takes_two_li
     (``--head``), which the frame holds it at only when it scrolls anyway; a short label and a pinned one carry none."""
     rules = _rules(_style(_served()["doc"]))
     by = {(rule.at, rule.selector): rule.declarations() for rule in rules}
-    assert by[("", "thead th")] == {"vertical-align": "top"}
+    assert by[("", "thead th")] == {"vertical-align": "top", "border-bottom": "1px solid var(--ink-2)"}
     assert by[("@container scroll-state(scrollable:x)", ".tbl thead th")] == {"min-width": "var(--head,4.5rem)"}
     arms = _served()["doc"].split('data-table="arms_key"', 1)[1].split("</thead>", 1)[0]
     widths = {label: width for width, label in _HEAD.findall(arms)}
@@ -1101,18 +1102,18 @@ def test_the_arms_table_s_header_row_sets_every_label_from_the_top_in_two_lines_
 
 @pytest.mark.integration
 def test_the_written_headline_takes_a_third_fewer_lines_at_688_px(tmp_path: Path) -> None:
-    """Kairo's 148-character headline, drawn in a host's 688 px frame: four lines at 24 px, where the hero size took
-    six."""
+    """Kairo's 148-character headline, drawn in a host's 688 px frame: at most four lines at the scale's 20 px step,
+    where 0.93's 36 px hero size took six."""
     _browser()
     path = tmp_path / "doc.html"
     path.write_text(_served()["doc"], encoding="utf-8")
     probe = """() => { const h = document.querySelector('h1'), s = getComputedStyle(h), size = s.fontSize;
       const lines = () => Math.round(h.getBoundingClientRect().height / parseFloat(getComputedStyle(h).lineHeight));
-      const drawn = lines(); h.style.fontSize = 'var(--t-hero)'; h.style.lineHeight = '1.12';
+      const drawn = lines(); h.style.fontSize = '2.25rem'; h.style.lineHeight = '1.12';
       return {size, drawn, hero: lines()}; }"""
     drawn, errors = rendered(path, probe, width=FRAME_PX)
     assert not errors, errors
-    assert drawn["size"] == "24px" and drawn["drawn"] <= 4 and drawn["drawn"] <= drawn["hero"] * 2 / 3, drawn
+    assert drawn["size"] == "20px" and drawn["drawn"] <= 4 and drawn["drawn"] <= drawn["hero"] * 2 / 3, drawn
 
 
 @pytest.mark.integration
@@ -1307,9 +1308,10 @@ def test_by_stratum_with_a_short_key_fits_a_688_px_frame_its_second_key_pinned_w
 ) -> None:
     """Production, 0.93.1: By stratum, keyed by "All cases" and its reading, was 687 px in a 636 px frame, its first
     column held at the 224 px cap. Sized to its text it is the 128 px floor and the table fits, the second key pinned
-    where the first ends. The control: the same table held at the cap scrolls."""
+    where the first ends. The control: the same table held at the cap scrolls (with five figures held at the cap it
+    runs 72 px past the 640 px frame, and sized to its text it fits with 24 to spare)."""
     _browser()
-    page = report_page([_keyed_table(["All cases"], key_columns=2, figures=4, name="strata")])
+    page = report_page([_keyed_table(["All cases"], key_columns=2, figures=5, name="strata")])
     drawn = _drawn_ids(page, FRAME_PX, tmp_path, "sized")
     (frame,) = [frame for frame in drawn["frames"] if frame["table"] == "strata"]
     assert frame["scrollWidth"] == frame["clientWidth"] and not frame["scrolls"], frame

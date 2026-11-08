@@ -242,6 +242,8 @@ def _lead_blocks(
     several = len(campaign.aspects) > 1
     asked = bool(campaign.question.strip())
     sentences: list[str] = []
+    # Each decision the lead says, word for word, which the page sets in bold; the figures after it stay regular.
+    decisions: list[str] = []
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
@@ -250,26 +252,37 @@ def _lead_blocks(
         figures = contrast_evidence(report.bundle)
         if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=figures):
             sentences += led
-        elif rows := readings.on_aspect(aspect.label):
-            sentences += [
-                f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
-                f"{'' if row.confirmatory or not asked else ', a lead'}. {row_figures(row, readings.control_label)}"
-                for row in rows
+            decisions += [
+                decision.removesuffix(".")
+                for decision in led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on)
             ]
+        elif rows := readings.on_aspect(aspect.label):
+            for row in rows:
+                decision = (
+                    f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
+                    f"{'' if row.confirmatory or not asked else ', a lead'}"
+                )
+                sentences.append(f"{decision}. {row_figures(row, readings.control_label)}")
+                decisions.append(decision)
         elif paired := pairs_words(readings, aspect.label, marked=asked):
             # An arm's label is a name, printed as given, even where it opens the sentence; the undecided reading's
             # own words open with a capital, as a sentence does.
             opened = paired[:1].upper() + paired[1:] if paired.startswith("the evidence ") else paired
-            sentences.append(f"On {names(aspect.label)}, {paired}." if several else f"{opened}.")
+            decision = f"On {names(aspect.label)}, {paired}" if several else opened
+            sentences.append(f"{decision}.")
+            decisions.append(decision)
         elif measured := _measured_lead(aspect, readings):
+            # One arm measured: its count, a figure, nothing decided, so nothing is set in bold.
             prefix = f"On {names(aspect.label)}, " if several else ""
             sentences += [f"{prefix}{said}." for said in measured]
         else:
-            sentences.append(f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}.")
+            decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}"
+            sentences.append(f"{decision}.")
+            decisions.append(decision)
     text = " ".join(sentences)
     # Where the lead says the evidence cannot tell arms apart, it links that phrase's one definition at its first use.
     term = CANNOT_TELL_APART if "cannot tell" in text else None
-    return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term)]
+    return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=decisions)]
 
 
 def _check_lead(lead: Sequence[ReportBlock]) -> None:

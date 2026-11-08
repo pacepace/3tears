@@ -222,6 +222,16 @@ def test_rung_2_s_first_screen_carries_its_judge_caveat_and_its_detail_one_step_
 # --- a caller's own answer replaces code's lead -----------------------------------------------------------------------
 
 
+def _verdict_unbolded(markup: str) -> str:
+    """``markup`` with the bold tags inside its verdict line taken out, every other byte as it was."""
+    return re.sub(
+        r'<p class="verdict"[^>]*>.*?</p>',
+        lambda line: line[0].replace("<strong>", "").replace("</strong>", ""),
+        markup,
+        flags=re.S,
+    )
+
+
 def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the_page_is_byte_identical() -> None:
     shape = s4_change()
     computed = build_campaign_report(shape.campaign, shape.readings, shape.reports)
@@ -246,10 +256,11 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
         supplied.blocks[:index] + supplied.blocks[index + 1 :] == computed.blocks[:index] + computed.blocks[index + 1 :]
     )
     # Rendered in code's tone, linking code's term, the page differs only by the lead's words: every other byte is the
-    # same.
+    # same. Code's lead sets its decision in bold, which a caller's words do not carry, so the verdict line is read
+    # without its bold.
     alike = given.model_copy(update={"tone": code_lead.tone, "term": code_lead.term})
     same_tone = build_campaign_report(shape.campaign, shape.readings, shape.reports, lead=[alike])
-    for render in (campaign_report_markdown, lambda page: unlinked(campaign_report_html(page))):
+    for render in (campaign_report_markdown, lambda page: _verdict_unbolded(unlinked(campaign_report_html(page)))):
         before = render(computed)
         after = render(same_tone)
         assert before.count(code_lead.text) == 1 and after.count(given.text) == 1

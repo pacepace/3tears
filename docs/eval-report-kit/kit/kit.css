@@ -3,11 +3,16 @@
    them, its own value the fallback; the page never declares one, so a host's value wins in either theme. Text, muted
    text, surface, link and accent come from them; secondary text, rules, the sunken tint and the accent's wash mix from
    those, so a host's palette carries through. Arm, outcome and scale colours stay the page's. Fonts are a local stack: nothing is
-   fetched, and every stack ends in a generic family. */
+   fetched, and every stack ends in a generic family.
+   Contrast, in each theme: text at 4.5:1 or more on every ground the page paints, quiet text included, and an axis and
+   an arm's colour at 3:1 (WCAG 1.4.3, 1.4.11). The arms' hues (blue, magenta, teal, indigo, violet) stand 40 degrees or more from pass,
+   warn and fail, so a colour means one thing, and each carries its tag's on-fill letter at 4.5:1.
+   Type: five steps, 12 px (ticks, captions, chart labels), 14 (tables, notes), 16 (body), 20 (h2, a title that is a
+   label) and 28 (the headline); nothing is set between them. */
 :root{
   --bg:var(--host-color-surface,#f5f6f8); --surface:var(--host-color-surface,#ffffff);
-  --ink:var(--host-color-text,#11151b); --muted:var(--host-color-muted,#7f8896);
-  --accent:var(--host-color-accent,#1f5fbf); --on-fill:#ffffff;
+  --ink:var(--host-color-text,#11151b); --muted:var(--host-color-muted,#5f6774);
+  --accent:var(--host-color-accent,#1f5fbf); --on-fill:#ffffff; --on-accent:#ffffff;
   --link:var(--host-color-link,var(--accent));
   --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
   --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
@@ -15,49 +20,50 @@
   --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
   --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
   --shade:color-mix(in srgb,var(--ink) 18%,transparent);
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s5:#6250d6;
-  --good:#0b7f0b; --good-wash:#e3f3e3; --warn:#a86a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
+  --ground:var(--bg);
+  --s1:#2874d2; --s2:#b8388f; --s3:#13788a; --s4:#4a4fb8; --s5:#7c4fc0;
+  --good:#0a7a0a; --good-wash:#e3f3e3; --warn:#8f5a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
   --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
-  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#ffffff; --seq-t4:#ffffff; --seq-t5:#ffffff;
+  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#11151b; --seq-t4:#ffffff; --seq-t5:#ffffff;
   --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
   --f-display:var(--host-font-body,"IBM Plex Sans Condensed","IBM Plex Sans","Arial Narrow",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
   --f-body:var(--host-font-body,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
   --f-mono:var(--host-font-mono,"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace);
-  --t-xs:.75rem; --t-sm:.8125rem; --t-base:.9375rem; --t-md:1.0625rem; --t-lg:1.375rem; --t-xl:1.875rem; --t-hero:2.25rem;
+  --t-xs:.75rem; --t-sm:.875rem; --t-base:1rem; --t-lg:1.25rem; --t-hero:1.75rem;
   --col:44rem; --wide:68rem; --r:6px;
 }
 /* Dark: the OS's, unless the host stamps data-theme="light"; data-theme="dark" sets it whatever the OS says. Each
    theme declares the mixed colours again, the same mixes, so every token a rule colours with is set in each theme. */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
-  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#828b99);
-  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --shade:rgb(0 0 0/.55);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#8a93a1);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --on-accent:#0e1115; --shade:rgb(0 0 0/.55);
   --link:var(--host-color-link,var(--accent));
   --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
   --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
   --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
   --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
   --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --s1:#2873d1; --s2:#c23f99; --s3:#147f93; --s4:#676bc3; --s5:#8860c6;
   --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
   --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
   --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
-  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}}
+  --div-neg:#c84b4e; --div-mid:#383835; --div-pos:#2676d2; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
-  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#828b99);
-  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --shade:rgb(0 0 0/.55);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#8a93a1);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --on-accent:#0e1115; --shade:rgb(0 0 0/.55);
   --link:var(--host-color-link,var(--accent));
   --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
   --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
   --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
   --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
   --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --s1:#2873d1; --s2:#c23f99; --s3:#147f93; --s4:#676bc3; --s5:#8860c6;
   --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
   --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
   --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
-  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}
+  --div-neg:#c84b4e; --div-mid:#383835; --div-pos:#2676d2; color-scheme:dark}
 
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:var(--t-base);line-height:1.55;
@@ -65,12 +71,14 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:v
 .page{max-width:var(--wide);margin:0 auto}
 .prose{max-width:var(--col)}
 h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:-.005em}
-h1{font-size:var(--t-hero);line-height:1.12;font-weight:600}
-h2{font-size:var(--t-lg);font-weight:600;line-height:1.2}
-h3{font-size:var(--t-md);font-weight:600}
+h1{font-size:var(--t-hero);line-height:1.15;font-weight:600}
+/* a headline over 90 characters is a paragraph's worth: it sets in at the 20 px step, not six lines at the hero size */
+h1.long{font-size:var(--t-lg);line-height:1.25}
+h2{font-size:var(--t-lg);font-weight:600;line-height:1.25}
+h3{font-size:var(--t-base);font-weight:600}
 p{margin:0}
 a{color:var(--link)}
-code,.mono{font-family:var(--f-mono);font-size:.92em}
+code,.mono{font-family:var(--f-mono)}
 .num{font-variant-numeric:tabular-nums}
 
 /* masthead: the campaign's name its own first line, then the kind, the system and the counts. The first screen's
@@ -83,7 +91,7 @@ code,.mono{font-family:var(--f-mono);font-size:.92em}
 .mast .kind{color:var(--accent);font-weight:600}
 .bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
 .bluf>h1{max-width:var(--col)}
-.bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
+.bluf .lede{font-size:var(--t-base);color:var(--ink-2);max-width:var(--col)}
 /* cards wrap and the last row's stretch to fill it, so a short card never leaves an empty cell beside it */
 .decision{display:flex;flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .decision>div{flex:1 1 15rem;background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
@@ -99,7 +107,7 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 .eyebrow{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
 .takeaway{color:var(--ink-2)}
 .part{margin-top:2.5rem;padding-top:1rem;border-top:2px solid var(--ink);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:baseline}
-.part h2{font-size:var(--t-xl)}
+.part h2{font-size:var(--t-lg)}
 .part span{font-size:var(--t-sm);color:var(--muted)}
 
 /* figure */
@@ -108,14 +116,14 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 .chart{width:100%;min-width:0;position:relative}
 .chart svg{display:block;overflow:visible}
 .chart text{font-family:var(--f-body);fill:var(--ink-2)}
-.chart .tick{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.chart .tick{font-size:12px;fill:var(--muted);font-variant-numeric:tabular-nums}
 .chart .lbl{font-size:12px;fill:var(--ink-2)}
 .chart .lbl-strong{font-size:12px;fill:var(--ink);font-weight:600}
 .chart .grid{stroke:var(--line);stroke-width:1}
-.chart .axis{stroke:var(--base);stroke-width:1}
+.chart .axis{stroke:var(--muted);stroke-width:1}
 .chart .floor{stroke:var(--ink-2);stroke-width:1.25;stroke-dasharray:3 3}
 .chart [data-tip]{cursor:default}
-.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-sm);color:var(--ink-2);margin-bottom:.5rem}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-xs);color:var(--ink-2);margin-bottom:.5rem}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px}
 .legend i.sq{border-radius:2px}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,30rem),1fr));gap:1rem}
@@ -138,36 +146,40 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
    overflows, goes once the frame is scrolled to its end, and needs no script. A browser without scroll-driven
    animations runs the fade to its end at once (no fade) and keeps the shadow under the cells, which shows at an edge
    only while more lies past it (the covers scroll with the content, the shadows stay with the frame). */
-.tbl{overflow-x:auto;isolation:isolate;container-type:scroll-state;border:1px solid var(--line);border-radius:var(--r);
-  background:linear-gradient(to right,var(--surface) 40%,transparent) left/2.5rem 100% no-repeat local,
-    linear-gradient(to left,var(--surface) 40%,transparent) right/2.5rem 100% no-repeat local,
+.tbl{overflow-x:auto;isolation:isolate;container-type:scroll-state;
+  background:linear-gradient(to right,var(--ground) 40%,transparent) left/2.5rem 100% no-repeat local,
+    linear-gradient(to left,var(--ground) 40%,transparent) right/2.5rem 100% no-repeat local,
     radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
-    var(--surface);
+    var(--ground);
   animation:tbl-more linear both;animation-timeline:scroll(self inline)}
+/* a table sits on the ground it is set on, never a panel of its own: the page's (--ground, the page's --bg in each
+   theme), or a card's or a figure's surface; its pinned cells and its edge covers paint that ground, so what scrolls
+   beneath them stays hidden */
+.fig .tbl,.decision .tbl,.excard .tbl,.callout .tbl{--ground:var(--surface)}
 @keyframes tbl-more{from,98%{mask-image:linear-gradient(to left,transparent,var(--ink) 3rem)}100%{mask-image:none}}
 /* the pinned column is at least a floor and at most about a third of the frame wide, so a long label never hides
    the columns past it and the columns past it never crush it: it wraps at its spaces (after a hyphen only in a word too long for its cap), never inside
    a word; only an id-like cell (an expression, a digest, a token longer than the floor holds: classed unbroken)
    breaks anywhere. The frame isolates its cells' stacking, so the page's sticky nav paints over a pinned cell. */
-.tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--line);
+.tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--ground);box-shadow:inset -1px 0 0 var(--line);
   white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw);
   width:min(var(--id1),35vw)}
 .tbl :is(th,td):first-child .armchip{white-space:normal}
 /* a long label sets in at most three lines where the cap leaves room: the frame's --lines1, the width that holds its
    longest label so, is the pinned column's floor (a frame without one keeps the floor above) */
 .tbl[style*="--lines1"] :is(th,td):first-child{min-width:min(var(--lines1),35vw)}
-.tbl thead th:first-child{z-index:2;background:var(--sunk)}
+.tbl thead th:first-child{z-index:2;background:var(--ground)}
 /* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its width, its text's between
    the floor and the cap (the frame's --key; the cap without one), so the second pins where the first ends; the second
    has a floor of its own */
 .tbl.keys-2 :is(th,td):first-child{width:min(var(--key,14rem),35vw);min-width:min(var(--key,14rem),35vw);
   max-width:min(var(--key,14rem),35vw)}
-.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(var(--key,14rem),35vw);z-index:1;background:var(--surface);
+.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(var(--key,14rem),35vw);z-index:1;background:var(--ground);
   box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;
   min-width:min(8rem,22vw);max-width:min(9rem,22vw);width:min(var(--id2),9rem,22vw)}
 .tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
-.tbl.keys-2 thead th:nth-child(2){z-index:2;background:var(--sunk)}
+.tbl.keys-2 thead th:nth-child(2){z-index:2;background:var(--ground)}
 .tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken{overflow-wrap:anywhere}
 /* a hyphenated word (a model id, a case id) in a pinned cell is one word. One the floor holds is never broken after a
    hyphen. A longer one (long) sets its column's width (--id1, --id2), which the table gives that column before the
@@ -181,7 +193,9 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 @container scroll-state(scrollable:x){.tbl .id.long{white-space:nowrap}}
 @media (max-width:639px){.tbl .id.long{white-space:normal}}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
-/* a cell of words wraps at its spaces, never inside a word, so a table narrows to its frame before it scrolls; a
+/* A table is ruled, never boxed (Schwabish 2020; booktabs): no frame border and no header fill, a rule in --ink-2
+   under the header row and quiet --line rules between the rows; its headers read in --ink-2 at the table's own size.
+   A cell of words wraps at its spaces, never inside a word, so a table narrows to its frame before it scrolls; a
    column of numbers, an id and a pill hold on one line. A table too wide to fit even so scrolls, and there a cell
    keeps its line, as wrapping would only crush its column; a prose cell (wrap) and a glyph's figure still wrap. */
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
@@ -189,11 +203,11 @@ th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
 /* a header row scrolls away with a tall table: its frame scrolls sideways, so it is the header's scroll container and
    a sticky header would stick to the frame, never the page; a header that stays visible inside a tall table needs the
    frame capped at the viewport's height with its own vertical scroll, a design choice to take with the host later */
-th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);white-space:normal;min-width:4.5rem}
+th{font-weight:600;color:var(--ink-2);white-space:normal;min-width:4.5rem}
 /* a header row is as tall as the label that needs the most lines, every label set from the top; in a frame that
    scrolls anyway a long label sets in two lines at most (its --head, the width that does), since widening its column
    costs only scroll, where wrapping it at the floor made the whole row as tall as its five lines */
-thead th{vertical-align:top}
+thead th{vertical-align:top;border-bottom:1px solid var(--ink-2)}
 @container scroll-state(scrollable:x){.tbl thead th{min-width:var(--head,4.5rem)}}
 /* a row's label (a turned table's figure) is the row's header and reads as a body cell */
 tbody th{font-weight:inherit;color:inherit;font-size:inherit;text-transform:none;letter-spacing:normal;background:none;
@@ -227,7 +241,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .seg{display:inline-flex;border:1px solid var(--base);border-radius:5px;overflow:hidden}
 .seg button{font:inherit;font-size:var(--t-sm);border:0;background:var(--surface);color:var(--ink-2);padding:.35rem .7rem;cursor:pointer}
 .seg button+button{border-left:1px solid var(--base)}
-.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-fill)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-accent)}
 .toggle{display:flex;align-items:center;gap:.45rem;font-size:var(--t-sm);color:var(--ink-2);cursor:pointer}
 .toggle input{accent-color:var(--accent);width:1rem;height:1rem}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -236,7 +250,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
   max-width:var(--col)}
 .callout.warn{border-color:var(--warn)}
 .stat{display:grid;gap:.1rem}
-.stat .big{font-size:var(--t-xl);font-weight:600;line-height:1.1}
+.stat .big{font-size:var(--t-hero);font-weight:600;line-height:1.1}
 .stat .lab{font-size:var(--t-xs);color:var(--muted)}
 .stats{display:flex;flex-wrap:wrap;gap:1rem 2.25rem}
 .method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
@@ -244,7 +258,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
 /* a frame under 700 px (a host's at a 1024 px window, a phone) sets headings a step smaller and tighter, so a
    headline holds three lines, not five */
-@media (max-width:700px){h1{font-size:1.5rem;line-height:1.2}h2{font-size:1.125rem;line-height:1.3}h3{font-size:var(--t-base);line-height:1.35}.part h2{font-size:var(--t-lg)}}
+@media (max-width:700px){h1{font-size:1.25rem;line-height:1.25}h2{font-size:1rem;line-height:1.35}h3{font-size:var(--t-base);line-height:1.35}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 .armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
 .armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:var(--on-fill);font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}
@@ -282,7 +296,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
 .lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
 .lattice .cell{display:grid;gap:.3rem;align-content:start}
-.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
+.lattice .acc{font-size:var(--t-hero);font-weight:600;line-height:1}
 .lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
 .lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
 .lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
@@ -292,8 +306,8 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
 .mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
 .mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
-.mx .c b{font-size:var(--t-md);font-weight:600}
-.mx .c span{font-size:var(--t-xs);opacity:.85}
+.mx .c b{font-size:var(--t-base);font-weight:600}
+.mx .c span{font-size:var(--t-xs)}
 .mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
 .excard .q{font-weight:600}
 .excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}

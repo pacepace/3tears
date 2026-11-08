@@ -293,11 +293,15 @@ class VerdictLine:
         shown safe on. The aspect page and the quick print print it.
     :ivar lead: The result's sentence alone, which the campaign page leads with (its guardrails are its warnings) and
         the exit line opens with; ``text`` where the line has one sentence.
+    :ivar decisions: Each decision ``text`` says, word for word and in its order, which a page sets in bold while the
+        figures it rests on and the guardrails stay regular; none where nothing is decided (one arm's count, a failed
+        setup, too few cases).
     """
 
     rule: VerdictRule
     text: str
     lead: str = ""
+    decisions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.lead:
@@ -513,7 +517,13 @@ def verdict_line(
             text = " ".join(
                 led_sentences(bundle, verdicts, order, asked=declared_question, evidence=evidence, also=others)
             )
-            return VerdictLine(rule=rule, text=prefix + text + _guardrail_sentences(verdicts), lead=result)
+            # each decision alone, its closing stop off, as the line says it before its figures (or its "; also")
+            decisions = tuple(
+                said.removesuffix(".") for said in led_sentences(bundle, verdicts, order, asked=declared_question)
+            )
+            return VerdictLine(
+                rule=rule, text=prefix + text + _guardrail_sentences(verdicts), lead=result, decisions=decisions
+            )
     said = (
         _told_apart(bundle, verdicts, asked=declared_question)
         if verdicts
@@ -544,7 +554,7 @@ def verdict_line(
     guardrails = (
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
     )
-    return VerdictLine(rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.")
+    return VerdictLine(rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,))
 
 
 def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:

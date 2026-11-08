@@ -171,7 +171,8 @@ def test_the_console_and_the_page_count_one_number_of_cases_passed(
     console = re.match(rf"triage: {counted}", capsys.readouterr().out)
     reports = triage_dir / ".evals" / "reports" / "triage"
     markdown = re.search(rf"\*\*{counted}", (reports / "report.md").read_text())
-    page = re.search(rf'class="verdict"[^>]*><strong>{counted}', (reports / "report.html").read_text())
+    # One arm's verdict is a count, nothing decided, so the page sets it at the line's own weight.
+    page = re.search(rf'class="verdict"[^>]*>{counted}', (reports / "report.html").read_text())
     assert console is not None and markdown is not None and page is not None
     assert console.groups() == markdown.groups() == page.groups() == ("62", "90", "30")
 

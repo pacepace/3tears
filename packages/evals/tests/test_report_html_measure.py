@@ -97,7 +97,7 @@ def test_a_written_report_s_first_screen_reads_at_one_measure_and_its_cards_at_t
     )
     # Drawn as a draft, so its page carries the draft's line under the masthead.
     page = doc_page_html(doc.model_copy(update={"draft": True}))
-    assert '<p class="callout warn" data-part="draft">' in page and "<h1>" in page, "the control: a draft's top block"
+    assert '<p class="callout warn" data-part="draft">' in page and "<h1" in page, "the control: a draft's top block"
     rules = _rules(page)
     for selector in _TOP_BLOCK:
         assert rules.get(selector, {}).get("max-width") == "var(--col)", (selector, rules.get(selector))
