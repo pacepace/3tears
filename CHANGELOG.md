@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, epoch: an epoch is its change set, and a missed broadcast corrects only the rows it missed
+
+**Changed (core, epoch):** a pod that misses a cache-invalidation broadcast no longer drops the table. Each advance
+of a table's write generation now stores the rows it covered as the epoch's change record (`EpochChange`,
+`threetears.core.collections.epoch_change`), in a memory, replicated bucket beside the epoch bucket
+(`EPOCH_CHANGES_BUCKET`, kept per `EpochChangeRetention`), or beside the generation in L2 for a table kept there. A
+follower that judges an epoch it did not hear in full (`CollectionRegistry.catch_up_generation`, run by
+`generation_catchup_tick`, `follow_generation_key` and `TableFollower`) reads that epoch's record and evicts exactly
+its rows; every other row stays cached. A first sight takes the mark and drops nothing.
+
+**Changed (core, epoch):** a record the log does not hold, or a generation from a replaced store, leaves the pod
+behind on the table (`CollectionRegistry.behind_on`), never a drop: it serves what it holds, logs at error, counts
+`collection_epoch_behind_total` and `collection_epoch_tables_behind`, and a derived cache stops trusting the table
+(`tables_trusted`, `TableFollower.watching`) until the next judgement applies the epoch. The log refuses a record
+past its `max_bytes` (`discard: new`) and the write that advanced raises `GenerationUnavailableError`, counted as
+`collection_epoch_change_refused_total`; it never evicts a record a pod may still need.
+
+**Changed (core):** a write whose reach is the whole table (a truncate, a file load, `announce_unheard_writes`, the
+write-mark reconciler) records the whole table as its change, and a follower applies it as a table invalidation,
+because that is the change. `CollectionRegistry.settle_generation` is replaced by the async `catch_up_generation`.
+
 ## v0.94.0 -- 2026-11-07
 
 ### core: a scoped snapshot's diff counts every group, and an answer the L3 rail cut fails loud

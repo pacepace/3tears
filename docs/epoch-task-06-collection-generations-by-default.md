@@ -1415,3 +1415,41 @@ follower's trust test, `announce_unheard_writes`, the grant contract, the regist
 test, the authorizer bundles, the hub's start announcement, the CLI's announcements, the
 gateway's construction, and the SDK stack's.
 
+
+---
+
+## An Epoch Is Its Change Set (Owner, 2026-11-08)
+
+**Decided.** A gap never drops a table and nothing bulk-reloads. "The Model" above dropped the table
+because a generation cannot say which row changed; the owner's ruling replaces that drop. Each
+advance stores the rows it covered as the epoch's change record, and a pod catches up by applying
+exactly those rows. Catching up after a missed broadcast, a restart and a partition is one operation:
+fetch epochs `mine+1 .. head`, apply each.
+
+**What exists now.**
+
+- `EpochChange` / `ChangedRow` (`threetears.core.collections.epoch_change`): the table, the token,
+  and either the rows (ids, the L2 scope a fenced write left current, the invalidation columns) or
+  `whole_table` for a write whose reach is the table (a truncate, a file load, a migration
+  announced through `announce_unheard_writes`, the write-mark reconciler).
+- `EpochGenerationSource.advance_with_change` writes the record after its compare-and-swap, into
+  `{ns}-epoch-changes`: memory storage, replicas per `EpochChangeRetention` (a platform declares
+  three), `max_age` 24h, `max_bytes` 64 MiB with `discard: new`. A refused record raises
+  `GenerationUnavailableError` and counts `collection_epoch_change_refused_total`; nothing is
+  evicted. Every advance goes through `advance_recording`, so a recording source is never handed
+  an advance without its change. A table kept in L2 keeps its records beside its generation,
+  `{scope}.{table}-epoch.{incarnation}.{count}`, with a per-entry lifetime of 24h.
+- `CollectionRegistry.catch_up_generation` replaces `settle_generation`. FIRST_SIGHT takes the mark
+  (a follower starts before it serves). MISSED reads each unheard epoch's record and applies it
+  through the same path a heard broadcast takes. A record not in L2, or a REPLACED generation,
+  leaves the registry behind on the table: it serves what it holds, logs at error, counts
+  `collection_epoch_behind_total` / `collection_epoch_tables_behind`, and `tables_trusted` and
+  `TableFollower.watching` are false for the table until the epoch is applied.
+
+**Still owed, in the same release.** The L2-first write path (a write lands in NATS and that is the
+commit; the saver persists row and epoch log to L3; L3 refills the epoch log in L2, which is what
+ends a REPLACED or lost-record "behind"). The hub broker carrying each commit's rows, so a pod's
+writes are recorded (a pod's `BrokerGenerationSource` records nothing today). The write-mark
+reconciler's and migrations' whole-table records become row records once the write path names
+their rows. Declarations on every collection (hub, SDK), the per-commit write-cost bench, and a
+pre-full gauge on the change log (it needs a bucket-usage read in `threetears.nats.kv`).

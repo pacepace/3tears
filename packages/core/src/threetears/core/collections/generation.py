@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
+from threetears.core.collections.epoch_change import advance_recording
 from threetears.core.exceptions import GenerationUnavailableError
 
 if TYPE_CHECKING:
@@ -127,7 +128,8 @@ async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str
     failed: dict[str, str] = {}
     for table in sorted(set(tables)):
         try:
-            token = await source.advance(table)
+            # a write nobody listed the rows of: its reach is the table
+            token = await advance_recording(source, table, None)
         except GenerationUnavailableError as exc:
             failed[table] = str(exc)
             continue
@@ -500,6 +502,81 @@ class GenerationMarks:
         :rtype: None
         """
         self._record(table_name, token, rows=1, of=1)
+
+    def unaccounted(self, table_name: str, token: str) -> tuple[str, ...]:
+        """the advances up to ``token`` this pod has not heard every row of, in order, as tokens.
+
+        What a follower must fetch the change records of to catch up to ``token``. Only advances
+        under the mark's incarnation can be named; a token from another incarnation, or a table
+        with no mark, names none (see :meth:`judge`).
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :param token: the generation the table's store holds now
+        :ptype token: str
+        :return: each advance after the mark and up to ``token`` whose rows were not all heard
+        :rtype: tuple[str, ...]
+        :raises KeyError: when ``table_name`` is not followed
+        """
+        mark = self._tables[table_name]
+        parts = split_generation_token(token)
+        if parts is None or not mark.sighted or parts[0] != mark.incarnation:
+            return ()
+        incarnation, count = parts
+        missing: list[str] = []
+        for each in range(mark.accounted + 1, count + 1):
+            heard = mark.heard.get((incarnation, each))
+            if mark.overflowed or heard is None or heard.rows < heard.of:
+                missing.append(f"{incarnation}:{each}")
+        return tuple(missing)
+
+    def applied(self, table_name: str, token: str) -> None:
+        """record that the change of the advance that wrote ``token`` was fetched and applied in full.
+
+        Once every advance up to the generation read is applied or heard, the mark has moved to it
+        and an overflow (which hid which advances were heard) is spent.
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :param token: the advance applied
+        :ptype token: str
+        :return: nothing
+        :rtype: None
+        """
+        mark = self._tables.get(table_name)
+        parts = split_generation_token(token)
+        if mark is None or parts is None or not mark.sighted or parts[0] != mark.incarnation:
+            return
+        if parts[1] > mark.accounted:
+            mark.heard[parts] = _Heard(rows=1, of=1)
+            self._move_on(mark)
+        if mark.overflowed and not any(heard.rows < heard.of for heard in mark.heard.values()):
+            # the overflow only hid which advances were heard; every one up to here is applied now
+            mark.overflowed = False
+
+    def adopt_generation(self, table_name: str, token: str | None) -> None:
+        """take ``token`` as the table's mark, for a follower that holds nothing older than it.
+
+        A pod starts following before it serves the table, so at its first sight of the generation
+        everything it holds was read at or after it: there is nothing to catch up. Advances heard
+        beyond ``token`` stay, since their broadcasts outran the read.
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :param token: the generation read, or ``None`` when the store holds none
+        :ptype token: str | None
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when ``table_name`` is not followed
+        """
+        mark = self._tables[table_name]
+        incarnation, count = self._parts(token)
+        mark.sighted = True
+        mark.incarnation = incarnation
+        mark.accounted = count
+        mark.overflowed = False
+        mark.heard = {key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}
+        self._move_on(mark)
 
     def _record(self, table_name: str, token: str, *, rows: int, of: int) -> None:
         """count ``rows`` rows of the advance that wrote ``token``, and move the mark on if it can.

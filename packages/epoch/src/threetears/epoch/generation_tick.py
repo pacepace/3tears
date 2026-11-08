@@ -3,24 +3,25 @@
 A registry that follows a table (``CollectionRegistry.follow_generation``) keeps a mark: the last
 write generation whose writes it has accounted for, moved on by the row broadcasts it hears. The
 broadcasts are at most once, so something has to compare the mark with the table's generation as
-the epoch bucket holds it, and drop the table in this pod when they disagree. That is all either
-function here does. What "disagree" means is the mark's to say
-(``threetears.core.collections.generation.GenerationMarks``):
+the epoch bucket holds it, and catch the pod up when they disagree. That is all either function
+here does: ``CollectionRegistry.catch_up_generation`` fetches the change record of each epoch the
+pod did not hear in full and applies exactly its rows. A gap never drops a table:
 
-- the generation belongs to another incarnation than the mark's -- the bucket was replaced, by a
-  broker restart -- so the table is dropped;
 - same incarnation, and an advance this pod did not hear every row of -- a broadcast was missed --
-  so the table is dropped;
+  so that epoch's record is read and its rows evicted;
+- a record the epoch change log does not hold, or a generation from another incarnation (the
+  bucket was replaced): the pod is behind on the table, serves what it holds, and is counted and
+  logged until the record can be read;
 - everything up to it heard: nothing happens.
 
-A generation that cannot be read is none of those. Nothing is dropped and the mark does not move;
+A generation that cannot be read is none of those. Nothing is applied and the mark does not move;
 the next pass tries again.
 
 **:func:`generation_catchup_tick` is pure-async, one pass per call, with no internal polling: the
 consumer's scheduler drives cadence**, for the reason :mod:`threetears.epoch.tick` gives -- the
 package dependency arrow allows nothing else -- and with the same contract: one table's failure
 does not abandon the rest. Whoever wires a registry to follow tables also schedules this pass, or
-runs :func:`follow_generation_key` for each; following alone drops nothing.
+runs :func:`follow_generation_key` for each; following alone applies nothing.
 
 **:func:`follow_generation_key` is the alternative for a pod following a few keys.** The broker
 pushes each new generation through one named consumer per key, so a missed broadcast is noticed
@@ -36,6 +37,7 @@ from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import Final, Protocol
 
+from threetears.core.collections.epoch_change import EpochChangeReader
 from threetears.core.collections.generation import GenerationVerdict
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.exceptions import GenerationUnavailableError
@@ -55,7 +57,7 @@ log = get_logger(__name__)
 #: how long :func:`follow_generation_key` waits for the row broadcasts of an advance it has just
 #: been pushed before judging them missed. A writer advances the generation and THEN publishes its
 #: rows, so the pushed generation routinely arrives first; judged at once, every heard write would
-#: read as a missed one and drop the table.
+#: read as a missed one and fetch a change record the broadcasts were about to deliver.
 DEFAULT_BROADCAST_GRACE: Final = timedelta(seconds=2)
 
 
@@ -82,14 +84,15 @@ _GRACE_POLL_SECONDS: Final = 0.02
 
 
 async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGenerationReader) -> int:
-    """run one catch-up pass over every table ``registry`` follows, returning how many it dropped.
+    """run one catch-up pass over every table ``registry`` follows, returning how many it caught up.
 
-    Each followed table's generation is read once and judged against the registry's mark
-    (``CollectionRegistry.settle_generation``), which drops the table in this pod when a broadcast
-    was missed or the bucket was replaced.
+    Each followed table's generation is read once and caught up
+    (``CollectionRegistry.catch_up_generation``): the change record of every epoch the pod did not
+    hear in full is read through ``reader`` and its rows evicted. A table whose record is not in the
+    log is left behind, serving what it holds, and tried again at the next pass.
 
     **A generation that cannot be read is not a reset.** ``GenerationUnavailableError`` for a
-    table is logged and that table is left exactly as it was: nothing dropped, the mark unmoved.
+    table is logged and that table is left exactly as it was: nothing applied, the mark unmoved.
     The pod goes on serving what it has, as it did before the pass, and the next pass reads again.
 
     **A failing table does not abandon the others.** Every table is attempted; any other exception
@@ -97,29 +100,29 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
     surfaces and the consumer's own loop decides whether that ends its scheduling.
 
     A pass that reads a generation while that advance's broadcasts are still in flight sees them
-    unheard and drops the table needlessly. That is the safe direction.
+    unheard and applies its record, evicting rows the broadcasts are about to evict anyway.
 
     **A table whose generation is kept in L2** (``L2_WRITE_GENERATION``) has none in the epoch bucket:
     it is judged by ``CollectionRegistry.catch_up_l2_generations``, which this pass runs after the
-    others, and its drops are counted with theirs.
+    others; it keeps no change records yet, so a missed epoch there leaves the table behind.
 
     :param registry: the registry whose followed tables this pass judges
     :ptype registry: CollectionRegistry
     :param reader: reads each table's generation from the epoch bucket
     :ptype reader: EpochGenerationReader
-    :return: how many tables were dropped in this pass
+    :return: how many tables this pass applied missed epochs to
     :rtype: int
     :raises Exception: the first exception other than ``GenerationUnavailableError`` raised for
         any table, after every other table has been attempted
     """
-    dropped = 0
+    caught_up = 0
     first_error: BaseException | None = None
     for table_name in registry.generation_marks.followed:
         if registry.generation_kept_in_l2(table_name):
             continue
         try:
             token = await reader.read(table_name)
-            verdict = registry.settle_generation(table_name, token)
+            verdict = await registry.catch_up_generation(table_name, token, changes=reader)
         except GenerationUnavailableError as exc:
             log.warning(
                 "write generation unavailable; the table is left as it is and the next pass reads again",
@@ -138,10 +141,10 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
             if first_error is None:
                 first_error = exc
             continue
-        if verdict.drops:
-            dropped += 1
+        if verdict is GenerationVerdict.MISSED and not registry.behind_on(table_name):
+            caught_up += 1
     try:
-        dropped += await registry.catch_up_l2_generations()
+        caught_up += await registry.catch_up_l2_generations()
     # prawduct:allow prawduct/broad-except -- the L2-kept tables are one more table's worth of the pass;
     # re-raised below with the first error, like any table's.
     except Exception as exc:  # noqa: BLE001
@@ -150,7 +153,7 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
             first_error = exc
     if first_error is not None:
         raise first_error
-    return dropped
+    return caught_up
 
 
 async def follow_generation_key(
@@ -159,6 +162,7 @@ async def follow_generation_key(
     table_name: str,
     *,
     grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    changes: EpochChangeReader | None = None,
 ) -> None:
     """follow one table's write generation by watching its key, until cancelled.
 
@@ -170,7 +174,9 @@ async def follow_generation_key(
     An advance is pushed as soon as it is written, ahead of the row broadcasts the writer sends
     next. So a generation whose advances are not yet all accounted for is given ``grace`` for
     their rows to arrive before it is judged; only then is an advance still unheard a missed
-    broadcast, and the table dropped. A generation from another incarnation is never waited on.
+    broadcast, and its change record is read and applied. A generation from another incarnation is
+    never waited on. A record that cannot be read leaves the pod behind on the table, logged, and
+    the watch goes on: the next generation pushed is caught up from the same mark.
 
     Runs until the consumer cancels it. Run it as a task per table, beside whatever else the pod
     schedules.
@@ -189,6 +195,10 @@ async def follow_generation_key(
     :ptype table_name: str
     :param grace: how long to wait for an advance's row broadcasts before judging them missed
     :ptype grace: timedelta
+    :param changes: reads each missed epoch's change record; ``None`` reads through ``reader`` when it
+        can (:class:`~threetears.epoch.generation.EpochGenerationReader` does), else every missed
+        epoch leaves the pod behind
+    :ptype changes: EpochChangeReader | None
     :return: nothing; it returns only if the watch ends
     :rtype: None
     :raises GenerationUnavailableError: when the bucket cannot be opened or watched
@@ -197,9 +207,17 @@ async def follow_generation_key(
     registry.follow_generation(table_name)
     marks = registry.generation_marks
     loop = asyncio.get_running_loop()
+    records = changes if changes is not None else reader if isinstance(reader, EpochChangeReader) else None
     async with aclosing(reader.watch(table_name)) as generations:
         async for token in generations:
             deadline = loop.time() + grace.total_seconds()
             while marks.judge(table_name, token) is GenerationVerdict.MISSED and loop.time() < deadline:
                 await asyncio.sleep(_GRACE_POLL_SECONDS)
-            registry.settle_generation(table_name, token)
+            try:
+                await registry.catch_up_generation(table_name, token, changes=records)
+            except GenerationUnavailableError as exc:
+                # NOSILENT: the registry recorded itself behind on the table and logged it; the next push catches up
+                log.warning(
+                    "an epoch's change record could not be read; behind on the table until the next generation",
+                    extra={"extra_data": {"table": table_name, "error": str(exc)}},
+                )

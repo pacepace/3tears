@@ -3,15 +3,15 @@
 Two registries on one in-process bus and bucket stand in for a writer pod and a follower pod, with
 the real generation source, the real reader and the real pass. The contract this pins:
 
-- a missed row broadcast is caught by ONE pass, with no sleep: the follower's row is gone;
-- a replaced bucket is caught by one pass;
+- a missed row broadcast is caught by ONE pass, with no sleep: the follower's row is gone, and no
+  other row is (the epoch's change record names the rows it changed);
+- a replaced bucket leaves the follower behind, serving what it holds, never dropping the table;
 - an opted-out table, a collection built with ``NO_L2`` and a table that is not switched on put
   nothing in the epoch bucket at all;
 - one transaction is one advance, and a follower that hears every row of it does not drop;
 - a flush is one advance per table;
 - a generation that cannot be read drops nothing and leaves the mark where it was;
-- a cache derived from the table is evicted row by row for a heard change, and emptied only when
-  the table drops;
+- a cache derived from the table is evicted row by row, for a heard change and a missed one alike;
 - one table's failure does not abandon the rest of the pass;
 - a key watcher judges each pushed generation the same way, after giving its broadcasts time.
 """
@@ -350,8 +350,8 @@ class TestAMissedBroadcastIsCaughtByOnePass:
         assert members.exists_in_cache_sync("seed")
 
 
-class TestAReplacedBucketIsCaught:
-    async def test_a_bucket_emptied_and_written_again_drops_the_table(self, bus: _Lossy) -> None:
+class TestAReplacedBucketLeavesThePodBehind:
+    async def test_a_bucket_emptied_and_written_again_is_behind_and_still_serving(self, bus: _Lossy) -> None:
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "m1", "ada")
         assert await _member_id(reading, "m1") == "ada"
@@ -361,24 +361,25 @@ class TestAReplacedBucketIsCaught:
         await _save(writing, "m1", "grace")
         bus.deaf = False
 
-        assert await follower.tick() == 1
-        assert await _member_id(reading, "m1") == "grace"
         assert await follower.tick() == 0
+        assert follower.registry.behind_on(_TABLE)
+        assert reading.exists_in_cache_sync("m1"), "behind is never a drop"
 
-    async def test_a_bucket_emptied_and_not_yet_written_drops_the_table(self, bus: _Lossy) -> None:
+    async def test_a_bucket_emptied_and_not_yet_written_is_behind(self, bus: _Lossy) -> None:
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "m1", "ada")
         assert await _member_id(reading, "m1") == "ada"
         (await _epochs(bus)).wipe()
-        assert await follower.tick() == 1
-        assert not reading.exists_in_cache_sync("m1")
         assert await follower.tick() == 0
+        assert follower.registry.behind_on(_TABLE)
+        assert reading.exists_in_cache_sync("m1")
 
     async def test_hearing_every_row_under_the_new_incarnation_does_not_excuse_the_old_ones(self, bus: _Lossy) -> None:
         _, writing, follower, _ = await _two_pods(bus)
         (await _epochs(bus)).wipe()
         await _save(writing, "m1")
-        assert await follower.tick() == 1
+        assert await follower.tick() == 0
+        assert follower.registry.behind_on(_TABLE)
 
 
 class TestWhatPutsNothingInTheEpochBucket:
@@ -431,10 +432,12 @@ class TestOneCommitIsOneAdvance:
         assert await follower.tick() == 0
         assert reading.exists_in_cache_sync("kept")
 
-    async def test_a_follower_that_missed_one_row_of_the_transaction_drops(self, bus: _Lossy) -> None:
+    async def test_a_follower_that_missed_one_row_of_the_transaction_applies_its_record(self, bus: _Lossy) -> None:
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "kept", "ada")
+        await _save(writing, "m3", "ada")
         assert await _member_id(reading, "kept") == "ada"
+        assert await _member_id(reading, "m3") == "ada"
         lost: list[str] = []
         deliver = FakeNatsClient.publish
 
@@ -450,9 +453,11 @@ class TestOneCommitIsOneAdvance:
             for index in range(6):
                 await writing.save_entity(writing.create({"id": f"m{index}", "member_id": "grace"}), conn=conn)
         assert lost == ["m3"]
+        assert await _member_id(reading, "m3") == "ada", "the lost broadcast left the row stale"
 
         assert await follower.tick() == 1
-        assert not reading.exists_in_cache_sync("kept")
+        assert await _member_id(reading, "m3") == "grace"
+        assert reading.exists_in_cache_sync("kept"), "a row the transaction did not write stays cached"
 
     async def test_a_flush_advances_once_per_table(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
@@ -555,7 +560,7 @@ class TestAGenerationThatCannotBeReadIsNotAReset:
         with pytest.raises(RuntimeError, match="first table"):
             await generation_catchup_tick(follower.registry, _BrokenForOne(bus))
 
-        # the table after the broken one was still judged, and dropped for the write it missed
+        # the table after the broken one was still judged, and caught up on the write it missed
         assert await _member_id(reading_members, "seed") == "grace"
 
 
@@ -576,8 +581,8 @@ class _PersonCache:
         self.entries.clear()
 
 
-class TestADerivedCacheIsEvictedRowByRowAndEmptiedOnlyOnATableDrop:
-    async def test_a_heard_change_evicts_one_entry_and_a_missed_one_empties_the_cache(self, bus: _Lossy) -> None:
+class TestADerivedCacheIsEvictedRowByRow:
+    async def test_a_heard_change_and_a_missed_one_each_evict_one_entry(self, bus: _Lossy) -> None:
         _, writing, follower, _ = await _two_pods(bus)
         cache = _PersonCache(follower.registry, ("ada", "grace", "edsger"))
 
@@ -591,15 +596,17 @@ class TestADerivedCacheIsEvictedRowByRowAndEmptiedOnlyOnATableDrop:
         bus.deaf = False
         assert cache.entries == {"ada": "access-of-ada", "edsger": "access-of-edsger"}
         assert await follower.tick() == 1
-        assert cache.entries == {}
-        assert cache.emptied == 1
+        assert cache.entries == {"edsger": "access-of-edsger"}
+        assert cache.emptied == 0
 
-    async def test_a_replaced_bucket_empties_the_cache(self, bus: _Lossy) -> None:
+    async def test_a_replaced_bucket_empties_nothing_and_the_table_is_untrusted(self, bus: _Lossy) -> None:
         _, _, follower, _ = await _two_pods(bus)
         cache = _PersonCache(follower.registry, ("ada",))
+        follower.registry.watched_by(_TABLE, lambda: True)
         (await _epochs(bus)).wipe()
-        assert await follower.tick() == 1
-        assert cache.emptied == 1
+        assert await follower.tick() == 0
+        assert cache.emptied == 0
+        assert not follower.registry.tables_trusted([_TABLE])
 
     async def test_an_unreadable_generation_empties_nothing(self, bus: _Lossy) -> None:
         _, _, follower, _ = await _two_pods(bus)
@@ -632,7 +639,7 @@ async def _watching(pod: _Pod, table: str, *, grace: timedelta) -> AsyncIterator
 
 
 class TestAKeyWatcherFollowsWithoutAPass:
-    async def test_a_heard_write_is_not_dropped_and_a_missed_one_is(self, bus: _Lossy) -> None:
+    async def test_a_heard_write_is_heard_and_a_missed_one_is_applied_from_its_record(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
         writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
         writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
@@ -644,7 +651,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
         async with _watching(follower, _TABLE, grace=timedelta(seconds=30)):
             # the key's latest value is pushed first, and is this pod's first sight of the table
             await _until(lambda: marks.follows(_TABLE) and marks.recorded(_TABLE) is not None)
-            assert cache.emptied == 1
+            assert cache.emptied == 1, "a derived cache re-bases its own marks on the first sight"
             cache.entries.update({"ada": "access-of-ada", "grace": "access-of-grace"})
             assert await _member_id(reading, "seed") == "ada"
 
@@ -661,11 +668,12 @@ class TestAKeyWatcherFollowsWithoutAPass:
             bus.deaf = True
             await _save(writing, "seed", "edsger")
             bus.deaf = False
-            await _until(lambda: cache.emptied == 2)
-            assert not reading.exists_in_cache_sync("seed")
+            await _until(lambda: not reading.exists_in_cache_sync("seed"))
+            assert cache.emptied == 1, "a missed write is applied row by row, never by emptying the cache"
+            assert cache.entries == {"ada": "access-of-ada"}
             assert await _member_id(reading, "seed") == "edsger"
 
-    async def test_a_new_incarnation_is_dropped_without_waiting_for_broadcasts(self, bus: _Lossy) -> None:
+    async def test_a_new_incarnation_is_behind_without_waiting_for_broadcasts(self, bus: _Lossy) -> None:
         rows: dict[str, dict[str, Any]] = {}
         writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
         writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
@@ -680,8 +688,9 @@ class TestAKeyWatcherFollowsWithoutAPass:
             bus.deaf = True
             await _save(writing, "seed", "grace")
             bus.deaf = False
-            await _until(lambda: marks.recorded(_TABLE) != first)
-            assert await _member_id(reading, "seed") == "grace"
+            await _until(lambda: follower.registry.behind_on(_TABLE))
+            assert marks.recorded(_TABLE) == first
+            assert reading.exists_in_cache_sync("seed"), "behind is never a drop"
 
     async def test_a_reader_whose_bucket_cannot_be_opened_cannot_watch(self, bus: _Lossy) -> None:
         follower = _Pod(bus, scope="follower")

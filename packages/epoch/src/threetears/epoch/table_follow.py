@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Final
 
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.observe import contain, get_logger
 
@@ -116,6 +117,20 @@ class _ObservedWatcher:
         finally:
             await generations.aclose()
 
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        """the change record of one epoch, read through the watcher this wraps when it reads them.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation that epoch's advance wrote
+        :ptype token: str
+        :return: the record; ``None`` when the wrapped watcher reads none, so the follower is behind
+        :rtype: EpochChange | None
+        """
+        if isinstance(self._inner, EpochChangeReader):
+            return await self._inner.change(table_name, token)
+        return None
+
 
 class TableFollower:
     """one supervised generation-key watch per table, on one registry.
@@ -190,16 +205,23 @@ class TableFollower:
 
     @property
     def watching(self) -> bool:
-        """whether the watches are running and none is failing now.
+        """whether the watches are running, none is failing now, and the registry is behind on no table.
 
         Weaker than :attr:`healthy`: a watch on a key never written is pushed nothing, and is still
         watching. What a cache that may serve held answers needs: a watch that is running judges every
-        advance it is pushed, its first push included, which is the key's latest.
+        advance it is pushed, its first push included, which is the key's latest, and has applied
+        every epoch it judged missed. A table whose missed epoch's record could not be read is
+        behind: a cache derived from it stops serving held answers until the epoch is applied.
 
-        :return: ``True`` when every table's watch is running with no failure since its last push
+        :return: ``True`` when every table's watch is running with no failure since its last push,
+            and none is behind
         :rtype: bool
         """
-        return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
+        return (
+            self.running
+            and all(h.consecutive_failures == 0 for h in self._health.values())
+            and not any(self._registry.behind_on(table) for table in self._tables)
+        )
 
     def _table_watching(self, table: str) -> bool:
         """whether ``table``'s watch is running with no failure since its last push.
@@ -209,7 +231,7 @@ class TableFollower:
         :return: ``True`` while the watch can judge the table
         :rtype: bool
         """
-        return self.running and self._health[table].consecutive_failures == 0
+        return self.running and self._health[table].consecutive_failures == 0 and not self._registry.behind_on(table)
 
     @property
     def healthy(self) -> bool:

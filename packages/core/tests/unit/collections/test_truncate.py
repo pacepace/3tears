@@ -12,6 +12,8 @@ The contract this pins:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import asyncio
 import uuid
 from typing import Any, ClassVar, Literal
@@ -31,6 +33,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     collection_for_schema,
 )
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.exceptions import DataLayerUnavailableError, GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
@@ -105,6 +108,7 @@ class _CountingSource:
     """a generation source that counts its advances, and can be made to refuse them."""
 
     def __init__(self) -> None:
+        self.changes: dict[tuple[str, str], EpochChange] = {}
         self.counts: dict[str, int] = {}
         self.failing = False
 
@@ -116,6 +120,16 @@ class _CountingSource:
             raise GenerationUnavailableError(f"generation for {table_name!r} is unreachable")
         self.counts[table_name] = self.counts.get(table_name, 0) + 1
         return f"inc:{self.counts[table_name]}"
+
+    async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str:
+        token = await self.advance(table_name)
+        self.changes[(table_name, token)] = EpochChange(
+            table=table_name, token=token, whole_table=rows is None, rows=list(rows) if rows is not None else []
+        )
+        return token
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        return self.changes.get((table_name, token))
 
 
 class _Pod:
@@ -143,7 +157,7 @@ class _Pod:
     async def follow(self, source: _CountingSource) -> None:
         """follow the table and take the first mark, as a pod does once at startup."""
         self.registry.follow_generation(SCHEMA.name)
-        self.registry.settle_generation(SCHEMA.name, await source.current(SCHEMA.name))
+        await self.registry.catch_up_generation(SCHEMA.name, await source.current(SCHEMA.name), changes=source)
 
 
 @pytest.fixture
@@ -220,12 +234,14 @@ async def test_a_pod_following_the_table_drops_it_at_its_next_catch_up(
     await follower.follow(source)
     await _save(writer, "a", 1)
     # no listener runs here, so the follower catches up on the save before it reads the row
-    follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert (await follower.results.ensure("a")) is not None
     assert follower.results.exists_in_cache_sync("a")
     await writer.results.truncate()
     # TRUNCATE leaves no write mark and no row broadcast: the advance alone tells the follower
-    verdict = follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    verdict = await follower.registry.catch_up_generation(
+        "lsf_results", await source.current("lsf_results"), changes=source
+    )
     assert verdict is GenerationVerdict.MISSED
     assert not follower.results.exists_in_cache_sync("a")
     assert await follower.results.ensure("a") is None
@@ -237,7 +253,7 @@ async def test_the_writer_does_not_drop_its_own_advance_again(
     pod = _Pod(bus, store, source=source)
     await pod.follow(source)
     await pod.results.truncate()
-    verdict = pod.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    verdict = await pod.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert verdict is GenerationVerdict.CURRENT
 
 
@@ -323,14 +339,16 @@ async def test_a_truncate_whose_reply_is_lost_still_drops_and_advances_and_raise
     follower = _Pod(bus, store, source=source)
     await follower.follow(source)
     await _save(writer, "a", 1)
-    follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert (await follower.results.ensure("a")) is not None
     store.lost_reply = DataLayerUnavailableError("l3.truncate: no reply")
     with pytest.raises(DataLayerUnavailableError, match="no reply"):
         await writer.results.truncate()
     assert not writer.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the failed truncate's
-    verdict = follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    verdict = await follower.registry.catch_up_generation(
+        "lsf_results", await source.current("lsf_results"), changes=source
+    )
     assert verdict is GenerationVerdict.MISSED
     assert not follower.results.exists_in_cache_sync("a")
 

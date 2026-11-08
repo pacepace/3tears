@@ -52,6 +52,7 @@ from typing import Any, Final, Protocol
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
+from threetears.core.collections.epoch_change import advance_recording
 from threetears.core.collections.generation import GenerationSource
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
@@ -490,7 +491,8 @@ class WriteMarkReconciler:
         failed: set[str] = set()
         for table in sorted({str(row["table_name"]) for row in page}):
             try:
-                await self._source.advance(table)
+                # a mark names its table, not its rows: the reach of the writes it covers is the table
+                await advance_recording(self._source, table, None)
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)

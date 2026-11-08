@@ -36,6 +36,7 @@ from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.declared_table import DeclaredTableCollection, RowCannotBeInsertedError
 from threetears.core.collections.durable_store import DurableStoreCollection
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochChangeReader, EpochChangeWriter
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
@@ -161,5 +162,9 @@ __all__ = [
     "spans_partitions",
     "read_delete_cascade",
     "tables_with_write_generation",
+    "ChangedRow",
+    "EpochChange",
+    "EpochChangeReader",
+    "EpochChangeWriter",
     "tier_reads_total",
 ]
