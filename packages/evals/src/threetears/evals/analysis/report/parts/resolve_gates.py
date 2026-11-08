@@ -79,22 +79,22 @@ from threetears.evals.analysis.report.charts import (
     LatticeRow,
     ScatterPoint,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.cost_unit import priced_in_part, per_count, per_noun
-from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import cost_basis, resolve
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
     KindResolver,
     chart_block,
     money_drawn,
-    count_text,
     criterion_label,
     factor_legend,
     with_hollow_key,
     factor_token,
     figure_stat,
+    figure_kind,
     figure_unit,
-    interval_words,
     measure_words,
     money_words,
     point_labels,
@@ -105,10 +105,7 @@ from threetears.evals.analysis.report.parts.look import (
     GATE_STATUS,
     Quantity,
     band_domain,
-    figure_text,
     log_spread,
-    quantity,
-    quantity_of,
     series_token,
 )
 from threetears.evals.analysis.report.parts.words import (
@@ -131,7 +128,7 @@ from threetears.evals.analysis.report.parts.words import (
     TASK_SHARE_TEMPLATE,
     reading_words,
 )
-from threetears.evals.analysis.report_gates import criterion_ruler, GateCheck, gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import (
     Aspect,
     Criterion,
@@ -238,10 +235,10 @@ def _check_lines(check: GateCheck) -> list[str]:
 # --- gate_matrix ----------------------------------------------------------------------------------------------------
 
 
-def _task_detail(task: Task) -> str | None:
+def _task_detail(context: ChartContext, task: Task) -> str | None:
     parts = []
     if task.n_cases is not None:
-        parts.append(TASK_DETAIL_TEMPLATE.format(cases=count_text(task.n_cases)))
+        parts.append(TASK_DETAIL_TEMPLATE.format(cases=context.forms.chart_count(task.n_cases).text))
     if task.share:
         parts.append(TASK_SHARE_TEMPLATE.format(share=with_unit(float(task.share) * 100, PERCENT)))
     return " · ".join(parts) or None
@@ -251,7 +248,9 @@ def _figures_drawn(context: ChartContext, key: str, stats: Iterable[Stat]) -> Qu
     """How one measure's figures are written in a matrix's cells: from every figure the matrix states of it, so its
     money reads in one form (#993)."""
     reads = [stat_value(context.report_input, key, stat) for stat in stats]
-    return quantity_of(figure_unit(context.report_input, key), [read[0] for read in reads if read is not None])
+    figures = [read[0] for read in reads if read is not None]
+    unit, kind = figure_unit(context.report_input, key), figure_kind(context, key)
+    return context.forms.chart_quantity_of(unit, figures, measure=key, kind=kind)
 
 
 def _figure_words(context: ChartContext, key: str, stat: Stat, drawn: Quantity) -> str | None:
@@ -261,7 +260,7 @@ def _figure_words(context: ChartContext, key: str, stat: Stat, drawn: Quantity) 
     if read is None:
         return None
     statistic = f" ({read[1]})" if read[1] != "mean" else ""
-    said = figure_text(read[0] * drawn.factor, drawn)
+    said = context.forms.chart_note(read[0] * drawn.factor, drawn, measure=key, kind=figure_kind(context, key)).text
     return f"{money_words(context.report_input, key, drawn)}{statistic} {said}"
 
 
@@ -315,11 +314,13 @@ def _task_matrix(context: ChartContext) -> Drawn:
             GateRow(
                 label=slice_name(context, task),
                 cells=cells,
-                detail=_task_detail(task),
+                detail=_task_detail(context, task),
                 flag=CROSS_CUTTING_FLAG if task.cross_cutting else None,
             )
         )
-    priced = quantity("usd_per_1k", costs_drawn)
+    # The costs are their tasks' figures on a cost measure, of one noun (refused below otherwise): named by the first.
+    cost_measure = min(cost_measures, default="")
+    priced = context.forms.chart_quantity("usd_per_1k", costs_drawn, measure=cost_measure, kind="measure")
     if priced.factor != 1:
         # Costs under a cent per 1,000 are drawn per 1,000,000 (look's money), every cell alike.
         rows = [
@@ -376,11 +377,14 @@ def _reading_cell(context: ChartContext, aspect: Aspect, reading: Reading | None
     flip = flip_margin(reading)
     # Within the margin by the decision's own rule: the reading flips at its worst drop, never below zero.
     within = flip < float(margin) if margin is not None and flip is not None else None
-    points = quantity("points", change=True)
-    said = figure_text(float(reading.change), points)
+    # A reading is the pipeline's change in the pass rate.
+    forms, rate = context.forms, TRIAL_PASS_NAME
+    points = forms.chart_quantity("points", change=True, measure=rate, kind="trial")
+    said = forms.chart_note(float(reading.change), points, measure=rate, kind="trial").text
     if reading.within_interval is not None:
         low, high = (float(end) for end in reading.within_interval)
-        said += f" ({interval_words(low, high, points)})"
+        interval = forms.chart_interval(low, high, points, measure=rate, kind="trial").text
+        said += f" ({interval})"
     reasons = [said]
     for floor in context.report_input.floors:
         if floor.aspect == aspect.id and floor.arm == reading.arm and floor.reading:
@@ -431,14 +435,15 @@ def _floor_label(context: ChartContext, floor: FloorRead) -> str:
 def _floor_cell(context: ChartContext, floor: FloorRead | None) -> GateCell:
     if floor is None:
         return GateCell(status="neutral", label=NO_READING)
-    points = quantity("points")
+    # A floor's drop and margin are points of the rate it is read on.
+    rate = floor.reading or floor.speaks_for or ""
+    kind = figure_kind(context, rate)
+    points = context.forms.chart_quantity("points", change=True, measure=rate, kind=kind)
     reasons = []
     if floor.worst_drop is not None and floor.margin is not None:
-        reasons.append(
-            FLOOR_REASON_TEMPLATE.format(
-                drop=figure_text(float(floor.worst_drop), points), margin=figure_text(float(floor.margin), points)
-            )
-        )
+        drop = context.forms.chart_note(float(floor.worst_drop), points, measure=rate, kind=kind).text
+        margin = context.forms.chart_note(float(floor.margin), points, measure=rate, kind=kind).text
+        reasons.append(FLOOR_REASON_TEMPLATE.format(drop=drop, margin=margin))
     if floor.reading:
         reasons.append(FLOOR_READS_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading, prose=True)))
     return GateCell(
@@ -473,12 +478,7 @@ def _floor_matrix(context: ChartContext) -> Drawn:
 
 def _gate_detail(context: ChartContext, criterion: Criterion) -> str:
     """A gate row's line: where it sits, by its direction, and where it is read beyond the whole comparison."""
-    threshold = resolve(f"criteria.{criterion.id}.threshold", context.report_input)
-    line = format_figure(threshold)
-    if threshold.scale in ("usd", "usd_per_1k", "usd_per_1m"):
-        # Money on the criterion's ruler, its count named once (the one owner of money's scale), never a mark.
-        ruler, _own = criterion_ruler(context.report_input, criterion, threshold)
-        line = f"{ruler.spell(float(criterion.threshold))} {ruler.words(threshold.per)}"
+    line = context.forms.gate_line(context.report_input, criterion).text
     said = GATE_LINE_WORDS[criterion.direction].format(line=line)
     if criterion.statistic != "mean":
         said = f"{criterion.statistic} {said}"
@@ -559,10 +559,11 @@ def _gate_matrix(context: ChartContext) -> Drawn:
 
 @dataclass(frozen=True)
 class _Axis:
-    """One axis of a scatter: how it is drawn, and its title."""
+    """One axis of a scatter: how it is drawn, its title, and the measure it draws."""
 
     drawn: Quantity
     title: str
+    key: str
 
 
 @dataclass(frozen=True)
@@ -670,7 +671,9 @@ def _scatter_point(context: ChartContext, point: _Point, axes: tuple[_Axis, _Axi
     if color is None and point.arm in context.look.arms:
         look = context.look.arm(point.arm)
         color, shape = look.token, look.shape
-    tip = [name, f"{x_axis.title} {figure_text(x, x_axis.drawn)} · {y_axis.title} {figure_text(y, y_axis.drawn)}"]
+    x_said = context.forms.chart_note(x, x_axis.drawn, measure=x_axis.key, kind=figure_kind(context, x_axis.key)).text
+    y_said = context.forms.chart_note(y, y_axis.drawn, measure=y_axis.key, kind=figure_kind(context, y_axis.key)).text
+    tip = [name, f"{x_axis.title} {x_said} · {y_axis.title} {y_said}"]
     return ScatterPoint(
         id=point.arm,
         x=x,
@@ -708,8 +711,10 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         criteria[where] = (x_criterion, y_criterion, _panel_points(context, (x_key, y_key), statistics, task))
     # Each axis in one form, from every point it draws (#993).
     points_drawn = [point for _, _, held in criteria.values() for point in held]
-    x_drawn = quantity_of(figure_unit(context.report_input, x_key), [point.x for point in points_drawn])
-    y_drawn = quantity_of(figure_unit(context.report_input, y_key), [point.y for point in points_drawn])
+    x_unit, y_unit = figure_unit(context.report_input, x_key), figure_unit(context.report_input, y_key)
+    x_kind, y_kind = figure_kind(context, x_key), figure_kind(context, y_key)
+    x_drawn = context.forms.chart_quantity_of(x_unit, [point.x for point in points_drawn], measure=x_key, kind=x_kind)
+    y_drawn = context.forms.chart_quantity_of(y_unit, [point.y for point in points_drawn], measure=y_key, kind=y_kind)
     for task in places:
         where = task.id if task is not None else None
         panel = _Panel(title=slice_name(context, task) if task is not None else None)
@@ -726,8 +731,8 @@ def _gate_scatter(context: ChartContext) -> Drawn:
     count = max(len(panel.points) for panel in panels)
     if not count:
         raise context.refuse(f"no arm holds a figure on both {x_key!r} and {y_key!r}")
-    x_axis = _Axis(x_drawn, _axis_title(context, x_key, statistics[0], x_drawn))
-    y_axis = _Axis(y_drawn, _axis_title(context, y_key, statistics[1], y_drawn))
+    x_axis = _Axis(x_drawn, _axis_title(context, x_key, statistics[0], x_drawn), x_key)
+    y_axis = _Axis(y_drawn, _axis_title(context, y_key, statistics[1], y_drawn), y_key)
     x_log = log_spread(x_values)
     x_domain = _axis_domain(x_values, x_drawn, log=x_log)
     y_domain = context.spec.domain or _axis_domain(y_values, y_drawn, log=False)
@@ -824,9 +829,15 @@ def _lattice(context: ChartContext) -> Drawn:
             if cost is not None:
                 costs.append(cost)
         tiles.append(row)
-    drawn = quantity_of(unit, values)  # the format follows the drawn sizes
-    priced = quantity("usd_per_1k", costs)
-    timed = quantity(latency_unit) if latency_key is not None else None
+    forms, kind = context.forms, figure_kind(context, key)
+    cost_key, cost_kind = _cost_measure(report_input)
+    drawn = forms.chart_quantity_of(unit, values, measure=key, kind=kind)  # the format follows the drawn sizes
+    priced = forms.chart_quantity("usd_per_1k", costs, measure=cost_key, kind=cost_kind)
+    timed = (
+        forms.chart_quantity(latency_unit, measure=latency_key, kind=figure_kind(context, latency_key))
+        if latency_key is not None
+        else None
+    )
     # A config no gate reads has no status: its tile carries no pill, never a pass where nothing was gated.
     gated = bool(_gating(report_input))
     lattice_rows = []
@@ -835,18 +846,19 @@ def _lattice(context: ChartContext) -> Drawn:
         for arm, value, cost, latency in row:
             check = gate_check(report_input, arm) if gated else None
             shown = value * drawn.factor
-            tip = [
-                _config_name(report_input, arm),
-                f"{money_words(report_input, key, drawn)} {figure_text(shown, drawn)}",
-            ]
+            said = forms.chart_note(shown, drawn, measure=key, kind=kind).text
+            tip = [_config_name(report_input, arm), f"{money_words(report_input, key, drawn)} {said}"]
             if cost is not None:
                 share = priced_in_part(report_input, arm)
+                priced_at = forms.chart_note(cost * priced.factor, priced, measure=cost_key, kind=cost_kind).text
                 tip.append(
-                    f"{figure_text(cost * priced.factor, priced)} {per_count(cost_basis(report_input).noun, priced.counted)}"
+                    f"{priced_at} {per_count(cost_basis(report_input).noun, priced.counted)}"
                     + (f" ({share})" if share is not None else "")
                 )
             if latency is not None and timed is not None:
-                tip.append(f"p95 {figure_text(latency * timed.factor, timed)}")
+                latency_kind = figure_kind(context, latency_key or "")
+                timed_at = forms.chart_note(latency * timed.factor, timed, measure=latency_key or "", kind=latency_kind)
+                tip.append(f"p95 {timed_at.text}")
             cells.append(
                 LatticeCell(
                     id=arm,
@@ -873,6 +885,19 @@ def _lattice(context: ChartContext) -> Drawn:
     )
     # The costs' count is the matrix's own cost unit words; the measure's money says it in a line under the chart.
     return money_drawn(context, data, money=[(key, drawn)])
+
+
+def _cost_measure(report_input: ReportInput) -> tuple[str, str]:
+    """The measure a page's cost per 1,000 is a figure of, and its kind: the cost measure it is read from, else the
+    scoreboard's cost per reply; neither where the input states no cost."""
+    source = cost_basis(report_input).source
+    if source == _SCOREBOARD_COST:
+        return _REPLY_COST, "scoreboard"
+    return (source, "measure") if source else ("", "")
+
+
+#: The cost source that is the scoreboard's cost per reply, and the scoreboard figure it reads.
+_SCOREBOARD_COST, _REPLY_COST = "scoreboard", "reply_cost_usd"
 
 
 def _cost(report_input: ReportInput, arm: str) -> float | None:

@@ -65,6 +65,7 @@ from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, ChartReference, ForestChart, ForestRow
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
@@ -73,10 +74,9 @@ from threetears.evals.analysis.report.parts.charting import (
     contrast_groups,
     contrast_unit_of,
     contrast_words,
+    figure_kind,
     figure_stat,
     figure_unit,
-    interval_level,
-    interval_words,
     measure_words,
     money_words,
     missing_note,
@@ -88,14 +88,7 @@ from threetears.evals.analysis.report.parts.charting import (
     stat_value,
     unit_refusal,
 )
-from threetears.evals.analysis.report.parts.look import (
-    Quantity,
-    centred_domain,
-    figure_text,
-    in_change_form,
-    quantity,
-    quantity_of,
-)
+from threetears.evals.analysis.report.parts.look import Quantity, centred_domain
 from threetears.evals.analysis.report.parts.words import (
     BASIS_NOTE,
     BETTER_WORDS,
@@ -131,9 +124,8 @@ from threetears.evals.analysis.report.parts.words import (
     ZERO_TEMPLATE,
     change_words,
 )
-from threetears.evals.kernel.numbers import MoneyForm, format_number
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
-from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, held_means, pairing_contrast
+from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report_rows import lever_arms, query_aspect
@@ -161,7 +153,7 @@ _AS_DOTS = frozenset({"strata", "tasks", "compare", "configs", "levers"})
 class _Change:
     """One drawn change: its row's id, label, colour, group and panel, its value and interval, and how it reads; the
     level of what it is compared with (``base``, spelled, and what that level counts, ``count``) where the input
-    holds it."""
+    holds it; and the measure it is a change of (``measure`` and ``kind``; both empty for a preference's, of none)."""
 
     id: str
     label: str
@@ -176,6 +168,8 @@ class _Change:
     short_label: str | None = None
     base: str | None = None
     count: str = ""
+    measure: str = ""
+    kind: str | None = ""
 
 
 def _in_one_form(
@@ -198,7 +192,7 @@ def _in_one_form(
     :return: The changes and their quantity.
     :rtype: tuple[list[_Change], Quantity]
     """
-    report_input = context.report_input
+    report_input, forms = context.report_input, context.forms
     money = _money_keys(context, keys)
     if drawn.unit != MONEY or not money or not changes:
         return changes, drawn
@@ -206,16 +200,20 @@ def _in_one_form(
     if amounts is None:
         return changes, drawn
     scale = amounts.factor / drawn.factor
-    settled = in_change_form(
+    settled = forms.chart_changes(
         amounts,
         [change.value * scale for change in changes],
         [abs(change.interval[1] - change.interval[0]) * scale for change in changes if change.interval is not None],
+        measure=money[0],
+        kind=changes[0].kind,
     )
     names = {measure_words(report_input, key): money_words(report_input, key, settled) for key in money}
 
-    def respelled(text: str, numbers: Sequence[float]) -> str:
+    def respelled(text: str, numbers: Sequence[float], change: _Change) -> str:
         for number in numbers:
-            text = text.replace(figure_text(number, drawn), figure_text(number * scale, settled))
+            old = forms.chart_note(number, drawn, measure=change.measure, kind=change.kind).text
+            new = forms.chart_note(number * scale, settled, measure=change.measure, kind=change.kind).text
+            text = text.replace(old, new)
         return relabelled(text)
 
     moved = {old: new for old, new in names.items() if old != new}
@@ -236,8 +234,8 @@ def _in_one_form(
                 change,
                 value=change.value * scale,
                 interval=(change.interval[0] * scale, change.interval[1] * scale) if change.interval else None,
-                note=respelled(change.note, numbers),
-                tip=[respelled(line, numbers) for line in change.tip],
+                note=respelled(change.note, numbers, change),
+                tip=[respelled(line, numbers, change) for line in change.tip],
                 label=relabelled(change.label),
                 group=relabelled(change.group) if change.group is not None else None,
             )
@@ -317,10 +315,11 @@ def _level_quantity(context: ChartContext, key: str, keys: Sequence[str]) -> Qua
     """How a level (not a change) of one measure is spelled on a change chart: money on the one ruler the chart's
     money is drawn on (:func:`_amounts_drawn`), so a level and the changes from it read on one scale; any other unit
     as its figure reads (a share as a percent)."""
-    unit = figure_unit(context.report_input, key)
-    if quantity(unit).unit == MONEY:
-        return _levels_drawn(context, keys or [key], quantity(unit, change=True))
-    return quantity(unit)
+    unit, kind = figure_unit(context.report_input, key), figure_kind(context, key)
+    if context.forms.chart_quantity(unit, measure=key, kind=kind).unit == MONEY:
+        changes = context.forms.chart_quantity(unit, change=True, measure=key, kind=kind)
+        return _levels_drawn(context, keys or [key], changes)
+    return context.forms.chart_quantity(unit, measure=key, kind=kind)
 
 
 def _passes(context: ChartContext, aspect: str | None) -> tuple[str | None, str]:
@@ -335,10 +334,14 @@ def _passes(context: ChartContext, aspect: str | None) -> tuple[str | None, str]
     row = board.get(control.id) if control is not None else None
     if row is None or row.passed is None or not row.usable:
         return None, ""
-    drawn = quantity("share")
+    # The control's pass rate, its passes and trials counts of no measure.
+    forms, rate = context.forms, TRIAL_PASS_NAME
+    drawn = forms.chart_quantity("share", measure=rate, kind="trial")
     return (
-        figure_text(row.passed / row.usable * drawn.factor, drawn),
-        TRIALS_COUNT_TEMPLATE.format(passed=format_number(row.passed), trials=format_number(row.usable)),
+        forms.chart_note(row.passed / row.usable * drawn.factor, drawn, measure=rate, kind="trial").text,
+        TRIALS_COUNT_TEMPLATE.format(
+            passed=context.forms.count_alone(row.passed).text, trials=context.forms.count_alone(row.usable).text
+        ),
     )
 
 
@@ -352,8 +355,13 @@ def _figure_base(
     if stat is None or read is None:
         return None, ""
     level = _level_quantity(context, key, keys)
-    count = CASES_MEAN_TEMPLATE.format(cases=format_number(stat.n_cases)) if stat.n_cases and read[1] == "mean" else ""
-    return _level_text(read[0] * level.factor, level), count
+    count = (
+        CASES_MEAN_TEMPLATE.format(cases=context.forms.count_alone(stat.n_cases).text)
+        if stat.n_cases and read[1] == "mean"
+        else ""
+    )
+    said = context.forms.chart_level(read[0] * level.factor, level, measure=key, kind=figure_kind(context, key)).text
+    return said, count
 
 
 def _reference_arm(context: ChartContext) -> tuple[str, str] | None:
@@ -428,7 +436,9 @@ def _baselined(context: ChartContext, changes: list[_Change]) -> list[_Change]:
 
 
 def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
-    drawn = quantity("points")
+    # A reading is the pipeline's change in the pass rate.
+    forms, rate = context.forms, TRIAL_PASS_NAME
+    drawn = forms.chart_quantity("points", change=True, measure=rate, kind="trial")
     aspect = query_aspect(context.query.aspect, context.report_input)
     base, count = _passes(context, aspect.id if aspect is not None else None)
     readings: dict[str, Reading] = {}
@@ -442,9 +452,10 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
         interval = reading.within_interval
         low, high = (float(interval[0]), float(interval[1])) if interval is not None else (None, None)
         direction = "worse" if high is not None and high < 0 else "better" if low is not None and low > 0 else ""
-        tip = [look.name, figure_text(float(reading.change), drawn)]
+        tip = [look.name, forms.chart_note(float(reading.change), drawn, measure=rate, kind="trial").text]
         if low is not None and high is not None:
-            tip[1] += f", {interval_words(low, high, drawn)}"
+            ends = forms.chart_interval(low, high, drawn, measure=rate, kind="trial")
+            tip[1] += f", {ends.text}"
         changes.append(
             _Change(
                 id=arm,
@@ -457,6 +468,8 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
                 tip=tip,
                 base=base,
                 count=count,
+                measure=rate,
+                kind="trial",
             )
         )
     return changes, drawn
@@ -486,7 +499,7 @@ def _contrast_changes(
             if contrast.delta is None:
                 continue
             unit = figure_unit(report_input, group.key, kind=contrast.kind)
-            here = quantity(unit, change=True)
+            here = context.forms.chart_quantity(unit, change=True, measure=group.key, kind=contrast.kind)
             drawn = drawn or here
             look = context.look.arm(arm)
             value = float(contrast.delta) * here.factor
@@ -497,9 +510,11 @@ def _contrast_changes(
             )
             words = contrast_words(report_input, contrast, named)
             direction = {"regressed": "worse", "improved": "better"}.get(contrast.verdict, "")
-            tip = [look.name, words, figure_text(value, here)]
+            said = context.forms.chart_note(value, here, measure=group.key, kind=contrast.kind).text
+            tip = [look.name, words, said]
             if interval is not None:
-                tip[2] += f", {interval_words(*interval, here)}"
+                ends = context.forms.chart_interval(*interval, here, measure=group.key, kind=contrast.kind)
+                tip[2] += f", {ends.text}"
             shown = contrast_words(report_input, contrast, None) if panelled else words
             if contrast.kind == "trial":
                 base, count = _passes(context, contrast.aspect)
@@ -516,16 +531,20 @@ def _contrast_changes(
                     value=value,
                     interval=interval,
                     strong=contrast.verdict in _DIRECTED,
-                    note=" ".join(part for part in (figure_text(value, here), change_words(direction)) if part),
+                    note=" ".join(part for part in (said, change_words(direction)) if part),
                     tip=tip,
                     group=shown if grouped else None,
                     panel=named if panelled else None,
                     base=base,
                     count=count,
+                    measure=group.key,
+                    kind=contrast.kind,
                 )
             )
     keys = [group.key for group in groups]
-    return (*_in_one_form(context, keys, changes, drawn or quantity("points")), _missing_contrasts(context, contrasts))
+    # A chart that drew no contrast has an axis of no measure.
+    drawn = drawn or context.forms.chart_quantity("points")
+    return (*_in_one_form(context, keys, changes, drawn), _missing_contrasts(context, contrasts))
 
 
 def _missing_contrasts(context: ChartContext, contrasts: Sequence[Contrast]) -> tuple[str, ...]:
@@ -576,8 +595,10 @@ def _descriptive(
         return None
     look = context.look.arm(arm)
     head = [where] if where else []
+    forms, kind = context.forms, figure_kind(context, key)
     if mine.change is not None and (theirs is None or stat_value(context.report_input, key, mine) is None):
         change = float(mine.change) * drawn.factor
+        said = forms.chart_note(change, drawn, measure=key, kind=kind).text
         return _Change(
             id=arm,
             label=look.label,
@@ -585,8 +606,10 @@ def _descriptive(
             value=change,
             interval=None,
             strong=None,
-            note=figure_text(change, drawn),
-            tip=[*head, look.name, figure_text(change, drawn)],
+            note=said,
+            tip=[*head, look.name, said],
+            measure=key,
+            kind=kind,
         )
     mine_value = stat_value(context.report_input, key, mine)
     theirs_value = stat_value(context.report_input, key, theirs) if theirs is not None else None
@@ -598,12 +621,10 @@ def _descriptive(
     control = context.look.arm(_control_or_refuse(context))
     # A level reads in its own unit (a share as a percent), money on the chart's one ruler, never at the change's.
     level = _level_quantity(context, key, keys)
-    tip = [
-        *head,
-        f"{control.name} {_level_text(theirs_value[0] * level.factor, level)} · "
-        f"{look.name} {_level_text(mine_value[0] * level.factor, level)}",
-        figure_text(change, drawn),
-    ]
+    base = forms.chart_level(theirs_value[0] * level.factor, level, measure=key, kind=kind).text
+    mine_level = forms.chart_level(mine_value[0] * level.factor, level, measure=key, kind=kind).text
+    said = forms.chart_note(change, drawn, measure=key, kind=kind).text
+    tip = [*head, f"{control.name} {base} · {look.name} {mine_level}", said]
     return _Change(
         id=arm,
         label=look.label,
@@ -611,25 +632,17 @@ def _descriptive(
         value=change,
         interval=None,
         strong=read,
-        note=figure_text(change, drawn),
+        note=said,
         tip=tip,
-        base=_level_text(theirs_value[0] * level.factor, level),
+        base=base,
         count=(
-            CASES_MEAN_TEMPLATE.format(cases=format_number(theirs.n_cases))
+            CASES_MEAN_TEMPLATE.format(cases=forms.count_alone(theirs.n_cases).text)
             if theirs.n_cases and theirs_value[1] == "mean"
             else ""
         ),
+        measure=key,
+        kind=kind,
     )
-
-
-def _level_text(value: float, drawn: Quantity) -> str:
-    """A level (not a change) in the quantity's unit, unsigned: money in its ruler's form, never coarser than the
-    chart's ticks, so a tip's two levels differ by its bar ($5,422 beside $6,300 for a bar of $878, never $5,400 at
-    two figures: the one more figure owner ruling Q3 grants where it is needed)."""
-    form = drawn.money
-    if drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
-        return MoneyForm(per_thousand=form.per_thousand, decimals=max(form.places(value), form.decimals)).spell(value)
-    return figure_text(value, dataclasses.replace(drawn, change=False))
 
 
 def _levels_drawn(context: ChartContext, keys: Sequence[str], drawn: Quantity) -> Quantity:
@@ -644,7 +657,13 @@ def _levels_drawn(context: ChartContext, keys: Sequence[str], drawn: Quantity) -
 
 def _money_keys(context: ChartContext, keys: Sequence[str]) -> list[str]:
     """The measures among a chart's that are money."""
-    return [key for key in keys if quantity(figure_unit(context.report_input, key)).unit == MONEY]
+    return [key for key in keys if _level_unit(context, key) == MONEY]
+
+
+def _level_unit(context: ChartContext, key: str) -> str:
+    """The unit a chart draws one measure's levels in."""
+    unit = figure_unit(context.report_input, key)
+    return context.forms.chart_quantity(unit, measure=key, kind=figure_kind(context, key)).unit
 
 
 def _amounts_drawn(context: ChartContext, keys: Sequence[str]) -> Quantity | None:
@@ -653,10 +672,7 @@ def _amounts_drawn(context: ChartContext, keys: Sequence[str]) -> Quantity | Non
     money = _money_keys(context, keys)
     if not money:
         return None
-    report_input = context.report_input
-    return quantity_of(
-        figure_unit(report_input, money[0]), [mean for key in money for mean in held_means(report_input, key)]
-    )
+    return context.forms.chart_amounts(context.report_input, money)
 
 
 def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
@@ -667,9 +683,11 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
     arms = list(dict.fromkeys(row.arm for row in context.rows() if row.arm != control))
     grouped = len(keys) > 1
     changes: list[_Change] = []
-    drawn = quantity("points")
+    # A chart that selects no measure has an axis of none.
+    drawn = context.forms.chart_quantity("points")
     for key in keys:
-        drawn = quantity(figure_unit(report_input, key), change=True)
+        unit = figure_unit(report_input, key)
+        drawn = context.forms.chart_quantity(unit, change=True, measure=key, kind=figure_kind(context, key))
         theirs = figure_stat(report_input, key, control, context.query.aspect)
         for arm in context.arm_order(arms):
             mine = figure_stat(report_input, key, arm, context.query.aspect)
@@ -693,9 +711,9 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
     keys = slice_keys(context, slices)
     arms = [arm for arm in context.query.arms or context.look.arms if arm != control]
     by_arm: dict[str, list[_Change]] = {}
-    drawn = quantity(figure_unit(context.report_input, keys[0]), change=True)
+    drawn = _change_quantity(context, keys[0])
     for key in keys:
-        drawn = quantity(figure_unit(context.report_input, key), change=True)
+        drawn = _change_quantity(context, key)
         for arm in context.arm_order(arms):
             for item in slices:
                 name = slice_name(context, item)
@@ -719,18 +737,26 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
     return {arm: [next(redrawn) for _ in rows] for arm, rows in by_arm.items()}, settled, notes
 
 
+def _change_quantity(context: ChartContext, key: str) -> Quantity:
+    """How a chart draws the changes of one measure, in its figures' unit."""
+    unit = figure_unit(context.report_input, key)
+    return context.forms.chart_quantity(unit, change=True, measure=key, kind=figure_kind(context, key))
+
+
 def _preference_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
     preference = context.report_input.human_pref
     if preference is None:
         raise context.refuse("the input holds no human preference")
-    drawn = quantity("percent")
+    # A human preference is a share of raters, no measure's figure.
+    drawn = context.forms.chart_quantity("percent")
     changes = []
     for row in context.rows():
         assert isinstance(row.item, PreferenceRow)
         item = row.item
         value = float(item.prefers_control)
         width = float(item.half_width) if item.half_width is not None else None
-        tip = [item.name or item.id, figure_text(value, drawn)]
+        said = context.forms.chart_note(value, drawn).text
+        tip = [item.name or item.id, said]
         changes.append(
             _Change(
                 id=item.id,
@@ -739,8 +765,10 @@ def _preference_changes(context: ChartContext) -> tuple[list[_Change], Quantity,
                 value=value,
                 interval=(value - width, value + width) if width is not None else None,
                 strong=abs(value - _NO_PREFERENCE) > width if width is not None else None,
-                note=figure_text(value, drawn),
+                note=said,
                 tip=tip,
+                measure="",
+                kind="",
             )
         )
     words = HUMAN_PREF_NOTE.format(
@@ -763,7 +791,7 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
         read = stat_value(report_input, key, row.item)
         if read is not None:
             values[row.arm] = read[0]
-    drawn = quantity(figure_unit(report_input, key), change=True)
+    drawn = _change_quantity(context, key)
     by_levels = {tuple(sorted(config.levels.items())): config.arm for config in report_input.configs}
     changes: list[_Change] = []
     for factor in report_input.factors:
@@ -780,6 +808,8 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
                 continue
             change = sum(pairs) / len(pairs) * drawn.factor
             name = level.name or level.id
+            kind = figure_kind(context, key)
+            said = context.forms.chart_note(change, drawn, measure=key, kind=kind).text
             changes.append(
                 _Change(
                     id=f"{factor.id}={level.id}",
@@ -788,9 +818,11 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
                     value=change,
                     interval=None,
                     strong=None,
-                    note=figure_text(change, drawn),
-                    tip=[name, figure_text(change, drawn)],
+                    note=said,
+                    tip=[name, said],
                     group=factor.name or factor.id,
+                    measure=key,
+                    kind=kind,
                 )
             )
     return (*_in_one_form(context, [key], changes, drawn), (LEVER_NOTE,))
@@ -801,7 +833,8 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
 
 def _difference_quantity(context: ChartContext, key: str) -> Quantity:
     """How a difference between two arms on one measure is drawn: a rate's in points, another's in its own unit."""
-    return quantity(contrast_unit_of(context.report_input, key), change=True)
+    unit = contrast_unit_of(context.report_input, key)
+    return context.forms.chart_quantity(unit, change=True, measure=key, kind=figure_kind(context, key))
 
 
 def _arm_name(context: ChartContext, arm: str) -> str:
@@ -843,7 +876,9 @@ def _figure_ends(figure: CitedFigure | None, drawn: Quantity) -> tuple[float, fl
 
 
 def _analysed_change(
+    context: ChartContext,
     *,
+    measure: str,
     row_id: str,
     label: str,
     short: str,
@@ -856,10 +891,12 @@ def _analysed_change(
     base: str | None = None,
 ) -> _Change:
     """One row an analysis computed, as a change: bold where its interval clears zero, muted where it holds it; what
-    it is compared with (``base``) where the input states it."""
-    tip = [*head, figure_text(value, drawn)]
+    it is compared with (``base``) where the input states it; on ``measure``, the measure the analysis compared."""
+    forms, kind = context.forms, figure_kind(context, measure)
+    said = forms.chart_note(value, drawn, measure=measure, kind=kind).text
+    tip = [*head, said]
     if interval is not None:
-        tip[-1] += f", {interval_words(*interval, drawn)}"
+        tip[-1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).text}"
     return _Change(
         id=row_id,
         label=label,
@@ -867,11 +904,13 @@ def _analysed_change(
         value=value,
         interval=interval,
         strong=strong,
-        note=figure_text(value, drawn),
+        note=said,
         tip=tip,
         group=group,
         short_label=short,
         base=base,
+        measure=measure,
+        kind=kind,
     )
 
 
@@ -899,6 +938,8 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
             bases.append(compare_basis(context, item, key))
         changes.append(
             _analysed_change(
+                context,
+                measure=key,
                 row_id=row.label,
                 label=place,
                 short=place,
@@ -907,7 +948,11 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
                 drawn=drawn,
                 head=[place],
                 strong=item.excludes_zero,
-                base=_level_text(theirs, level) if theirs is not None else None,
+                base=(
+                    context.forms.chart_level(theirs, level, measure=key, kind=figure_kind(context, key)).text
+                    if theirs is not None
+                    else None
+                ),
             )
         )
     changes, drawn = _in_one_form(context, [key], changes, drawn)
@@ -1009,13 +1054,13 @@ def _paired_cases(context: ChartContext, row: ComparisonRow, candidate: str) -> 
     return PAIRED_CASES["paired"].format(cases=cases.reads)
 
 
-def setting_value(report_input: ReportInput, setting: str, arm: str) -> str | None:
+def setting_value(context: ChartContext, setting: str, arm: str) -> str | None:
     """One arm's value of a setting as the input states it: the name its declared factor gives that level (a level
     matched by its id or name, as a lattice matches one), else the value itself, a number by the package's number rule
     (``1``, never ``1.0``); None where the arm states none.
 
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
     :param setting: The setting, by id.
     :ptype setting: str
     :param arm: The arm, by id.
@@ -1023,10 +1068,11 @@ def setting_value(report_input: ReportInput, setting: str, arm: str) -> str | No
     :return: The value as a reader reads it, or None.
     :rtype: str | None
     """
+    report_input = context.report_input
     value = arm_settings(report_input).get(arm, {}).get(setting)
     if value is None:
         return None
-    spelled = value if isinstance(value, str) else format_number(float(value))
+    spelled = value if isinstance(value, str) else context.forms.declared(float(value)).text
     factor = next((factor for factor in report_input.factors if factor.id == setting), None)
     for level in factor.levels if factor is not None else []:
         if spelled.casefold() in {level.id.casefold(), (level.name or level.id).casefold()}:
@@ -1050,7 +1096,7 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
     arms = lever_arms(row, context.report_input)
 
     def moved(start: str, end: str, *, short: bool) -> str:
-        value = setting_value(context.report_input, row.setting, end)
+        value = setting_value(context, row.setting, end)
         first = _arm_tag(context, start) if short else _arm_name(context, start)
         return LEVER_MOVE_TEMPLATE.format(start=first, value=value if value is not None else _arm_name(context, end))
 
@@ -1094,6 +1140,8 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
             strong = None if interval is None else interval[0] > 0 or interval[1] < 0
         changes.append(
             _analysed_change(
+                context,
+                measure=key,
                 row_id=row.label,
                 label=label,
                 short=short,
@@ -1149,7 +1197,7 @@ def _family_level(context: ChartContext) -> str:
     together, ``99.7% (95% across 16 comparisons)`` (the kit prints ``99.7% intervals (95% across 16 comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
-    return interval_level(context.level, families[0] if len(families) == 1 else None)
+    return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
 
 
 def _forest(context: ChartContext) -> Drawn:
