@@ -1,7 +1,8 @@
 """The charts of magnitude: bars from zero, and lines over an ordered x.
 
-**bars** draw each figure from zero (from the axis's low end on a log axis, where a magnitude's figures span more
-than ten times, by the page's one log rule, which a caption says):
+**bars** draw each figure from zero; where a magnitude's figures span more than ten times (the page's one log rule)
+they are drawn on a log axis as dots, never bars, since a bar's length from a log axis's low end measures nothing, and
+a caption says the axis is logarithmic, and that an open mark has no interval:
 
 - *measures*, *judged*: an arm per row (on the query's aspect where it names one), grouped under the measure's reader
   name where the chart reads several; money per reply drawn per 1,000 replies;
@@ -83,7 +84,8 @@ from threetears.evals.analysis.report.parts.look import (
     quantity,
 )
 from threetears.evals.analysis.report.parts.words import (
-    LOG_BARS_NOTE,
+    LOG_X_NOTE,
+    OPEN_MARKS_NOTE,
     PRICE_OPEN_NOTE,
     PRICE_STEP_NOTES,
     PRICE_STEP_TEMPLATE,
@@ -526,6 +528,7 @@ def _panels(
                 tick_fmt=own.tick_fmt if spans is not None else None,
                 ticks=log_ticks(spans[own]) if spans is not None and own in logged else None,
                 log=(own in logged) if spans is not None and own in logged else None,
+                dots=True if spans is not None and own in logged else None,
             )
         )
     return panels
@@ -594,11 +597,25 @@ def _bars(context: ChartContext) -> Drawn:
         tick_fmt=drawn.tick_fmt,
         ticks=log_ticks(domain) if drawn in logged else None,
         log=True if drawn in logged else None,
+        dots=True if drawn in logged else None,
         level=context.level or None,
         reference=reference,
         emphasis=context.emphasis,
     )
-    notes = (*_statistic_note(statistics), *((LOG_BARS_NOTE,) if logged else ()), *computed_notes(context))
+    # The rows drawn as dots on a log axis: an open mark among them is one with no interval, which a caption says.
+    dotted = [row for row in data.rows or [] if data.log] + [
+        row
+        for panel in data.panels or []
+        if (panel.log if panel.log is not None else data.log)
+        for row in panel.rows or []
+    ]
+    open_marks = any(row.lo is None for row in dotted)
+    notes = (
+        *_statistic_note(statistics),
+        *((LOG_X_NOTE,) if logged else ()),
+        *((OPEN_MARKS_NOTE,) if open_marks else ()),
+        *computed_notes(context),
+    )
     if source == "settle":
         notes = (*notes, *settle_notes(context))
     if source == "prices":

@@ -27,6 +27,7 @@ The kinds the kit lays out as HTML rather than drawing (a gate matrix, a lattice
 from __future__ import annotations
 
 import html
+import itertools
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -39,7 +40,6 @@ from pydantic import BaseModel
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
-    BarRow,
     BarsChart,
     BarsPanel,
     ChartReference,
@@ -204,6 +204,30 @@ _FORMATS: dict[str, Callable[[float, int | None], str]] = {
     "x": lambda value, digits: _fixed(value, 1 if digits is None else digits) + "×",
     "k": lambda value, digits: _fixed(value / 1000, 1 if digits is None else digits) + "k",
 }
+
+
+def _tick_format(spec: str) -> Callable[[float], str]:
+    """An axis's tick labels in a value format's name without its digits (``kTickFmt``: ``pct:3`` ticks as ``pct``),
+    which places them."""
+    return _kit_format(re.sub(r":\d$", "", spec))
+
+
+#: The formats whose digits are decimals of the value drawn, which a tick takes from its axis's step (``K_STEP_FMTS``).
+_STEP_FORMATS = frozenset({"num", "pct", "pts", "usd", "ms", "s", "x"})
+
+
+def _tick_labels(spec: str, ticks: Sequence[float]) -> Callable[[float], str]:
+    """The labels of the ticks placed (``kTickLabels``), every one at the decimals the axis's step needs (``$0.00``,
+    ``$0.05``, ``$0.10``; ``0.0%``, ``0.5%``, ``1.0%``; ``0%``, ``50%``, ``100%``), so one axis reads at one precision,
+    never at the decimals a value is stated to; a format whose digits mean something else keeps its own."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    if match is None or match[2] not in _STEP_FORMATS:
+        return _tick_format(spec)
+    step = min((b - a for a, b in itertools.pairwise(ticks)), default=1.0)
+    places = 0
+    while places < 6 and abs(round(step * 10**places) - step * 10**places) > 1e-6 * 10**places:
+        places += 1
+    return _kit_format(f"{match[1]}{match[2]}:{places}")
 
 
 def _kit_format(spec: str) -> Callable[[float], str]:
@@ -397,10 +421,6 @@ def _titled(tip: Sequence[str], inner: str, hit: tuple[float, float, float, floa
     return f"<g><title>{_escape(chr(10).join(tip))}</title>{inner}{target}</g>"
 
 
-def _cut(label: str, room: int) -> str:
-    return label if len(label) <= room else label[: max(room - 1, 0)] + "…"
-
-
 def _mark(
     shape: ChartShape | None, x: float, y: float, r: float, color: str, hollow: bool | None, extra: str = ""
 ) -> str:
@@ -441,7 +461,8 @@ def _texture(name: str, x: float, y: float, w: float, h: float, color: str, opac
         )
     ]
     if w > 0 and h > 0:
-        step, path = 6.0, []
+        # Sparse (12 px apart), so a light tint carries it and a bar of failures never reads as a block of ink.
+        step, path = 12.0, []
 
         def diagonal(sx: float, sy: float, direction: int) -> None:
             a, b = max(0.0, x - sx), min(h, x + w - sx)
@@ -604,7 +625,7 @@ _BarsLike = BarsChart | BarsPanel
 
 def _bars(d: _BarsLike, w: float) -> _Drawn:
     """Horizontal bars (``barsH``): plain or stacked, diverging from a no-preference point, grouped, with whiskers and
-    a reference line."""
+    a reference line; changes, and every row on a log axis, as dots."""
     rows, (d0, d1) = _need(d.rows, "rows"), _need(d.domain, "domain")
     f = _kit_format(_need(d.fmt, "fmt"))
     tf = _kit_format(d.tick_fmt) if d.tick_fmt else f
@@ -615,29 +636,20 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     line_ref: ChartReference | None = None if no_preference else ref
     narrow = w < 480
     tag_w = 22 if any(r.tag is not None for r in rows) else 0
-    # Changes as dots label as a dot strip does: the column fits the longest label on one line up to 42% of the width,
-    # else on two up to half of it.
-    longest = max(len(r.label) for r in rows)
-    one, two = longest * 6.6 + 18, (math.ceil(longest / 2) + 4) * 6.6 + 18
-    dots_w = one if one <= w * 0.42 else max(w * 0.42, min(two, w * 0.5))
-    fitted = dots_w if d.dots else (min(130, w * 0.36) if narrow else min(220, w * 0.3))
+    # A log axis draws each row as a dot, never a bar: a bar's length from a log axis's low end measures nothing.
+    dots = bool(d.dots or d.log)
+    # A dot strip's column, and room for the tags beside its labels.
+    fitted = _dot_label_w(rows, w) + tag_w if dots else (min(130, w * 0.36) if narrow else min(220, w * 0.3))
     lw = (d.label_width_narrow if narrow else d.label_width) or fitted
     ml, mr, mb = lw, float(52 if narrow else 70), 22
-    # Changes as dots: one label form for the chart, and rows 34 px apart where a label takes two lines, so it clears a
-    # group's heading.
-    dots_room = math.floor((ml - 14 - tag_w) / 6.6)
-    dots_whole = all(_two_lines(r.label, dots_room) for r in rows)
-
-    def dot_lines(r: BarRow) -> list[str]:
-        return (_two_lines(r.label, dots_room) if dots_whole else None) or _fit_label(
-            r.short_label or r.label, None, dots_room
-        )
-
-    two_lines = bool(d.dots) and any(len(dot_lines(r)) > 1 for r in rows)
-    row_h = d.row_height or (34 if two_lines else 28)
-    if d.dots and any(r.note is not None for r in rows):
-        # Changes as dots: each note at the right edge, wrapped as a forest's, the margin as wide as the widest line.
-        mr = max(len(line) * 6.4 for r in rows for line in _wrapped(r.note or "", w * 0.3 - 10)) + 16
+    # Every note whole, wrapped at its spaces to two lines at most, the margin as wide as its widest line: a dot's note
+    # at the right edge, a bar's past its bar's end.
+    if any(r.note is not None for r in rows):
+        mr = _note_margin(rows, w) if dots else max(mr, _note_margin(rows, w))
+    # One label form for the chart, every label whole on one line or two, else every row its short label, never a tag
+    # alone; rows apart by the lines a label takes, so it clears a group's heading.
+    lines_of = _row_lines(rows, math.floor((ml - 14 - tag_w) / 6.6))
+    row_h = _row_h(rows, lines_of, d.row_height or 28)
     mt = 20 if (line_ref is not None or d.level or origin_label) else 6
     x = _Scale(d0, d1, ml, w - mr, log=bool(d.log))
     # What zero is on a change chart (the control), on lines of its own above every other label.
@@ -647,7 +659,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     words = _better_words(d.better)
     better_h = _better_height(words, ml, w - mr)
     mb += better_h
-    level_room = w - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
+    level_room = w - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(line_ref.value), line_ref.label, 0, level_room) if line_ref and line_ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
@@ -656,7 +668,12 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0)
     out: list[str] = []
     tick_w = max(len(tf(v)) for v in (d0, d1, (d0 + d1) / 2)) * 6.4 + 14
-    shown = _thin_ticks(d.ticks, x, tf) if d.ticks else _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), tf, x)
+    if d.ticks:
+        shown = _thin_ticks(d.ticks, x, tf)
+    elif d.log:
+        shown = _log_ticks(d0, d1, tf, x)
+    else:
+        shown = _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), tf, x)
     for v in shown:
         out.append(_line(x(v), mt, x(v), h - mb, "grid"))
         out.append(_text(x(v), h - 6 - better_h, tf(v), anchor="middle"))
@@ -680,27 +697,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         v = _clamp(value, d0, d1)
         color = _tok(r.color, "--s1")
         opacity = 0.45 if r.muted else 1
-        marks: list[str] = []
-        room = math.floor((ml - 14 - tag_w) / 6.6)
-        shown_label = r.label
-        if len(shown_label) > room:
-            if r.short_label and len(r.short_label) <= room:
-                shown_label = r.short_label
-            elif r.tag is not None:
-                shown_label = ""
-            else:
-                shown_label = _cut(r.short_label or shown_label, room)
-        if d.dots:
-            # One form for the chart: every label whole on one line or two, else every row's short label.
-            lines = dot_lines(r)
-            spans = "".join(
-                _el("tspan", {"x": ml - 10 - tag_w, "dy": 13 if j else 0}, _escape(line))
-                for j, line in enumerate(lines)
-            )
-            attrs = {"x": ml - 10 - tag_w, "y": cy + 4 - 6.5 * (len(lines) - 1), "text-anchor": "end"}
-            marks.append(_el("text", {**attrs, "class": "lbl-strong" if strong else "lbl"}, spans))
-        else:
-            marks.append(_text(ml - 10 - tag_w, cy + 4, shown_label, "lbl-strong" if strong else "lbl", "end"))
+        marks: list[str] = [_label_text(lines_of(r), ml - 10 - tag_w, cy, strong)]
         if r.tag is not None:
             tag_color = _tok(r.color, "--ink-2")
             on_tag = ink_on(f"var({tag_color})", _TAG_INKS)
@@ -713,18 +710,10 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
             marks.append(
                 _text(ml - 18, cy + 3.5, r.tag, "tag", "middle", f"fill:var({on_tag});font-size:12px;font-weight:600")
             )
-        if d.dots:
-            # A dot at the change and its faint interval; an open mark where the row has no interval, never a solid one.
-            value = _need(r.value, "value")
-            if r.lo is not None and r.hi is not None:
-                style = f"stroke:var({color});stroke-width:3;stroke-linecap:round;opacity:.35"
-                marks.append(_line(x(_clamp(r.lo, d0, d1)), cy, x(_clamp(r.hi, d0, d1)), cy, style=style))
+        if dots:
+            # A dot at the value and its faint interval; an open mark where the row has no interval, never a solid one.
             fade = ";opacity:.45" if r.muted else ""
-            marks.append(_mark("circle", x(_clamp(value, d0, d1)), cy, 5, color, r.lo is None, fade))
-            if r.note is not None:
-                lines = _wrapped(r.note, mr - 10)
-                css = "lbl-strong" if strong else "tick"
-                marks.append(_lines_text(w - mr + 8, cy + 4 - 6 * (len(lines) - 1), lines, css))
+            marks += _dot_row(x, d0, d1, r, value, cy, color, "circle", r.lo is None, w - mr + 8, mr - 10, strong, fade)
             spread = f" ({f(r.lo)} to {f(r.hi)})" if r.lo is not None and r.hi is not None else ""
             out.append(
                 _titled(_tip_or(r.tip, r.label, f(value) + spread), "".join(marks), (0, cy - row_h / 2, w, row_h))
@@ -788,23 +777,29 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
                         },
                     )
                 )
+        # The note past the bar's end, wrapped as the margin was sized; the value alone only where no side holds it.
         right = value >= origin
         if r.lo is not None and hi is not None:
             edge = x(min(d1, hi)) if right else x(max(d0, r.lo))
         else:
             edge = x(v)
-        note = r.note if r.note is not None else f(value)
-        if right and edge + 6 + len(note) * 6.4 > w:
-            note = f(value)
-        note_w = len(note) * 6.4
+        notes = _wrapped(r.note, mr - 10) if r.note is not None else [f(value)]
+        note_w = max(len(line) for line in notes) * 6.4
+        if right and edge + 6 + note_w > w:
+            notes = [f(value)]
+            note_w = len(notes[0]) * 6.4
         flip = not right and edge - 6 - note_w < ml + 4
         past = max(z, x(min(d1, hi if hi is not None else origin)))
         if flip and past + 6 + note_w > w:
-            note = f(value)
+            notes = [f(value)]
+            note_w = len(notes[0]) * 6.4
         note_x = edge + 6 if right else past + 6 if flip else edge - 6
-        marks.append(
-            _text(note_x, cy + 4, note, "lbl-strong" if strong else "tick", "start" if right or flip else "end")
+        spans = "".join(
+            _el("tspan", {"x": note_x, "dy": 12 if j else 0}, _escape(line)) for j, line in enumerate(notes)
         )
+        anchor = "start" if right or flip else "end"
+        attrs = {"x": note_x, "y": cy + 4 - 6 * (len(notes) - 1), "text-anchor": anchor}
+        marks.append(_el("text", {**attrs, "class": "lbl-strong" if strong else "tick"}, spans))
         if r.lo is None:
             spread = ""
         elif open_above:
@@ -818,7 +813,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         if label is not None:
             out.append(_ref_text(label, mt - 8, True))
     if d.level:
-        out.append(_text(w, mt - 8, f"{d.level} intervals", anchor="end"))
+        out.append(_text(w, mt - 8, _level_head(d.level), anchor="end"))
     return "".join(out), h
 
 
@@ -868,46 +863,164 @@ def _better(words: tuple[str, str] | None, x0: float, x1: float, y: float) -> li
     return [_text(x0, y - 16 if two else y, f"← {words[0]}"), _text(x1, y, f"{words[1]} →", anchor="end")]
 
 
+def _greedy(text: str, room: int) -> tuple[str, str]:
+    """``text``'s first line of whole words that fits ``room`` characters (empty where its first word does not), and
+    the words after it."""
+    words = text.split(" ")
+    first, i = "", 0
+    while i < len(words):
+        joined = f"{first} {words[i]}" if first else words[i]
+        if len(joined) > room:
+            break
+        first, i = joined, i + 1
+    return first, " ".join(words[i:])
+
+
 def _two_lines(text: str, room: int) -> list[str] | None:
     """``text`` whole where it fits ``room`` characters, else broken at its spaces onto two lines that each fit
     (``kWrap2``); None where it does not fit on two."""
     if len(text) <= room:
         return [text]
-    words = text.split(" ")
-    first, i = "", 0
-    while i < len(words):
-        joined = f"{first} {words[i]}" if first else words[i]
-        if len(joined) > room:
-            break
-        first, i = joined, i + 1
-    rest = " ".join(words[i:])
+    first, rest = _greedy(text, room)
     return [first, rest] if first and len(rest) <= room else None
+
+
+def _wrap_all(text: str, room: int) -> list[str]:
+    """``text`` broken at its spaces onto as many lines of ``room`` characters as it takes (``kWrapAll``); a word
+    longer than ``room`` is a line of its own, never cut."""
+    lines: list[str] = []
+    while text:
+        first, text = _greedy(text, room)
+        if not first:
+            first, _, text = text.partition(" ")
+        lines.append(first)
+    return lines or [""]
 
 
 def _fit_label(label: str, short: str | None, room: int) -> list[str]:
     """A row label in a column of ``room`` characters (``kFitLabel``): whole, else on two lines, else its short label
-    so, else cut on its second line; never cut while a whole form fits, so no two rows read alike that their labels
-    tell apart."""
-    fitted = _two_lines(label, room) or (_two_lines(short, room) if short else None)
-    if fitted is not None:
-        return fitted
-    text = short or label
-    words = text.split(" ")
-    first, i = "", 0
-    while i < len(words):
-        joined = f"{first} {words[i]}" if first else words[i]
-        if len(joined) > room:
-            break
-        first, i = joined, i + 1
-    if not first:
-        return [text[: max(room - 1, 0)] + "…"]
-    return [first, " ".join(words[i:])[: max(room - 1, 0)] + "…"]
+    so, else wrapped onto as many lines as it takes; never cut, so no two rows read alike that their labels tell
+    apart."""
+    return _two_lines(label, room) or (_two_lines(short, room) if short else None) or _wrap_all(short or label, room)
+
+
+def _row_h(rows: Sequence[Any], lines_of: Callable[[Any], list[str]], base: float) -> float:
+    """The row pitch (``kRowH``): ``base`` (the chart's own where it sets one) where every label takes one line, else
+    room for the most lines a label takes, 13 px each, so a wrapped label never runs into the next row."""
+    most = max(len(lines_of(r)) for r in rows)
+    return max(base, 13 * most + 8) if most > 1 else base
+
+
+def _row_lines(rows: Sequence[Any], room: int) -> Callable[[Any], list[str]]:
+    """One label form per chart, so rows read alike (``kRowLines``): every label whole on one line or two where all
+    fit, else each row its short label (:func:`_fit_label`); a row's lines."""
+    whole = all(_two_lines(r.label, room) for r in rows)
+
+    def lines(r: Any) -> list[str]:
+        if whole:
+            return _two_lines(r.label, room) or [r.label]
+        return _fit_label(getattr(r, "short_label", None) or r.label, None, room)
+
+    return lines
+
+
+def _label_text(lines: Sequence[str], x: float, cy: float, strong: bool) -> str:
+    """A row's label lines, right-aligned at ``x`` and centred on ``cy``, 13 px apart (``kLabelText``)."""
+    spans = "".join(_el("tspan", {"x": x, "dy": 13 if j else 0}, _escape(line)) for j, line in enumerate(lines))
+    attrs = {"x": x, "y": cy + 4 - 6.5 * (len(lines) - 1), "text-anchor": "end"}
+    return _el("text", {**attrs, "class": "lbl-strong" if strong else "lbl"}, spans)
+
+
+def _dot_label_w(rows: Sequence[Any], w: float) -> float:
+    """A dot strip's label column (``kDotLabelW``): the longest label on one line up to 42% of the width, else on two
+    lines up to half of it."""
+    longest = max(len(r.label) for r in rows)
+    one, two = longest * 6.6 + 18, (math.ceil(longest / 2) + 4) * 6.6 + 18
+    return one if one <= w * 0.42 else max(w * 0.42, min(two, w * 0.5))
+
+
+def _note_margin(rows: Sequence[Any], w: float) -> float:
+    """The right margin that holds every row's note, each wrapped at its spaces to 30% of the width
+    (``kNoteMargin``)."""
+    return max(len(line) * 6.4 for r in rows for line in _wrapped(r.note or "", w * 0.3 - 10)) + 16
+
+
+def _dot_row(
+    x: _Scale,
+    d0: float,
+    d1: float,
+    r: Any,
+    value: float,
+    cy: float,
+    color: str,
+    shape: ChartShape | None,
+    hollow: bool | None,
+    note_x: float,
+    room: float,
+    strong: bool,
+    extra: str = "",
+) -> list[str]:
+    """A dot row (``kDotRow``): its faint interval, its mark at ``value`` in ``shape`` (hollow where asked, ``extra``
+    style after), and its note at ``note_x``, wrapped to ``room`` px."""
+    marks: list[str] = []
+    if r.lo is not None and r.hi is not None:
+        style = f"stroke:var({color});stroke-width:3;stroke-linecap:round;opacity:.35"
+        marks.append(_line(x(_clamp(r.lo, d0, d1)), cy, x(_clamp(r.hi, d0, d1)), cy, style=style))
+    marks.append(_mark(shape, x(_clamp(value, d0, d1)), cy, 5, color, hollow, extra))
+    if r.note is not None:
+        lines = _wrapped(r.note, room)
+        marks.append(_lines_text(note_x, cy + 4 - 6 * (len(lines) - 1), lines, "lbl-strong" if strong else "tick"))
+    return marks
+
+
+#: A log axis's tick steps within a decade, coarsest first (``kLogTicks``), and the finer set it falls to where none
+#: of them puts three ticks in its range.
+_LOG_STEPS: tuple[tuple[int, ...], ...] = ((1,), (1, 3), (1, 2, 5))
+_LOG_STEPS_FINE = (1, 2, 3, 5, 7)
+
+
+def _log_ticks(a: float, b: float, f: Callable[[float], str], x: _Scale) -> list[float]:
+    """A log axis's ticks where the data names none (``kLogTicks``): the decades, else 1 and 3 of each, else 1, 2 and
+    5, the first of those with three ticks at least in the range whose labels do not touch at the drawn scale; 1, 2,
+    3, 5 and 7 where no set gives three. A log axis is never left with a stretch it does not label, and never takes a
+    linear step's ticks."""
+
+    def at(steps: Sequence[int]) -> list[float]:
+        found: list[float] = []
+        for decade in range(math.floor(math.log10(a)), math.ceil(math.log10(b)) + 1):
+            for step in steps:
+                # The decimal step and power exactly, then the nearest float, as the kit's toPrecision(12) gives it.
+                value = float(Decimal(step).scaleb(decade))
+                if a * (1 - 1e-9) <= value <= b * (1 + 1e-9):
+                    found.append(value)
+        return found
+
+    def fits(found: list[float]) -> bool:
+        return all(
+            not i or x(v) - x(found[i - 1]) >= (len(f(v)) + len(f(found[i - 1]))) * 3.2 + 6 for i, v in enumerate(found)
+        )
+
+    sets = [found for found in map(at, _LOG_STEPS) if len(found) >= 3]
+    return next((found for found in sets if fits(found)), None) or _thin_ticks(
+        sets[0] if sets else at(_LOG_STEPS_FINE), x, f
+    )
+
+
+#: An interval level with a gloss after it in parentheses: ``99.7% (95% across 16 comparisons)``.
+_GLOSSED_LEVEL = re.compile(r"^(\S+) (\(.+\))$")
+
+
+def _level_head(level: str) -> str:
+    """An interval level as a chart's head prints it (``kLevelHead``): ``95% intervals``; a glossed level keeps its
+    gloss last, ``99.7% intervals (95% across 16 comparisons)``."""
+    glossed = _GLOSSED_LEVEL.fullmatch(level)
+    return f"{glossed[1]} intervals {glossed[2]}" if glossed else f"{level} intervals"
 
 
 def _forest(d: ForestChart, w: float) -> _Drawn:
     """A forest plot (``forest``): each change against the control with its interval, and an optional margin band."""
     rows, (d0, d1), f = d.rows, d.domain, _kit_format(d.fmt)
-    narrow, row_h = w < 480, d.row_height or 30
+    narrow = w < 480
     need = max(len(r.label) for r in rows) * 6.6 + 18
     lw = (d.label_width_narrow if narrow else d.label_width) or min(need, w * 0.42 if narrow else min(230, w * 0.32))
     has_zero = bool(d.zero_label) and d0 <= 0 <= d1
@@ -929,10 +1042,13 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     better_h = _better_height(words, ml, w - mr)
     mb += better_h
     ref = d.reference
-    level_room = w - mr - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
+    level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(max(d0, ref.value)), ref.label, 0, level_room) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
+    # One label form for the chart: every label whole on one line or two, else every row its short label.
+    lines_of = _row_lines(rows, math.floor((ml - 14) / 6.6))
+    row_h = _row_h(rows, lines_of, d.row_height or 30)
     grouped = any(r.group for r in rows)
     h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0)
     out: list[str] = []
@@ -959,7 +1075,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
         out.append(_text(x(v), h - 6 - better_h, f(v), anchor="middle"))
     out.append(_line(x(0), mt - 4, x(0), h - mb, "axis", "stroke-width:1.5"))
     if d.level:
-        out.append(_text(w - mr, mt - 8, f"{d.level} intervals", anchor="end"))
+        out.append(_text(w - mr, mt - 8, _level_head(d.level), anchor="end"))
     if zero_label is not None:
         out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5")
     out += _better(words, ml, w - mr, h - 6)
@@ -977,16 +1093,9 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
         def at(value: float) -> float:
             return x(max(d0, min(d1, value)))
 
-        room = math.floor((ml - 14) / 6.6)
-        if len(r.label) <= room:
-            shown_label = r.label
-        elif r.short_label and len(r.short_label) <= room:
-            shown_label = r.short_label
-        else:
-            shown_label = _cut(r.label, room)
         lines = _wrapped(r.note, mr - 10) if noted and r.note is not None else [f(r.value)]
         marks = [
-            _text(ml - 10, cy + 4, shown_label, "lbl-strong" if strong else "lbl", "end"),
+            _label_text(lines_of(r), ml - 10, cy, strong),
             _line(at(r.lo), cy, at(r.hi), cy, style=f"stroke:var({color});stroke-width:3;stroke-linecap:round"),
             _el(
                 "rect",
@@ -1027,7 +1136,7 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
     if d.x_title:
         out.append(_text((ml + w - mr) / 2, h - 6, d.x_title, anchor="middle"))
     if d.level:
-        out.append(_text(w - mr, 12, f"{d.level} intervals", anchor="end"))
+        out.append(_text(w - mr, 12, _level_head(d.level), anchor="end"))
     for se in d.series:
         if se.lo and se.hi:
             color = _tok(se.color, "--s1")
@@ -1061,13 +1170,19 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
             )
             out.append(_titled([f"{se.name} · {cats[i]}", f"{f(v)}{spread}"], dot, (x(i) - 10, y(v) - 10, 20, 20)))
         ends.append((x(len(cats) - 1), y(se.values[-1]), se.end_label or se.name, bool(se.strong)))
+    # Each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line.
     ends.sort(key=lambda end: end[1])
     last, room = -1e9, math.floor((mr - 12) / 6.6)
     for px, py, text, strong in ends:
+        lines = _wrap_all(text, room)
         at = max(py + 4, last + 16)
-        last = at
-        out.append(_text(px + 10, at, _cut(text, room), "lbl-strong" if strong else "lbl"))
-    return "".join(out), h
+        last = at + (len(lines) - 1) * 13
+        spans = "".join(
+            _el("tspan", {"x": px + 10, "dy": 13 if j else 0}, _escape(line)) for j, line in enumerate(lines)
+        )
+        out.append(_el("text", {"x": px + 10, "y": at, "class": "lbl-strong" if strong else "lbl"}, spans))
+    # The drawing grows (its plot as it is) until the last end label's last line sits inside it, so none is lost.
+    return "".join(out), max(h, math.ceil(last + 4))
 
 
 @dataclass
@@ -1197,12 +1312,21 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             f"M{_n(x(0))},{_n(y(0))}L{_n(x(x1))},{_n(y(0))}L{_n(x(x1))},{_n(y(max(y0, y_at(x1))))}"
             f"L{_n(x(lx))},{_n(y(max(y0, y_at(lx))))}Z"
         )
-        out.append(_el("path", {"d": region_path, "style": "fill:var(--good-wash)"}))
+        # The price line and its region in ink: green is a status's colour alone, and this region is a price's reading.
+        out.append(_el("path", {"d": region_path, "style": "fill:var(--sunk)"}))
     for v in y_ticks:
         out.append(_line(ml, y(v), w - mr, y(v), "grid"))
         if v > y0:
             out.append(_text(ml - 8, y(v) + 4, yf(v), anchor="end"))
-    for v in _thin_ticks(d.x_ticks or _format_ticks(x0, x1, 5, xf), x, xf):
+    # A log x axis takes its ticks where its scale puts them (kLogTicks), never a linear step's, which leaves the low
+    # decades unlabelled.
+    if d.x_ticks:
+        x_ticks = _thin_ticks(d.x_ticks, x, xf)
+    elif d.x_log:
+        x_ticks = _log_ticks(x0, x1, xf, x)
+    else:
+        x_ticks = _thin_ticks(_format_ticks(x0, x1, 5, xf), x, xf)
+    for v in x_ticks:
         out.append(_line(x(v), mt, x(v), h - mb, "grid"))
         out.append(_text(x(v), h - mb + 16, xf(v), anchor="middle"))
     if d.x_title:
@@ -1234,17 +1358,17 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
                 y(0),
                 x(lx),
                 y(max(y0, -(lx / max(1e-9, p)))),
-                style="stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4",
+                style="stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:5 4",
             )
         )
         if price.label:
             mx = lx * 0.55
             tx, ty = x(mx) + 8, y(max(y0, -(mx / max(1e-9, p)))) + 16
-            out.append(_text(tx, ty, price.label, style="fill:var(--good)"))
+            out.append(_text(tx, ty, price.label, "lbl"))
             obstacles.append((tx, ty - 10, tx + len(price.label) * 6.4, ty + 3, 10.0))
         if price.region_label:
             t = price.region_label
-            out.append(_text(w - mr - 8, mt + 16, t, "lbl", "end", "fill:var(--good);font-weight:600"))
+            out.append(_text(w - mr - 8, mt + 16, t, "lbl-strong", "end"))
             obstacles.append((w - mr - 8 - len(t) * 6.6, mt + 6, w - mr - 8, mt + 19, 10.0))
 
     def at(px: float, py: float) -> tuple[float, float]:
@@ -1285,7 +1409,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             obstacles.append((px - 2, a, px + 2, b, 1.0))
             whiskered = True
     if whiskered and d.level:
-        out.append(_text(w - mr, mt - 4, f"{d.level} intervals", anchor="end"))
+        out.append(_text(w - mr, mt - 4, _level_head(d.level), anchor="end"))
     for point in points:
         px, py = at(point.x, point.y)
         r = point.size or 5.5
@@ -1301,7 +1425,8 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
         out.append(_titled(tip, marks, (px - 12, py - 12, 24, 24)))
     labels = []
     for point in points:
-        text = point.narrow_label if narrow else point.label
+        # A point with no label of its own is labelled by its tag, so colour is never the only thing that names a mark.
+        text = (point.narrow_label if narrow else point.label) or point.tag
         if text:
             px, py = at(point.x, point.y)
             strong = d.emphasis is not None and point.id == d.emphasis
@@ -1318,22 +1443,18 @@ _DotLike = DotIntervalChart | DotIntervalPanel
 def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     """One rate per row against a floor, or one change per row about zero (``kDotInterval``): a dot in its arm's
     shape, its interval, the floor dashed; a change chart's zero line named at the top, an open mark where a row has no
-    interval, each label on two lines before it takes its short label, and each note at the right edge."""
+    interval, each label on two lines before it takes its short label, and each note at the right edge. Its column,
+    margin, label form and rows are the dots :func:`_bars` draws."""
     rows, (d0, d1), f = _need(d.rows, "rows"), _need(d.domain, "domain"), _kit_format(_need(d.fmt, "fmt"))
-    row_h = d.row_height or 28
-    # The label column fits the longest label on one line up to 42% of the width, else on two up to half of it.
-    longest = max(len(r.label) for r in rows)
-    need, two_need = longest * 6.6 + 18, (math.ceil(longest / 2) + 4) * 6.6 + 18
-    fitted = need if need <= w * 0.42 else max(w * 0.42, min(two_need, w * 0.5))
-    ml = (d.label_width_narrow if w < 480 else d.label_width) or fitted
+    ml = (d.label_width_narrow if w < 480 else d.label_width) or _dot_label_w(rows, w)
+    lines_of = _row_lines(rows, math.floor((ml - 12) / 6.6))
+    row_h = _row_h(rows, lines_of, d.row_height or 28)
     mr, mt, mb = 14.0, 22.0, 22.0
     if any(r.note is not None for r in rows):
-        # The notes wrapped at their spaces, two lines at most, the margin as wide as the widest line, up to 30%.
-        mr = max(len(line) * 6.4 for r in rows for line in _wrapped(r.note or "", w * 0.3 - 10)) + 16
-    room = math.floor((ml - 12) / 6.6)
+        mr = _note_margin(rows, w)
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
-    level_room = w - mr - _text_width(f"{d.level} intervals", 12) - 8 if d.level else w
+    level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(ref.value), ref.label, 0, level_room) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
@@ -1345,36 +1466,21 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     mb += better_h
     h = mt + mb + row_h * len(rows)
     out: list[str] = []
-    tick_w = max(len(f(d0)), len(f(d1))) * 6.4 + 16
-    shown = _thin_ticks(d.ticks, x, f) if d.ticks else _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), f, x)
+    tf = _tick_format(_need(d.fmt, "fmt"))
+    tick_w = max(len(tf(d0)), len(tf(d1))) * 6.4 + 16
+    shown = _thin_ticks(d.ticks, x, tf) if d.ticks else _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), tf, x)
+    labelled = _tick_labels(_need(d.fmt, "fmt"), shown)
     for v in shown:
         out.append(_line(x(v), mt, x(v), h - mb, "grid"))
-        out.append(_text(x(v), h - 6 - better_h, f(v), anchor="middle"))
+        out.append(_text(x(v), h - 6 - better_h, labelled(v), anchor="middle"))
     if zero_label is not None:
         out.append(_line(x(0), mt - 4, x(0), h - mb, "axis", "stroke-width:1.5"))
         out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5")
-    # One form per strip: every label whole (on one line or two), else every row its short label, so rows read alike.
-    whole = all(_two_lines(r.label, room) for r in rows)
     for i, r in enumerate(rows):
         cy, color = mt + row_h * i + row_h / 2, _tok(r.color, "--s1")
         strong = bool(r.strong) or (d.emphasis is not None and r.id == d.emphasis)
-        lines = _two_lines(r.label, room) if whole else None
-        lines = lines or _fit_label(r.short_label or r.label, None, room)
-        spans = "".join(
-            _el("tspan", {"x": ml - 8, "dy": 13 if j else 0}, _escape(line)) for j, line in enumerate(lines)
-        )
-        css = "lbl-strong" if strong else "lbl"
-        top = cy + 4 - 6.5 * (len(lines) - 1)
-        marks = [_el("text", {"x": ml - 8, "y": top, "text-anchor": "end", "class": css}, spans)]
-        if r.lo is not None and r.hi is not None:
-            style = f"stroke:var({color});stroke-width:3;stroke-linecap:round;opacity:.35"
-            marks.append(_line(x(_clamp(r.lo, d0, d1)), cy, x(_clamp(r.hi, d0, d1)), cy, style=style))
-        marks.append(_mark(r.shape, x(_clamp(r.value, d0, d1)), cy, 5, color, r.hollow))
-        if r.note is not None:
-            notes = _wrapped(r.note, mr - 10)
-            marks.append(
-                _lines_text(w - mr + 8, cy + 4 - 6 * (len(notes) - 1), notes, "lbl-strong" if strong else "tick")
-            )
+        marks = [_label_text(lines_of(r), ml - 8, cy, strong)]
+        marks += _dot_row(x, d0, d1, r, r.value, cy, color, r.shape, r.hollow, w - mr + 8, mr - 10, strong)
         spread = f" ({f(r.lo)} to {f(r.hi)})" if r.lo is not None and r.hi is not None else ""
         out.append(
             _titled(
@@ -1387,25 +1493,35 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         if label is not None:
             out.append(_ref_text(label, mt - 8, True))
     if d.level:
-        out.append(_text(w - mr, mt - 8, f"{d.level} intervals", anchor="end"))
+        out.append(_text(w - mr, mt - 8, _level_head(d.level), anchor="end"))
     out += _better(words, ml, w - mr, h - 6)
     return "".join(out), h
 
 
+#: What a range bar spans, as its chart's head says (``kRangeBars``).
+_RANGE_HEAD = "p50 to p95"
+
+
 def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
-    """Latency distributions (``kRangeBars``): one bar per row from ``from`` to ``to``, grouped, with a budget line."""
+    """Latency distributions (``kRangeBars``): one bar per row from ``from`` to ``to``, p50 to p95 as the head says, a
+    heading per group over its rows, each row labelled beside its bar, with a budget line."""
     groups, (d0, d1), f = d.groups, d.domain, _kit_format(d.fmt)
+    rows = [row for group in groups for row in group.rows]
+    narrow = w < 480
+    ml, mr, mt, mb = _dot_label_w(rows, w), 16, 20.0, 26
+    lines_of = _row_lines(rows, math.floor((ml - 14) / 6.6))
+    row_h = _row_h(rows, lines_of, 18)
 
-    def band(rows: int) -> float:
-        return rows * 13 + 20
+    def band(group: Any) -> float:
+        return len(group.rows) * row_h + (18 if group.label else 0) + 6
 
-    ml, mr, mt, mb = min(190, w * 0.36), 16, 16.0, 26
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
-    label = _ref_label(x(ref.value), ref.label, 0, w) if ref is not None and ref.label else None
+    room = w - _text_width(_RANGE_HEAD, 12) - 8
+    label = _ref_label(x(ref.value), ref.label, 0, room) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13
-    h = mt + mb + sum(band(len(group.rows)) for group in groups)
+    h = mt + mb + sum(band(group) for group in groups)
     out: list[str] = []
     tick_w = max(len(f(d0)), len(f(d1))) * 6.4 + 16
     shown = _thin_ticks(d.ticks, x, f) if d.ticks else _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), f, x)
@@ -1414,29 +1530,33 @@ def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
         out.append(_text(x(v), h - 8, f(v), anchor="middle"))
     top = mt
     for group in groups:
-        y0 = top + 10
-        top += band(len(group.rows))
-        heading = group.short_label if w < 480 and group.short_label else group.label
-        # cut to the label column, which the kit leaves to overflow; the whole heading is the group's title
-        heading_y = y0 + len(group.rows) * 13 / 2 + 3
-        cut = _text(ml - 12, heading_y, _cut(heading, math.floor((ml - 14) / 7.0)), "lbl-strong", "end")
-        out.append(_titled([group.label], cut))
+        y0 = top + 6
+        top += band(group)
+        if group.label:
+            heading = group.short_label if narrow and group.short_label else group.label
+            out.append(_text(0, y0 + 12, heading, "lbl-strong"))
+            y0 += 18
         for i, r in enumerate(group.rows):
-            cy, color = y0 + i * 13 + 4, _tok(r.color, "--s1")
-            marks = _line(
-                x(_clamp(r.from_, d0, d1)),
-                cy,
-                x(_clamp(r.to, d0, d1)),
-                cy,
-                style=f"stroke:var({color});stroke-width:6;stroke-linecap:round",
-            ) + _mark(r.shape, x(_clamp(r.to, d0, d1)), cy, 4, color, r.hollow)
+            cy, color = y0 + i * row_h + row_h / 2, _tok(r.color, "--s1")
+            marks = (
+                _label_text(lines_of(r), ml - 10, cy, False)
+                + _line(
+                    x(_clamp(r.from_, d0, d1)),
+                    cy,
+                    x(_clamp(r.to, d0, d1)),
+                    cy,
+                    style=f"stroke:var({color});stroke-width:6;stroke-linecap:round",
+                )
+                + _mark(r.shape, x(_clamp(r.to, d0, d1)), cy, 4, color, r.hollow)
+            )
             tip = _tip_or(r.tip, f"{r.label} · {group.label}", f"{f(r.from_)} to {f(r.to)}")
-            out.append(_titled(tip, marks, (ml, cy - 6.5, w - ml - mr, 13)))
+            out.append(_titled(tip, marks, (0, cy - row_h / 2, w, row_h)))
     if ref is not None:
         rx = x(ref.value)
-        out.append(_line(rx, mt - 8, rx, h - mb, "floor"))
+        out.append(_line(rx, mt - 6, rx, h - mb, "floor"))
         if label is not None:
-            out.append(_ref_text(label, mt - 2, True))
+            out.append(_ref_text(label, mt - 8, True))
+    out.append(_text(w, mt - 8, _RANGE_HEAD, anchor="end"))
     return "".join(out), h
 
 
@@ -1461,16 +1581,26 @@ def _matrix(columns: Sequence[str], rows: Sequence[tuple[str, Sequence[_Cell]]],
     gap = 3.0
     col_w = (w - lw - gap * len(columns)) / max(len(columns), 1)
     any_sub = any(cell.sub is not None for _, cells in rows for cell in cells)
-    cell_h, head_h = (44.0 if any_sub else 34.0), 22.0
-    h = head_h + len(rows) * (cell_h + gap)
     room, label_room = math.floor((col_w - 4) / 6.0), math.floor((lw - 8) / 6.6)
+    # Every heading and row label whole, wrapped at its spaces as the HTML grid wraps it, never cut: the heading row as
+    # tall as the longest heading's lines, each row as tall as its tile or its label's lines.
+    heads = [_wrap_all(column, room) for column in columns]
+    names = [_wrap_all(label, label_room) for label in labels]
+    head_h = 22.0 + (max((len(lines) for lines in heads), default=1) - 1) * 13
+    cell_h = max(44.0 if any_sub else 34.0, *(13.0 * len(lines) + 8 for lines in names))
+    h = head_h + len(rows) * (cell_h + gap)
     out: list[str] = []
-    for j, column in enumerate(columns):
+    for j, (column, lines) in enumerate(zip(columns, heads, strict=True)):
         cx = lw + gap + j * (col_w + gap) + col_w / 2
-        out.append(_titled([column], _text(cx, head_h - 7, _cut(column, room), "tick", "middle")))
+        spans = "".join(_el("tspan", {"x": cx, "dy": 13 if k else 0}, _escape(line)) for k, line in enumerate(lines))
+        attrs = {"x": cx, "y": head_h - 7 - (len(lines) - 1) * 13, "text-anchor": "middle", "class": "tick"}
+        out.append(_titled([column], _el("text", attrs, spans)))
     for i, (label, cells) in enumerate(rows):
         top = head_h + i * (cell_h + gap)
-        out.append(_titled([label], _text(0, top + cell_h / 2 + 4, _cut(label, label_room), "lbl")))
+        lines = names[i]
+        spans = "".join(_el("tspan", {"x": 0, "dy": 13 if k else 0}, _escape(line)) for k, line in enumerate(lines))
+        attrs = {"x": 0, "y": top + cell_h / 2 + 4 - 6.5 * (len(lines) - 1), "class": "lbl"}
+        out.append(_titled([label], _el("text", attrs, spans)))
         for j, cell in enumerate(cells):
             left = lw + gap + j * (col_w + gap)
             outline = ";stroke:var(--bad);stroke-width:2" if cell.low else ""

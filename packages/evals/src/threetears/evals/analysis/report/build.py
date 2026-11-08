@@ -1100,7 +1100,7 @@ def _scoreboard_blocks(
         ChartBlock(
             section="scoreboard",
             chart="outcome_bar",
-            title="Outcomes",
+            title="Outcomes, share of each arm's trials",
             bars=[_outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key)) for board in boards],
         ),
     ]

@@ -437,11 +437,12 @@ def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: s
 
 def test_r1s_tasks_table_reads_each_tasks_cost_across_the_arms_in_one_form() -> None:
     """One task's cost across the arms is one figure type with every other task's, a rate: each to two significant
-    figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-07), so $58 | $24 | $4.60 | $8.90."""
+    figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-07), so $58 | $24 | $4.60 | $8.90; its
+    count is written as the page writes every count, "per 1,000 conversations", never the input label's "1k"."""
     held = INPUTS["r1"]
     (tasks,) = [table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "tasks"]
     rows = [[cell.text for cell in row.values()] for row in tasks.rows]
-    assert ["Billing & account Q&A", "400", "Cost per 1k conversations", "$58", "$24", "$4.60", "$8.90"] in rows
+    assert ["Billing & account Q&A", "400", "Cost per 1,000 conversations", "$58", "$24", "$4.60", "$8.90"] in rows
 
 
 def test_a_cost_still_under_a_cent_at_the_rulers_cap_reads_there_with_no_mark() -> None:

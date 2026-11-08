@@ -832,15 +832,21 @@ def test_markup_in_input_names_is_text_where_a_page_lays_out_this_modules_kinds(
 # --- the legend, the clipped interval, a config's colour and the labels -------------------------------------------
 
 
-def test_range_bars_carry_a_legend_of_the_arms_drawn_and_name_a_bar_over_its_budget() -> None:
+def test_range_bars_label_each_row_by_its_arm_with_no_legend_and_name_a_bar_over_its_budget() -> None:
+    """Each bar is labelled beside it by its arm's tag and name, in its colour and mark, so no legend is needed to
+    tell the rows apart (and none is drawn); a bar ending past its budget is hollow, its tooltip saying so."""
     report_input = _input("r1")
     data = _data(_draw("r1", _spec("range_bars", _query("tasks", measures=["latency_s"]))))
-    assert isinstance(data, RangeBarsChart) and data.legend is not None
+    assert isinstance(data, RangeBarsChart) and data.legend is None
     look = _look("r1")
-    drawn = {arm.id for arm in report_input.arms}
-    assert [(item.label, item.color, item.mark) for item in data.legend] == [
-        (look.arm(arm).name, look.arm(arm).token, look.arm(arm).shape) for arm in look.ordered(drawn)
-    ]
+    drawn = [arm for arm in look.ordered({arm.id for arm in report_input.arms})]
+    for group in data.groups:
+        rows = [(row.label, row.color, row.shape) for row in group.rows]
+        assert rows == [
+            (look.arm(arm).label, look.arm(arm).token, look.arm(arm).shape)
+            for arm in drawn
+            if look.arm(arm).label in {row.label for row in group.rows}
+        ]
     assert data.reference is not None and data.reference.kind == "budget"
     over = [row for group in data.groups for row in group.rows if row.to > data.reference.value]
     assert over, "some bar ends over the budget, so its tooltip line is reached"
@@ -875,8 +881,12 @@ def test_a_config_frontier_colours_each_config_by_its_first_factors_level_and_na
         assert point.color is not None
         assert colours.setdefault(levels[point.id or ""], point.color) == point.color
     assert len(set(colours.values())) == len(colours) == len(first.levels)
-    assert [item.label for item in data.legend] == [level.name or level.id for level in first.levels]
-    assert [item.color for item in data.legend] == [colours[level.id] for level in first.levels]
+    levels_named = [item for item in data.legend if not item.hollow]
+    assert [item.label for item in levels_named] == [level.name or level.id for level in first.levels]
+    assert [item.color for item in levels_named] == [colours[level.id] for level in first.levels]
+    # Then what a hollow mark is, where some config fails a gate.
+    keyed = [item.label for item in data.legend if item.hollow]
+    assert keyed == (["Hollow: fails a gate"] if any(point.hollow for point in data.points) else [])
 
 
 @pytest.mark.parametrize(

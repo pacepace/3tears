@@ -837,5 +837,6 @@ def test_no_column_of_a_rung_s_tables_mixes_whole_and_decimal_percents(rungs: di
             ]
             stated = {bool(match[1]) for match in found if match[0] != "0%"}
             assert len(stated) <= 1, (table.name, column.key, [match[0] for match in found])
+    # A zero written two ways: "0.0%" standing alone (never the tail of "100.0%" or "20.0%") beside a bare "0%".
     for text in _page_texts(rungs[name]):
-        assert not ("0.0%" in text and re.search(r"(?<![\d.])0%", text)), "0.0% beside 0% on one page"
+        assert not (re.search(r"(?<![\d.])0\.0%", text) and re.search(r"(?<![\d.])0%", text)), "0.0% beside 0%"

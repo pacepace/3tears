@@ -231,9 +231,11 @@ def test_bars_draw_each_figure_from_zero_or_a_log_axis(
     assert rows
     values = [row.value for row in rows if row.value is not None]
     if data.log:
-        # A magnitude spanning more than ten times is drawn on a log axis, from its low end: the decade under the least.
+        # A magnitude spanning more than ten times is drawn on a log axis, from its low end: the decade under the least,
+        # each figure a dot, since a bar's length from a log axis's low end measures nothing.
         assert 0 < data.domain[0] <= min(values) and max(values) / min(values) > 10, "a log axis only where it spans"
-        assert any("log scale" in note for note in notes), "a caption says the axis is logarithmic"
+        assert data.dots, "a magnitude on a log axis is a dot, never a bar"
+        assert any("logarithmic" in note for note in notes), "a caption says the axis is logarithmic"
     else:
         assert data.domain[0] <= 0 <= data.domain[1] or spec.domain, "bars start at zero"
     if spec.query.source in ("measures", "configs"):

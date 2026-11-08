@@ -146,11 +146,11 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 | Pass/fail against several criteria, per candidate × task | Gate matrix (table cells with pill, reason, cost; cheapest passing highlighted) | A score heatmap that hides which criterion failed |
 | Change from a control, with interval and margin | `forest()` | A sentence saying "no worse than the margin" |
 | One rate per candidate against a floor | Dot + interval strips, floor dashed (r1 `dims`) | Bars from zero hiding a 3-point gap |
-| Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures, `placeLabels()` | A dual-axis chart |
-| Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget | Pass rates on a truncated axis: chart failure rate from zero instead |
+| Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures (a key says so), each mark labelled or tagged, `placeLabels()` | A dual-axis chart; a line joining configs whose factor is not ordered |
+| Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget; on a log axis, dots (a Cleveland dot plot) | Pass rates on a truncated axis: chart failure rate from zero instead; bars on a log axis, whose length from its low end measures nothing |
 | Deltas per stratum, task, place or lever | Dots with intervals about a named zero (`barsH()` with `dots`): a row with no interval an open mark, said in a caption; a row with an interval never faded | Solid bars, whose length reads surer than the one row that has an interval; a before-and-after table |
 | Ordered x (turn depth, version, date, input length) | `lineChart()`, bands on at most two series, end labels | Lines over unordered categories |
-| Latency distributions | p50–p95 range bars with the budget line | Mean only |
+| Latency distributions | p50–p95 range bars with the budget line, each bar labelled beside it | Mean only; a legend to decode which bar is whose |
 | Two crossed factors | Lattice of tiles with metric, cost, latency, pill | Grouped bars hiding the interaction |
 | Target matrix of cells | Sequential heatmap, n in each cell, red outline below the floor | One overall number |
 | Errors between classes | Row-normalized confusion, one per label axis | A 9 × 9 matrix on a phone |
@@ -159,12 +159,14 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 ### 5.2 Mechanics
 
-- **One unit per axis, one interval system per chart, and the level is printed on it** ("95% intervals", "99.69% intervals"). Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
+- **One unit per axis, one interval system per chart, and the level is printed on it** ("95% intervals"; a family's corrected level with what the family holds at together, "99.7% intervals (95% across 16 comparisons)"). Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
   - Every value on one axis is in one unit, each figure at its own scale. Two units drawn alike are one: a share and a percent are both drawn as a percent, and any rate's change is in points.
   - A kind that draws each measure in its own panel gives each panel its measure's unit and format: a heatmap's matrix per measure, a dot strip's strip per measure (unless its panels are by arm), and bars in panels by slice or aspect (not over configs, whose panels are a factor's levels). Panels in one unit share one span.
   - Every other kind that reads measures is single-scale, and refuses them in more than one unit: bars on one axis, diverging bars, lines, range bars, difference heatmaps, and every chart of contrasts, whose groups share one axis. A scatter gives each of its two axes its own measure. So does a chart of strata or tasks naming no measure where its kind draws only one.
   - The invariants and the page apply this one rule (`report/block_spec.chart_faults`), so a block the store accepts draws, and a block the page draws is accepted.
-- **Log axes** when a measure spans more than 10×; the caption says so.
+- **Log axes** when a measure spans more than 10×; the caption says so. Its ticks fall where the log scale puts them (the decades, else 1 and 3, else 1, 2 and 5 of each), three at least, so no stretch of it is unlabelled; a linear step's ticks on a log axis leave its low decades bare. A magnitude on a log axis is a dot, never a bar.
+- **Every axis states its unit**, in its title or its tick labels, and a count is written one way on a page ("per 1,000 calls", never "per 1k calls").
+- **No label is dropped or cut.** A long row label wraps to two lines, then takes its short label, then wraps onto as many lines as it takes; it is never reduced to its tag. A line's end label and a static matrix's headings and row labels wrap the same way. A note is printed whole, wrapped, the margin widened to hold it.
 - **A reference line sits at a declared line, and code fills its value.** The document asks for the kind (`reference`); code fills the figure key at completion:
   - a **margin** on a forest, at the chart's aspect's margin (`aspect.margin`, or `aspects.<id>.margin`);
   - a **floor** or a **budget**, at `criteria.<id>.threshold`, the threshold of the one criterion that reads the chart's one measure (the measure its query names, else the one its rows read). A floor's criterion is higher-is-better and a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget). Its statistic is one the chart draws (range bars draw p50 to p95, every other kind the mean). It reads where the chart does: over the whole comparison or each task, within the one task the chart keeps, or each cell on a chart of cells.

@@ -27,7 +27,6 @@ committed plan draws yet. The expected side is always computed from the input, n
 from __future__ import annotations
 
 import functools
-import math
 from itertools import product
 from typing import Any
 
@@ -460,33 +459,25 @@ def test_a_gate_scatter_draws_each_config_at_the_gates_own_figures_between_the_g
 
 
 @pytest.mark.parametrize(("name", "spec", "block", "summary"), _stored("gate_scatter", "configs"))
-def test_its_paths_join_configs_along_one_factor_coloured_by_the_first_and_cover_the_grid(
+def test_it_colours_configs_by_the_first_factor_and_joins_none_by_a_line(
     name: str, spec: ChartSpec, block: ChartBlock, summary: bool
 ) -> None:
+    """Each config takes its first factor's level's colour, one colour a level, the legend naming each; no line joins
+    configs, since the input never says a factor's levels are ordered and a line over unordered categories draws a
+    trend that is not there (GENERATOR §5.1)."""
     report_input = _input(name)
     data = block.data
-    assert isinstance(data, GateScatterChart) and data.paths
-    levels = {config.arm: config.levels for config in report_input.configs}
+    assert isinstance(data, GateScatterChart) and data.points and data.legend
+    assert data.paths is None
     first = report_input.factors[0]
+    levels = {config.arm: config.levels[first.id] for config in report_input.configs}
     colours: dict[str, str] = {}
-    along_factors = set()
-    for path in data.paths:
-        rows = [levels[arm] for arm in path.ids]
-        varying = [factor for factor in report_input.factors if len({row[factor.id] for row in rows}) > 1]
-        assert len(varying) == 1, "a path holds every other factor at one level"
-        (along,) = varying
-        along_factors.add(along.id)
-        order = [level.id for level in along.levels]
-        assert [order.index(row[along.id]) for row in rows] == sorted(order.index(row[along.id]) for row in rows)
-        assert len({row[first.id] for row in rows}) == 1
-        assert path.color is not None
-        assert colours.setdefault(rows[0][first.id], path.color) == path.color
-    assert len(set(colours.values())) == len(colours), "each level of the first factor its own colour"
-    (along_id,) = along_factors
-    assert along_id != first.id
-    combinations = math.prod(len(factor.levels) for factor in report_input.factors if factor.id != along_id)
-    assert len(data.paths) == combinations
-    assert {arm for path in data.paths for arm in path.ids} == set(levels)
+    for point in data.points:
+        assert point.color is not None and point.tag is not None
+        assert colours.setdefault(levels[point.id or ""], point.color) == point.color
+    assert len(set(colours.values())) == len(colours)
+    named = [item.label for item in data.legend if not item.hollow]
+    assert named == [level.name or level.id for level in first.levels if level.id in colours]
 
 
 @pytest.mark.parametrize("measures", [["overall", "latency_s"], []], ids=["named", "the-gates-every-task-reads"])

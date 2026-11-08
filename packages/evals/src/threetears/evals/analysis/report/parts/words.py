@@ -23,7 +23,7 @@ __all__ = [
     "CASES_MEAN_TEMPLATE",
     "OPEN_MARKS_NOTE",
     "MARGIN_BAND_TEMPLATE",
-    "FAMILY_LEVEL_NOTE",
+    "FAMILY_LEVEL_TEMPLATE",
     "BETTER_WORDS",
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
@@ -135,7 +135,6 @@ __all__ = [
     "TABLE_HEADERS",
     "COST_HEADER",
     "INTERVAL_HEADER",
-    "LOG_BARS_NOTE",
     "CELL_TEMPLATE",
     "TABLE_ORDER",
 ]
@@ -368,10 +367,9 @@ OPEN_MARKS_NOTE = "Open marks: no interval."
 #: A forest's margin line, and what its shaded band means.
 MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 
-#: A forest of contrasts corrected together: the level each interval is drawn at, and what it holds as a family.
-FAMILY_LEVEL_NOTE = (
-    "Each interval is at {level}, so the {size} comparisons corrected together hold at {joint} at once."
-)
+#: A forest of contrasts corrected together, its level as the chart's head prints it: each interval's level, then what
+#: the family's intervals hold at together (the kit prints "99.7% intervals (95% across 16 comparisons)").
+FAMILY_LEVEL_TEMPLATE = "{level} ({joint} across {size} comparisons)"
 
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.
 BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}
@@ -589,10 +587,7 @@ FLOOR_STRIP_NOTE = "Each dot is the largest drop its interval allows; a floor ho
 #: A dot's tooltip line where it misses its line.
 MISSES_TEMPLATE = "Misses the {line}"
 
-#: The caption under bars drawn on a log axis.
-LOG_BARS_NOTE = "The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple."
-
-#: The caption under a scatter whose x axis is logarithmic.
+#: The caption under a chart whose horizontal axis is logarithmic: a scatter's x axis, or magnitudes drawn as dots.
 LOG_X_NOTE = "The horizontal axis is logarithmic: each step is a multiple."
 
 #: A range bar's tooltip line: its two ends.

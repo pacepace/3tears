@@ -902,6 +902,10 @@ _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] =
 }
 
 
+#: An outcome bar's note: the share of its arm's trials that passed, and of how many.
+_OUTCOME_NOTE = "{share} passed · {passed} of {trials}"
+
+
 class OutcomeSegment(EvalDocumentModel):
     """One segment of an arm's outcome bar: passed, failed, or lost to one cause, with its count."""
 
@@ -1099,8 +1103,10 @@ class ChartBlock(_Block):
 
     def _outcome_bars(self) -> BarsChart:
         """An outcome bar as the kit's stacked bars: one row per arm, its tag in its colour beside its label (its short
-        name where the label does not fit), a segment per outcome, each outcome's look (:data:`_OUTCOME_STYLES`) the
-        same on every arm and named in the legend, the whole label and the census in each row's tooltip."""
+        name where the label does not fit), a segment per outcome as its share of the arm's trials, so every bar runs
+        0 to 100% and arms with unequal trials read alike, each outcome's look (:data:`_OUTCOME_STYLES`) the same on
+        every arm and named in the legend; each row's note says what share passed and of how many (``20% passed · 167
+        of 836``), the whole label and the census in its tooltip."""
         looks: dict[str, tuple[str, ChartPattern | None]] = {}
         used = dict.fromkeys(_OUTCOME_STYLES, 0)
         for bar in self.bars:
@@ -1109,7 +1115,10 @@ class ChartBlock(_Block):
                     styles = _OUTCOME_STYLES[segment.state]
                     looks[segment.label] = styles[used[segment.state] % len(styles)]
                     used[segment.state] += 1
-        longest = max(bar.total for bar in self.bars)
+
+        def passed(bar: OutcomeBar) -> int:
+            return sum(segment.count for segment in bar.segments if segment.state == "passed")
+
         rows = [
             BarRow(
                 label=bar.arm,
@@ -1117,10 +1126,18 @@ class ChartBlock(_Block):
                 tag=bar.tag,
                 color=arm_token(bar.tag),
                 segments=[
-                    BarSegment(value=segment.count, color=looks[segment.label][0], pattern=looks[segment.label][1])
+                    BarSegment(
+                        value=segment.count / bar.total * 100,
+                        color=looks[segment.label][0],
+                        pattern=looks[segment.label][1],
+                    )
                     for segment in bar.segments
                 ],
-                note=f"{bar.total} trials",
+                note=_OUTCOME_NOTE.format(
+                    share=with_unit(passed(bar) / bar.total * 100, PERCENT), passed=passed(bar), trials=bar.total
+                )
+                if bar.total
+                else f"{bar.total} trials",
                 tip=[bar.arm, f"{bar.total} trials", *(f"{s.label} {s.count}" for s in bar.segments)],
             )
             for bar in self.bars
@@ -1129,7 +1146,7 @@ class ChartBlock(_Block):
             LegendItem(label=label, color=colour, mark="square", pattern=pattern)
             for label, (colour, pattern) in looks.items()
         ]
-        return BarsChart(rows=rows, domain=(0, longest or 1), fmt="int", legend=legend)
+        return BarsChart(rows=rows, domain=(0, 100), fmt="pct", legend=legend)
 
     def _cost_drawn(self) -> tuple[Callable[[float], str], float, str, int | None]:
         """How a cost/quality chart draws its costs: the speller of one cost as stored, the scale it is drawn at, and

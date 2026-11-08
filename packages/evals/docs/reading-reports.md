@@ -386,8 +386,9 @@ page's first line is the warning.
 ### The marks
 
 The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
-one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
-test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. A
+one chart: a census, so it is always drawn, one bar per arm, each its arm's trials as shares from 0 to 100% so arms
+with unequal trials read alike, passed, failed and lost to the test setup cause by cause, the share passed and its
+counts written beside the bar (`20% passed · 167 of 836`), and a key naming only the states that occur. A
 failure's causes share its one colour and differ in ink alone (solid, then a lighter tone), each alike on every bar,
 and the key names each (`failed: check`, `failed: judge`); a lost cause's edge is dashed, the next dotted. An
 **interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
