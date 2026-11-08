@@ -324,14 +324,19 @@ def test_the_cost_chart_s_tips_and_values_table_print_a_cost_alike_and_its_axes_
 
 def test_a_change_chart_names_its_zero_as_the_control(kairo_document: str) -> None:
     """H4: "Change against September (P)" never said that zero is September. Every change chart against the control
-    names its zero line with the control as its rows name arms, on the drawn page and on the static one."""
+    names its zero line with the control as its rows name arms, on the drawn page and on the static one: no change
+    against it, with its level where every row shares one (the cost forest's), the pass-rate forest's two measures
+    each carrying theirs in its group's head."""
     changes = [
         json.loads(html.unescape(data))
         for kind, data in _CHART.findall(kairo_document)
         if kind in ("forest", "diverging_bars")
     ]
     assert changes, "the Kairo document draws a change chart"
-    assert all(chart.get("zero_label") == "P · September" for chart in changes), [c.get("zero_label") for c in changes]
+    assert [chart.get("zero_label") for chart in changes] == [
+        "no change vs P · September",
+        "no change vs P · September ($1.89, mean over 294 cases)",
+    ], [c.get("zero_label") for c in changes]
     assert "zero_label" in KIT_JS and "zeroLabel" in KIT_JS
 
 

@@ -34,6 +34,21 @@ about a centre).
   names its arms by their tags. The caption speaks of interactions only where the chart draws one. A lever's effect,
   which its key states as a share where the measure is a rate, is drawn in points, as a comparison is.
 
+Asked as diverging bars, changes per slice (*strata*, *tasks*), per place (*compare*) and per lever (*configs*,
+*levers*) are drawn as dots with intervals (``dots``, GENERATOR §5.1), most of their rows carrying no interval: a
+row with none is an open mark, which a caption says, faded where the descriptive rule cannot tell it from zero, and a
+row with an interval is never faded, so no row reads surer than the one that has an interval; groups and panels are the
+bars'.
+
+Every change chart names its zero: no change against the control as a chart row names it, against the second of two
+arms compared, against each factor's first level, or from each lever move's start (and, where interactions are drawn,
+no difference between the moves); a no-preference point is named by its own line. The level each change is from, as
+the input states it (a pass rate's passes of its trials, a figure's mean over its cases; money on the chart's one
+ruler), is on the figure: in the zero label where every row shares it, in each group's head where each measure's rows
+do, else in each row's note (``+1.7 pts from 88%``). Under its axis a chart over measures that are better one way
+says which (``← worse · better →``). A forest's margin line says its band is no worse than the margin, and a forest
+of contrasts corrected together says what its level holds as a family.
+
 Every interval is drawn only where the chart states a level; every note is written by the package's number rule. A
 chart of what an analysis computes (compare, levers) spells its values table at its quantity's precision, a point to
 one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.parts.charting.chart_block`).
@@ -83,11 +98,16 @@ from threetears.evals.analysis.report.parts.look import (
 )
 from threetears.evals.analysis.report.parts.words import (
     BASIS_NOTE,
+    BETTER_WORDS,
+    CASES_MEAN_TEMPLATE,
     COMPARE_NARROW_NOTE,
     COMPARE_NESTED_TEMPLATE,
     COMPARE_STATED_COUNT,
     COMPARE_UNSTATED_COUNT,
     COMPARE_NOTE,
+    FAMILY_LEVEL_NOTE,
+    FROM_LEVEL_TEMPLATE,
+    GROUP_LEVEL_TEMPLATE,
     HUMAN_PREF_NOTE,
     LEVER_CROSS_GROUP,
     LEVER_CROSS_TEMPLATE,
@@ -97,20 +117,30 @@ from threetears.evals.analysis.report.parts.words import (
     LEVERS_INTERACTION_NOTE,
     LEVERS_NOTE,
     LEVERS_READ_NOTE,
+    LEVEL_COUNT_TEMPLATE,
+    MARGIN_BAND_TEMPLATE,
+    OPEN_MARKS_NOTE,
     OVERALL_WORD,
     PAIRED_BASIS_TEMPLATE,
     PAIRED_CASES,
+    TRIALS_COUNT_TEMPLATE,
     UNCORRECTED_NOTE,
+    ZERO_FIRST_LEVELS,
+    ZERO_LEVEL_TEMPLATE,
+    ZERO_STARTS,
+    ZERO_STARTS_CROSS,
+    ZERO_TEMPLATE,
     change_words,
 )
 from threetears.evals.kernel.numbers import MoneyForm, format_number
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
-from threetears.evals.analysis.report_rows import lever_arms
+from threetears.evals.analysis.report_margins import aspect_board
+from threetears.evals.analysis.report_rows import lever_arms, query_aspect
 from threetears.evals.analysis.style import humanize
 
-__all__ = ["RESOLVERS"]
+__all__ = ["RESOLVERS", "higher_is_better"]
 
 #: The sources whose rows an analysis computes, unrounded: a values table spells them at their quantity's precision.
 _COMPUTED = frozenset({"compare", "levers"})
@@ -121,10 +151,18 @@ _DIRECTED = frozenset({"improved", "regressed"})
 #: The no-preference point a human preference is read about, in percent.
 _NO_PREFERENCE = 50.0
 
+#: The sources whose changes the diverging chart draws as dots with intervals, never as bars (GENERATOR §5.1): per slice,
+#: per place two arms are compared at, and per lever, where most rows carry no interval, so a bar's solid length would
+#: read surer than the one row that has one. Bars stay for the pipeline's own changes and each arm's figure less the
+#: control's.
+_AS_DOTS = frozenset({"strata", "tasks", "compare", "configs", "levers"})
+
 
 @dataclass(frozen=True)
 class _Change:
-    """One drawn change: its row's id, label, colour, group and panel, its value and interval, and how it reads."""
+    """One drawn change: its row's id, label, colour, group and panel, its value and interval, and how it reads; the
+    level of what it is compared with (``base``, spelled, and what that level counts, ``count``) where the input
+    holds it."""
 
     id: str
     label: str
@@ -137,6 +175,8 @@ class _Change:
     group: str | None = None
     panel: str | None = None
     short_label: str | None = None
+    base: str | None = None
+    count: str = ""
 
 
 def _in_one_form(
@@ -227,11 +267,171 @@ def _arm_panel(context: ChartContext, arm: str, rows: list[_Change]) -> _Panel:
     return _Panel(title=look.name, tag=look.tag, color=look.token, rows=rows)
 
 
+# --- what a change is compared with: its level, and which way is better -------------------------------------------
+
+
+def higher_is_better(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool | None:
+    """Which way a measure or judged dimension is better: the pass rate (a contrast of kind ``trial``) and a judged
+    dimension up, a measure as it declares, else as the one direction its criteria give; None where nothing says.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension, by key.
+    :ptype key: str
+    :param kind: A contrast's kind, where the key is a contrast's; None otherwise.
+    :ptype kind: str | None
+    :return: True where higher is better, False where lower is, None where the input does not say.
+    :rtype: bool | None
+    """
+    if kind == "trial":
+        return True
+    measure = report_input.measures.get(key)
+    if measure is not None and kind != "judged" and measure.higher_is_better is not None:
+        return measure.higher_is_better
+    if key in report_input.judged and (measure is None or kind == "judged"):
+        return True
+    directions = {criterion.direction for criterion in report_input.criteria if criterion.measure == key}
+    return directions.pop() == "higher_is_better" if len(directions) == 1 else None
+
+
+def _better(context: ChartContext) -> tuple[str, str] | None:
+    """The words under a change chart's two ends: the one direction every measure it draws is better in, a reading's
+    the pass rate's; None where they differ, or one does not say, or the chart is about a no-preference point."""
+    source, report_input = context.query.source, context.report_input
+    if source == "human_pref":
+        return None
+    if source == "readings":
+        return BETTER_WORDS[True]
+    kinds = {contrast.measure: contrast.kind for contrast in report_input.contrasts} if source == "contrasts" else {}
+    if source in ("strata", "tasks"):
+        keys = slice_keys(context, [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)])
+    else:
+        keys = list(dict.fromkeys([*context.query.measures, *(row.key for row in context.rows() if row.key)]))
+    ups = {higher_is_better(report_input, key, kind=kinds.get(key)) for key in keys}
+    if len(ups) != 1:
+        return None
+    up = ups.pop()
+    return None if up is None else BETTER_WORDS[up]
+
+
+def _level_quantity(context: ChartContext, key: str, keys: Sequence[str]) -> Quantity:
+    """How a level (not a change) of one measure is spelled on a change chart: money on the one ruler the chart's
+    money is drawn on (:func:`_amounts_drawn`), so a level and the changes from it read on one scale; any other unit
+    as its figure reads (a share as a percent)."""
+    unit = figure_unit(context.report_input, key)
+    if quantity(unit).unit == MONEY:
+        return _levels_drawn(context, keys or [key], quantity(unit, change=True))
+    return quantity(unit)
+
+
+def _passes(context: ChartContext, aspect: str | None) -> tuple[str | None, str]:
+    """The control's pass rate on an aspect (the lead's where None) as its scoreboard counts it, its passes over its
+    usable trials beside it: what a reading or a pass-rate contrast is compared with."""
+    control = context.look.control
+    try:
+        board = aspect_board(context.report_input, aspect)
+    except KeyError:
+        # NOSILENT: an aspect the input does not hold has no scoreboard; the chart names the control without a level.
+        return None, ""
+    row = board.get(control.id) if control is not None else None
+    if row is None or row.passed is None or not row.usable:
+        return None, ""
+    drawn = quantity("share")
+    return (
+        figure_text(row.passed / row.usable * drawn.factor, drawn),
+        TRIALS_COUNT_TEMPLATE.format(passed=format_number(row.passed), trials=format_number(row.usable)),
+    )
+
+
+def _figure_base(
+    context: ChartContext, key: str, arm: str, aspect: str, keys: Sequence[str]
+) -> tuple[str | None, str]:
+    """An arm's level on one measure as the input states it, and what it counts (a mean over its cases): what each
+    candidate's change on that measure is compared with where the arm is the control."""
+    stat = figure_stat(context.report_input, key, arm, aspect)
+    read = stat_value(context.report_input, key, stat) if stat is not None else None
+    if stat is None or read is None:
+        return None, ""
+    level = _level_quantity(context, key, keys)
+    count = CASES_MEAN_TEMPLATE.format(cases=format_number(stat.n_cases)) if stat.n_cases and read[1] == "mean" else ""
+    return _level_text(read[0] * level.factor, level), count
+
+
+def _reference_arm(context: ChartContext) -> tuple[str, str] | None:
+    """What a change chart's rows are compared with, as a chart row names it and by its name: the query's second arm
+    for two arms compared, else the control; None for lever effects and a preference, whose zero is no one arm."""
+    source = context.query.source
+    if source in ("configs", "levers", "human_pref"):
+        return None
+    if source == "compare":
+        second = context.query.arms[1]
+        return _arm_label(context, second), _arm_name(context, second)
+    control = context.look.control
+    return (control.label, control.name) if control is not None else None
+
+
+def _one_base(changes: Sequence[_Change]) -> tuple[str, str] | None:
+    """The one level every change is compared with, and what it counts (where they all count it alike); None where
+    the changes are compared with several, or with one the input does not state."""
+    bases = {change.base for change in changes}
+    if len(bases) != 1 or None in bases or not changes:
+        return None
+    counts = {change.count for change in changes}
+    return str(bases.pop()), counts.pop() if len(counts) == 1 else ""
+
+
+def _zero_label(context: ChartContext, changes: Sequence[_Change]) -> str | None:
+    """What a change chart's zero line is labelled with, so a reader cold to the page reads zero as what the rows are
+    compared with: no change against the control as a chart row names it (``P · September``), or against the second
+    of two arms compared, with its level where every row shares one; against each factor's first level, or the arm
+    each lever's move starts at; None about a no-preference point, whose own line names it, or with no control."""
+    source = context.query.source
+    if source == "configs":
+        return ZERO_FIRST_LEVELS
+    if source == "levers":
+        crossed = any(isinstance(row.item, InteractionRow) for row in context.rows())
+        return ZERO_STARTS_CROSS if crossed else ZERO_STARTS
+    reference = _reference_arm(context)
+    if reference is None:
+        return None
+    shared = _one_base(changes)
+    if shared is None:
+        return ZERO_TEMPLATE.format(reference=reference[0])
+    base, count = shared
+    level = LEVEL_COUNT_TEMPLATE.format(level=base, count=count) if count else base
+    return ZERO_LEVEL_TEMPLATE.format(reference=reference[0], level=level)
+
+
+def _baselined(context: ChartContext, changes: list[_Change]) -> list[_Change]:
+    """The changes, each with what it is compared with in sight: where every row shares one level the zero line says
+    it (:func:`_zero_label`) and the rows are as they are; where each group of rows shares one (a measure's, on a chart
+    of several) the group's head carries it; else each change's note carries its own (``+1.7 pts from 88%``)."""
+    reference = _reference_arm(context)
+    if reference is None or _one_base(changes) is not None or all(change.base is None for change in changes):
+        return changes
+    groups = list(dict.fromkeys(change.group for change in changes))
+    if None not in groups and all(_one_base([c for c in changes if c.group == group]) for group in groups):
+        return [
+            dataclasses.replace(
+                change, group=GROUP_LEVEL_TEMPLATE.format(group=change.group, reference=reference[1], level=change.base)
+            )
+            for change in changes
+        ]
+    return [
+        dataclasses.replace(change, note=FROM_LEVEL_TEMPLATE.format(change=change.note, level=change.base))
+        if change.base is not None
+        else change
+        for change in changes
+    ]
+
+
 # --- readings and contrasts: the pipeline's own tests -----------------------------------------------------------
 
 
 def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
     drawn = quantity("points")
+    aspect = query_aspect(context.query.aspect, context.report_input)
+    base, count = _passes(context, aspect.id if aspect is not None else None)
     readings: dict[str, Reading] = {}
     for row in context.rows():
         assert isinstance(row.item, Reading)
@@ -256,6 +456,8 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
                 strong=bool(direction),
                 note=change_words(direction),
                 tip=tip,
+                base=base,
+                count=count,
             )
         )
     return changes, drawn
@@ -300,6 +502,13 @@ def _contrast_changes(
             if interval is not None:
                 tip[2] += f", {interval_words(*interval, here)}"
             shown = contrast_words(report_input, contrast, None) if panelled else words
+            if contrast.kind == "trial":
+                base, count = _passes(context, contrast.aspect)
+            else:
+                control = contrast.control or (context.look.control.id if context.look.control else "")
+                base, count = _figure_base(
+                    context, group.key, control, contrast.aspect or "", [one.key for one in groups]
+                )
             changes.append(
                 _Change(
                     id=arm,
@@ -312,6 +521,8 @@ def _contrast_changes(
                     tip=tip,
                     group=shown if grouped else None,
                     panel=named if panelled else None,
+                    base=base,
+                    count=count,
                 )
             )
     keys = [group.key for group in groups]
@@ -386,7 +597,8 @@ def _descriptive(
     spreads = [spread(mine), spread(theirs)]
     read = separated(change, [one * drawn.factor if one is not None else None for one in spreads])
     control = context.look.arm(_control_or_refuse(context))
-    level = quantity("percent") if drawn.unit == "pts" else _levels_drawn(context, keys or [key], drawn)
+    # A level reads in its own unit (a share as a percent), money on the chart's one ruler, never at the change's.
+    level = _level_quantity(context, key, keys)
     tip = [
         *head,
         f"{control.name} {_level_text(theirs_value[0] * level.factor, level)} · "
@@ -402,6 +614,12 @@ def _descriptive(
         strong=read,
         note=figure_text(change, drawn),
         tip=tip,
+        base=_level_text(theirs_value[0] * level.factor, level),
+        count=(
+            CASES_MEAN_TEMPLATE.format(cases=format_number(theirs.n_cases))
+            if theirs.n_cases and theirs_value[1] == "mean"
+            else ""
+        ),
     )
 
 
@@ -496,9 +714,9 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
                 if change is not None:
                     by_arm.setdefault(arm, []).append(_with_group(change, None, label=where))
     notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for rows in by_arm.values() for c in rows) else ()
-    # One form across every arm's changes (#993), each arm's rows kept in order.
+    # One form across every arm's changes (#993), each arm's rows kept in order, each with what it is compared with.
     flat, settled = _in_one_form(context, keys, [change for rows in by_arm.values() for change in rows], drawn)
-    redrawn = iter(flat)
+    redrawn = iter(_baselined(context, flat))
     return {arm: [next(redrawn) for _ in rows] for arm, rows in by_arm.items()}, settled, notes
 
 
@@ -591,6 +809,10 @@ def _arm_name(context: ChartContext, arm: str) -> str:
     return context.look.arm(arm).name if arm in context.look.arms else arm
 
 
+def _arm_label(context: ChartContext, arm: str) -> str:
+    return context.look.arm(arm).label if arm in context.look.arms else arm
+
+
 def _arm_tag(context: ChartContext, arm: str) -> str:
     return context.look.arm(arm).tag if arm in context.look.arms else arm
 
@@ -632,8 +854,10 @@ def _analysed_change(
     head: Sequence[str],
     strong: bool | None,
     group: str | None = None,
+    base: str | None = None,
 ) -> _Change:
-    """One row an analysis computed, as a change: bold where its interval clears zero, muted where it holds it."""
+    """One row an analysis computed, as a change: bold where its interval clears zero, muted where it holds it; what
+    it is compared with (``base``) where the input states it."""
     tip = [*head, figure_text(value, drawn)]
     if interval is not None:
         tip[-1] += f", {interval_words(*interval, drawn)}"
@@ -648,6 +872,7 @@ def _analysed_change(
         tip=tip,
         group=group,
         short_label=short,
+        base=base,
     )
 
 
@@ -669,6 +894,8 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
             continue
         place = str(item.name.value) if item.name is not None else OVERALL_WORD
         interval = _figure_ends(item.interval, drawn)
+        level = _level_quantity(context, key, [key])
+        theirs = _figure_value(item.second, level)
         if item.basis is not None:
             bases.append(compare_basis(context, item, key))
         changes.append(
@@ -681,6 +908,7 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
                 drawn=drawn,
                 head=[place],
                 strong=item.excludes_zero,
+                base=_level_text(theirs, level) if theirs is not None else None,
             )
         )
     changes, drawn = _in_one_form(context, [key], changes, drawn)
@@ -916,16 +1144,21 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
         yield reference.value
 
 
-#: The sources whose changes are each an arm less the control, so a change chart's zero is the control.
-_AGAINST_CONTROL = frozenset({"readings", "contrasts"})
-
-
-def _zero_label(context: ChartContext) -> str | None:
-    """What a change chart's zero line is labelled with: the control as a chart row names it (``P · September``), so
-    a reader cold to the page reads zero as the control (the review's H4); None where the changes are not against the
-    control, or the input has none."""
-    control = context.look.control
-    return control.label if control is not None and context.query.source in _AGAINST_CONTROL else None
+def _family_note(context: ChartContext) -> tuple[str, ...]:
+    """What a forest of contrasts corrected together says its level means: each interval's level, and that the
+    family's intervals hold together at its own; none where the chart's level is not one family's corrected level."""
+    aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
+    families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
+    if len(families) != 1:
+        return ()
+    (family,) = families
+    corrected = (family.correction or "").strip().lower() not in ("", "none")
+    if not corrected or not family.family_size or family.family_size < 2 or family.alpha is None:
+        return ()
+    if family.level != context.level:
+        return ()
+    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
+    return (FAMILY_LEVEL_NOTE.format(level=context.level, size=family.family_size, joint=joint),)
 
 
 def _forest(context: ChartContext) -> Drawn:
@@ -938,11 +1171,17 @@ def _forest(context: ChartContext) -> Drawn:
         changes, drawn = _reading_changes(context)
     elif source == "contrasts":
         changes, drawn, notes = _contrast_changes(context)
+        notes = (*notes, *_family_note(context))
     else:
         raise context.refuse("a forest draws readings or contrasts")
     if not context.level:
         raise context.refuse("a forest draws intervals, and the chart states no level for them")
+    zero = _zero_label(context, changes)
+    changes = _baselined(context, changes)
     reference = reference_line(context, drawn)
+    if reference is not None and reference.kind == "margin" and reference.label:
+        # The band the margin shades is what "no worse than the margin" means; the line's label says so.
+        reference = reference.model_copy(update={"label": MARGIN_BAND_TEMPLATE.format(line=reference.label)})
     domain = context.spec.domain or centred_domain(_ends(changes, reference, intervals=True), drawn)
     data = ForestChart(
         rows=[_forest_row(change, context) for change in changes],
@@ -950,7 +1189,8 @@ def _forest(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         level=context.level,
         reference=reference,
-        zero_label=_zero_label(context),
+        zero_label=zero,
+        better=_better(context),
         emphasis=context.emphasis,
     )
     # Its values table reads each value and interval end at the unit's precision (a point to one decimal), as its
@@ -958,7 +1198,10 @@ def _forest(context: ChartContext) -> Drawn:
     return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=drawn.unit)
 
 
-def _bar_row(change: _Change, level: str) -> BarRow:
+def _bar_row(change: _Change, level: str, *, dots: bool = False) -> BarRow:
+    """A change as a bar, or as a dot (``dots``): a dot's row with no interval is an open mark, faded where the
+    descriptive rule cannot tell it from zero; a dot with an interval is never faded, its interval saying how sure it
+    is, so no row reads surer than one whose interval holds zero."""
     interval = change.interval if level else None
     return BarRow(
         id=change.id,
@@ -969,7 +1212,7 @@ def _bar_row(change: _Change, level: str) -> BarRow:
         hi=interval[1] if interval is not None else None,
         color=change.color,
         strong=True if change.strong else None,
-        muted=True if change.strong is False else None,
+        muted=True if change.strong is False and (not dots or interval is None) else None,
         note=change.note,
         tip=change.tip,
         group=change.group,
@@ -989,29 +1232,23 @@ def _diverging(context: ChartContext) -> Drawn:
         changes = [_with_group(change, None) for change in changes]
     elif source == "contrasts":
         changes, drawn, notes = _contrast_changes(context, by_aspect=context.query.small_multiples_by == "aspect")
-        if any(change.panel is not None for change in changes):
-            by_aspect: dict[str, list[_Change]] = {}
-            for change in changes:
-                by_aspect.setdefault(change.panel or "", []).append(change)
-            panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_aspect.items()]
     elif source in ("measures", "judged"):
         changes, drawn, notes = _figure_changes(context)
     elif source in ("strata", "tasks"):
         by_arm, drawn, notes = _slice_changes(context)
         changes = [change for rows in by_arm.values() for change in rows]
         by = context.query.small_multiples_by
-        if by == "arm" and len(by_arm) > 1:
-            panels = [_arm_panel(context, arm, rows) for arm, rows in by_arm.items()]
-        elif by in ("task", "aspect") and len({change.label for change in changes}) > 1:
+        if by in ("task", "aspect") and len({change.label for change in changes}) > 1:
             by_slice: dict[str, list[_Change]] = {}
             for change in changes:
                 arm_label = context.look.arm(change.id).label
                 by_slice.setdefault(change.label, []).append(_with_group(change, None, label=arm_label))
             panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_slice.items()]
-        else:
-            grouped = len(by_arm) > 1
+        elif by == "arm" and len(by_arm) > 1:
+            panels = [_arm_panel(context, arm, rows) for arm, rows in by_arm.items()]
+        elif len(by_arm) > 1:
             changes = [
-                _with_group(change, context.look.arm(arm).label if grouped else None, label=change.label)
+                _with_group(change, context.look.arm(arm).label, label=change.label)
                 for arm, rows in by_arm.items()
                 for change in rows
             ]
@@ -1031,7 +1268,22 @@ def _diverging(context: ChartContext) -> Drawn:
         )
     if not changes:
         raise context.refuse("it selects no change to draw")
+    zero = _zero_label(context, changes)
+    if source not in ("strata", "tasks"):
+        # Slices are set beside what they are compared with as their changes are read (:func:`_slice_changes`).
+        changes = _baselined(context, changes)
+    dots = source in _AS_DOTS
+    if source == "contrasts" and any(change.panel is not None for change in changes):
+        by_aspect: dict[str, list[_Change]] = {}
+        for change in changes:
+            by_aspect.setdefault(change.panel or "", []).append(change)
+        panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_aspect.items()]
     level = context.level
+    if dots:
+        if not any(change.interval is not None for change in changes):
+            level = ""
+        if any(change.interval is None or not level for change in changes):
+            notes = (*notes, OPEN_MARKS_NOTE)
     if centre == _NO_PREFERENCE:
         reference: ChartReference | None = ChartReference(value=centre, kind="no_preference")
     else:
@@ -1039,32 +1291,37 @@ def _diverging(context: ChartContext) -> Drawn:
     ends = list(_ends(changes, reference, intervals=bool(level)))
     domain = context.spec.domain or centred_domain(ends, drawn, centre=centre)
     read_at = drawn.unit if source in _COMPUTED else ""
+    better = _better(context)
     if panels is not None:
         data = BarsChart(
             domain=(domain[0], domain[1]),
             fmt=drawn.fmt,
             level=level or None,
             reference=reference,
-            zero_label=_zero_label(context),
+            zero_label=zero,
+            better=better,
+            dots=dots or None,
             emphasis=context.emphasis,
             panels=[
                 BarsPanel(
                     title=panel.title,
                     tag=panel.tag,
                     color=panel.color,
-                    rows=[_bar_row(change, level) for change in panel.rows],
+                    rows=[_bar_row(change, level, dots=dots) for change in panel.rows],
                 )
                 for panel in panels
             ],
         )
     else:
         data = BarsChart(
-            rows=[_bar_row(change, level) for change in changes],
+            rows=[_bar_row(change, level, dots=dots) for change in changes],
             domain=(domain[0], domain[1]),
             fmt=drawn.fmt,
             level=level or None,
             reference=reference,
-            zero_label=_zero_label(context),
+            zero_label=zero,
+            better=better,
+            dots=dots or None,
             emphasis=context.emphasis,
         )
     return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at)

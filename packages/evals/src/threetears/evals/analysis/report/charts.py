@@ -72,6 +72,16 @@ ChartStatus = Literal["good", "warn", "bad", "neutral"]
 #: read apart by more than colour.
 ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols"]
 
+#: Which way a change chart's axis is better, printed under the axis: ``right`` prints "← worse · better →", ``left``
+#: its mirror, and two words print each under its own end, the left's first ("prefers shipped", "prefers lead-first").
+_Better = Literal["right", "left"] | tuple[str, str]
+
+#: How :data:`_Better` is described on every chart that carries it.
+_BETTER_WORDS = (
+    'Which way is better, printed under the axis: "right" prints "← worse · better →", "left" its mirror; two words '
+    "print each under its own end, the left end's first."
+)
+
 #: The panel fields that are text: a panel holding only these is drawn as a text card.
 _PANEL_TEXT = frozenset({"title", "subtitle", "tag", "color"})
 
@@ -677,7 +687,14 @@ class _BarsFields(_Kind):
     zero_label: str | None = Field(
         default=None,
         min_length=1,
-        description="Printed at the zero line of a change chart: what zero is (the control's name).",
+        description="Printed at the zero line of a change chart: what zero is (no change against the control, by "
+        "name, and its level where the rows share one).",
+    )
+    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
+    dots: bool | None = Field(
+        default=None,
+        description="Changes drawn as dots with their intervals, not bars: a row with no interval an open mark, each "
+        "note at the right edge.",
     )
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
@@ -774,8 +791,12 @@ class ForestChart(_Drawable):
     level: str = Field(description='The intervals\' level ("95%").')
     reference: ChartReference | None = Field(default=None, description="The margin (kind `margin`).")
     zero_label: str | None = Field(
-        default=None, min_length=1, description="Printed at the zero line: what zero is (the control's name)."
+        default=None,
+        min_length=1,
+        description="Printed at the zero line: what zero is (no change against the control, by name, and its level "
+        "where the rows share one).",
     )
+    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -1003,17 +1024,21 @@ class GateScatterChart(_GateScatterFields, _Drawable):
 
 
 class DotIntervalRow(_KitModel):
-    """One rate against a floor: a mark at the value and a faint interval."""
+    """One rate against a floor, or one change about zero: a mark at the value and a faint interval."""
 
-    label: str = Field(description="The row's label.")
+    label: str = Field(description="The row's label; wrapped to two lines where it is too long for one.")
     value: float = Field(description="The value.")
     lo: float | None = Field(default=None, description="The interval's low end.")
     hi: float | None = Field(default=None, description="The interval's high end.")
     id: str | None = Field(default=None, description="What `emphasis` names.")
+    short_label: str | None = Field(default=None, description="Used when `label` does not fit on two lines.")
     color: Token | None = Field(default=None, description="The mark's colour token.")
     shape: ChartShape | None = Field(default=None, description="The mark's shape.")
-    hollow: bool | None = Field(default=None, description="A hollow mark (a failure).")
+    hollow: bool | None = Field(
+        default=None, description="A hollow mark: a failure against a floor, or a change with no interval."
+    )
     strong: bool | None = Field(default=None, description="A bold label.")
+    note: str | None = Field(default=None, description="Printed at the row's right edge; nothing when none.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
 
 
@@ -1030,6 +1055,13 @@ class _DotIntervalFields(_Kind):
     )
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
     reference: ChartReference | None = Field(default=None, description="The floor.")
+    zero_label: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Printed at a change chart's zero line, which it draws: what zero is (no change against the "
+        "control, by name, and its level where the rows share one).",
+    )
+    better: _Better | None = Field(default=None, description=_BETTER_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -1040,18 +1072,22 @@ class _DotIntervalFields(_Kind):
         _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        if not self.level:
-            headers = ["Row", "Value"]
-            body = [[row.label, _formatted(self._format, row.value, read_at)] for row in self.rows or []]
-            return headers, body + _reference_row(self.reference, self._format, len(headers))
-        headers = ["Row", "Value", f"{self.level} interval"]
+        rows = self.rows or []
+        said = [_formatted(self._format, row.value, read_at) for row in rows]
+        kept = [
+            None if _restates(row.note, row.value, text, self._format, read_at) else row.note
+            for row, text in zip(rows, said, strict=True)
+        ]
+        notes = any(kept)
+        headers = ["Row", "Value", *([f"{self.level} interval"] if self.level else []), *(["Note"] if notes else [])]
         body = [
             [
                 row.label,
-                _formatted(self._format, row.value, read_at),
-                _interval(self._format, row.lo, row.hi, read_at),
+                text,
+                *([_interval(self._format, row.lo, row.hi, read_at)] if self.level else []),
+                *([note or ""] if notes else []),
             ]
-            for row in self.rows or []
+            for row, text, note in zip(rows, said, kept, strict=True)
         ]
         return headers, body + _reference_row(self.reference, self._format, len(headers))
 

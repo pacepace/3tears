@@ -1817,7 +1817,8 @@ def _preference_figure(
 ) -> list[ReportBlock]:
     """The preference drawn at the head of the Scorecard, so a reader sees at once which page the judge preferred, by
     how much and whether it is settled: each candidate's share as a dot on the 0 to 100% scale, its interval where its
-    pass read one (an open mark where it read none), against a line at even (50%); then one line per candidate saying
+    pass read one (an open mark where it read none), against a line at even (50%), each end of the axis saying whose
+    page it prefers ("← prefers shipped", "prefers lead-first →"); then one line per candidate saying
     the same in words, the control's share beside the candidate's. Nothing when no pass scored a pair. An interval is
     drawn and said only with its level, as every interval on a page is (GENERATOR §5.2)."""
     level = _level_text(pairwise)
@@ -1846,6 +1847,8 @@ def _preference_figure(
         level=level if any(shares.interval is not None for _, _, shares in drawn) else None,
         ticks=list(_SHARE_TICKS),
         reference=ChartReference(value=_EVEN, kind="no_preference", label=f"even ({format_number(_EVEN)}%)"),
+        # Right of even the judge preferred the candidate's page, left of it the control's: each end says whose.
+        better=(f"prefers {control}", f"prefers {drawn[0][0] if len(drawn) == 1 else 'the candidate'}"),
     )
     lines = []
     for arm, read, shares in drawn:
