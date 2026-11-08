@@ -7393,7 +7393,7 @@
     },
     "threetears.evals.ops.campaign_export": {
       "kind": "function",
-      "signature": "campaign_export(host: EvalHost, scope_id: str, campaign_id: str, *, built_by: str | None, paged: bool = False, after_doc_type: str | None = None, after_document_id: str | None = None) -> CampaignExport",
+      "signature": "campaign_export(host: EvalHost, scope_id: str, campaign_id: str, *, built_by: str | None, paged: bool = False, after_doc_type: str | None = None, after_document_id: str | None = None, max_bytes: int | None = None) -> CampaignExport",
       "tier": "host-contract"
     },
     "threetears.evals.ops.campaign_record": {
@@ -7833,7 +7833,7 @@
     },
     "threetears.evals.ops.OpsHost": {
       "kind": "dataclass",
-      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None, model_family: Callable[[str], str | None] | None = None)",
+      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None, model_family: Callable[[str], str | None] | None = None, campaign_export_max_bytes: int = 16000000)",
       "tier": "stable"
     },
     "threetears.evals.ops.out_of_run_spend_text": {

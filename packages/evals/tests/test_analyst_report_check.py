@@ -457,7 +457,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: scope does, where two or more were refused.
 #: The evals tool moved again when campaign_export joined it: a read action that pages a campaign's closure, the
 #: documents, profile and manifest the writer-case mint reads.
-_EVALS_BYTES = "393d913010580306388d07bc3e100dca4f0929af381106ecd91592101b36ee8b"
+#: The evals tool moved again when campaign_export's help came to say a closure past the host's ceiling
+#: (OpsHost.campaign_export_max_bytes) is refused, naming the bytes reached, and is exported once with the command line.
+_EVALS_BYTES = "18c51aa61da4c83c528d92ef2c90c3f98e71911ed1427dd445d429887ccacf82"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

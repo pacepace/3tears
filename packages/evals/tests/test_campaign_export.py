@@ -18,8 +18,10 @@ Over the toy host's corpus campaign, its store held in hand so a test writes wha
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +56,8 @@ BUILT_BY = "packages.evals.tests.fixtures.toyhost.profile:toyhost_profile"
 class Toy:
     """The toy host's operations host over a store this test holds."""
 
-    def __init__(self, *, generation: bool = False) -> None:
-        self.store = InMemoryDocumentStore()
+    def __init__(self, *, generation: bool = False, store: InMemoryDocumentStore | None = None) -> None:
+        self.store = store if store is not None else InMemoryDocumentStore()
         self.fixture = ops_fixture(generation=generation, store=self.store)
         self.host: OpsHost = self.fixture.host
         self.campaign_id = self.fixture.campaign.id
@@ -440,13 +442,14 @@ def test_a_factory_not_named_module_callable_is_refused(built_by: str) -> None:
 
 # --- pages -----------------------------------------------------------------------------------------------------------
 
-#: Bytes merged into each of several results, so the toy's closure spans several pages.
+#: Bytes merged into each of several results' kind payload (a field the model declares, as a real result's heavy fields
+#: are), so the toy's closure spans several pages.
 PADDING = 300_000
 
 
 def _padded(toy: Toy, count: int = 8) -> None:
     for result in sorted(toy.documents("eval_result"), key=lambda document: document["id"])[:count]:
-        assert toy.store.merge_fields(result["id"], SCOPE, {"padding": "x" * PADDING})
+        assert toy.store.merge_fields(result["id"], SCOPE, {"kind_payload": {"padding": "x" * PADDING}})
 
 
 def _pages(toy: Toy) -> list[CampaignExport]:
@@ -606,3 +609,234 @@ async def test_a_campaign_stored_under_another_scope_is_not_the_callers_to_expor
     # Read in its own scope, it is there: the refusal is the scope's, not the id's.
     exported = off_loop(campaign_export, toy.host.eval_host, elsewhere, "campaign-elsewhere", built_by=None)
     assert exported.manifest.scope_id == elsewhere and exported.documents[0]["id"] == "campaign-elsewhere"
+
+
+# --- the action's ceiling --------------------------------------------------------------------------------------------
+
+
+def _closure_bytes(exported: CampaignExport) -> int:
+    """What the closure's documents weigh, each as canonical JSON: the measure the ceiling counts in."""
+    return sum(len(json.dumps(document, sort_keys=True, separators=(",", ":"))) for document in exported.documents)
+
+
+async def _action_pages(host: OpsHost, campaign_id: str) -> list[Any]:
+    """Every page the action answers for ``campaign_id``, following each page's next call; stops at a refusal."""
+    (evals, _admin) = eval_catalogue().mount_all(standard_tools("evals"))
+    call: dict[str, Any] = {"action": "campaign_export", "campaign_id": campaign_id}
+    outcomes = []
+    while True:
+        outcome = await evals.call(call, host=host, caller=CALLER)
+        outcomes.append(outcome)
+        if outcome.is_error:
+            return outcomes
+        page = CampaignExport.model_validate(outcome.structured).page
+        if page is None or page.next_after_doc_type is None:
+            return outcomes
+        call |= {
+            "export_after_doc_type": page.next_after_doc_type,
+            "export_after_document_id": page.next_after_document_id,
+        }
+
+
+async def test_the_action_refuses_a_closure_past_its_hosts_ceiling_naming_the_size_and_the_way_out() -> None:
+    toy = off_loop(Toy)
+    off_loop(_padded, toy)
+    whole = off_loop(toy.export)
+    assert _closure_bytes(whole) > 1_000_000, "the padded closure is past the ceiling set below"
+    lowered = dataclasses.replace(toy.host, campaign_export_max_bytes=1_000_000)
+
+    (refused,) = await _action_pages(lowered, toy.campaign_id)
+    assert refused.is_error
+    assert (
+        f"the closure of campaign '{toy.campaign_id}' passed the export ceiling of 1,000,000 bytes, at " in refused.text
+    )
+    assert "python -m threetears.evals.harness export" in refused.text
+    assert "threetears.evals.ops.campaign_export(host, scope_id, campaign_id" in refused.text
+
+
+#: The most whole documents the module states one read under a ceiling returns.
+CHUNK = 16
+
+#: The types the closure scans whole, outside the ceiling's count.
+SCANNED = {"rubric_dim", "eval_launch", "eval_judge_profile"}
+
+
+class RecordingStore(InMemoryDocumentStore):
+    """The memory store, recording what each read asked for and what it returned."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: list[tuple[str, str, tuple[str, ...], list[dict[str, Any]]]] = []
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        found = super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+        self.reads.append(("get_many", doc_type, tuple(exclude), found))
+        return found
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        found = super().by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+        self.reads.append(("by_doc_type", doc_type, tuple(exclude), found))
+        return found
+
+    def whole_reads(self) -> list[list[dict[str, Any]]]:
+        """What each read of whole documents returned: every read but the reads of ids and the whole-type scans."""
+        return [found for _, doc_type, exclude, found in self.reads if not exclude and doc_type not in SCANNED]
+
+
+def test_a_refused_export_read_no_more_than_one_chunk_of_whole_documents_at_a_time() -> None:
+    """The bound, not just the counter: a closure several times the ceiling is refused, and no read before the refusal
+    returned more than a chunk of whole documents, so what the call held is the ceiling and one chunk. A read of ids
+    returns ids alone. Mutation checked: a where that reads its documents whole returned a run's 36 results in one read
+    and went red here."""
+    store = RecordingStore()
+    toy = Toy(store=store)
+    _padded(toy, count=60)
+    whole = toy.export()
+    largest = max(len(json.dumps(document, sort_keys=True, separators=(",", ":"))) for document in whole.documents)
+    ceiling = 1_000_000
+    assert _closure_bytes(whole) > 5 * ceiling, "the closure is several times the ceiling"
+    store.reads.clear()
+
+    with pytest.raises(ValidationFailedError) as refused:
+        toy.export(max_bytes=ceiling)
+    details = refused.value.details
+    assert details["max_bytes"] == ceiling and ceiling < details["kept_bytes"] <= ceiling + largest
+    assert f"at {details['kept_bytes']:,} bytes after {details['kept_documents']:,} documents" in refused.value.message
+    whole_reads = store.whole_reads()
+    assert whole_reads and max(len(found) for found in whole_reads) <= CHUNK
+    assert any(len(found) == CHUNK for found in whole_reads), "a run's results were read a full chunk at a time"
+    id_reads = [found for kind, _, exclude, found in store.reads if exclude]
+    assert id_reads and all(set(document) <= {"id"} for found in id_reads for document in found), (
+        "a read of ids carries nothing else of a document"
+    )
+    held = sum(
+        len(json.dumps(document, sort_keys=True, separators=(",", ":"))) for found in whole_reads for document in found
+    )
+    assert held < _closure_bytes(whole) / 2, "the refused call read under half the closure's documents"
+
+
+def test_a_ceilinged_export_reads_what_an_unbounded_one_reads_over_every_field_read() -> None:
+    """Every read by a field runs under a ceiling (the runs pinned to a case set, a cassette corpus and a sweep, a
+    report document and a snapshot stored, a judge whose config is gone): the export is the unbounded one, each read of
+    ids carries ids alone, and every other read returns at most a chunk."""
+    store = RecordingStore()
+    toy = Toy(store=store)
+    campaign = toy.campaign()
+    pins = {
+        "case_set": {"name": "toy-set", "version": 1},
+        "cassette_corpus_id": "corpus-1",
+        "launch_group_id": "group-1",
+    }
+    for run_id in campaign["aspects"][0]["run_ids"]:
+        assert store.merge_fields(run_id, SCOPE, pins)
+    stored = [
+        {"doc_type": "eval_report_doc", "id": "report-1", "campaign_id": toy.campaign_id},
+        {"doc_type": "eval_report_snapshot", "id": "snapshot-1", "campaign_id": toy.campaign_id},
+        {"doc_type": "eval_report_session", "id": "session-1", "report_doc_id": "report-1"},
+        {"doc_type": "eval_analyst_gap", "id": "gap-1", "snapshot_id": "snapshot-1"},
+        {"doc_type": "judge_config_tombstone", "id": "tomb-1", "deleted_config_id": "cfg-gone", "rubric_dim_id": "d"},
+        {"doc_type": "case_set", "id": "set-1", "name": "toy-set", "version": 1},
+        {"doc_type": "eval_cassette", "id": "cassette-1", "corpus_id": "corpus-1"},
+        {"doc_type": "eval_sweep", "id": "sweep-1", "launch_group_id": "group-1"},
+    ]
+    for document in stored:
+        store.upsert({**document, "scope_id": SCOPE})
+    assert store.merge_fields(_first_result(toy)["id"], SCOPE, {"judge_config_ids": {"d": f"cfg-gone@{'0' * 12}"}})
+    unbounded = toy.export()
+    assert {(document["doc_type"], document["id"]) for document in stored} <= set(_keys(unbounded.documents))
+    store.reads.clear()
+
+    assert toy.export(max_bytes=10 * _closure_bytes(unbounded)) == unbounded
+    read_by_field = {doc_type for kind, doc_type, exclude, _ in store.reads if kind == "by_doc_type" and exclude}
+    assert read_by_field >= {document["doc_type"] for document in stored} - {"eval_report_doc"} | {"eval_result"}
+    assert not [
+        doc_type
+        for kind, doc_type, exclude, _ in store.reads
+        if kind == "by_doc_type" and not exclude and doc_type not in SCANNED
+    ]
+    assert all(set(document) <= {"id"} for _, _, exclude, found in store.reads if exclude for document in found)
+    assert max(len(found) for found in store.whole_reads()) <= CHUNK
+
+
+async def test_under_the_ceiling_the_action_pages_exactly_as_before() -> None:
+    toy = off_loop(Toy)
+    off_loop(_padded, toy)
+    whole = off_loop(toy.export, built_by=None)
+    at_the_ceiling = dataclasses.replace(toy.host, campaign_export_max_bytes=_closure_bytes(whole))
+    for host in (toy.host, at_the_ceiling):
+        outcomes = await _action_pages(host, toy.campaign_id)
+        assert not any(outcome.is_error for outcome in outcomes), outcomes[-1].text
+        pages = [CampaignExport.model_validate(outcome.structured) for outcome in outcomes]
+        assert len(pages) >= 3
+        joined = [document for page in pages for document in page.documents]
+        assert pages[0].model_copy(update={"documents": joined, "page": None}) == whole
+
+
+def test_the_function_exports_a_closure_past_the_actions_ceiling() -> None:
+    """The function holds no ceiling unless one is passed, whatever its host's action holds."""
+    toy = Toy()
+    _padded(toy)
+    host = dataclasses.replace(toy.host, campaign_export_max_bytes=1_000)
+    exported = campaign_export(host.eval_host, SCOPE, toy.campaign_id, built_by=None)
+    assert _closure_bytes(exported) > host.campaign_export_max_bytes and exported.page is None
+
+
+async def test_the_host_raises_and_lowers_the_ceiling() -> None:
+    toy = off_loop(Toy)
+    size = _closure_bytes(off_loop(toy.export))
+    assert toy.host.campaign_export_max_bytes == 16_000_000, "the default a host that sets none holds"
+    for ceiling, refused in ((size - 1, True), (size, False), (size * 10, False)):
+        outcomes = await _action_pages(
+            dataclasses.replace(toy.host, campaign_export_max_bytes=ceiling), toy.campaign_id
+        )
+        assert outcomes[-1].is_error is refused, (ceiling, outcomes[-1].text)
+    for ceiling in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match="campaign_export_max_bytes must be a positive integer"):
+            dataclasses.replace(toy.host, campaign_export_max_bytes=ceiling)
+
+
+def test_a_reading_host_takes_the_ceiling() -> None:
+    """A host serving a reading host (``as_host``, then ``OpsHost.reading``) sets the action's ceiling there."""
+    toy = Toy()
+    _padded(toy)
+    reading = OpsHost.reading(toy.host.eval_host, campaign_export_max_bytes=1_000_000)
+    assert reading.campaign_export_max_bytes == 1_000_000
+    assert OpsHost.reading(toy.host.eval_host).campaign_export_max_bytes == 16_000_000
+    with pytest.raises(ValueError, match="positive integer"):
+        OpsHost.reading(toy.host.eval_host, campaign_export_max_bytes=0)
+
+
+async def test_the_action_on_a_reading_host_holds_the_ceiling_it_was_given() -> None:
+    toy = off_loop(Toy)
+    off_loop(_padded, toy)
+    reading = OpsHost.reading(toy.host.eval_host, campaign_export_max_bytes=1_000_000)
+    (refused,) = await _action_pages(reading, toy.campaign_id)
+    assert refused.is_error and "export ceiling of 1,000,000 bytes" in refused.text

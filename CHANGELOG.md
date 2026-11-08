@@ -20,15 +20,24 @@ packages (bumped in lock-step).
   factory raises.
 - The `campaign_export` action (read): the same export for the caller's scope, paged by whole documents for a large
   closure. Joined, the pages' documents are the single call's.
-- `EvalStorage.stored_documents` reads the engine's documents of one type as stored, never hydrated.
+- The action is bounded: it counts each kept document as canonical JSON as it gathers the closure, reads no more
+  than 16 whole documents at a time (ids first, then the documents in chunks), and refuses the moment the total passes
+  `OpsHost.campaign_export_max_bytes` (default 16,000,000), naming the bytes reached and the ceiling, with the command
+  line and `campaign_export` as the remedy. A refused call holds at most the ceiling and one chunk.
+  `campaign_export(..., max_bytes=...)` takes the same ceiling; the function and the command line hold none unless one
+  is passed. `OpsHost.reading(..., campaign_export_max_bytes=...)` sets it on a reading host.
+- `EvalStorage.stored_documents` reads the engine's documents of one type as stored, never hydrated, the store's
+  `exclude` passed through.
 
 **Fixed:**
 - The mint refused an export of a quick eval's campaign: its runs name no template, and the mint required one.
   It now requires a template only where a run names one.
 
-**Hosts:** a host that exported its campaigns with its own closure exports with the package's: the command, the
-action, or `campaign_export`. Its manifest names a report document `report <id>: <campaign name>`, never by its
-headline. A case re-minted from a new export records that name in `minted`, so its file differs from one minted from
+**Hosts:** `OpsHost.campaign_export_max_bytes` (new, default 16,000,000) counts canonical JSON, not heap: a decoded
+document takes 3 to 5 times its JSON, so a host serving actions sets it at a tenth of its serving process's headroom or
+less. A closure past it is refused by the action and exported with the command line instead. A host that exported its campaigns with its own closure exports with the
+package's: the command, the action, or `campaign_export`. Its manifest names a report document
+`report <id>: <campaign name>`, never by its headline. A case re-minted from a new export records that name in `minted`, so its file differs from one minted from
 an export that named the headline; its snapshot is the same. `ReasonedOn` is defined beside the export now and is
 still imported from `threetears.evals.harness`.
 

@@ -30,7 +30,13 @@ unchanged closure are equal, and its files (:meth:`CampaignExport.files`) are ca
 :attr:`CampaignExportPage.byte_ceiling` bytes of them, each page carrying the profile and the manifest whole, and
 naming the document the next page starts after. The pages' documents, joined, are the single call's. Paging bounds a
 response for a client, not the read: every page call reads the whole closure, so a very large campaign is exported
-once, whole. Pages are not a snapshot: a write between two calls can drop a document or move the manifest, and the
+once, whole. So the action holds a ceiling (``max_bytes``, its host's
+:attr:`~threetears.evals.ops.OpsHost.campaign_export_max_bytes`, in characters of canonical JSON), counted as the
+closure is gathered and refused the moment it passes. Under a ceiling no read returns more than a chunk of whole
+documents: a field read fetches ids first, every other field its type's model declares left out, then the documents
+a chunk at a time, so a refused call holds the ceiling and one chunk. The three whole-type scans (rubric dims,
+launches, judge profiles) read their small types whole and are not counted. The command line and the function, which
+read the closure once in a process of their own, hold no ceiling and read each type in one read. Pages are not a snapshot: a write between two calls can drop a document or move the manifest, and the
 manifest's ``closure_keys_digest`` then differs from the first page's.
 """
 
@@ -51,6 +57,28 @@ from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThresho
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.schema import DOC_TYPE_FACTS, is_builtin_judge_config_id, judge_config_of
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap
+from threetears.evals.kernel.campaign import (
+    EvalAnalysis,
+    EvalAnalysisAttempt,
+    EvalGenerationSlot,
+    EvalInsight,
+    EvalReportPlan,
+    EvalSweep,
+)
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
+from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
+from threetears.evals.run.judge_second import EvalSecondJudgePass
+from threetears.evals.run.judge_temperature import EvalJudgeTemperatureCheck
+from threetears.evals.schema.models import (
+    CalibrationRating,
+    CaseSet,
+    EvalCassette,
+    EvalResult,
+    EvalTrace,
+    JudgeConfigTombstone,
+)
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 
 #: Every model here is a value inside an export, never a stored document: immutable, refusing a key it does not
 #: declare. Not ``EvalBaseModel``, whose subclasses declaring a ``doc_type`` are the stored documents, and a
@@ -60,6 +88,46 @@ _VALUE = ConfigDict(frozen=True, extra="forbid")
 #: The most bytes of documents (each as canonical JSON) one page of a paged export holds; a document larger than it is
 #: a page alone. An action's result is read whole into a client, and a page at this ceiling stays near a megabyte.
 _PAGE_BYTES: Final = 1_000_000
+
+#: The most whole documents one store read returns while a ceiling holds (:meth:`_Closure._fetch`): a read's documents
+#: arrive together before any is counted, so what one export holds is at most its ceiling and one chunk. Sixteen keeps
+#: a chunk of the heaviest stored documents (a trace of a long conversation, a report snapshot's frozen bundle, at a
+#: few hundred kilobytes to a few megabytes each) to tens of megabytes at worst, at one store round trip per sixteen.
+_CHUNK: Final = 16
+
+#: Every field each type's model declares but its id, for the read of ids a ceilinged ``where`` makes before it reads
+#: the documents in chunks. Only the types the closure reads by field: the others are read by id.
+_BEYOND_ID: Final[Mapping[str, tuple[str, ...]]] = {
+    str(model.model_fields["doc_type"].default): tuple(field for field in model.model_fields if field != "id")
+    for model in (
+        CalibrationRating,
+        CaseSet,
+        EvalAnalysis,
+        EvalAnalysisAttempt,
+        EvalAnalystGap,
+        EvalCassette,
+        EvalGenerationSlot,
+        EvalInsight,
+        EvalJudgeTemperatureCheck,
+        EvalReportDoc,
+        EvalReportPlan,
+        EvalReportSession,
+        EvalReportSnapshot,
+        EvalResult,
+        EvalSecondJudgePass,
+        EvalSweep,
+        EvalTrace,
+        JudgeConfigTombstone,
+        OutOfRunSpend,
+    )
+}
+
+#: What a caller does about a closure past the action's ceiling: export it once, in a process of its own.
+_PAST_CEILING: Final = (
+    "export it in a process of its own, which reads the closure once and holds no ceiling: python -m "
+    "threetears.evals.harness export --host module:callable --scope SCOPE --campaign ID --out DIR, or "
+    "threetears.evals.ops.campaign_export(host, scope_id, campaign_id, built_by=...)"
+)
 
 #: What a caller does about a stored judge identity the package's reader refuses: the record is what is wrong.
 _UNREAD_JUDGE: Final = (
@@ -357,22 +425,64 @@ def _unique(ids: Iterable[str | None]) -> list[str]:
 class _Closure:
     """The documents gathered so far, keyed ``(doc_type, id)``, and what the scope did not hold."""
 
-    def __init__(self, host: EvalHost, scope_id: str) -> None:
+    def __init__(self, host: EvalHost, scope_id: str, campaign_id: str, max_bytes: int | None) -> None:
         self._storage = host.storage
         self._scope = scope_id
+        self._campaign_id = campaign_id
+        self._max_bytes = max_bytes
+        self.kept_bytes = 0
         self.documents: dict[tuple[str, str], dict[str, Any]] = {}
         self.unresolved: list[UnresolvedLink] = []
         self.builtin_judge_config_ids: list[str] = []
 
     def _keep(self, doc_type: str, documents: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        return [self.documents.setdefault((doc_type, str(document["id"])), dict(document)) for document in documents]
+        kept = []
+        for document in documents:
+            key = (doc_type, str(document["id"]))
+            if key not in self.documents:
+                self.documents[key] = dict(document)
+                self._count(document)
+            kept.append(self.documents[key])
+        return kept
+
+    def _count(self, document: Mapping[str, Any]) -> None:
+        """Add a kept document's size to the running total, refusing the moment it passes the ceiling.
+
+        Counted as each document is kept, and every read under a ceiling returns at most :data:`_CHUNK` whole
+        documents (:meth:`_fetch`), so a refused export holds at most the ceiling and one chunk.
+        """
+        if self._max_bytes is None:
+            return
+        self.kept_bytes += len(canonical_json(document))
+        if self.kept_bytes > self._max_bytes:
+            raise ValidationFailedError(
+                f"the closure of campaign {self._campaign_id!r} passed the export ceiling of {self._max_bytes:,} "
+                f"bytes, at {self.kept_bytes:,} bytes after {len(self.documents):,} documents: every page call of "
+                "the action reads the whole closure, so a closure past the ceiling is not served here",
+                {"max_bytes": self._max_bytes, "kept_bytes": self.kept_bytes, "kept_documents": len(self.documents)},
+                remedy=_PAST_CEILING,
+            )
+
+    def _fetch(self, doc_type: str, ids: Sequence[str]) -> list[dict[str, Any]]:
+        """The documents of ``doc_type`` with these ids, kept: those already held from memory, the rest read whole.
+
+        Under a ceiling they are read :data:`_CHUNK` at a time, each chunk counted before the next is read, so no read
+        returns more than a chunk; without one, in one read.
+        """
+        found = [self.documents[key] for doc_id in ids if (key := (doc_type, doc_id)) in self.documents]
+        missing = [doc_id for doc_id in ids if (doc_type, doc_id) not in self.documents]
+        step = _CHUNK if self._max_bytes is not None else max(len(missing), 1)
+        for start in range(0, len(missing), step):
+            chunk = missing[start : start + step]
+            found.extend(self._keep(doc_type, self._storage.stored_documents(doc_type, self._scope, ids=chunk)))
+        return found
 
     def by_ids(self, doc_type: str, ids: Sequence[str], *, record_missing: bool = True) -> list[dict[str, Any]]:
         """The documents of ``doc_type`` with these ids; with ``record_missing``, an id not held is unresolved."""
         wanted = _unique(ids)
         if not wanted:
             return []
-        found = self._keep(doc_type, self._storage.stored_documents(doc_type, self._scope, ids=wanted))
+        found = self._fetch(doc_type, wanted)
         if record_missing:
             held = {document["id"] for document in found}
             self.unresolved.extend(
@@ -381,8 +491,16 @@ class _Closure:
         return found
 
     def where(self, doc_type: str, **field_eq: Any) -> list[dict[str, Any]]:
-        """The documents of ``doc_type`` whose scalar fields equal ``field_eq``."""
-        return self._keep(doc_type, self._storage.stored_documents(doc_type, self._scope, **field_eq))
+        """The documents of ``doc_type`` whose scalar fields equal ``field_eq``.
+
+        Under a ceiling, their ids are read first, every other field the type's model declares left out by the store,
+        and the documents then read whole a chunk at a time (:meth:`_fetch`): one run's results or traces never arrive
+        in one read. Without one, they are read whole in one read.
+        """
+        if self._max_bytes is None:
+            return self._keep(doc_type, self._storage.stored_documents(doc_type, self._scope, **field_eq))
+        light = self._storage.stored_documents(doc_type, self._scope, exclude=_BEYOND_ID[doc_type], **field_eq)
+        return self._fetch(doc_type, _unique(str(document["id"]) for document in light))
 
     def scan(self, doc_type: str) -> list[dict[str, Any]]:
         """Every document of ``doc_type`` in the scope, NOT kept: for a list-valued link the caller filters itself."""
@@ -623,6 +741,7 @@ def campaign_export(
     paged: bool = False,
     after_doc_type: str | None = None,
     after_document_id: str | None = None,
+    max_bytes: int | None = None,
 ) -> CampaignExport:
     """Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer
     case is minted from.
@@ -642,17 +761,23 @@ def campaign_export(
     :ptype after_doc_type: str | None
     :param after_document_id: With ``paged``, the previous page's ``next_after_document_id``.
     :ptype after_document_id: str | None
+    :param max_bytes: The most bytes of canonical JSON (ASCII, so its characters; a decoded document takes several
+        times that on the heap) the kept documents may total, counted as they are gathered, a chunk at a time, and
+        refused the moment the total passes; ``None``, the default, for no ceiling. The ``campaign_export``
+        action passes its host's (:attr:`~threetears.evals.ops.OpsHost.campaign_export_max_bytes`), since it reads the
+        whole closure on every page call; a process exporting once passes none.
+    :ptype max_bytes: int | None
     :return: The export: every document in ``(doc_type, id)`` order (one page of them, when paged and more than one
         page's worth), the profile's declaration, the manifest.
     :rtype: CampaignExport
     :raises NotFoundError: No campaign of that id in the scope.
-    :raises ValidationFailedError: ``built_by`` is not ``module:callable``, or a cursor is given without ``paged``,
-        half of one, or with a type the engine does not store.
+    :raises ValidationFailedError: ``built_by`` is not ``module:callable``, a cursor is given without ``paged``,
+        half of one, or with a type the engine does not store, or the closure passes ``max_bytes``.
     :raises UnreadableRecordError: A run or a result records a judge identity the package's reader refuses.
     """
     built = _checked_built_by(built_by)
     _cursor(paged, after_doc_type, after_document_id)
-    closure = _Closure(host, scope_id)
+    closure = _Closure(host, scope_id, campaign_id, max_bytes)
     campaigns = closure.by_ids("eval_campaign", [campaign_id], record_missing=False)
     if not campaigns:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
