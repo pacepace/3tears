@@ -23,8 +23,7 @@ the default: the default changes once every writing principal holds the epoch gr
 table's saved position; idempotent; an L3 refusal of a write that did not wait is an ERROR counted on
 `threetears_l2_first_l3_refused_total`), `L2Refiller` (after NATS loses data, puts rows, the newest epoch records
 and the generation back from L3, under the old incarnation, so pods catch up through the normal epoch path),
-`run_l2_first_worker`, `l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`,
-`epoch_log_ddl`), `CollectionRegistry.set_epoch_log` and `registered_tables`, `SchemaBackedCollection.l3_pages`,
+`run_l2_first_worker`, `l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`), `CollectionRegistry.set_epoch_log` and `registered_tables`, `SchemaBackedCollection.l3_pages`,
 and `tables_written_l2_first`. The write-mark reconciler deletes a mark on an L2-first table without a whole-table
 advance, and the trigger install skips such tables.
 

@@ -63,7 +63,6 @@ if TYPE_CHECKING:
     from threetears.core.coordination.lease import HeldLease
 
 __all__ = [
-    "EPOCH_LOG_TABLE",
     "L2_FIRST",
     "EpochLogStore",
     "L2First",
@@ -75,8 +74,6 @@ __all__ = [
     "SaverPass",
     "SqlEpochLogStore",
     "complete_mark",
-    "epoch_log_ddl",
-    "is_l3_refusal",
     "l2_first_status",
     "run_l2_first_worker",
 ]
@@ -84,7 +81,7 @@ __all__ = [
 log = get_logger(__name__)
 
 #: the L3 table holding every epoch record an L2-first collection committed.
-EPOCH_LOG_TABLE: Final = "threetears_epoch_log"
+_EPOCH_LOG_TABLE: Final = "threetears_epoch_log"
 
 #: how many of a table's newest epoch records the refiller puts back after L2 is lost: as many as a
 #: pod's mark remembers heard-but-unapplied advances, so a pod behind by less catches up from L2.
@@ -274,7 +271,7 @@ class EpochLogStore(Protocol):
         ...
 
 
-def is_l3_refusal(exc: BaseException) -> bool:
+def _is_l3_refusal(exc: BaseException) -> bool:
     """whether an L3 write failed because L3 refused the row (a constraint), rather than being unreachable.
 
     A refusal is final: the same row will be refused again. Anything else -- a connection lost, a
@@ -290,7 +287,7 @@ def is_l3_refusal(exc: BaseException) -> bool:
     return isinstance(state, str) and state.startswith(_INTEGRITY_SQLSTATE_CLASS)
 
 
-def epoch_log_ddl(schema: str) -> tuple[str, ...]:
+def _epoch_log_ddl(schema: str) -> tuple[str, ...]:
     """the statements that create the L3 epoch log in ``schema``, each safe to run again.
 
     :param schema: the schema, a TRUSTED identifier
@@ -298,13 +295,13 @@ def epoch_log_ddl(schema: str) -> tuple[str, ...]:
     :return: the statements
     :rtype: tuple[str, ...]
     """
-    qualified = f"{quote_identifier(schema)}.{quote_identifier(EPOCH_LOG_TABLE)}"
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(_EPOCH_LOG_TABLE)}"
     return (
         f"CREATE TABLE IF NOT EXISTS {qualified} ("
         "table_name TEXT NOT NULL, incarnation TEXT NOT NULL, epoch_count BIGINT NOT NULL, "
         "record TEXT NOT NULL, date_saved TIMESTAMPTZ NOT NULL DEFAULT now(), "
         "PRIMARY KEY (table_name, incarnation, epoch_count))",
-        f"CREATE INDEX IF NOT EXISTS {quote_identifier(EPOCH_LOG_TABLE + '_newest')} "
+        f"CREATE INDEX IF NOT EXISTS {quote_identifier(_EPOCH_LOG_TABLE + '_newest')} "
         f"ON {qualified} (table_name, date_saved DESC)",
     )
 
@@ -317,14 +314,14 @@ class SqlEpochLogStore:
 
         :param pool: an asyncpg-shaped pool: ``fetch``, ``execute`` and ``acquire``
         :ptype pool: Any
-        :param schema: the schema holding :data:`EPOCH_LOG_TABLE`, a TRUSTED identifier
+        :param schema: the schema holding ``threetears_epoch_log``, a TRUSTED identifier
         :ptype schema: str
         :return: nothing
         :rtype: None
         """
         self._pool = pool
         self._schema = schema
-        self._table = f"{quote_identifier(schema)}.{quote_identifier(EPOCH_LOG_TABLE)}"
+        self._table = f"{quote_identifier(schema)}.{quote_identifier(_EPOCH_LOG_TABLE)}"
 
     async def install(self, policy: DdlLockPolicy | None = None) -> None:
         """create the table and its index where missing, under the database's DDL lock.
@@ -335,7 +332,7 @@ class SqlEpochLogStore:
         :rtype: None
         """
         async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-            for statement in epoch_log_ddl(self._schema):
+            for statement in _epoch_log_ddl(self._schema):
                 await conn.execute(statement)
 
     async def save(self, change: EpochChange) -> None:
@@ -601,7 +598,7 @@ class L3Saver:
                 await collection.carry_to_l3(row)
             # prawduct:allow prawduct/broad-except -- a refusal is counted and passed; anything else stops the table here and is raised by run_pass
             except Exception as exc:
-                if not is_l3_refusal(exc):
+                if not _is_l3_refusal(exc):
                     raise
                 if await self._refused_by_its_writer(collection, incarnation, count, token):
                     result.settled += 1

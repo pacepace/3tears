@@ -172,11 +172,9 @@ class _Feed(_Results):
     _table: ClassVar[str] = _FEED
 
 
+# parity-with: threetears.core.collections.l2_first.EpochLogStore
 class FakeEpochLog:
-    """the L3 epoch log, kept in a dict.
-
-    # parity-with: threetears.core.collections.l2_first.EpochLogStore
-    """
+    """the L3 epoch log, kept in a dict."""
 
     def __init__(self) -> None:
         self.records: dict[tuple[str, str, int], EpochChange] = {}
