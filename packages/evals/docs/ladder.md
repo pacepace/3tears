@@ -487,7 +487,7 @@ turns came from (each path printed whole):
 writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gemini-3.8-flash
 | reading | shipped | lead-first |
 |---|---|---|
-| Report finished | 0.14 | 0.43 |
+| Report finished | 0.43 | 0.86 |
 | Bounces | 0.86 | 1.00 |
 ...
 | Must-fix findings open | 0.43 | 0.29 |
@@ -506,7 +506,7 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|
 | lead-first | every pair | cannot tell apart | 52 | 48 | 15 to 89 |
-| lead-first | both pages finished | untested: no pair had both pages finished, 0 of 7 | — | — | — |
+| lead-first | both pages finished | cannot tell apart (too few cases) | 50 | 50 | 0 to 100 |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
@@ -528,7 +528,7 @@ sentence, and the same two side-by-side tables head its Scorecard:
 Further down it reads the two code measures that moved most:
 
 ```text
-| Report finished | 14% [3%, 51%] | 43% [16%, 75%] | +28.6 pts | [-74.6, 100.0] pts | cannot tell apart | 7 paired |
+| Report finished | 43% [16%, 75%] | 86% [49%, 97%] | +42.9 pts | [-49.5, 100.0] pts | cannot tell apart | 7 paired |
 | Must-fix findings open | 0.43 [0, 0.92] | 0.29 [0, 0.98] | -0.14 | [-1.31, 1.03] | cannot tell apart | 7 paired |
 ```
 
@@ -549,7 +549,7 @@ arms: the writer revises each page until the editor passes it on the same rubric
 cannot tell the arms apart. Read side by side, the same judge gave lead-first 52% of its preference (50% is even), and
 its two orders agreed on 6 of 7 cases. Recorded seven times on the same seven cases, a few lines of the pages apart
 each time, the judge read between 43% and 70%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
-tell the arms apart on either: 3 of 7 lead-first reports finished against 1 of 7, with fewer must-fix findings left
+tell the arms apart on either: 6 of 7 lead-first reports finished against 3 of 7, with fewer must-fix findings left
 open (0.29 a report against 0.43). That preference is the promotion read's primary reading, fixed before the run: it
 reads `promote` only when the preference favours the candidate on enough held-out cases, no gated reading regressed
 and every guardrail held. 7 held-out cases, each written once (k=1), separate only a large effect, and the pass gives

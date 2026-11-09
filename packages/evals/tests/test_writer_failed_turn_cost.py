@@ -380,7 +380,9 @@ class _Models:
         return model
 
 
-async def _capped_run(models: _Models, *, cap_usd: float = 5.0) -> tuple[list[EvalResult], BudgetStoppedError | None]:
+async def _capped_run(
+    models: _Models, *, cap_usd: float = 5.0, budget_usd: float = 1.0
+) -> tuple[list[EvalResult], BudgetStoppedError | None]:
     """One arm over both cases, one cell at a time, under an enforcing cost cap: its stored results, by case, and the
     stop the cap raised, if it did."""
     host = off_loop(_host)
@@ -406,7 +408,7 @@ async def _capped_run(models: _Models, *, cap_usd: float = 5.0) -> tuple[list[Ev
         CALLER,
         overlays=WriterOverlays.model_validate(run.overlays),
         models=models,
-        budget=ReportBudget(usd=1.0),
+        budget=ReportBudget(usd=budget_usd),
         skills={},
     )
     cap = EvalRunCostCap(run.id, cap_usd, enabled=True)
@@ -485,7 +487,10 @@ async def test_a_reply_nothing_could_price_still_stops_the_capped_run_after_its_
     """A reply that reported no usage was answered, so may have been billed: unpriced spend, and the cap stops."""
     models = _Models(lambda: sonnet(Messages((200, READS), (200, UNREPORTED)), Waits()))
 
-    results, stopped = await _capped_run(models)
+    # The report's budget admits the read and the answer, then charges the unpriced answer at its ceiling and refuses a
+    # third turn: about $0.35 a turn at the analyst's 8,192-token output cap (owner ruling 2026-11-09), where $1.00 did
+    # so at the 32,000-token cap's $0.60.
+    results, stopped = await _capped_run(models, budget_usd=0.5)
 
     assert stopped is not None, "unpriced spend stops an enforcing run"
     assert "1 result(s) spent what could not be priced" in str(stopped)
