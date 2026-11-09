@@ -26,6 +26,7 @@ import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.shared_arrow import SharedArrowFullError, SharedArrowPool, SharedArrowStore
+from threetears.core.testing.calibrate import bare_loop_lateness
 
 #: the large table's first column: 100 MiB of int64
 BIG_BYTES = 100 << 20
@@ -274,6 +275,7 @@ class TestTheLoopRunsWhileALargeTableIsHanded:
     ) -> None:
         table, digest = big
         late = 0.0
+        began = time.perf_counter()
         ticking = True
 
         async def tick() -> None:
@@ -290,7 +292,12 @@ class TestTheLoopRunsWhileALargeTableIsHanded:
         ticking = False
         await ticker
         assert result.value["sha256"] == digest
-        assert late < LOOP_MAY_BE_LATE, f"the loop ran {late * 1000:.1f} ms late while the table was handed"
+        # the hand-off's writer thread and its worker process: as many busy threads holding no lock, for as long
+        bare = await bare_loop_lateness(2, time.perf_counter() - began)
+        assert late < bare + LOOP_MAY_BE_LATE, (
+            f"the loop ran {late * 1000:.1f} ms late while the table was handed, {bare * 1000:.1f} ms beside threads "
+            f"holding no lock"
+        )
 
 
 class TestHandOffsSideBySide:
