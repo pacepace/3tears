@@ -94,7 +94,6 @@ def build_campaign_report(
     arms: Sequence[CampaignArm] | None = None,
     lead: Sequence[ReportBlock] | None = None,
     folds_alone: bool = False,
-    aspect_forms: Mapping[str, PageForms] | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as code's page: under the title the question, where its report is, what warns and the
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
@@ -141,16 +140,77 @@ def build_campaign_report(
         record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
         line, which the page's own Design & provenance would otherwise state once.
     :ptype folds_alone: bool
-    :param aspect_forms: The forms each aspect's own page was built in, by its label
-        (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`, handed to
-        :func:`~threetears.evals.analysis.report.build.build_code_only_report`), which the lead's figures read as that
-        page's verdict line does; an aspect left out has its forms built here, from its page's bundle. They stay the
-        aspects' own: the page's own figures read the campaign's forms.
-    :ptype aspect_forms: Mapping[str, PageForms] | None
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
         are of another campaign, or a given lead is empty or holds a block outside the ``answer`` section.
+    """
+    return build_campaign_report_in_aspect_forms(
+        campaign,
+        readings,
+        aspect_reports,
+        call=call,
+        report_doc_id=report_doc_id,
+        unread_analysis_id=unread_analysis_id,
+        unread_report_doc_id=unread_report_doc_id,
+        unread_line=unread_line,
+        arms=arms,
+        lead=lead,
+        folds_alone=folds_alone,
+        aspect_forms={},
+    )
+
+
+def build_campaign_report_in_aspect_forms(
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    aspect_reports: Mapping[str, Report],
+    *,
+    call: CampaignCall | None = None,
+    report_doc_id: str | None = None,
+    unread_analysis_id: str | None = None,
+    unread_report_doc_id: str | None = None,
+    unread_line: str = NO_LONGER_READS,
+    arms: Sequence[CampaignArm] | None = None,
+    lead: Sequence[ReportBlock] | None = None,
+    folds_alone: bool = False,
+    aspect_forms: Mapping[str, PageForms],
+) -> CampaignReport:
+    """A campaign's code-only page (:func:`build_campaign_report`), its lead reading each aspect's figures in the
+    forms that aspect's own page was built in: the engine's route for a caller that built those pages in forms it
+    handed in (:func:`~threetears.evals.analysis.report.build.build_code_only_report_in_forms`). Not exported: the
+    forms are the engine's own.
+
+    :param campaign: The campaign.
+    :ptype campaign: EvalCampaign
+    :param readings: What code read off it, as :func:`build_campaign_report` reads them.
+    :ptype readings: CampaignReadings
+    :param aspect_reports: Each aspect's own page, keyed by its label, as :func:`build_campaign_report` reads them.
+    :ptype aspect_reports: Mapping[str, Report]
+    :param call: As :func:`build_campaign_report` reads it.
+    :ptype call: CampaignCall | None
+    :param report_doc_id: As :func:`build_campaign_report` reads it.
+    :ptype report_doc_id: str | None
+    :param unread_analysis_id: As :func:`build_campaign_report` reads it.
+    :ptype unread_analysis_id: str | None
+    :param unread_report_doc_id: As :func:`build_campaign_report` reads it.
+    :ptype unread_report_doc_id: str | None
+    :param unread_line: As :func:`build_campaign_report` reads it.
+    :ptype unread_line: str
+    :param arms: As :func:`build_campaign_report` reads them.
+    :ptype arms: Sequence[CampaignArm] | None
+    :param lead: As :func:`build_campaign_report` reads it.
+    :ptype lead: Sequence[ReportBlock] | None
+    :param folds_alone: As :func:`build_campaign_report` reads it.
+    :ptype folds_alone: bool
+    :param aspect_forms: The forms each aspect's own page was built in, by its label
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), which the lead's figures read as that
+        page's verdict line does; an aspect left out has its forms built here, from its page's bundle. They stay the
+        aspects' own: the page's own figures read the campaign's forms.
+    :ptype aspect_forms: Mapping[str, PageForms]
+    :return: The page, ``basis="code_only"``.
+    :rtype: CampaignReport
+    :raises RefusedInput: As :func:`build_campaign_report` refuses.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
     if lead is not None:
@@ -168,7 +228,7 @@ def build_campaign_report(
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms),
         *(
-            _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms or {})
+            _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms)
             if lead is None
             else lead
         ),
