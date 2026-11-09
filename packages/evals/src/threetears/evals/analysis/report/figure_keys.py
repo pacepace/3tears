@@ -112,8 +112,8 @@ from typing import TYPE_CHECKING, Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import CENT, format_number, group_thousands, spell_multiple
-from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
+from threetears.evals.kernel.numbers import CENT, format_number, group_thousands
+from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.cost_unit import (
     REPLIES,
     CostBasis,
@@ -895,14 +895,46 @@ def _passing(report_input: ReportInput) -> dict[str, float]:
     return {arm: float(stat.mean) for arm, stat in measure.per_arm.items() if stat.mean is not None}
 
 
+def _counts_passes(report_input: ReportInput) -> bool:
+    """Whether the scoreboard counts some arm's passes, so a pass rate is passed over usable."""
+    return any(row.passed is not None and row.usable for row in report_input.scoreboard.values())
+
+
 def _pass_rate_scale(report_input: ReportInput) -> Scale:
-    if any(row.passed is not None and row.usable for row in report_input.scoreboard.values()):
+    if _counts_passes(report_input):
         return "share"
     return _measure_scale(report_input.measures["pass_rate"])[0]
 
 
+def pass_rate_measure(report_input: ReportInput) -> tuple[str, str]:
+    """The measure an arm's pass rate is a figure of, with its kind, as every table and key holds it: how each trial
+    ended (``trial``) where the scoreboard counts passes, else the input's ``pass_rate`` measure, which the figure is
+    read from (:func:`_passing`).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The measure's key and kind.
+    :rtype: tuple[str, str]
+    """
+    return (TRIAL_PASS_NAME, "trial") if _counts_passes(report_input) else ("pass_rate", "measure")
+
+
+def cost_measure(report_input: ReportInput) -> tuple[str, str] | None:
+    """The measure an arm's cost per 1,000 is a figure of, with its kind, as every table and key holds it: the measure
+    the page's cost is read from (:func:`cost_basis`); None where it is read from the scoreboard, or none states it.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The measure's key and kind, or None.
+    :rtype: tuple[str, str] | None
+    """
+    source = cost_basis(report_input).source
+    return (source, "measure") if source in report_input.measures else None
+
+
 def _pass_rate(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    return _number(path, _passing(report_input)[values[0]], "the pass rate", _pass_rate_scale(report_input))
+    read = _number(path, _passing(report_input)[values[0]], "the pass rate", _pass_rate_scale(report_input))
+    return replace(read, set_of=pass_rate_measure(report_input))
 
 
 def _cost_measures(report_input: ReportInput) -> tuple[list[str], list[str]]:
@@ -1098,7 +1130,8 @@ def _input_unit_phrases(report_input: ReportInput) -> set[str]:
 
 
 def _cost_per_1k(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    return _number(path, _costs_per_thousand(report_input)[values[0]], "the cost", "usd_per_1k")
+    read = _number(path, _costs_per_thousand(report_input)[values[0]], "the cost", "usd_per_1k")
+    return replace(read, set_of=cost_measure(report_input))
 
 
 _MEASURE_STATISTICS = ("mean", "ci", "half_width", "sem", "n", "n_cases", "p50", "p95", "change")
@@ -6465,8 +6498,15 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
         figure.scale in _PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
     ):
         figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
-    if figure.kind in ("number", "interval") and figure.scale == "plain" and figure.unit not in _KEPT_UNITS:
-        figure = replace(figure, statistic=_statistic_of(reading), set_of=_set_of(reading, figure, report_input))
+    if figure.kind in ("number", "interval"):
+        # Every figure names the measure it is of, so the page's forms record it there whatever its scale; which of them
+        # read at a set's decimals is the forms' to decide. A family whose path names an arm alone (an arm's pass rate,
+        # its cost) says which measure it read, from the source every table reads that figure from.
+        figure = replace(
+            figure,
+            statistic=_statistic_of(reading),
+            set_of=figure.set_of or _set_of(reading, figure, report_input),
+        )
     return replace(figure, derived=figure.derived or _is_derived(reading))
 
 
@@ -6480,17 +6520,36 @@ def _statistic_of(reading: _Reading) -> str | None:
 
 
 def _set_of(reading: _Reading, figure: Figure, report_input: ReportInput) -> tuple[str, str] | None:
-    """The measure whose set a plain figure is printed in by the page's tables, with its kind: the measure or judged
-    dimension a key names (or its figure carries, :attr:`Figure.measure`), a judged score on the 1–5 rubric as
-    ``judged``, a measure as ``measure``; None for a key naming neither, whose figure keeps the number rule. Which of
-    its figures a table prints, and at what decimals, is the page's forms' to decide
+    """The measure a figure is of, as the page's tables print it, with its kind: the measure or judged dimension a key
+    names (or its figure carries, :attr:`Figure.measure`), a judged score on the 1–5 rubric as ``judged``, a measure as
+    ``measure``, how each trial ended as ``trial`` (the pass rate's comparisons); None for a key naming none. Which of
+    its figures read at a set's decimals is the page's forms' to decide
     (:meth:`~threetears.evals.analysis.report.forms.PageForms.key_number`)."""
-    for value in (figure.measure,) if figure.measure else reading.values:
+    for value in (figure.measure,) if figure.measure else _named_measures(reading):
         if rubric_score(report_input, value):
             return (value, "judged")
         if value in report_input.measures:
             return (value, "measure")
+        if value in report_input.judged:
+            return (value, "judged")
+        if value == TRIAL_PASS_NAME:
+            return (value, "trial")
     return None
+
+
+#: The id slots that name a measure or a judged dimension, as a path spells them.
+_MEASURE_SLOTS = frozenset({"<measure>", "<dimension>"})
+
+
+def _named_measures(reading: _Reading) -> tuple[str, ...]:
+    """The values a path names a measure by: its measure's or dimension's slot, never an aspect, an arm or a place
+    whose id happens to be a measure's too; every value where the family has no such slot."""
+    named = tuple(
+        value
+        for slot, value in zip(_value_slots(reading), reading.values, strict=True)
+        if isinstance(slot, _Ids) and slot.name in _MEASURE_SLOTS
+    )
+    return named or reading.values
 
 
 #: A judged score's rubric scale (``ordinal``): the two decimals and the ``(1–5)`` a page prints it with.
@@ -6971,29 +7030,6 @@ def _counted_under_a_cent(figure: Figure) -> bool:
     return bool(stated) and min(stated) < CENT
 
 
-def _ruler(figure: Figure, *, per: int, start: int = 0, finer: bool = False) -> MoneyRuler:
-    """How a money figure's family is stated (#993), by the one owner of money's scale
-    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`): over the family's whole set (:class:`Figure`'s
-    ``amounts``), never the figure alone, its count moved per 1,000 more where the set is under a cent; a change in the
-    changes' form on the amounts' ruler, capped by its interval's width. A figure made without its set is a set of
-    its own numbers. ``per`` 0 is a bare amount, which states no count and reads in plain dollars."""
-    own = (
-        figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
-    )
-    ruler = money_ruler(
-        figure.amounts or own, per=per, start=start, rate=not figure.total, reconciles=figure.reconciles
-    )
-    if finer and ruler.form.figures is not None:
-        # An interval whose two ends would read alike: one significant figure more, for it alone.
-        ruler = replace(ruler, form=replace(ruler.form, figures=ruler.form.figures + 1))
-    if not figure.change:
-        return ruler
-    changes = (
-        figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
-    )
-    return ruler.for_changes(changes, (figure.spread,) if figure.spread is not None else ())
-
-
 #: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words of what it
 #: counts, ``$180 per 1,000,000 turns``. No filter names it: a key's own spelling, never chosen.
 _PER_MILLION = "per_million"
@@ -7017,6 +7053,8 @@ def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
 def _spell(
     value: float, figure: Figure, spelling: str, absolute: bool, forms: PageForms, *, finer: bool = False
 ) -> _Spelled:
+    """A figure's number by the spelling its filters chose, or the filter refused: which spelling suits which scale is
+    the grammar's, and every number's text is the page's forms' (each ``PageForms.key_*``)."""
     if absolute:
         value = abs(value)
     signed = figure.change and not absolute
@@ -7026,65 +7064,58 @@ def _spell(
         if not rate or figure.change:
             why = "a change in a rate reads in points (pts)" if rate else f"it is on the {figure.scale} scale"
             raise _refuse(figure.path, f"cannot read as a percent: {why}")
-        if spelling == "pct10":
-            return _Spelled(format_number(float(round(hundred / 10) * 10)), PERCENT)
-        if figure.level:
-            return _Spelled(format_number(hundred), PERCENT)
-        whole = float(round(hundred)) if figure.whole else hundred
-        return _Spelled(number_in(whole, PERCENT), PERCENT)
+        return _Spelled(forms.key_percent(figure, hundred, tens=spelling == "pct10"), PERCENT)
     if spelling in ("pts", "points"):
         if figure.scale not in ("share", "percent", "points"):
             raise _refuse(figure.path, f"cannot read in points: it is on the {figure.scale} scale")
-        text = number_in(hundred, POINTS)
+        text = forms.key_points(figure, hundred)
         return _Spelled(plus_signed(text, hundred) if spelling == "pts" and not absolute else text)
     if spelling in ("usd", "usd_per_1k"):
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd" and not _counted_under_a_cent(figure):
-            return _Spelled(_ruler(figure, per=0, finer=finer).spell(value, signed=signed))
+            return _Spelled(forms.key_money(figure, value, per=0, finer=finer, signed=signed)[0])
+        counts = _SCALE_COUNTS[figure.scale]
+        amount, words = forms.key_money(figure, value, per=counts, start=1_000, finer=finer, signed=signed)
         if spelling == "usd":
             # The count said once after an interval's two ends (``+$0.17 to +$0.81 per 1,000 replies``).
-            counted = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000, finer=finer)
-            return _Spelled(counted.spell(value, signed=signed), f" {counted.words(figure.per)}")
+            return _Spelled(amount, f" {words}")
         # Per 1,000 of what the cost counts (a reply's cost under a cent reads ``$0.49 per 1,000 replies``, never a
         # bare ``$0.00049`` a reader takes for a total), or per 1,000,000 where the family is under a cent even so: the
         # ruler moves (the one owner's rule), and the count is said with the amount (Q4).
-        ruler = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000, finer=finer)
-        return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
+        return _Spelled(f"{amount} {words}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if abs(value) < _WHOLE_DOLLARS_FROM:
+            amount, floor = forms.key_refused_whole(figure, value, _WHOLE_DOLLARS_FROM, finer=finer, signed=signed)
             raise _refuse(
-                figure.path,
-                f"is {_ruler(figure, per=0, finer=finer).spell(value, signed=signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
-                "which whole dollars would "
-                "round away: write it with `usd`",
+                figure.path, f"is {amount}, under ${floor}, which whole dollars would round away: write it with `usd`"
             )
-        dollars = "$" + group_thousands(format_number(float(round(abs(value)))))
+        dollars = "$" + forms.key_whole(figure, abs(value))
         return _Spelled(f"-{dollars}" if value < 0 else plus_signed(dollars, value) if signed else dollars)
     if spelling == _PER_MILLION:
         # In its family's one form, as every other money key: a price per million of anything is whole dollars or near
         # it, so the form's cents are its precision.
-        ruler = _ruler(figure, per=1_000_000, finer=finer)
-        return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
+        amount, words = forms.key_money(figure, value, per=1_000_000, finer=finer, signed=signed)
+        return _Spelled(f"{amount} {words}")
     if spelling == "words":
-        whole = round(value)
-        if figure.scale != "count" or whole != value or whole < 0:
+        whole = forms.key_whole_count(value)
+        if figure.scale != "count" or whole is None:
             why = "it is not a whole count" if figure.scale == "count" else f"it is on the {figure.scale} scale"
             raise _refuse(figure.path, f"cannot read as a word: {why}")
         if whole < len(_COUNT_WORDS):
             return _Spelled(_COUNT_WORDS[whole])
-        return _Spelled(group_thousands(format_number(float(whole))))
+        return _Spelled(forms.key_whole(figure, value))
     if spelling == "int":
         # A price per 1,000,000 (of what it counts) also reads as a whole number, as stored plans spell it.
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
-        text = group_thousands(format_number(float(round(value))))
+        text = forms.key_whole(figure, value)
         text = plus_signed(text, value) if signed else text
         return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
     if figure.unit in _KEPT_UNITS:
-        return _Spelled(f"{spell_multiple(value)} {figure.unit}")
+        return _Spelled(f"{forms.key_multiple(figure, value)} {figure.unit}")
     # A plain figure the page's tables print at a set's decimals reads at them here too (a score's ``-0.21``), and a
     # count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
     text = forms.key_number(figure, value)
@@ -7100,7 +7131,9 @@ def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageFor
     A rate reads as a percent (one decimal; a descriptive ratio in whole percents), a change in points, money in
     dollars, a count whole. An interval reads ``low to high`` when an end carries a sign, and ``low–high`` with its
     unit once otherwise (``27–28%``). A plain figure of a measure the page's tables print, and an interval's two ends,
-    read at the precision the page's forms decide for it.
+    read at the precision the page's forms decide for it. Every number it prints, and how an interval's ends read
+    together and are joined, is the forms' (each ``PageForms.key_*``), each recorded in their ledger: this chooses the
+    spelling the filters name and refuses one that does not suit.
 
     :param figure: What a key resolved to; not an arm, which :func:`render` names.
     :ptype figure: Figure
@@ -7142,27 +7175,15 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...], forms: PageForms
     low, high = figure.value
     if absolute:
         low, high = sorted((abs(low), abs(high)))
-    ends = [_spell(end, figure, spelling, absolute, forms) for end in (low, high)]
-    if ends[0] == ends[1] and low != high:
-        # Two ends that differ never read alike: one significant figure more, for this interval alone (owner ruling Q3).
-        ends = [_spell(end, figure, spelling, absolute, forms, finer=True) for end in (low, high)]
-    if spelling == "plain":
-        # Both ends at one precision, the page's forms decide which (:meth:`PageForms.key_plain_ends`).
-        respelled = forms.key_plain_ends(figure, (low, high), (ends[0].number, ends[1].number), absolute=absolute)
-        if respelled is not None:
-            ends = [_Spelled(text, end.suffix) for text, end in zip(respelled, ends, strict=True)]
-    if spelling == "pts":
-        points = forms.key_points_ends(figure, (low, high), absolute=absolute)
-        ends = [_Spelled(text, end.suffix) for text, end in zip(points, ends, strict=True)]
-    if ends[0] == ends[1]:
-        return ends[0].number + ends[0].suffix
-    if ends[0].suffix == ends[1].suffix and ends[0].suffix.startswith(" per "):
-        # A count of what money is per is said once, after both ends.
-        return INTERVAL_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[0].suffix
-    signed = spelling == "pts" or figure.change or low < 0 or high < 0
-    if "interval" in chosen or signed or ends[0].suffix != ends[1].suffix:
-        return INTERVAL_TEMPLATE.format(low=ends[0].number + ends[0].suffix, high=ends[1].number + ends[1].suffix)
-    return RANGE_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[1].suffix
+
+    def one_end(end: float, finer: bool) -> tuple[str, str]:
+        one = _spell(end, figure, spelling, absolute, forms, finer=finer)
+        return one.number, one.suffix
+
+    # How the two ends read together, and are joined, is the page's forms' (:meth:`PageForms.key_interval`).
+    return forms.key_interval(
+        figure, (low, high), one_end, spelling=spelling, absolute=absolute, joined="interval" in chosen
+    )
 
 
 def render(text: str, arm_names: Mapping[str, str], *, forms: PageForms) -> str:

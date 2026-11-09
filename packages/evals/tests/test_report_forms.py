@@ -36,7 +36,7 @@ import pytest
 from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ChartReference
 from threetears.evals.analysis.analyst.cited import cite
@@ -50,7 +50,8 @@ from threetears.evals.analysis.report.forms import PageForms, Printed, interval_
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report.parts.tables import arms_table
+from threetears.evals.analysis.report.parts.tables import arms_key, arms_table, pass_rate_cell
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
@@ -59,6 +60,7 @@ from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.words import judged_heading, reading_heading
 from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
+from threetears.evals.kernel.chart_query import PlannedChart
 from threetears.evals.harness import read_writer_cases
 from threetears.evals.kernel.numbers import (
     ABSENT,
@@ -1003,6 +1005,154 @@ def test_a_key_s_count_is_recorded_with_its_thousands_grouped_as_it_prints() -> 
     assert [entry.text for entry in forms.ledger] == ["4,000,000"]
 
 
+def _kairo_rate() -> str:
+    """Kairo's rate measure: its send-message check, a share of trials."""
+    return next(key for key in _written_inputs()[KAIRO].measures if key.startswith("goal_state:"))
+
+
+#: Kairo's rate, money and pass-rate keys, each with the measure and kind its figures are held under, the role, and
+#: the texts the key prints of it: a rate's level and interval in percent, money per 1,000 replies, the pass rate's
+#: change in points.
+_MEASURED_KEYS = [
+    ("measure.{rate}.September.mean", ("{rate}", "measure"), "level", "99.7%", ["99.7"]),
+    ("measure.{rate}.September.ci", ("{rate}", "measure"), "interval", "98.6–99.9%", ["98.6", "99.9"]),
+    (
+        "measure.production_replicating_cost.September.mean",
+        ("production_replicating_cost", "measure"),
+        "money",
+        "$1.89 per 1,000 replies",
+        ["$1.89"],
+    ),
+    (
+        "measure.production_replicating_cost.September.ci",
+        ("production_replicating_cost", "measure"),
+        "interval",
+        "$1.76 to $2.03 per 1,000 replies",
+        ["$1.76", "$2.03"],
+    ),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
+]
+
+
+@pytest.mark.parametrize(("key", "held_under", "role", "written", "texts"), _MEASURED_KEYS)
+def test_a_rate_or_money_key_records_what_it_prints_under_its_measure(
+    key: str, held_under: tuple[str, str], role: str, written: str, texts: list[str]
+) -> None:
+    """A key on a rate, on money or on the pass rate records each figure it prints under the measure it is of, as a
+    plain figure's key does, so a page-level test can hold its text to its table's."""
+    rate = _kairo_rate()
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    assert format_figure(resolve(key.format(rate=rate), held), forms=forms) == written
+    measure, kind = held_under
+    assert [(entry.measure, entry.kind, entry.role, entry.text) for entry in forms.ledger] == [
+        (measure.format(rate=rate), kind, role, text) for text in texts
+    ]
+
+
+#: The written fixtures every key family is read on: Kairo round 2 and the five misfit inputs.
+_WRITTEN_FIXTURES = ("kairo round 2", "r1", "r2", "r3", "r4", "r5")
+
+#: The roles a table holds a figure of a measure by, as a key may print the same figure: its level, its money, its
+#: change.
+_FIGURE_ROLES = frozenset({"level", "money", "change"})
+
+
+@functools.cache
+def _fixture_inputs() -> dict[str, ReportInput]:
+    snapshots = fixture_snapshots("s")
+    return {name: frozen_input(snapshots[name]) for name in _WRITTEN_FIXTURES}
+
+
+#: A figure as printed: its sign, a dollar sign, its digits and whatever follows (a unit, a count's words).
+_PRINTED = re.compile(r"([+\-]?)(\$?)(\d[\d,]*(?:\.\d+)?)(.*)")
+
+#: How a printed figure is found in a table: its number, whether it is money, and whether it is a change.
+_Said = tuple[float, bool, bool]
+
+
+def _said_as(text: str, *, change: bool) -> _Said | None:
+    """A printed figure's number, money or not, and change or not; None for text that is no figure."""
+    read = _PRINTED.fullmatch(text.strip())
+    if read is None:
+        return None
+    sign, dollar, digits, _unit = read.groups()
+    number = float(digits.replace(",", ""))
+    return (-number if sign == "-" else number, bool(dollar), change)
+
+
+def _table_figures(held: ReportInput) -> dict[_Said, set[tuple[str, str, str]]]:
+    """Every figure of a measure the page's tables print, by how it is printed, with the measure, kind and role each
+    is held under. A figure a table prints whole is left out: a count, a 1–5 score's step or a rate of 100% is held
+    by many figures alike, so it names none of them."""
+    forms = PageForms.of(held)
+    look = block_look(held, fact_arms(held))
+    every_table(held, look, forms=forms)
+    arms_table(held, look, (), forms=forms)
+    arms_key(held, look, forms=forms)
+    held_figures: dict[_Said, set[tuple[str, str, str]]] = {}
+    for entry in forms.ledger:
+        said = _said_as(entry.text, change=entry.role == "change")
+        if entry.measure and entry.role in _FIGURE_ROLES and said is not None and not said[0].is_integer():
+            held_figures.setdefault(said, set()).add((entry.measure, entry.kind, entry.role))
+    return held_figures
+
+
+def _figure_keys(held: ReportInput) -> Iterator[str]:
+    """A key of every family whose figure a table prints, for every arm and measure the input names: an arm's pass
+    rate and cost, an arm's level on a measure or a judged dimension, a comparison's change, a stratum's, a task's and
+    a cell's level, and each of them on every aspect."""
+    arms = [arm.id for arm in held.arms]
+    keys = [f"pass_rate.{arm}" for arm in arms] + [f"cost_per_1k.{arm}" for arm in arms]
+    keys += [f"measure.{key}.{arm}.mean" for key, measure in held.measures.items() for arm in measure.per_arm]
+    keys += [f"judged.{key}.{arm}.mean" for key, judged in held.judged.items() for arm in judged.per_arm]
+    keys += [f"contrast.{contrast.arm}.{contrast.measure}.delta" for contrast in held.contrasts]
+    sliced = [(f"strata.{stratum.id}", stratum.per_arm) for stratum in held.strata]
+    sliced += [(f"task.{task.id}", task.per_arm) for task in held.tasks]
+    sliced += [(f"cells.{cell.row}.{cell.column}", cell.per_arm) for cell in held.cells.values()]
+    keys += [
+        f"{where}.{arm}.{key}.mean" for where, per_arm in sliced for arm, stats in per_arm.items() for key in stats
+    ]
+    yield from keys
+    yield from (f"aspects.{aspect.id}.{key}" for aspect in held.aspects for key in keys)
+
+
+@pytest.mark.parametrize("name", _WRITTEN_FIXTURES)
+def test_a_key_records_a_figure_a_table_prints_as_the_table_does(name: str) -> None:
+    """Every key whose figure a table also prints records it under the measure and role the table holds it by, with
+    the text the key prints: an arm's pass rate is the pass rate's level wherever it is read, its cost the cost
+    measure's money, whatever the key's path names. A figure a table prints is found by how both print it (its number,
+    money or not) and whether it is a change; a figure printed alike under two measures names neither, and is passed
+    over."""
+    held = _fixture_inputs()[name]
+    tabled = _table_figures(held)
+    checked: set[str] = set()
+    for key in _figure_keys(held):
+        try:
+            figure = resolve(key, held)
+        except UnresolvableReference:
+            # NOSILENT: a key the input states no figure for (an arm a measure does not read, a slice it does not
+            # cut) is no figure a table prints; the walk reads every combination of the input's ids and skips these.
+            continue
+        if figure.kind != "number":
+            continue
+        forms = PageForms.of(held)
+        written = format_figure(figure, forms=forms)
+        for entry in forms.ledger:
+            said = _said_as(entry.text, change=figure.change)
+            held_as = tabled.get(said, set()) if said is not None else set()
+            if len({(measure, kind) for measure, kind, _role in held_as}) != 1:
+                continue
+            assert entry.text in written, (key, written, entry)
+            assert (entry.measure, entry.kind, entry.role) in held_as, (key, written, entry, sorted(held_as))
+            checked.add(key.split(".")[0])
+    roles = {role for held_as in tabled.values() for _measure, _kind, role in held_as}
+    measures = {measure for held_as in tabled.values() for measure, _kind, _role in held_as}
+    # An arm's cost and pass rate are the figures whose key names no measure: where a table prints one, its key is read.
+    assert "money" not in roles or "cost_per_1k" in checked, f"{name}: the table's cost is read by no key"
+    assert TRIAL_PASS_NAME not in measures or "pass_rate" in checked, f"{name}: the table's pass rate by no key"
+
+
 # --- the ledger and the fixed forms -------------------------------------------------------------------------------
 
 
@@ -1232,6 +1382,61 @@ def test_a_view_of_the_page_s_input_prints_into_the_page_s_ledger() -> None:
     assert view.report_input is not held
     view.count(3)
     assert [entry.role for entry in forms.ledger] == ["count"]
+
+
+def test_a_view_that_is_no_view_of_the_page_s_input_is_refused() -> None:
+    """A configs chart's grid is a view of the page's input; an input that only reads alike (validated afresh) or one
+    with another field changed is another input, and the page's forms refuse to print over it."""
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    grid = held.model_copy(update={"factors": [], "configs": []})
+    assert forms.over(grid).report_input is grid
+    with pytest.raises(ValueError, match="a view of a report input they were not built from"):
+        forms.over(ReportInput.model_validate(held.model_dump(by_alias=True)))
+    with pytest.raises(ValueError, match="a view of a report input they were not built from"):
+        forms.over(held.model_copy(update={"arms": held.arms[:-1]}))
+
+
+#: Each table or chart a written page builds from an input and its forms, given forms built from another input.
+_HANDED_APART: dict[str, Callable[[ReportInput, PageForms], object]] = {
+    "arms_table": lambda held, forms: arms_table(held, block_look(held, fact_arms(held)), (), forms=forms),
+    "pass_rate_cell": lambda held, forms: pass_rate_cell(held, held.arms[0].id, forms=forms),
+    "arms_key": lambda held, forms: arms_key(held, block_look(held, fact_arms(held)), forms=forms),
+    "every_table": lambda held, forms: every_table(held, block_look(held, fact_arms(held)), forms=forms),
+    "complete_chart": lambda held, forms: complete_chart(
+        PlannedChart.model_validate(
+            {
+                "kind": "bars",
+                "title": "",
+                "query": {
+                    "source": "measures",
+                    "aspect": "",
+                    "measures": ["production_replicating_cost"],
+                    "arms": [],
+                    "strata": [],
+                    "limit": 0,
+                    "transform": "none",
+                    "small_multiples_by": "none",
+                },
+                "reference": [],
+                "emphasis": "",
+            }
+        ),
+        held,
+        "block",
+        forms=forms,
+    ),
+}
+
+
+@pytest.mark.parametrize("build", sorted(_HANDED_APART))
+def test_a_table_or_chart_handed_another_input_s_forms_refuses_them(build: str) -> None:
+    """Each prints the input's figures in the page's forms, so forms built from another input are refused, never used:
+    one input's keys would read in another's sets."""
+    held = _written_inputs()[KAIRO]
+    _HANDED_APART[build](held, PageForms.of(held))
+    with pytest.raises(ValueError, match="not built from"):
+        _HANDED_APART[build](held, PageForms.of(held.model_copy()))
 
 
 def test_an_aspect_page_s_forms_carry_their_bundle() -> None:

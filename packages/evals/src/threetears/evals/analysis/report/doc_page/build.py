@@ -440,7 +440,7 @@ def _drawn(
 
     :raises UnresolvableReference: It does not complete, or the page cannot draw it from the input.
     """
-    spec, faults = complete_chart(planned, reader.report_input, path)
+    spec, faults = complete_chart(planned, reader.report_input, path, forms=reader.forms)
     if faults:
         raise UnresolvableReference("; ".join(f"{at} {why}" for at, why in faults))
     return spec, resolve_chart(spec, look, title="", fallback_title=title, forms=reader.forms)

@@ -233,7 +233,7 @@ def test_a_chart_stored_before_its_intervals_were_computed_draws_as_it_was_store
         planned = PlannedChart.model_validate(
             {"kind": "dot_interval", "title": "", "query": query, "reference": [], "emphasis": ""}
         )
-        spec, faults = complete_chart(planned, held, "chart")
+        spec, faults = complete_chart(planned, held, "chart", forms=PageForms.of(held))
         assert not faults
         stored = spec.model_copy(update={"level": ""})
         chart = resolve_chart(stored, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart

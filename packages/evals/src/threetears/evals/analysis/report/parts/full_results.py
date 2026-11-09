@@ -641,7 +641,9 @@ def every_table(report_input: ReportInput, look: PageLook, *, forms: PageForms) 
     :ptype forms: PageForms
     :return: The tables, each with one row at least.
     :rtype: list[TableBlock]
+    :raises ValueError: The forms were built from another input.
     """
+    forms = forms.checked(report_input)
     return [table for build in _TABLES.values() for table in build(report_input, look, forms) if table.rows]
 
 

@@ -67,13 +67,16 @@ _KIT_OWNERS = frozenset({"fmt", "K_FMTS"})
 #: The set and precision helpers outside the rule that the plan's inventory names as deciding a figure's form. A
 #: call to one, or one passed as a function value, is a site. The rule's own public callables join them by derivation
 #: (:func:`_rule_primitives`), so a primitive added to ``numbers.py`` is covered without an edit here.
+#: ``figure_keys.format_figure`` is not listed: it chooses which spelling a key's filters name and refuses one that
+#: does not suit, and every number it prints, an interval's precision and how its ends are joined are a
+#: ``PageForms.key_*`` method's, so a call to it decides nothing. A primitive written back into it is a site where it
+#: is written, as any is.
 _SET_HELPERS = frozenset(
     {
         "bare_places",
         "dollars_text",
         "figure_places",
         "figure_text",
-        "format_figure",
         "held_means",
         "interval_level",
         "interval_words",

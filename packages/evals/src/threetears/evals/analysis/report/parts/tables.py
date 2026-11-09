@@ -50,6 +50,7 @@ from threetears.evals.analysis.report.figure_keys import (
     Figure,
     aspect_costs_per_thousand,
     cost_basis,
+    cost_measure,
     format_figure,
     held_figure,
 )
@@ -146,7 +147,9 @@ def arms_table(
     :ptype forms: PageForms
     :return: The table, a row per arm in the input's order.
     :rtype: TableBlock
+    :raises ValueError: The forms were built from another input.
     """
+    forms = forms.checked(report_input)
     arms = [arm.id for arm in report_input.arms]
     described = any(_runs(report_input, arm) for arm in arms)
     aspects = _laid_out_aspects(report_input)
@@ -295,10 +298,10 @@ def _cost_cell(
     if share is not None:
         marks.append(share)
     marks += unanswered
-    # The cost is a figure of the measure the page reads it from, where that is a measure (not the scoreboard).
-    source = cost_basis(report_input).source
-    measure = source if source in report_input.measures else ""
-    cost = forms.money_on(ruler, costs[aspect, arm], measure=measure)
+    # The cost is a figure of the measure the page reads it from, where that is a measure (not the scoreboard), as its
+    # key's is (``cost_per_1k.<arm>``).
+    held = cost_measure(report_input)
+    cost = forms.money_on(ruler, costs[aspect, arm], measure=held[0] if held else "")
     return TableCell(value=cost.text, flag="; ".join(marks) or None)
 
 
@@ -378,7 +381,9 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     :ptype forms: PageForms
     :return: The cell; a dash where neither the scoreboard nor, on the lead aspect, the figure states a rate.
     :rtype: TableCell
+    :raises ValueError: The forms were built from another input.
     """
+    forms = forms.checked(report_input)
     row = aspect_board(report_input, aspect).get(arm)
     if row is None or row.passed is None or not row.usable:
         figure = held_figure(f"pass_rate.{arm}", report_input) if aspect is None else None
@@ -476,7 +481,9 @@ def arms_key(report_input: ReportInput, look: PageLook, *, forms: PageForms) -> 
     :ptype forms: PageForms
     :return: The key, under code's eyebrow and takeaway.
     :rtype: PageArmsKey
+    :raises ValueError: The forms were built from another input.
     """
+    forms = forms.checked(report_input)
     arms = report_input.arms
     aspects = _laid_out_aspects(report_input)
     present = {

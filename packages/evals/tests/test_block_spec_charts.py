@@ -29,6 +29,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
@@ -219,7 +220,8 @@ def _completed(
     name: str, plan: dict[str, Any], path: str, data: dict[str, Any] | None = None
 ) -> tuple[ChartSpec, list[tuple[str, str]]]:
     """The chart at ``path`` completed on its input, and the faults completion found."""
-    return complete_chart(_planned(_get(plan, path)), _input(name, data), path)
+    held = _input(name, data)
+    return complete_chart(_planned(_get(plan, path)), held, path, forms=PageForms.of(held))
 
 
 def _line(name: str, path: str, kind: str, **query: Any) -> dict[str, Any]:
