@@ -290,7 +290,6 @@ def build_code_only_report(
     bundle_fingerprint: str | None = None,
     trials: TrialDetail = "all",
     measure_order: Sequence[str] = (),
-    forms: PageForms | None = None,
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -336,10 +335,65 @@ def build_code_only_report(
         the quick print do (:func:`~threetears.evals.analysis.report.verdict.verdict_line`); empty where none is
         listed.
     :ptype measure_order: Sequence[str]
-    :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), where the
-        caller also reads the page's verdict sentences apart (a campaign's page, :func:`contrast_evidence`) and builds
-        them once for both; None builds them here.
-    :ptype forms: PageForms | None
+    :return: The aspect's page, code's alone.
+    :rtype: Report
+    """
+    return build_code_only_report_in_forms(
+        bundle,
+        assembled_at=assembled_at,
+        campaign_name=campaign_name,
+        arm_labels=arm_labels,
+        arm_tags=arm_tags,
+        arm_short_names=arm_short_names,
+        writer=writer,
+        bundle_fingerprint=bundle_fingerprint,
+        trials=trials,
+        measure_order=measure_order,
+        forms=PageForms.of_bundle(bundle),
+    )
+
+
+def build_code_only_report_in_forms(
+    bundle: AnalysisContextBundle,
+    *,
+    assembled_at: str,
+    campaign_name: str | None = None,
+    arm_labels: Mapping[str, str] | None = None,
+    arm_tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
+    writer: str | None = None,
+    bundle_fingerprint: str | None = None,
+    trials: TrialDetail = "all",
+    measure_order: Sequence[str] = (),
+    forms: PageForms,
+) -> Report:
+    """An aspect's code-only page (:func:`build_code_only_report`), in forms its caller built over its bundle: the
+    engine's route for a caller that also reads the page's verdict sentences apart (a campaign's page,
+    :func:`contrast_evidence`) and builds them once for both. Not exported: the forms are the engine's own.
+
+    :param bundle: The aspect's evidence, as :func:`build_code_only_report` reads it.
+    :ptype bundle: AnalysisContextBundle
+    :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
+    :ptype assembled_at: str
+    :param campaign_name: As :func:`build_code_only_report` reads it.
+    :ptype campaign_name: str | None
+    :param arm_labels: As :func:`build_code_only_report` reads them.
+    :ptype arm_labels: Mapping[str, str] | None
+    :param arm_tags: As :func:`build_code_only_report` reads them.
+    :ptype arm_tags: Mapping[str, str] | None
+    :param arm_short_names: As :func:`build_code_only_report` reads them.
+    :ptype arm_short_names: Mapping[str, str] | None
+    :param writer: As :func:`build_code_only_report` reads it.
+    :ptype writer: str | None
+    :param bundle_fingerprint: As :func:`build_code_only_report` reads it.
+    :ptype bundle_fingerprint: str | None
+    :param trials: As :func:`build_code_only_report` reads it.
+    :ptype trials: TrialDetail
+    :param measure_order: As :func:`build_code_only_report` reads it.
+    :ptype measure_order: Sequence[str]
+    :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), built over
+        ``bundle``.
+    :ptype forms: PageForms
     :return: The aspect's page, code's alone.
     :rtype: Report
     :raises ValueError: ``forms`` were built from another bundle.
@@ -637,7 +691,7 @@ def _page(
     arm_short_names: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
     measure_order: Sequence[str] = (),
-    forms: PageForms | None = None,
+    forms: PageForms,
 ) -> Report:
     """Code's page over one bundle: the same screens, whatever door renders it.
 
@@ -652,11 +706,9 @@ def _page(
     """
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
-    # Every figure the page states is decided once, for the whole page, by the bundle: here, or by the caller that
-    # also reads the page's verdict sentences (a campaign's page), which hands the same forms in.
-    if forms is None:
-        forms = PageForms.of_bundle(bundle)
-    elif forms.bundle is not bundle:
+    # Every figure the page states is decided once, for the whole page, by the bundle: by the forms its caller built
+    # over it, which a campaign's page also reads the page's verdict sentences in.
+    if forms.bundle is not bundle:
         raise ValueError("an aspect page's forms were handed in beside a bundle they were not built from")
     names = _arm_names(bundle, labels=arm_labels)
     arm = _namer(names)

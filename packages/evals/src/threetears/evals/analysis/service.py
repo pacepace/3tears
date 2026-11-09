@@ -36,12 +36,17 @@ from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection, stored_shape_line
-from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.figure_keys import input_check_name
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
-from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
+from threetears.evals.analysis.report.build import (
+    analysis_campaign_bundle,
+    analysis_writer,
+    build_code_only_report_in_forms,
+)
+from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
@@ -1101,7 +1106,7 @@ def _campaign_page(
     # page's verdict sentences.
     forms = {aspect.aspect: PageForms.of_bundle(aspect) for aspect in bundle.aspects}
     reports = {
-        aspect.aspect: build_code_only_report(
+        aspect.aspect: build_code_only_report_in_forms(
             aspect,
             assembled_at=assembled_at,
             campaign_name=campaign.name,
@@ -1116,7 +1121,7 @@ def _campaign_page(
         )
         for aspect in bundle.aspects
     }
-    page = build_campaign_report(
+    page = build_campaign_report_in_aspect_forms(
         campaign,
         readings,
         reports,

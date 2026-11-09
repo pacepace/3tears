@@ -150,7 +150,7 @@ threetears/evals/analysis/report/charts.py | RangeBarsChart.with_texts | _kept()
 threetears/evals/analysis/report/charts.py | _ConfusionFields.with_texts | _formatted() | 1
 threetears/evals/analysis/report/charts.py | _DotIntervalFields.with_texts | _end_texts() | 1
 threetears/evals/analysis/report/charts.py | _DotIntervalFields.with_texts | _kept() | 1
-threetears/evals/analysis/report/charts.py | _HeatmapFields._table | _heat_detail() | 1
+threetears/evals/analysis/report/charts.py | _HeatmapFields.table | _heat_detail() | 1
 threetears/evals/analysis/report/charts.py | _HeatmapFields.with_texts | _end_texts() | 1
 threetears/evals/analysis/report/charts.py | _HeatmapFields.with_texts | _kept() | 1
 threetears/evals/analysis/report/charts.py | _ScatterFields.with_texts | _kept() | 2

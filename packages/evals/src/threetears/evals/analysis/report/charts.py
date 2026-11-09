@@ -29,10 +29,11 @@ its own.
 from __future__ import annotations
 
 import decimal
+import functools
 import math
 import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
@@ -252,15 +253,8 @@ class _Kind(_KitModel):
         """The kind's values as ``(headers, rows)`` of text, each value its text (:meth:`with_texts` first, so a text
         the kind carries is printed as it is and any other is spelled by the contract's rule); ``read_at`` the unit
         its values are read at where its format names none (:func:`_formatted`), which a kind drawing computed changes
-        spells them at."""
-        spelled = self.with_texts(read_at)
-        if spelled != self:
-            # Tabulated as spelled, which carries every text and so spells to itself.
-            return spelled.table(legend, read_at)
-        return self._table(legend, read_at)
-
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        """The kind's values as a table, every value it draws already carrying its text."""
+        spells them at. Each kind's own is :func:`_spelled_first`, so it tabulates a kind every value of which already
+        carries its text."""
         raise NotImplementedError
 
     @property
@@ -285,6 +279,26 @@ class _Kind(_KitModel):
         :rtype: dict[str, JsonValue]
         """
         return self.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+
+def _spelled_first[T: Callable[..., tuple[list[str], list[list[str]]]]](table: T) -> T:
+    """A kind's :meth:`_Kind.table`, run on the kind as spelled (:meth:`_Kind.with_texts`) wherever spelling changes
+    it, so the table it builds reads every value it draws as its text: a text the kind carries is printed as it is,
+    and any other is spelled by the contract's rule."""
+
+    # Wrapped, so the kind's own signature and docstring are the method's: the wrapper's are not what a reader calls.
+    @functools.wraps(table)
+    def spelled_table(
+        kind: _Kind, legend: Sequence[LegendItem], read_at: str = ""
+    ) -> tuple[list[str], list[list[str]]]:
+        spelled = kind.with_texts(read_at)
+        if spelled != kind:
+            # Tabulated as spelled, which carries every text and so spells to itself.
+            return spelled.table(legend, read_at)
+        result: tuple[list[str], list[list[str]]] = table(kind, legend, read_at)
+        return result
+
+    return cast(T, spelled_table)
 
 
 class _Drawable(_Kind):
@@ -873,7 +887,8 @@ class _BarsFields(_Kind):
         rows = None if self.rows is None else [_bar_spelled(row, spec, read_at) for row in self.rows]
         return self.model_copy(update={"rows": rows, "reference": _reference_spelled(self.reference, spec, read_at)})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
         names: dict[tuple[str | None, ChartPattern | None], str] = {
             (item.color, item.pattern): item.label for item in legend if item.color is not None
@@ -1000,7 +1015,8 @@ class ForestChart(_Drawable):
         reference = _reference_spelled(self.reference, self.fmt, read_at)
         return self.model_copy(update={"rows": rows, "reference": reference})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
         said = [_said(row.value_text) for row in self.rows]
         kept = [
@@ -1087,7 +1103,8 @@ class LinesChart(_Drawable):
             series.append(one.model_copy(update={"values_text": values, "lo_text": low, "hi_text": high}))
         return self.model_copy(update={"series": series})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = [self.x_title or "", *(series.name for series in self.series)]
         body = []
         for index, category in enumerate(self.categories):
@@ -1215,7 +1232,8 @@ class _ScatterFields(_Kind):
             }
         )
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["Point", self.x_title or "x", self.y_title or "y"]
         body = [[_point_name(point), _said(point.x_text), _said(point.y_text)] for point in self.points or []]
         for reference, column in ((self.x_reference, 1), (self.reference, 2)):
@@ -1334,7 +1352,8 @@ class _DotIntervalFields(_Kind):
         reference = _reference_spelled(self.reference, spec, read_at)
         return self.model_copy(update={"rows": None if self.rows is None else rows, "reference": reference})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
         said = [_said(row.value_text) for row in rows]
         kept = [
@@ -1433,7 +1452,8 @@ class RangeBarsChart(_Drawable):
             update={"groups": groups, "reference": _reference_spelled(self.reference, self.fmt, read_at)}
         )
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["Group", "Row", "From", "To"]
         body = [
             [group.label, row.label, _said(row.from_text), _said(row.to_text)]
@@ -1489,7 +1509,8 @@ class GateMatrixChart(_Drawable):
             if self.cost_fmt is None and any(cell.cost is not None for cell in row.cells):
                 raise ValueError('cells carry "cost", so "cost_fmt" is required')
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = [self.row_header or "", *(column.label for column in self.columns)]
@@ -1575,7 +1596,8 @@ class LatticeChart(_Drawable):
             rows.append(row.model_copy(update={"cells": cells}))
         return self.model_copy(update={"rows": rows})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = ["", *(column.label for column in self.columns)]
@@ -1684,7 +1706,8 @@ class _HeatmapFields(_Kind):
             rows.append(row.model_copy(update={"cells": cells}))
         return self.model_copy(update={"rows": None if self.rows is None else rows})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns or [])]
         body = [
             [
@@ -1769,7 +1792,8 @@ class DiffHeatmapChart(_Drawable):
             rows.append(row.model_copy(update={"cells": cells}))
         return self.model_copy(update={"rows": rows})
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns)]
         body = [
             [
@@ -1831,7 +1855,8 @@ class _ConfusionFields(_Kind):
             update={"matrix_text": [[_formatted(spec, share) for share in row] for row in self.shares()]}
         )
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         labels = self.labels or []
         headers = ["", *labels]
         texts = self.matrix_text or [[]] * len(labels)
@@ -1921,7 +1946,8 @@ class ExamplesChart(_Drawable):
     cards: list[ExampleCard] = Field(description="The cards, in order.")
     card_min_rem: float | None = Field(default=None, description="The narrowest card before a column drops.")
 
-    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    @_spelled_first
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         def meta(card: ExampleCard) -> str:
             return " · ".join(
                 item.text if isinstance(item, ExampleMetaText) else item.label for item in card.meta or []

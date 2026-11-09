@@ -39,7 +39,11 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns
 from threetears.evals.analysis.analyst.cited import cite
-from threetears.evals.analysis.report.build import build_code_only_report, contrast_evidence
+from threetears.evals.analysis.report.build import (
+    build_code_only_report,
+    build_code_only_report_in_forms,
+    contrast_evidence,
+)
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
 from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
@@ -260,7 +264,9 @@ class _CodePage:
 def _scaled() -> _CodePage:
     """The scaled campaign's code page, and the readings and aspects' pages it was laid out over."""
     corpus = hot_path_corpus(scale=1)
-    with mock.patch.object(service, "build_campaign_report", wraps=service.build_campaign_report) as built:
+    with mock.patch.object(
+        service, "build_campaign_report_in_aspect_forms", wraps=service.build_campaign_report_in_aspect_forms
+    ) as built:
         page = campaign_report(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
     (call,) = built.call_args_list
     _campaign, readings, reports = call.args
@@ -1009,7 +1015,9 @@ def test_an_aspect_page_built_in_handed_forms_reads_as_one_built_in_its_own() ->
     shape = s3_measurement()
     first, second = list(shape.bundles.values())[:2]
     own = build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z")
-    handed = build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(first))
+    handed = build_code_only_report_in_forms(
+        first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(first)
+    )
     assert handed == own
     with pytest.raises(ValueError, match="not built from"):
-        build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(second))
+        build_code_only_report_in_forms(first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(second))
