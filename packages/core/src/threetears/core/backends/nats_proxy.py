@@ -22,6 +22,7 @@ none changes nothing.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,15 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.backends.arrow_copy import (
+    COPY_ARROW_FIELD,
+    JSON_COLUMNS_FIELD,
+    ROWS_DIGEST_FIELD,
+    ArrowCopyRows,
+    arrow_copy_available,
+    copy_rows_arrow,
+    framed_copy_request,
+)
 from threetears.core.backends.arrow_reply import reply_rows
 from threetears.core.backends.broker_generation import (
     CHANGED_ROWS_FIELD,
@@ -119,6 +129,11 @@ def _copy_request_budget(cap: int | None, max_payload: int | None) -> int | None
     if max_payload is not None:
         budget = min(budget, max_payload * 3 // 4)
     return budget
+
+
+#: what an Arrow copy request's envelope may take beside its rows (its token, proof and column names), with room
+#: to spare: the rows go as Arrow only when they and this fit the request's budget
+_COPY_ENVELOPE_ALLOWANCE_BYTES = 64 * 1024
 
 
 #: the broker's ``error_code`` for a statement the database refused with an SQLSTATE in class
@@ -1462,6 +1477,7 @@ class NatsProxyL3Backend:
         timeout_s: float | None = None,
         offload_encode: bool = False,
         idempotent: bool = False,
+        rows_ipc: bytes | None = None,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1489,13 +1505,20 @@ class NatsProxyL3Backend:
         :param idempotent: whether the request may be sent again when it goes unanswered; see
             :meth:`nats_request_bytes`
         :ptype idempotent: bool
+        :param rows_ipc: an ``l3.tx.copy`` request's rows as an Arrow IPC stream; see :meth:`nats_request_bytes`
+        :ptype rows_ipc: bytes | None
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
         reply = await self.nats_request_bytes(
-            subject, payload, timeout_s=timeout_s, offload_encode=offload_encode, idempotent=idempotent
+            subject,
+            payload,
+            timeout_s=timeout_s,
+            offload_encode=offload_encode,
+            idempotent=idempotent,
+            rows_ipc=rows_ipc,
         )
         try:
             result: dict[str, Any] = json.loads(reply)
@@ -1512,6 +1535,7 @@ class NatsProxyL3Backend:
         timeout_s: float | None = None,
         offload_encode: bool = False,
         idempotent: bool = False,
+        rows_ipc: bytes | None = None,
     ) -> bytes:
         """send a raw NATS request and answer the reply's bytes, undecoded: :meth:`nats_request` before its parse.
 
@@ -1535,6 +1559,9 @@ class NatsProxyL3Backend:
         :param idempotent: whether running the request twice is the same as running it once (a read), so
             it may be sent again when it goes unanswered
         :ptype idempotent: bool
+        :param rows_ipc: an ``l3.tx.copy`` request's rows as an Arrow IPC stream, sent after ``payload`` as its
+            envelope (:func:`~threetears.core.backends.arrow_copy.framed_copy_request`); None for a JSON request
+        :ptype rows_ipc: bytes | None
         :return: the reply's body
         :rtype: bytes
         :raises DataLayerUnavailableError: if the NATS request times out or the client is closed, on the
@@ -1545,7 +1572,9 @@ class NatsProxyL3Backend:
         while True:
             again: str | None = None
             try:
-                payload_bytes = await self._encoded(subject, payload, offload=offload_encode, within=nats_timeout)
+                payload_bytes = await self._encoded(
+                    subject, payload, offload=offload_encode, within=nats_timeout, rows_ipc=rows_ipc
+                )
                 reply: bytes = await self._nc.request_raw(
                     subject=Subject.raw(subject),
                     payload=payload_bytes,
@@ -1566,7 +1595,9 @@ class NatsProxyL3Backend:
             await asyncio.sleep(_UNANSWERED_BACKOFF_SECONDS * 2 ** (attempt - 1))
             attempt += 1
 
-    async def _encoded(self, subject: str, payload: dict[str, Any], *, offload: bool, within: float) -> bytes:
+    async def _encoded(
+        self, subject: str, payload: dict[str, Any], *, offload: bool, within: float, rows_ipc: bytes | None = None
+    ) -> bytes:
         """one attempt's request bytes (:meth:`encode_request`), on a thread when ``offload``, within ``within`` seconds.
 
         An offloaded encode waits for a thread of the default executor; one held by blocked threads never ran it,
@@ -1581,19 +1612,39 @@ class NatsProxyL3Backend:
         :ptype offload: bool
         :param within: the bound, in seconds
         :ptype within: float
+        :param rows_ipc: the rows' Arrow IPC stream of an Arrow copy request, ``payload`` its envelope; None for a
+            JSON request
+        :ptype rows_ipc: bytes | None
         :return: the request's bytes
         :rtype: bytes
         :raises RequestTimeoutError: when the offloaded encode did not finish within the bound
         """
+        encode = functools.partial(self._encoded_now, subject, payload, rows_ipc)
         if not offload:
-            return self.encode_request(subject, payload)
+            return encode()
         try:
             async with asyncio.timeout(within):
-                return await asyncio.to_thread(self.encode_request, subject, payload)
+                return await asyncio.to_thread(encode)
         except TimeoutError as exc:
             raise RequestTimeoutError(
                 f"request not sent: encoding it on a thread took past {within:.1f}s: subject={subject}"
             ) from exc
+
+    def _encoded_now(self, subject: str, payload: dict[str, Any], rows_ipc: bytes | None) -> bytes:
+        """one attempt's request bytes, here and now: :meth:`encode_request`, framed with its Arrow rows when it has
+        them (the proof, in the envelope, covers them by their digest).
+
+        :param subject: NATS subject the request goes to
+        :ptype subject: str
+        :param payload: request payload dict, or an Arrow copy request's envelope
+        :ptype payload: dict[str, Any]
+        :param rows_ipc: the rows' Arrow IPC stream, or None
+        :ptype rows_ipc: bytes | None
+        :return: the request's bytes
+        :rtype: bytes
+        """
+        encoded = self.encode_request(subject, payload)
+        return encoded if rows_ipc is None else framed_copy_request(encoded, rows_ipc)
 
     def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.
@@ -1826,6 +1877,9 @@ class _ProxyConnection:
         # set to the broker-minted tx_id while a transaction is open;
         # reset to None on commit or rollback.
         self.tx_id: UUID | None = None
+        #: whether the hub holding the open transaction announced, at its ``tx.begin``, that it reads a copy's rows
+        #: as Arrow (:data:`~threetears.core.backends.arrow_copy.COPY_ARROW_FIELD`); set at each begin
+        self.copy_arrow = False
 
     def transaction(
         self,
@@ -2119,6 +2173,48 @@ class _ProxyConnection:
             "rows": [[transport_param(value) for value in record] for record in records],
         }
 
+    def _copy_envelope(self, table: str, columns: Sequence[str], rows: ArrowCopyRows) -> dict[str, Any]:
+        """the envelope of an Arrow ``l3.tx.copy`` request: :meth:`_copy_payload`'s fields but its rows, which follow
+        it as Arrow, named by their digest and their JSON columns.
+
+        :param table: the table copied into
+        :ptype table: str
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param rows: the rows as Arrow
+        :ptype rows: ArrowCopyRows
+        :return: the envelope
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": str(self.tx_id),
+            "table": table,
+            "columns": list(columns),
+            ROWS_DIGEST_FIELD: rows.digest,
+            JSON_COLUMNS_FIELD: rows.json_columns,
+        }
+
+    def _copy_arrow_rows(self, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> ArrowCopyRows | None:
+        """a copy's rows as Arrow, when they fit one request: within its budget (:meth:`copy_budget_bytes`, or the
+        ceiling and the server's ``max_payload`` when the hub announced none) with room for the envelope. Rows Arrow
+        lays out wider than their JSON (small integers, nulls) may not; those are sent as JSON, which the budget sized.
+
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param records: the rows' values
+        :ptype records: Sequence[Sequence[Any]]
+        :return: the rows, or None to send them as JSON
+        :rtype: ArrowCopyRows | None
+        """
+        rows = copy_rows_arrow(columns, records)
+        budget = self.copy_budget_bytes() or _copy_request_budget(
+            _COPY_REQUEST_CEILING_BYTES, self._backend.broker_max_payload
+        )
+        fits = budget is None or len(rows.ipc) + _COPY_ENVELOPE_ALLOWANCE_BYTES <= budget
+        return rows if fits else None
+
     def copy_budget_bytes(self) -> int | None:
         """the bytes one ``l3.tx.copy`` request is sized to: the hub's announced request cap, or its reply cap when
         it announces none apart, under :data:`_COPY_REQUEST_CEILING_BYTES` and the broker's ``max_payload``; None
@@ -2137,10 +2233,11 @@ class _ProxyConnection:
         )
 
     def copy_request_bytes(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> int:
-        """the bytes of the ``l3.tx.copy`` message :meth:`copy_records_to_table` sends for ``records``.
+        """the bytes of the JSON ``l3.tx.copy`` message :meth:`copy_records_to_table` sends for ``records``.
 
         built and encoded exactly as it is sent, so a caller sizing a copy for the bus measures what
-        goes on it.
+        goes on it. To a hub that reads a copy's rows as Arrow the request goes as Arrow only when that fits the
+        same budget (:meth:`_copy_arrow_rows`), so a copy sized by this fits it either way.
 
         :param table: the table copied into
         :ptype table: str
@@ -2200,10 +2297,20 @@ class _ProxyConnection:
                 "schema_name= is not allowed on the L3 rail; the namespace is declared at "
                 "conn.transaction(namespace=...) and bound on the broker for the session"
             )
-        # a page of rows: its values converted and the request encoded on a thread, never the loop
-        payload = await asyncio.to_thread(self._copy_payload, table_name, columns, records)
+        # a page of rows: its values converted and the request encoded on a thread, never the loop; as Arrow to a
+        # hub that reads it (laid out by Arrow, its rows never JSON), else as JSON
+        rows = (
+            await asyncio.to_thread(self._copy_arrow_rows, columns, records)
+            if self.copy_arrow and arrow_copy_available()
+            else None
+        )
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload, offload_encode=True)
+        if rows is None:
+            payload = await asyncio.to_thread(self._copy_payload, table_name, columns, records)
+            response = await self._backend.nats_request(subject, payload, offload_encode=True)
+        else:
+            envelope = self._copy_envelope(table_name, columns, rows)
+            response = await self._backend.nats_request(subject, envelope, offload_encode=True, rows_ipc=rows.ipc)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
@@ -2319,6 +2426,8 @@ class _ProxyTransaction:
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")
+        # a hub that reads a copy's rows as Arrow says so here; one that does not is sent JSON
+        self._connection.copy_arrow = response.get(COPY_ARROW_FIELD) is True
         # a hub that announces its caps here sizes the session's copies from its first request
         self._backend.remember_reply_cap(response.get("max_reply_bytes"))
         request_cap = response.get("max_request_bytes")
