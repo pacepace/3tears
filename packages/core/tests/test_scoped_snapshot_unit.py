@@ -2410,7 +2410,9 @@ async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
     await snapshot.stop()
 
 
-async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_over_the_names() -> None:
+async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_over_the_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """a load's publish moves every state at once and retires each one's older chunks: each name listed is read once,
     by its own scope, not once per scope moved -- the per-scope pass held the event loop 50-60 ms a publish on
     cobalt prod (51 states). Chunks of scopes not moved, and those the pointers serve, stay."""
@@ -2433,16 +2435,25 @@ async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_o
     for name in old | kept:
         store.objects[name] = b"x"
 
-    began = time.perf_counter()
+    # a scope's token is made once per scope moved; a pass per scope over the names made it once per name per scope
+    # (the 50-60 ms on cobalt prod). Counted, not timed: a bound on a pool runner's clock is a bound on the runner
+    made = 0
+    token_of_scope = scoped_snapshot_module.scope_token
+
+    def counted(scope: str) -> str:
+        nonlocal made
+        made += 1
+        return token_of_scope(scope)
+
+    monkeypatch.setattr(scoped_snapshot_module, "scope_token", counted)
     moved, skipped = await snapshot.publish_staged(staged, carry_at=dict.fromkeys(scopes, 0), whole=True)
-    spent = time.perf_counter() - began
 
     assert (sorted(moved), skipped) == (scopes, [])
     assert not old & set(store.objects), "an older chunk of a moved scope was left"
     assert kept <= set(store.objects), "a chunk of a scope not moved was retired"
     assert _served(pointers) <= set(store.objects)
-    # the fakes answer at once, so this is the publish's own work on the loop: one pass over ~13k names
-    assert spent < 0.25, f"the publish's retire held the loop {spent:.3f} s"
+    names = len(old) + len(kept)
+    assert made < names, f"the publish made a scope's token {made} times over {names} names: a pass per scope"
     await snapshot.stop()
 
 
