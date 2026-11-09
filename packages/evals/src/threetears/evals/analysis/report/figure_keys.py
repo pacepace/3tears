@@ -449,15 +449,32 @@ def _of_the_pass_rate(roles: Mapping[str, Role]) -> _LedgerAs:
     return held
 
 
-def _a_reply_cost_is_the_cost(
-    report_input: ReportInput, _values: tuple[str, ...], figure: Figure
+def _the_page_s_cost(*statistics: str) -> _LedgerAs:
+    """A family whose figures, by statistic, are the page's cost (:func:`cost_measure`), held as the money its cost per
+    1,000 and its table's cost cell are: an arm's cost per reply, and its cost with unreported trials counted free or
+    at its 95th percentile; nothing where the page reads its cost from no measure."""
+
+    def held(report_input: ReportInput, _values: tuple[str, ...], figure: Figure) -> tuple[str, str, Role] | None:
+        measure = cost_measure(report_input)
+        if measure is None or figure.statistic not in statistics:
+            return None
+        return (*measure, "money")
+
+    return held
+
+
+#: An arm's cost per reply, on its scoreboard: the page's cost.
+_A_REPLY_COST = _the_page_s_cost("reply_cost_usd")
+
+
+def _a_bar_s_level(
+    _report_input: ReportInput, _values: tuple[str, ...], figure: Figure
 ) -> tuple[str, str, Role] | None:
-    """An arm's cost per reply is the page's cost (:func:`cost_measure`), held as the money its cost per 1,000 and its
-    table's cost cell are; nothing where the page reads its cost from no measure."""
-    measure = cost_measure(report_input)
-    if measure is None or figure.statistic != "reply_cost_usd":
+    """An arm's figure against a bar, and its interval's ends, are its level on the bar's measure (money's its money),
+    as the measure's table prints it; the bar itself is a declared line, no figure of the measure."""
+    if figure.set_of is None or figure.statistic not in ("value", "low", "high"):
         return None
-    return (*measure, "money")
+    return (*figure.set_of, "money" if figure.scale in _SCALE_COUNTS else "level")
 
 
 #: A reading's figures that are the pass rate's: its change and that change's ends.
@@ -5562,7 +5579,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_SCOREBOARD_STATISTICS),
         what="how an arm's trials came out. " + _SCOREBOARD_FAILED,
         resolve=_scoreboard,
-        ledger_as=_a_reply_cost_is_the_cost,
+        ledger_as=_A_REPLY_COST,
     ),
     _family_of(
         _Word("calls.unanswered"),
@@ -5727,7 +5744,7 @@ _FAMILIES: tuple[_Family, ...] = (
         what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
-        ledger_as=_a_reply_cost_is_the_cost,
+        ledger_as=_A_REPLY_COST,
     ),
     _family_of(
         *_ON_ASPECT,
@@ -5780,6 +5797,7 @@ _FAMILIES: tuple[_Family, ...] = (
         "hold no aspect record for)",
         resolve=_bar,
         example="aspects.speed.bar.latency_ms.fast.v2.value",
+        ledger_as=_a_bar_s_level,
     ),
     _family_of(
         *_ON_ASPECT,
@@ -6252,6 +6270,7 @@ _FAMILIES: tuple[_Family, ...] = (
         "highest cost); refused where the cost is not read off one measure's observations, one per trial",
         resolve=_unreported,
         derived=True,
+        ledger_as=_the_page_s_cost("free", "at_p95"),
     ),
 )
 
