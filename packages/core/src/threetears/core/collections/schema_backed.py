@@ -81,6 +81,7 @@ from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.epoch_change import RESET_REASON, WholeReach
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.keyset import keyset_pages
@@ -2382,8 +2383,39 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             await store.upsert(self.table_name, data, pk=self.schema.pk_columns, on_conflict="raise", conn=conn)
         return len(rows)
 
+    @property
+    def _records_epochs(self) -> bool:
+        """whether this table's writes advance a write generation whose epochs are recorded: a whole-table change of
+        it would make every follower read the table again.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self._write_generation_on or self.keeps_write_generation_in_l2 or self._negative_cache_writes_advance
+
     async def truncate(self) -> None:
-        """empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it.
+        """empty a table whose epochs are not recorded (:meth:`reset` without its reason); refused on one whose are.
+
+        A recorded table is never emptied whole by a load: its epoch would make every follower read the table again.
+        Clear a part by its key prefixes (:meth:`clear_partition`), delete rows by key (:meth:`delete_rows`), or, for
+        an operator's reset only, :meth:`reset`.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table's epochs are recorded, or as :meth:`reset`
+        """
+        if self._records_epochs:
+            raise ValueError(
+                f"{type(self).__name__}.truncate: {self.table_name}'s epochs are recorded, and a whole-table change "
+                f"would make every follower read it again: clear its key prefixes with clear_partition, delete rows "
+                f"by key, or reset() from an operator's reset"
+            )
+        await self._truncate_l3(reset=False)
+
+    async def reset(self) -> None:
+        """an operator's reset: empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it. The one
+        whole-table change a writer makes; its epoch names ``reason="reset"``, and a follower reads the table again as
+        on a first start. Never from a load.
 
         For a table reloaded whole from a source that changed: deleting every row leaves a
         tombstone per row behind, and on YugabyteDB one transaction deleting millions of them runs
@@ -2413,6 +2445,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the table is emptied and this process's caches dropped
         """
+        await self._truncate_l3(reset=True)
+
+    async def _truncate_l3(self, *, reset: bool) -> None:
+        """``TRUNCATE`` the table in L3, then drop and advance (:meth:`reset`, :meth:`truncate`).
+
+        :param reset: whether it is an operator's reset, which its epoch names
+        :ptype reset: bool
+        :return: nothing
+        :rtype: None
+        """
         store = self._durable_store()
         if store is None:
             raise ValueError(f"{type(self).__name__}.truncate: {self.table_name} has no durable store to empty")
@@ -2423,13 +2465,17 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.truncate: {self.table_name} defers its L3 writes, and a buffered row "
                 f"would land after the table was emptied"
             )
+        reach = WholeReach(reason=RESET_REASON) if reset else None
         try:
-            await store.truncate(self.table_name)
+            if reset:
+                await store.truncate(self.table_name, reason=RESET_REASON)
+            else:
+                await store.truncate(self.table_name)
         except (Exception, asyncio.CancelledError) as exc:
             # a reply lost or timed out may still have emptied the table: drop as if it had
-            await self._drop_and_advance_after_failure("truncate failed", exc)
+            await self._drop_and_advance_after_failure("reset failed" if reset else "truncate failed", exc, reach=reach)
             raise
-        await self._drop_and_advance("truncated")
+        await self._drop_and_advance("reset" if reset else "truncated", reach=reach)
 
     async def load_files(
         self,
@@ -2440,6 +2486,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         rows_per_transaction: int | None = None,
         timeout_ms: int | None = None,
         connections: int = 1,
+        prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -2489,6 +2536,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype timeout_ms: int | None
         :param connections: the most requests sent at once; one sends them one after another
         :ptype connections: int
+        :param prefixes: the key prefixes the load's rows fall in, each the leading key columns and their values (an
+            AP load of a state names each office's key): its epoch names them, so a follower reads each as a key range.
+            None takes the one prefix the constants lead the key with. A load naming neither is refused: its epoch
+            could name only the whole table
+        :ptype prefixes: Sequence[Mapping[str, Any]] | None
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
@@ -2509,6 +2561,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         if not files:
             return 0
+        reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
         per_transaction = self.LOAD_ROWS_PER_TRANSACTION if rows_per_transaction is None else rows_per_transaction
         bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
         # refused here, before anything is sent: only a single file too long for one reply
@@ -2529,6 +2582,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                     constants=dict(constants or {}),
                     rows_per_transaction=per_transaction,
                     timeout_ms=bound,
+                    key_prefixes=[dict(prefix) for prefix in reach.prefixes],
                 )
             return result.row_count
 
@@ -2541,7 +2595,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         except (Exception, asyncio.CancelledError) as exc:
             # the load commits as it goes: the requests and transactions before a failure stay
             # committed, and a reply lost or timed out may follow a load the broker finished
-            await self._drop_and_advance_after_failure("load from files failed", exc)
+            await self._drop_and_advance_after_failure("load from files failed", exc, reach=reach)
             raise
         if written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
             # a reload's rows: the planner reads the table blind until it is analysed, once, after the last request
@@ -2554,13 +2608,71 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 )
         await self._drop_and_advance(
             "loaded from files",
-            partition={column: str(value) for column, value in (constants or {}).items() if value is not None} or None,
+            reach=reach,
             rows=written,
             requests=len(requests),
         )
         return written
 
-    async def _drop_and_advance_after_failure(self, reason: str, failure: BaseException) -> None:
+    def _key_columns(self) -> tuple[str, ...]:
+        key = self.schema.primary_key
+        return tuple(key) if isinstance(key, tuple) else (key,)
+
+    def _load_reach(
+        self, constants: Mapping[str, Any], prefixes: Sequence[Mapping[str, Any]] | None
+    ) -> list[dict[str, str]]:
+        """a load's or a clear's key prefixes as text, each checked to name the key's leading columns.
+
+        :param constants: the load's constants
+        :ptype constants: Mapping[str, Any]
+        :param prefixes: the prefixes named, or None for the constants' one
+        :ptype prefixes: Sequence[Mapping[str, Any]] | None
+        :return: the prefixes, each once
+        :rtype: list[dict[str, str]]
+        :raises ValueError: when none is named, or one does not lead the key
+        """
+        if prefixes is None:
+            prefix = self.key_prefix_of(constants)
+            if not prefix:
+                raise ValueError(
+                    f"{type(self).__name__}: {self.table_name}'s load names no key prefix and its constants "
+                    f"({sorted(constants)}) do not lead the key {list(self._key_columns())}: its epoch could name only "
+                    f"the whole table. Name the key prefixes its rows fall in (prefixes=)"
+                )
+            return [prefix]
+        named: list[dict[str, str]] = []
+        for given in prefixes:
+            prefix = self.key_prefix_of(given)
+            if not prefix or set(prefix) != set(given):
+                raise ValueError(
+                    f"{type(self).__name__}: {self.table_name}: {dict(given)} is not a key prefix (the leading columns "
+                    f"of {list(self._key_columns())}, each with a value)"
+                )
+            if prefix not in named:
+                named.append(prefix)
+        if not named:
+            raise ValueError(f"{type(self).__name__}: {self.table_name}: prefixes= names none")
+        return named
+
+    def key_prefix_of(self, constants: Mapping[str, Any]) -> dict[str, str]:
+        """the longest run of the key's leading columns ``constants`` names, as text: a load's or a clear's reach as an
+        index reads it exactly (a key range). Empty when the first key column is not among them.
+
+        :param constants: columns and the value every row holds
+        :ptype constants: Mapping[str, Any]
+        :return: the prefix
+        :rtype: dict[str, str]
+        """
+        prefix: dict[str, str] = {}
+        for column in self._key_columns():
+            if constants.get(column) is None:
+                break
+            prefix[column] = str(constants[column])
+        return prefix
+
+    async def _drop_and_advance_after_failure(
+        self, reason: str, failure: BaseException, *, reach: WholeReach | None = None
+    ) -> None:
         """drop and advance as :meth:`_drop_and_advance` does, after a store call that failed.
 
         A store call that raised may still have changed L3 (a load commits as it goes; a lost reply
@@ -2576,7 +2688,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: None
         """
         try:
-            await self._drop_and_advance(reason, failure=type(failure).__name__)
+            await self._drop_and_advance(reason, reach=reach, failure=type(failure).__name__)
         except Exception as exc:
             contain(
                 exc,
@@ -2586,9 +2698,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 level="error",
             )
 
-    async def _drop_and_advance(
-        self, reason: str, *, partition: Mapping[str, str] | None = None, **detail: Any
-    ) -> None:
+    async def _drop_and_advance(self, reason: str, *, reach: WholeReach | None = None, **detail: Any) -> None:
         """drop the table from this process's caches, then advance its write generation once.
 
         After a change to the table that left no row-level write mark (:meth:`truncate`,
@@ -2598,10 +2708,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         :param reason: what changed the table, for the drop and the log
         :ptype reason: str
-        :param partition: a load's constants, the columns every row it loaded holds and their values: a derived copy
-            here reads those rows again rather than the table (:meth:`CollectionRegistry.drop_partition`). The
-            broker that advances for a pod records the same, from the load's constants
-        :ptype partition: Mapping[str, str] | None
+        :param reach: a load's or a clear's key prefixes, or an operator's reset: a derived copy here reads those
+            prefixes again, or the table as on a first start (:meth:`CollectionRegistry.drop_partitions`), and the
+            epoch's record names the same, recorded here on a direct pool and by the broker that advances for a pod
+        :ptype reach: WholeReach | None
         :param detail: more to log
         :ptype detail: Any
         :return: nothing
@@ -2609,19 +2719,56 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the generation had to advance and could not
         """
         registry = self.registry
-        if registry is not None and partition:
-            registry.drop_partition(self.table_name, partition, reason=reason)
+        if registry is not None and reach is not None and reach.prefixes:
+            registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
         elif registry is not None:
-            registry.drop_table(self.table_name, reason=reason)
+            why = "reset" if reach is not None and reach.reason == RESET_REASON else "local"
+            registry.drop_table(self.table_name, reason=reason, why=why)
         if registry is None or registry.get_collection(self.table_name) is not self:
             self.drop_cached_table()
-        bump = await self._bump_after_commit(None)
+        bump = await self._bump_after_commit(None, reach=reach)
         log.info(
             "table changed with no row write mark; caches dropped and generation advanced",
             extra={"extra_data": {"table": self.table_name, "change": reason, "generation": bump.token, **detail}},
         )
         if bump.failure is not None:
             raise bump.failure
+
+    async def clear_partition(self, prefixes: Sequence[Mapping[str, Any]], *, conn: Any) -> int:
+        """delete every row of some key prefixes on a caller's transaction: what a load that replaces a part does
+        before it writes the part again, in place of emptying the table.
+
+        Each prefix names the key's leading columns and their values (an office's key, a run's). The keys the
+        prefixes hold are read on the caller's transaction, every statement led by the key (:meth:`read_rows_led_by`),
+        then deleted by key (:meth:`delete_rows`): the epoch names exactly the rows that left, so a follower reads
+        only those keys, never the table.
+
+        :param prefixes: the key prefixes to clear
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :return: the rows deleted
+        :rtype: int
+        :raises ValueError: when a prefix does not lead the key, or as :meth:`read_rows_led_by` and :meth:`delete_rows`
+        """
+        reach = self._load_reach({}, prefixes)
+        lead = self._key_columns()[0]
+        key = list(self.schema.pk_columns)
+        by_lead: dict[str, list[dict[str, str]]] = {}
+        values: dict[str, Any] = {}
+        for text in reach:
+            by_lead.setdefault(text[lead], []).append(text)
+        for given in prefixes:
+            values.setdefault(str(given[lead]), given[lead])
+        rows = await self.read_rows_led_by(list(values.values()), conn=conn)
+        doomed = [
+            tuple(row[column] for column in key)
+            for row in rows
+            if any(all(str(row[c]) == v for c, v in prefix.items()) for prefix in by_lead.get(str(row[lead]), []))
+        ]
+        if not doomed:
+            return 0
+        return await self.delete_rows(doomed, conn=conn)
 
     async def delete_rows(
         self,
