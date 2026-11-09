@@ -1109,7 +1109,7 @@ class NatsProxyL3Backend:
         response = await self._send_query(query, list(params), operation, namespace)
         return _format_execute_tag(operation, response.get("row_count"))
 
-    async def truncate(self, table: str, *, namespace: str | None = None) -> None:
+    async def truncate(self, table: str, *, namespace: str | None = None, reason: str | None = None) -> None:
         """empty one of this principal's tables: the ``l3.truncate`` request, outside any transaction.
 
         the broker runs ``TRUNCATE TABLE`` alone, under the database's DDL lock, and only for a
@@ -1123,11 +1123,15 @@ class NatsProxyL3Backend:
         :ptype table: str
         :param namespace: target namespace (default: this principal's own)
         :ptype namespace: str | None
+        :param reason: ``"reset"`` for an operator's reset: the request names it, and the broker's epoch record too
+        :ptype reason: str | None
         :return: nothing
         :rtype: None
         :raises DataLayerUnavailableError: if the broker refuses or does not answer
         """
         payload = self._truncate_payload(table, namespace)
+        if reason is not None:
+            payload["reason"] = reason
         subject = Subjects.l3_truncate(namespace=self.ns).path
         response = await self.nats_request(subject, payload)
         if not response.get("success", False):
@@ -1225,6 +1229,7 @@ class NatsProxyL3Backend:
         rows_per_transaction: int,
         timeout_ms: int,
         namespace: str | None = None,
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> LoadResult:
         """load one of this principal's tables from files: the ``l3.load_files`` request.
 
@@ -1270,6 +1275,9 @@ class NatsProxyL3Backend:
         :ptype timeout_ms: int
         :param namespace: target namespace (default: this principal's own)
         :ptype namespace: str | None
+        :param key_prefixes: the key prefixes the load's rows fall in: the request names them (``key_prefixes``), and
+            the broker's epoch record too, so a follower reads each as a key range
+        :ptype key_prefixes: Sequence[Mapping[str, Any]] | None
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
         :raises ValueError: when no column is named, ``rows_per_transaction`` or ``timeout_ms`` is
@@ -1287,6 +1295,10 @@ class NatsProxyL3Backend:
             timeout_ms=timeout_ms,
             namespace=namespace,
         )
+        if key_prefixes:
+            payload["key_prefixes"] = [
+                {column: transport_param(value) for column, value in prefix.items()} for prefix in key_prefixes
+            ]
         subject = Subjects.l3_load_files(namespace=self.ns).path
         wait = load_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
         if wait > LOAD_FILES_MAX_WAIT_SECONDS:

@@ -16,6 +16,7 @@ from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
+    RESET_REASON,
     EpochChange,
     EpochChangeReader,
     EpochLogExtent,
@@ -98,6 +99,11 @@ BEHIND_REASONS: Final[dict[str, str]] = {
         "names; ends at a restart"
     ),
     "aged_out": "the log's retention passed the mark; ends at a restart",
+    "notes_whole": (
+        "the change notes since the table was last current name a whole-table write (a reset, a file load, a large "
+        "copy) whose reach they cannot say; ends when the change-note keeper's restore of the log is labelled, "
+        "otherwise at a restart. Never a read of the table"
+    ),
 }
 
 
@@ -110,6 +116,27 @@ def _epochs_behind() -> Any:
             + "); the pod serves what it holds"
         ),
         label_names=("table", "reason"),
+    )
+
+
+#: why a process drops a table whole from its caches, as ``collection_whole_table_drops_total`` labels it
+WHOLE_TABLE_DROP_WHYS: Final[Mapping[str, str]] = {
+    "reset": "an operator's reset (SchemaBackedCollection.reset), here or in an epoch record naming reason='reset'",
+    # TODO(3tears 0.96.0 contract step, dated 2026-11-09): zero once no 0.94-or-older writer is left to record one
+    "whole_record": "an epoch record naming the whole table with no key prefix and no reason: an older writer's",
+    "local": "this process dropped it itself, for a change it made (a schema migration, a failed reset)",
+}
+
+
+def _whole_table_drops() -> Any:
+    return counter(
+        "collection_whole_table_drops_total",
+        description=(
+            "tables a process dropped whole from its caches, by table and why ("
+            + "; ".join(f"{why}: {what}" for why, what in WHOLE_TABLE_DROP_WHYS.items())
+            + "); a load or a clear names its key prefixes and drops nothing whole"
+        ),
+        label_names=("table", "why"),
     )
 
 
@@ -154,6 +181,9 @@ _NOTED_KEYS_PAGE_BYTES: Final = 4 * 1024 * 1024
 _NOTED_ROWS_PER_YIELD: Final = 500
 
 #: why the notes could not name an epoch's keys, as a reader answers it -> the reason this registry is behind
+#: how far a follower's clock may run ahead of the database's: a notes bracket from it starts this much earlier
+_NOTES_CLOCK_SKEW: Final = timedelta(seconds=60)
+
 _NOTES_BEHIND: Final[dict[str, str]] = {"not_covered": "notes_not_covered", "notes_unavailable": "notes_unavailable"}
 
 
@@ -368,9 +398,13 @@ class DerivedCacheRegistration:
     :ivar on_first_sight: called when this registry first sights the table's generation and takes it as
         its mark: a cache that keeps its own marks starts them from it. Nothing is dropped: what the
         cache holds was derived after following began. ``None`` falls back to :attr:`on_caught_up`
-    :ivar on_partition: called, in place of :attr:`on_table_dropped`, when a whole-table change is a load from
-        files whose reach the record names (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`):
+    :ivar on_partition: called, in place of :attr:`on_table_dropped`, when a whole-table change is a load or a clear
+        whose reach the record names (:attr:`~threetears.core.collections.epoch_change.EpochChange.prefixes`, or an
+        older writer's :attr:`~threetears.core.collections.epoch_change.EpochChange.partition`): once per key prefix,
         the columns its rows hold and their values. ``None`` drops the table as for any whole-table change
+    :ivar on_table_reset: called, in place of :attr:`on_table_dropped`, when the table is reset by an operator (a
+        record naming :data:`~threetears.core.collections.epoch_change.RESET_REASON`): a copy reads it again as on a
+        first start. ``None`` drops the table
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
@@ -378,6 +412,7 @@ class DerivedCacheRegistration:
     on_caught_up: Callable[[], None] | None = None
     on_first_sight: Callable[[], None] | None = None
     on_partition: Callable[[Mapping[str, str]], None] | None = None
+    on_table_reset: Callable[[], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1164,10 +1199,18 @@ class CollectionRegistry:
         :rtype: None
         """
         if change.whole_table:
-            if change.partition:
+            if change.reason == RESET_REASON:
+                self.drop_table(change.table, reason=f"epoch {change.token} reset the table", why="reset")
+            elif change.prefixes:
+                self.drop_partitions(
+                    change.table, change.prefixes, reason=f"epoch {change.token} loaded or cleared key prefixes"
+                )
+            elif change.partition:
                 self.drop_partition(change.table, change.partition, reason=f"epoch {change.token} loaded a partition")
             else:
-                self.drop_table(change.table, reason=f"epoch {change.token} changed the whole table")
+                self.drop_table(
+                    change.table, reason=f"epoch {change.token} changed the whole table", why="whole_record"
+                )
             return
         for row in change.rows:
             # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
@@ -1215,6 +1258,55 @@ class CollectionRegistry:
                             table=change.table, ids=list(ids), columns=None if held is None else dict(held)
                         )
                     )
+        return None
+
+    async def resolve_behind_from_notes(self, table_name: str, since: datetime, token: str) -> str | None:
+        """end being behind on ``table_name`` from its change notes, never by reading the table: every key its notes
+        name since ``since`` is applied as its row message would be, and ``token`` becomes its mark.
+
+        For a follower that knows when it last held the table current (``since``, on its own clock; the bracket
+        widens by :data:`_NOTES_CLOCK_SKEW` each way): every commit after its mark wrote notes in it, and every commit
+        up to ``token`` (read before the notes) is among them. Keys another commit wrote in the bracket are read again
+        harmlessly. A whole-table note in it (a reset, a file load, a large copy) names no reach: the table stays
+        behind (``notes_whole``) and is never read whole for it.
+
+        :param table_name: a table this registry is behind on
+        :ptype table_name: str
+        :param since: when the follower last held it current, timezone-aware
+        :ptype since: datetime
+        :param token: the table's generation, read before this call
+        :ptype token: str
+        :return: ``None`` once resolved; else the :data:`BEHIND_REASONS` key of why the notes cannot say
+        :rtype: str | None
+        """
+        reader = self._noted_keys
+        if reader is None:
+            return "notes_unavailable"
+        bracket = (since - _NOTES_CLOCK_SKEW, datetime.now(tz=since.tzinfo) + _NOTES_CLOCK_SKEW)
+        keys = 0
+        async with aclosing(_noted_pages(reader, table_name, bracket)) as pages:
+            async for page in pages:
+                if isinstance(page, str):
+                    return page
+                if page.whole_table:
+                    return "notes_whole"
+                columns = page.columns or (None,) * len(page.keys)
+                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
+                    if index and not index % _NOTED_ROWS_PER_YIELD:
+                        await asyncio.sleep(0)
+                    await self._apply_row_message(
+                        CacheInvalidationMessage(
+                            table=table_name, ids=list(ids), columns=None if held is None else dict(held)
+                        )
+                    )
+                    keys += 1
+        self._generation_marks.adopt_generation(table_name, token)
+        self._caught_up(table_name)
+        self._tell_caught_up(table_name)
+        log.info(
+            "caught up on a table from its change notes, without reading it",
+            extra={"extra_data": {"table": table_name, "since": since.isoformat(), "keys": keys, "token": token}},
+        )
         return None
 
     def behind_on(self, table_name: str) -> bool:
@@ -1312,7 +1404,7 @@ class CollectionRegistry:
             _tables_behind().set(len(self._behind))
             log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
-    def drop_table(self, table_name: str, *, reason: str) -> None:
+    def drop_table(self, table_name: str, *, reason: str, why: str = "local") -> None:
         """drop everything this process holds of ``table_name``, because a write changed the whole table.
 
         For a write whose reach is the table itself: a truncate, a file load, an announced migration,
@@ -1331,26 +1423,49 @@ class CollectionRegistry:
         :ptype table_name: str
         :param reason: why, for the log
         :ptype reason: str
+        :param why: a :data:`WHOLE_TABLE_DROP_WHYS` key, as ``collection_whole_table_drops_total`` counts it. A reset
+            tells each derived cache that takes one (``on_table_reset``) in place of dropping it
+        :ptype why: str
         :return: nothing
         :rtype: None
         """
+        _whole_table_drops().labels(table=table_name, why=why).inc()
         self.drop_local_scans(table_name)
         collection = self._collections.get(table_name)
         rows = collection.drop_cached_table() if collection is not None else 0
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
-            registration.on_table_dropped()
+            if why == "reset" and registration.on_table_reset is not None:
+                registration.on_table_reset()
+            else:
+                registration.on_table_dropped()
         log.warning(
             "dropped a table from this process's caches; the next read of it goes to the durable tier",
             extra={
                 "extra_data": {
                     "table": table_name,
                     "reason": reason,
+                    "why": why,
                     "l1_rows": rows,
                     "derived_caches": len(derived),
                 }
             },
         )
+
+    def drop_partitions(self, table_name: str, prefixes: Sequence[Mapping[str, str]], *, reason: str) -> None:
+        """:meth:`drop_partition` for a load or a clear that reached several key prefixes: the table's own caches drop
+        it once, and each derived cache that takes a partition is told each prefix.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param prefixes: each key prefix, the leading key columns and their values as text
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :param reason: why, for the log
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        self._drop_reach(table_name, prefixes, reason=reason)
 
     def drop_partition(self, table_name: str, partition: Mapping[str, str], *, reason: str) -> None:
         """what a load from files whose reach is known does here: the table's own caches drop it whole, and each
@@ -1370,13 +1485,28 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
+        self._drop_reach(table_name, [partition], reason=reason)
+
+    def _drop_reach(self, table_name: str, prefixes: Sequence[Mapping[str, str]], *, reason: str) -> None:
+        """drop the table's own caches once and tell each derived cache each prefix (or drop it, when it takes none).
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param prefixes: the reach
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :param reason: why, for the log
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
         self.drop_local_scans(table_name)
         collection = self._collections.get(table_name)
         rows = collection.drop_cached_table() if collection is not None else 0
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
             if registration.on_partition is not None:
-                registration.on_partition(dict(partition))
+                for prefix in prefixes:
+                    registration.on_partition(dict(prefix))
             else:
                 registration.on_table_dropped()
         log.info(
@@ -1385,7 +1515,8 @@ class CollectionRegistry:
                 "extra_data": {
                     "table": table_name,
                     "reason": reason,
-                    "partition": dict(partition),
+                    "prefixes": [dict(prefix) for prefix in prefixes[:20]],
+                    "prefix_count": len(prefixes),
                     "l1_rows": rows,
                     "derived_caches": len(derived),
                 }
@@ -1401,6 +1532,7 @@ class CollectionRegistry:
         on_caught_up: Callable[[], None] | None = None,
         on_first_sight: Callable[[], None] | None = None,
         on_partition: Callable[[Mapping[str, str]], None] | None = None,
+        on_table_reset: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1437,6 +1569,9 @@ class CollectionRegistry:
         :param on_partition: told, in place of ``on_table_dropped``, the reach of a load from files the record names
             (the columns its rows hold and their values), so the cache drops only those rows; ``None`` drops it all
         :ptype on_partition: Callable[[Mapping[str, str]], None] | None
+        :param on_table_reset: told, in place of ``on_table_dropped``, an operator's reset of the table, so a copy
+            reads it again as on a first start; ``None`` drops it all
+        :ptype on_table_reset: Callable[[], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
@@ -1446,6 +1581,7 @@ class CollectionRegistry:
             on_caught_up=on_caught_up,
             on_first_sight=on_first_sight,
             on_partition=on_partition,
+            on_table_reset=on_table_reset,
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)

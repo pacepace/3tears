@@ -984,8 +984,9 @@ class SqlL3Backend:
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
         return written
 
-    async def truncate(self, table: str) -> None:
-        """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction.
+    async def truncate(self, table: str, *, reason: str | None = None) -> None:  # noqa: ARG002 - the collection records it
+        """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction. On a direct pool the collection
+        records the epoch itself, ``reason`` with it.
 
         On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
         request), under the database's DDL lock and only for a table of the caller's own data
@@ -1036,8 +1037,10 @@ class SqlL3Backend:
         constants: Mapping[str, Any],
         rows_per_transaction: int,
         timeout_ms: int,
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,  # noqa: ARG002 - the collection records them
     ) -> LoadResult:
-        """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes.
+        """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes. On a direct pool
+        the collection records the epoch itself, ``key_prefixes`` with it.
 
         The load's columns are checked against the table's registered schema first, on either path,
         so a caller's local run refuses what the rail would. On the rail the broker then does it

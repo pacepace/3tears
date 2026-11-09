@@ -832,6 +832,8 @@ class EpochGenerationSource(_ChangeLogReading):
         tenant: str | None = None,
         partition: Mapping[str, str] | None = None,
         noted_between: tuple[datetime, datetime] | None = None,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        reason: str | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -857,6 +859,12 @@ class EpochGenerationSource(_ChangeLogReading):
         :param noted_between: a keys-unknown change's notes bracket
             (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`); requires ``keys_unknown``
         :ptype noted_between: tuple[datetime, datetime] | None
+        :param prefixes: a whole-table change's key prefixes, a load's or a clear's
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.prefixes`); requires ``rows=None``
+        :ptype prefixes: Sequence[Mapping[str, str]] | None
+        :param reason: a whole-table change's reason, ``"reset"`` only
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.reason`); requires ``rows=None``
+        :ptype reason: str | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -872,7 +880,13 @@ class EpochGenerationSource(_ChangeLogReading):
                 (
                     tenant,
                     epoch_change_body(
-                        table_name, rows, keys_unknown=keys_unknown, partition=partition, noted_between=noted_between
+                        table_name,
+                        rows,
+                        keys_unknown=keys_unknown,
+                        partition=partition,
+                        noted_between=noted_between,
+                        prefixes=prefixes,
+                        reason=reason,
                     ),
                 )
             ]

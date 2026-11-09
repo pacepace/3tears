@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EPOCH_CHANGE_MAX_AGE",
+    "RESET_REASON",
+    "WholeReach",
     "key_text",
     "ChangedRow",
     "EpochChange",
@@ -58,6 +60,25 @@ __all__ = [
     "epoch_change_record",
     "read_epoch_change",
 ]
+
+#: the one reason a whole-table record names: an operator's reset (``SchemaBackedCollection.reset``), which a follower
+#: reads as that table's cold start. A whole-table record naming no reason and no key prefix is an older writer's
+RESET_REASON: Final = "reset"
+
+
+@dataclass(frozen=True, slots=True)
+class WholeReach:
+    """what a whole-table change reached, as its record names it: the key prefixes of a load or a clear, or an
+    operator's reset (:data:`RESET_REASON`). A follower reads each prefix as a key range, and a reset as that table's
+    cold start.
+
+    :ivar prefixes: each prefix, the leading key columns and their values as text
+    :ivar reason: :data:`RESET_REASON`, or None
+    """
+
+    prefixes: tuple[Mapping[str, str], ...] = ()
+    reason: str | None = None
+
 
 #: how long a change record is kept, wherever it is kept: long enough for a partitioned pod to catch
 #: up from it. A record gone is a pod behind, never a drop.
@@ -140,7 +161,14 @@ class EpochChange(BaseModel):
     :ivar partition: for a whole-table record of a load from files, the columns every row it loaded holds and their
         values as text (the load's constants): the rows whose columns equal these are the load's reach, and a follower
         that knows the field reads those rows again rather than the table. A follower built before it reads the
-        record as the whole table, which the record also says, so it is never misled
+        record as the whole table, which the record also says, so it is never misled. A record of exactly one key
+        prefix names it here too, for a follower that knows this field but not :attr:`prefixes`
+    :ivar prefixes: for a whole-table record of a load or a clear, the SET of primary-key prefixes it reached, each the
+        leading key columns and their values as text (an AP load of a state names each office's key): a follower reads
+        each prefix's rows again as a key range, never the table. A follower built before it reads :attr:`partition`,
+        or the whole table
+    :ivar reason: for a whole-table record, why the whole table: only :data:`RESET_REASON` (an operator's reset). A
+        follower built before it reads the record as the whole table
     :ivar noted_between: for a keys-unknown record of a commit whose rows were too many to name, the database clock's
         bracket of the commit's change notes, ``(transaction start, just before COMMIT)`` on the committing
         connection: every note the commit wrote (:mod:`~threetears.core.collections.change_notes`) is in it, so a
@@ -154,6 +182,8 @@ class EpochChange(BaseModel):
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
     partition: dict[str, str] | None = None
+    prefixes: list[dict[str, str]] | None = None
+    reason: str | None = None
     noted_between: tuple[datetime, datetime] | None = None
 
     @model_validator(mode="after")
@@ -174,8 +204,32 @@ class EpochChange(BaseModel):
                 f"an epoch change of {self.table!r} at {self.token!r} names a partition only as a whole-table record, "
                 f"and names at least one column"
             )
+        _check_whole_reach(self.prefixes, self.reason, whole_table=self.whole_table)
         _check_noted_between(self.noted_between, keys_unknown=self.keys_unknown)
         return self
+
+
+def _check_whole_reach(prefixes: Sequence[Mapping[str, str]] | None, reason: str | None, *, whole_table: bool) -> None:
+    """refuse key prefixes or a reason on a record that is not whole-table, an empty prefix, or a reason not known.
+
+    :param prefixes: the record's key prefixes, or None
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :param reason: the record's reason, or None
+    :ptype reason: str | None
+    :param whole_table: whether the record is whole-table
+    :ptype whole_table: bool
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if (prefixes is not None or reason is not None) and not whole_table:
+        raise ValueError("a change names key prefixes or a reason only as a whole-table record")
+    if prefixes is not None and (not prefixes or not all(prefixes)):
+        raise ValueError("a change's key prefixes are at least one, each naming at least one column")
+    if reason is not None and reason != RESET_REASON:
+        raise ValueError(f"a whole-table change's reason is {RESET_REASON!r} or none, not {reason!r}")
+    if reason is not None and prefixes is not None:
+        raise ValueError("a reset names the whole table, never key prefixes")
 
 
 def _check_noted_between(noted_between: tuple[datetime, datetime] | None, *, keys_unknown: bool) -> None:
@@ -401,6 +455,8 @@ async def advance_recording(
     tenant: str | None = None,
     partition: Mapping[str, str] | None = None,
     noted_between: tuple[datetime, datetime] | None = None,
+    prefixes: Sequence[Mapping[str, str]] | None = None,
+    reason: str | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -425,6 +481,11 @@ async def advance_recording(
     :param noted_between: a keys-unknown change's notes bracket (:attr:`EpochChange.noted_between`), for a source that
         records it; one that does not records keys unknown, which the bracket would resolve
     :ptype noted_between: tuple[datetime, datetime] | None
+    :param prefixes: a whole-table change's key prefixes (:attr:`EpochChange.prefixes`), for a source that records
+        them; exactly one is also named as :attr:`EpochChange.partition`, for a follower that knows only that
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :param reason: a whole-table change's reason (:data:`RESET_REASON`), for a source that records it
+    :ptype reason: str | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -435,8 +496,16 @@ async def advance_recording(
         extra: dict[str, Any] = {}
         if tenant is not None:
             extra["tenant"] = tenant
-        if partition and rows is None and not keys_unknown and _takes(source, "partition"):
+        whole = rows is None and not keys_unknown
+        _check_whole_reach(prefixes, reason, whole_table=whole)
+        if prefixes and len(prefixes) == 1 and not partition:
+            partition = prefixes[0]
+        if partition and whole and _takes(source, "partition"):
             extra["partition"] = dict(partition)
+        if prefixes and _takes(source, "prefixes"):
+            extra["prefixes"] = [dict(prefix) for prefix in prefixes]
+        if reason is not None and _takes(source, "reason"):
+            extra["reason"] = reason
         if noted_between is not None and keys_unknown and _takes(source, "noted_between"):
             extra["noted_between"] = noted_between
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
@@ -513,7 +582,12 @@ def _within_bound(stored: bytes, table_name: str) -> bytes:
 
 
 def epoch_change_record(
-    table_name: str, token: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    table_name: str,
+    token: str,
+    rows: Sequence[ChangedRow] | None,
+    *,
+    keys_unknown: bool = False,
+    reach: WholeReach | None = None,
 ) -> bytes:
     """the stored form of the change one advance made.
 
@@ -528,18 +602,25 @@ def epoch_change_record(
     :ptype rows: Sequence[ChangedRow] | None
     :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
     :ptype keys_unknown: bool
+    :param reach: a whole-table change's key prefixes or reason (:attr:`EpochChange.prefixes`,
+        :attr:`EpochChange.reason`)
+    :ptype reach: WholeReach | None
     :return: the record, as stored
     :rtype: bytes
-    :raises ValueError: when ``keys_unknown`` is set with rows
+    :raises ValueError: when ``keys_unknown`` is set with rows, or a reach on a change that is not whole-table
     :raises GenerationUnavailableError: when the record is past the bound
     """
     check_change_form(rows, keys_unknown=keys_unknown)
+    prefixes = [dict(prefix) for prefix in reach.prefixes] if reach is not None and reach.prefixes else None
     record = EpochChange(
         table=table_name,
         token=token,
         whole_table=rows is None and not keys_unknown,
         keys_unknown=keys_unknown,
         rows=list(rows) if rows is not None else [],
+        partition=prefixes[0] if prefixes is not None and len(prefixes) == 1 else None,
+        prefixes=prefixes,
+        reason=reach.reason if reach is not None else None,
     )
     return _within_bound(record.model_dump_json().encode("utf-8"), table_name)
 
@@ -580,6 +661,8 @@ class _EpochBody(BaseModel):
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
     partition: dict[str, str] | None = None
+    prefixes: list[dict[str, str]] | None = None
+    reason: str | None = None
     noted_between: tuple[datetime, datetime] | None = None
 
 
@@ -590,6 +673,8 @@ def epoch_change_body(
     keys_unknown: bool = False,
     partition: Mapping[str, str] | None = None,
     noted_between: tuple[datetime, datetime] | None = None,
+    prefixes: Sequence[Mapping[str, str]] | None = None,
+    reason: str | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -608,6 +693,10 @@ def epoch_change_body(
     :ptype partition: Mapping[str, str] | None
     :param noted_between: for a keys-unknown change, its notes bracket (:attr:`EpochChange.noted_between`)
     :ptype noted_between: tuple[datetime, datetime] | None
+    :param prefixes: for a whole-table change of a load or a clear, its key prefixes (:attr:`EpochChange.prefixes`)
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :param reason: for a whole-table change, its reason (:attr:`EpochChange.reason`)
+    :ptype reason: str | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, or a partition with either
@@ -617,12 +706,15 @@ def epoch_change_body(
     if partition is not None and (rows is not None or keys_unknown):
         raise ValueError("a partition narrows a whole-table change: pass rows=None without keys_unknown")
     _check_noted_between(noted_between, keys_unknown=keys_unknown)
+    _check_whole_reach(prefixes, reason, whole_table=rows is None and not keys_unknown)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
         keys_unknown=keys_unknown,
         rows=list(rows) if rows is not None else [],
         partition=dict(partition) if partition else None,
+        prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
+        reason=reason,
         noted_between=noted_between,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
@@ -652,6 +744,8 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             keys_unknown=body.keys_unknown,
             rows=body.rows,
             partition=body.partition,
+            prefixes=body.prefixes,
+            reason=body.reason,
             noted_between=body.noted_between,
         )
     except ValidationError as exc:

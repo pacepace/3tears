@@ -44,6 +44,7 @@ from threetears.core.collections.epoch_change import (
     ChangedRow,
     EpochChange,
     changed_row_runs,
+    WholeReach,
     epoch_change_record,
     key_text,
     read_epoch_change,
@@ -288,6 +289,19 @@ class _Bump:
 
 #: no advance was made and none was owed.
 _NO_BUMP: Final = _Bump()
+
+
+def _reach_kw(reach: WholeReach | None) -> dict[str, Any]:
+    """a whole-table change's reach as :func:`~threetears.core.collections.generation.advance_for_write` takes it.
+
+    :param reach: the reach, or None
+    :ptype reach: WholeReach | None
+    :return: its keywords; none for no reach
+    :rtype: dict[str, Any]
+    """
+    if reach is None:
+        return {}
+    return {"prefixes": [dict(prefix) for prefix in reach.prefixes] or None, "reason": reach.reason}
 
 
 def _unadvanced_absence_error(table_name: str) -> GenerationUnavailableError:
@@ -1753,11 +1767,15 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
             return None
 
-    async def _advance_generation(self, changed: Sequence[ChangedRow] | None) -> GenerationUnavailableError | None:
+    async def _advance_generation(
+        self, changed: Sequence[ChangedRow] | None, *, reach: WholeReach | None = None
+    ) -> GenerationUnavailableError | None:
         """advance this table's write generation after a committed write, when negative caching is on.
 
         :param changed: the rows the write changed, stored as the epoch's change; ``None`` for the whole table
         :ptype changed: Sequence[ChangedRow] | None
+        :param reach: a whole-table change's key prefixes or reason, which its record names
+        :ptype reach: WholeReach | None
         :return: the failure, for the caller to raise once the rest of the write path has run, or
             ``None`` when the generation advanced or nothing needed advancing
         :rtype: GenerationUnavailableError | None
@@ -1772,7 +1790,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
         try:
             token = await advance_for_write(
-                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named()
+                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named(), **_reach_kw(reach)
             )
             if token is None:
                 # a source that advanced nothing (a pod whose broker names no generation for the
@@ -1868,7 +1886,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if recorded and records_changes(registry.generation_source):
             raise ValueError(_unnamed_schema_message(self.table_name))
 
-    async def _bump_generation(self, changed: Sequence[ChangedRow] | None) -> _Bump:
+    async def _bump_generation(self, changed: Sequence[ChangedRow] | None, *, reach: WholeReach | None = None) -> _Bump:
         """advance this table's write generation once, for one commit that changed ``changed``.
 
         Only a switched-on collection advances here (:attr:`_write_generation_on`). The advance is
@@ -1888,12 +1906,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         registry = self.registry
         rows = 1 if changed is None else len(changed)
         if self.keeps_write_generation_in_l2 and registry is not None and rows >= 1:
-            return await self._advance_l2_generation(registry, changed)
+            return await self._advance_l2_generation(registry, changed, reach=reach)
         if not self._write_generation_on or registry is None or rows < 1:
             return _NO_BUMP
         shared = shared_advance_for(self.table_name)
         if shared is None:
-            return await self._advance_for_commit(registry, changed)
+            return await self._advance_for_commit(registry, changed, reach=reach)
         if not isinstance(shared.bump, _Bump):
             # the first instance of the table to settle advances it for every instance's rows
             shared.bump = await self._advance_for_commit(registry, shared.changed)
@@ -1901,7 +1919,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             registry.account_generation(self.table_name, shared.bump.token)
         return shared.bump
 
-    async def _advance_for_commit(self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None) -> _Bump:
+    async def _advance_for_commit(
+        self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None, *, reach: WholeReach | None = None
+    ) -> _Bump:
         """advance this table's write generation once, for a commit that changed ``changed``.
 
         :param registry: this collection's registry, which carries a generation source
@@ -1919,7 +1939,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         rows = 1 if changed is None else len(changed)
         try:
             token = await advance_for_write(
-                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named()
+                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named(), **_reach_kw(reach)
             )
         except GenerationNotCommittedError as exc:
             # the commit did not land (a rolled-back transaction settling): nothing to advance
@@ -2137,7 +2157,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             raise GenerationUnavailableError(f"write generation for {self.table_name!r} is malformed: {raw!r}")
         return token
 
-    async def _advance_l2_generation(self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None) -> _Bump:
+    async def _advance_l2_generation(
+        self, registry: CollectionRegistry, changed: Sequence[ChangedRow] | None, *, reach: WholeReach | None = None
+    ) -> _Bump:
         """advance this table's write generation in L2 by compare-and-swap, and store the epoch's change beside it.
 
         This process's advances of the table take turns, so its own writes never contend for the key; a
@@ -2169,7 +2191,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                     token = await self._advance_l2_generation_key()
                 await kv.put(
                     key=self._l2_epoch_key(token),
-                    value=epoch_change_record(self.table_name, token, run),
+                    value=epoch_change_record(self.table_name, token, run, reach=reach if run is None else None),
                     ttl=EPOCH_CHANGE_MAX_AGE,
                 )
                 # each run's advance is this registry's own: it needs no broadcast to be counted
@@ -2216,7 +2238,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
         raise ConcurrentModificationError(self.table_name, key, datetime.min)
 
-    async def _bump_after_commit(self, changed: Sequence[ChangedRow] | None) -> _Bump:
+    async def _bump_after_commit(
+        self, changed: Sequence[ChangedRow] | None, *, reach: WholeReach | None = None
+    ) -> _Bump:
         """advance the generation after one commit to L3, on the paths that always have.
 
         :meth:`save_entity` and :meth:`l2_cas_mutate` advanced the generation for a collection
@@ -2225,12 +2249,15 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param changed: the rows the commit changed; ``None`` when it changed the whole table
         :ptype changed: Sequence[ChangedRow] | None
+        :param reach: for a whole-table change, the key prefixes it reached or its reason (an operator's reset): its
+            epoch record names them, so a follower reads only those prefixes, or the table as on a first start
+        :ptype reach: WholeReach | None
         :return: what the advance came to; for a collection not switched on, at most a failure
         :rtype: _Bump
         """
         if self._write_generation_on or self.keeps_write_generation_in_l2:
-            return await self._bump_generation(changed)
-        failure = await self._advance_generation(changed)
+            return await self._bump_generation(changed, reach=reach)
+        failure = await self._advance_generation(changed, reach=reach)
         return _NO_BUMP if failure is None else _Bump(failure=failure)
 
     def _naming_changed(self, rows: Sequence[ChangedRow]) -> AbstractContextManager[None]:

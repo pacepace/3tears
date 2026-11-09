@@ -913,6 +913,8 @@ async def advance_for_write(
     tenancy: Tenancy | None = None,
     partition: Mapping[str, str] | None = None,
     noted_between: tuple[datetime, datetime] | None = None,
+    prefixes: Sequence[Mapping[str, str]] | None = None,
+    reason: str | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -942,6 +944,12 @@ async def advance_for_write(
     :param noted_between: for a keys-unknown change (rows too many to name), the database clock's bracket of the
         commit's change notes on its connection: the record names it, so a follower resolves the keys from the notes
     :ptype noted_between: tuple[datetime, datetime] | None
+    :param prefixes: for a whole-table change of a load or a clear, the key prefixes it reached
+        (:attr:`~threetears.core.collections.epoch_change.EpochChange.prefixes`): a follower reads each as a key range
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :param reason: for a whole-table change, ``"reset"`` for an operator's reset; a follower reads the table again as
+        on a first start
+    :ptype reason: str | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -968,6 +976,8 @@ async def advance_for_write(
         tenant=owner,
         partition=partition if rows is None else None,
         noted_between=noted_between if keys_unknown else None,
+        prefixes=prefixes if rows is None else None,
+        reason=reason if rows is None else None,
     )
 
 
