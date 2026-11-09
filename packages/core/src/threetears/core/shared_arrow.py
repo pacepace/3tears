@@ -83,18 +83,26 @@ from threetears.observe import contain, get_logger, remove_tree
 
 from threetears.core.utils.atomic_write import atomic_write_sync
 
+# pyarrow alone carries the store, its slots and hand-offs, and the pool: a process that never opens DuckDB (the hub,
+# offloading its broker's work) needs no duckdb, and only the calls that open it say so
+try:
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    _ARROW_EXTRA: ImportError | None = None
+except ImportError as exc:  # NOSILENT: the snapshot extra is optional; using shared Arrow says so
+    _ARROW_EXTRA = exc
+
 try:
     import duckdb
-    import pyarrow as pa
 
     # DuckDB scans a registered Arrow table through pyarrow.dataset's Scanner, importing the module (and what it
     # imports) at the first scan in the process, 25-70 ms inside a serving thread's read; imported here, at boot
     import pyarrow.dataset  # noqa: F401
-    import pyarrow.ipc as ipc
 
-    _SNAPSHOT_EXTRA: ImportError | None = None
-except ImportError as exc:  # NOSILENT: the snapshot extra is optional; using shared Arrow says so
-    _SNAPSHOT_EXTRA = exc
+    _DUCKDB_EXTRA: ImportError | None = None
+except ImportError as exc:  # NOSILENT: DuckDB over shared Arrow is optional; the calls that open it say so
+    _DUCKDB_EXTRA = exc
 
 __all__ = [
     "HandedTables",
@@ -165,15 +173,29 @@ DEFAULT_BATCH_ROWS: Final = 64 * 1024
 _REGISTERED_PREFIX: Final = "__shared_"
 
 
-def _require_snapshot_extra() -> None:
-    """raise, naming the extra, when duckdb or pyarrow could not be imported.
+def _require_arrow() -> None:
+    """raise, naming the extra, when pyarrow could not be imported: the store, its slots, hand-offs and pool need it.
+
+    :return: nothing
+    :rtype: None
+    :raises ImportError: when pyarrow is not installed
+    """
+    if _ARROW_EXTRA is not None:
+        raise ImportError(f"shared Arrow needs pyarrow: install 3tears[snapshot] ({_ARROW_EXTRA})")
+
+
+def _require_duckdb() -> None:
+    """raise, naming the extra, when duckdb or pyarrow could not be imported: the calls that open DuckDB over the
+    mapped tables (:meth:`MappedTables.connect`, :meth:`SharedArrowStore.reader`,
+    :meth:`SharedArrowStore.publish_query`) need both.
 
     :return: nothing
     :rtype: None
     :raises ImportError: when the snapshot extra is not installed
     """
-    if _SNAPSHOT_EXTRA is not None:
-        raise ImportError(f"shared Arrow needs duckdb and pyarrow: install 3tears[snapshot] ({_SNAPSHOT_EXTRA})")
+    missing = _ARROW_EXTRA or _DUCKDB_EXTRA
+    if missing is not None:
+        raise ImportError(f"shared Arrow needs duckdb and pyarrow: install 3tears[snapshot] ({missing})")
 
 
 def plain_name(name: str) -> bool:
@@ -811,7 +833,9 @@ class MappedTables:
         :ptype config: Mapping[str, Any] | None
         :return: the connection; close it when done, before this is closed
         :rtype: duckdb.DuckDBPyConnection
+        :raises ImportError: when duckdb is not installed
         """
+        _require_duckdb()
         connection = duckdb.connect(":memory:", config=dict(config or {}))
         if schema is not None:
             connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quoted(schema)}")
@@ -1151,7 +1175,7 @@ class SegmentSlot:
         :raises FileExistsError: when the slot was written already
         :raises RuntimeError: when its staging directory could not be locked
         """
-        _require_snapshot_extra()
+        _require_arrow()
         segments = Path(self.root) / _SEGMENTS_DIR
         target = segments / self.slot_id
         if target.exists():
@@ -1198,7 +1222,7 @@ class HandedTables:
         :rtype: MappedTables
         :raises LookupError: when the hand-off is gone (released before the worker mapped it)
         """
-        _require_snapshot_extra()
+        _require_arrow()
         path = Path(self.root) / _HANDOFFS_DIR / _valid_name(self.handoff_id, "hand-off")
         try:
             return MappedTables(self.handoff_id, path, lock=True)
@@ -1368,7 +1392,7 @@ class SharedArrowStore:
     """
 
     def __init__(self, root: Path | str, *, max_bytes: int) -> None:
-        _require_snapshot_extra()
+        _require_arrow()
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
         self._root = Path(root)
@@ -1617,7 +1641,9 @@ class SharedArrowStore:
         :return: the version
         :rtype: SharedVersion
         :raises SharedArrowFullError: as :meth:`publish`
+        :raises ImportError: when duckdb is not installed
         """
+        _require_duckdb()
         return self.publish(
             version, {table: query_batches(cursor, sql, batch_rows=batch_rows) for table, sql in queries.items()}
         )
@@ -1669,7 +1695,9 @@ class SharedArrowStore:
         :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
         :return: the reader; close it when done
         :rtype: SharedArrowReader
+        :raises ImportError: when duckdb is not installed
         """
+        _require_duckdb()
         made = SharedArrowReader(self, schema=schema, config=config, prepare=prepare)
         with self._state:
             self._readers.add(made)

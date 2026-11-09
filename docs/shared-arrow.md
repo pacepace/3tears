@@ -12,7 +12,7 @@ and that work reads, or produces, more data than you want copied per process.
 
 | Fact | Value |
 |---|---|
-| Install | `3tears[snapshot]` (pyarrow and duckdb) |
+| Install | `3tears[snapshot]` (pyarrow and duckdb). The store, its slots and hand-offs, and the pool need pyarrow alone; `MappedTables.connect`, `SharedArrowStore.reader` and `publish_query` also need duckdb. |
 | Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables, merge_parts, merged_rows` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
