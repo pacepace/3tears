@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from functools import wraps
-from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
+from typing import Any, ClassVar, Final, Generic, Literal, TypeVar, overload
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -91,6 +91,7 @@ from threetears.observe.metrics import counter
 
 __all__ = [
     "BIGINT_TYPE",
+    "MAX_INDEX_COLUMNS",
     "BOOL_TYPE",
     "BYTES_TYPE",
     "Column",
@@ -203,6 +204,11 @@ INT_TYPE = "int"
 BIGINT_TYPE = "bigint"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
+
+#: the most columns one index may hold on YugabyteDB, its ``INCLUDE`` columns and a primary key's columns counted:
+#: 2026.1 refuses more ("cannot use more than 32 columns in an index", measured on 2026.1.0.0-b118). A schema naming
+#: more could never be created there, so :class:`IndexDef` and :class:`TableSchema` refuse it when declared
+MAX_INDEX_COLUMNS: Final = 32
 
 
 # allowed values for :attr:`ForeignKeyDef.on_delete`. matches the
@@ -364,6 +370,11 @@ class IndexDef:
         if stray:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        if len(self.columns) + len(self.include) > MAX_INDEX_COLUMNS:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): {len(self.columns)} columns and {len(self.include)} included are "
+                f"{len(self.columns) + len(self.include)}; YugabyteDB indexes at most {MAX_INDEX_COLUMNS}",
             )
         twice = [col for col in self.include if col in self.columns]
         if twice:
@@ -979,6 +990,11 @@ class TableSchema:
                 f"row uniqueness through the partition",
             )
         by_name = {c.name: c for c in coerced_columns}
+        if len(pk_cols) > MAX_INDEX_COLUMNS:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): primary_key lists {len(pk_cols)} columns; "
+                f"YugabyteDB indexes at most {MAX_INDEX_COLUMNS}",
+            )
         for pk_col in pk_cols:
             if pk_col not in by_name:
                 raise ValueError(

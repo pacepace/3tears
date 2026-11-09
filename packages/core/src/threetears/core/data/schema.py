@@ -6,6 +6,7 @@ import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from threetears.core.collections.schema_backed import MAX_INDEX_COLUMNS
 from threetears.observe import get_logger
 
 __all__ = [
@@ -182,6 +183,23 @@ class IndexDef(BaseModel):
         for col in value:
             _validate_identifier(col, "column name")
         return value
+
+    @model_validator(mode="after")
+    def validate_width(self) -> IndexDef:
+        """refuse an index wider than YugabyteDB builds: its columns and included columns together.
+
+        :return: the index
+        :rtype: IndexDef
+        :raises ValueError: past :data:`~threetears.core.collections.schema_backed.MAX_INDEX_COLUMNS`
+        """
+        width = len(self.columns) + len(self.include)
+        if width > MAX_INDEX_COLUMNS:
+            msg = (
+                f"index {self.name!r}: {len(self.columns)} columns and {len(self.include)} included are {width}; "
+                f"YugabyteDB indexes at most {MAX_INDEX_COLUMNS}"
+            )
+            raise ValueError(msg)
+        return self
 
     @field_validator("include")
     @classmethod

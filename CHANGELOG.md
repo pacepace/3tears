@@ -19,6 +19,13 @@ packages (bumped in lock-step).
   Built on a thread. A 12 MB copy's rows: 210 ms of JSON -> 40 ms of Arrow. A hub that does not announce it,
   rows that as Arrow pass the request's budget, and a process without pyarrow are sent JSON as before.
 
+### core: an index YugabyteDB cannot build is refused where it is declared
+
+YugabyteDB 2026.1 refuses an index of more than 32 columns, its `INCLUDE` columns counted ("cannot use more than 32
+columns in an index", 2026.1.0.0-b118), and a primary key is an index. `IndexDef` (`Index(...)`), `TableSchema`'s
+primary key and `threetears.core.data.schema.IndexDef` now refuse more than `MAX_INDEX_COLUMNS` (32) when declared, so a
+covering index over a wide table fails in the author's tests rather than mid-upgrade on the database.
+
 ### core, epoch, nats: load paths that grew with the table now grow with the change
 
 Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large
