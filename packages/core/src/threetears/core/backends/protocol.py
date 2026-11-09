@@ -36,6 +36,8 @@ __all__ = [
     "L3Page",
     "ManyKeyReadingStore",
     "LOAD_FILES_MAX_WAIT_SECONDS",
+    "ANALYZE_AFTER_ROWS",
+    "AnalyzingStore",
     "BulkDeletingStore",
     "BulkDurableStore",
     "CopyingStore",
@@ -552,6 +554,33 @@ class LoadResult:
 
     row_count: int
     files: tuple[FileLoad, ...]
+
+
+#: the rows a load writes to a table from which the table is analysed after it (:class:`AnalyzingStore`): a
+#: reload's, not ordinary writes, which auto-analyze keeps up with. The hub's broker asks the same of its loads
+ANALYZE_AFTER_ROWS: Final = 10_000
+
+
+@runtime_checkable
+class AnalyzingStore(Protocol):
+    """A durable store that refreshes a table's planner statistics after a reload.
+
+    A reload truncates a table and loads it again; the truncate leaves the planner no row count until the
+    table is analysed, and YugabyteDB plans its reads blind meanwhile (a state's rows of some geographies:
+    a primary-key scan and a sort, 157 ms against 0.4 ms once analysed). On the L3 rail the broker analyses
+    a loaded table itself, once its loads settle; a direct store does it when asked, after the load's last
+    request.
+    """
+
+    async def analyze(self, table: str) -> None:
+        """refresh ``table``'s planner statistics, where this store is the one to; nothing where it is not.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        ...
 
 
 @runtime_checkable

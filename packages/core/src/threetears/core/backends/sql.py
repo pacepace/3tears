@@ -963,6 +963,19 @@ class SqlL3Backend:
                 await conn.execute(statement)
         _logger.info("table truncated", extra={"extra_data": {"table": table}})
 
+    async def analyze(self, table: str) -> None:
+        """refresh ``table``'s planner statistics: ``ANALYZE`` on a direct connection; nothing on the L3 rail,
+        whose broker analyses a loaded table itself once its loads settle (and refuses the statement from a pod).
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        if getattr(type(self._pool), "accepts_scoped_reads", False):
+            return
+        await self.execute(f"ANALYZE {_quote_ident(table)}")
+
     async def load_files(
         self,
         table: str,
