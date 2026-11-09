@@ -115,7 +115,7 @@ class _PoolNotes:
             self.db.pool,
             notes_schema=self.db.notes,
             table=table,
-            tenant=self.db.tenant,
+            tenant_token=self.db.tenant,
             noted_between=noted_between,
             cursor=cursor,
             limit=limit,

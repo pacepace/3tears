@@ -1962,13 +1962,13 @@ async def noted_keys_page(
     *,
     notes_schema: str,
     table: str,
-    tenant: str | None,
+    tenant_token: str | None,
     noted_between: tuple[datetime, datetime],
     cursor: NotedKeysCursor | None,
     limit: int,
     max_bytes: int,
 ) -> NotedKeysPage | str:
-    """a page of the keys ``table``'s notes of ``tenant`` name in a commit's notes bracket, or why they cannot be read.
+    """a page of the keys ``table``'s notes of ``tenant_token`` name in a commit's notes bracket, or why they cannot be read.
 
     For the broker's answer to a copy follower holding a keys-unknown record whose commit named too many rows
     (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`). The commit wrote a note per row in
@@ -1987,8 +1987,8 @@ async def noted_keys_page(
     :ptype notes_schema: str
     :param table: the table, as its notes name it
     :ptype table: str
-    :param tenant: the tenant whose notes are read (the asker's schema's), ``None`` for ``_all``: never another's
-    :ptype tenant: str | None
+    :param tenant_token: the tenant whose notes are read (the asker's schema's), ``None`` for ``_all``: never another's
+    :ptype tenant_token: str | None
     :param noted_between: the commit's bracket, ``(from, until)`` on the database's clock
     :ptype noted_between: tuple[datetime, datetime]
     :param cursor: where the last page ended; ``None`` for the first
@@ -2010,7 +2010,7 @@ async def noted_keys_page(
     async with held as one, one.transaction(readonly=True):
         # the planner prices the bracket's notes too few to read in index order: it is told to (_INDEX_ORDER)
         await one.execute(_INDEX_ORDER)
-        return await _noted_keys_page(one, owner, table, tenant, since, until, cursor, limit, max_bytes)
+        return await _noted_keys_page(one, owner, table, tenant_token, since, until, cursor, limit, max_bytes)
 
 
 async def _noted_keys_page(
