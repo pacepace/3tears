@@ -25,7 +25,7 @@ from threetears.core.backends import arrow_reply  # noqa: E402
 from threetears.core.backends import nats_proxy as nats_proxy_module  # noqa: E402
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, reply_rows  # noqa: E402
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
-from threetears.core.backends.protocol import L3AnswerCutError, L3Page  # noqa: E402
+from threetears.core.backends.protocol import L3AnswerCutError  # noqa: E402
 from threetears.core.collections.complete_copy import rail_arrow_types  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
@@ -36,7 +36,7 @@ from threetears.core.collections.schema_backed import (  # noqa: E402
     Column,
 )
 from threetears.core.exceptions import DataLayerUnavailableError  # noqa: E402
-from threetears.core.keyset import _next_rows, keyset_arrow_pages  # noqa: E402
+from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
 
 _COLUMNS = [
     Column("id", BIGINT_TYPE),
@@ -141,11 +141,39 @@ async def test_an_arrow_page_is_sized_by_the_bytes_its_json_would_take() -> None
 
 async def test_an_arrow_page_that_does_not_say_its_json_bytes_keeps_its_rows() -> None:
     """a hub mid-roll may send Arrow without its rows' JSON bytes: the page is taken as having met the cap, and the
-    next asks for as many rows as this one, never more by the Arrow's smaller bytes."""
-    proxy, _ = _proxy(_arrow_reply(_ROWS, rows_json_bytes=False, max_reply_bytes=4096))
+    keyset pager's next page asks for as many rows as this one, never more by the Arrow's smaller bytes."""
+    rows = [{**_ROWS[0], "id": index} for index in range(3)]
+    proxy, request = _proxy(
+        _arrow_reply(rows, rows_json_bytes=False, truncated=True, max_reply_bytes=4096),
+        _arrow_reply([], rows_json_bytes=False, max_reply_bytes=4096),
+    )
     page = await proxy.fetch_arrow_page("SELECT * FROM t LIMIT 10", types=_TYPES)
     assert page.reply_bytes == 0
-    assert _next_rows(page, 3, 10) == 10
+    proxy, request = _proxy(
+        _arrow_reply(rows, rows_json_bytes=False, truncated=True, max_reply_bytes=4096),
+        _arrow_reply([], rows_json_bytes=False, max_reply_bytes=4096),
+    )
+    select = f"SELECT {', '.join(_TYPES)} FROM t"
+    read = [page async for page in keyset_arrow_pages(proxy, select, ["id"], types=_TYPES, page_size=10)]
+    assert sum(page.num_rows for page in read) == 3
+    limits = [_sent(request, index)["query"].rsplit("LIMIT ", 1)[1] for index in range(2)]
+    assert limits[0] == limits[1]
+
+
+async def test_an_arrow_page_that_says_its_json_bytes_is_sized_as_its_json_would_be() -> None:
+    """the keyset pager sizes the page after an Arrow reply as it would after the same rows' JSON reply."""
+    rows = [{**_ROWS[0], "id": index} for index in range(3)]
+    select = f"SELECT {', '.join(_TYPES)} FROM t"
+    asked: dict[str, int] = {}
+    for form, reply, last in (
+        ("arrow", _arrow_reply(rows, truncated=True, max_reply_bytes=4096), _arrow_reply([], max_reply_bytes=4096)),
+        ("json", _json_reply(rows, truncated=True, max_reply_bytes=4096), _json_reply([], max_reply_bytes=4096)),
+    ):
+        proxy, request = _proxy(reply, last)
+        assert [page async for page in keyset_arrow_pages(proxy, select, ["id"], types=_TYPES, page_size=10)]
+        asked[form] = int(_sent(request, 1)["query"].rsplit("LIMIT ", 1)[1])
+    # within the envelope's rows_json_bytes key: a row or so of a few hundred bytes' page
+    assert abs(asked["arrow"] - asked["json"]) <= 1, asked
 
 
 async def test_an_arrow_reply_is_read_on_another_thread(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,10 +259,6 @@ async def test_an_arrow_reply_equals_its_json_replys_rows(rows: list[dict[str, A
     by_json = await proxy.fetch_arrow("SELECT * FROM t", types=_TYPES)
     assert by_arrow.equals(reply_rows(_json_reply(rows), _TYPES).rows)
     assert by_arrow.equals(by_json)
-
-
-def test_a_page_says_reply_bytes_as_the_pager_reads_them() -> None:
-    assert _next_rows(L3Page(rows=None, truncated=False, reply_bytes=0, reply_cap=4096), 3, 10) == 10
 
 
 async def test_the_keyset_pager_reads_a_table_in_arrow_pages() -> None:

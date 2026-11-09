@@ -866,7 +866,7 @@ class NatsProxyL3Backend:
 
         The request carries ``reply_format: "arrow"`` and the schema of ``types`` (``arrow_schema``). A hub that
         answers Arrow sends the rows as an IPC stream behind a JSON envelope
-        (:data:`~threetears.core.backends.arrow_reply.ARROW_REPLY_MAGIC`), read in place; an older hub, a refusal,
+        (``L3ARROW1``), read in place; an older hub, a refusal,
         and rows not of ``types`` come as JSON, read as before (:func:`reply_rows`). No announcement is needed: an
         older hub ignores the two fields.
 

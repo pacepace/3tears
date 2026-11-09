@@ -43,7 +43,6 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; reply_rows refu
     _PYARROW = False
 
 __all__ = [
-    "ARROW_REPLY_MAGIC",
     "ReplyNotArrowError",
     "arrow_schema_text",
     "l3_fetch_arrow",
@@ -56,10 +55,10 @@ _BYTES_MARK: Final = "\\x"
 
 #: what an ``l3.query`` reply in Arrow begins with: then its envelope's length (4 bytes, big-endian), the envelope (the
 #: JSON reply without its ``rows``), and the rows as one Arrow IPC stream. A JSON reply begins with ``{``.
-ARROW_REPLY_MAGIC: Final = b"L3ARROW1"
+_ARROW_REPLY_MAGIC: Final = b"L3ARROW1"
 
 #: the bytes before an Arrow reply's envelope: the magic and the envelope's length
-_ARROW_HEAD: Final = len(ARROW_REPLY_MAGIC) + 4
+_ARROW_HEAD: Final = len(_ARROW_REPLY_MAGIC) + 4
 
 #: what a JSON reply carries around its rows beyond the envelope's own bytes (``,"rows":``)
 _ROWS_KEY_BYTES: Final = len(b',"rows":')
@@ -169,7 +168,7 @@ def arrow_schema_text(types: Mapping[str, Any]) -> str:
 
 
 def _arrow_reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
-    """an Arrow reply's rows (:data:`ARROW_REPLY_MAGIC`): its envelope, then its rows' IPC stream, read in place.
+    """an Arrow reply's rows (``L3ARROW1``): its envelope, then its rows' IPC stream, read in place.
 
     The broker builds the table with :func:`reply_rows` over the rows it would have answered as JSON, so its columns
     are ``types``; a table of any other schema is refused, never answered otherwise than the JSON would be.
@@ -182,7 +181,7 @@ def _arrow_reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
     :rtype: _RailReply
     :raises ReplyNotArrowError: when the reply is malformed or its table is not of ``types``
     """
-    size = int.from_bytes(reply[len(ARROW_REPLY_MAGIC) : _ARROW_HEAD], "big")
+    size = int.from_bytes(reply[len(_ARROW_REPLY_MAGIC) : _ARROW_HEAD], "big")
     try:
         envelope = json.loads(reply[_ARROW_HEAD : _ARROW_HEAD + size])
     except ValueError as exc:
@@ -220,7 +219,7 @@ def read_reply(
     reply: bytes, types: Mapping[str, Any], json_rows: Callable[[bytes, Mapping[str, Any]], _RailReply] = reply_rows
 ) -> _RailReply:
     """an ``l3.query`` reply's rows as one Arrow table, whichever form the broker answered in: an Arrow reply
-    (:data:`ARROW_REPLY_MAGIC`) read in place, anything else as JSON (``json_rows``, :func:`reply_rows`). Blocking:
+    (``L3ARROW1``) read in place, anything else as JSON (``json_rows``, :func:`reply_rows`). Blocking:
     on a thread, as :func:`reply_rows`.
 
     :param reply: the reply's bytes
@@ -236,7 +235,7 @@ def read_reply(
     """
     if not _PYARROW:
         raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
-    if reply[: len(ARROW_REPLY_MAGIC)] == ARROW_REPLY_MAGIC:
+    if reply[: len(_ARROW_REPLY_MAGIC)] == _ARROW_REPLY_MAGIC:
         return _arrow_reply_rows(reply, types)
     return json_rows(reply, types)
 
