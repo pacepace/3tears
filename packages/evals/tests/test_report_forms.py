@@ -770,16 +770,23 @@ def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_held_under_i
     assert not unmeasured, unmeasured
 
 
+_ASPECT_SOURCES = ("s1_change", "s2_choice", "s3_measurement", "s4_change", "toyhost")
+
+
 @functools.cache
-def _aspect_pages() -> dict[str, tuple[Report, PageForms]]:
-    """Each aspect's own page (code's page over its bundle), with the one forms it was built in: every aspect of the
-    four campaign shapes, and the toy host's."""
-    bundles = {
-        f"{shape.name}/{label}": bundle
-        for shape in (s1_change(), s2_choice(), s3_measurement(), s4_change())
-        for label, bundle in shape.bundles.items()
-    }
-    bundles["toyhost"] = toyhost_bundle()
+def _aspect_pages(source: str) -> dict[str, tuple[Report, PageForms]]:
+    """Each aspect's own page (code's page over its bundle), with the one forms it was built in, for one of the four
+    campaign shapes or the toy host. Built inside the test, never at import: a shape's bundles stamp the clock."""
+    if source == "toyhost":
+        bundles = {"toyhost": toyhost_bundle()}
+    else:
+        shape = {
+            "s1_change": s1_change,
+            "s2_choice": s2_choice,
+            "s3_measurement": s3_measurement,
+            "s4_change": s4_change,
+        }[source]()
+        bundles = {f"{shape.name}/{label}": bundle for label, bundle in shape.bundles.items()}
     pages = {}
     for name, bundle in bundles.items():
         forms = PageForms.of_bundle(bundle)
@@ -828,21 +835,24 @@ def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[s
     return expected
 
 
-@pytest.mark.parametrize("name", sorted(_aspect_pages()))
-def test_every_rate_and_money_cell_an_aspect_page_prints_is_in_its_ledger_under_its_measure(name: str) -> None:
+@pytest.mark.parametrize("source", _ASPECT_SOURCES)
+def test_every_rate_and_money_cell_an_aspect_page_prints_is_in_its_ledger_under_its_measure(source: str) -> None:
     """An aspect's own page prints each rate and money figure as its forms recorded it, under the measure the cell
     states a figure of: a column rule records a cell under the measure its builder named (:meth:`PageForms.of_measure`),
     so a page-level test of one measure to one precision sees the aspect page's rate and money columns too. Each row's
     measure is read off the page's evidence, so a cell recorded under another row's measure fails."""
-    page, forms = _aspect_pages()[name]
-    tables = [block for block in page.blocks if isinstance(block, TableBlock)]
-    checked, missing = _unheld(tables, forms)
-    assert checked, "an aspect page prints rates or money, so this must check some"
-    assert not missing, missing
-    measures = _aspect_row_measures(page, tables)
-    assert {table for table, _ in measures} >= {table.name for table in tables} & {"comparisons", "bars", "scoreboard"}
-    _, misheld = _unheld(tables, forms, by_measure=True, measures=measures)
-    assert not misheld, misheld
+    pages = _aspect_pages(source)
+    assert pages, f"{source} builds no aspect page"
+    for name, (page, forms) in sorted(pages.items()):
+        tables = [block for block in page.blocks if isinstance(block, TableBlock)]
+        checked, missing = _unheld(tables, forms)
+        assert checked, f"{name}: an aspect page prints rates or money, so this must check some"
+        assert not missing, (name, missing)
+        measures = _aspect_row_measures(page, tables)
+        drawn = {table.name for table in tables} & {"comparisons", "bars", "scoreboard"}
+        assert {table for table, _ in measures} >= drawn, name
+        _, misheld = _unheld(tables, forms, by_measure=True, measures=measures)
+        assert not misheld, (name, misheld)
 
 
 def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -> None:
@@ -865,7 +875,7 @@ def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -
     _, misheld = _unheld([table], forms, by_measure=True, measures={("t", 0): ("accuracy", "measure")})
     assert misheld == ["t.rate (number): '63%' under ('accuracy', 'measure')"]
 
-    page, forms = _aspect_pages()["s1 change/billing"]
+    page, forms = _aspect_pages("s1_change")["s1 change/billing"]
     tables = [block for block in page.blocks if isinstance(block, TableBlock)]
     measures = _aspect_row_measures(page, tables)
     moved = {**measures, ("comparisons", 0): ("another_measure", "measure")}
