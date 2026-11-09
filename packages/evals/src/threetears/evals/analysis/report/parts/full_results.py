@@ -547,7 +547,7 @@ def _gate_cell(
     )
     if figure is None or not math.isfinite(figure.value):
         return TableCell(value=GATE_UNKNOWN, status="neutral", flag=NO_FIGURE)
-    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
+    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id, forms=forms)
     line = resolve(f"criteria.{criterion.id}.threshold", report_input)
     said = format_figure(replace(line, value=figure.value), forms=forms)
     return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)

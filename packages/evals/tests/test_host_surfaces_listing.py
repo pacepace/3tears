@@ -338,7 +338,7 @@ def test_an_arm_reads_one_name_on_every_page_and_one_tag_on_one_listing_line(
         assert (held.name, held.tag) == (listed[key], listed_tags[key]), "the listing names it as the document does"
         assert f"Adopting {listed[key]} overrides" in caveats, (listed[key], caveats)
         assert render(
-            f"{{arm:{held.id}}}", built, {arm.id: arm.name for arm in doc.values()}, forms=PageForms.of(built)
+            f"{{arm:{held.id}}}", {arm.id: arm.name for arm in doc.values()}, forms=PageForms.of(built)
         ) == written_arm(held.name, held.tag)
         for name, tags in ((code[key], code_tags), (listed[key], listed_tags)):
             assert name == _bare(name) or name.endswith(f" ({tags[key]})"), name
@@ -355,7 +355,6 @@ def test_a_name_told_apart_by_its_tag_is_written_with_its_tag_once() -> None:
     arms = fact_arms(built)
     written = render(
         " vs ".join(f"{{arm:{arm.id}}}" for arm in built.arms),
-        built,
         {arm.id: arm.name for arm in arms},
         forms=PageForms.of(built),
     )

@@ -83,7 +83,7 @@ def _drawn(held: ReportInput, kind: str, query: ChartQuery) -> Any:
     planned = PlannedChart.model_validate({"kind": kind, "title": "", "query": query, "reference": [], "emphasis": ""})
     spec, faults = complete_chart(planned, held, "block")
     assert not faults, faults
-    return resolve_chart(spec, held, block_look(held, fact_arms(held)), title="").chart
+    return resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart
 
 
 # =============================================================================

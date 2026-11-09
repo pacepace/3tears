@@ -555,7 +555,7 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
 
 def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
     """The chart as the resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
-    drawn = resolve_chart(spec, report_input, anchor_look(_plan(anchor), report_input), title="")
+    drawn = resolve_chart(spec, anchor_look(_plan(anchor), report_input), title="", forms=PageForms.of(report_input))
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart
 

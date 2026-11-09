@@ -56,6 +56,7 @@ from threetears.evals.analysis.report.figure_keys import resolve, figure_unit
 from threetears.evals.analysis.report.parts.charting import COMPUTED, misses_line
 from threetears.evals.analysis.report.parts.look import PageLook, quantity
 from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
 from threetears.evals.analysis.report_decision import control_arm
@@ -162,7 +163,7 @@ def _look(name: str) -> PageLook:
 
 
 def _draw(name: str, spec: ChartSpec) -> PageChart:
-    return resolve_chart(spec, _variant(name), _look(name), title="chart")
+    return resolve_chart(spec, _look(name), title="chart", forms=PageForms.of(_variant(name)))
 
 
 def _data(drawn: PageChart) -> Any:

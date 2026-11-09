@@ -114,13 +114,13 @@ def test_a_reading_read_on_its_corrected_interval_is_weaker_than_the_floor_that_
 def test_the_weakest_keys_render_in_their_lines_units() -> None:
     said = "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, gap {weakest.margin}"
     # The worst case is the corrected interval's lower bound (-12.85), 2.15 inside the -15 margin.
-    assert render(said, _input("r5"), {}, forms=PageForms.of(_input("r5"))) == (
+    assert render(said, {}, forms=PageForms.of(_input("r5"))) == (
         "qwen3.8-flash (A): -12.8 against the margin on character adherence (v2) at -15, gap 2.2"
     )
-    assert render(said, _input("r1"), {}, forms=PageForms.of(_input("r1"))) == (
+    assert render(said, {}, forms=PageForms.of(_input("r1"))) == (
         "Atlas-M (B): 90% against Resolves the issue in Troubleshooting (multi-turn) at 90%, gap 0"
     )
-    assert render("{weakest.margin|pts}", _input("r4"), {}, forms=PageForms.of(_input("r4"))) == "-0.6"
+    assert render("{weakest.margin|pts}", {}, forms=PageForms.of(_input("r4"))) == "-0.6"
 
 
 def test_a_weakest_key_is_refused_by_name_where_nothing_is_read_against_a_line() -> None:

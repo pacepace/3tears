@@ -72,6 +72,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
@@ -522,7 +523,9 @@ def _changes(report_input: ReportInput, source: str, measures: list[str]) -> tup
             "domain": [],
         }
     )
-    drawn = resolve_chart(spec, report_input, block_look(report_input, fact_arms(report_input)), title="chart")
+    drawn = resolve_chart(
+        spec, block_look(report_input, fact_arms(report_input)), title="chart", forms=PageForms.of(report_input)
+    )
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart, tuple(drawn.notes)
 
@@ -624,7 +627,9 @@ def test_a_family_corrected_level_reads_plainly_on_every_chart_of_contrasts(kind
             "domain": [],
         }
     )
-    drawn = resolve_chart(spec, report_input, block_look(report_input, fact_arms(report_input)), title="chart")
+    drawn = resolve_chart(
+        spec, block_look(report_input, fact_arms(report_input)), title="chart", forms=PageForms.of(report_input)
+    )
     block = drawn.chart
     assert isinstance(block, ChartBlock) and block.data is not None
     assert block.data.level == "99.7% (95% across 16 comparisons)"  # type: ignore[union-attr]

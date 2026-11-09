@@ -375,13 +375,9 @@ def test_every_surface_of_the_documents_page_prints_the_one_name() -> None:
         assert "Run " + _PRINTED[1] in written
 
 
-def _capitalised_as_rendered(
-    text: str, report_input: ReportInput, arm_names: Mapping[str, str], *, forms: PageForms
-) -> str:
+def _capitalised_as_rendered(text: str, arm_names: Mapping[str, str], *, forms: PageForms) -> str:
     """The mutation's prose renderer: every arm's name capitalised as the prose is rendered, not where it is made."""
-    return render(
-        text, report_input, {arm: name[:1].upper() + name[1:] for arm, name in arm_names.items()}, forms=forms
-    )
+    return render(text, {arm: name[:1].upper() + name[1:] for arm, name in arm_names.items()}, forms=forms)
 
 
 def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(

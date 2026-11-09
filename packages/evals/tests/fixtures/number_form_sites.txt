@@ -13,32 +13,9 @@
 #
 # Generated from the tree on 2026-11-08 (evals/reset, nf-c3a merge); the ratchet, not this header, holds the counts.
 threetears/evals/actions/analyst.py | <module> | group_thousands() | 1
-threetears/evals/actions/render.py | _cited_body | _cited_field() | 1
-threetears/evals/actions/render.py | _cited_field | _cited_body() | 1
-threetears/evals/actions/render.py | _cited_field | _cited_field() | 1
-threetears/evals/actions/render.py | _cited_field | _cited_row() | 1
-threetears/evals/actions/render.py | _cited_field | _value() | 1
-threetears/evals/actions/render.py | _cited_row | _cited_field() | 1
-threetears/evals/actions/render.py | _field_lines | _field_lines() | 1
-threetears/evals/actions/render.py | _field_lines | _item_line() | 1
-threetears/evals/actions/render.py | _field_lines | _value() | 1
-threetears/evals/actions/render.py | _item_line | _value() | 1
-threetears/evals/actions/render.py | _latency_lines | _ms() | 2
-threetears/evals/actions/render.py | _ms | format_number() | 1
-threetears/evals/actions/render.py | _record_lines | _latency_lines() | 1
-threetears/evals/actions/render.py | _record_lines | dollars_text() | 1
-threetears/evals/actions/render.py | _result_line | _ms() | 1
-threetears/evals/actions/render.py | _result_line | dollars_text() | 1
-threetears/evals/actions/render.py | _value | _value() | 1
-threetears/evals/actions/render.py | _value | format_number() | 1
-threetears/evals/actions/render.py | render_cited | _cited_body() | 1
-threetears/evals/actions/render.py | render_model | _field_lines() | 1
-threetears/evals/actions/render.py | render_result | _record_lines() | 1
-threetears/evals/actions/render.py | render_results | _result_line() | 1
 threetears/evals/analysis/agreement.py | _criterion_words | format_number() | 4
 threetears/evals/analysis/agreement.py | tier_sentence | _criterion_words() | 8
 threetears/evals/analysis/agreement.py | tier_sentence | format_number() | 3
-threetears/evals/analysis/analyst/blocks.py | block_render.rendered | format_number() | 1
 threetears/evals/analysis/analyst/cited.py | cite | format_figure() | 1
 threetears/evals/analysis/analyst/cited.py | cite_written | format_figure() | 1
 threetears/evals/analysis/aspects.py | _unread_without_control | format_number() | 1
@@ -148,7 +125,6 @@ threetears/evals/analysis/report/build.py | _bar_interval | spell_ends() | 1
 threetears/evals/analysis/report/build.py | _case_blocks | spell_count() | 1
 threetears/evals/analysis/report/build.py | _census_line | spell_count() | 4
 threetears/evals/analysis/report/build.py | _change | places_of() | 1
-threetears/evals/analysis/report/build.py | _change_forms | for_changes() | 1
 threetears/evals/analysis/report/build.py | _comparison_blocks | _interval_on_delta() | 1
 threetears/evals/analysis/report/build.py | _decision_blocks | _dollars() | 2
 threetears/evals/analysis/report/build.py | _dollars | spell() | 1
@@ -191,8 +167,6 @@ threetears/evals/analysis/report/build.py | _prediction_powered_text | _interval
 threetears/evals/analysis/report/build.py | _prediction_powered_text | _mean_text() | 1
 threetears/evals/analysis/report/build.py | _projection_blocks | projected_cell() | 2
 threetears/evals/analysis/report/build.py | _projection_blocks | projected_usd_value() | 1
-threetears/evals/analysis/report/build.py | _reading_places | format_number() | 2
-threetears/evals/analysis/report/build.py | _reading_places | set_places() | 2
 threetears/evals/analysis/report/build.py | _readings_blocks | _figure_text() | 1
 threetears/evals/analysis/report/build.py | _readings_blocks | _value_text() | 1
 threetears/evals/analysis/report/build.py | _side_cell | _side_text() | 1
@@ -329,7 +303,6 @@ threetears/evals/analysis/report/decision.py | projection_note | format_number()
 threetears/evals/analysis/report/decision.py | read_floor | _rate_floor() | 1
 threetears/evals/analysis/report/decision.py | read_floor | floor_statement() | 1
 threetears/evals/analysis/report/doc_page/build.py | _Labels._said | format_figure() | 1
-threetears/evals/analysis/report/doc_page/build.py | _evidence | format_number() | 1
 threetears/evals/analysis/report/doc_page/build.py | _reference | format_figure() | 1
 threetears/evals/analysis/report/doc_page/html.py | _appendix | _arms_key() | 1
 threetears/evals/analysis/report/doc_page/html.py | _appendix | table_html() | 1

@@ -233,9 +233,7 @@ class TestADeclaredNameReachesThePage:
     def test_a_figure_key_and_rendered_prose_print_the_declared_name(self) -> None:
         built = _input({"off_lane": "Off-lane asks"})
         assert resolve("strata.off_lane.name", built).value == "Off-lane asks"
-        assert (
-            render("Worst in {strata.off_lane.name}", built, {}, forms=PageForms.of(built)) == "Worst in Off-lane asks"
-        )
+        assert render("Worst in {strata.off_lane.name}", {}, forms=PageForms.of(built)) == "Worst in Off-lane asks"
 
     def test_a_name_no_stratum_holds_reaches_nothing(self) -> None:
         assert [stratum.name for stratum in _input({"elsewhere": "Elsewhere"}).strata] == [None]

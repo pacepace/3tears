@@ -7166,23 +7166,24 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...], forms: PageForms
     return RANGE_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[1].suffix
 
 
-def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str], *, forms: PageForms) -> str:
+def render(text: str, arm_names: Mapping[str, str], *, forms: PageForms) -> str:
     """Replace every figure key in report prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
 
     :param text: Report prose.
     :ptype text: str
-    :param report_input: The report input the plan was written against.
-    :ptype report_input: ReportInput
     :param arm_names: Each arm's computed short name, by id (GENERATOR §6.1). An arm declaring a short name
         (``Arm.short_name``) prints that instead; one missing from both is named by its alias, else its id.
     :ptype arm_names: Mapping[str, str]
-    :param forms: The forms of the page the prose is printed on (an off-page reader's own, built from the same input),
-        which decide each figure's precision (:func:`format_figure`).
+    :param forms: The forms of the page the prose is printed on (an off-page reader's own), which decide each figure's
+        precision (:func:`format_figure`). Each key resolves on the report input they were built from, which they carry,
+        so prose never reads one input in another's forms.
     :ptype forms: PageForms
     :return: The prose with every key written out.
     :rtype: str
     :raises UnresolvableReference: A key does not parse, resolve or suit its filters.
+    :raises ValueError: The forms are a code page's or an off-page surface's, which carry no report input.
     """
+    report_input = forms.report_input
     control = _control(report_input)
     tags = arm_tags([arm.id for arm in report_input.arms], control.id if control else None)
     page: dict[str, str] | None = None
@@ -7504,9 +7505,9 @@ _FILTER_EXAMPLES: dict[str, str] = {
 }
 
 
-def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str], forms: PageForms) -> str:
+def _family_line(family: _Family, names: Mapping[str, str], forms: PageForms) -> str:
     """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its example
-    rendered on the made-up input, in its forms."""
+    rendered on the made-up input its forms carry."""
     statistic = family.statistic()
     listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
     tag = (
@@ -7518,7 +7519,7 @@ def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]
         derived = ", ".join(f"`{name}`" for name in family.derived_statistics)
         tag += f" {derived} derived: descriptive, no interval."
     if family.example:
-        shown = render(f"{{{family.example}}}", example, names, forms=forms)
+        shown = render(f"{{{family.example}}}", names, forms=forms)
         tag += f' `{{{family.example}}}` reads "{shown}".'
     return f"- `{family.form()}`: {family.what}{listed}.{tag}"  # one line: module constants
 
@@ -7549,7 +7550,7 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str], forms: Page
         means, example_key = _FILTER_MEANS[name], _FILTER_EXAMPLES[name]
         lines.append(f'- `{name}`: {means}. `{{{example_key}}}` reads "{shown}".')  # one line: module constants
     sentence = "{arm:fast.v2} is down {reading.fast.v2.change|abs|pts} points ({reading.fast.v2.interval|pts})."
-    lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names, forms=forms)}".')
+    lines.append(f'For example, "{sentence}" reads "{render(sentence, names, forms=forms)}".')
     per_reply = "scoreboard.base.reply_cost_usd"
     lines.append(
         "A key prints its own unit (`%`, `$`, `ms`, `s`, or per 1,000 of what the input's cost counts, such as "
@@ -7598,7 +7599,7 @@ def figure_key_grammar(*, forms_of: Callable[[ReportInput], PageForms]) -> str:
     example = _example_input()
     forms = forms_of(example)
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES, forms) for family in _FAMILIES]
+    lines += [_family_line(family, _EXAMPLE_NAMES, forms) for family in _FAMILIES]
     lines += _grammar_filters(example, _EXAMPLE_NAMES, forms)
     return "\n".join(lines)
 
@@ -7763,7 +7764,7 @@ def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[st
     pages: dict[str, str] = {}
     for (group, families), (_, what, _) in zip(_grouped().items(), _FAMILY_GROUPS, strict=True):
         lines = [f"## {GRAMMAR_HEADING}: {group}", f"Paths of {what}:"]
-        lines += [_family_line(family, example, _EXAMPLE_NAMES, forms) for family in families]
+        lines += [_family_line(family, _EXAMPLE_NAMES, forms) for family in families]
         pages[group] = "\n".join(lines)
     return pages
 

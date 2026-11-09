@@ -189,12 +189,13 @@ def _durable_insights(
     checked = {caveat.id for caveat in doc.confidence.caveats if caveat.checked is not None}
     insights: list[EvalInsight] = []
     stated: set[str] = set()
-    # An insight states its claim as the page prints it, in the forms its input's page would print each figure in.
+    # An insight states its claim as the page prints it; it is minted off the page, which is not built here, so in
+    # forms of its own, built once from its input as its page builds them.
     forms = PageForms.of(report_input)
     for claim in doc.claims:
         if not claim.durable:
             continue
-        statement = render(claim.text, report_input, {}, forms=forms)
+        statement = render(claim.text, {}, forms=forms)
         key = insight_restatement_key(statement)
         if not statement.strip() or key in stated:
             continue

@@ -33,6 +33,7 @@ from threetears.evals.analysis.report.block_spec import block_look, complete_cha
 from threetears.evals.analysis.report.charts import DotIntervalChart
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.parts.charting import computed_interval
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
 from threetears.evals.analysis.report_input import ReportInput, Stat
@@ -235,7 +236,7 @@ def test_a_chart_stored_before_its_intervals_were_computed_draws_as_it_was_store
         spec, faults = complete_chart(planned, held, "chart")
         assert not faults
         stored = spec.model_copy(update={"level": ""})
-        chart = resolve_chart(stored, held, block_look(held, fact_arms(held)), title="").chart
+        chart = resolve_chart(stored, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart
         assert isinstance(chart.data, DotIntervalChart)
         rows = [row for panel in (chart.data.panels or [chart.data]) for row in (panel.rows or [])]
         assert rows and all(row.lo is None and row.hi is None for row in rows)

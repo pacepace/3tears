@@ -201,14 +201,14 @@ def test_the_words_filter_is_refused_on_a_figure_that_is_no_count() -> None:
     held = INPUTS["r4"]
     arm = held.arms[0].id
     with pytest.raises(UnresolvableReference, match="cannot read as a word"):
-        render(f"{{cost_per_1k.{arm}|words}}", held, {}, forms=PageForms.of(held))
+        render(f"{{cost_per_1k.{arm}|words}}", {}, forms=PageForms.of(held))
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_count_written_through_a_key_types_no_digit(name: str) -> None:
     held = INPUTS[name]
     sentence = "{count.surviving|words} of {count.arms|words} options survive; {count.gates} gates."
-    rendered = render(sentence, held, {}, forms=PageForms.of(held))
+    rendered = render(sentence, {}, forms=PageForms.of(held))
     # The sentence opens on the spelled count, which takes its capital (``Two of three``).
     said = rendered.casefold()
     assert str(len(surviving_options(held))) in said or WORDS[len(surviving_options(held))] in said
@@ -223,12 +223,11 @@ def test_a_count_spelled_at_a_sentence_s_start_takes_its_capital_and_nowhere_els
     arms = WORDS[len(held.arms)]
     rendered = render(
         "{count.arms|words} arms ran. Of {count.arms|words}, the {count.arms|words} held.",
-        held,
         {},
         forms=PageForms.of(held),
     )
     assert rendered == f"{arms.capitalize()} arms ran. Of {arms}, the {arms} held.", rendered
-    assert render("{count.arms|words}", held, {}, forms=PageForms.of(held)) == arms, (
+    assert render("{count.arms|words}", {}, forms=PageForms.of(held)) == arms, (
         "a key alone is a figure, read as its filter spells it"
     )
 

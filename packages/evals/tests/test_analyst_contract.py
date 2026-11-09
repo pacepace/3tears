@@ -652,7 +652,7 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     text = render_cited(listing)
 
     first = held.arms[0].id
-    reads = render(f"{{pass_rate.{first}}}", held, {}, forms=PageForms.of(held))
+    reads = render(f"{{pass_rate.{first}}}", {}, forms=PageForms.of(held))
     assert f"  - arm: arm:{first}\n    pass_rate.{first} = {reads}\n" in text
     assert text.splitlines()[0] == "_listing" and "total: 3" in text
     assert "next_offset" not in text, "a page's next call is the tool's to write"

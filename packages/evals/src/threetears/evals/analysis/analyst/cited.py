@@ -102,17 +102,28 @@ def _arm_written(report_input: ReportInput, arm_id: str) -> str:
     return written_arm(page_arm_names(report_input)[arm_id], tag)
 
 
-def cite(key: str, report_input: ReportInput) -> CitedFigure:
+def _forms_of(report_input: ReportInput, forms: PageForms | None) -> PageForms:
+    """The forms a cited figure is written in: the caller's, checked to be ``report_input``'s, or, for a tool that
+    reads the input off any page and holds none, forms of the figure's own, built from its input as its page builds
+    them."""
+    return forms.checked(report_input) if forms is not None else PageForms.of(report_input)
+
+
+def cite(key: str, report_input: ReportInput, *, forms: PageForms | None = None) -> CitedFigure:
     """The figure a key names on the report input, with the text the page writes it as.
 
     :param key: The path, without braces or filters (``reading.fast.v2.change``, ``arm:base``).
     :ptype key: str
     :param report_input: The frozen report input the tool reads.
     :ptype report_input: ReportInput
+    :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints; None for the
+        input's own, built for this figure alone.
+    :ptype forms: PageForms | None
     :return: The figure.
     :rtype: CitedFigure
     :raises UnresolvableReference: The key names nothing the input holds, reads two ways, or names a figure the input
         leaves unstated.
+    :raises ValueError: ``forms`` were built from another input.
     """
     figure = resolve(key, report_input)
     return CitedFigure(
@@ -120,7 +131,7 @@ def cite(key: str, report_input: ReportInput) -> CitedFigure:
         reads=(
             _arm_written(report_input, str(figure.value))
             if figure.kind == "arm"
-            else format_figure(figure, forms=PageForms.of(report_input))
+            else format_figure(figure, forms=_forms_of(report_input, forms))
         ),
         value=_whole(figure),
         kind=figure.kind,
@@ -153,7 +164,9 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
         return None
 
 
-def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) -> WrittenFigure:
+def cite_written(
+    key: str, filters: tuple[str, ...], report_input: ReportInput, *, forms: PageForms | None = None
+) -> WrittenFigure:
     """The figure a key names, written through its filters as the page writes ``{key|filter}``.
 
     :param key: The path, without braces or filters; never an arm, which takes no filter.
@@ -162,15 +175,19 @@ def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) 
     :ptype filters: tuple[str, ...]
     :param report_input: The frozen report input the tool reads.
     :ptype report_input: ReportInput
+    :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints; None for the
+        input's own, built for this figure alone.
+    :ptype forms: PageForms | None
     :return: The figure, ``reads`` written through the filters.
     :rtype: WrittenFigure
     :raises UnresolvableReference: The key does not resolve, or a filter does not suit its figure.
+    :raises ValueError: ``forms`` were built from another input.
     """
     figure = resolve(key, report_input)
     reads = (
         _arm_written(report_input, str(figure.value))
         if figure.kind == "arm"
-        else format_figure(figure, filters, forms=PageForms.of(report_input))
+        else format_figure(figure, filters, forms=_forms_of(report_input, forms))
     )
     return WrittenFigure(
         key=key,

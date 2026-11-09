@@ -125,18 +125,21 @@ def drawn_charts(stored: StoredCharts, report_input: ReportInput) -> list[tuple[
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
 
     def written(text: str) -> str:
-        return render(text, report_input, names, forms=PageForms.of(report_input))
+        return render(text, names, forms=PageForms.of(report_input))
 
-    drawn = [(spec, resolve_chart(spec, report_input, look, title=written(spec.title))) for spec in stored.summary]
+    drawn = [
+        (spec, resolve_chart(spec, look, title=written(spec.title), forms=PageForms.of(report_input)))
+        for spec in stored.summary
+    ]
     drawn += [
         (
             section.chart,
             resolve_chart(
                 section.chart,
-                report_input,
                 look,
                 title=written(section.chart.title),
                 fallback_title=written(section.headline),
+                forms=PageForms.of(report_input),
             ),
         )
         for section in stored.sections

@@ -184,6 +184,29 @@ def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
     return _money_ruler(costs)
 
 
+class ContrastPlaces(NamedTuple):
+    """How one reading's figures read wherever an aspect's page states its contrasts (decided by
+    :meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`): the contrasts table, the verdict
+    line's figures and a program's rows alike (docs/design.md, Presentation rulings). A set keeps one precision: every
+    level of the reading (both arms' figures and their intervals' ends) reads at ``level`` decimals, every change and
+    its interval's ends at ``change``. A rate's level reads by its column's percent rule and money by its form, so
+    either is None there. ``floor`` and ``ceiling`` are what a level can take, drawn, so an interval never runs past
+    them (a count never below zero, a score never past its scale); ``scale`` names a score's scale for its row
+    (``1–5``)."""
+
+    level: int | None
+    change: int | None
+    floor: float | None = None
+    ceiling: float | None = None
+    scale: str = ""
+
+    def span(self) -> float | None:
+        """How far a change can reach either way: the range a level can take; None where it is open."""
+        if self.floor is None or self.ceiling is None:
+            return None
+        return self.ceiling - self.floor
+
+
 class Rulers(NamedTuple):
     """Every ruler one report states its readings on: its measures', its judged dimensions', and the pass rate's."""
 
@@ -228,6 +251,7 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
 
 __all__ = [
     "NO_SUCCESSFUL_RESULTS",
+    "ContrastPlaces",
     "PER_MILLION_REPLIES",
     "PER_THOUSAND_LABEL",
     "PER_THOUSAND_REPLIES",

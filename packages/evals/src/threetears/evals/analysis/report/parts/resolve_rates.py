@@ -851,7 +851,7 @@ def _scatter(context: ChartContext) -> Drawn:
             colour = factor_token(context.report_input, point.arm) if configs else None
             fails = (
                 bool(context.report_input.criteria)
-                and gate_check(context.report_input, point.arm, task=point.task).status == "fail"
+                and gate_check(context.report_input, point.arm, task=point.task, forms=context.forms).status == "fail"
             )
             x_value, y_value = point.x * x_drawn.factor, point.y * y_drawn.factor
             x_said = forms.chart_note(x_value, x_drawn, measure=x_key, kind=x_kind).text

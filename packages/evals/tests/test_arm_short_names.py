@@ -305,7 +305,7 @@ class TestTheReportInputCarriesIt:
         built = report_input(bundle)
 
         written = render(
-            "{arm:v2} against {arm:v4}", built, {"v2": "computed v2", "v4": "computed v4"}, forms=PageForms.of(built)
+            "{arm:v2} against {arm:v4}", {"v2": "computed v2", "v4": "computed v4"}, forms=PageForms.of(built)
         )
 
         assert written.startswith("Second try (A)") and "computed v2" not in written

@@ -156,8 +156,8 @@ def test_the_masthead_is_the_one_a_stored_plan_on_the_same_input_carries(name: s
     assert _masthead(name) == (
         stored["kind"],
         stored["system"],
-        render(stored["counts"], report_input, names, forms=PageForms.of(report_input)),
-        render(stored["run_date"], report_input, names, forms=PageForms.of(report_input)),
+        render(stored["counts"], names, forms=PageForms.of(report_input)),
+        render(stored["run_date"], names, forms=PageForms.of(report_input)),
         stored["synthetic"],
     )
 

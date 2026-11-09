@@ -52,7 +52,11 @@ def _examples_drawn(path: str, report_input: ReportInput) -> list[ExamplesChart]
     """Every examples chart a stored plan names, drawn by the chart resolver on ``report_input``."""
     look = block_look(report_input, fact_arms(report_input))
     specs = stored_charts(path).charts()
-    drawn = [resolve_chart(spec, report_input, look, title=spec.title) for spec in specs if spec.kind == "examples"]
+    drawn = [
+        resolve_chart(spec, look, title=spec.title, forms=PageForms.of(report_input))
+        for spec in specs
+        if spec.kind == "examples"
+    ]
     return [one.chart.data for one in drawn if isinstance(one.chart.data, ExamplesChart)]
 
 
@@ -128,7 +132,7 @@ def test_the_weakest_margins_worst_case_is_read_on_the_corrected_interval_and_sa
     plain_worst, corrected_worst = float(reading.within_interval[0]), float(contrast.interval[0]) * 100
     assert corrected_worst < plain_worst  # the corrected interval reaches further (10.8 against 12.6 on Kairo)
     assert margin.corrected and margin.value == pytest.approx(corrected_worst)
-    said = render("{weakest.interval}", held, {}, forms=PageForms.of(held))
+    said = render("{weakest.interval}", {}, forms=PageForms.of(held))
     assert said.startswith("the multiplicity-corrected 99.69% interval")
 
 

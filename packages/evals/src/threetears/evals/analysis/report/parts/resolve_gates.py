@@ -294,7 +294,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
             # A cost over part of the arm's calls is a smaller total, never stated bare.
             share = priced_in_part(report_input, arm) if cost is not None else None
             if gated:
-                check = gate_check(report_input, arm, task=task.id)
+                check = gate_check(report_input, arm, task=task.id, forms=context.forms)
                 cell = _gate_cell(check, cost=cost, pick=picks.get(task.id) == arm)
                 if share is not None:
                     cell = cell.model_copy(update={"reasons": [*(cell.reasons or []), share]})
@@ -515,7 +515,9 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
         GateRow(
             label=context.look.reader("criterion", criterion.id),
             detail=_gate_detail(context, criterion),
-            cells=[_gate_cell(gate_check(report_input, arm, criterion=criterion.id)) for arm in arms],
+            cells=[
+                _gate_cell(gate_check(report_input, arm, criterion=criterion.id, forms=context.forms)) for arm in arms
+            ],
         )
         for criterion in criteria
     ]
@@ -648,7 +650,7 @@ def _panel_points(
         x, y = getattr(figures[x_key, arm], statistics[0]), getattr(figures[y_key, arm], statistics[1])
         if x is None or y is None:
             continue
-        check = gate_check(report_input, arm, task=task.id) if task is not None else gate_check(report_input, arm)
+        check = gate_check(report_input, arm, task=task.id if task is not None else None, forms=context.forms)
         points.append(_Point(arm, float(x), float(y), check))
     return points
 
@@ -843,7 +845,7 @@ def _lattice(context: ChartContext) -> Drawn:
     for place, (level, row) in enumerate(zip(rows_factor.levels, tiles, strict=True)):
         cells = []
         for arm, value, cost, latency in row:
-            check = gate_check(report_input, arm) if gated else None
+            check = gate_check(report_input, arm, forms=context.forms) if gated else None
             shown = value * drawn.factor
             said = forms.chart_note(shown, drawn, measure=key, kind=kind).text
             tip = [_config_name(report_input, arm), f"{money_words(report_input, key, drawn)} {said}"]

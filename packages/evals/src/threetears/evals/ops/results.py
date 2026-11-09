@@ -28,6 +28,10 @@ stands in for the other.
 
 **Every read is in the caller's scope.** A run or a result in another scope is not found, as every other
 read answers it — never an empty listing, which would read as a run that produced nothing.
+
+**A result's text prints its figures in an off-page surface's forms**
+(:meth:`~threetears.evals.analysis.report.forms.PageForms.off_page`), which this module serves the actions layer
+as :class:`PageForms`: that layer writes every result's text and reads no analysis module.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from threetears.evals.analysis.latency_partition import LatencyPartition, decompose_total_ms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema import CallLedger, CellTermination, EvalResult, JudgedArtifact, JudgeEvidence
 from threetears.evals.kernel import (
     ResultCondition,
@@ -320,6 +325,7 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
 
 
 __all__ = [
+    "PageForms",
     "ResultDetail",
     "ResultLine",
     "ResultListing",

@@ -179,9 +179,9 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_
         sections=[replace(section, chart=_completed_now(section.chart, held)) for section in stored.sections],
     )
     look = anchor_look(plan, held)
-    charts = [(spec, resolve_chart(spec, held, look, title=spec.title)) for spec in plan.summary]
+    charts = [(spec, resolve_chart(spec, look, title=spec.title, forms=PageForms.of(held))) for spec in plan.summary]
     charts += [
-        (section.chart, resolve_chart(section.chart, held, look, title=section.chart.title))
+        (section.chart, resolve_chart(section.chart, look, title=section.chart.title, forms=PageForms.of(held)))
         for section in plan.sections
     ]
     assert charts
