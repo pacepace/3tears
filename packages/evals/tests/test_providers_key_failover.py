@@ -44,16 +44,16 @@ CREDIT_SPENT: Final = (
 #: The one tool a scripted turn offers.
 TOOLS: Final = (TurnToolSpec("evals_help", "Explain an action.", {"type": "object", "properties": {}}),)
 
-#: Opus 5.5's row as the catalogue lists it, so a call is priced without a network read.
+#: The scripted model's row as the catalogue lists it, so a call is priced without a network read.
 CATALOGUE: Final[dict[str, Any]] = {
-    "data": [{"id": "anthropic/claude-opus-5.5", "pricing": {"prompt": "0.000004", "completion": "0.00002"}}]
+    "data": [{"id": "anthropic/scripted-model", "pricing": {"prompt": "0.000004", "completion": "0.00002"}}]
 }
 
 
 def reply(text: str = "hello") -> tuple[int, dict[str, Any]]:
     """An Anthropic Messages reply."""
     return 200, {
-        "model": "claude-opus-5-5-20261001",
+        "model": "scripted-model",
         "content": [{"type": "text", "text": text}],
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 10, "output_tokens": 4},
@@ -102,13 +102,13 @@ def keys(monkeypatch: pytest.MonkeyPatch, *variables: str) -> dict[str, str]:
 
 
 def opus(server: KeyedServer, /, **options: Any) -> Model:
-    """Opus on Anthropic, sending through ``server``, its key read from the environment unless one is passed."""
+    """A scripted model on Anthropic, sending through ``server``, its key read from the environment unless one is passed."""
     options.setdefault(
         "catalogue",
         Catalogue(http=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=CATALOGUE)))),
     )
     return Model(
-        "claude-opus-5-5",
+        "scripted-model",
         provider="anthropic",
         http=httpx.AsyncClient(transport=httpx.MockTransport(server)),
         **options,
@@ -213,7 +213,7 @@ async def test_a_timeout_never_fails_over(monkeypatch: pytest.MonkeyPatch) -> No
         raise httpx.ReadTimeout("no answer", request=request)
 
     model = Model(
-        "claude-opus-5-5",
+        "scripted-model",
         provider="anthropic",
         http=httpx.AsyncClient(transport=httpx.MockTransport(timing_out)),
         catalogue=Catalogue(

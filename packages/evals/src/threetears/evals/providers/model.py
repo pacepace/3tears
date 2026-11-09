@@ -11,6 +11,7 @@ per session through :class:`~threetears.evals.testing.RecordedTurns` given ``tur
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import string
 import time
@@ -102,10 +103,18 @@ _CACHE_APPROXIMATE: Final = ";cache-approximate"
 
 _FILE_CLOCK_SLACK_SECONDS: Final = 1.0
 
-#: The keys whose credit a provider has said is spent, in this process, each as its variable and its value: no model
-#: sends on one again, whichever model met the refusal. The value is part of the identity, so a key is spent, not a
-#: variable's name; the set holds only what the models already hold, and nothing in it is ever logged or stored.
+#: The keys whose credit a provider has said is spent, in this process, each as its variable and the SHA-256 digest
+#: of its value (:func:`_spent_id`): no model sends on one again, whichever model, or host, met the refusal, since a
+#: spent key is spent for every holder. The digest is part of the identity, so a key is spent, not a variable's name;
+#: it is one-way, so nothing that reads the set reads a key, and nothing in it is ever logged or stored.
 _SPENT_KEYS: Final[set[tuple[str, str]]] = set()
+
+
+def _spent_id(key: tuple[str, str]) -> tuple[str, str]:
+    """How :data:`_SPENT_KEYS` holds ``key``: its variable, and the SHA-256 hex digest of its value, never the value.
+    A provider key is long and random, so its unsalted digest reveals nothing of it."""
+    variable, value = key
+    return variable, hashlib.sha256(value.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +131,7 @@ class _KeyChain:
 
     def current(self) -> tuple[str, str]:
         """The first key not spent, or the last when every one is, which then meets its refusal as before."""
-        return next((key for key in self.keys if key not in _SPENT_KEYS), self.keys[-1])
+        return next((key for key in self.keys if _spent_id(key) not in _SPENT_KEYS), self.keys[-1])
 
     def spend(self, key: tuple[str, str], *, provider: Provider, model: str) -> tuple[str, str] | None:
         """Mark ``key`` spent: the key to send on next, or ``None`` when every key in the chain is spent.
@@ -130,9 +139,10 @@ class _KeyChain:
         The switch is logged at WARNING by the call that first found the key spent, naming the two variables and
         never a value; a call that meets the same refusal after it moves to the same key, unlogged.
         """
-        first = key not in _SPENT_KEYS
-        _SPENT_KEYS.add(key)
-        after = next((other for other in self.keys if other not in _SPENT_KEYS), None)
+        spent = _spent_id(key)
+        first = spent not in _SPENT_KEYS
+        _SPENT_KEYS.add(spent)
+        after = next((other for other in self.keys if _spent_id(other) not in _SPENT_KEYS), None)
         if first and after is not None:
             log.warning(
                 "eval.providers a key's credit is spent, failing over provider=%s model=%s from=%s to=%s",

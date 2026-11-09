@@ -116,6 +116,10 @@ CACHES: frozenset[str] = frozenset({"cache", "lru_cache", "cached_property"})
 
 #: ``(module, name)`` -> why this module state holds nothing a host could read. The only entries.
 ALLOWED: dict[tuple[str, str], str] = {
+    ("threetears/evals/providers/model.py", "_SPENT_KEYS"): (
+        "digests of credit-spent provider keys, one-way; a host can read no key from it, and a spent key is spent "
+        "for every host holding it"
+    ),
     ("threetears/evals/kernel/job_leases.py", "_KIND_OF_MODEL"): (
         "each leased job kind, keyed by its record model, registered as the kind is constructed — code (how a "
         "record type ends and reads lost), not a host's data: one model reads the same way for every host, and a "
