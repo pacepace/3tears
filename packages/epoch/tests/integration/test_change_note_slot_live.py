@@ -11,7 +11,9 @@ YugabyteDB). What these prove:
 - a copy older than its age is read again before it is applied;
 - the keeper empties the idle table with batched deletes while eight writers write to the current one, with
   no error, and a switch never lands on a table whose emptying has not finished;
-- a migration run that creates a noted table gives it its note triggers in that run.
+- a migration run that creates a noted table gives it its note triggers in that run;
+- an agent schema's noted table gets its note triggers from that schema's migration run at every start, a table
+  created before the run gave triggers included: the keeper's install gives them only in its own schema.
 """
 
 from __future__ import annotations
@@ -395,3 +397,88 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
         assert [list(note["keys"]) for note in await _notes(pool, schema, 0)] == [["first"]], (
             "its first write left a note"
         )
+
+    async def test_an_agent_schemas_table_from_before_the_hook_gets_its_triggers_at_every_run_start(
+        self, db_container: str
+    ) -> None:
+        """Flips if an agent schema's noted table depends on the keeper for its triggers (the keeper gives them
+        only in its own schema), or a run with nothing pending leaves one without them."""
+        suffix = uuid.uuid4().hex[:8]
+        database, platform, agent = f"notes_db_{suffix}", "platform", f"agent_{suffix}"
+        table = f"agent_widgets_{suffix}"
+        admin = await asyncpg.connect(db_container)
+        try:
+            # a database of its own: the run finds the ring as a deployment has it, one schema holding it
+            await admin.execute(f"CREATE DATABASE {database}")
+            url = db_container.rsplit("/", 1)[0] + f"/{database}"
+            pool = await asyncpg.create_pool(url, min_size=1, max_size=4)
+            assert pool is not None
+            try:
+                await pool.execute(f"CREATE SCHEMA {platform}")
+                await pool.execute(f"CREATE SCHEMA {agent}")
+                keeper = ChangeNoteKeeper(
+                    pool, notes_schema=platform, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE
+                )
+                await keeper.install()
+                declared = TableSchema(
+                    name=table,
+                    primary_key="id",
+                    columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("owner", STRING_TYPE, nullable=True)],
+                )
+                type(f"Agent_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
+
+                async def create(store: Any) -> None:
+                    await store.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, owner TEXT)")
+
+                async def run(marked: bool) -> int:
+                    package = PackageMigrations(name=f"agent_{table}", scope=MigrationScope.AGENT)
+                    package.version(1)(create)
+                    if marked:
+                        package.mark_write_generation(table)
+                    runner = MigrationRunner()
+                    runner.register(package)
+                    run_pool = await asyncpg.create_pool(
+                        url, min_size=1, max_size=2, server_settings={"search_path": agent}
+                    )
+                    assert run_pool is not None
+                    try:
+                        registry = CollectionRegistry()
+                        registry.configure(l3_pool=run_pool)
+                        return int(await DataStore(uuid.uuid4(), registry).run_migrations(runner))
+                    finally:
+                        await run_pool.close()
+
+                async def triggers() -> set[str]:
+                    return {
+                        str(row["tgname"])
+                        for row in await pool.fetch(
+                            "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2",
+                            agent,
+                            table,
+                        )
+                    }
+
+                # the table, created by a run before its package declared it switched on: no triggers
+                assert await run(marked=False) == 1
+                assert await triggers() == set()
+                assert await keeper.install_triggers([NotedTable(table=table, keys=("id",))]) == [], (
+                    "the keeper gives none in an agent schema"
+                )
+                assert await triggers() == set()
+                # the next start, nothing pending: its run gives them
+                assert await run(marked=True) == 0
+                assert {NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER} <= await triggers()
+                # lost again (a restore of the schema, say): the start after gives them again
+                for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER):
+                    await pool.execute(f"DROP TRIGGER {name} ON {agent}.{table}")
+                assert await run(marked=True) == 0
+                assert {NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER} <= await triggers()
+                await pool.execute(f"INSERT INTO {agent}.{table} VALUES ('first', 'o')")
+                current = (await keeper.ring()).current
+                assert [list(note["keys"]) for note in await _notes(pool, platform, current)] == [["first"]]
+            finally:
+                await pool.close()
+        finally:
+            await admin.execute(f"DROP DATABASE IF EXISTS {database}")
+            await admin.close()

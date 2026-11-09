@@ -45,6 +45,7 @@ from threetears.core.collections.epoch_change import (
     EpochChange,
     changed_row_runs,
     epoch_change_record,
+    key_text,
     read_epoch_change,
     records_changes,
 )
@@ -2263,7 +2264,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         values = entity_id if isinstance(entity_id, tuple) else (entity_id,)
         registry = self.registry
         return ChangedRow(
-            ids=[str(value) for value in values],  # convert at border: epoch change record pk values
+            ids=[key_text(value) for value in values],  # convert at border: epoch change record pk values
             l2_current_scope=registry.kv_key_scope if l2_key_current and registry is not None else None,
             columns=self._invalidation_values(row),
         )
@@ -2281,7 +2282,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
         return {
             # convert at border: invalidation wire-envelope column values
-            column: None if row[column] is None else str(row[column])
+            column: None if row[column] is None else key_text(row[column])
             for column in self.invalidation_columns
             if column in row
         }
@@ -2313,7 +2314,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the key
         :rtype: str
         """
-        body = "\x1f".join(str(v) for v in self.normalize_pk(entity_id))
+        body = "\x1f".join(key_text(v) for v in self.normalize_pk(entity_id))
         return f"{self.table_name}.{hashlib.sha256(body.encode('utf-8')).hexdigest()}"
 
     def _l1_marker_matches(self, entity_id: Any, generation: str) -> bool:
@@ -2541,7 +2542,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the pk values' string forms, in declared order
         :rtype: tuple[str, ...]
         """
-        return tuple(str(value) for value in self.normalize_pk(entity_id))
+        return tuple(key_text(value) for value in self.normalize_pk(entity_id))
 
     def _l1_holding_table(self) -> Any:
         """this collection's L1, while it holds the collection's table; ``None`` until then.
@@ -2984,7 +2985,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
             )
         pk_values = self.normalize_pk(entity_id)
-        body = "_".join(str(v) for v in pk_values)
+        body = "_".join(key_text(v) for v in pk_values)
         if not _KV_KEY_GRAMMAR.match(body):
             body = hashlib.sha256(body.encode("utf-8")).hexdigest()
         return f"{scope}.{self.table_name}.{body}"

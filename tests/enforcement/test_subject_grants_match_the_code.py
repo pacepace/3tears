@@ -199,7 +199,7 @@ def _l3(*, truncates: bool = True) -> tuple[str, ...]:
     :param truncates: whether the site empties and reloads tables (``l3.truncate``,
         ``l3.load_files``); a reader that never does, the registry, is not granted them
     :ptype truncates: bool
-    :return: query, batch, truncate and load_files when asked, and each transaction op
+    :return: query, batch, truncate, load_files and noted_keys when asked, and each transaction op
     :rtype: tuple[str, ...]
     """
     ops: tuple[Literal["begin", "execute", "fetch", "fetchrow", "copy", "commit", "rollback"], ...] = (
@@ -211,7 +211,10 @@ def _l3(*, truncates: bool = True) -> tuple[str, ...]:
         "commit",
         "rollback",
     )
-    truncate = (str(Subjects.l3_truncate()), str(Subjects.l3_load_files())) if truncates else ()
+    # a pod that reloads its tables follows them too: it asks the notes for a large commit's keys (l3.noted_keys)
+    truncate = (
+        (str(Subjects.l3_truncate()), str(Subjects.l3_load_files()), str(Subjects.l3_noted_keys())) if truncates else ()
+    )
     return (
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),

@@ -52,6 +52,7 @@ from asyncpg import PostgresError
 from sqlalchemy import MetaData
 
 from threetears.core.collections.base import CasMutation
+from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -343,7 +344,7 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
                 f"keys would carry no principal segment. wire it with "
                 f"registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
             )
-        body = "\x1f".join(str(v) for v in self.normalize_pk(entity_id))
+        body = "\x1f".join(key_text(v) for v in self.normalize_pk(entity_id))
         return f"{scope}.{self.table_name}.{hashlib.sha256(body.encode('utf-8')).hexdigest()}"
 
     @property

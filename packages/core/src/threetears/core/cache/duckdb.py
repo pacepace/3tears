@@ -40,6 +40,8 @@ from threetears.core.cache.base import (
     exact_decimal_type,
     stored_decimal,
     stored_date,
+    stored_instant,
+    stored_instant_text,
     stored_time,
 )
 from threetears.core.sql_fragments import quote_identifier
@@ -365,7 +367,11 @@ def stored_value(value: Any, col_type: str) -> Any:
     elif isinstance(value, date) and col_type.endswith("_DATE"):
         result = stored_date(value)
     elif isinstance(value, datetime):
-        result = value.isoformat()
+        result = stored_instant(value)
+    elif isinstance(value, str) and col_type.endswith("_DATETIME"):
+        # a key named by text (a change record's, a row message's) or an instant a reply answers as text: kept and
+        # matched in the one spelling a datetime is, so a row is found whichever form names it
+        result = stored_instant_text(value)
     elif isinstance(value, time_of_day):
         result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
     elif isinstance(value, date):
@@ -380,6 +386,50 @@ def stored_value(value: Any, col_type: str) -> Any:
         result = value.hex()
 
     return result
+
+
+def _canonical_instants(values: Any) -> Any:
+    """an Arrow column of zoned instants, or of ISO text carrying offsets, as the text
+    :func:`~threetears.core.cache.base.stored_instant` keeps each as; None for a column it cannot make in Arrow.
+
+    :param values: the column
+    :ptype values: pyarrow.ChunkedArray | pyarrow.Array
+    :return: the column as text, or None
+    :rtype: pyarrow.ChunkedArray | pyarrow.Array | None
+    """
+    kind = values.type
+    textual = pa.types.is_string(kind) or pa.types.is_large_string(kind)
+    if not textual and not (pa.types.is_timestamp(kind) and kind.tz is not None):
+        return None
+    try:
+        instants = pc.cast(values, pa.timestamp("us", tz="UTC"))
+    except pa.ArrowInvalid, pa.ArrowNotImplementedError:
+        return None  # NOSILENT: the caller stores the column value by value, as a dict row's values are
+    return pc.strftime(instants, format="%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def _parquet_select(column: str, file_type: str, code: str) -> str:
+    """the expression :meth:`DuckDBBackend.load_parquet` reads a file's column with, into a column of ``code``.
+
+    A file's timestamp going into an instant kept as text is written in the spelling
+    :func:`~threetears.core.cache.base.stored_instant` gives it, never DuckDB's own cast to text, so a key read
+    from a file is found by the text a change record names it in. Any other column is read as it is.
+
+    :param column: the column
+    :ptype column: str
+    :param file_type: its type in the file, as ``DESCRIBE`` names it, upper case
+    :ptype file_type: str
+    :param code: the table column's type code
+    :ptype code: str
+    :return: the expression
+    :rtype: str
+    """
+    quoted = quote_identifier(column)
+    if not (code.endswith("_DATETIME") and _ddl_type(code) == "VARCHAR" and file_type.startswith("TIMESTAMP")):
+        return quoted
+    if file_type == "TIMESTAMP WITH TIME ZONE":
+        return f"strftime(timezone('UTC', {quoted}), '%Y-%m-%dT%H:%M:%S.%f+00:00')"
+    return f"strftime(CAST({quoted} AS TIMESTAMP), '%Y-%m-%dT%H:%M:%S.%f')"
 
 
 def _ddl_type(code: str) -> str:
@@ -768,6 +818,28 @@ class DuckDBBackend:
             )
         return values
 
+    def _stored_pk_values(self, table: str, entity_id: Any, pk_cols: tuple[str, ...]) -> list[Any]:
+        """a key's values as ``table`` stores them, to bind where a lookup or delete names the row.
+
+        Through :meth:`serialize_value`, as a row's are written: a timestamp key named by a datetime or by text in any
+        ISO spelling (a change record's) binds as the text it is kept as, so the row is found whichever names it.
+
+        :param table: the table
+        :ptype table: str
+        :param entity_id: pk value or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param pk_cols: the key's columns
+        :ptype pk_cols: tuple[str, ...]
+        :return: the values, in key order
+        :rtype: list[Any]
+        :raises ValueError: if the values do not match ``pk_cols`` in number
+        """
+        schema = self._schema_info.get(table, {})
+        return [
+            self.serialize_value(value, schema.get(col, "VARCHAR"))
+            for col, value in zip(pk_cols, self._pk_values(entity_id, pk_cols), strict=True)
+        ]
+
     def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
         """insert or update row.
 
@@ -1032,10 +1104,11 @@ class DuckDBBackend:
             raise ValueError(f"key-less table {table!r}: load_parquet replaces rows by the table's own key")
         with self._db_lock:
             in_file = {
-                row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+                row[0]: str(row[1]).upper()
+                for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
             }
             columns = [c for c in schema if c in in_file and c != row_number_column]
-            selects = [quote_identifier(c) for c in columns]
+            selects = [_parquet_select(c, in_file[c], schema[c]) for c in columns]
             if row_number_column is not None:
                 columns.insert(0, row_number_column)
                 selects.insert(0, "row_number() OVER () - 1")
@@ -1163,6 +1236,14 @@ class DuckDBBackend:
                 pass  # NOSILENT: stored value by value below, as serialize_value stores a dict row's
         if scale is not None:
             as_is = pa.types.is_decimal(kind) and kind.scale == scale
+        elif code.endswith("_DATETIME") and ddl == "VARCHAR":
+            # an instant kept as text, in the one spelling (:func:`~threetears.core.cache.base.stored_instant`) a key
+            # naming it is matched in: made in Arrow from zoned instants, or ISO text that carries its offset (the
+            # rail's); any other (a naive instant, text without an offset) value by value, as a dict row's is
+            canonical = _canonical_instants(values)
+            if canonical is not None:
+                return canonical
+            as_is = False
         elif pa.types.is_timestamp(kind):
             # an instant into an instant column; a naive one is read in another zone by the cast than by
             # its isoformat text, so it is stored as a dict row's is
@@ -1437,7 +1518,17 @@ class DuckDBBackend:
             if keys.num_rows == 0:
                 return 0
             self._db.execute(f"CREATE OR REPLACE TABLE {chunk} AS SELECT {names} FROM {source} LIMIT 0")  # noqa: S608
-            self._db.register("_staged_keys", keys.select(list(key)))
+            # an instant's key named in any ISO spelling is staged in the one its row is stored in
+            codes = self._schema_info[table]
+            staged = pa.table(
+                {
+                    column: self._stored_column(keys.column(column), codes[column])
+                    if codes.get(column, "").endswith("_DATETIME")
+                    else keys.column(column)
+                    for column in key
+                }
+            )
+            self._db.register("_staged_keys", staged)
             try:
                 self._db.execute(f"INSERT INTO {chunk} BY NAME SELECT * FROM _staged_keys")  # noqa: S608
             finally:
@@ -1643,7 +1734,7 @@ class DuckDBBackend:
             the table's registered schema does not have
         """
         pk_cols = self._pk_columns(primary_key)
-        pk_vals = self._pk_values(entity_id, pk_cols)
+        pk_vals = self._stored_pk_values(table, entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
         sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
@@ -1687,14 +1778,14 @@ class DuckDBBackend:
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
             sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
-            params: list[Any] = list(entity_ids)
+            params: list[Any] = [self._stored_pk_values(table, eid, pk_cols)[0] for eid in entity_ids]
         else:
             per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
             sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
             params = []
             for eid in entity_ids:
-                params.extend(self._pk_values(eid, pk_cols))
+                params.extend(self._stored_pk_values(table, eid, pk_cols))
         with self._db_lock:
             result = self._db.execute(sql, params)
             result_columns = [desc[0] for desc in result.description]
@@ -1719,7 +1810,7 @@ class DuckDBBackend:
         :rtype: None
         """
         pk_cols = self._pk_columns(primary_key)
-        pk_vals = self._pk_values(entity_id, pk_cols)
+        pk_vals = self._stored_pk_values(table, entity_id, pk_cols)
         where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:

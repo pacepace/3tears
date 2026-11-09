@@ -110,16 +110,17 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
     for table in present:
         each = noted[table]
         tenant_columns = (each.tenancy.column,) if each.tenancy.column else ()
-        refused = inexact_note_columns(types.get(table, {}), (*each.keys, *each.columns, *tenant_columns))
+        kinds = types.get(table, {})
+        refused = inexact_note_columns(kinds, (*each.keys, *each.columns, *tenant_columns))
         if refused:
             log.error(
                 "a noted table gets no change-note trigger: a key or invalidation column's text form does not "
-                "name its value exactly (only uuid, text, varchar and integers do)",
+                "name its value exactly (only uuid, text, varchar, integers and timestamptz do)",
                 extra={"extra_data": {"table": f"{here}.{table}", "columns": [f"{c} ({k})" for c, k in refused]}},
             )
             continue
         wanted = trigger_function_body(
-            notes_schema=notes_schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
+            notes_schema=notes_schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy, kinds=kinds
         )
         stale = bodies.get(note_function_name(here, table)) != wanted
         missing = [name for name in NOTE_TRIGGERS if (table, name) not in triggers]
@@ -134,6 +135,7 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
                     keys=each.keys,
                     columns=each.columns,
                     tenancy=each.tenancy,
+                    kinds=kinds,
                 )
             )
         statements = note_trigger_sql(notes_schema=notes_schema, table_schema=here, table=table)

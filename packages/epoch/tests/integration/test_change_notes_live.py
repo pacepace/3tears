@@ -26,7 +26,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -38,7 +38,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
-from threetears.core.collections.epoch_change import ChangedRow, read_epoch_change_body
+from threetears.core.collections.epoch_change import ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
 from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
@@ -47,9 +47,12 @@ from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import (
     NOTE_RING_SIZE,
+    NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
     note_function_name,
     note_table,
+    note_trigger_sql,
+    trigger_function_sql,
 )
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.tenancy import TENANT_BY_SCHEMA, PodTenants, schema_tenant, tenant_column, value_tenant
@@ -463,13 +466,84 @@ class TestARestoreIsWholeOrNotTakenAtAll:
         assert again.restored is None
 
 
+async def _triggers(pool: asyncpg.Pool, schema: str, table: str) -> set[str]:
+    return {
+        str(row["tgname"])
+        for row in await pool.fetch(
+            "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2",
+            schema,
+            table,
+        )
+    }
+
+
+async def _give_as_its_schemas_run_does(pool: asyncpg.Pool, notes_schema: str, schema: str, noted: NotedTable) -> None:
+    """a table of another schema given its note triggers as that schema's migration run gives them."""
+    await pool.execute(
+        trigger_function_sql(
+            notes_schema=notes_schema,
+            table_schema=schema,
+            table=noted.table,
+            keys=noted.keys,
+            columns=noted.columns,
+            tenancy=noted.tenancy,
+        )
+    )
+    for statement in note_trigger_sql(notes_schema=notes_schema, table_schema=schema, table=noted.table):
+        await pool.execute(statement)
+
+
+class TestTheKeeperGivesTriggersInItsOwnSchemaOnly:
+    async def test_a_table_of_the_same_name_in_another_schema_is_said_and_counted_never_given(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Flips if the keeper gives another schema's table of a noted name the triggers its own classes declare
+        (a pod's table keyed or tenanted otherwise), or leaves one without them unsaid."""
+        pool, schema, table = ring
+        other = f"{schema}_pod"
+        await pool.execute(f"CREATE SCHEMA {other}")
+        try:
+            # the pod's own table: the same name, another key
+            await pool.execute(f"CREATE TABLE {other}.{table} (pod_key TEXT PRIMARY KEY, owner TEXT)")
+            keeper = ChangeNoteKeeper(
+                pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE
+            )
+            await keeper.install()
+            noted = [NotedTable(table=table, keys=("id",), columns=("owner",))]
+            with caplog.at_level(logging.WARNING):
+                assert await keeper.install_triggers(noted) == [f"{schema}.{table}"]
+                assert await keeper.install_triggers(noted) == [], "nothing more to give, the pod's table never"
+            assert {NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER} <= await _triggers(pool, schema, table)
+            assert await _triggers(pool, other, table) == set(), "the keeper gave the pod's table nothing"
+            said = [r.__dict__["extra_data"] for r in caplog.records if "another schema" in r.getMessage()]
+            assert said == [{"table": f"{other}.{table}", "keeper_schema": schema}], "said once"
+            assert REGISTRY.get_sample_value("threetears_change_notes_untriggered_tables") == 1
+
+            # its schema's migration run gives it its own triggers: it is no longer counted, and the keeper's
+            # next install leaves its function (its own key) alone
+            pod_noted = NotedTable(table=table, keys=("pod_key",))
+            await _give_as_its_schemas_run_does(pool, schema, other, pod_noted)
+            assert await keeper.install_triggers(noted) == []
+            assert REGISTRY.get_sample_value("threetears_change_notes_untriggered_tables") == 0
+            await pool.execute(f"INSERT INTO {other}.{table} VALUES ('p1', 'o')")
+            current = (await keeper.ring()).current
+            keys = [
+                list(note["keys"])
+                for note in await pool.fetch(f"SELECT keys FROM {schema}.{note_table(current)}")  # noqa: S608
+            ]
+            assert keys == [["p1"]], "the pod's note names its own key"
+        finally:
+            await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
+
+
 class TestAColumnWhoseTextIsNotExactGetsNoTrigger:
     async def test_a_boolean_key_or_a_timestamp_column_is_refused_with_an_error(
         self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
     ) -> None:
         pool, schema, table = ring
         odd = f"{table}_odd"
-        await pool.execute(f"CREATE TABLE {schema}.{odd} (id BOOLEAN PRIMARY KEY, at TIMESTAMPTZ)")
+        await pool.execute(f"CREATE TABLE {schema}.{odd} (id BOOLEAN PRIMARY KEY, at TIMESTAMP)")
         keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE)
         await keeper.install()
         with caplog.at_level(logging.ERROR):
@@ -478,7 +552,58 @@ class TestAColumnWhoseTextIsNotExactGetsNoTrigger:
             )
         assert given == [f"{schema}.{table}"], "the exact table is given its trigger, the other is refused"
         said = [r.__dict__["extra_data"] for r in caplog.records if "no change-note trigger" in r.getMessage()]
-        assert said == [{"table": f"{schema}.{odd}", "columns": ["id (boolean)", "at (timestamp with time zone)"]}]
+        assert said == [{"table": f"{schema}.{odd}", "columns": ["id (boolean)", "at (timestamp without time zone)"]}]
+
+
+class TestATimestamptzKeyIsNotedInOneSpelling:
+    async def test_its_notes_name_each_instant_as_its_record_does_and_bind_back_to_its_rows(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if a timestamptz key's note is spelled by the session's TimeZone or DateStyle rather than in UTC to
+        the microsecond (so a note and its record name one row two ways), or a key read back from the notes fails to
+        bind to its row."""
+        pool, schema, table = ring
+        snaps = f"{table}_snaps"
+        await pool.execute(
+            f"CREATE TABLE {schema}.{snaps} (office TEXT, at TIMESTAMPTZ, seen TIMESTAMPTZ, n INT, "
+            "PRIMARY KEY (office, at))"
+        )
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=EpochGenerationSource(FakeNatsClient()), fence=_FENCE)
+        await keeper.install()
+        assert await keeper.install_triggers([NotedTable(table=snaps, keys=("office", "at"), columns=("seen",))]) == [
+            f"{schema}.{snaps}"
+        ]
+        pacific = timezone(timedelta(hours=-8))
+        instants = [
+            datetime(2026, 11, 3, 19, 0, 0, tzinfo=pacific),  # a whole second: no fraction in str()
+            datetime(2026, 11, 4, 3, 0, 0, 82658, tzinfo=UTC),
+            datetime(1999, 12, 31, 23, 59, 59, 999999, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+        ]
+        async with pool.acquire() as conn:
+            # a writer whose session would spell a timestamptz otherwise
+            await conn.execute("SET TimeZone = 'America/New_York'; SET DateStyle = 'SQL, DMY'")
+            for n, at in enumerate(instants):
+                await conn.execute(f"INSERT INTO {schema}.{snaps} VALUES ('pres', $1, $1, $2)", at, n)
+        current = (await keeper.ring()).current
+        notes = await pool.fetch(
+            f"SELECT keys, columns FROM {schema}.{note_table(current)} WHERE table_name = $1",  # noqa: S608
+            snaps,
+        )
+        named = sorted(tuple(note["keys"]) for note in notes)
+        assert named == sorted(("pres", key_text(at)) for at in instants), "the record's spelling, exactly"
+        assert sorted(json.loads(note["columns"])["seen"] for note in notes) == sorted(key_text(at) for at in instants)
+        assert key_text(instants[0]) == "2026-11-04T03:00:00.000000+00:00"
+        # the keys read back bind to their rows, as a follower's read by key binds them (each key's text cast to its
+        # column's type, CopyFollower's keyed read)
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT t.n, t.at FROM {schema}.{snaps} AS t JOIN (SELECT unnest($1::text[]) AS k0, "  # noqa: S608
+                "unnest($2::text[]) AS k1) AS k ON t.office = k.k0 AND t.at = CAST(k.k1 AS timestamptz)",
+                [key[0] for key in named],
+                [key[1] for key in named],
+            )
+        assert sorted(row["n"] for row in rows) == [0, 1, 2]
+        assert sorted(row["at"] for row in rows) == sorted(instants)
 
 
 class TestTheScrubRunsOnItsOwnInterval:
@@ -594,6 +719,7 @@ class TestTheSwitchSizeIsDerivedFromTheRestoreBudget:
             switched = (await keeper.run_pass()).switched_to
             if switched is None:
                 assert state.bytes < threshold * 1.2, "it would have switched by now"
+        assert state is not None
         assert state.bytes < max_bytes / 2, "far before one whole log's worth"
         assert state.bytes >= threshold * 0.8
 
@@ -617,6 +743,9 @@ class TestALivingKeeperAndWorkerSayWhenTheyLastPassed:
         held = _OnePass()
 
         class _Pass:
+            #: the worker turns a saver's batched reads on (its runner is the infrastructure identity)
+            batched_reads: bool | None = None
+
             async def run_pass(self) -> None:
                 held.lost_reason = "done"  # one pass, then the lease is gone
 
@@ -801,7 +930,10 @@ class TestTheReconcilerKeysEachSchemasChange:
             await source.start_log()
             keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0))
             await keeper.install()
-            await keeper.install_triggers([NotedTable(table=table, keys=("id",), tenancy=TENANT_BY_SCHEMA)])
+            noted = NotedTable(table=table, keys=("id",), tenancy=TENANT_BY_SCHEMA)
+            await keeper.install_triggers([noted])
+            # the other schema's table is given its triggers by its own schema's migration run, never the keeper
+            await _give_as_its_schemas_run_does(pool, schema, other, noted)
             for statement in write_marks_ddl(schema):
                 await pool.execute(statement)
             await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])

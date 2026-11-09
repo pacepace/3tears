@@ -7,6 +7,8 @@
   :class:`NonFiniteNumericError`, how an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
 - :func:`stored_time`, the ISO text a ``TIME`` column keeps a ``datetime.time`` as.
 - :func:`stored_date`, the ISO text a ``DATE`` column keeps a ``datetime.date`` as.
+- :func:`stored_instant` and :func:`stored_instant_text`, the one text a timestamp column keeps an instant as,
+  whatever form it is named in.
 
 Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 (the collection broadcasts and their tables' write generations).
@@ -15,7 +17,7 @@ Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any, Protocol, runtime_checkable
 
@@ -34,6 +36,8 @@ __all__ = [
     "stored_decimal",
     "stored_date",
     "stored_time",
+    "stored_instant",
+    "stored_instant_text",
     # released here (v0.66.0) before it moved to threetears.core.sql_fragments; still importable
     "quote_identifier",
 ]
@@ -195,6 +199,42 @@ def stored_date(value: date) -> str:
     """
     day = value.date() if isinstance(value, datetime) else value
     return day.isoformat()
+
+
+def stored_instant(value: datetime) -> str:
+    """``value`` as the one text a timestamp column keeps it as, and every key naming it is matched by.
+
+    An aware value is its instant in UTC, to the microsecond, in ISO form (``2026-11-09T10:22:10.000000+00:00``):
+    the spelling :func:`~threetears.core.collections.epoch_change.key_text` gives a change record, a row message, an
+    L2 key and a fence key, so an eviction naming a key by that text finds the row an L1 holds under it. ``isoformat``
+    alone drops the fraction of a whole second and keeps the value's own offset, so the same instant had several
+    spellings and a whole-second key named by its record was never found. A naive value is its wall clock to the
+    microsecond, in ISO form.
+
+    :param value: the instant
+    :ptype value: datetime.datetime
+    :return: its stored text
+    :rtype: str
+    """
+    if value.utcoffset() is not None:
+        value = value.astimezone(UTC)
+    return value.isoformat(timespec="microseconds")
+
+
+def stored_instant_text(text: str) -> str:
+    """an instant named by text (a key from a change record or a row message, or a reply's ISO text) as
+    :func:`stored_instant` keeps it, so text naming a row matches the row; text that is not ISO is kept as it is.
+
+    :param text: the text
+    :ptype text: str
+    :return: its stored text
+    :rtype: str
+    """
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text  # NOSILENT: not an instant's text, so no stored instant can equal it either way
+    return stored_instant(parsed)
 
 
 def stored_time(value: time, *, zoned: bool) -> str:

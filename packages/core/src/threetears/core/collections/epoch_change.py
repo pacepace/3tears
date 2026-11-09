@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from threetears.core.cache.base import stored_instant
 from threetears.core.exceptions import GenerationUnavailableError
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EPOCH_CHANGE_MAX_AGE",
+    "key_text",
     "ChangedRow",
     "EpochChange",
     "EpochChangeReader",
@@ -68,6 +70,27 @@ _EPOCH_CHANGE_MAX_RECORD_BYTES: Final = 256 * 1024
 
 #: what a record holds beside its rows (the table, the token, the field names), kept free under the bound.
 _RECORD_OVERHEAD_BYTES: Final = 1024
+
+
+def key_text(value: Any) -> str:
+    """a key's or an invalidation column's value as a change record, a row message and a change note name it.
+
+    A time zone-aware ``datetime`` (a ``timestamptz``) is named in UTC, to the microsecond, in ISO form
+    (``2026-11-09T10:22:10.082658+00:00``): the form the note trigger writes it in
+    (:mod:`threetears.core.ddl.change_notes`), whatever zone the value came in, so a note and a record of one row
+    name it in one spelling, and a key read back from the notes binds as the same instant. Anything else is its
+    ``str``. Every key derived from a row's key values (its L2 key, its fence key) is built from these forms too, so a
+    message's text values land on the key the typed values made.
+
+    :param value: the value
+    :ptype value: Any
+    :return: its text
+    :rtype: str
+    """
+    if isinstance(value, datetime) and value.utcoffset() is not None:
+        # the L1 keeps a timestamp column in this text too, so an eviction naming the key finds its row
+        return stored_instant(value)
+    return str(value)
 
 
 class ChangedRow(BaseModel):

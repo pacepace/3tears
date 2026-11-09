@@ -26,6 +26,41 @@ write-mark trigger, the change-note triggers and the note function off one table
 `IF EXISTS`. It is safe to run twice and after the table is dropped. `write_generation_triggers_on` names the
 triggers a table carries. Moved from the hub's `write_generation_triggers.py`.
 
+### core, epoch, nats: a too-large commit's keys are read back from its change notes
+
+**Added (core, nats):** a keys-unknown epoch record that carries its commit's notes bracket
+(`EpochChange.noted_between`) is resolved from the change notes: `CollectionRegistry.catch_up_generation` asks a
+`NotedKeysReader` (`set_noted_keys_reader`; `configure(l3_pool=)` wires the pod's `NatsProxyL3Backend`, whose
+`noted_keys` asks the hub's `{ns}.l3.noted_keys` door, `Subjects.l3_noted_keys`) for the keys a page at a time and
+applies each as its row message would be. Notes the ring no longer covers, or a hub with no door, leave the table
+behind with its reason (`BEHIND_REASONS` `notes_not_covered`, `notes_unavailable`; `CopyFollower.status().behind`),
+asked again every pass, never dropped. Agent and tool pods are granted publish on the subject, the hub subscribe.
+`noted_keys_page` takes a connection and reads each page in one read-only transaction told to keep the
+`(table_name, noted_at)` index's order: every page is an index range scan of its own notes, both ends of the bracket
+in the index condition (a large commit's pages read 1.0x the notes they name, where they read 10.5x).
+`NotedKeysPage.columns` carries each key's invalidation columns; a page's limit and bytes hold over the previous and
+current table together.
+
+**Changed (core):** a `timestamptz` key or invalidation column is noted: the trigger writes it in UTC, to the
+microsecond, in ISO form (`2026-11-09T10:22:10.082658+00:00`) whatever the session's `TimeZone` and `DateStyle`,
+and `key_text` (`threetears.core.collections.epoch_change`) names an aware `datetime` the same way in every change
+record, row message, L2 key and fence key, so a note, its record and a key read back from the notes name one instant
+in one spelling and bind to its row. Other types stay refused (`inexact_note_columns`). A `datetime`-keyed
+collection's L2 keys change spelling once (an old key is read by no new process).
+
+**Fixed (core):** the SQLite and DuckDB L1s keep a timestamp column in that same spelling
+(`threetears.core.cache.base.stored_instant`; `isoformat()` dropped `.000000` from a whole second and kept the value's
+own offset) and bind a key named by text in any ISO form as it (`stored_instant_text`) on every read, delete, staged
+key, Arrow and Parquet load, so a row message or change record naming a whole-second or other-offset key by its
+text evicts the L1 row instead of missing it and leaving the pod serving the stale value. Both L1s live in process
+memory only, so no row kept in the old spelling survives the upgrade's restart.
+
+**Changed (core) -- requirement:** `ChangeNoteKeeper.install_triggers` gives note triggers only in the keeper's own
+schema (the platform schema its process's classes declare). A table of a noted name in another schema (a pod's
+table, keyed and tenanted by its own declaration) gets its triggers from its schema's migration run
+(`give_noted_tables_their_note_trigger`, at every run start, a table from before the hook included); one without
+them is logged once and counted (`threetears_change_notes_untriggered_tables`), never given the keeper's.
+
 ## v0.95.0 -- 2026-11-07
 
 ### core, epoch, nats: load paths that grew with the table now grow with the change

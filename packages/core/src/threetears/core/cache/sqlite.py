@@ -47,6 +47,8 @@ from threetears.core.cache.base import (
     exact_decimal_type,
     stored_decimal,
     stored_date,
+    stored_instant,
+    stored_instant_text,
     stored_time,
 )
 from threetears.core.sql_fragments import quote_identifier
@@ -216,9 +218,10 @@ class SQLiteBackend:
 
         if not self._initialized:
             # Register type adapters so UUID/datetime values are automatically
-            # serialized at the SQLite boundary.
+            # serialized at the SQLite boundary: a datetime as a timestamp column keeps it, so a query's
+            # bound instant compares with the stored text it names.
             sqlite3.register_adapter(uuid.UUID, str)
-            sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
+            sqlite3.register_adapter(datetime, stored_instant)
             for uuid_type in _UUID_UTILS_TYPES:
                 sqlite3.register_adapter(uuid_type, str)
             self._initialized = True
@@ -684,7 +687,11 @@ class SQLiteBackend:
         elif isinstance(value, date) and col_type.endswith("_DATE"):
             result = stored_date(value)
         elif isinstance(value, datetime):
-            result = value.isoformat()
+            result = stored_instant(value)
+        elif isinstance(value, str) and col_type.endswith("_DATETIME"):
+            # a key named by text (a change record's, a row message's) or an instant a reply answers as text: kept and
+            # matched in the one spelling a datetime is, so a row is found whichever form names it
+            result = stored_instant_text(value)
         elif isinstance(value, time):
             result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
         elif isinstance(value, date):

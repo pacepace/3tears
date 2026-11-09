@@ -55,6 +55,7 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.backends.statement_operation import is_resendable, statement_operation
+from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,
@@ -287,6 +288,49 @@ def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
     :rtype: bool
     """
     return isinstance(error, NoRespondersError) or (idempotent and isinstance(error, RequestTimeoutError))
+
+
+#: the bus payload a noted-keys page is held under when the client does not know the announced one: NATS's default
+_NOTED_KEYS_ASSUMED_PAYLOAD: Final = 1024 * 1024
+
+#: how long past the statement's own bound a noted-keys page waits for its reply, in seconds
+_NOTED_KEYS_GRACE_SECONDS: Final = 1.0
+
+
+def _noted_keys_answer(response: Mapping[str, Any], table: str) -> NotedKeysPage | str:
+    """an ``l3.noted_keys`` reply as a page, or as why the notes cannot say.
+
+    :param response: the parsed reply
+    :ptype response: Mapping[str, Any]
+    :param table: the table asked of, for the log
+    :ptype table: str
+    :return: the page; ``"notes_unavailable"`` or ``"not_covered"`` as the broker answered; ``"not_covered"`` for a
+        refusal or an unreadable reply, logged at WARNING
+    :rtype: NotedKeysPage | str
+    """
+    answer = response.get("answer")
+    if response.get("success", False) and answer in ("not_covered", "notes_unavailable"):
+        return str(answer)
+    if not response.get("success", False) or answer != "page":
+        _logger.warning(
+            "l3.noted_keys refused or unreadable; not covered",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "error_code": response.get("error_code"),
+                    "error_message": response.get("error_message"),
+                }
+            },
+        )
+        return "not_covered"
+    raw_next = response.get("next")
+    after = None if raw_next is None or raw_next.get("after") is None else datetime.fromisoformat(raw_next["after"])
+    return NotedKeysPage(
+        keys=tuple(tuple(str(value) for value in key) for key in response.get("keys") or ()),
+        columns=tuple(None if held is None else dict(held) for held in response.get("columns") or ()),
+        whole_table=bool(response.get("whole_table", False)),
+        next=None if raw_next is None else NotedKeysCursor(slot=int(raw_next["slot"]), after=after),
+    )
 
 
 def _cut_off_by_a_leaving_replica(reply: bytes) -> bool:
@@ -1107,6 +1151,69 @@ class NatsProxyL3Backend:
             "table": table,
             "timeout_ms": self.timeout_ms,
         }
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        """a page of the keys one of this principal's tables' change notes name in a commit's bracket: ``l3.noted_keys``.
+
+        For a keys-unknown epoch record whose commit named too many rows to record
+        (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`). The broker reads the notes of
+        ``table`` in the caller's own schema, of that schema's tenant only, a page at a time
+        (:func:`~threetears.core.collections.change_notes.noted_keys_page`). A page holds at most ``max_bytes`` of
+        keys, and at most half the payload the bus announces, so its reply always fits one message.
+
+        Never raises for a broker that cannot answer: no broker answering the door (a hub built before it), no
+        answer within the backend's bound, or a refusal, is ``"not_covered"``, logged at WARNING; the registry is
+        then behind on the table and asks again on its next pass.
+
+        :param table: the table, as a statement names it
+        :ptype table: str
+        :param noted_between: the commit's bracket, on the database's clock
+        :ptype noted_between: tuple[datetime, datetime]
+        :param cursor: where the last page ended; ``None`` for the first
+        :ptype cursor: NotedKeysCursor | None
+        :param limit: the most notes a page reads
+        :ptype limit: int
+        :param max_bytes: the most bytes of keys a page holds
+        :ptype max_bytes: int
+        :return: the page; ``"notes_unavailable"`` when the database holds no ring; ``"not_covered"`` otherwise
+        :rtype: NotedKeysPage | str
+        """
+        announced = self._nc.max_payload
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": self.default_namespace,
+            "table": table,
+            "noted_between": [noted_between[0].isoformat(), noted_between[1].isoformat()],
+            "cursor": None
+            if cursor is None
+            else {"slot": cursor.slot, "after": None if cursor.after is None else cursor.after.isoformat()},
+            "limit": limit,
+            "max_bytes": min(max_bytes, (announced or _NOTED_KEYS_ASSUMED_PAYLOAD) // 2),
+            "timeout_ms": self.timeout_ms,
+        }
+        subject = Subjects.l3_noted_keys(namespace=self.ns).path
+        try:
+            # a page is one indexed read the broker answers within the statement's bound: a second past it is
+            # long enough, and a hub that never answers costs the catch-up pass a few seconds, never a hang
+            response = await self.nats_request(
+                subject, payload, timeout_s=self.timeout_ms / 1000 + _NOTED_KEYS_GRACE_SECONDS, idempotent=True
+            )
+        except DataLayerUnavailableError as exc:
+            _logger.warning(
+                "l3.noted_keys got no answer: the broker has no such door, or did not answer; not covered",
+                extra={"extra_data": {"table": table, "error": str(exc)}},
+            )
+            return "not_covered"
+        return _noted_keys_answer(response, table)
 
     async def load_files(
         self,
