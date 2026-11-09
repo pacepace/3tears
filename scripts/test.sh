@@ -10,6 +10,7 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh              # all packages
 #   ./scripts/test.sh core         # just core
 #   ./scripts/test.sh core -v      # core, verbose
+#   ./scripts/test.sh agent/memory # one agent-family package; `agent` runs the whole family
 #   ./scripts/test.sh -v           # all packages, verbose
 
 PACKAGE=""
@@ -22,6 +23,12 @@ if [ $# -gt 0 ] && [[ "$1" != -* ]] && [ -d "packages/$1" ]; then
 fi
 
 EXTRA_ARGS=("$@")
+
+# a package's tests/; a directory of packages with none of its own (agent) runs all of it
+TEST_PATH="packages/$PACKAGE/tests/"
+if [ -n "$PACKAGE" ] && [ ! -d "packages/$PACKAGE/tests" ]; then
+    TEST_PATH="packages/$PACKAGE/"
+fi
 
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
 # outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
@@ -49,9 +56,9 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
         # a path goes to the default suite alone; the package's loop_timing tests run in their own suite
         # (.testament.toml), one batch a runner at a time
         status=0
-        testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || status=$?
+        testament run -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || status=$?
         timing=0
-        testament run --suite loop_timing -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || timing=$?
+        testament run --suite loop_timing -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || timing=$?
         # 5: the package has no loop_timing test (pytest's "no tests collected")
         [ "$timing" -eq 5 ] && timing=0
         if [ "$status" -ne 0 ] || [ "$timing" -ne 0 ]; then
@@ -64,7 +71,7 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
 fi
 
 if [ -n "$PACKAGE" ]; then
-    uv run pytest "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    uv run pytest "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 else
     # Mirror the CI workflow's invocation (`packages/ tests/` with
     # ``-m "not integration"``). The agent-namespace move

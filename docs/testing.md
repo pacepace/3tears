@@ -4,6 +4,25 @@ The four suites, why three of them sit outside `./scripts/test.sh`, how to make 
 suite run everything it can, and how test fakes declare what they stand in for. The rules are in
 `CLAUDE.md`; this is the detail behind them.
 
+## Run only what you're working on
+
+```bash
+./scripts/test.sh scrape          # one package: packages/scrape/tests/
+./scripts/test.sh agent/memory    # one agent-family package: packages/agent/memory/tests/
+./scripts/test.sh agent           # the whole agent family: packages/agent/
+./scripts/test.sh core -k lease   # one package, narrowed; pytest's options pass through
+./scripts/test.sh                 # everything
+```
+
+`./scripts/test.sh <package>` runs that package's `tests/` and nothing else, so evals stays out
+unless you name it (`./scripts/test.sh evals`). A bare `./scripts/test.sh` runs every package and
+the repo-level `tests/`, and evals is most of that test time (roughly four fifths, by testament's per-test
+medians from a full run on 2026-11-03; its duration totals are unreliable, see below).
+
+Run everything at the gates: before you open a PR (`./scripts/test.sh`, or `./scripts/check-all.sh`,
+which runs it), and on the integration branch before it merges into `develop`. CI runs everything on
+every PR as well.
+
 ## The sidecar suite
 
 `./scripts/test-sidecar.sh` runs the nodriver sidecar's own tests. nodriver is AGPL-3.0 and never
@@ -31,6 +50,27 @@ runners instead, and none of the above applies: testament distributes the tests 
 tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
 one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
 whose tests would skip on runners without it, and one that passes its own `-m`.
+
+### Where the unit suite's time goes
+
+testament records every test it runs, so it can say which area is slow, large or sparse:
+
+```bash
+testament time --by folder --depth 3 --project 3tears --since 7d     # share of test time per package
+testament trend --project 3tears                                     # the suite day by day: size, cost, full runs
+testament tests slowest --project 3tears --since 7d                  # the slowest tests, mean, median and p90
+testament run --json -- packages/scrape/tests/                       # report.items[]: each test's outcome and duration
+```
+
+Without `--project` they cover every project on the pool. The unit suite is two testament suites:
+`default`, and `loop_timing`, the event loop's wall-clock tests, one batch a runner
+(`testament run --suite loop_timing`). Within a suite a per-area view is a folder view;
+testament's own per-area reporting is pending (brookstalley/testament#549).
+
+**Totals and means are wrong under freezegun.** A test that freezes time records the frozen clock
+as its duration (one test showed 1.78e9 s), so a folder holding one reads as billions of seconds:
+`packages/core` showed 88.9% of the suite for that reason alone. Read the median, or leave such a
+folder out, until testament fixes it (brookstalley/testament#553).
 
 Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that
 waits for background work loses the race on a loaded machine: wait for the event itself. And a
