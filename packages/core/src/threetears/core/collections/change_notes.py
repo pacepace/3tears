@@ -1210,10 +1210,10 @@ class ChangeNoteKeeper:
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
         )
-        await self._count_ring_reads(ring.current)
+        await self.count_ring_reads(ring.current)
         return after
 
-    async def _count_ring_reads(self, index: int) -> None:
+    async def count_ring_reads(self, index: int) -> None:
         """count, per table, the notes of the table just switched away from whose statement read the ring row.
 
         Once per switch: those writers had no valid cached slot (raw SQL outside 3tears, or a process that
@@ -1533,7 +1533,7 @@ class ChangeNoteKeeper:
             return ScrubPass(position=_token(incarnation, start))
         records = await self._epochs_between(start, end)
         fence = _seq_under(ring.fence_seq, incarnation)
-        found = await self._found(ring, records)
+        found = await self.notes_found(ring, records)
         result = ScrubPass(checked=len(records), position=_token(incarnation, end))
         for record in records:
             seq = int(record.token.rpartition(":")[2])
@@ -1576,12 +1576,14 @@ class ChangeNoteKeeper:
             records.extend(record for record in read if record is not None)
         return records
 
-    async def _found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
+    async def notes_found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
         """the notes the coverage tables hold for ``records``, by table.
 
-        Each query is led by the notes' ``(key_text, table_name)`` index, so its cost follows the epochs
-        checked, not the size of the coverage. Only a record that names no rows (a whole-table or keys-unknown
-        epoch) asks whether its table has any note at all, which stops at the first one found.
+        Each query is led by an index, so its cost follows the epochs checked, not the size of the coverage: the
+        keyed notes by the ``(key_text, table_name)`` index, whether a table is noted whole by its whole-note
+        index, and whether a table has any note (asked only for a record naming no rows: a whole-table or
+        keys-unknown epoch) by the ``(table_name, noted_at)`` index. The last two are ``DISTINCT`` over their
+        index, which YugabyteDB answers by skipping from one table's first note to the next's: a note a table.
 
         :param ring: the ring
         :ptype ring: NoteRingState
@@ -1602,14 +1604,17 @@ class ChangeNoteKeeper:
                 tables,
                 keys,
             )
+            # DISTINCT over the whole-note index: YugabyteDB reads one note a table noted whole
             whole = await self._pool.fetch(
                 f"SELECT DISTINCT table_name FROM {table} WHERE key_text IS NULL AND table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
                 tables,
             )
             any_rows = (
                 await self._pool.fetch(
-                    f"SELECT noted AS table_name FROM unnest($1::text[]) AS noted "  # noqa: S608 - trusted identifiers
-                    f"WHERE EXISTS (SELECT 1 FROM {table} n WHERE n.table_name = noted)",
+                    # DISTINCT over the (table_name, noted_at) index: YugabyteDB skips from one table's first note
+                    # to the next table's, reading one a table; an EXISTS a table read ahead a batch of its notes
+                    # each (500, measured)
+                    f"SELECT DISTINCT table_name FROM {table} WHERE table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
                     rowless,
                 )
                 if rowless
