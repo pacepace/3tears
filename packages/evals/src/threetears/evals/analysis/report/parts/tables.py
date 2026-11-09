@@ -357,6 +357,10 @@ def _aspect_header(aspect: Aspect, header: str) -> str:
     return ASPECT_HEADER_TEMPLATE.format(aspect=name[:1].upper() + name[1:], header=header[:1].lower() + header[1:])
 
 
+#: The measure an arm's pass rate falls back to where no scoreboard counts its passes (``pass_rate.<arm>``).
+_FALLBACK_PASS_RATE = "pass_rate"
+
+
 def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = None, *, forms: PageForms) -> TableCell:
     """An arm's pass rate on one aspect, as its scoreboard counts it, its passes over its usable trials beside it; on
     the lead aspect, an arm its scoreboard counts no passes for reads the ``pass_rate.<arm>`` figure, which falls back
@@ -377,11 +381,17 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     """
     row = aspect_board(report_input, aspect).get(arm)
     if row is None or row.passed is None or not row.usable:
-        return TableCell(value=_said(held_figure(f"pass_rate.{arm}", report_input), forms) if aspect is None else None)
-    return TableCell(
+        figure = held_figure(f"pass_rate.{arm}", report_input) if aspect is None else None
+        cell = TableCell(value=_said(figure, forms) if aspect is None else None)
+        # Where no scoreboard counts this arm's passes, the figure is the input's own pass rate measure's, which the
+        # column rules record the cell under.
+        return cell if figure is None else forms.of_measure(cell, measure=_FALLBACK_PASS_RATE, kind="measure")
+    cell = TableCell(
         value=forms.level(TRIAL_PASS_NAME, row.passed / row.usable, kind="trial").text,
         flag=PASSES_TEMPLATE.format(passed=row.passed, usable=row.usable),
     )
+    # A figure of the pass rate, which the column rules record the cell under.
+    return forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial")
 
 
 def _trials(report_input: ReportInput, arm: str, aspect: str | None = None) -> TableCell:

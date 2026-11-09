@@ -79,7 +79,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
-from threetears.evals.analysis.quantities import display_scale, with_unit
+from threetears.evals.analysis.quantities import display_scale
 from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
@@ -1024,9 +1024,12 @@ class EvalSummary(BaseModel):
             # rulers read as one.
             figures = [value for value in (measure.mean, measure.minimum, measure.maximum) if value is not None]
             factor, unit = display_scale(figures, measure.unit)
+            forms = PageForms.off_page()
 
             def stated(value: float | None) -> str:
-                return with_unit(None if value is None else value * factor, unit)
+                if value is None:
+                    return forms.lone(None, measure=measure.name).text
+                return forms.in_unit(value * factor, unit, role="level", measure=measure.name).text
 
             said = (
                 f"mean {stated(measure.mean)} (n={measure.n}, "

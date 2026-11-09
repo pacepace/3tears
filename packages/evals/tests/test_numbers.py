@@ -273,10 +273,13 @@ class TestAnEffectSize:
 
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
-        """The quantities, the references and a page's forms, which spell every figure the report's builder states,
-        spell their values with it; nothing holds a copy."""
-        for module in (quantities, references, report_forms):
+        """The quantities and a page's forms, which spell every figure the report's builder states, spell their values
+        with it; nothing holds a copy. The references spell none themselves: an evidence row's figures are a page's
+        forms' (``PageForms.off_page``), so they hold no spelling function at all."""
+        for module in (quantities, report_forms):
             assert module.format_number is numbers.format_number, module.__name__
+        assert not hasattr(references, "format_number")
+        assert references.PageForms is report_forms.PageForms
 
     def test_no_other_module_defines_a_number_formatter(self):
         """A second ``def format_number`` anywhere in the engine or its surfaces is the defect itself.

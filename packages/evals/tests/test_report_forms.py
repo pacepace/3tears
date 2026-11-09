@@ -37,7 +37,8 @@ from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
+from threetears.evals.analysis.report.charts import BarRow, BarsChart, ChartReference
 from threetears.evals.analysis.analyst.cited import cite
 from threetears.evals.analysis.report.build import (
     build_code_only_report,
@@ -52,7 +53,10 @@ from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.report.figures import report_rulers
+from threetears.evals.analysis.report.words import judged_heading, reading_heading
 from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.harness import read_writer_cases
@@ -69,7 +73,9 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpus
 from packages.evals.tests.report_doc_support import snapshot_of
-from packages.evals.tests.report_shapes_support import s3_measurement
+from packages.evals.tests.campaign_support import ASSEMBLED_AT
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
+from packages.evals.tests.report_shapes_support import s1_change, s2_choice, s3_measurement, s4_change
 
 
 @functools.cache
@@ -591,21 +597,39 @@ def _printing(cell: TableCell, bare: bool) -> str | None:
     return None
 
 
-def _unheld(tables: list[TableBlock], forms: PageForms) -> tuple[int, list[str]]:
+#: Each table row's measure and reading, by the table's name and the row's place in it: what each rate or money cell
+#: of the row states a figure of.
+_RowMeasures = Mapping[tuple[str, int], tuple[str, str]]
+
+
+def _unheld(
+    tables: list[TableBlock], forms: PageForms, *, by_measure: bool = False, measures: _RowMeasures | None = None
+) -> tuple[int, list[str]]:
     """How many rate and money cells the tables print, and each one the page's ledger holds no entry of its own for.
 
     Each cell takes one entry, by role and figure, so a cell is never passed by another cell's entry of the same text: a
     number the column rule's (``column``, its value and its text); words a column rule read the same, by their text; a
     level the table keeps as its builder wrote it, the level's (``confidence``); money as its words, the amount's as its
-    builder issued it (``money`` on a ruler, or its measure's ``change`` or ``level``)."""
-    entries = Counter((entry.role, entry.value, entry.text) for entry in forms.ledger)
+    builder issued it (``money`` on a ruler, or its measure's ``change`` or ``level``). ``by_measure``, only an entry
+    held under a measure counts, but for an interval's level, which is how a family's intervals were read and belongs to
+    no measure; and where ``measures`` names a row's measure, only an entry held under exactly that measure and reading
+    counts for that row's cells."""
+    entries = Counter((entry.role, entry.value, entry.text, entry.measure, entry.kind) for entry in forms.ledger)
+    own: tuple[str, str] | None = None
 
     def take(role: str, text: str, value: object = None, *, any_value: bool = False) -> bool:
         found = next(
             (
                 key
                 for key, count in entries.items()
-                if count > 0 and key[0] == role and key[2] == text and (any_value or key[1] == value)
+                if count > 0
+                and key[0] == role
+                and key[2] == text
+                and (any_value or key[1] == value)
+                and (
+                    role == "confidence"
+                    or ((key[3], key[4]) == own if own is not None else bool(key[3]) or not by_measure)
+                )
             ),
             None,
         )
@@ -617,7 +641,8 @@ def _unheld(tables: list[TableBlock], forms: PageForms) -> tuple[int, list[str]]
     checked, missing = 0, []
     for table in tables:
         bare = bare_columns(table.columns)
-        for row in table.rows:
+        for at, row in enumerate(table.rows):
+            own = (measures or {}).get((table.name, at))
             for key, cell in row.items():
                 printing = _printing(cell, key in bare)
                 if printing is None:
@@ -631,7 +656,8 @@ def _unheld(tables: list[TableBlock], forms: PageForms) -> tuple[int, list[str]]
                 else:
                     held = any(take(role, text, any_value=True) for role in ("money", "change", "level"))
                 if not held:
-                    missing.append(f"{table.name}.{key} ({printing}): {text!r}")
+                    under = "" if own is None else f" under {own}"
+                    missing.append(f"{table.name}.{key} ({printing}): {text!r}{under}")
     return checked, missing
 
 
@@ -670,6 +696,44 @@ def test_every_rate_and_money_cell_a_code_page_prints_is_in_its_ledger(page_of: 
     assert not missing, missing
 
 
+#: The code page's cells that print a rate's figure of no measure: an interval's share of its variance between cases,
+#: and a test setup's disclosure stated in words.
+_NO_MEASURE_CODE_CELLS = frozenset({("precision", "between"), ("test_setup", "detail")})
+
+
+@pytest.mark.parametrize(
+    "page_of",
+    [
+        pytest.param(lambda: _scaled_page(), id="scaled"),
+        pytest.param(lambda: _scaled_page(two_aspects=True), id="scaled_two_aspects"),
+        pytest.param(lambda: s3_measurement().page(), id="measurement"),
+    ],
+)
+def test_every_rate_and_money_cell_a_code_page_prints_is_held_under_its_measure(
+    page_of: Callable[[], CampaignReport],
+) -> None:
+    """The code page's tables hold each rate and money cell under the measure it states a figure of (the pass rate's
+    levels, changes, pass^k and half-widths; each measure's value and interval), so a page-level test of one measure
+    to one precision sees the code page's columns too; a figure of no measure (:data:`_NO_MEASURE_CODE_CELLS`) is left
+    out."""
+    page, forms = _page_and_forms(page_of)
+    tables = [
+        block.model_copy(
+            update={
+                "rows": [
+                    {key: cell for key, cell in row.items() if (block.name, key) not in _NO_MEASURE_CODE_CELLS}
+                    for row in block.rows
+                ]
+            }
+        )
+        for block in page.blocks
+        if isinstance(block, TableBlock)
+    ]
+    checked, unmeasured = _unheld(tables, forms, by_measure=True)
+    assert checked, "a code page prints rates and money, so this must check some"
+    assert not unmeasured, unmeasured
+
+
 @pytest.mark.parametrize("name", _WRITTEN)
 def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_in_its_ledger(name: str) -> None:
     """The Full results and the options table print each rate and money figure as the page's forms recorded it."""
@@ -680,6 +744,179 @@ def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_in_its_ledge
     checked, missing = _unheld(tables, forms)
     assert checked, f"{name} prints a pass rate or a cost, so this must check some"
     assert not missing, missing
+
+
+#: The written page's tables whose rate cells are not yet held under their measure: a gate's line is a figure key's
+#: text, laid in the cell its key printed, which no builder names a measure for until the key's own text is the cell's.
+_UNMEASURED_WRITTEN_TABLES = frozenset({"gate_matrix_full"})
+
+
+@pytest.mark.parametrize("name", _WRITTEN)
+def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_held_under_its_measure(name: str) -> None:
+    """The Full results and the options table hold each rate and money cell under the measure it states a figure of
+    (a level, a change and its interval, a cost, a pass rate), so a page-level test of one measure to one precision sees
+    the written page's rate and money columns too; an interval's level is no measure's."""
+    held = _written_inputs()[name]
+    forms = PageForms.of(held)
+    look = block_look(held, fact_arms(held))
+    tables = [
+        table
+        for table in (*every_table(held, look, forms=forms), arms_table(held, look, (), forms=forms))
+        if table.name not in _UNMEASURED_WRITTEN_TABLES
+    ]
+    _, unmeasured = _unheld(tables, forms, by_measure=True)
+    assert not unmeasured, unmeasured
+
+
+@functools.cache
+def _aspect_pages() -> dict[str, tuple[Report, PageForms]]:
+    """Each aspect's own page (code's page over its bundle), with the one forms it was built in: every aspect of the
+    four campaign shapes, and the toy host's."""
+    bundles = {
+        f"{shape.name}/{label}": bundle
+        for shape in (s1_change(), s2_choice(), s3_measurement(), s4_change())
+        for label, bundle in shape.bundles.items()
+    }
+    bundles["toyhost"] = toyhost_bundle()
+    pages = {}
+    for name, bundle in bundles.items():
+        forms = PageForms.of_bundle(bundle)
+        pages[name] = (build_code_only_report_in_forms(bundle, assembled_at=ASSEMBLED_AT, forms=forms), forms)
+    return pages
+
+
+def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+    """Each row's measure on an aspect's page, read off its evidence in the order its tables lay their rows out: a
+    contrast's row by the contrast (one under the case floor states none and has no row), a guardrail's by its check, a
+    bar's by its verdict, a reading's by the heading it is printed under, and every scoreboard row's cost by the cost
+    the floors read."""
+    bundle = page.bundle
+    surface = bundle_decision_surface(bundle)
+    rulers = report_rulers(surface, bundle.measure_catalog)
+    contrasts = [
+        (comparison.name, comparison.reading)
+        for family in bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+        if PageForms.small_n(comparison) is None
+    ]
+    guardrails = bundle.guardrails
+    checks = [] if guardrails is None or guardrails.withheld is not None else guardrails.checks
+    by_table: dict[str, list[tuple[str, str]]] = {
+        "comparisons": contrasts,
+        "comparison_statistics": contrasts,
+        "guardrails": [(check.name, check.reading) for check in checks],
+        "bars": [(verdict.name, verdict.reading) for verdict in page.verdicts if verdict.kind == "bar"],
+    }
+    headings = {
+        rulers.of(name, "measure").scaled(reading_heading(surface, name, declared=bundle.check_name(name))): (
+            name,
+            "measure",
+        )
+        for name in bundle.measure_catalog
+    } | {judged_heading(cell.dimension): (cell.dimension, "judged") for one in surface.cells for cell in one.judged}
+    expected: dict[tuple[str, int], tuple[str, str]] = {}
+    for table in tables:
+        if table.name in by_table:
+            assert len(by_table[table.name]) == len(table.rows), table.name
+            expected |= {(table.name, at): measure for at, measure in enumerate(by_table[table.name])}
+        elif table.name == "scoreboard":
+            expected |= {(table.name, at): (FLOOR_COST_MEASURE, "measure") for at in range(len(table.rows))}
+        elif table.name == "readings":
+            expected |= {(table.name, at): headings[str(row["reading"].value)] for at, row in enumerate(table.rows)}
+    return expected
+
+
+@pytest.mark.parametrize("name", sorted(_aspect_pages()))
+def test_every_rate_and_money_cell_an_aspect_page_prints_is_in_its_ledger_under_its_measure(name: str) -> None:
+    """An aspect's own page prints each rate and money figure as its forms recorded it, under the measure the cell
+    states a figure of: a column rule records a cell under the measure its builder named (:meth:`PageForms.of_measure`),
+    so a page-level test of one measure to one precision sees the aspect page's rate and money columns too. Each row's
+    measure is read off the page's evidence, so a cell recorded under another row's measure fails."""
+    page, forms = _aspect_pages()[name]
+    tables = [block for block in page.blocks if isinstance(block, TableBlock)]
+    checked, missing = _unheld(tables, forms)
+    assert checked, "an aspect page prints rates or money, so this must check some"
+    assert not missing, missing
+    measures = _aspect_row_measures(page, tables)
+    assert {table for table, _ in measures} >= {table.name for table in tables} & {"comparisons", "bars", "scoreboard"}
+    _, misheld = _unheld(tables, forms, by_measure=True, measures=measures)
+    assert not misheld, misheld
+
+
+def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -> None:
+    """The aspect page's check reads each row's own measure, never only whether some measure holds a cell: a rate cell
+    recorded under another measure than its row's is unheld, on a table of one cell and on a real page's first
+    contrast, whose cells read as unheld once the row is said to state another measure's figures."""
+    forms = PageForms.off_page()
+    cell = forms.of_measure(TableCell(value=62.9, unit="%"), measure="latency", kind="measure")
+    (row,) = forms.rate_columns([{"rate": cell}])
+    table = TableBlock(
+        section="contrasts",
+        name="t",
+        title="T",
+        columns=[TableColumn(key="rate", header="Rate")],
+        rows=[row],
+        order="as given",
+        total_rows=1,
+    )
+    assert _unheld([table], forms, by_measure=True, measures={("t", 0): ("latency", "measure")}) == (1, [])
+    _, misheld = _unheld([table], forms, by_measure=True, measures={("t", 0): ("accuracy", "measure")})
+    assert misheld == ["t.rate (number): '63%' under ('accuracy', 'measure')"]
+
+    page, forms = _aspect_pages()["s1 change/billing"]
+    tables = [block for block in page.blocks if isinstance(block, TableBlock)]
+    measures = _aspect_row_measures(page, tables)
+    moved = {**measures, ("comparisons", 0): ("another_measure", "measure")}
+    _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
+    assert misheld and all(line.startswith("comparisons.") and "another_measure" in line for line in misheld), misheld
+
+
+def test_a_column_rule_records_a_cell_under_the_measure_its_builder_named_and_the_cell_carries_the_text() -> None:
+    """A cell its builder named a figure of a measure is recorded by the column rule under that measure, with what the
+    rule prints (``63%`` of ``62.9%``), and carries that text as its decided text; a cell named of none is recorded
+    under none, as before, and carries its text too."""
+    forms = PageForms.off_page()
+    named = forms.of_measure(TableCell(value=62.9, unit="%"), measure="accuracy", kind="measure")
+    laid = forms.rate_columns([{"rate": named}, {"rate": TableCell(value=70.4, unit="%")}])
+    assert [row["rate"].value_text for row in laid] == ["63%", "70%"]
+    assert [(entry.measure, entry.kind, entry.role, entry.text) for entry in forms.ledger] == [
+        ("accuracy", "measure", "column", "63%"),
+        ("", "", "column", "70%"),
+    ]
+
+
+def test_a_money_column_records_a_cell_under_its_measure_and_a_second_rule_keeps_it() -> None:
+    """Money named a figure of a measure is recorded under it by the money columns, and the rate columns after them
+    read the cell the money columns laid, so a page that applies both records each cell once, by its measure."""
+    forms = PageForms.off_page()
+    cost = forms.of_measure(TableCell(value=0.008, unit="usd"), measure="cost_usd", kind="measure")
+    laid = forms.rate_columns(forms.money_columns([{"cost": cost}, {"cost": TableCell(value=0.11, unit="usd")}]))
+    assert [row["cost"].figure for row in laid] == ["$0.0080", "$0.11"]
+    assert [(entry.measure, entry.text) for entry in forms.ledger] == [("cost_usd", "$0.0080"), ("", "$0.11")]
+
+
+def test_a_chart_of_one_measure_records_each_value_it_draws_under_that_measure() -> None:
+    """A chart drawing one measure's figures records each value's text under it, a value as its level, an
+    interval's ends as its interval, as the chart draws them; its reference line, a declared value, is no figure of
+    it, and a chart that names no measure records nothing."""
+    data = BarsChart(
+        rows=[BarRow(label="a", value=62.9, lo=50.0, hi=71.4)],
+        domain=(0, 100),
+        fmt="pct",
+        level="95%",
+        reference=ChartReference(value=80.0, kind="floor"),
+    )
+    forms = PageForms.off_page()
+    drawn = forms.chart_texts(data, measure="accuracy", kind="measure")
+    (row,) = drawn.rows
+    assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
+        ("accuracy", "measure", "level", 62.9, row.value_text),
+        ("accuracy", "measure", "interval", 50.0, row.lo_text),
+        ("accuracy", "measure", "interval", 71.4, row.hi_text),
+    ]
+    unnamed = PageForms.off_page()
+    assert unnamed.chart_texts(data) == drawn
+    assert unnamed.ledger == ()
 
 
 def test_a_column_rule_records_the_words_it_respelled_exactly() -> None:

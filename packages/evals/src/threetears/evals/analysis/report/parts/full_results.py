@@ -204,25 +204,30 @@ def _stated(
     flag = statistic if statistic != "mean" else None
     if form.reads_as == "money":
         # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
-        return TableCell(value=value * form.factor, unit=MONEY, flag=flag)
-    return TableCell(value=forms.level(key, value, kind=kind, alone=statistic != "mean").text, flag=flag)
+        cell = TableCell(value=value * form.factor, unit=MONEY, flag=flag)
+    else:
+        cell = TableCell(value=forms.level(key, value, kind=kind, alone=statistic != "mean").text, flag=flag)
+    # A figure of the measure, which the column rules record the cell under.
+    return forms.of_measure(cell, measure=key, kind=form.kind)
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
 
 
-def _cost(report_input: ReportInput, arm: str) -> TableCell:
+def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell:
     """The arm's cost by the package's one cost rule (the ``cost_per_1k`` figure), a number drawn per the count the
     column's head names (:func:`~threetears.evals.analysis.report.figure_keys.cost_ruler`), its priced share beside it
-    where only part of its calls were priced."""
+    where only part of its calls were priced: a figure of the cost's source, which the column rules record it under."""
     figure = held_figure(f"cost_per_1k.{arm}", report_input)
     if figure is None or not isinstance(figure.value, float):
         return TableCell(value=None)
     # The form is chosen over every arm's cost, a partly priced one's included, where the options table leaves that arm
     # out of its choice: this table prints the partly priced cost, its share beside it, and the options table prints
     # the share in its place, so each column's form fits the numbers it prints.
-    return TableCell(
-        value=cost_ruler(report_input).drawn(figure.value), unit=MONEY, flag=priced_in_part(report_input, arm)
+    return forms.of_measure(
+        TableCell(value=cost_ruler(report_input).drawn(figure.value), unit=MONEY, flag=priced_in_part(report_input, arm)),
+        measure=cost_basis(report_input).source,
+        kind="measure",
     )
 
 
@@ -243,7 +248,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
     ]
     # The cost the decision reads, where no measure column already states a cost: the one cost rule's figure.
     costed = not any(forms.measure(key).reads_as == "money" for key in measures) and any(
-        _cost(report_input, arm).value is not None for arm in arms
+        _cost(report_input, arm, forms).value is not None for arm in arms
     )
     columns = [
         _column("arm"),
@@ -275,7 +280,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
                 report_input, forms, key, report_input.measures[key].per_arm.get(arm), others=True
             )
         if costed:
-            cells["cost_per_1k"] = _cost(report_input, arm)
+            cells["cost_per_1k"] = _cost(report_input, arm, forms)
         rows.append(cells)
     return [
         _table(
@@ -406,9 +411,15 @@ def _change(forms: PageForms, contrast: Contrast) -> tuple[TableCell, TableCell]
         else TableCell(value=None)
     )
     if contrast.interval is None:
-        return change, TableCell(value=None)
-    low, high = (float(end) for end in contrast.interval)
-    return change, TableCell(value=forms.interval(contrast.measure, low, high, kind=contrast.kind, change=True).text)
+        interval = TableCell(value=None)
+    else:
+        low, high = (float(end) for end in contrast.interval)
+        interval = TableCell(value=forms.interval(contrast.measure, low, high, kind=contrast.kind, change=True).text)
+    # Both are figures of the comparison's measure, which the column rules record them under.
+    return (
+        forms.of_measure(change, measure=contrast.measure, kind=contrast.kind),
+        forms.of_measure(interval, measure=contrast.measure, kind=contrast.kind),
+    )
 
 
 def _level(report_input: ReportInput, forms: PageForms, contrast: Contrast) -> str | None:

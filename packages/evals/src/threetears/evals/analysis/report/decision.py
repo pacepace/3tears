@@ -44,11 +44,10 @@ Every sentence here names the arms by the names the page gives them, never by th
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -76,6 +75,11 @@ from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, reads_as_rate, rule_rates
 from threetears.evals.schema.base import EvalDocumentModel
+
+if TYPE_CHECKING:
+    # A page's forms decide over figures this module reads, so the module that decides them reads this one: a page
+    # hands its forms in to state a projection, and the type is named for the checker alone.
+    from threetears.evals.analysis.report.forms import PageForms
 
 #: Where one floor stands on one candidate, and where each rate it reads does: the values of :data:`FloorState`.
 FloorOutcome = Literal["broken", "held", "unclear"]
@@ -1136,29 +1140,14 @@ def floors_projection(
     return reduce(SampleProjection.joined, projections)
 
 
-def projected_usd_value(value: float) -> float:
-    """A projected cost to two significant figures, since the cases it prices are about: ``2.7``, ``120``; nought
-    for none. The one rounding the page's price (:func:`projected_usd`) and the writer's view both state.
-
-    :param value: The cost, in US dollars.
-    :ptype value: float
-    :return: The cost to two figures.
-    :rtype: float
-    """
-    if value <= 0:
-        return 0.0
-    return round(value, 1 - math.floor(math.log10(value)))
-
-
-def projected_usd(value: float) -> str:
-    """A projected cost to two figures (:func:`projected_usd_value`), as the page prints it: ``$2.7``, ``$120``."""
-    return format_number(projected_usd_value(value), prefix="$")
-
-
-def projected_cell(projection: SampleProjection, need: CasesNeeded, form: MoneyForm | None = None) -> str:
+def projected_cell(
+    projection: SampleProjection, need: CasesNeeded, form: MoneyForm | None = None, *, forms: PageForms
+) -> str:
     """One side of a projection as a table cell says it, with its cost: ``107 cases, $2.7``, ``this run's 12 cases``,
     ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``. Handed the form every projected cost the
     table states reads in (#993), the cost, to two figures, is written in it (``107 cases, $2.70`` beside ``$27.00``).
+    The page's ``forms`` state the count and the cost
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.projected_money`).
     """
     if need.kind == "never":
         return "none would"
@@ -1167,14 +1156,16 @@ def projected_cell(projection: SampleProjection, need: CasesNeeded, form: MoneyF
     if need.kind == "enough":
         return f"this run's {projection.cases} cases"
     if need.kind == "beyond":
-        return f"more than {format_number(need.cases)} cases"
+        return f"more than {forms.count_alone(need.cases).text} cases"
     cost = projection.cost(need)
     if cost is None:
         return f"{need.cases} cases"
-    return f"{need.cases} cases, " + (projected_usd(cost) if form is None else form.spell(projected_usd_value(cost)))
+    return f"{need.cases} cases, {forms.projected_money(cost, form).text}"
 
 
-def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, cost_clause: bool = False) -> str:
+def projection_note(
+    projections: Sequence[SampleProjection], *, run_cases: int, cost_clause: bool = False, forms: PageForms
+) -> str:
     """The sentences under the projected cases: how each count was found and that it is about, what repeats do, what a
     cost floor's blank means, and, where holding needs more cases than the run used on every side, that it does.
 
@@ -1185,6 +1176,8 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
     :ptype run_cases: int
     :param cost_clause: Whether the table shows a cost floor, whose no-difference cell is blank.
     :ptype cost_clause: bool
+    :param forms: The page's forms, which state each count.
+    :ptype forms: PageForms
     :return: The sentences.
     :rtype: str
     """
@@ -1206,13 +1199,13 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
         if not beyond:
             span = f"about {counted[0]}" if counted[0] == counted[-1] else f"about {counted[0]} to {counted[-1]}"
         elif caps[0] >= counted[-1]:
-            span = f"about {counted[0]} to more than {format_number(caps[-1])}"
+            span = f"about {counted[0]} to more than {forms.count_alone(caps[-1]).text}"
         else:
             # A search stopped at a cap below a count another row reached: that row needs more than its cap, which
             # may be fewer or more than the counts, so the range is the counts' and the cap is said apart.
             low, high = counted[0], counted[-1]
             counts = f"about {low}" if low == high else f"about {low} to {high}"
-            span = f"{counts}, or more than {format_number(caps[0])} where a search stopped there"
+            span = f"{counts}, or more than {forms.count_alone(caps[0]).text} where a search stopped there"
         said.append(f"This run used {run_cases} cases; showing the floors hold needs {span}, more than it ran.")
     return " ".join(said)
 
@@ -1237,8 +1230,6 @@ __all__ = [
     "project_rate",
     "project_sample",
     "projected_cell",
-    "projected_usd",
-    "projected_usd_value",
     "projection_note",
     "rate_projections",
     "read_floor",

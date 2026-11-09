@@ -96,6 +96,12 @@ def test_a_chart_or_a_panel_given_no_row_draws_nothing_and_the_page_shows_its_ta
     forest = _block(chart="forest", data={"rows": [], "domain": [-10, 10], "fmt": "+pts", "level": "95%"})
     dots = _block(chart="dot_interval", data={"rows": [], "domain": [0, 1], "fmt": "pct"})
     assert chart_drawing(forest) is None and chart_drawing(dots) is None
+    # A series chart over no category (every series empty, as a stored plan's run chart reads on an input holding no
+    # runs) has no point to draw either.
+    lines = _block(
+        chart="lines", data={"categories": [], "series": [{"name": "s", "values": []}], "domain": [-1, 1], "fmt": "num"}
+    )
+    assert chart_drawing(lines) is None
     row = {"label": "a", "value": 0.5, "lo": 0.4, "hi": 0.6}
     panels = {
         "domain": [0, 1],

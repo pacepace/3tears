@@ -408,10 +408,11 @@ def _comparisons_of(blocks: object) -> TableBlock:
 
 def _notices_sentence(aspect: AnalysisContextBundle) -> str:
     surface = bundle_decision_surface(aspect)
-    figures = contrast_evidence(aspect)
+    forms = PageForms.of_bundle(aspect)
+    figures = contrast_evidence(aspect, forms=forms)
     (verdict,) = [
         verdict
-        for verdict in contrast_verdicts(aspect, surface)
+        for verdict in contrast_verdicts(aspect, surface, forms=forms)
         if verdict.name == _NOTICES and verdict.arm.startswith("1017")
     ]
     said = figures(verdict)

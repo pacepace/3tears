@@ -40,9 +40,9 @@ The
 differences between surfaces that reproduce today's page (a chart's note spelling a figure alone, ``alone``) are named
 where they are taken, so the flip removes them in one place.
 A chart's forms (``PageForms.chart_*``) still decide over a chart's own drawn values, as today; each takes the measure
-and kind of a measure's figure (``chart_amounts`` its measures' keys), and C5 re-decides them by measure there. So do a
-table's column rules (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), over the cells a table already
-built, each recording what every rate or money cell prints; and a stored table's glyph scale
+and kind of a measure's figure (``chart_amounts`` its measures' keys), and the policy flip re-decides them by measure
+there. So do a table's column rules (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), over the cells
+a table already built, each recording what every rate or money cell prints; and a stored table's glyph scale
 (:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a page's writer, which holds
 no page's forms and asks its own.
 
@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
@@ -385,6 +385,10 @@ class PageForms:
         self._bundle: AnalysisContextBundle | None = None
         self._contrast_places: dict[_ContrastSurface, dict[tuple[str, str], ContrastPlaces]] = {}
         self._change_money: dict[_ContrastSurface, dict[tuple[str, str], MoneyForm]] = {}
+        # Each table cell a builder made as a figure of a measure (:meth:`of_measure`), by the cell's id, with that
+        # measure and its reading, so a column rule that spells the cell records it under them. The cell is held beside
+        # its id, so the id names that cell for as long as these forms are read.
+        self._cell_measures: dict[int, tuple[TableCell, str, str]] = {}
 
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
@@ -768,8 +772,7 @@ class PageForms:
             )
         else:
             cell = TableCell(value=drawn, unit=ruler.unit)
-        self._ruled_cell(measure, kind, "level", value, cell)
-        return cell
+        return self._ruled_cell(measure, kind, "level", value, cell)
 
     def ruled_change_cell(
         self,
@@ -833,8 +836,7 @@ class PageForms:
         if form is not None:
             decided = form.places_of([float(delta * ruler.factor), cell.low, cell.high], ends=(cell.low, cell.high))
             cell = cell.model_copy(update={"decimals": decided, "per_thousand": form.per_thousand})
-        self._ruled_cell(measure, kind, "change", delta, cell)
-        return cell
+        return self._ruled_cell(measure, kind, "change", delta, cell)
 
     def ruled_allows(
         self,
@@ -963,12 +965,15 @@ class PageForms:
             digits=f"[{low_digits}, {high_digits}]",
         )
 
-    def _ruled_cell(self, measure: str, kind: _MeasureKind, role: Role, value: float, cell: TableCell) -> None:
-        """Record a cell an aspect page's builder decided, unless a column rule spells it and records it there: a
-        rate's or a change in points (:meth:`rate_columns`), or money (:meth:`money_columns`)."""
+    def _ruled_cell(self, measure: str, kind: _MeasureKind, role: Role, value: float, cell: TableCell) -> TableCell:
+        """Record a cell an aspect page's builder decided, unless a column rule spells it and records it there, under
+        the cell's measure (:meth:`of_measure`): a rate's or a change in points (:meth:`rate_columns`), or money
+        (:meth:`money_columns`). A cell recorded here carries the text recorded (``value_text``)."""
         if cell.unit in (PERCENT, POINTS) or is_money(cell.unit):
-            return
-        self._issued.append(_Issued(*_keyed(measure, kind), role, value, cell.figure))
+            return self.of_measure(cell, measure=measure, kind=kind)
+        text = cell.figure
+        self._issued.append(_Issued(*_keyed(measure, kind), role, value, text))
+        return cell.model_copy(update={"value_text": text})
 
     # --- measures ----------------------------------------------------------------------------------------------------
 
@@ -2048,22 +2053,92 @@ class PageForms:
         text = format_number(value)
         return self._issue("", "", "count", value, text, text, "")
 
-    def chart_texts(self, data: KitChart, *, read_at: str = "") -> KitChart:
+    def in_unit(self, value: float, unit: str, *, role: Role, measure: str = "", kind: _MeasureKind = None) -> Printed:
+        """A figure in its unit, unsigned, at the unit's own precision (a percent's or a point's one decimal) and by
+        the number rule in any other, as an aspect page states one today where no set decides it: a declared margin or
+        line in the unit a change is stated in (``declared``), an interval's level in percent (``confidence``), a
+        judged reading's rectifier (``change``), a quick print's figure beside its unit.
+
+        :param value: The figure, already in ``unit``.
+        :ptype value: float
+        :param unit: Its unit; empty for none.
+        :ptype unit: str
+        :param role: What the figure is: a measure's, or the fixed form it takes.
+        :ptype role: Role
+        :param measure: The measure or dimension it is a figure of; empty for none.
+        :ptype measure: str
+        :param kind: Its reading (``measure``, ``judged``, ``trial``).
+        :ptype kind: _MeasureKind
+        :return: The figure.
+        :rtype: Printed
+        """
+        text = with_unit(value, unit)
+        written = MONEY if is_money(unit) else unit
+        return self._issue(*_keyed(measure, kind), role, value, text, _digits_of(text, written), written)
+
+    @staticmethod
+    def projected_cost(value: float) -> float:
+        """A projected cost to two significant figures, since the cases it prices are about (``2.7``, ``120``), nought
+        for none: the one rounding every projected cost a page states is read at, which a table's set of projected
+        costs chooses its money form over. A decision that prints nothing, so nothing is issued.
+
+        :param value: The cost, in US dollars.
+        :ptype value: float
+        :return: The cost to two figures.
+        :rtype: float
+        """
+        if value <= 0:
+            return 0.0
+        return round(value, 1 - math.floor(math.log10(value)))
+
+    def projected_money(self, value: float, form: MoneyForm | None = None) -> Printed:
+        """A projected cost as a page prints one, to two figures (:meth:`projected_cost`): by the lone figure rule with
+        its ``$`` (``$2.7``, ``$120``), or, handed the form every projected cost the table states reads in (#993), in
+        it (``$2.70`` beside ``$27.00``). A projected cost is of no measure: it prices cases not yet run.
+
+        :param value: The cost, in US dollars.
+        :ptype value: float
+        :param form: The table's form for its projected costs; None for none.
+        :ptype form: MoneyForm | None
+        :return: The cost.
+        :rtype: Printed
+        """
+        held = self.projected_cost(value)
+        text = format_number(held, prefix="$") if form is None else form.spell(held)
+        return self._issue("", "", "money", value, text, _digits_of(text, MONEY), MONEY)
+
+    def chart_texts(
+        self, data: KitChart, *, read_at: str = "", measure: str = "", kind: _MeasureKind = None
+    ) -> KitChart:
         """A chart's data with every value it draws carried as decided text (``value_text``, ``lo_text``,
         ``hi_text`` and their kin), which the kit and the static page print in place of formatting a value, and its
         values table prints. Today's decision, relocated, not rewritten: each value as the chart's values table has
         always spelled it, in the chart's format at ``read_at``'s precision where the format names no unit (the
-        chart's own ``spelled``, the contract's rule, which a host's chart without texts is spelled by too). Nothing
-        enters the ledger: a chart's rows do not name their measure.
+        chart's own ``spelled``, the contract's rule, which a host's chart without texts is spelled by too).
+
+        A chart that draws one measure's figures (``measure``) records each value's text under it: a value or a range's
+        end as the measure's level, or as its change where the chart's format signs its values (``+pts``), and an
+        interval's end as its interval. A chart's rows name no measure, so a chart of several measures, or of none,
+        records nothing, and neither does a figure that is no value of its measure (a count, a cost beside a score).
 
         :param data: The chart's data, as its resolver drew it.
         :ptype data: KitChart
         :param read_at: The unit its values are read at where its format names none, as its block reads them.
         :ptype read_at: str
+        :param measure: The one measure or dimension whose figures the chart draws; empty for several, or none.
+        :ptype measure: str
+        :param kind: Its reading (``measure``, ``judged``, ``trial``).
+        :ptype kind: _MeasureKind
         :return: The data, every value it draws carrying its text.
         :rtype: KitChart
         """
-        return data.spelled(read_at)
+        spelled = data.spelled(read_at)
+        if measure:
+            signed = str(getattr(spelled, "fmt", "")).startswith("+")
+            for field_name, value, text in _drawn_texts(spelled.model_dump(mode="json", by_alias=True)):
+                role: Role = "interval" if field_name in _INTERVAL_ENDS else "change" if signed else "level"
+                self._issued.append(_Issued(*_keyed(measure, kind), role, value, text))
+        return spelled
 
     def gate_line(self, report_input: ReportInput, criterion: Criterion) -> Printed:
         """A criterion's threshold as a gate row's line states it: as its figure key reads it, money on its
@@ -2231,8 +2306,9 @@ class PageForms:
     # A table states each set of its rates and its money at one precision, decided over the column (or the row) after
     # its cells are built. These hold those decisions, relocated: a cell keeps its value and glyph, and takes the
     # decimals its set reads at, or, where it states its figures in words, those words respelled. Each records the
-    # text every cell it reads prints, so the ledger holds what a rate or money column prints, not only what its cells
-    # were built from. The flip retires both: a cell then prints its measure's text.
+    # text every cell it reads prints, under the measure its builder named (:meth:`of_measure`), and a number carries
+    # that text as its decided text (``value_text``), so the ledger holds what a rate or money column prints, not only
+    # what its cells were built from. The flip retires both: a cell then prints its measure's text.
 
     def rate_columns(
         self,
@@ -2251,9 +2327,10 @@ class PageForms:
         level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left
         as it is; a cell's other words stay as written.
 
-        Every rate's cell it reads is recorded as it prints (``column``): a number in percent or in points, a bare
-        figure under a head naming its unit, and a cell stating a rate in its words (``[1.0%, 9.0%]``, ``-7.6 pts``),
-        respelled or not; a column it keeps is its builder's, recorded where that cell was decided.
+        Every rate's cell it reads is recorded as it prints (``column``), under the measure its builder named
+        (:meth:`of_measure`): a number in percent or in points, a bare figure under a head naming its unit, and a cell
+        stating a rate in its words (``[1.0%, 9.0%]``, ``-7.6 pts``), respelled or not; a number carries the text
+        recorded (``value_text``). A column it keeps is its builder's, recorded where that cell was decided.
 
         :param rows: The table's rows, by column key.
         :ptype rows: Sequence[Mapping[str, TableCell]]
@@ -2298,13 +2375,15 @@ class PageForms:
             }
             for row in rows
         ]
-        for row in laid:
-            for key, cell in row.items():
-                if key in keep:
-                    continue
-                if _a_rate_cell(cell, key in bare) or _rate_words(cell, key in bare):
-                    self._issue_cell(cell)
-        return laid
+        return [
+            {
+                key: self._issue_cell(cell, built[key])
+                if key not in keep and (_a_rate_cell(cell, key in bare) or _rate_words(cell, key in bare))
+                else cell
+                for key, cell in row.items()
+            }
+            for row, built in zip(laid, rows, strict=True)
+        ]
 
     def money_columns(
         self,
@@ -2327,7 +2406,8 @@ class PageForms:
         the amount. The values are as stored, so the decimals state no digit a value does not hold; a cell of words, of
         another unit, or already carrying a form its builder chose from a wider set, is left as it is.
 
-        Every money number it reads is recorded as it prints (``column``), a form its builder chose too.
+        Every money number it reads is recorded as it prints (``column``), a form its builder chose too, under the
+        measure its builder named (:meth:`of_measure`), and carries the text recorded (``value_text``).
 
         :param rows: The table's rows, by column key.
         :ptype rows: Sequence[Mapping[str, TableCell]]
@@ -2374,17 +2454,46 @@ class PageForms:
             }
             for at, row in enumerate(rows)
         ]
-        for row in laid:
-            for cell in row.values():
-                if cell.is_number and is_money(cell.unit):
-                    self._issue_cell(cell)
-        return laid
+        return [
+            {
+                key: self._issue_cell(cell, built[key]) if cell.is_number and is_money(cell.unit) else cell
+                for key, cell in row.items()
+            }
+            for row, built in zip(laid, rows, strict=True)
+        ]
 
-    def _issue_cell(self, cell: TableCell) -> None:
-        """A cell's text as it prints, without its flag (which says how the cell reads, not its figure), recorded under
-        no measure: a table's column rule reads its cells, never their measures."""
+    def _issue_cell(self, cell: TableCell, built: TableCell) -> TableCell:
+        """A cell a column rule read, its text recorded as it prints, without its flag (which says how the cell reads,
+        not its figure): under the measure its builder made ``built``, the cell the rule was handed, a figure of
+        (:meth:`of_measure`), or under none where it named none. A number carries the text recorded (``value_text``),
+        so every reader prints what the ledger holds."""
         value = float(cell.value) if cell.is_number else None  # type: ignore[arg-type]
-        self._issued.append(_Issued("", "", "column", value, cell.figure))
+        _held, measure, kind = self._cell_measures.get(id(built), (built, "", ""))
+        text = cell.figure
+        self._issued.append(_Issued(measure, kind, "column", value, text))
+        if not cell.is_number:
+            return cell
+        decided = cell.model_copy(update={"value_text": text})
+        return self.of_measure(decided, measure=measure, kind=kind) if measure else decided
+
+    def of_measure(self, cell: TableCell, *, measure: str, kind: _MeasureKind) -> TableCell:
+        """A cell a builder made, held as a figure of ``measure`` read as ``kind``, so a column rule that spells it
+        (:meth:`rate_columns`, :meth:`money_columns`) records what it prints under that measure: the ledger then holds a
+        rate's or money's table cell by its measure, as it holds every other figure the page prints. Nothing is
+        printed, so nothing is issued.
+
+        :param cell: The cell, as its builder made it.
+        :ptype cell: TableCell
+        :param measure: The measure or dimension whose figure it prints; empty for none, and nothing is held.
+        :ptype measure: str
+        :param kind: Its reading (``measure``, ``judged``, ``trial``).
+        :ptype kind: _MeasureKind
+        :return: The cell, as it was.
+        :rtype: TableCell
+        """
+        if measure:
+            self._cell_measures[id(cell)] = (cell, *_keyed(measure, kind))
+        return cell
 
     # --- the ledger --------------------------------------------------------------------------------------------------
 
@@ -2462,6 +2571,17 @@ class PageForms:
 #: What an absent figure reads as.
 _ABSENT_TEXT = format_number(None)
 
+#: The values a chart draws of its measure, by the field each is held in, whose texts a chart of one measure records
+#: (:meth:`PageForms.chart_texts`); the rest (a count, a cost, a point's other axis, a detail) are no value of it.
+_MEASURE_VALUES = frozenset({"value", "values", "lo", "hi", "low", "high", "from", "to"})
+
+#: The fields among them that are an interval's ends.
+_INTERVAL_ENDS = frozenset({"lo", "hi", "low", "high"})
+
+#: The lines a chart draws at a declared value (a floor, a budget, a margin, a price), which are no value of its
+#: measure either.
+_CHART_LINES = frozenset({"reference", "x_reference", "price_line"})
+
 #: The decimals an off-page reading is stated to (:meth:`PageForms.reading`).
 _READING_PLACES = 2
 
@@ -2470,6 +2590,27 @@ EVEN_SHARE = 50.0
 
 #: The most decimals a side-by-side figure is read to (:func:`_places`).
 _MOST_SIDE_BY_SIDE_PLACES = 6
+
+
+def _drawn_texts(node: object) -> Iterator[tuple[str, float | None, str]]:
+    """Every value a chart's dumped data draws of its measure (:data:`_MEASURE_VALUES`) with the text it carries, by
+    the value's field: a list of values beside a list of texts, one by one; a value with no text left out."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _drawn_texts(item)
+        return
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        text = node.get(f"{key}_text") if key in _MEASURE_VALUES else None
+        if isinstance(text, str):
+            yield key, float(value) if isinstance(value, int | float) else None, text
+        elif isinstance(text, list) and isinstance(value, list):
+            for one, said in zip(value, text, strict=False):
+                if isinstance(said, str):
+                    yield key, float(one) if isinstance(one, int | float) else None, said
+        elif not key.endswith("_text") and key not in _CHART_LINES:
+            yield from _drawn_texts(value)
 
 
 def _places(values: Sequence[float]) -> int:
