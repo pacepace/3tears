@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `switch_off`, the inverse of the runner's two trigger hooks
+
+**Added (core):** `threetears.core.data.migrations.write_generation_switch.switch_off(store, table_name)` takes the
+write-mark trigger, the change-note triggers and the note function off one table of the session's schema, each
+`IF EXISTS`. It is safe to run twice and after the table is dropped. `write_generation_triggers_on` names the
+triggers a table carries. Moved from the hub's `write_generation_triggers.py`.
+
 ## v0.95.0 -- 2026-11-07
 
 ### core, epoch, nats: the epoch change log keyed by tenant
