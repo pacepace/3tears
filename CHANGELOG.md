@@ -99,6 +99,12 @@ package's text for every value, and a host-authored chart without them draws as 
 `fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
 yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
 
+**Hosts (number policy, code and aspect pages):** a cost and quality chart's point (`CostQualityPoint`) gains
+`pass_rate_text` and `pass_rate_interval_text`, the pass rate and its interval as the page decided them, bare (their
+`%` is the column's); each is left out where no page decided it, and the values table spells `pass_rate` as before.
+`interval_text` now joins an interval in the one form every page prints, `low to high` (`0.05 to 0.45`), where it
+wrote `[low, high]`; a host matching that text, or any code or aspect page's `[a, b]` interval, updates its match.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

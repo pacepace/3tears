@@ -192,7 +192,7 @@ def _pass_k_depth_blocks(
                                 "planned": subject.k,
                                 "short": point.n_cases_short_of_k,
                                 "common": subject.common_depth,
-                                "reading": forms.pass_k(TRIAL_PASS_NAME, point.common_pass_hat_k, kind="trial").held,
+                                "reading": _pass_k_cell(forms, point.common_pass_hat_k),
                                 "left_out": point.n_cases_left_out,
                             }
                         ),
@@ -251,7 +251,7 @@ def _model_blocks(
                     "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
                     "arm": _label_of(bundle, labels)(point.variant_key),
                     "depth": point.model_pass_hat_k.k,
-                    "model": forms.pass_k(TRIAL_PASS_NAME, point.model_pass_hat_k.pass_hat_k, kind="trial").held,
+                    "model": _pass_k_cell(forms, point.model_pass_hat_k.pass_hat_k),
                 }
             ),
             ("model",),
@@ -309,9 +309,9 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, forms: Pag
                     {
                         "aspect": names.cell(aspect),
                         "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
-                        "half_width": forms.half_width(TRIAL_PASS_NAME, precision.half_width, kind="trial").held,
-                        "first": forms.half_width(TRIAL_PASS_NAME, first_width, kind="trial").held,
-                        "second": forms.half_width(TRIAL_PASS_NAME, second_width, kind="trial").held,
+                        "half_width": _half_width_cell(forms, precision.half_width),
+                        "first": _half_width_cell(forms, first_width),
+                        "second": _half_width_cell(forms, second_width),
                         "limited_by": named(precision.limited_by) if precision.limited_by else None,
                         "between": None
                         if precision.between_share is None
@@ -369,3 +369,17 @@ def _of_the_pass_rate(row: dict[str, TableCell], keys: Sequence[str], forms: Pag
         key: forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial") if key in keys else cell
         for key, cell in row.items()
     }
+
+
+def _pass_k_cell(forms: PageForms, value: float | None) -> TableCell:
+    """A pass^k as its depth table's cell holds it, bare under the column's ``(%)``, at the places the page's forms
+    read it at."""
+    printed = forms.pass_k(TRIAL_PASS_NAME, value, kind="trial")
+    return TableCell(value=printed.held, decimals=printed.decimals)
+
+
+def _half_width_cell(forms: PageForms, value: float) -> TableCell:
+    """An interval's half-width as the precision table's cell holds it, bare under the column's ``(pts)``, at the
+    places the page's forms read the pass rate's changes at."""
+    printed = forms.half_width(TRIAL_PASS_NAME, value, kind="trial")
+    return TableCell(value=printed.held, decimals=printed.decimals)

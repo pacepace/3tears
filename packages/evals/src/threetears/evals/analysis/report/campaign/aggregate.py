@@ -32,6 +32,7 @@ from threetears.evals.analysis.campaign_readings import (
     CampaignAggregate,
     CampaignReadings,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
@@ -137,7 +138,9 @@ def aggregate_blocks(
         )
         declared = declared_arm_names(campaign.arms)
         points = [
-            point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm], declared.get(arm.arm))) is not None
+            point
+            for arm in aggregate.arms
+            if (point := _point(arm, tags[arm.arm], declared.get(arm.arm), forms)) is not None
         ]
         if len(points) >= 2:
             level = forms.confidence_share(aggregate.level).text
@@ -200,13 +203,23 @@ def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:
     return len(aggregate.arms) >= 2 and (len(readings.aspects) >= 2 or len(aggregate.arms) >= 3)
 
 
-def _point(arm: ArmAggregate, tag: str, short_name: str | None) -> CostQualityPoint | None:
+def _point(arm: ArmAggregate, tag: str, short_name: str | None, forms: PageForms) -> CostQualityPoint | None:
     """An arm's point on the chart, tagged as the page tags it and named by its label, which a campaign gives each
-    arm, and in tight places by the short name it declares, else that label; None where its cost or its pass rate is
-    withheld."""
+    arm, and in tight places by the short name it declares, else that label, its pass rate and interval as the page's
+    forms decide every figure of the pass rate; None where its cost or its pass rate is withheld."""
     rate, cost = arm.pass_rate, arm.cost
     if rate.value is None or rate.interval is None or cost.value is None or cost.interval is None:
         return None
+    texts: dict[str, str] = {}
+    held = next((form for form in forms.measures if form.key == TRIAL_PASS_NAME), None)
+    if held is not None:
+        # The pass rate is held in percent here, as a code page draws it; its interval's ends as shares.
+        texts = {
+            "pass_rate_text": forms.drawn_level(held.key, rate.value, kind=held.kind).digits,
+            "pass_rate_interval_text": forms.interval(
+                held.key, rate.interval[0] / held.factor, rate.interval[1] / held.factor, kind=held.kind
+            ).digits,
+        }
     return CostQualityPoint(
         arm=arm.arm_label,
         tag=tag,
@@ -217,6 +230,7 @@ def _point(arm: ArmAggregate, tag: str, short_name: str | None) -> CostQualityPo
         pass_rate=rate.value,
         pass_rate_low=rate.interval[0],
         pass_rate_high=rate.interval[1],
+        **texts,
     )
 
 

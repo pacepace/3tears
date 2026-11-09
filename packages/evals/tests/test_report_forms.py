@@ -34,10 +34,12 @@ from unittest import mock
 import pytest
 
 from threetears.evals.analysis import campaign_report, service
+from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ChartReference
 from threetears.evals.analysis.analyst.cited import cite
 from threetears.evals.analysis.report.build import (
@@ -55,7 +57,7 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
+from threetears.evals.analysis.report.forms import MeasureForm, PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.full_results import every_table
@@ -296,8 +298,9 @@ def _named(blocks: list[ReportBlock], name: str) -> TableBlock:
 
 
 def test_the_scaled_campaign_s_pass_rate_reads_as_its_scorecard_prints_it() -> None:
-    """Each candidate's change in points at a point's one decimal, its interval in brackets, and the level it lands
-    at in percent to a decimal: ``23.0% · +2.5 pts`` and ``[-3.5, 7.9]``."""
+    """Each candidate's change in points and the level it lands at in percent, at the one precision the pass rate's
+    narrowest interval sets across the campaign (whole points here), and its interval in the one form, bare under its
+    ``(pts)`` head: ``23% · +2 pts`` and ``-3 to +8``."""
     scaled = _scaled()
     forms = PageForms.of_campaign(scaled.readings, scaled.reports)
     matrix = _named(scaled.page.blocks, "scorecard")
@@ -305,7 +308,6 @@ def test_the_scaled_campaign_s_pass_rate_reads_as_its_scorecard_prints_it() -> N
     (row,) = matrix.rows
     changes = [cell for key, cell in row.items() if key.startswith("arm:") and cell.level is not None]
     assert len(changes) == len(scaled.readings.readings) == len(aspects.rows)
-    rebuilt = []
     for reading, cell, line in zip(scaled.readings.readings, changes, aspects.rows, strict=True):
         assert cell.low is not None and cell.high is not None and cell.level is not None
         change = forms.change("passed", reading.change, kind="trial")
@@ -313,29 +315,19 @@ def test_the_scaled_campaign_s_pass_rate_reads_as_its_scorecard_prints_it() -> N
         level = forms.level("passed", cell.level / 100, kind="trial")
         assert cell.figure == f"{level.text} · {change.text}"
         assert (change.digits, change.unit) == (change.text.removesuffix(" pts"), "pts")
-        assert interval.digits == interval.text == f"[{interval.low_digits}, {interval.high_digits}]"
-        rebuilt.append(
-            {
-                **line,
-                "change": line["change"].model_copy(
-                    update={"value": change.text, "unit": "", "decimals": None, "signed": False}
-                ),
-                "interval": line["interval"].model_copy(update={"value": interval.text}),
-            }
-        )
-    # The interval column's head names its unit, (pts), so the page's column rule writes its ends at a point's decimal.
-    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(aspects.columns)))
-    for printed, again in zip(aspects.rows, redone, strict=True):
-        assert (again["change"].text, again["interval"].text) == (printed["change"].text, printed["interval"].text)
+        assert interval.digits == f"{interval.low_digits} to {interval.high_digits}"
+        assert interval.text == f"{interval.digits} pts"
+        assert (line["change"].text, line["interval"].text) == (change.text, interval.digits)
+    assert (changes[0].figure, aspects.rows[0]["interval"].text) == ("23% · +2 pts", "-3 to +8")
 
 
 def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
-    """A rate's levels and intervals through the page's column rule, and money on its ruler in its one form."""
+    """A rate's level and its interval, and money on its ruler in its one form, each as the page's forms state them,
+    the interval in its one form."""
     shape = s3_measurement()
     page = shape.page()
     forms = PageForms.of_campaign(shape.readings, shape.reports)
     table = _named(page.blocks, "scorecard")
-    rebuilt = [dict(row) for row in table.rows]
     readings = list(shape.readings.measures)
     assert len(readings) == len(table.rows)
     kinds: set[str] = set()
@@ -343,25 +335,283 @@ def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
         assert reading.value is not None and reading.interval is not None
         form = forms.measure(reading.measure)
         kinds.add(form.reads_as)
-        level = forms.level(reading.measure, reading.value).text
-        interval = forms.interval(reading.measure, *reading.interval).text
+        level, interval = forms.bracketed(reading.measure, reading.value, *reading.interval)
+        assert table.rows[index]["value"].figure == level.text
+        assert table.rows[index]["interval"].text == interval.text
+        assert " to " in interval.text and "[" not in interval.text
         if form.reads_as == "money":
-            assert table.rows[index]["value"].text == level
-            assert table.rows[index]["interval"].text == interval
-            printed = forms.level(reading.measure, reading.value)
-            ends = forms.interval(reading.measure, *reading.interval)
             # Money's parts lay out apart: its "$" is the unit's, never the digits'.
-            assert (printed.unit, printed.text) == ("usd", f"${printed.digits}") and "$" not in printed.digits
-            assert ends.digits == f"[{ends.low_digits}, {ends.high_digits}]" and "$" not in ends.digits
-        else:
-            value = table.rows[index]["value"]
-            rebuilt[index]["value"] = value.model_copy(update={"value": level, "unit": "", "decimals": None})
-            rebuilt[index]["interval"] = table.rows[index]["interval"].model_copy(update={"value": interval})
+            assert (level.unit, level.text) == ("usd", f"${level.digits}") and "$" not in level.digits
+            assert interval.digits == f"{interval.low_digits} to {interval.high_digits}" and "$" not in interval.digits
     assert kinds == {"rate", "money"}
-    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(table.columns)))
-    for printed, again in zip(table.rows, redone, strict=True):
-        assert again["value"].text == printed["value"].text
-        assert again["interval"].text == printed["interval"].text
+
+
+# The number policy on the code and aspect pages, row by row against the plan's before and after (section 2.5).
+
+
+@functools.cache
+def _scaled_markdown() -> str:
+    return campaign_report_markdown(_scaled().page)
+
+
+def test_the_p95_time_reads_at_the_places_its_interval_sets_with_each_interval_in_one_form() -> None:
+    """A 2.4 s p95 with a ±0.07 s interval reads to the hundredth, its level, its change and both intervals alike, each
+    interval ``low to high``, the unit on the figure it follows (``2.42 s (2.35 to 2.49)``, section 2.5): never
+    ``2.4 [2.4, 2.5] s`` beside ``+0.028 s [-0.131, 0.187] s``."""
+    assert (
+        "| 95th-percentile extraction time | candidate-a | 2.39 s | 2.42 s (2.35 to 2.49) | +0.03 s | -0.13 to +0.19 s |"
+        in _scaled_markdown()
+    )
+
+
+def test_fields_stripped_reads_at_the_places_its_interval_sets() -> None:
+    """A count per trial reads at the hundredth its interval sets, never ``1.5 [1.5, 1.6]`` beside ``+0.095``. The
+    change is +0.0947 (0.095 as printed before was itself rounded), so at the hundredth it reads ``+0.09``, not section
+    2.5's ``+0.10``."""
+    assert (
+        "| Fields stripped | candidate-b | 1.43 | 1.53 (1.45 to 1.61) | +0.09 | -0.09 to +0.28 |" in _scaled_markdown()
+    )
+
+
+def test_a_pass_rate_change_reads_whole_with_an_end_off_zero_taking_the_digits_that_keep_it_off() -> None:
+    """The pass rate's intervals set whole points across the campaign, so a change reads ``-7 pts``; the interval's high
+    end, -0.03, would read as zero, so it alone takes the digits that keep it off (owner ruling, 2026-11-09), and the
+    unit is written once: never ``-7.4 pts [-15.09, -0.03] pts``."""
+    assert "| Pass rate | candidate-b | 21% | 13% | -7 pts | -15 to -0.03 pts |" in _scaled_markdown()
+
+
+def test_the_statistics_print_each_effect_and_p_in_its_fixed_form() -> None:
+    """An aspect page's Hedges' g, pairing r and adjusted p are no measurement: each cell prints the fixed form its
+    page's forms decide (an effect at two decimals, p as APA writes it), never the number rule's ``0.08475``."""
+    (fold,) = _scaled().page.aspects
+    (table,) = [
+        block for block in fold.report.blocks if isinstance(block, TableBlock) and block.name == "comparison_statistics"
+    ]
+    fixed = PageForms.off_page()
+    assert table.rows
+    for row in table.rows:
+        for key, form in (("hedges_g", fixed.effect), ("pairing_r", fixed.effect), ("p_adjusted", fixed.p)):
+            cell = row[key]
+            value = float(cell.value) if isinstance(cell.value, int | float) else None
+            assert cell.figure == form(value).text
+
+
+def _narrowed(aspect: AnalysisContextBundle) -> AnalysisContextBundle:
+    """``aspect`` with each pass rate contrast's interval cut to ±0.4 points about its change: the campaign's narrowest
+    pass rate interval, which sets a tenth of a point where every other aspect's sets whole points."""
+    families = [
+        family.model_copy(
+            update={
+                "comparisons": [
+                    comparison.model_copy(update={"interval": (comparison.delta - 0.004, comparison.delta + 0.004)})
+                    if comparison.reading == "trial" and comparison.delta is not None
+                    else comparison
+                    for comparison in family.comparisons
+                ]
+            }
+        )
+        for family in aspect.multiple_comparisons.families
+    ]
+    return aspect.model_copy(
+        update={"multiple_comparisons": aspect.multiple_comparisons.model_copy(update={"families": families})}
+    )
+
+
+def _pass_rate_changes(*, together: bool) -> tuple[list[str], list[str]]:
+    """The two-aspect scaled campaign laid out as the engine lays it out, its first aspect's pass rate contrasts
+    narrowed (:func:`_narrowed`): the pass rate's changes its second aspect's page prints in its contrasts table, and
+    those the code page prints in its scorecard. ``together`` builds each aspect page's forms over the whole
+    campaign, as the engine does (:meth:`PageForms.of_aspects`); else each aspect's alone (:meth:`PageForms.of_bundle`),
+    the control."""
+    corpus = hot_path_corpus(scale=1, two_aspects=True)
+    bundle = service.assemble_campaign_bundle(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
+    first, second = bundle.aspects
+    aspects = [_narrowed(first), second]
+    forms = (
+        PageForms.of_aspects(aspects, bundle.readings)
+        if together
+        else {aspect.aspect: PageForms.of_bundle(aspect) for aspect in aspects}
+    )
+    reports = {
+        aspect.aspect: build_code_only_report_in_forms(aspect, assembled_at=ASSEMBLED_AT, forms=forms[aspect.aspect])
+        for aspect in aspects
+    }
+    page = build_campaign_report_in_aspect_forms(corpus.campaign, bundle.readings, reports, aspect_forms=forms)
+    (contrasts,) = [
+        block
+        for block in reports[second.aspect].blocks
+        if isinstance(block, TableBlock) and block.name == "comparisons"
+    ]
+    on_aspect = [row["change"].text for row in contrasts.rows if row["reading"].text == "Pass rate"]
+    matrix = _named(page.blocks, "scorecard")
+    on_code = [
+        cell.text.partition(" · ")[2].partition(" (")[0]
+        for row in matrix.rows
+        for key, cell in row.items()
+        if key.startswith("arm:") and cell.level is not None
+    ]
+    assert on_aspect and on_code
+    return on_aspect, on_code
+
+
+def test_one_measure_reads_at_one_precision_on_every_page_of_its_campaign() -> None:
+    """Set scope is the whole campaign (owner ruling, 2026-11-09): where one aspect's pass rate interval is ten times
+    narrower than any other's, every page of the campaign prints the pass rate at the tenth that interval sets, the
+    other aspect's page and the code page alike, never at the whole points its own intervals would set alone."""
+    tenth = re.compile(r"[+-]\d+\.\d pts")
+    on_aspect, on_code = _pass_rate_changes(together=True)
+    assert all(tenth.fullmatch(text) for text in on_aspect), on_aspect
+    assert all(tenth.fullmatch(text) for text in on_code), on_code
+    # The control: built alone, the second aspect's page reads its own whole points.
+    alone, _ = _pass_rate_changes(together=False)
+    assert all(re.fullmatch(r"[+-]?\d+ pts", text) for text in alone), alone
+
+
+#: A rate's figure as a page prints it: a percent or a change in points.
+_RATE_FIGURE = re.compile(r"([+-]?\d+(?:\.(\d+))?)(?:%| pts)")
+
+
+def _rate_places(forms: PageForms) -> dict[tuple[str, str], set[int]]:
+    """The decimals each rate measure's figures print at in one page's ledger, by measure and kind, its levels,
+    changes, interval ends, half-widths and pass^k alike, as its forms decided them (a column's record of a cell
+    restates one, and a bar's threshold is declared, not measured); a figure the boundary exception keeps off zero or a
+    rate's floor or ceiling (within one point of it) is left out, since it alone takes the digits that keep it off."""
+    found: dict[tuple[str, str], set[int]] = {}
+    for entry in forms.ledger:
+        if not entry.measure or entry.role not in ("level", "change", "interval", "half_width", "pass_k"):
+            continue
+        for match in _RATE_FIGURE.finditer(entry.text):
+            value = abs(float(match[1]))
+            if value < 1 or value > 99:
+                continue
+            found.setdefault((entry.measure, str(entry.kind)), set()).add(len(match[2] or ""))
+    return found
+
+
+# s2's aspect page decides no rate's figure between 1% and 99% (its levels and changes sit at a boundary or are counts),
+# so it holds none to check.
+@pytest.mark.parametrize("source", ["scaled", "s1_change", "s3_measurement", "s4_change", "toyhost"])
+def test_no_rate_prints_at_two_precisions_on_one_page(source: str) -> None:
+    """Rule 1: a measure reads at one precision on the whole page. Every rate's levels, changes and interval ends on a
+    code page, and on each aspect page, print at one count of decimals, but for an end kept off a boundary."""
+    pages = (
+        [_page_and_forms(_scaled_page)[1]]
+        if source == "scaled"
+        else [forms for _, forms in _aspect_pages(source).values()]
+    )
+    assert any(_rate_places(forms) for forms in pages), "the control: a page states some rate"
+    for forms in pages:
+        mixed = {key: places for key, places in _rate_places(forms).items() if len(places) > 1}
+        assert not mixed, mixed
+
+
+def _narrowed_readings(readings: CampaignReadings) -> CampaignReadings:
+    """``readings`` with each row's pass rate intervals cut to ±0.4 points about its change: the code page's own
+    intervals become the campaign's narrowest, which sets a tenth of a point where every aspect's sets whole points."""
+    rows = [
+        row.model_copy(
+            update={
+                name: (row.change - 0.4, row.change + 0.4)
+                for name in ("gain_interval", "drop_interval", "within_interval")
+                if getattr(row, name) is not None
+            }
+        )
+        for row in readings.readings
+    ]
+    return readings.model_copy(update={"readings": rows})
+
+
+def test_the_code_page_s_readings_set_the_precision_of_every_aspect_page_the_engine_lays_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's own route (``campaign_report``): where the code page's readings hold the campaign's narrowest pass
+    rate interval, each aspect's page, built by the service in the campaign's forms, prints the pass rate at the
+    tenth that interval sets, as the code page does. An aspect page built over its own bundle alone, or in forms that
+    leave the readings out, would read its own whole points."""
+    real = service.campaign_readings
+    monkeypatch.setattr(service, "campaign_readings", lambda *args, **kwargs: _narrowed_readings(real(*args, **kwargs)))
+    page = _scaled_page(two_aspects=True)
+    tenth = re.compile(r"[+-]\d+\.\d pts")
+    on_aspects = [
+        row["change"].text
+        for fold in page.aspects
+        for block in fold.report.blocks
+        if isinstance(block, TableBlock) and block.name == "comparisons"
+        for row in block.rows
+        if row["reading"].text == "Pass rate"
+    ]
+    on_code = [
+        cell.text.partition(" · ")[2].partition(" (")[0]
+        for row in _named(page.blocks, "scorecard").rows
+        for key, cell in row.items()
+        if key.startswith("arm:") and cell.level is not None
+    ]
+    assert on_aspects and on_code
+    assert all(tenth.fullmatch(text) for text in on_aspects), on_aspects
+    assert all(tenth.fullmatch(text) for text in on_code), on_code
+
+
+def test_a_judged_bar_reads_alike_on_the_code_page_and_its_aspect_page() -> None:
+    """A bar on a judged dimension reads on the dimension's own ruler on the code page, as its aspect's page reads it:
+    its threshold, its value and its interval in one text each (``at least 90%``, ``95%``, ``75 to 99%``), never the raw
+    scale's ``0.9`` and ``0.95``."""
+    page = s3_measurement().page()
+    code = {
+        (row["aspect"].text, row["arm"].text): (row["bar"].text, row["value"].text, row["interval"].text)
+        for row in _named(page.blocks, "bars").rows
+    }
+    checked = 0
+    for fold in page.aspects:
+        for block in fold.report.blocks:
+            if not (isinstance(block, TableBlock) and block.name == "bars"):
+                continue
+            for row in block.rows:
+                if "(judged)" not in row["bar"].text:
+                    continue
+                bar, value, interval = code[fold.aspect, row["arm"].text]
+                assert bar.partition(" ")[2].partition(" ")[2] == row["threshold"].text, (bar, row["threshold"].text)
+                assert (value, interval) == (row["value"].text, row["interval"].text)
+                checked += 1
+    assert checked, "the control: s3 reads a judged bar"
+
+
+def _a_rate(places: int) -> PageForms:
+    """A code page's forms holding one rate, read at ``places``."""
+    form = MeasureForm(
+        key="accuracy",
+        kind="measure",
+        reads_as="rate",
+        unit="%",
+        change_unit="pts",
+        factor=100.0,
+        change_factor=100.0,
+        level_decimals=places,
+        change_decimals=places,
+        span=100.0,
+        places=places,
+        half_width=9.0,
+    )
+    return PageForms("code", {("accuracy", "measure"): form})
+
+
+def test_a_rate_s_value_and_its_interval_read_at_one_precision() -> None:
+    """A scorecard's rate and its interval share its measure's one precision (#1127 item 10): ``84%`` beside
+    ``73 to 92%``, never ``84%`` beside ``[73.2%, 91.5%]``."""
+    level, interval = _a_rate(0).bracketed("accuracy", 0.8444, 0.732, 0.915)
+    assert (level.text, interval.text) == ("84%", "73 to 92%")
+
+
+def test_a_rate_of_none_reads_with_its_percent() -> None:
+    """A lost-call rate of none reads ``0%`` beside its neighbours' units, never a bare ``0`` (#1127 item 12)."""
+    assert _a_rate(1).level("accuracy", 0.0).text == "0%"
+
+
+def test_a_rate_near_its_ceiling_keeps_off_it() -> None:
+    """A rate read in whole percents that would round onto its ceiling takes the digit that keeps it off: ``99.7%``,
+    never ``100%`` (owner ruling, 2026-11-09)."""
+    forms = _a_rate(0)
+    assert forms.level("accuracy", 0.997).text == "99.7%"
+    assert forms.level("accuracy", 1.0).text == "100%"
 
 
 def test_the_code_page_builds_its_forms_once_and_issues_every_change_its_scorecard_prints() -> None:
@@ -382,33 +632,43 @@ def _code_forms() -> PageForms:
     return PageForms.of_campaign(scaled.readings, scaled.reports)
 
 
-def test_a_level_drawn_in_percent_is_held_as_computed_and_alone_keeps_today_s_spelling() -> None:
-    """A baseline in percent is rounded as computed (``6.25`` held at ``6.2``, half to even), and stated alone in words
-    it is spelled half away from zero (``6.3%``): today's two spellings, relocated, until the policy flip."""
-    forms = _code_forms()
-    held = forms.drawn_level("passed", 6.25, kind="trial")
-    alone = forms.drawn_level("passed", 6.25, kind="trial", alone=True)
-    assert (held.held, held.decimals, held.text, held.unit) == (6.2, 1, "6.2%", "%")
-    assert (alone.text, alone.held) == ("6.3%", 6.2)
-    assert forms.drawn_level("passed", None, kind="trial").held is None
-
-
-def test_a_code_page_s_change_and_its_half_width_are_held_at_a_point_s_decimal() -> None:
+def test_a_change_its_half_width_and_its_sized_ends_read_at_the_pass_rate_s_places() -> None:
+    """On the scaled campaign the pass rate's narrowest interval sets whole points: a change, how far an interval
+    reaches and an interval's ends sized in a sentence all read whole, half to even, but for an end a whole point
+    would print as zero, which takes just the digits that keep it off zero."""
     forms = _code_forms()
     change = forms.change("passed", 2.46, kind="trial")
-    assert (change.held, change.decimals, change.text) == (2.5, 1, "+2.5 pts")
+    assert (change.held, change.decimals, change.text) == (2.0, 0, "+2 pts")
     width = forms.half_width("passed", 3.04, kind="trial")
-    assert (width.held, width.text, width.unit) == (3.0, "3.0 pts", "pts")
+    assert (width.held, width.text, width.unit) == (3.0, "3 pts", "pts")
     assert [entry.role for entry in forms.ledger] == ["change", "half_width"]
-
-
-def test_an_interval_sized_in_a_sentence_reads_each_end_unsigned_at_one_precision() -> None:
-    forms = _code_forms()
     sized = forms.sizes("passed", -3.46, 7.9, kind="trial")
-    assert (sized.low_text, sized.high_text) == ("3.5", "7.9")
-    # An end a point's decimal would print as zero takes the decimals that show it, and the other end takes them too.
+    assert (sized.low_text, sized.high_text) == ("3", "8")
     finer = forms.sizes("passed", -0.03, 4.2, kind="trial")
-    assert (finer.low_text, finer.high_text) == ("0.03", "4.20")
+    assert (finer.low_text, finer.high_text) == ("0.03", "4")
+
+
+def test_a_level_drawn_in_percent_reads_half_to_even_in_a_cell_and_in_words_alike() -> None:
+    """A baseline in percent, ``6.25``, on a pass rate whose interval sets one decimal, is held and stated ``6.2%``
+    (half to even, the one rounding) in its cell and in words alike: the words' own half-up ``6.3%`` is gone."""
+    form = MeasureForm(
+        key="passed",
+        kind="trial",
+        reads_as="rate",
+        unit="%",
+        change_unit="pts",
+        factor=100.0,
+        change_factor=1.0,
+        level_decimals=1,
+        change_decimals=1,
+        span=100.0,
+        places=1,
+        half_width=1.5,
+    )
+    forms = PageForms("code", {("passed", "trial"): form})
+    level = forms.drawn_level("passed", 6.25, kind="trial")
+    assert (level.held, level.decimals, level.text, level.unit) == (6.2, 1, "6.2%", "%")
+    assert forms.drawn_level("passed", None, kind="trial").held is None
 
 
 @pytest.mark.parametrize(
@@ -443,8 +703,8 @@ def test_a_money_level_bracketed_by_its_interval_reads_both_in_one_form() -> Non
     assert form.ruler is not None
     cell = TableCell(value=level.held, unit=level.unit, decimals=level.decimals)
     assert level.text == cell.figure and level.held == form.ruler.drawn(reading.value)
-    assert interval.text == f"[{cell.amount(form.ruler.drawn(reading.interval[0]))}, " + (
-        f"{cell.amount(form.ruler.drawn(reading.interval[1]))}]"
+    assert interval.text == (
+        f"{cell.amount(form.ruler.drawn(reading.interval[0]))} to {cell.amount(form.ruler.drawn(reading.interval[1]))}"
     )
     assert "$" not in interval.digits
 
@@ -467,14 +727,14 @@ def test_a_written_page_refuses_a_code_page_s_own_forms(figure: Callable[[PageFo
 
 @pytest.mark.parametrize(
     ("figures", "decimals"),
-    [([2.737, 0.0], 1), ([3.0, 2.0], 1), ([99.2345, 100.0], 0), ([0.0, 0.0], None), ([None], None)],
+    [([2.737, 0.0], 1), ([3.0, 2.0], 1), ([99.2345, 100.0], 0), ([0.0, 0.0], 0), ([None], 0)],
 )
 def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
     figures: list[float | None], decimals: int | None
 ) -> None:
-    """A measure that is neither a rate nor money reads at its column's set's decimals, over each arm's one figure:
-    ``2.737`` beside ``0`` at one, ``99.2345`` beside ``100`` at none; a column of zeros or of no figure at all is
-    left to the number rule."""
+    """A measure that is neither a rate nor money, with no interval anywhere, reads at two significant figures of its
+    least figure but zero, over each arm's one figure: ``2.737`` beside ``0`` at one, ``99.2345`` beside ``100`` at
+    none; a column of zeros or of no figure at all reads whole, as an exact zero does."""
     shape = s3_measurement()
     base = shape.readings.measures[0]
     made = [
@@ -517,7 +777,8 @@ def _respelled(forms: PageForms, entry) -> bool:
 
 
 def _ledger_and_page(page_of: Callable[[], CampaignReport]) -> tuple[PageForms, str]:
-    """The one forms a code page was built with, and its markdown."""
+    """The one forms a code page was built with, and its markdown, with each pass rate a cost and pass rate chart
+    states bare under its ``(%)`` head written with its unit after it, as its forms issued it."""
     built: list[PageForms] = []
     real = PageForms.of_campaign
 
@@ -529,7 +790,14 @@ def _ledger_and_page(page_of: Callable[[], CampaignReport]) -> tuple[PageForms, 
     with mock.patch.object(PageForms, "of_campaign", side_effect=capture):
         page = page_of()
     (forms,) = built
-    return forms, campaign_report_markdown(page)
+    charted = [
+        f"{point.pass_rate_text}%"
+        for block in page.blocks
+        if isinstance(block, ChartBlock) and block.chart == "cost_quality"
+        for point in block.points
+        if point.pass_rate_text is not None
+    ]
+    return forms, "\n".join([campaign_report_markdown(page), *charted])
 
 
 @pytest.mark.parametrize(
@@ -557,7 +825,7 @@ def test_a_decision_that_prints_nothing_issues_nothing() -> None:
     forms.count(3)
     before = forms.ledger
     assert forms.told_apart(0.99688) == 0.9969
-    assert forms.drawn_held("passed", 86.65, kind="trial") == 86.7
+    assert forms.drawn_held("passed", 86.65, kind="trial") == 87.0
     assert forms.ledger == before
 
 
@@ -565,7 +833,8 @@ def test_a_decision_that_prints_nothing_issues_nothing() -> None:
 def test_the_control_cell_issues_only_the_level_it_prints(two_aspects: bool) -> None:
     """On a change's matrix each pass rate level issued is one a cell prints: the control's (its pooled rate and its
     candidates' baselines compared, not issued), each candidate's level beside its change, and each baseline a cell
-    names in words; on the row across the aspects, the control's level across them in place of its own figure."""
+    names in words; on the row across the aspects, the control's level across them in place of its own figure; and
+    each arm's pass rate the cost and pass rate chart states."""
     forms, _ = _ledger_and_page(lambda: _scaled_page(two_aspects=two_aspects))
     rows = _named(_scaled_page(two_aspects=two_aspects).blocks, "scorecard").rows
     assert len(rows) == (3 if two_aspects else 1), "two aspects and the row across them, or one aspect"
@@ -576,8 +845,14 @@ def test_the_control_cell_issues_only_the_level_it_prints(two_aspects: bool) -> 
         if key.startswith("arm:") and cell.is_number and (cell.unit == "%" or cell.level is not None)
     ]
     named = sum((cell.flag or "").count("'s ") for cell in printed if cell.level is not None)
+    # The cost and pass rate chart states each arm's pass rate across the aspects too, in its values table.
+    charted = sum(
+        len(block.points)
+        for block in _scaled_page(two_aspects=two_aspects).blocks
+        if isinstance(block, ChartBlock) and block.chart == "cost_quality"
+    )
     levels = forms.issued("passed", kind="trial", role="level")
-    assert len(levels) == len(printed) + named
+    assert len(levels) == len(printed) + named + charted
     controls = [cell for cell in printed if cell.level is None]
     assert len(controls) == len(rows) and {cell.figure for cell in controls} <= {entry.text for entry in levels}
 

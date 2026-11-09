@@ -189,9 +189,9 @@ class ContrastPlaces(NamedTuple):
     :meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`): the contrasts table, the verdict
     line's figures and a program's rows alike (docs/design.md, Presentation rulings). A set keeps one precision: every
     level of the reading (both arms' figures and their intervals' ends) reads at ``level`` decimals, every change and
-    its interval's ends at ``change``. A rate's level reads by its column's percent rule and money by its form, so
-    either is None there. ``floor`` and ``ceiling`` are what a level can take, drawn, so an interval never runs past
-    them (a count never below zero, a score never past its scale); ``scale`` names a score's scale for its row
+    its interval's ends at ``change``, both the places its uncertainty sets across the campaign. Money reads by its
+    form, so both are None there. ``floor`` and ``ceiling`` are what a level can take, drawn, so an interval never runs
+    past them (a count never below zero, a score never past its scale); ``scale`` names a score's scale for its row
     (``1–5``)."""
 
     level: int | None
