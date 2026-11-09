@@ -31,7 +31,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
-from threetears.core.backends.arrow_reply import reply_rows
+from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.backends.broker_generation import (
     CHANGED_ROWS_FIELD,
     GENERATION_UNAVAILABLE_ERROR_CODE,
@@ -758,7 +758,8 @@ class NatsProxyL3Backend:
 
         The reply's bytes are parsed by Arrow's JSON reader on a thread, which lets go of the interpreter lock
         while it parses (:func:`~threetears.core.backends.arrow_reply.reply_rows`), so neither the event loop nor
-        any other thread waits on a reply's rows. ``types`` names each column the statement selects and its Arrow
+        any other thread waits on a reply's rows. It asks the hub for the rows as Arrow (:meth:`_arrow_reply`): a hub
+        that answers so sends an IPC stream, read in place with no parse; an older one answers JSON. ``types`` names each column the statement selects and its Arrow
         type, in order, as the reply's JSON carries it
         (:func:`~threetears.core.collections.complete_copy.rail_arrow_types`); ``table.to_pylist()`` equals what
         :meth:`fetch` answers for the same reply. A read only: the rail's cap and paging are the caller's, as
@@ -780,18 +781,9 @@ class NatsProxyL3Backend:
         """
         if statement_operation(query) != "select":
             raise ValueError("fetch_arrow reads: its statement is a SELECT")
-        payload = self._query_payload(query, list(params), "select", namespace)
-        reply = await self.nats_request_bytes(
-            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
-        )
-        parsed = await asyncio.to_thread(reply_rows, reply, types)
+        reply, parsed = await self._arrow_reply(query, params, types, namespace)
         if not parsed.success:
-            # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
-            try:
-                response: dict[str, Any] = json.loads(reply)
-            except ValueError as exc:
-                raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
-            self.raise_for_failed_reply(response, "L3 query")
+            self._raise_for_failed_arrow(reply, parsed)
         if parsed.truncated:
             raise L3AnswerCutError(
                 f"L3 query: the L3 rail cut the answer at {parsed.rows.num_rows} rows (its cap is {L3_RAIL_ROW_CAP}); "
@@ -860,18 +852,64 @@ class NatsProxyL3Backend:
         """
         if statement_operation(query) != "select":
             raise ValueError("fetch_arrow_page reads: its statement is a SELECT")
+        reply, parsed = await self._arrow_reply(query, params, types, namespace)
+        if not parsed.success:
+            self._raise_for_failed_arrow(reply, parsed)
+        # the broker cuts by the bytes of its JSON reply: an Arrow reply says what they would be
+        reply_bytes = len(reply) if parsed.json_bytes is None else parsed.json_bytes
+        return L3Page(rows=parsed.rows, truncated=parsed.truncated, reply_bytes=reply_bytes, reply_cap=parsed.reply_cap)
+
+    async def _arrow_reply(
+        self, query: str, params: Sequence[Any], types: Mapping[str, Any], namespace: str | None
+    ) -> tuple[bytes, Any]:
+        """send a SELECT asking for its rows as Arrow, and read the reply on a thread, whichever form it came in.
+
+        The request carries ``reply_format: "arrow"`` and the schema of ``types`` (``arrow_schema``). A hub that
+        answers Arrow sends the rows as an IPC stream behind a JSON envelope
+        (:data:`~threetears.core.backends.arrow_reply.ARROW_REPLY_MAGIC`), read in place; an older hub, a refusal,
+        and rows not of ``types`` come as JSON, read as before (:func:`reply_rows`). No announcement is needed: an
+        older hub ignores the two fields.
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Sequence[Any]
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :return: the reply's bytes, and its parse
+        :rtype: tuple[bytes, Any]
+        """
         payload = self._query_payload(query, list(params), "select", namespace)
+        payload["reply_format"] = "arrow"
+        payload["arrow_schema"] = arrow_schema_text(types)
         reply = await self.nats_request_bytes(
             Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
         )
-        parsed = await asyncio.to_thread(reply_rows, reply, types)
-        if not parsed.success:
-            try:
-                response: dict[str, Any] = json.loads(reply)
-            except ValueError as exc:
-                raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
-            self.raise_for_failed_reply(response, "L3 query")
-        return L3Page(rows=parsed.rows, truncated=parsed.truncated, reply_bytes=len(reply), reply_cap=parsed.reply_cap)
+        # reply_rows looked up here, at the call: the JSON parse is this module's
+        parsed = await asyncio.to_thread(read_reply, reply, types, reply_rows)
+        return reply, parsed
+
+    def _raise_for_failed_arrow(self, reply: bytes, parsed: Any) -> NoReturn:
+        """raise a failed read's error as :meth:`fetch` raises it: from an Arrow reply's envelope, or the JSON.
+
+        :param reply: the reply's bytes
+        :ptype reply: bytes
+        :param parsed: its parse (:func:`~threetears.core.backends.arrow_reply.read_reply`)
+        :ptype parsed: Any
+        :return: never
+        :rtype: NoReturn
+        :raises DataLayerUnavailableError: always, or what the failure names
+        """
+        if parsed.envelope is not None:
+            self.raise_for_failed_reply(parsed.envelope, "L3 query")
+        # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
+        try:
+            response: dict[str, Any] = json.loads(reply)
+        except ValueError as exc:
+            raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
+        self.raise_for_failed_reply(response, "L3 query")
 
     async def fetchrow(
         self,
