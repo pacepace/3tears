@@ -28,6 +28,13 @@ record, row message, L2 key and fence key, so a note, its record and a key read 
 in one spelling and bind to its row. Other types stay refused (`inexact_note_columns`). A `datetime`-keyed
 collection's L2 keys change spelling once (an old key is read by no new process).
 
+**Fixed (core):** the SQLite and DuckDB L1s keep a timestamp column in that same spelling
+(`threetears.core.cache.base.stored_instant`; `isoformat()` dropped `.000000` from a whole second and kept the value's
+own offset) and bind a key named by text in any ISO form as it (`stored_instant_text`) on every read, delete, staged
+key, Arrow and Parquet load, so a row message or change record naming a whole-second or other-offset key by its
+text evicts the L1 row instead of missing it and leaving the pod serving the stale value. Both L1s live in process
+memory only, so no row kept in the old spelling survives the upgrade's restart.
+
 **Changed (core) -- requirement:** `ChangeNoteKeeper.install_triggers` gives note triggers only in the keeper's own
 schema (the platform schema its process's classes declare). A table of a noted name in another schema (a pod's
 table, keyed and tenanted by its own declaration) gets its triggers from its schema's migration run

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
+from threetears.core.collections.epoch_change import key_text
 from threetears.core.fingerprint import key_fingerprint, postgres_fingerprint_sql, relation_key_expression
 
 duckdb = pytest.importorskip("duckdb")
@@ -101,7 +102,8 @@ class TestStoredKeys:
         backend.upsert_many("results", [{"race": "VA", "at": at, "votes": 5}], ("race", "at"))
         stored = backend.stored_keys("results", ("race", "at"))
         assert stored == [("VA", backend.serialize_value(at, "VARCHAR_DATETIME"))]
-        assert key_fingerprint(stored) == key_fingerprint([("VA", at.isoformat())])
+        # in the spelling a change record names the key in (key_text), so an eviction by that text finds the row
+        assert key_fingerprint(stored) == key_fingerprint([("VA", key_text(at))])
 
 
 class TestEvictionListeners:

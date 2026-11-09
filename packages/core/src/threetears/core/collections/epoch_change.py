@@ -25,13 +25,14 @@ from __future__ import annotations
 import inspect
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from threetears.core.cache.base import stored_instant
 from threetears.core.exceptions import GenerationUnavailableError
 
 if TYPE_CHECKING:
@@ -87,7 +88,8 @@ def key_text(value: Any) -> str:
     :rtype: str
     """
     if isinstance(value, datetime) and value.utcoffset() is not None:
-        return value.astimezone(UTC).isoformat(timespec="microseconds")
+        # the L1 keeps a timestamp column in this text too, so an eviction naming the key finds its row
+        return stored_instant(value)
     return str(value)
 
 
