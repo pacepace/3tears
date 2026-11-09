@@ -78,3 +78,48 @@ def test_a_bare_select_from_a_table_is_a_head_judged_where_it_runs() -> None:
 def test_prose_is_not_sql(text: str) -> None:
     """Flips if English that starts with a SQL verb is judged as a statement."""
     assert not is_sql(text)
+
+
+_CLOSURE = """
+WITH RECURSIVE reachable(dataset_id, path) AS (
+    SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path
+  UNION ALL
+    SELECT s.source_id, r.path || s.source_id
+      FROM dataset_sources s
+      JOIN reachable r ON s.dataset_id = r.dataset_id
+     WHERE s.source_kind = 'dataset'
+       AND NOT (s.source_id = ANY(r.path))
+)
+SELECT DISTINCT s.source_kind AS source_kind, s.source_id AS source_id
+  FROM dataset_sources s
+  JOIN reachable r ON s.dataset_id = r.dataset_id
+"""
+
+
+def test_a_join_to_a_recursive_cte_seeded_by_a_key_is_keyed() -> None:
+    """Flips if a closure walked from one bound key, joined back to the table on column equality, is called whole."""
+    assert _kinds(_CLOSURE) == []
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # no key at all: the CTE starts from every row
+        "SELECT id AS dataset_id, ARRAY[id] AS path FROM roots",
+        # a key in the select list of a whole read binds nothing
+        "SELECT $1::uuid AS dataset_id, ARRAY[id] AS path FROM roots",
+    ],
+)
+def test_a_cte_seeded_without_a_bound_key_leaves_the_join_whole(seed: str) -> None:
+    """Flips if a join to a CTE counts as keyed when the CTE's seed is unbound, or is itself a whole read."""
+    sql = _CLOSURE.replace("SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path", seed)
+    assert ("whole-aggregate", "dataset_sources") in _kinds(sql)
+
+
+def test_a_join_to_a_bound_cte_without_column_equality_is_still_whole() -> None:
+    """Flips if naming a bound CTE in a clause, without joining the table to it by a column, keys the read."""
+    sql = _CLOSURE.replace(
+        "  FROM dataset_sources s\n  JOIN reachable r ON s.dataset_id = r.dataset_id\n",
+        "  FROM dataset_sources s CROSS JOIN reachable r\n",
+    )
+    assert ("whole-aggregate", "dataset_sources") in _kinds(sql)

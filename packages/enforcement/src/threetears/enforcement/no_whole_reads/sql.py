@@ -8,7 +8,9 @@ whether it aggregates. A relation is a data table unless it is a catalog, a CTE 
 
 A predicate carries a key when it holds a bound value: a placeholder (``$1``, ``%s``, ``%(name)s``, ``?``,
 ``:name``), an interpolation the walk cannot see (``{}``, inside the ``WHERE`` only), or an equality with a
-literal (``scope = '*'``). ``WHERE pending IS NOT NULL`` carries none: it is a scan of the table with a filter.
+literal (``scope = '*'``). ``WHERE pending IS NOT NULL`` carries none: it is a scan of the table with a filter. A join on column equality to
+a CTE of the same statement whose seed is bound (``WITH RECURSIVE reachable AS (SELECT $1 ... UNION ALL ...)``)
+carries the key too: the CTE holds only the rows walked from that key, and the join reads the table by them.
 
 Kinds, each the start of a finding's symbol:
 
@@ -273,7 +275,72 @@ def _outer_bound(text: str, depths: list[int], start: int, depth: int) -> bool:
     return bound
 
 
-def _judge_select(text: str, depths: list[int], start: int, ctes: set[str]) -> _SqlFinding | None:
+def _bound_ctes(text: str, depths: list[int], ctes: set[str]) -> set[str]:
+    """the statement's CTEs whose seed carries a key: the first ``SELECT`` of the body (before any ``UNION``) holds a
+    bound value and reads no data table whole.
+
+    :param text: cleaned SQL
+    :ptype text: str
+    :param depths: :func:`_depths` of it
+    :ptype depths: list[int]
+    :param ctes: the statement's CTE names
+    :ptype ctes: set[str]
+    :return: the bound CTEs' names, as written and lower-cased
+    :rtype: set[str]
+    """
+    bound: set[str] = set()
+    for match in _CTE.finditer(text):
+        if depths[match.start()] != 0:
+            continue
+        body = match.end()
+        seed = _SELECT.search(text, body)
+        if seed is None or depths[seed.start()] != 1:
+            continue
+        _, masked = _own_level(text, depths, seed.start(), 1)
+        reads = any(
+            match.group(2) != "(" and _is_data(match.group(3), masked[match.end() : match.end() + 2], ctes)
+            for match in _FROM_OR_JOIN.finditer(masked)
+        )
+        where = _WHERE.search(masked)
+        # a seed reading no table binds the key in what it selects; one reading a table binds it in its WHERE, so a
+        # placeholder in a whole read's select list binds nothing
+        keyed = _PLACEHOLDER.search(masked[where.end() :] if reads and where is not None else masked) is not None
+        keyed = keyed and (not reads or where is not None)
+        if keyed and _judge_select(text, depths, seed.start(), ctes, frozenset()) is None:
+            name = match.group(1).strip('"')
+            bound |= {name, name.lower()}
+    return bound
+
+
+def _joins_bound_cte(masked: str, bound_ctes: frozenset[str]) -> bool:
+    """whether a clause joins a bound CTE on column equality: ``JOIN reachable r ON s.id = r.id``.
+
+    :param masked: the clause at its own level
+    :ptype masked: str
+    :param bound_ctes: the statement's bound CTEs
+    :ptype bound_ctes: frozenset[str]
+    :return: whether it does
+    :rtype: bool
+    """
+    joined = False
+    for match in _FROM_OR_JOIN.finditer(masked):
+        name = (match.group(3) or "").strip('"')
+        if name not in bound_ctes:
+            continue
+        alias_match = re.match(r"\s+(?:AS\s+)?(\w+)", masked[match.end() :], re.IGNORECASE)
+        alias = alias_match.group(1) if alias_match is not None else name
+        if alias.upper() in {"ON", "JOIN", "WHERE", "USING", "LEFT", "INNER", "CROSS", "GROUP", "ORDER", "LIMIT"}:
+            alias = name
+        column = r"[\w\"]+\.[\w\"]+"
+        side = rf"(?:{re.escape(alias)}|{re.escape(name)})\.[\w\"]+"
+        if re.search(rf"{column}\s*=\s*{side}|{side}\s*=\s*{column}", masked) is not None:
+            joined = True
+    return joined
+
+
+def _judge_select(
+    text: str, depths: list[int], start: int, ctes: set[str], bound_ctes: frozenset[str] = frozenset()
+) -> _SqlFinding | None:
     """judge one ``SELECT`` at its own level.
 
     :param text: cleaned SQL
@@ -284,6 +351,8 @@ def _judge_select(text: str, depths: list[int], start: int, ctes: set[str]) -> _
     :ptype start: int
     :param ctes: the statement's CTE names
     :ptype ctes: set[str]
+    :param bound_ctes: the statement's CTEs whose seed carries a key (:func:`_bound_ctes`)
+    :ptype bound_ctes: frozenset[str]
     :return: the finding, or None when it reads by a key, reads no data table, or is bounded by a ``LIMIT``
     :rtype: _SqlFinding | None
     """
@@ -314,6 +383,7 @@ def _judge_select(text: str, depths: list[int], start: int, ctes: set[str]) -> _
             unseen
             or _bound(text[start + opening : end], where, correlated=depth > 0)
             or _outer_bound(text, depths, start, depth)
+            or _joins_bound_cte(masked, bound_ctes)
         )
         aggregate = _AGGREGATE.search(masked[:first]) is not None or re.search(r"\bGROUP\s+BY\b", masked, re.IGNORECASE)
         limited = _LIMITED.search(masked) is not None
@@ -392,9 +462,10 @@ def judge_sql(sql: str) -> list[_SqlFinding]:
     ctes = {match.group(1).strip('"') for match in _CTE.finditer(text) if depths[match.start()] == 0}
     ctes |= {name.lower() for name in ctes}
     findings = _judge_write(text, depths)
+    bound_ctes = frozenset(_bound_ctes(text, depths, ctes))
     if _VIEW.match(text) is None:
         for match in _SELECT.finditer(text):
-            judged = _judge_select(text, depths, match.start(), ctes)
+            judged = _judge_select(text, depths, match.start(), ctes, bound_ctes)
             if judged is not None:
                 findings.append(judged)
     return findings
