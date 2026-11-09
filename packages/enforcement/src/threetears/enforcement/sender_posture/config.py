@@ -21,6 +21,14 @@ the postures, and what each one claims:
   on nothing in the body.
 - ``read-only``: the handler answers a read and changes nothing, and its reply is safe to
   hand whoever can name the subject.
+- ``request-reply``: the receiver takes the replies to a request it has just sent, on a fresh inbox it
+  made for that request, and on nothing else: trusted exactly as ``nc.request``'s reply is. It holds
+  because the platform's grants keep each principal's inbox prefix private (no other principal may
+  publish into it; tests/enforcement/test_inbox_prefixes_are_private.py). The gate checks the claim at
+  the site: the subscribed subject is a name bound from ``new_inbox()`` in the same function, a publish
+  or request there names it as its ``reply=``, and the subscription ends with the request (its
+  ``unsubscribe()`` is called in the function, or the subscribe bounds its messages with
+  ``max_msgs=``). A fixed or shared subject cannot claim it.
 - ``unauthenticated``: none of the above. allowed only while its audit row stays open in the
   repo's allowlist.
 - ``primitive``: the call implements a subscribe primitive whose callers declare their own
@@ -51,6 +59,7 @@ POSTURES: Final[frozenset[str]] = frozenset(
         "own-consumer",
         "trigger-only",
         "read-only",
+        "request-reply",
         "unauthenticated",
         "primitive",
     }

@@ -1,0 +1,88 @@
+"""A write of many rows may be broadcast as one message naming them all: heard exactly as one message a row."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+from threetears.core.testing.kv import FakeNatsClient
+
+_ROWS = 1_200
+
+
+class _Heard:
+    """what a receiving registry did with what it heard: each row applied, each generation mark counted."""
+
+    def __init__(self, registry: CollectionRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.applied: list[tuple[str, tuple[str, ...], Any, Any]] = []
+        self.counted: list[tuple[str, str, int]] = []
+
+        def apply(message: CacheInvalidationMessage) -> None:
+            self.applied.append((message.table, tuple(message.ids), message.l2_current_scope, message.columns))
+
+        # every row applied reaches the caches derived from its table, in order
+        registry.register_derived_cache("results", on_row=apply, on_table_dropped=lambda: None)
+        marks = registry.generation_marks
+        real_hear = type(marks).hear
+
+        def hear(owner: Any, table: str, generation: str, rows: int) -> None:
+            if owner is marks:
+                self.counted.append((table, generation, rows))
+            real_hear(owner, table, generation, rows)
+
+        monkeypatch.setattr(type(marks), "hear", hear)
+
+
+async def _broadcast(batched: bool, monkeypatch: pytest.MonkeyPatch) -> tuple[_Heard, int]:
+    bus = FakeNatsClient()
+    sender, receiver = CollectionRegistry(), CollectionRegistry()
+    heard = _Heard(receiver, monkeypatch)
+    await receiver.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    sender.batch_invalidations = batched
+    published: list[Any] = []
+    real_publish = bus.publish
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        published.append(kwargs)
+        return await real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(bus, "publish", counting)
+    messages = [
+        sender.row_message(
+            "results", (f"r{n % 7}", f"g{n}"), generation="inc:9", bump_rows=_ROWS, columns={"state": f"S{n % 3}"}
+        )
+        for n in range(_ROWS)
+    ]
+    await sender.publish_invalidations(bus, "results", messages)  # type: ignore[arg-type]
+    await receiver.stop_invalidation_listener()
+    return heard, len(published)
+
+
+async def test_a_batch_is_heard_row_for_row_as_the_singles_are(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a batched broadcast evicts other rows, in another order, or counts its advance otherwise than
+    one message a row would."""
+    singles, single_publishes = await _broadcast(False, monkeypatch)
+    batched, batch_publishes = await _broadcast(True, monkeypatch)
+
+    assert single_publishes == _ROWS
+    assert batch_publishes == 3
+    assert batched.applied == singles.applied
+    assert len(batched.applied) == _ROWS
+    assert batched.counted == singles.counted == [("results", "inc:9", _ROWS)] * _ROWS
+
+
+async def test_a_batch_from_this_registry_is_not_applied_here() -> None:
+    """Flips if a registry applies the rows of its own batched broadcast on hearing it, as it never does its own
+    single ones: a derived cache is told of each of its own rows once, by the write, and not again by the echo."""
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.batch_invalidations = True
+    applied: list[Any] = []
+    registry.register_derived_cache("results", on_row=applied.append, on_table_dropped=lambda: None)
+    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    messages = [registry.row_message("results", ("a", "b")) for _ in range(3)]
+    await registry.publish_invalidations(bus, "results", messages)  # type: ignore[arg-type]
+    await registry.stop_invalidation_listener()
+    assert len(applied) == 3

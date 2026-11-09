@@ -3998,6 +3998,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         else:
             await self._publish_invalidation(entity_id)
 
+    def _announces_rows_as_built(self) -> bool:
+        """whether this class announces a row exactly as :class:`BaseCollection` builds its message: a subclass
+        that overrides :meth:`_announce_row` or :meth:`_publish_invalidation` is announced through its own, one
+        row at a time, never batched past it.
+
+        :return: whether a write's rows may go as one message
+        :rtype: bool
+        """
+        cls = type(self)
+        return (
+            cls._announce_row is BaseCollection._announce_row
+            and cls._publish_invalidation is BaseCollection._publish_invalidation
+        )
+
     async def _publish_invalidation(
         self,
         entity_id: Any,
@@ -4210,6 +4224,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 id_of_row=self._id_of_row,
                 entry_lifetime=self._l2_entry_lifetime,
                 encode=lambda row: self.serialize(self._normalise_datetimes_for_write(row)),
+                save_many=getattr(self, "save_many_to_store") if getattr(self, "saves_many_to_store", False) else None,
             )
             self._l2_first_support_held = support
         return support
@@ -6039,6 +6054,29 @@ class BaseCollection(ABC, Generic[EntityT]):
                             columns=self._invalidation_values(row),
                         )
                     )
+        elif self._registry.batch_invalidations and self._announces_rows_as_built():
+            # one message for the write's rows: each key's L2 copy deleted first, as one a row does
+            limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
+
+            async def evict(entity_id: Any) -> None:
+                async with limit:
+                    await self._delete_from_l2(entity_id)
+
+            await asyncio.gather(*(evict(entity_id) for entity_id in entity_ids))
+            await self._registry.publish_invalidations(
+                self._nats_client,
+                self.table_name,
+                [
+                    self._registry.row_message(
+                        self.table_name,
+                        entity_id,
+                        generation=bump.token,
+                        bump_rows=bump.rows,
+                        columns=self._invalidation_values(row),
+                    )
+                    for entity_id, row in zip(entity_ids, seen, strict=True)
+                ],
+            )
         else:
             limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
 

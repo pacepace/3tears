@@ -59,6 +59,7 @@ from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
+from threetears.core.ddl.change_notes import WHOLE_COPY_ROWS
 from threetears.core.ddl.write_marks import (
     MARK_FUNCTION,
     WRITE_MARK_TRIGGER,
@@ -130,8 +131,9 @@ _OLDEST_AGE = gauge(
 )
 
 
-#: the most rows one reconciled table's epoch names from the change notes; more are advanced as keys unknown
-_MAX_NOTED_ROWS: Final = 10_000
+#: the most rows one reconciled table's epoch names from the change notes; more are advanced as keys unknown. A
+#: copy of more rows is noted whole (:data:`~threetears.core.ddl.change_notes.WHOLE_COPY_ROWS`, the same count)
+_MAX_NOTED_ROWS: Final = WHOLE_COPY_ROWS
 
 _KEYS_UNKNOWN = counter(
     "collection_write_marks_keys_unknown_total",

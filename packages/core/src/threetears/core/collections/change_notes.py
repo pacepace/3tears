@@ -117,7 +117,7 @@ from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
     MARKS_TABLE,
     NOTE_RING_SIZE,
-    NOTE_TRIGGER,
+    NOTE_TRIGGERS,
     NOTE_TRUNCATE_TRIGGER,
     legacy_truncate_trigger_drop_sql,
     RING_TABLE,
@@ -165,6 +165,26 @@ _MARKS_PER_FENCE: Final = 20
 
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
+
+#: YugabyteDB's hash codes of a key: ``yb_hash_code`` answers 0 to 65535
+_HASH_SPACE: Final = 65536
+
+#: the batches' worth of notes the count that sizes an emptying's first band reads at most: past it the table is
+#: taken to hold that many, so the first band is small and the bands grow from the notes each deletes
+_BAND_COUNT_BATCHES: Final = 64
+
+
+def _status_count(status: str) -> int:
+    """the row count a command tag names (``DELETE 812``), 0 when it names none.
+
+    :param status: the tag
+    :ptype status: str
+    :return: the count
+    :rtype: int
+    """
+    last = status.rpartition(" ")[2]
+    return int(last) if last.isdigit() else 0
+
 
 #: the pause between two delete batches, so the emptying never crowds the writers
 _EMPTY_PAUSE: Final = timedelta(milliseconds=20)
@@ -672,6 +692,15 @@ class ChangeNoteKeeper:
         #: the newest epoch the scrub has checked, and the log's head at the previous pass (what it checks up to)
         self._scrubbed: tuple[str, int] | None = None
         self._seen: tuple[str, int] | None = None
+        #: whether the ring's database is YugabyteDB, read once: an emptying steps through the notes in its key's
+        #: own order, which there is the key's hash
+        self._yugabyte: bool | None = None
+        #: the table being emptied (one at a time: the ring's idle table) and where its emptying has reached: the
+        #: next hash band's start (YugabyteDB) or the last id deleted (Postgres), so the next batch, or the next
+        #: pass, starts past the notes already gone; None before a walk starts
+        self._emptying_at: tuple[int, Any] | None = None
+        #: the hash codes a YugabyteDB emptying's next statement covers, sized to about a batch of notes
+        self._band = _HASH_SPACE // 1024
 
     def _ring_table(self, index: int) -> str:
         """the qualified name of the ring's note table at ``index``.
@@ -755,7 +784,7 @@ class ChangeNoteKeeper:
         ]
         triggers = {
             (str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"]))
-            for row in await reader.fetch(_TRIGGERS_SQL, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
+            for row in await reader.fetch(_TRIGGERS_SQL, list(NOTE_TRIGGERS))
         }
         types: dict[tuple[str, str], dict[str, str]] = {}
         for row in await reader.fetch(_COLUMN_TYPES_SQL, sorted(noted)):
@@ -776,9 +805,7 @@ class ChangeNoteKeeper:
                 notes_schema=self._schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
             )
             stale = bodies.get(note_function_name(schema, table)) != wanted
-            missing = tuple(
-                name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (schema, table, name) not in triggers
-            )
+            missing = tuple(name for name in NOTE_TRIGGERS if (schema, table, name) not in triggers)
             if stale or missing:
                 work.append(_Install(table_schema=schema, noted=each, function=stale, triggers=missing))
         return work
@@ -829,13 +856,12 @@ class ChangeNoteKeeper:
                     tenancy=each.tenancy,
                 )
             )
-        row, truncate = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
+        statements = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
         if NOTE_TRUNCATE_TRIGGER in install.triggers:
             # a table given its triggers before a truncate's note named its tenant ran the shared function
             await conn.execute(legacy_truncate_trigger_drop_sql(table_schema=install.table_schema, table=each.table))
-        for name, statement in ((NOTE_TRIGGER, row), (NOTE_TRUNCATE_TRIGGER, truncate)):
-            if name in install.triggers:
-                await conn.execute(statement)
+        for name in install.triggers:
+            await conn.execute(statements[name])
 
     async def ring(self) -> NoteRingState:
         """the ring row, and the database's clock.
@@ -931,7 +957,7 @@ class ChangeNoteKeeper:
             result.fenced = True
         if not ring.emptied:
             idle = ring.oldest
-            done, result.emptied_rows = await self._empty_slot(idle)
+            done, result.emptied_rows = await self.empty_slot(idle)
             if done:
                 ring = await self._update(ring, emptied=True)
                 result.emptied = idle
@@ -991,15 +1017,22 @@ class ChangeNoteKeeper:
             fence_seq=None if ring.fence_seq is None else start,
         )
 
-    async def _empty_slot(self, index: int) -> tuple[bool, int]:
+    async def empty_slot(self, index: int) -> tuple[bool, int]:
         """empty the ring's idle note table at ``index`` with batched deletes; never ``TRUNCATE``.
 
         The one place the ring's emptying is done, so how it is done is one change. Called only for the
         idle table (the one after the current), which the ring switched away from two switches back, at
         least one wait ago: no write can still reach it (the module docstring's argument). Each batch of
-        ``empty_batch`` notes is its own short transaction, with ``empty_pause`` between batches; a pass
+        about ``empty_batch`` notes is its own short transaction, with ``empty_pause`` between batches; a pass
         stops after ``empty_budget`` and the next pass carries on. The table counts as empty only once a
         read finds no note left in it.
+
+        **Each batch starts where the last stopped.** A deleted note leaves a tombstone its table's reads step
+        over until it is compacted away; a batch that picked its notes from the table's start stepped over every
+        tombstone the batches before it left, so emptying ``N`` notes read about ``N²/2/batch`` (YugabyteDB:
+        about 200 ms of tombstones a batch by 200,000 notes). The batches walk the key in its own order instead:
+        on YugabyteDB the key's hash, a band of hash codes a statement, each band sized to about a batch from
+        the last; elsewhere the key itself, past the last id deleted.
 
         :param index: the idle table
         :ptype index: int
@@ -1007,31 +1040,115 @@ class ChangeNoteKeeper:
         :rtype: tuple[bool, int]
         """
         table = self._ring_table(index)
+        if self._yugabyte is None:
+            self._yugabyte = "-YB-" in str((await self._pool.fetch("SELECT version() AS v"))[0]["v"])
         deleted = 0
         began = time.monotonic()
         while True:
-            status = await self._pool.execute(
-                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} LIMIT $1)",  # noqa: S608 - trusted identifiers
-                self._empty_batch,
-            )
-            count = int(status.rpartition(" ")[2]) if status.rpartition(" ")[2].isdigit() else 0
+            if self._yugabyte:
+                count, done = await self._delete_band(table, index)
+            else:
+                count, done = await self._delete_past(table, index)
             deleted += count
-            if count < self._empty_batch:
+            if done:
                 break
             if time.monotonic() - began >= self._empty_budget.total_seconds():
                 break
             await asyncio.sleep(self._empty_pause.total_seconds())
         if deleted:
             _EMPTIED_ROWS.inc(deleted)
+        if not done:
+            # the pass's budget ran out mid-walk: the next pass carries on from where this one stopped
+            return False, deleted
         left = await self._pool.fetch(f"SELECT 1 FROM {table} LIMIT 1")  # noqa: S608 - trusted identifiers
         if left:
+            # a note the walk passed (none can be written here, but a walk may restart after a keeper restarts):
+            # the next pass walks the table again from its start
+            self._emptying_at = None
             return False, deleted
+        self._emptying_at = None
         _EMPTIED.inc()
         log.info(
             "a change-note table was emptied",
             extra={"extra_data": {"table": note_table(index), "deleted": deleted}},
         )
         return True, deleted
+
+    async def _delete_band(self, table: str, index: int) -> tuple[int, bool]:
+        """delete the notes of the next band of key hashes (YugabyteDB); how many, and whether the walk is done.
+
+        A band's statement reads only its own hash codes, so no batch steps over another's tombstones. The band
+        is resized toward ``empty_batch`` notes from the count the last one deleted.
+
+        :param table: the qualified table
+        :ptype table: str
+        :param index: its place in the ring
+        :ptype index: int
+        :return: notes deleted, and whether the band reached the end of the hash space
+        :rtype: tuple[int, bool]
+        """
+        if self._reached(index) is None:
+            # a walk's start: the first band is sized from a count of the table's notes, capped so the count reads
+            # at most _BAND_COUNT_BATCHES batches' worth however many the table holds (past the cap the band starts
+            # small and grows from what each band deletes); a table holding none is done without a statement a band
+            cap = self._empty_batch * _BAND_COUNT_BATCHES
+            held = int(
+                (
+                    await self._pool.fetch(
+                        f"SELECT count(*) AS notes FROM (SELECT 1 FROM {table} LIMIT $1) AS held",  # noqa: S608 - trusted identifiers
+                        cap,
+                    )
+                )[0]["notes"]
+            )
+            if held == 0:
+                return 0, True
+            self._band = max(1, min(_HASH_SPACE, _HASH_SPACE * self._empty_batch // held))
+        start = int(self._reached(index) or 0)
+        end = min(start + self._band, _HASH_SPACE)
+        status = await self._pool.execute(
+            f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
+            start,
+            end,
+        )
+        count = _status_count(status)
+        self._emptying_at = (index, end)
+        if count:
+            self._band = max(1, min(_HASH_SPACE, self._band * self._empty_batch // count))
+        elif self._band < _HASH_SPACE:
+            self._band = min(_HASH_SPACE, self._band * 2)
+        return count, end >= _HASH_SPACE
+
+    def _reached(self, index: int) -> Any:
+        """where the emptying of the table at ``index`` has reached; None when no walk of it has started.
+
+        :param index: the table's place in the ring
+        :ptype index: int
+        :return: the next band's start or the last id deleted, or None
+        :rtype: Any
+        """
+        if self._emptying_at is None or self._emptying_at[0] != index:
+            return None
+        return self._emptying_at[1]
+
+    async def _delete_past(self, table: str, index: int) -> tuple[int, bool]:
+        """delete the next ``empty_batch`` notes past the last id deleted, in id order; how many, and whether done.
+
+        :param table: the qualified table
+        :ptype table: str
+        :param index: its place in the ring
+        :ptype index: int
+        :return: notes deleted, and whether the batch reached the table's end
+        :rtype: tuple[int, bool]
+        """
+        rows = await self._pool.fetch(
+            f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
+            "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
+            self._empty_batch,
+            self._reached(index),
+        )
+        if rows:
+            self._emptying_at = (index, max(row["id"] for row in rows))
+        return len(rows), len(rows) < self._empty_batch
 
     def _switch_waits(self, ring: NoteRingState) -> None:
         """say once per switch that it is due but waits for the idle table's emptying.
@@ -1090,10 +1207,10 @@ class ChangeNoteKeeper:
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
         )
-        await self._count_ring_reads(ring.current)
+        await self.count_ring_reads(ring.current)
         return after
 
-    async def _count_ring_reads(self, index: int) -> None:
+    async def count_ring_reads(self, index: int) -> None:
         """count, per table, the notes of the table just switched away from whose statement read the ring row.
 
         Once per switch: those writers had no valid cached slot (raw SQL outside 3tears, or a process that
@@ -1413,7 +1530,7 @@ class ChangeNoteKeeper:
             return ScrubPass(position=_token(incarnation, start))
         records = await self._epochs_between(start, end)
         fence = _seq_under(ring.fence_seq, incarnation)
-        found = await self._found(ring, records)
+        found = await self.notes_found(ring, records)
         result = ScrubPass(checked=len(records), position=_token(incarnation, end))
         for record in records:
             seq = int(record.token.rpartition(":")[2])
@@ -1456,12 +1573,14 @@ class ChangeNoteKeeper:
             records.extend(record for record in read if record is not None)
         return records
 
-    async def _found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
+    async def notes_found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
         """the notes the coverage tables hold for ``records``, by table.
 
-        Each query is led by the notes' ``(key_text, table_name)`` index, so its cost follows the epochs
-        checked, not the size of the coverage. Only a record that names no rows (a whole-table or keys-unknown
-        epoch) asks whether its table has any note at all, which stops at the first one found.
+        Each query is led by an index, so its cost follows the epochs checked, not the size of the coverage: the
+        keyed notes by the ``(key_text, table_name)`` index, whether a table is noted whole by its whole-note
+        index, and whether a table has any note (asked only for a record naming no rows: a whole-table or
+        keys-unknown epoch) by the ``(table_name, noted_at)`` index. The last two are ``DISTINCT`` over their
+        index, which YugabyteDB answers by skipping from one table's first note to the next's: a note a table.
 
         :param ring: the ring
         :ptype ring: NoteRingState
@@ -1482,14 +1601,17 @@ class ChangeNoteKeeper:
                 tables,
                 keys,
             )
+            # DISTINCT over the whole-note index: YugabyteDB reads one note a table noted whole
             whole = await self._pool.fetch(
                 f"SELECT DISTINCT table_name FROM {table} WHERE key_text IS NULL AND table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
                 tables,
             )
             any_rows = (
                 await self._pool.fetch(
-                    f"SELECT noted AS table_name FROM unnest($1::text[]) AS noted "  # noqa: S608 - trusted identifiers
-                    f"WHERE EXISTS (SELECT 1 FROM {table} n WHERE n.table_name = noted)",
+                    # DISTINCT over the (table_name, noted_at) index: YugabyteDB skips from one table's first note
+                    # to the next table's, reading one a table; an EXISTS a table read ahead a batch of its notes
+                    # each (500, measured)
+                    f"SELECT DISTINCT table_name FROM {table} WHERE table_name = ANY($1::text[])",  # noqa: S608 - trusted identifiers
                     rowless,
                 )
                 if rowless
@@ -1602,6 +1724,43 @@ class NotedRows:
     whole_tenants: tuple[str | None, ...] = ()
 
 
+def _noted_rows_sql(owner: str) -> str:
+    """the one statement :func:`noted_rows_since` asks: the ring row, and the table's notes in its coverage.
+
+    One statement, not a read of the ring row then one of the notes, so the reconciler's ask a marked table
+    is one round trip, and the ring and its notes are read in one snapshot. Each note table's branch is read
+    only when it is the current or the previous table (a one-time filter on the ring row); the previous one only
+    while the reach is before the last switch's fence has passed (a copy of the slot read before the switch writes
+    there for at most the fence after it, so past that it holds no note from the reach on, and is not read), from the reach
+    (``since`` less half the ring's wait), and only when the coverage reaches back that far. Each branch is
+    answered from the ``(table_name, noted_at)`` index, which carries the columns read
+    (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`). A row comes back for the ring with no note
+    (``noted`` NULL) when the coverage holds none, and none at all when the ring has no row.
+
+    :param owner: the quoted schema holding the ring
+    :ptype owner: str
+    :return: the statement: ``$1`` the table, ``$2`` since, ``$3`` the most notes to answer
+    :rtype: str
+    """
+    branches = " UNION ALL ".join(
+        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
+        f"WHERE (r.current_ring = {index} OR ((r.current_ring - 1 + {NOTE_RING_SIZE}) % {NOTE_RING_SIZE} = {index} "
+        "AND r.reach < r.writes_previous_until)) "
+        "AND table_name = $1 AND noted_at >= r.reach"
+        for index in range(NOTE_RING_SIZE)
+    )
+    return (  # one statement; each interpolated piece is a fixed name this module builds
+        "SELECT r.switch_no, r.previous_switched_at, r.reach, n.noted, n.key_text, n.keys, n.columns, n.tenant "
+        f"FROM (SELECT current_ring, switch_no, previous_switched_at, "
+        "$2::timestamptz - make_interval(secs => wait_seconds / 2) AS reach, "
+        "switched_at + make_interval(secs => GREATEST(fence_seconds, wait_seconds)) AS writes_previous_until "
+        f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1) r "
+        "LEFT JOIN LATERAL (SELECT TRUE AS noted, key_text, keys, columns, tenant "
+        f"FROM (SELECT DISTINCT key_text, keys, columns, tenant FROM ({branches}) u) d LIMIT $3) n "
+        "ON r.switch_no = 0 OR r.reach >= r.previous_switched_at"
+    )
+
+
 async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
     """the rows the change notes say ``table``'s writes changed since ``since``, or why they cannot say.
 
@@ -1626,58 +1785,44 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     """
     owner = quote_identifier(notes_schema)
     try:
-        rings = await pool.fetch(
-            "SELECT current_ring, switch_no, switched_at, previous_switched_at, wait_seconds "  # noqa: S608 - trusted identifiers
-            f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
-        )
+        found = await pool.fetch(_noted_rows_sql(owner), table, since, cap + 1)
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the caller names the whole table instead, said and counted there
         return "notes_unavailable"
-    if not rings:
+    if not found:
         return "notes_unavailable"
-    ring = rings[0]
-    reach = since - timedelta(seconds=float(ring["wait_seconds"])) / 2
+    ring = found[0]
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
-    start = None if int(ring["switch_no"]) == 0 else ring["previous_switched_at"]
-    if start is not None and reach < start:
+    if int(ring["switch_no"]) != 0 and ring["reach"] < ring["previous_switched_at"]:
         return "not_covered"
-    current = int(ring["current_ring"])
-    tables = (current, (current - 1) % NOTE_RING_SIZE)
-    coverage = " UNION ALL ".join(
-        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
-        "WHERE table_name = $1 AND noted_at >= $2"
-        for index in tables
-    )
-    notes = await pool.fetch(
-        f"SELECT DISTINCT key_text, keys, columns, tenant FROM ({coverage}) n LIMIT $3", table, reach, cap + 1
-    )
+    # each note's values by position (_noted_rows_sql's select list: noted, key_text, keys, columns, tenant from 3):
+    # at 500 notes the rows' handling, not the statement, was the larger part of the call
+    notes = [note for note in found if note[3]]
     if not notes:
         return "no_notes"
     if len(notes) > cap:
         return "too_many_rows"
     # the ring holds every schema's notes of the table: a whole-table note covers its own tenant's rows (or every
     # tenant's, when it is _all's), never another schema's, whose rows are still named
-    whole = dict.fromkeys(
-        None if note["tenant"] is None else str(note["tenant"]) for note in notes if note["key_text"] is None
-    )
-    covers_all = None in whole
-    rows = {
-        (tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]), note["tenant"]): None
-        for note in notes
-        if note["key_text"] is not None
-        and not covers_all
-        and (None if note["tenant"] is None else str(note["tenant"])) not in whole
-    }
-    return NotedRows(
-        rows=tuple(
-            ChangedRow(
-                ids=list(ids), columns=dict(cols) if cols else None, tenant=None if tenant is None else str(tenant)
+    whole = dict.fromkeys(None if note[7] is None else str(note[7]) for note in notes if note[4] is None)
+    rows: list[ChangedRow] = []
+    if None not in whole:
+        # the statement answers each (key, columns, tenant) once (its DISTINCT), so each note is one row
+        for note in notes:
+            if note[4] is None:
+                continue
+            token = None if note[7] is None else str(note[7])
+            if token in whole:
+                continue
+            columns = note[6]
+            rows.append(
+                ChangedRow(
+                    ids=[str(key) for key in note[5]],
+                    columns=dict(_columns_of(columns)) or None if columns is not None else None,
+                    tenant=token,
+                )
             )
-            for ids, cols, tenant in rows
-        ),
-        whole_table=bool(whole),
-        whole_tenants=tuple(whole),
-    )
+    return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(whole))
 
 
 @dataclass(frozen=True, slots=True)

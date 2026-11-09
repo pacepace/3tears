@@ -19,6 +19,8 @@ version history:
   claims and redemptions tables, and backfill existing rows to the order floor.
 - v003 -- create ``collection_write_marks`` and the trigger function that fills it, so a committed
   write's generation advance cannot be lost (:mod:`threetears.core.collections.write_marks`).
+- v004 -- index ``collection_write_marks`` by ``(table_name, id)``, so the broker's read of a commit's
+  marks reads that table's, not the whole queue.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from threetears.core.coordination.migrations.v002_add_l2_order_columns import ad
 from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
     create_collection_write_marks,
 )
+from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -55,6 +58,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(1)(create_coordination_tables)
     pkg.version(2)(add_l2_order_columns)
     pkg.version(3)(create_collection_write_marks)
+    pkg.version(4)(index_write_marks_by_table)
     # the revocation list caches absences: its writes are marked from the run that creates it
     pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)

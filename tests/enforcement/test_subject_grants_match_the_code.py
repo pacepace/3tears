@@ -272,6 +272,8 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
         # a write generation is followed through the KV key watch, on the inbox: the change log's, or an
         # L2-kept table's generation key in the collections bucket
         "packages/nats/src/threetears/nats/kv.py::NatsChangeLog.watch": _ON_THE_INBOX,
+        # a batched KV read's replies, on an inbox made for the one request and ended with it
+        "packages/nats/src/threetears/nats/kv.py::NatsKvBucket._batch_get_latest.ask": _ON_THE_INBOX,
         "packages/core/src/threetears/core/collections/base.py::BaseCollection.watch_l2_write_generation": _ON_THE_INBOX,
         "packages/epoch/src/threetears/epoch/listener.py::EpochListener.subscribe": {
             # hub gateway/service.py:660, the catalog epoch; the hub's mcp.rbac listener is ungated

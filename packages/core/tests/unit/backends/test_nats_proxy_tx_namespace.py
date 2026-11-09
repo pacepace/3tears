@@ -366,3 +366,32 @@ async def test_fetchval_returns_none_on_an_empty_result() -> None:
         value = await conn.fetchval("SELECT nothing")
 
     assert value is None
+
+
+@pytest.mark.asyncio
+async def test_a_copy_in_a_transaction_is_sized_to_the_caps_its_begin_announced() -> None:
+    """Flips if the caps a hub announces at ``tx.begin`` do not size the session's copies, the reply cap wins over a
+    request cap the hub announced apart, a hub announcing none is given bytes it never sized for, or a request may
+    outgrow the ceiling or the server's max_payload."""
+    mib = 1024 * 1024
+    for begin, max_payload, budget in (
+        ({}, 16 * mib, None),
+        ({"max_reply_bytes": 4 * mib}, 16 * mib, 4 * mib),
+        ({"max_reply_bytes": 8 * mib, "max_request_bytes": 2 * mib}, 16 * mib, 2 * mib),
+        # never past the 12 MiB ceiling, nor past three quarters of what the server takes
+        ({"max_reply_bytes": 64 * mib}, 64 * mib, 12 * mib),
+        ({"max_reply_bytes": 8 * mib}, 8 * mib, 6 * mib),
+    ):
+        plan = _ScriptedReplyPlan(
+            [
+                ("test.l3.tx.begin", {"success": True, "tx_id": TX_ID, **begin}),
+                ("test.l3.tx.commit", {"success": True}),
+            ],
+        )
+        mock_nc = MagicMock()
+        mock_nc.request_raw = plan
+        mock_nc.max_payload = max_payload
+        proxy = _make_proxy(mock_nc)
+        async with proxy.acquire() as conn:
+            async with conn.transaction():
+                assert conn.copy_budget_bytes() == budget

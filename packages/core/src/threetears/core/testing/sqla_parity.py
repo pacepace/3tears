@@ -84,7 +84,7 @@ def column_signature(
 
     :param col: column to summarise
     :ptype col: sqlalchemy.Column
-    :return: 8-tuple of (name, type-class-name, primary_key, nullable,
+    :return: 9-tuple of (name, type-class-name, primary_key, nullable,
         server_default-arg, vector_dim, enum_values, numeric_ps)
     :rtype: tuple
     """
@@ -163,6 +163,7 @@ def index_signature(
     tuple[tuple[str, str], ...],
     tuple[tuple[str, str], ...],
     bool,
+    tuple[str, ...],
 ]:
     """return a structural signature for a SA Index.
 
@@ -190,7 +191,7 @@ def index_signature(
         compiled where-clause text or ``None``, access-method name or
         ``None``, tuple of sorted ``(column, opclass)`` pairs, tuple
         of sorted ``(key, value)`` pairs for the ``WITH`` clause,
-        whether NULLs are not distinct)
+        whether NULLs are not distinct, the included columns in order)
     :rtype: tuple
     """
     where = idx.dialect_kwargs.get("postgresql_where")
@@ -210,6 +211,7 @@ def index_signature(
         tuple(sorted((str(k), str(v)) for k, v in ops_map.items())),
         tuple(sorted((str(k), str(v)) for k, v in with_map.items())),
         bool(idx.dialect_kwargs.get("postgresql_nulls_not_distinct")),
+        tuple(str(column) for column in idx.dialect_kwargs.get("postgresql_include") or ()),
     )
 
 

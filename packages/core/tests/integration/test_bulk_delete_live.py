@@ -33,6 +33,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.plans import on_yugabyte
 
 pytestmark = pytest.mark.integration
 
@@ -178,6 +179,11 @@ _DOCS = TableSchema(
 
 
 async def test_a_jsonb_key_column_held_fixed_deletes_the_keys_named(pool: asyncpg.Pool, db_container: str) -> None:
+    async with pool.acquire() as conn:
+        if await on_yugabyte(conn):
+            pytest.skip(
+                "YugabyteDB holds no JSONB key column (FeatureNotSupportedError), so no such table exists there"
+            )
     await pool.execute("CREATE TABLE docs (doc_id TEXT, shape JSONB, PRIMARY KEY (doc_id, shape))")
     for doc, kind in (("d1", 1), ("d2", 1), ("d3", 1), ("d1", 2)):
         await pool.execute("INSERT INTO docs VALUES ($1, $2::jsonb)", doc, f'{{"k": {kind}}}')

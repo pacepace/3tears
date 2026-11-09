@@ -17,6 +17,7 @@ __all__ = [
     "WRITE_MARK_TRIGGER",
     "write_mark_trigger_sql",
     "write_marks_ddl",
+    "write_marks_index_sql",
 ]
 
 #: the queue of committed writes not yet reconciled
@@ -53,7 +54,25 @@ def write_marks_ddl(schema: str) -> tuple[str, ...]:
         "table_name TEXT NOT NULL, "
         "date_created TIMESTAMPTZ NOT NULL DEFAULT now())",
         _mark_function_sql(schema),
+        write_marks_index_sql(schema),
     )
+
+
+def write_marks_index_sql(schema: str) -> str:
+    """the statement that gives the marks table its ``(table_name, id)`` index, idempotently.
+
+    Every commit the hub's broker answers reads the marks of the tables it wrote (``WHERE table_name =
+    ANY(...)``), to clear those its advances cover. With only the id key, each read scanned every mark queued,
+    and every tombstone a cleared one left: a cost on every write that grew with the queue. The index answers
+    a table's marks alone. A table's marks are one a writing transaction, so its index entries are few.
+
+    :param schema: the schema that holds the queue
+    :ptype schema: str
+    :return: the ``CREATE INDEX`` statement
+    :rtype: str
+    """
+    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+    return f"CREATE INDEX IF NOT EXISTS {quote_identifier(WRITE_MARKS_TABLE + '_table')} ON {marks} (table_name, id)"
 
 
 def _mark_function_sql(schema: str) -> str:

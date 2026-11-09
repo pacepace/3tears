@@ -88,7 +88,14 @@ RULE_ADVICE: Final[Mapping[str, str]] = {
 
 #: the store hooks :class:`~threetears.core.collections.base.BaseCollection`'s write path calls.
 _DEFAULT_WRITE_PATH_HOOKS: Final[frozenset[str]] = frozenset(
-    {"save_to_store", "delete_from_store", "save_ordered_to_store", "persist_to_store", "persist_to_postgres"}
+    {
+        "save_to_store",
+        "save_many_to_store",
+        "delete_from_store",
+        "save_ordered_to_store",
+        "persist_to_store",
+        "persist_to_postgres",
+    }
 )
 
 

@@ -33,7 +33,13 @@ from uuid import UUID
 __all__ = [
     "ArrowL3Reader",
     "L3_RAIL_ROW_CAP",
+    "L3Page",
+    "ManyKeyReadingStore",
+    "ReturningDeletingStore",
     "LOAD_FILES_MAX_WAIT_SECONDS",
+    "copy_bounds",
+    "ANALYZE_AFTER_ROWS",
+    "AnalyzingStore",
     "BulkDeletingStore",
     "BulkDurableStore",
     "CopyingStore",
@@ -96,6 +102,29 @@ class ArrowL3Reader(Protocol):
 #: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
+
+
+@dataclass(frozen=True)
+class L3Page:
+    """one keyset page as a transport that may cut it answers it: its rows, whether the transport cut them
+    short of what the statement matched, and how many bytes its reply took.
+
+    A transport answers a keyset page with ``fetch_page`` or ``fetch_arrow_page``. A broker that cuts a read's
+    reply by its bytes announces the cap in every reply (``max_reply_bytes``); a cut page is still the
+    statement's first rows in its order, so a keyset read takes it as a short page and steps past its last
+    row, and sizes its next page's rows to the cap (:mod:`threetears.core.keyset`).
+
+    :ivar rows: the rows: dicts from ``fetch_page``, a ``pyarrow.Table`` from ``fetch_arrow_page``
+    :ivar truncated: the transport answered fewer rows than the statement matched
+    :ivar reply_bytes: the reply's size, from which the next page's rows are sized
+    :ivar reply_cap: the bytes the broker announced it cuts a reply at; None from one that cuts at its row
+        cap (an older hub), or a transport that cuts nothing, whose pages keep their row count
+    """
+
+    rows: Any
+    truncated: bool
+    reply_bytes: int
+    reply_cap: int | None = None
 
 
 class L3AnswerCutError(RuntimeError):
@@ -529,6 +558,58 @@ class LoadResult:
     files: tuple[FileLoad, ...]
 
 
+#: the rows a load writes to a table from which the table is analysed after it (:class:`AnalyzingStore`): a
+#: reload's, not ordinary writes, which auto-analyze keeps up with. The hub's broker asks the same of its loads
+ANALYZE_AFTER_ROWS: Final = 10_000
+
+
+def copy_bounds(conn: Any, rows: int) -> tuple[int | None, int | None]:
+    """the row and byte bounds of one copy of ``rows`` rows on ``conn``, when its caller names neither.
+
+    - The L3 rail, its hub's cap announced (``copy_budget_bytes``): bytes alone cut it, each request sized to
+      that cap, so a reload is a few requests, not one a thousand rows.
+    - A connection that streams a copy (no ``copy_request_bytes``: asyncpg's own): one ``COPY`` of every row,
+      which is what the database's bulk path costs; cut, it cost two and a half times that on YugabyteDB.
+    - The rail of a hub that announces no cap: None, None, so the caller's fixed batches stand.
+
+    :param conn: the connection the copy goes to
+    :ptype conn: Any
+    :param rows: the rows copied
+    :ptype rows: int
+    :return: the most rows and the most bytes one copy carries, each None where the caller's default stands
+    :rtype: tuple[int | None, int | None]
+    """
+    budget = getattr(conn, "copy_budget_bytes", None)
+    announced = budget() if callable(budget) else None
+    if isinstance(announced, int) and not isinstance(announced, bool) and announced > 0:
+        return max(rows, 1), announced
+    if not callable(getattr(conn, "copy_request_bytes", None)):
+        return max(rows, 1), None
+    return None, None
+
+
+@runtime_checkable
+class AnalyzingStore(Protocol):
+    """A durable store that refreshes a table's planner statistics after a reload.
+
+    A reload truncates a table and loads it again; the truncate leaves the planner no row count until the
+    table is analysed, and YugabyteDB plans its reads blind meanwhile (a state's rows of some geographies:
+    a primary-key scan and a sort, 157 ms against 0.4 ms once analysed). On the L3 rail the broker analyses
+    a loaded table itself, once its loads settle; a direct store does it when asked, after the load's last
+    request.
+    """
+
+    async def analyze(self, table: str) -> None:
+        """refresh ``table``'s planner statistics, where this store is the one to; nothing where it is not.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+
 @runtime_checkable
 class LoadingStore(Protocol):
     """A durable store that loads one table from files, outside any transaction of the caller's.
@@ -585,6 +666,72 @@ class LoadingStore(Protocol):
         :ptype timeout_ms: int
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
+        """
+        ...
+
+
+@runtime_checkable
+class ManyKeyReadingStore(Protocol):
+    """A durable store that reads many rows of one table by whole key at once.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_rows` reads the rows
+    it deletes through, when the collection's messages carry columns of each. A store without it is asked a key at
+    a time through :meth:`DurableStore.fetch_one`.
+    """
+
+    async def fetch_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """Read every row of ``table`` whose primary key is one of ``keys``, each as ``fetch_one`` reads it.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one read may name
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the backend's own
+        :ptype conn: Any
+        :return: each held row under its key as ``keys`` names it; a key no row holds left out
+        :rtype: dict[tuple[Any, ...], dict[str, Any]]
+        """
+        ...
+
+
+@runtime_checkable
+class ReturningDeletingStore(Protocol):
+    """A durable store that deletes many rows of one table by key and returns the rows it deleted.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_rows` deletes
+    through when the collection's messages carry columns of each row: one statement a batch reads and deletes,
+    where a read then a delete took two.
+    """
+
+    async def delete_many_returning(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """Delete every row of ``table`` whose primary key is one of ``keys``, returning each as ``fetch_one`` reads it.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement may name
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the backend's own
+        :ptype conn: Any
+        :return: each deleted row under its key as ``keys`` names it; a key no row held left out
+        :rtype: dict[tuple[Any, ...], dict[str, Any]]
         """
         ...
 

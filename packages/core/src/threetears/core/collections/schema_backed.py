@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -50,7 +50,11 @@ from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.backends.protocol import (
+    ANALYZE_AFTER_ROWS,
+    AnalyzingStore,
     BulkDeletingStore,
+    ManyKeyReadingStore,
+    ReturningDeletingStore,
     BulkDurableStore,
     CopyingStore,
     DurableStore,
@@ -59,6 +63,7 @@ from threetears.core.backends.protocol import (
     LoadingStore,
     OrderedDurableStore,
     TruncatingStore,
+    copy_bounds,
     load_requests,
     side_by_side_requests,
 )
@@ -82,6 +87,7 @@ from threetears.core.keyset import keyset_pages
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter
 
 __all__ = [
     "BIGINT_TYPE",
@@ -128,6 +134,18 @@ __all__ = [
 OnConflict = Literal["raise", "ignore", "update"]
 
 log = get_logger(__name__)
+
+
+def _deletes_settled_by_key() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_collection_deletes_settled_by_key_total",
+        description=(
+            "rows a bulk delete enrolled whose delete failed before returning them, so their invalidation names the "
+            "key alone (a broader invalidation than their columns would give)"
+        ),
+        label_names=("table",),
+    )
 
 
 # sentinel strings for column type tags. chosen over real Python types
@@ -304,6 +322,11 @@ class IndexDef:
         rows whose covered columns are both NULL collide, as
         ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
         column still holds one row per key while that column is unset.
+    :cvar include: columns the index carries without ordering by them
+        (``INCLUDE (...)`` in the DDL), so a read of them is answered from
+        the index alone. On YugabyteDB a read through an index that does
+        not carry a column visits the table for each row, several times the
+        index read's cost. none may also be in ``columns``.
     """
 
     name: str
@@ -316,6 +339,7 @@ class IndexDef:
     pg_with: tuple[tuple[str, str], ...] | None = None
     desc: tuple[str, ...] = ()
     nulls_not_distinct: bool = False
+    include: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
@@ -340,6 +364,11 @@ class IndexDef:
         if stray:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        twice = [col for col in self.include if col in self.columns]
+        if twice:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): include names {twice!r}, which are already its columns",
             )
         both = [col for col in self.desc if col in dict(self.ops or ())]
         if both:
@@ -410,6 +439,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     pg_with: Mapping[str, str] | None = None,
     desc: str | Sequence[str] = (),
     nulls_not_distinct: bool = False,
+    include: Sequence[str] = (),
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -431,6 +461,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         )
         Index("idx_memories_tags", "tags", using="gin")
         Index("idx_history", "agent_id", "date_created", desc="date_created")
+        Index("t_by_state", "state", "geo", *primary_key, include=("votes", "pad"))
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -466,6 +497,10 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         (``NULLS NOT DISTINCT``); maps to SQLAlchemy's
         ``postgresql_nulls_not_distinct`` dialect kwarg
     :ptype nulls_not_distinct: bool
+    :param include: columns carried without ordering (``INCLUDE (...)``),
+        so a read of them never visits the table; maps to SQLAlchemy's
+        ``postgresql_include`` dialect kwarg
+    :ptype include: Sequence[str]
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -491,6 +526,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         pg_with=pg_with_tuple,
         desc=(desc,) if isinstance(desc, str) else tuple(desc),
         nulls_not_distinct=nulls_not_distinct,
+        include=tuple(include),
     )
 
 
@@ -1131,6 +1167,49 @@ class TableSchema:
         """
         return self._pk_columns
 
+    def keyset_order(self, pinned: Iterable[str] = ()) -> tuple[str, ...]:
+        """the columns a keyset read of the rows ``pinned``'s equality filters name pages on, so an index answers
+        each page in that order.
+
+        A keyset read pages ``ORDER BY`` the columns it is given (:mod:`threetears.core.keyset`). Ordered by the
+        primary key, a read filtered on other columns is found through another index, and every page reads and
+        sorts every row the filters leave. This picks the declared index (or the primary key) that the filters
+        lead furthest: its leading columns all in ``pinned``, and every primary-key column in it, so its columns
+        after that lead are unique among the read's rows. The answer is those columns, in the index's order. An
+        index led by the filters but without the key in it cannot answer a page in order: declare the primary
+        key's columns as its tail (``Index("t_by_state", "state", "geo", *primary_key)``).
+
+        Only a plain ascending btree index is chosen: not a partial one (it holds only its ``where``'s rows), one
+        of another access method, one with a descending column or an operator class. When no index is led by
+        the filters (none pinned, or none such), the primary key. On a tie the primary key wins, then the index
+        declared first.
+
+        A set filter (``= ANY``) pins nothing: its column is read in order, as the index orders it.
+
+        :param pinned: the columns the read's equality filters fix
+        :ptype pinned: Iterable[str]
+        :return: the columns to page on, unique among the rows the filters name
+        :rtype: tuple[str, ...]
+        """
+        fixed = set(pinned)
+        candidates = [self._pk_columns]
+        candidates += [
+            index.columns
+            for index in self.indexes
+            if index.where is None
+            and index.using in (None, "btree")
+            and not index.desc
+            and not index.ops
+            and set(self._pk_columns) <= set(index.columns)
+        ]
+        best, order = 0, self._pk_columns
+        for columns in candidates:
+            led = next((place for place, column in enumerate(columns) if column not in fixed), len(columns))
+            # a lead that pins every column leaves nothing to page on: one row, read by the key
+            if best < led < len(columns):
+                best, order = led, tuple(columns[led:])
+        return order
+
     @property
     def partition_column(self) -> str | None:
         """return the partition-column name, or ``None`` for non-partitioned tables.
@@ -1319,6 +1398,8 @@ class TableSchema:
                 idx_kwargs["postgresql_with"] = dict(idx.pg_with)
             if idx.nulls_not_distinct:
                 idx_kwargs["postgresql_nulls_not_distinct"] = True
+            if idx.include:
+                idx_kwargs["postgresql_include"] = list(idx.include)
             sa.Index(
                 idx.name,
                 *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),
@@ -2277,9 +2358,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype rows: list[dict[str, Any]]
         :param conn: the caller's connection
         :ptype conn: Any
-        :param max_rows: the most rows one copy carries; :attr:`BULK_MAX_ROWS` when None
+        :param max_rows: the most rows one copy carries; when neither bound is given, :func:`copy_bounds`
         :ptype max_rows: int | None
-        :param max_bytes: the most bytes one copy's request comes to; :attr:`BULK_MAX_BYTES` when None
+        :param max_bytes: the most bytes one copy's request comes to; when neither bound is given, :func:`copy_bounds`
         :ptype max_bytes: int | None
         :return: rows written
         :rtype: int
@@ -2287,6 +2368,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if not rows:
             return 0
         if isinstance(store, CopyingStore):
+            if max_rows is None and max_bytes is None:
+                max_rows, max_bytes = copy_bounds(conn, len(rows))
             return await store.copy_many(
                 self.table_name,
                 rows,
@@ -2460,6 +2543,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # committed, and a reply lost or timed out may follow a load the broker finished
             await self._drop_and_advance_after_failure("load from files failed", exc)
             raise
+        if written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
+            # a reload's rows: the planner reads the table blind until it is analysed, once, after the last request
+            try:
+                await store.analyze(self.table_name)
+            # prawduct:allow prawduct/broad-except -- the rows are loaded; stale statistics cost plans, not data
+            except Exception as exc:
+                contain(
+                    exc, log=log, what="could not analyse a table after loading it", extra={"table": self.table_name}
+                )
         await self._drop_and_advance("loaded from files", rows=written, requests=len(requests))
         return written
 
@@ -2571,17 +2663,26 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(
                 f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
             )
+        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
+            return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         entity_keys: list[Any] = []
+        # a collection whose row messages carry columns reads each row before it goes, on the caller's
+        # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
+        # many (one a key was a round trip each, on the rail a NATS request each), a read a key where it
+        # cannot, none for a collection that declares no columns
+        held: dict[tuple[Any, ...], dict[str, Any]] | None = None
+        if self.invalidation_columns and named and isinstance(store, ManyKeyReadingStore):
+            held = await store.fetch_many(self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn)
         for key in named:
             entity_key = key if width > 1 else key[0]
-            # a collection whose row messages carry columns reads each row before it goes, on the
-            # caller's transaction, so the message can say whose it was; one read per key, and
-            # none for a collection that declares no columns
-            seen = (
-                await store.fetch_one(self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn)
-                if self.invalidation_columns
-                else None
-            )
+            if not self.invalidation_columns:
+                seen = None
+            elif held is not None:
+                seen = held.get(key)
+            else:
+                seen = await store.fetch_one(
+                    self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn
+                )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
             transaction.enroll(self, entity_key, row=seen)
             entity_keys.append(entity_key)
@@ -2601,6 +2702,61 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    async def _delete_rows_returning(
+        self,
+        store: ReturningDeletingStore,
+        named: list[tuple[Any, ...]],
+        transaction: CallerTransaction,
+        *,
+        conn: Any,
+        max_rows: int | None,
+    ) -> int:
+        """:meth:`delete_rows` for a collection whose messages carry columns, on a store that returns what it deletes.
+
+        Each key is enrolled before the delete with no row, so a delete whose outcome is unknown is still
+        settled (its message names the key alone: a broader invalidation, never a missed one), then restated
+        with the row the delete returned. One ``DELETE ... RETURNING`` a batch, where a read then a delete took
+        two statements (2.7 times one keyed delete on YugabyteDB). A failed delete is counted
+        (``threetears_collection_deletes_settled_by_key_total``) and logged, so a message that went out without
+        its columns is seen.
+
+        :param store: the collection's durable store
+        :ptype store: ReturningDeletingStore
+        :param named: the keys, each a tuple in key order
+        :ptype named: list[tuple[Any, ...]]
+        :param transaction: the caller's transaction
+        :ptype transaction: CallerTransaction
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :param max_rows: the most keys one statement names; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :return: the keys named
+        :rtype: int
+        """
+        width = len(self.schema.pk_columns)
+        entity_keys = [key if width > 1 else key[0] for key in named]
+        for entity_key in entity_keys:
+            transaction.enroll(self, entity_key, row=None)
+        await self._evict_l1_many_off_loop(entity_keys)
+        try:
+            deleted = await store.delete_many_returning(
+                self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn
+            )
+        except BaseException:  # prawduct:allow prawduct/broad-except -- counted and logged, then re-raised
+            _deletes_settled_by_key().labels(table=self.table_name).inc(len(named))
+            log.warning(
+                "a bulk delete failed before it returned its rows: its keys are settled without their columns, "
+                "a broader invalidation",
+                extra={"extra_data": {"table": self.table_name, "keys": len(named)}},
+            )
+            raise
+        transaction.restate_many(self, {key if width > 1 else key[0]: row for key, row in deleted.items()})
+        log.debug(
+            "bulk delete written on the caller's transaction, its rows returned",
+            extra={"extra_data": {"table": self.table_name, "rows": len(deleted)}},
+        )
+        return len(named)
 
     async def read_rows_led_by(
         self,
@@ -2720,6 +2876,37 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             cas=original_timestamp,
             conn=conn,
         )
+
+    @property
+    def saves_many_to_store(self) -> bool:
+        """whether :meth:`save_many_to_store` saves rows as :meth:`save_to_store` would: a table upserted on conflict,
+        on a store that saves many rows in a few statements.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self.schema.on_conflict == "update" and isinstance(self._durable_store(), BulkDurableStore)
+
+    async def save_many_to_store(self, rows: list[dict[str, Any]]) -> int:
+        """save many rows to L3 in a few statements, as :meth:`save_to_store` saves each with no fence.
+
+        A store hook of the write path, as :meth:`save_to_store` is: the L2-first saver writes a backlog of rows
+        already committed and announced at L2 through it (:mod:`threetears.core.collections.l2_first`), and only
+        where :attr:`saves_many_to_store`.
+
+        :param rows: the rows, each keyed by column
+        :ptype rows: list[dict[str, Any]]
+        :return: rows written
+        :rtype: int
+        :raises ValueError: when the collection does not save many rows at once (:attr:`saves_many_to_store`)
+        """
+        store = self._durable_store()
+        if self.schema.on_conflict != "update" or not isinstance(store, BulkDurableStore):
+            raise ValueError(f"{self.table_name}: save_many_to_store needs a bulk store and an upsert on conflict")
+        written: int = await store.upsert_many(
+            self.schema.name, rows, max_rows=self.BULK_MAX_ROWS, max_bytes=self.BULK_MAX_BYTES
+        )
+        return written
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete one row from L3 by primary key via the :class:`DurableStore` seam.
