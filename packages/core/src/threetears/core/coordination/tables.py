@@ -691,7 +691,8 @@ def table_def_for(schema: TableSchema) -> TableDef:
             for column in schema.columns
         ],
         indexes=[
-            DdlIndexDef(name=index.name, columns=list(index.columns), unique=index.unique) for index in schema.indexes
+            DdlIndexDef(name=index.name, columns=list(index.columns), unique=index.unique, include=list(index.include))
+            for index in schema.indexes
         ],
     )
 

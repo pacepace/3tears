@@ -144,11 +144,15 @@ class IndexDef(BaseModel):
     :ptype columns: list[str]
     :param unique: whether index enforces uniqueness
     :ptype unique: bool
+    :param include: columns the index carries without ordering by them (``INCLUDE (...)``), so a read of
+        them is answered from the index alone
+    :ptype include: list[str]
     """
 
     name: str
     columns: list[str]
     unique: bool = False
+    include: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -177,6 +181,21 @@ class IndexDef(BaseModel):
         """
         for col in value:
             _validate_identifier(col, "column name")
+        return value
+
+    @field_validator("include")
+    @classmethod
+    def validate_include(cls, value: list[str]) -> list[str]:
+        """validate every included column name.
+
+        :param value: included column names
+        :ptype value: list[str]
+        :return: the names
+        :rtype: list[str]
+        :raises ValueError: if any name does not match the allowed pattern
+        """
+        for col in value:
+            _validate_identifier(col, "included column name")
         return value
 
 

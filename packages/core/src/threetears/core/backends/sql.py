@@ -43,9 +43,11 @@ from urllib.request import url2pathname
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
+from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
     L3AnswerCutError,
+    L3Page,
     FileLoad,
     LoadFile,
     LoadingStore,
@@ -1087,6 +1089,51 @@ class SqlL3Backend:
         )
         return result
 
+    async def fetch_page(self, query: str, *params: Any) -> L3Page:
+        """a keyset page's SELECT through the transport that may cut it: its rows, whether it was cut, its bytes.
+
+        On the rail, its own :meth:`NatsProxyL3Backend.fetch_page`; on a bound or direct connection, which cuts
+        nothing, :meth:`fetch`'s rows, never cut, at no stated size.
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the page
+        :rtype: L3Page
+        """
+        target, _ = self._target()
+        # looked up on the class: a mock pool's instance answers any name it is asked
+        paged = getattr(target, "fetch_page") if target is self._pool and hasattr(type(target), "fetch_page") else None
+        if paged is None:
+            return L3Page(rows=await self.fetch(query, *params), truncated=False, reply_bytes=0)
+        page: L3Page = await paged(query, *params)
+        return page
+
+    async def fetch_arrow_page(self, query: str, *params: Any, types: Mapping[str, Any]) -> L3Page:
+        """:meth:`fetch_page`, its rows one Arrow table (:func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow`).
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the page, its rows a ``pyarrow.Table``
+        :rtype: L3Page
+        """
+        target, _ = self._target()
+        paged = (
+            getattr(target, "fetch_arrow_page")
+            if target is self._pool and hasattr(type(target), "fetch_arrow_page")
+            else None
+        )
+        if paged is None:
+            rows = await l3_fetch_arrow(self, query, *params, types=types)
+            return L3Page(rows=rows, truncated=False, reply_bytes=0)
+        page: L3Page = await paged(query, *params, types=types)
+        return page
+
     @property
     def rows_per_statement(self) -> int | None:
         """the most rows the wrapped transport answers one statement, or None when it never cuts.
@@ -1391,9 +1438,11 @@ class SqlL3Backend:
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty).
 
-        A table whose schema is registered is read in pages of its primary key under the transport's row cap
+        A table whose schema is registered is read in pages under the transport's row cap
         (:attr:`rows_per_statement`), so a scan of more rows than the L3 rail answers a statement reads every one;
-        any other is one statement, which the rail refuses rather than cut when it matches more.
+        any other is one statement, which the rail refuses rather than cut when it matches more. The pages are in
+        the order of the declared index the filters lead (:meth:`TableSchema.keyset_order
+        <threetears.core.collections.schema_backed.TableSchema.keyset_order>`), so each reads about its own rows.
         """
         schema = self._schemas.get(table)
         cap = self.rows_per_statement
@@ -1401,7 +1450,7 @@ class SqlL3Backend:
             read = await read_keyset_pages(
                 self,
                 f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
-                list(schema.pk_columns),
+                list(schema.keyset_order(filters or {})),
                 where=dict(filters or {}),
                 page_size=cap - 1,
             )

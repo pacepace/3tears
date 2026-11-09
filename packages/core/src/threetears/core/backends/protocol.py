@@ -33,6 +33,7 @@ from uuid import UUID
 __all__ = [
     "ArrowL3Reader",
     "L3_RAIL_ROW_CAP",
+    "L3Page",
     "LOAD_FILES_MAX_WAIT_SECONDS",
     "BulkDeletingStore",
     "BulkDurableStore",
@@ -96,6 +97,29 @@ class ArrowL3Reader(Protocol):
 #: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
+
+
+@dataclass(frozen=True)
+class L3Page:
+    """one keyset page as a transport that may cut it answers it: its rows, whether the transport cut them
+    short of what the statement matched, and how many bytes its reply took.
+
+    A transport answers a keyset page with ``fetch_page`` or ``fetch_arrow_page``. A broker that cuts a read's
+    reply by its bytes announces the cap in every reply (``max_reply_bytes``); a cut page is still the
+    statement's first rows in its order, so a keyset read takes it as a short page and steps past its last
+    row, and sizes its next page's rows to the cap (:mod:`threetears.core.keyset`).
+
+    :ivar rows: the rows: dicts from ``fetch_page``, a ``pyarrow.Table`` from ``fetch_arrow_page``
+    :ivar truncated: the transport answered fewer rows than the statement matched
+    :ivar reply_bytes: the reply's size, from which the next page's rows are sized
+    :ivar reply_cap: the bytes the broker announced it cuts a reply at; None from one that cuts at its row
+        cap (an older hub), or a transport that cuts nothing, whose pages keep their row count
+    """
+
+    rows: Any
+    truncated: bool
+    reply_bytes: int
+    reply_cap: int | None = None
 
 
 class L3AnswerCutError(RuntimeError):

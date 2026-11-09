@@ -339,12 +339,12 @@ async def read_l3_rows(
     this pages through :func:`~threetears.core.keyset.read_keyset_pages`, asking for one row more
     than a page until a page comes back without it.
 
-    **A whole-table read, not a bounded one.** Each page is ``ORDER BY`` the whole key, which a
-    btree key answers in order but a YugabyteDB hash-sharded key answers by reading and sorting
-    every row the filters leave, once a page. Fine for a table copied whole that is small enough
-    to copy; for the rows some leading-key values hold, read
-    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.read_rows_led_by`,
-    every statement of which the key leads.
+    **Page in the order an index answers.** Each page is ``ORDER BY`` ``key``. Given the primary key for
+    a read filtered on other columns, every page reads and sorts every row the filters leave. A filtered
+    read passes :meth:`TableSchema.keyset_order
+    <threetears.core.collections.schema_backed.TableSchema.keyset_order>` of its equality-filtered
+    columns, the order of the declared index they lead (with the primary key as that index's tail), and
+    each page reads about its own rows (:mod:`threetears.core.keyset`).
 
     :param l3: the L3 backend
     :ptype l3: L3Reader
@@ -352,7 +352,8 @@ async def read_l3_rows(
     :ptype table: str
     :param columns: the columns to read, TRUSTED identifiers
     :ptype columns: Sequence[str]
-    :param key: the table's key, TRUSTED identifiers; unique, so paging steps past no row
+    :param key: the columns to page on, TRUSTED identifiers; unique among the rows read, so paging steps past
+        no row: the table's key, or ``TableSchema.keyset_order`` of the filtered columns
     :ptype key: Sequence[str]
     :param where: equality filters naming the rows; every row when None
     :ptype where: Mapping[str, Any] | None
