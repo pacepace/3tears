@@ -658,7 +658,8 @@ def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_word
 
 def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision() -> None:
     """A forest of changes in points prints its values and their intervals' ends at the pass rate's one precision on
-    the page (number policy, rule 1: Kairo's half-width of 3.5 points reads them whole), never at the float's four
+    the page (number policy, rule 1: Kairo's campaign's narrowest half-width, ±2.86 points, reads them at a tenth),
+    never at the float's four
     figures (``-3.010 | -5.815 to +1.136``)."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     look = block_look(held, fact_arms(held))
@@ -691,7 +692,7 @@ def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision()
     _, rows = values_table(drawn.chart)
     figures = [number for row in rows for cell in row[1:3] for number in re.findall(r"[+-]?\d+\.\d+|[+-]?\d+", cell)]
     places = PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places
-    assert places == 0
+    assert places == 1
     assert figures and all(len(number.partition(".")[2]) == places for number in figures), rows
 
 
