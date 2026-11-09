@@ -166,6 +166,26 @@ _MARKS_PER_FENCE: Final = 20
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
 
+#: YugabyteDB's hash codes of a key: ``yb_hash_code`` answers 0 to 65535
+_HASH_SPACE: Final = 65536
+
+#: the batches' worth of notes the count that sizes an emptying's first band reads at most: past it the table is
+#: taken to hold that many, so the first band is small and the bands grow from the notes each deletes
+_BAND_COUNT_BATCHES: Final = 64
+
+
+def _status_count(status: str) -> int:
+    """the row count a command tag names (``DELETE 812``), 0 when it names none.
+
+    :param status: the tag
+    :ptype status: str
+    :return: the count
+    :rtype: int
+    """
+    last = status.rpartition(" ")[2]
+    return int(last) if last.isdigit() else 0
+
+
 #: the pause between two delete batches, so the emptying never crowds the writers
 _EMPTY_PAUSE: Final = timedelta(milliseconds=20)
 
@@ -672,6 +692,15 @@ class ChangeNoteKeeper:
         #: the newest epoch the scrub has checked, and the log's head at the previous pass (what it checks up to)
         self._scrubbed: tuple[str, int] | None = None
         self._seen: tuple[str, int] | None = None
+        #: whether the ring's database is YugabyteDB, read once: an emptying steps through the notes in its key's
+        #: own order, which there is the key's hash
+        self._yugabyte: bool | None = None
+        #: the table being emptied (one at a time: the ring's idle table) and where its emptying has reached: the
+        #: next hash band's start (YugabyteDB) or the last id deleted (Postgres), so the next batch, or the next
+        #: pass, starts past the notes already gone; None before a walk starts
+        self._emptying_at: tuple[int, Any] | None = None
+        #: the hash codes a YugabyteDB emptying's next statement covers, sized to about a batch of notes
+        self._band = _HASH_SPACE // 1024
 
     def _ring_table(self, index: int) -> str:
         """the qualified name of the ring's note table at ``index``.
@@ -931,7 +960,7 @@ class ChangeNoteKeeper:
             result.fenced = True
         if not ring.emptied:
             idle = ring.oldest
-            done, result.emptied_rows = await self._empty_slot(idle)
+            done, result.emptied_rows = await self.empty_slot(idle)
             if done:
                 ring = await self._update(ring, emptied=True)
                 result.emptied = idle
@@ -991,15 +1020,22 @@ class ChangeNoteKeeper:
             fence_seq=None if ring.fence_seq is None else start,
         )
 
-    async def _empty_slot(self, index: int) -> tuple[bool, int]:
+    async def empty_slot(self, index: int) -> tuple[bool, int]:
         """empty the ring's idle note table at ``index`` with batched deletes; never ``TRUNCATE``.
 
         The one place the ring's emptying is done, so how it is done is one change. Called only for the
         idle table (the one after the current), which the ring switched away from two switches back, at
         least one wait ago: no write can still reach it (the module docstring's argument). Each batch of
-        ``empty_batch`` notes is its own short transaction, with ``empty_pause`` between batches; a pass
+        about ``empty_batch`` notes is its own short transaction, with ``empty_pause`` between batches; a pass
         stops after ``empty_budget`` and the next pass carries on. The table counts as empty only once a
         read finds no note left in it.
+
+        **Each batch starts where the last stopped.** A deleted note leaves a tombstone its table's reads step
+        over until it is compacted away; a batch that picked its notes from the table's start stepped over every
+        tombstone the batches before it left, so emptying ``N`` notes read about ``N²/2/batch`` (YugabyteDB:
+        about 200 ms of tombstones a batch by 200,000 notes). The batches walk the key in its own order instead:
+        on YugabyteDB the key's hash, a band of hash codes a statement, each band sized to about a batch from
+        the last; elsewhere the key itself, past the last id deleted.
 
         :param index: the idle table
         :ptype index: int
@@ -1007,31 +1043,115 @@ class ChangeNoteKeeper:
         :rtype: tuple[bool, int]
         """
         table = self._ring_table(index)
+        if self._yugabyte is None:
+            self._yugabyte = "-YB-" in str((await self._pool.fetch("SELECT version() AS v"))[0]["v"])
         deleted = 0
         began = time.monotonic()
         while True:
-            status = await self._pool.execute(
-                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} LIMIT $1)",  # noqa: S608 - trusted identifiers
-                self._empty_batch,
-            )
-            count = int(status.rpartition(" ")[2]) if status.rpartition(" ")[2].isdigit() else 0
+            if self._yugabyte:
+                count, done = await self._delete_band(table, index)
+            else:
+                count, done = await self._delete_past(table, index)
             deleted += count
-            if count < self._empty_batch:
+            if done:
                 break
             if time.monotonic() - began >= self._empty_budget.total_seconds():
                 break
             await asyncio.sleep(self._empty_pause.total_seconds())
         if deleted:
             _EMPTIED_ROWS.inc(deleted)
+        if not done:
+            # the pass's budget ran out mid-walk: the next pass carries on from where this one stopped
+            return False, deleted
         left = await self._pool.fetch(f"SELECT 1 FROM {table} LIMIT 1")  # noqa: S608 - trusted identifiers
         if left:
+            # a note the walk passed (none can be written here, but a walk may restart after a keeper restarts):
+            # the next pass walks the table again from its start
+            self._emptying_at = None
             return False, deleted
+        self._emptying_at = None
         _EMPTIED.inc()
         log.info(
             "a change-note table was emptied",
             extra={"extra_data": {"table": note_table(index), "deleted": deleted}},
         )
         return True, deleted
+
+    async def _delete_band(self, table: str, index: int) -> tuple[int, bool]:
+        """delete the notes of the next band of key hashes (YugabyteDB); how many, and whether the walk is done.
+
+        A band's statement reads only its own hash codes, so no batch steps over another's tombstones. The band
+        is resized toward ``empty_batch`` notes from the count the last one deleted.
+
+        :param table: the qualified table
+        :ptype table: str
+        :param index: its place in the ring
+        :ptype index: int
+        :return: notes deleted, and whether the band reached the end of the hash space
+        :rtype: tuple[int, bool]
+        """
+        if self._reached(index) is None:
+            # a walk's start: the first band is sized from a count of the table's notes, capped so the count reads
+            # at most _BAND_COUNT_BATCHES batches' worth however many the table holds (past the cap the band starts
+            # small and grows from what each band deletes); a table holding none is done without a statement a band
+            cap = self._empty_batch * _BAND_COUNT_BATCHES
+            held = int(
+                (
+                    await self._pool.fetch(
+                        f"SELECT count(*) AS notes FROM (SELECT 1 FROM {table} LIMIT $1) AS held",  # noqa: S608 - trusted identifiers
+                        cap,
+                    )
+                )[0]["notes"]
+            )
+            if held == 0:
+                return 0, True
+            self._band = max(1, min(_HASH_SPACE, _HASH_SPACE * self._empty_batch // held))
+        start = int(self._reached(index) or 0)
+        end = min(start + self._band, _HASH_SPACE)
+        status = await self._pool.execute(
+            f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
+            start,
+            end,
+        )
+        count = _status_count(status)
+        self._emptying_at = (index, end)
+        if count:
+            self._band = max(1, min(_HASH_SPACE, self._band * self._empty_batch // count))
+        elif self._band < _HASH_SPACE:
+            self._band = min(_HASH_SPACE, self._band * 2)
+        return count, end >= _HASH_SPACE
+
+    def _reached(self, index: int) -> Any:
+        """where the emptying of the table at ``index`` has reached; None when no walk of it has started.
+
+        :param index: the table's place in the ring
+        :ptype index: int
+        :return: the next band's start or the last id deleted, or None
+        :rtype: Any
+        """
+        if self._emptying_at is None or self._emptying_at[0] != index:
+            return None
+        return self._emptying_at[1]
+
+    async def _delete_past(self, table: str, index: int) -> tuple[int, bool]:
+        """delete the next ``empty_batch`` notes past the last id deleted, in id order; how many, and whether done.
+
+        :param table: the qualified table
+        :ptype table: str
+        :param index: its place in the ring
+        :ptype index: int
+        :return: notes deleted, and whether the batch reached the table's end
+        :rtype: tuple[int, bool]
+        """
+        rows = await self._pool.fetch(
+            f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
+            "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
+            self._empty_batch,
+            self._reached(index),
+        )
+        if rows:
+            self._emptying_at = (index, max(row["id"] for row in rows))
+        return len(rows), len(rows) < self._empty_batch
 
     def _switch_waits(self, ring: NoteRingState) -> None:
         """say once per switch that it is due but waits for the idle table's emptying.
