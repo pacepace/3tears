@@ -6,14 +6,17 @@ export mints (``export_held_out_cases.host_case``), byte for byte, and the commi
 under the house rule that file is held to (``test_held_out_cases.py``: the same snapshot id, every figure the same
 to twelve places, without the build's ``package_version``). The command line builds the host's three files from the
 capture (the documents, the courier's profile declaration naming its factory and its declarations' digest, the
-manifest of what reasoned on the campaign) and writes that case. The notes withheld are the shipped skill's.
+manifest of what reasoned on the campaign) and writes that case from the factory its operator names (``--host``),
+never the one the declaration names. The notes withheld are the shipped skill's.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -99,12 +102,14 @@ def _files(
     reasoned_on: list[dict[str, str]] | None = None,
     campaign_id: str | None = None,
     built_by: str = FACTORY,
+    host: str = FACTORY,
     digest: str | None = None,
 ) -> list[str]:
-    """The host's three files, built from the capture, and the arguments naming them."""
+    """The host's three files, built from the capture, and the arguments naming them and the operator's factory."""
     documents = _documents()
     (tmp_path / "documents.json").write_text(json.dumps(documents))
-    # The declaration carries the host's record of its declarations; the mint reads its factory and its digest.
+    # The declaration carries the host's record of its declarations; the mint reads its digest, and its built_by is
+    # provenance.
     declaration = {
         "host_id": "courier",
         "sweepables": {"declarations": [{"name": "candidate_model", "role": "lever"}]},
@@ -128,6 +133,8 @@ def _files(
         str(tmp_path / "manifest.json"),
         "--campaign",
         _campaign(documents)["id"],
+        "--host",
+        host,
     ]
 
 
@@ -168,7 +175,7 @@ def test_the_command_line_mints_it_from_the_hosts_three_files(
     again = tmp_path / f"again{out.name}"
     args = [*_files(tmp_path), *_case_args(again), "--as-of", FROZEN_AT]
     at = args.index("--profile")
-    args[at : at + 2] = ["--host", FACTORY]
+    del args[at : at + 2]
     assert main(args) == EXIT_OK
     assert again.read_bytes() == out.read_bytes()
 
@@ -183,13 +190,38 @@ def test_a_profile_whose_declarations_are_not_the_ones_declared_is_refused_namin
     assert not out.exists()
 
 
-def test_a_declaration_naming_no_factory_needs_the_factory_named(
+def test_a_mint_without_the_operators_factory_is_refused_whatever_the_declaration_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out = tmp_path / f"{NAME}.json.gz"
-    assert main([*_files(tmp_path, built_by="courier 0.92"), *_case_args(out)]) == EXIT_REFUSED
-    assert "no profile factory is named" in capsys.readouterr().err
+    args = [*_files(tmp_path), *_case_args(out)]
+    at = args.index("--host")
+    del args[at : at + 2]
+    assert main(args) == EXIT_REFUSED
+    assert "the following arguments are required: --host" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_a_module_the_declaration_names_is_never_imported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``built_by`` is provenance: a caller of the export action chooses it, so the mint never runs it. Without the
+    operator's ``--host`` the mint is refused before importing anything; with it, only that module is imported, and
+    the case is the one the courier's own factory mints."""
+    imported: list[str] = []
+    import_module = importlib.import_module
+
+    def recorded(name: str, package: str | None = None) -> ModuleType:
+        imported.append(name)
+        return import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", recorded)
+    out = tmp_path / f"{NAME}.json.gz"
+    args = [*_files(tmp_path, built_by="nowhere_host.evals:build_profile"), *_case_args(out), "--as-of", FROZEN_AT]
+    at = args.index("--host")
+    assert main([*args[:at], *args[at + 2 :]]) == EXIT_REFUSED
+    assert main(args) == EXIT_OK
+    assert FACTORY.partition(":")[0] in imported
+    assert not [name for name in imported if name.startswith("nowhere_host")]
+    assert WriterCaseFile.read(out).snapshot.id == WriterCaseFile.read(held_out_path(NAME)).snapshot.id
 
 
 async def test_minting_the_same_evidence_again_writes_the_same_bytes_at_the_evidences_own_instant(
@@ -315,9 +347,7 @@ def test_a_manifest_of_another_campaign_is_refused(tmp_path: Path, capsys: pytes
 def test_a_factory_returning_neither_a_profile_nor_a_host_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz")]
-    at = args.index("--profile")
-    args[at : at + 2] = ["--host", "builtins:dict"]
+    args = [*_files(tmp_path, host="builtins:dict"), *_case_args(tmp_path / f"{NAME}.json.gz")]
     assert main(args) == EXIT_REFUSED
     assert "builtins:dict returned a dict, not a HostProfile or an EvalHost" in capsys.readouterr().err
 
@@ -338,7 +368,7 @@ def test_a_profile_factory_raising_exits_three_with_its_traceback(
     """Not 2: a broken factory is the host's bug, not a refused export."""
     out = tmp_path / f"{NAME}.json.gz"
     spec = f"{__name__}:broken_profile"
-    assert main([*_files(tmp_path, built_by=spec), *_case_args(out)]) == EXIT_FAILED
+    assert main([*_files(tmp_path, host=spec), *_case_args(out)]) == EXIT_FAILED
     err = capsys.readouterr().err
     assert "failed on an unanticipated error" in err
     assert "Traceback (most recent call last)" in err and "ValueError: the host's config file is missing" in err
@@ -447,7 +477,7 @@ def test_the_export_is_checked_before_the_profile_factory_is_imported(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A dry check: an export refused where the host's module does not import says what is wrong with the export."""
-    args = [*_files(tmp_path, built_by="nowhere_host.evals:build_profile"), *_case_args(tmp_path / f"{NAME}.json.gz")]
+    args = [*_files(tmp_path, host="nowhere_host.evals:build_profile"), *_case_args(tmp_path / f"{NAME}.json.gz")]
     results_dropped = [document for document in _documents() if document["doc_type"] != "eval_result"]
     (tmp_path / "documents.json").write_text(json.dumps(results_dropped))
     err = _refused(args, capsys)

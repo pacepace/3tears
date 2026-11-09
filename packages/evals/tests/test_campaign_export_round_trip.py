@@ -37,7 +37,8 @@ from threetears.evals.storage import InMemoryDocumentStore
 #: The courier's capture: every document of its planner bake-off, as stored.
 CAPTURE = PACKAGE / "tests" / "fixtures" / "hot_path_oracle" / "inputs" / "courierhost.json"
 
-#: The profile factories the mint rebuilds each host's profile from, as each host names its own.
+#: The profile factories each host names as its own: the export records one as provenance, the mint's operator
+#: passes it as ``--host``.
 COURIER_PROFILE = "packages.evals.tests.fixtures.courierhost:courier_profile"
 TOY_PROFILE = "packages.evals.tests.fixtures.toyhost.profile:toyhost_profile"
 
@@ -82,10 +83,12 @@ def _courier_campaign() -> str:
     return campaign_id_of(json.loads(CAPTURE.read_text()))
 
 
-def _mint_args(out: Path, case: Path, *, campaign: str, name: str, group: str) -> list[str]:
+def _mint_args(out: Path, case: Path, *, host: str, campaign: str, name: str, group: str) -> list[str]:
     return [
         "mint",
         *(arg for file in FILES for arg in (f"--{file.removesuffix('.json')}", str(out / file))),
+        "--host",
+        host,
         "--campaign",
         campaign,
         "--name",
@@ -136,7 +139,8 @@ def test_the_command_line_writes_the_three_files_the_mint_reads(
 
 
 def test_built_by_defaults_to_the_host_factory_named(tmp_path: Path) -> None:
-    """The factory that builds the host for the export builds it for the mint too: the mint reads the host's profile."""
+    """The factory that builds the host for the export is recorded as where the profile came from: an operator can
+    pass it to the mint as ``--host``, since the mint reads only the host's profile."""
     out = tmp_path / "export"
     host = f"{__name__}:courier_export_host"
     assert main(_export_args(out, host=host, scope=COURIER_SCOPE, campaign=_courier_campaign())) == EXIT_OK
@@ -212,7 +216,7 @@ async def test_an_export_minted_is_the_case_the_host_freezes_directly(
     def round_trip() -> tuple[int, int]:
         return (
             main(_export_args(out, host=f"{__name__}:{host}", scope=scope, campaign=campaign_id, built_by=built_by)),
-            main(_mint_args(out, case, campaign=campaign_id, name=name, group=campaign.group)),
+            main(_mint_args(out, case, host=built_by, campaign=campaign_id, name=name, group=campaign.group)),
         )
 
     assert await asyncio.to_thread(round_trip) == (EXIT_OK, EXIT_OK)
@@ -231,7 +235,8 @@ def test_the_manifest_the_export_writes_is_the_one_the_mint_reads(tmp_path: Path
     )
     manifest: dict[str, Any] = json.loads((out / "manifest.json").read_text())
     (out / "manifest.json").write_text(json.dumps({**manifest, "campaign_id": "another"}))
-    assert main(_mint_args(out, tmp_path / "case.json.gz", campaign=campaign, name="c", group="g")) == EXIT_REFUSED
+    case = tmp_path / "case.json.gz"
+    assert main(_mint_args(out, case, host=COURIER_PROFILE, campaign=campaign, name="c", group="g")) == EXIT_REFUSED
 
 
 def test_a_write_failing_part_way_leaves_no_directory_and_the_same_command_runs_again(
@@ -313,5 +318,7 @@ def test_a_campaign_a_configured_judge_scored_exports_and_mints(
     (run_judges,) = {json.dumps(doc["judge_config_ids"]) for doc in documents if doc["doc_type"] == "eval_run"}
     (config,) = [doc for doc in documents if doc["doc_type"] == "judge_config"]
     assert json.loads(run_judges) == {"toy.dim": config["id"]}, "the run is exported with the bare id it records"
-    assert main(_mint_args(out, case, campaign=campaign, name="configured", group=toy.group)) == EXIT_OK
+    assert (
+        main(_mint_args(out, case, host=TOY_PROFILE, campaign=campaign, name="configured", group=toy.group)) == EXIT_OK
+    )
     assert WriterCaseFile.read(case).snapshot.id

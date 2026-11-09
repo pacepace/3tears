@@ -13,14 +13,7 @@ The second prototype, run after the W2 fix wave on report-kit/analyst @6da6c055f
 
 Every first draft passed. Every cited figure key read on its snapshot in every round. The analysts made 49 to 56 tool calls each and logged 52 capability gaps in all.
 
-Files in each directory:
-- `report.json`: the final report document (draft `report-doc/1`).
-- `blocks.txt`: each evidence block's `block_render` text. It stands in for the page, since the claims renderer is W3's.
-- `notes.md`: the analyst's reasoning note, the tools it used, and a section for each revision.
-- `gaps.json`: every `capability_gap` call.
-- `editor.json`, `editor2.json`, `editor3.json`: each round's review.
-- `round1/`, `round2/`: earlier drafts with the review they received.
-- `work/`, `editor-work/`: the raw tool output each agent saved.
+Each directory now holds only `doc.json`, the one file the tests read. The run's other files (`report.json`, `blocks.txt`, `notes.md`, `gaps.json`, each round's review, the earlier drafts and the agents' raw tool output) were removed, since nothing read them; git holds them at 83be8d3de.
 
 Two caveats on these runs:
 - They ran with two bugs the runs found. The goal-state measures of s1 to s3 read as fractions rather than percents, so a price per point on them was 100 times too high (fixed since, on report-kit/goal-state-rates). And a bar declared per aspect reads the lead aspect's figure, so on s3 code's own call has the solo arm passing the clarity bar it misses (the next fix wave's first item). The analysts worked around both, and their notes say so.
@@ -28,7 +21,7 @@ Two caveats on these runs:
 
 ## Converted documents (`doc.json`)
 
-Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
+Each directory's `doc.json` is the run's `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). The conversion:
 - adds `recommends`, read by hand from the call this README and the report's decision state. It holds only an arm the report recommends: a tradeoff's lean ("our lean, not a recommendation") stays in its prose and recommends none, as does a report that ships nothing yet;
 - fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
 - drops `snapshot_id` where the draft carried one: the stored record names its snapshot;

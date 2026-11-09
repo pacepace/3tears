@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the mint imports only the profile factory its operator names
+
+**Changed:** `python -m threetears.evals.harness mint` requires `--host module:callable` and never imports the
+`built_by` a profile declaration names. The `campaign_export` action takes `built_by` from its caller, which can be a
+host's chat agent, and the mint runs in the operator's environment, so a profile naming a module chose the code the
+mint ran. `built_by` is now provenance: the export still records it, the mint checks it is text, and nothing imports
+it.
+
+**Fixed:** a `<VARIABLE>_FALLBACKS` entry that is not a variable's name (a spare key pasted in place of its variable)
+is refused by its position in the list, never printed.
+
+**Hosts:** pass `--host` to every mint, naming the factory the declaration's `built_by` named (or the export's
+`--host`). A mint without it is refused as a malformed command line (exit 2). Nothing exported or stored changes.
+
 ### evals: the writer's editor clears more reports, its analyst turns are priced at an 8,192-token cap, and the acceptance gate discloses the finished pairs
 
 Owner rulings of 2026-11-09, after run 5 (32 cases, Sonnet 5.5, $1.50 a report) finished 9 of 64 reports. Read over
@@ -120,10 +134,12 @@ a completion or a stored document.
   factory raises.
 - The `campaign_export` action (read): the same export for the caller's scope, paged by whole documents for a large
   closure. Joined, the pages' documents are the single call's.
-- The action is bounded: it counts each kept document as canonical JSON as it gathers the closure, reads no more
-  than 16 whole documents at a time (ids first, then the documents in chunks), and refuses the moment the total passes
-  `OpsHost.campaign_export_max_bytes` (default 16,000,000), naming the bytes reached and the ceiling, with the command
-  line and `campaign_export` as the remedy. A refused call holds at most the ceiling and one chunk.
+- The action is bounded: it counts each kept document as canonical JSON as it gathers the closure, reads documents by
+  id or by field no more than 16 whole at a time (ids first, then the documents in chunks), and refuses the moment the
+  total passes `OpsHost.campaign_export_max_bytes` (default 16,000,000), naming the bytes reached and the ceiling, with
+  the command line and `campaign_export` as the remedy. Three small types (rubric dims, launches, judge profiles) are
+  read whole, one read each, and only the documents kept from them are counted. A refused call holds at most the
+  ceiling and one chunk, besides those three whole-type reads.
   `campaign_export(..., max_bytes=...)` takes the same ceiling; the function and the command line hold none unless one
   is passed. `OpsHost.reading(..., campaign_export_max_bytes=...)` sets it on a reading host.
 - `EvalStorage.stored_documents` reads the engine's documents of one type as stored, never hydrated, the store's

@@ -1,4 +1,0 @@
-readings listing
-aspects: []
-total: 0
-offset: 0

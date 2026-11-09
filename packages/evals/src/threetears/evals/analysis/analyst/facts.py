@@ -617,10 +617,6 @@ def _stated(stats: Iterable[Stat]) -> list[MeasureStatistic]:
     return [statistic for statistic in _STORED if any(getattr(stat, statistic) is not None for stat in held)]
 
 
-def _slices_of(report_input: ReportInput, key: str, table: Measure | Judged) -> list[str]:
-    return list(_stats_by_slice(report_input, key, table))
-
-
 def _arms_holding(report_input: ReportInput, key: str, table: Measure | Judged) -> set[str]:
     """The arms holding a figure on one measure anywhere: overall, on an aspect, or within any slice."""
     slices = [

@@ -1,4 +1,4 @@
-"""The analyst's session: the brief, the investigation, the submission, and the bounces until it passes (plan §4.2).
+"""The analyst's session: the brief, the investigation, the submission, and the bounces until it passes.
 
 :class:`AnalystSession` runs the analyst over one frozen snapshot through a
 :class:`~threetears.evals.ops.report_writer.session.ToolSession`. Its system text is the analyst skill
@@ -81,7 +81,7 @@ _ANALYST_MAX_TOKENS: Final = 8_192
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AnalystLimits:
-    """What the analyst's rounds are held to (plan §4.3).
+    """What the analyst's rounds are held to, so every draft and revision ends within bounded calls and bounces.
 
     :ivar draft_calls: The tool calls the first draft may make.
     :ivar revision_calls: The tool calls each revision may make.
@@ -247,7 +247,7 @@ class AnalystSession:
         :ptype tally: Tally
         :param budget: The report's budget (dollars, or tokens and turns).
         :ptype budget: ReportBudget
-        :param limits: What its rounds are held to; plan §4.3's defaults when ``None``.
+        :param limits: What its rounds are held to; :class:`AnalystLimits`' defaults when ``None``.
         :ptype limits: AnalystLimits | None
         :return: The session.
         :rtype: AnalystSession

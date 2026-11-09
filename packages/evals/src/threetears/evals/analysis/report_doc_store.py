@@ -12,9 +12,10 @@ never a crash.
 editor's findings left unresolved in Method, the made line at its foot), and refuses a document with any verdict, so
 nothing that fails validity or an invariant is ever stored, whatever the loop that wrote it believed.
 
-**The generation record** (:func:`generation_record`, format 2) is what the stored document's ``generation`` holds
-(plan §4.5): the model the report was written with, the skill texts' digests, the writing loop's tally (every turn,
-then the sums by role, by round and in all, tool calls, bounces, wall time, a transcript digest per session), every
+**The generation record** (:func:`generation_record`, format 2) is what the stored document's ``generation`` holds,
+so a stored report says how it was written: the model the report was written with, the skill texts' digests, the
+writing loop's tally (every turn, then the sums by role, by round and in all, tool calls, bounces, wall time, a
+transcript digest per session), every
 review as code scored it, and each session (the analyst's and each review round's) by ``{digest, turns, ref}``: its
 transcript digest, the turns it sent, and the id of the ``eval_report_session`` document that holds it
 (:func:`~threetears.evals.kernel.report_doc.report_session_id`). It holds digests and refs, never a message, so a

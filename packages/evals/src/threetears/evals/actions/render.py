@@ -765,7 +765,8 @@ def render_campaign_export(export: CampaignExport) -> str:
         f"{held}; the whole export holds {counts}; {unresolved}.",
         "The result's JSON carries documents, profile and manifest: write them as documents.json (every page's "
         "documents, joined in order), profile.json and manifest.json, and mint a writer case from them with "
-        "python -m threetears.evals.harness mint.",
+        "python -m threetears.evals.harness mint --documents documents.json --profile profile.json "
+        "--manifest manifest.json --host module:factory --campaign <id>, naming your own host factory.",
     ]
     if page is not None:
         lines.append(

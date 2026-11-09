@@ -11,9 +11,11 @@ report names the analysis page and the recording it was written from, or says wh
 Exit codes are the file door's, each eval's analysis folded in: 1 when the writer stored nothing, 2 when the
 analysis was refused (no recording and no key, a campaign the freeze refuses, a result that files no campaign).
 
-``python -m threetears.evals.harness mint --documents FILE --profile FILE [--host module:factory] --campaign ID
+``python -m threetears.evals.harness mint --documents FILE --profile FILE --host module:factory --campaign ID
 --name NAME --out FILE.json.gz [...]`` mints one writer case from a host's export of a campaign
-(:func:`~threetears.evals.harness.writer_case_from_export`), writing nothing to the host's store. Its exit codes are
+(:func:`~threetears.evals.harness.writer_case_from_export`), writing nothing to the host's store. The profile's
+factory is the one ``--host`` names: the declaration's ``built_by`` is provenance and never imported, since an export
+can come from a host's chat agent and the mint runs in the operator's environment. Its exit codes are
 the host commands': 0 when the case is written, 2 when the mint is refused (an export missing a document the freeze
 reads, a profile factory that does not load, a profile whose declarations are not the ones declared, a manifest of
 another campaign, a note the skill does not hold, a malformed command line), 3 when the
@@ -22,11 +24,11 @@ profile factory or the freeze raises an error nothing anticipated, its traceback
 ``python -m threetears.evals.harness export --host module:factory --scope SCOPE --campaign ID --out DIR
 [--built-by module:callable]`` writes the three files ``mint`` reads (``documents.json``, ``profile.json``,
 ``manifest.json``) from the host's own store (:func:`~threetears.evals.ops.campaign_export`), read-only. The factory
-returns the host's :class:`~threetears.evals.kernel.host.EvalHost`; the profile declares it as the factory the mint
-rebuilds the profile from, unless ``--built-by`` names another. Its exit codes are the mint's: 0 when the files are
-written, 2 when the export is refused (a campaign the scope does not hold, a ``DIR`` that exists and holds files, a
-factory that does not load or returns no host, a malformed command line), 3 when the factory or the export
-raises an error nothing anticipated, its traceback on stderr. ``DIR`` must not exist yet, or be empty: the three
+returns the host's :class:`~threetears.evals.kernel.host.EvalHost`; the profile records it as ``built_by``, where the
+profile came from, unless ``--built-by`` names another. The mint never imports it. Its exit codes are the mint's: 0
+when the files are written, 2 when the export is refused (a campaign the scope does not hold, a ``DIR`` that exists
+and holds files, a factory that does not load or returns no host, a malformed command line), 3 when the factory or
+the export raises an error nothing anticipated, its traceback on stderr. ``DIR`` must not exist yet, or be empty: the three
 files are written into a new sibling directory renamed to ``DIR``, so either all three are there or none is.
 """
 
@@ -129,12 +131,15 @@ def _mint_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--documents", required=True, help="the export: one JSON list of the campaign's documents")
     parser.add_argument(
-        "--profile", help="the host's profile declaration: built_by (module:callable) and host_declarations_digest"
+        "--profile",
+        help="the host's profile declaration: its host_declarations_digest is checked; its built_by is provenance, "
+        "never imported",
     )
     parser.add_argument(
         "--host",
-        help="the profile's factory, module:callable, returning a HostProfile or an EvalHost; "
-        "omitted, the declaration's built_by",
+        required=True,
+        help="the profile's factory, module:callable, returning a HostProfile or an EvalHost: the one module the "
+        "mint imports, named by its operator",
     )
     parser.add_argument("--manifest", help="a JSON file naming the documents that reasoned on the campaign")
     parser.add_argument(
@@ -196,13 +201,9 @@ def _mint(argv: Sequence[str]) -> int:
         declared: ProfileFile | None = None if args.profile is None else read_profile_file(args.profile)
         # The export is checked whole before the factory is imported, so an export can be dry-checked anywhere.
         asyncio.run(export_checked(documents, campaign_id=args.campaign, as_of=args.as_of))
-        factory = args.host if args.host is not None else None if declared is None else declared.factory
-        if factory is None:
-            raise RefusedInput(
-                "no profile factory is named: the freeze calls the profile's readers, which no file carries",
-                remedy="set profile.json's 'built_by' to a module:callable importable here, or pass --host module:callable",
-            )
-        profile = host_profile_from(factory)
+        # Only the operator's --host is imported, never the declaration's built_by: the export, and the profile in
+        # it, can come from a host's chat agent, so code it names would otherwise run in the operator's mint.
+        profile = host_profile_from(args.host)
         skill = None if args.skill is None else _skill_at(args.skill)
         case = asyncio.run(
             writer_case_from_export(
@@ -252,7 +253,8 @@ def _export_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", required=True, help="the directory the three files are written to")
     parser.add_argument(
         "--built-by",
-        help="the module:callable the mint rebuilds the host's profile from; omitted, --host, which returns the host",
+        help="the module:callable the profile records as where it came from (provenance; the mint never imports it); "
+        "omitted, --host",
     )
     return parser
 

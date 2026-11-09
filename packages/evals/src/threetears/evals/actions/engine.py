@@ -868,9 +868,9 @@ class CampaignExportParams(EvalBaseModel):
         str | None,
         Field(
             min_length=1,
-            description="The module:callable, importable where the host's code is, that returns this host's profile "
-            "(or the host) with no arguments: the factory the mint rebuilds the profile from. Omitted, the profile names "
-            "none, and the mint is given one (--host).",
+            description="Provenance: the module:callable this host's profile comes from, recorded in the profile as "
+            "built_by. The mint never imports it; its operator names the factory (--host). Omitted, the profile names "
+            "none.",
         ),
     ] = None
     export_after_doc_type: Annotated[

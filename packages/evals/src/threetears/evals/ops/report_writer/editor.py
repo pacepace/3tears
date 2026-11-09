@@ -1,4 +1,4 @@
-"""The report editor: one review of a report document, in a session of its own (plan §4.2 step 4).
+"""The report editor: one review of a report document, in a session of its own, so nothing the analyst said sways it.
 
 Each review round is a fresh :class:`~threetears.evals.ops.report_writer.session.ToolSession`: its system text is
 the skill's ``editor.md`` (``load_skill().editor()``), its tool the ``evals_analyst`` tool on the editor's cut, and its
@@ -128,7 +128,7 @@ def editor_session(round: int) -> str:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EditorLimits:
-    """What each review round is held to (plan §4.3).
+    """What each review round is held to, so every review ends within a bounded number of calls.
 
     :ivar calls: The tool calls a review may make.
     :ivar session: What every turn is held to.
@@ -319,7 +319,7 @@ async def review_report(
     :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns).
     :ptype budget: ReportBudget
-    :param limits: What the round is held to; plan §4.3's defaults when ``None``.
+    :param limits: What the round is held to; :class:`EditorLimits`' defaults when ``None``.
     :ptype limits: EditorLimits | None
     :return: How the round ended, with its session as a stored value. A failure of the client is the ``failed``
         ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in

@@ -12,13 +12,7 @@ Each directory is one campaign snapshot. An Opus analyst wrote the report, worki
 | r2 without its gates (misfit) | tradeoff | high_if_immaterial | 11 → 13 |
 | r1 reading only bars (misfit) | tradeoff | high_if_immaterial | 11 → 12 |
 
-Files in each directory:
-- `report.json`: the final report document (draft `report-doc/1`).
-- `blocks.txt`: each evidence block's `block_render` text. It stands in for the page, since the claims renderer is W3's.
-- `notes.md`: the analyst's reasoning note, the tools it used, and a section for each revision.
-- `gaps.json`: every `capability_gap` call.
-- `editor*.json`: each round's review.
-- `round1/`, `round2/`: earlier report drafts.
+Each directory now holds only `doc.json`, the one file the tests read. The run's other files (`report.json`, `blocks.txt`, `notes.md`, `gaps.json`, each round's review, the earlier drafts) were removed, since nothing read them; git holds them at 83be8d3de.
 
 Two caveats on these runs:
 - Wave A (kairo, r1, r4, r2 without its gates) read `exemplars/INDEX.md`, whose one-line summaries give away each reference campaign's story. Those runs are less blind than wave B.
@@ -26,7 +20,7 @@ Two caveats on these runs:
 
 ## Converted documents (`doc.json`)
 
-Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
+Each directory's `doc.json` is the run's `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). The conversion:
 - adds `recommends`, read by hand from the call this README and the report's decision state. It holds only an arm the report recommends: a tradeoff's lean ("our lean, not a recommendation") stays in its prose and recommends none, as does a report that ships nothing yet;
 - fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
 - drops `snapshot_id` where the draft carried one: the stored record names its snapshot;

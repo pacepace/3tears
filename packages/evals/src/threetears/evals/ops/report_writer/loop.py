@@ -1,6 +1,6 @@
 """The writing loop's rounds: the analyst drafts, the editor reviews, the analyst revises, until a review clears it.
 
-:func:`write_rounds` runs plan §4.2's steps 1 to 6 over one frozen snapshot:
+:func:`write_rounds` runs these steps over one frozen snapshot:
 
 1. The analyst drafts (:meth:`~threetears.evals.ops.report_writer.analyst.AnalystSession.draft`): its submission
    passes the document's validity and the invariants before anything else sees it; a fault goes back to it as a
@@ -19,7 +19,7 @@
    round-1 one included (owner rulings 2026-10-29, 2026-10-31 and 2026-11-09): it is given a revision while one
    remains, and alone it never makes the report a draft.
 
-**Endings** (plan §4.4), each a value the caller stores or reports:
+**Endings**, each a value the caller stores or reports, so every way a write can end is named and none is silent:
 
 - ``stored``: a review cleared the document, which is stored finished, with any ``should_fix`` findings of its last
   review that block nothing listed open;
@@ -132,7 +132,7 @@ class TurnModel(Protocol):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriterLimits:
-    """What the writing loop is held to (plan §4.3).
+    """What the writing loop is held to, so every report ends within bounded rounds, whatever the reviews say.
 
     :ivar analyst: The analyst's rounds: its tool calls per draft and revision, its bounces, every turn's limits.
     :ivar editor: Each review: its tool calls, every turn's limits.
@@ -238,7 +238,7 @@ async def write_rounds(
     :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
-    :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
+    :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
     :ptype limits: WriterLimits | None
     :param editor_model: The model every review session runs on, and their client; ``None`` runs them on ``model``.
     :ptype editor_model: TurnModel | None

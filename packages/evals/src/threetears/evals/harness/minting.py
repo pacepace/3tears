@@ -27,10 +27,11 @@ sweepable's ``read`` (:meth:`~threetears.evals.kernel.host.sweepables.SweepableR
 bundle's design and configuration lenses), the host's ``variant_levers`` and each kind contract's ``levels``
 (:meth:`~threetears.evals.kernel.host.HostProfile.engine_levels`, from its design and coverage lenses). They read a
 run's payload in the host's own vocabulary, so no file can carry them. The door takes the live profile; the command
-line builds it from its factory (:func:`host_profile_from`). The host's declaration of it (:func:`read_profile_file`)
-names that factory and the digest of the declarations that partition its observations
-(``host_declarations_digest``, the one every bundle records), and a profile whose digest differs is refused: the
-campaign was measured under other sweepables or another world.
+line builds it from the factory its operator names (``--host``, :func:`host_profile_from`), never from one the export
+names: an export can come from a host's chat agent, so a factory it named would be code that agent chose. The host's
+declaration of the profile (:func:`read_profile_file`) carries the digest of the declarations that partition its
+observations (``host_declarations_digest``, the one every bundle records), and a profile whose digest differs is
+refused: the campaign was measured under other sweepables or another world.
 
 **Withholding is by note.** A case withholds notes of the analyst skill, by file name. The documents that reasoned on
 the campaign (its analyses, reports and insights, as the host's manifest names them) lead to the notes that hold their
@@ -135,14 +136,12 @@ class MintManifest(EvalBaseModel):
 
 @dataclass(frozen=True)
 class ProfileFile:
-    """What a mint reads of a host's profile declaration: its factory and its declarations' digest.
+    """What a mint reads of a host's profile declaration: its declarations' digest. Its ``built_by`` is provenance,
+    and never imported: the operator names the factory (``--host``).
 
-    :ivar factory: ``module:callable`` building the live profile (the declaration's ``built_by``), or ``None`` when
-        it names no callable.
     :ivar digest: The declaration's ``host_declarations_digest``.
     """
 
-    factory: str | None
     digest: str
 
 
@@ -215,20 +214,22 @@ def eval_host_from(spec: str) -> EvalHost:
 
 
 def read_profile_file(path: str | Path) -> ProfileFile:
-    """What a host's profile declaration names: ``built_by`` (``module:callable``) and ``host_declarations_digest``.
+    """What a host's profile declaration names that a mint checks: ``host_declarations_digest``.
 
     Every other key (the declarations themselves: the sweepables, measures, bars, world, kinds) is the host's record,
-    and not read: the digest stands for the declarations that partition observations.
+    and not read: the digest stands for the declarations that partition observations. ``built_by`` is checked to be
+    text, as the export writes it, and is never imported: the export can come from a host's chat agent, and the mint
+    runs only the factory its operator names.
 
     :param path: The file, a JSON object.
     :ptype path: str | Path
-    :return: Its factory (``None`` when ``built_by`` names no callable) and its digest.
+    :return: Its digest.
     :rtype: ProfileFile
     :raises RefusedInput: The file cannot be read or is not a JSON object, ``built_by`` is there and not a string, or
         ``host_declarations_digest`` is missing (naming any key that looks like it) or not a string.
     """
     source = Path(path)
-    remedy = "write a JSON object whose 'built_by' is a module:callable importable here and whose 'host_declarations_digest' is the profile's digest"
+    remedy = "write a JSON object whose 'host_declarations_digest' is the profile's digest and 'built_by', if any, text"
     try:
         content = json.loads(_text(source))
     except json.JSONDecodeError as unread:
@@ -246,8 +247,7 @@ def read_profile_file(path: str | Path) -> ProfileFile:
     for key, value in (("built_by", built_by), ("host_declarations_digest", digest)):
         if (value is not None or key == "host_declarations_digest") and not isinstance(value, str):
             raise RefusedInput(f"{source}: {key} is a {type(value).__name__}, not a string", remedy=remedy)
-    factory = built_by if isinstance(built_by, str) and ":" in built_by else None
-    return ProfileFile(factory=factory, digest=str(digest))
+    return ProfileFile(digest=str(digest))
 
 
 def _text(source: Path) -> str:

@@ -125,7 +125,7 @@ An app that already runs 3tears can build those adapters on 3tears modules inste
   <img alt="The evals architecture, simplified. The host app brings its own UI, storage, tracing and model clients through small adapters, each of which may be built on an optional 3tears module (core, observe, models) instead. The evals engine depends on no other 3tears package. Its report writer loops: the analyst writes, code checks bounce a faulty draft, the editor reviews, the analyst revises, and the report is stored. Offline, a capability gap the analyst reports becomes a change in the 3tears repo that ships back to the host." src="docs/images/evals-overview-light.svg">
 </picture>
 
-The diagram shows the designed architecture: the analyst and editor loop and the offline loop are not on `develop` yet. [The full architecture](docs/evals-architecture.md) has every arrow, what is built today, and a table of the ports. [Adopting the engine](packages/evals/docs/adopting-a-host.md) is the full host guide.
+The engine builds the analyst and editor loop and records the gaps it hits as issue-ready text; the host files the issues, and the change that answers one ships in a later release. [The full architecture](docs/evals-architecture.md) has every arrow, what is built today, and a table of the ports. [Adopting the engine](packages/evals/docs/adopting-a-host.md) is the full host guide.
 
 ## Where to go next
 

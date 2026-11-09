@@ -25,7 +25,7 @@ This page shows how `3tears-evals` sits inside a host app: the engine, the ports
 </picture>
 </a>
 
-The diagram is evals as designed, not as `develop` has it today. On `develop`, `analysis_generate` and `report_read` (arrows 15 and 26) already write and serve a report, without the frozen snapshot or the analyst and editor loop (14, 16–25), which are on the `report-kit/analyst` branch. The gap loop (28–36) is designed but not built, and moving the model client into 3tears-models is [#1013](https://github.com/pacepace/3tears/issues/1013).
+The engine builds every arrow it owns. The report writer (14–27) freezes the evidence as a snapshot, runs the analyst and editor loop on it, and stores and serves the reviewed report. In the gap loop, the engine records each gap and code's notices (28) and `analyst_gaps_list` writes them as ranked, issue-ready text (29). The rest of that loop is outside the engine by design: the host's scheduled job reads the digest and files the issues with its own credentials (30–31), and the change, its release and the host's pin move happen outside any run (32–36). Moving the model client into 3tears-models is [#1013](https://github.com/pacepace/3tears/issues/1013).
 
 - **Boxes:** the host app's zones have a solid outline and a tan fill; 3tears' zones have no outline and a blue fill; a dashed box is one of the host's choices; a hatched zone with a dash-dot outline is outside any run.
 - **Arrows 1–13** run a question as cells. **14–27** turn the evidence into a stored, reviewed report the owner reads; the thick orange arrows are the report's own path. **28–36** (dash-dot, purple) turn a capability the report writer lacked into a change to 3tears.

@@ -150,7 +150,7 @@ class ToolMount(Protocol):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SessionLimits:
-    """What every turn of a session is held to (plan §4.3).
+    """What every turn of a session is held to, so no turn's reply or prompt grows past what its budget admitted.
 
     :ivar max_tokens: Each turn's output cap, thinking included.
     :ivar result_chars: The most characters of a tool result the model is sent; the rest is cut, saying so.
@@ -264,7 +264,7 @@ class ToolSession:
         :ptype tally: Tally
         :param budget: The report's budget, which admits every turn.
         :ptype budget: ReportBudget
-        :param limits: What every turn is held to; plan §4.3's defaults when ``None``.
+        :param limits: What every turn is held to; :class:`SessionLimits`' defaults when ``None``.
         :ptype limits: SessionLimits | None
         :raises ValueError: An empty name or model id.
         """
