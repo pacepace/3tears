@@ -207,8 +207,8 @@ def test_what_reading_reports_shows_a_campaign_opening_on_is_the_page_s_first_sc
 
 def test_what_reading_reports_shows_a_change_s_scorecard_is_what_the_page_prints() -> None:
     """The scorecard ``reading-reports.md`` shows is the s1 change's own (three candidates on three aspects, the
-    control passing nothing on one), line for line from its heading: it once printed ``0 pts`` where the page prints
-    ``0.0 pts`` beside ``-5.0 pts``, and left out the equal-weight row."""
+    control passing nothing on one), line for line from its heading: it once printed ``0 pts`` where the page then
+    printed ``0.0 pts`` beside ``-5.0 pts``, and left out the equal-weight row."""
     shown = _markdown_under(DOCS / "reading-reports.md", "### The campaign's scorecard").splitlines()
     printed = campaign_report_markdown(s1_change().page())
     printed_lines = printed[printed.index("## Scorecard") :].splitlines()

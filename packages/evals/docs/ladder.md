@@ -259,7 +259,7 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: 83.3%, 75 of 90 trials
   ...
@@ -268,7 +268,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -279,11 +279,11 @@ guardrail's row, and the trials' census:
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
-| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +16.7 pts | [-1.5, 25.9] | — | cannot tell apart |
-| Number score | 83.3% [66.8%, 92.5%] | 100.0% [88.1%, 100.0%] | +16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
-| No invented total score | v2 | 99% | 99% | 30 paired | 0.0 pts | [-13.4, 13.4] pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
+| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -8 to +35 pts | cannot tell apart | 30 paired |
+| No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 

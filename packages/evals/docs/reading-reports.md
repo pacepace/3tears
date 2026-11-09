@@ -103,7 +103,7 @@ A change of two aspects, one regressing past its floor and one improving, with n
 
 production vs v2 · billing, tone
 
-**Pass rate on billing: v2 against production shown worse. Of 20 cases each, production passed 18 and v2 6. The interval puts v2 between 19.4 and 86.3 points worse. Pass rate on tone: v2 against production shown better. Of 20 cases each, production passed 10 and v2 18. The interval puts v2 between 3.6 and 66.2 points better.**
+**Pass rate on billing: v2 against production shown worse. Of 20 cases each, production passed 18 and v2 6. The interval puts v2 between 19 and 86 points worse. Pass rate on tone: v2 against production shown better. Of 20 cases each, production passed 10 and v2 18. The interval puts v2 between 4 and 66 points better.**
 
 **Adopting v2 overrides the 10-point floor it breaks on billing.**
 ```
@@ -131,10 +131,10 @@ three candidates on three aspects, one aspect where the control passes nothing:
 
 | Aspect | Cases | ▸ production · pass rate | v2 · pass rate vs production | v3 · pass rate vs production | v4 · pass rate vs production |
 |---|---|---|---|---|---|
-| billing | 20 | 90.0% (18 of 20 cases) | 30.0% · -60.0 pts (shown worse) | 85.0% · -5.0 pts (unclear) | 95.0% · +5.0 pts (unclear) |
-| tone | 20 | 50.0% (10 of 20 cases) | 90.0% · +40.0 pts (shown better; floor unclear) | 50.0% · 0.0 pts (unclear) | 40.0% · -10.0 pts (unclear; floor broken) |
-| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25.0% · +25.0 pts (no worse than the margin) | 0% · 0.0 pts (unclear) | 10.0% · +10.0 pts (unclear) |
-| All aspects (equal weight) | — | 46.7% (mean of the aspects above, each weighted equally) | 48.3% · +1.7 pts | 45.0% · -1.7 pts | 48.3% · +1.7 pts |
+| billing | 20 | 90% (18 of 20 cases) | 30% · -60 pts (shown worse) | 85% · -5 pts (unclear) | 95% · +5 pts (unclear) |
+| tone | 20 | 50% (10 of 20 cases) | 90% · +40 pts (shown better; floor unclear) | 50% · 0 pts (unclear) | 40% · -10 pts (unclear; floor broken) |
+| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25% · +25 pts (no worse than the margin) | 0% · 0 pts (unclear) | 10% · +10 pts (unclear) |
+| All aspects (equal weight) | — | 47% (mean of the aspects above, each weighted equally) | 48% · +2 pts | 45% · -2 pts | 48% · +2 pts |
 ```
 
 The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
@@ -212,7 +212,7 @@ page opens on its own first screen; the invoices example (rung 3) renders this (
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -256,7 +256,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
   first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
   (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
-  interval allows v2 to be as much as 19.7 points worse or 17.8 better.`, its level the table's header), then what
+  interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
   else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
   arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No

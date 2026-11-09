@@ -255,7 +255,8 @@ def test_the_marks_are_coloured_by_kit_tokens_set_for_light_and_dark() -> None:
 def test_a_row_under_the_case_floor_cannot_be_built_into_a_page_but_a_chart_names_its_values() -> None:
     headers, rows = _interval_chart().values_table()
     assert headers == ["Row", "Value", "Interval", "Cases", "Verdict"]
-    assert rows == [["model=b − model=a", "0.25", "[0.05, 0.45]", "8", "improved"]]
+    # An interval in its one form, "low to high" (number rule 3), never bracketed.
+    assert rows == [["model=b − model=a", "0.25", "0.05 to 0.45", "8", "improved"]]
 
 
 async def _classify(case: Mapping[str, Any]) -> str:
@@ -287,7 +288,8 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the
 def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
     svg = interval_glyph_svg(-1.1, -4.2, 2.0, unit="pts", scale=(-7.0, 36.7), margin=5.0)
     assert svg.startswith('<svg class="viz-glyph" viewBox="0 0 120 14" role="img">')
-    assert "<title>-1.1 pts, interval [-4.2, 2] pts, margin ±5 pts</title>" in svg
+    # The interval in its one form, a change's ends signed, the unit once (number rule 3).
+    assert "<title>-1.1 pts, interval -4.2 to +2 pts, margin ±5 pts</title>" in svg
     for mark in ("viz-track", "viz-zero", "viz-band", "viz-whisker", "viz-point"):
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg
@@ -312,7 +314,7 @@ def test_a_glyph_on_a_twentieth_of_a_px_draws_the_same_at_its_one_ulp_neighbours
 def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
     svg = interval_glyph_svg(0.92, 0.85, 0.99, unit="s", scale=(0.8, 1.5))
     assert 'class="viz-zero"' not in svg and 'class="viz-band"' not in svg
-    assert "<title>0.92 s, interval [0.85, 0.99] s</title>" in svg
+    assert "<title>0.92 s, interval 0.85 to 0.99 s</title>" in svg
 
 
 def test_the_legend_names_only_the_states_that_occur() -> None:
