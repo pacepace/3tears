@@ -74,7 +74,11 @@ def test_a_recommended_arm_missing_a_gate_is_a_fact_per_figure_missed() -> None:
         f"criteria.p95.atlas-l.{task}.value" for task in ("billing", "trouble", "research", "specul")
     ]
     assert all(fact.figures[2] == "criteria.p95.threshold" for fact in facts)
-    assert "misses the declared gate Latency budget (p95) in Billing & account Q&A: 3.6 s against 3 s." in facts[0].fact
+    # The latency states no interval, so it reads at two figures of its least level, a p50 of 0.35 s (number rule 2);
+    # the gate as declared.
+    assert (
+        "misses the declared gate Latency budget (p95) in Billing & account Q&A: 3.60 s against 3 s." in facts[0].fact
+    )
 
 
 def test_the_arm_the_document_recommends_meets_every_gate_and_no_gate_fact_fires() -> None:
@@ -262,7 +266,8 @@ def test_a_settled_loss_past_the_margin_on_an_unasked_aspect_is_a_fact() -> None
     assert [(fact.path, fact.figures) for fact in facts] == [
         ("recommends[0]", ["arm:v2", "aspects.billing.reading.v2.interval", "aspects.billing.reading.v2.margin"])
     ]
-    assert "-83.2 to -23.9 points, lies wholly at or below minus the margin of 10 points" in facts[0].fact
+    # In the pass rate's whole points, read from its intervals (number rule 2).
+    assert "-83 to -24 points, lies wholly at or below minus the margin of 10 points" in facts[0].fact
 
 
 def test_a_settled_loss_on_an_asked_aspect_is_no_unasked_fact() -> None:
@@ -723,7 +728,7 @@ def test_a_brace_in_a_task_name_is_written_as_it_is() -> None:
         "gate_failed",
     )
 
-    assert " in Billing {beta}: 3.6 s against 3 s." in facts[0].fact
+    assert " in Billing {beta}: 3.60 s against 3 s." in facts[0].fact
     assert facts[0].figures == ["arm:atlas-l", "criteria.p95.atlas-l.billing.value", "criteria.p95.threshold"]
 
 

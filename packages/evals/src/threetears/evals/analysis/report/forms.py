@@ -92,6 +92,7 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     held_kind,
     held_means,
+    held_stats,
     is_rubric_score,
     joint_level,
     plus_signed,
@@ -3432,7 +3433,14 @@ def _written_stated(
         if table is not None:
             stats = [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())]
             found += [(set_key, _stat_width(stat)) for stat in stats]
-        held_figures += [mean * levels.factor for mean in held_means(report_input, key)]
+        # A level is any statistic the input holds of an arm (its mean, a p50 or a p95 where it states no mean), so a
+        # measure with no interval reads at two figures of the least of them (rule 2), never at none.
+        held_figures += [
+            float(level) * levels.factor
+            for stat in held_stats(report_input, key)
+            for level in (stat.mean, stat.p50, stat.p95)
+            if level is not None
+        ]
     return _stated("written", [(key, width, "compared") for key, width in found]), figures
 
 

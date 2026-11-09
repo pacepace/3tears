@@ -1613,8 +1613,7 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
 
 def held_means(report_input: ReportInput, key: str) -> list[float]:
     """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell.
-    The one walk of them: a money ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds
-    all read this set.
+    A money ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds all read this set.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -1622,6 +1621,20 @@ def held_means(report_input: ReportInput, key: str) -> list[float]:
     :ptype key: str
     :return: The means, as stored.
     :rtype: list[float]
+    """
+    return [float(stat.mean) for stat in held_stats(report_input, key) if stat.mean is not None]
+
+
+def held_stats(report_input: ReportInput, key: str) -> list[Stat]:
+    """Every row of figures the input holds for a measure or judged dimension: overall, per aspect, per task, stratum
+    and cell. The one walk of them (:func:`held_means` reads their means).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :return: The rows, as stored.
+    :rtype: list[Stat]
     """
     stats: list[Stat] = []
     for table in (report_input.measures, report_input.judged):
@@ -1631,7 +1644,7 @@ def held_means(report_input: ReportInput, key: str) -> list[float]:
     slices: list[Task | Stratum | Cell] = [*report_input.tasks, *report_input.strata, *report_input.cells.values()]
     for held in slices:
         stats.extend(figures[key] for figures in held.per_arm.values() if key in figures)
-    return [float(stat.mean) for stat in stats if stat.mean is not None]
+    return stats
 
 
 def _scale_of(report_input: ReportInput, key: str, extra: Iterable[float] = ()) -> tuple[Scale, str]:

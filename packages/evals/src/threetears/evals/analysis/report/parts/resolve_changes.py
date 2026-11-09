@@ -206,8 +206,8 @@ def _decided(
     try:
         form = context.forms.measure(measure, kind=kind)
     except KeyError:
-        # A measure the page states no form of (a chart of a measure the input names only in a slice) keeps its
-        # chart's format.
+        # NOSILENT: a measure the page states no form of (a chart of a measure the input names only in a slice) keeps
+        # its chart's format.
         return None
     if form.places is None:
         return None

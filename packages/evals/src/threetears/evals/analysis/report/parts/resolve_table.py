@@ -162,7 +162,7 @@ def _decided(
     try:
         form = forms.measure(key, kind=kind)
     except KeyError:
-        # A figure of a measure the page's forms hold no form of keeps its column's number rule.
+        # NOSILENT: a figure of a measure the page's forms hold no form of keeps its column's number rule.
         return None
     if form.places is None:
         return None
