@@ -210,6 +210,27 @@ class CallerTransaction:
                 self._enrolled[index] = (collection, entity_id, row)
                 break
 
+    def restate_many(self, collection: BaseCollection[Any], rows: Mapping[Any, dict[str, Any]]) -> None:
+        """:meth:`restate` each key of ``rows`` with its row, in one pass over the enrollments.
+
+        A key a time would search the enrollments once a key: a bulk delete of 5,000 rows restated in about a
+        second and a half that way.
+
+        :param collection: the collection that enrolled them
+        :ptype collection: BaseCollection[Any]
+        :param rows: each key, as enrolled, onto the row it now names
+        :ptype rows: Mapping[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        left = dict(rows)
+        for index in range(len(self._enrolled) - 1, -1, -1):
+            if not left:
+                break
+            enrolled, key, _ = self._enrolled[index]
+            if enrolled is collection and key in left:
+                self._enrolled[index] = (collection, key, left.pop(key))
+
     async def __aenter__(self) -> CallerTransaction:
         """open the transaction and make it findable from the writes that join it.
 

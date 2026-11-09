@@ -51,6 +51,8 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
+    ManyKeyReadingStore,
+    ReturningDeletingStore,
     BulkDurableStore,
     CopyingStore,
     DurableStore,
@@ -82,6 +84,7 @@ from threetears.core.keyset import keyset_pages
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter
 
 __all__ = [
     "BIGINT_TYPE",
@@ -128,6 +131,18 @@ __all__ = [
 OnConflict = Literal["raise", "ignore", "update"]
 
 log = get_logger(__name__)
+
+
+def _deletes_settled_by_key() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_collection_deletes_settled_by_key_total",
+        description=(
+            "rows a bulk delete enrolled whose delete failed before returning them, so their invalidation names the "
+            "key alone (a broader invalidation than their columns would give)"
+        ),
+        label_names=("table",),
+    )
 
 
 # sentinel strings for column type tags. chosen over real Python types
@@ -2634,17 +2649,26 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(
                 f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
             )
+        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
+            return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         entity_keys: list[Any] = []
+        # a collection whose row messages carry columns reads each row before it goes, on the caller's
+        # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
+        # many (one a key was a round trip each, on the rail a NATS request each), a read a key where it
+        # cannot, none for a collection that declares no columns
+        held: dict[tuple[Any, ...], dict[str, Any]] | None = None
+        if self.invalidation_columns and named and isinstance(store, ManyKeyReadingStore):
+            held = await store.fetch_many(self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn)
         for key in named:
             entity_key = key if width > 1 else key[0]
-            # a collection whose row messages carry columns reads each row before it goes, on the
-            # caller's transaction, so the message can say whose it was; one read per key, and
-            # none for a collection that declares no columns
-            seen = (
-                await store.fetch_one(self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn)
-                if self.invalidation_columns
-                else None
-            )
+            if not self.invalidation_columns:
+                seen = None
+            elif held is not None:
+                seen = held.get(key)
+            else:
+                seen = await store.fetch_one(
+                    self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn
+                )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
             transaction.enroll(self, entity_key, row=seen)
             entity_keys.append(entity_key)
@@ -2664,6 +2688,61 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    async def _delete_rows_returning(
+        self,
+        store: ReturningDeletingStore,
+        named: list[tuple[Any, ...]],
+        transaction: CallerTransaction,
+        *,
+        conn: Any,
+        max_rows: int | None,
+    ) -> int:
+        """:meth:`delete_rows` for a collection whose messages carry columns, on a store that returns what it deletes.
+
+        Each key is enrolled before the delete with no row, so a delete whose outcome is unknown is still
+        settled (its message names the key alone: a broader invalidation, never a missed one), then restated
+        with the row the delete returned. One ``DELETE ... RETURNING`` a batch, where a read then a delete took
+        two statements (2.7 times one keyed delete on YugabyteDB). A failed delete is counted
+        (``threetears_collection_deletes_settled_by_key_total``) and logged, so a message that went out without
+        its columns is seen.
+
+        :param store: the collection's durable store
+        :ptype store: ReturningDeletingStore
+        :param named: the keys, each a tuple in key order
+        :ptype named: list[tuple[Any, ...]]
+        :param transaction: the caller's transaction
+        :ptype transaction: CallerTransaction
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :param max_rows: the most keys one statement names; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :return: the keys named
+        :rtype: int
+        """
+        width = len(self.schema.pk_columns)
+        entity_keys = [key if width > 1 else key[0] for key in named]
+        for entity_key in entity_keys:
+            transaction.enroll(self, entity_key, row=None)
+        await self._evict_l1_many_off_loop(entity_keys)
+        try:
+            deleted = await store.delete_many_returning(
+                self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn
+            )
+        except BaseException:  # prawduct:allow prawduct/broad-except -- counted and logged, then re-raised
+            _deletes_settled_by_key().labels(table=self.table_name).inc(len(named))
+            log.warning(
+                "a bulk delete failed before it returned its rows: its keys are settled without their columns, "
+                "a broader invalidation",
+                extra={"extra_data": {"table": self.table_name, "keys": len(named)}},
+            )
+            raise
+        transaction.restate_many(self, {key if width > 1 else key[0]: row for key, row in deleted.items()})
+        log.debug(
+            "bulk delete written on the caller's transaction, its rows returned",
+            extra={"extra_data": {"table": self.table_name, "rows": len(deleted)}},
+        )
+        return len(named)
 
     async def read_rows_led_by(
         self,

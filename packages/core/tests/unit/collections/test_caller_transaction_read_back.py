@@ -104,3 +104,21 @@ async def test_settling_broadcasts_the_row_as_restated_for_that_key_only() -> No
         (["k", "other", "k"], [{"id": "k"}, {"id": "other"}, {"id": "k", "geo": "county"}]),
     ]
     assert second.settled == [(["k"], [{"id": "k"}])]
+
+
+async def test_restating_many_keys_changes_each_key_s_latest_enrollment_and_nothing_else() -> None:
+    """Flips if a bulk restate misses a key, touches another collection's, or an earlier enrollment of the key."""
+    first, second = _collection(_Announcing), _collection(_Announcing)
+    conn = _Conn()
+    async with CallerTransaction(conn) as transaction:
+        transaction.enroll(first, "k", row=None)
+        transaction.enroll(first, "other", row=None)
+        transaction.enroll(second, "k", row=None)
+        transaction.enroll(first, "k", row=None)
+        transaction.enroll(first, "gone", row=None)
+        transaction.restate_many(first, {"k": {"id": "k", "geo": "county"}, "other": {"id": "other"}})
+
+    assert first.settled == [
+        (["k", "other", "k", "gone"], [None, {"id": "other"}, {"id": "k", "geo": "county"}, None]),
+    ]
+    assert second.settled == [(["k"], [None])]
