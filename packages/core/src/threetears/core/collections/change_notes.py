@@ -1602,6 +1602,43 @@ class NotedRows:
     whole_tenants: tuple[str | None, ...] = ()
 
 
+def _noted_rows_sql(owner: str) -> str:
+    """the one statement :func:`noted_rows_since` asks: the ring row, and the table's notes in its coverage.
+
+    One statement, not a read of the ring row then one of the notes, so the reconciler's ask a marked table
+    is one round trip, and the ring and its notes are read in one snapshot. Each note table's branch is read
+    only when it is the current or the previous table (a one-time filter on the ring row); the previous one only
+    while the reach is before the last switch's fence has passed (a copy of the slot read before the switch writes
+    there for at most the fence after it, so past that it holds no note from the reach on, and is not read), from the reach
+    (``since`` less half the ring's wait), and only when the coverage reaches back that far. Each branch is
+    answered from the ``(table_name, noted_at)`` index, which carries the columns read
+    (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`). A row comes back for the ring with no note
+    (``noted`` NULL) when the coverage holds none, and none at all when the ring has no row.
+
+    :param owner: the quoted schema holding the ring
+    :ptype owner: str
+    :return: the statement: ``$1`` the table, ``$2`` since, ``$3`` the most notes to answer
+    :rtype: str
+    """
+    branches = " UNION ALL ".join(
+        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
+        f"WHERE (r.current_ring = {index} OR ((r.current_ring - 1 + {NOTE_RING_SIZE}) % {NOTE_RING_SIZE} = {index} "
+        "AND r.reach < r.writes_previous_until)) "
+        "AND table_name = $1 AND noted_at >= r.reach"
+        for index in range(NOTE_RING_SIZE)
+    )
+    return (  # one statement; each interpolated piece is a fixed name this module builds
+        "SELECT r.switch_no, r.previous_switched_at, r.reach, n.noted, n.key_text, n.keys, n.columns, n.tenant "
+        f"FROM (SELECT current_ring, switch_no, previous_switched_at, "
+        "$2::timestamptz - make_interval(secs => wait_seconds / 2) AS reach, "
+        "switched_at + make_interval(secs => GREATEST(fence_seconds, wait_seconds)) AS writes_previous_until "
+        f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1) r "
+        "LEFT JOIN LATERAL (SELECT TRUE AS noted, key_text, keys, columns, tenant "
+        f"FROM (SELECT DISTINCT key_text, keys, columns, tenant FROM ({branches}) u) d LIMIT $3) n "
+        "ON r.switch_no = 0 OR r.reach >= r.previous_switched_at"
+    )
+
+
 async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
     """the rows the change notes say ``table``'s writes changed since ``since``, or why they cannot say.
 
@@ -1626,58 +1663,44 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     """
     owner = quote_identifier(notes_schema)
     try:
-        rings = await pool.fetch(
-            "SELECT current_ring, switch_no, switched_at, previous_switched_at, wait_seconds "  # noqa: S608 - trusted identifiers
-            f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
-        )
+        found = await pool.fetch(_noted_rows_sql(owner), table, since, cap + 1)
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the caller names the whole table instead, said and counted there
         return "notes_unavailable"
-    if not rings:
+    if not found:
         return "notes_unavailable"
-    ring = rings[0]
-    reach = since - timedelta(seconds=float(ring["wait_seconds"])) / 2
+    ring = found[0]
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
-    start = None if int(ring["switch_no"]) == 0 else ring["previous_switched_at"]
-    if start is not None and reach < start:
+    if int(ring["switch_no"]) != 0 and ring["reach"] < ring["previous_switched_at"]:
         return "not_covered"
-    current = int(ring["current_ring"])
-    tables = (current, (current - 1) % NOTE_RING_SIZE)
-    coverage = " UNION ALL ".join(
-        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
-        "WHERE table_name = $1 AND noted_at >= $2"
-        for index in tables
-    )
-    notes = await pool.fetch(
-        f"SELECT DISTINCT key_text, keys, columns, tenant FROM ({coverage}) n LIMIT $3", table, reach, cap + 1
-    )
+    # each note's values by position (_noted_rows_sql's select list: noted, key_text, keys, columns, tenant from 3):
+    # at 500 notes the rows' handling, not the statement, was the larger part of the call
+    notes = [note for note in found if note[3]]
     if not notes:
         return "no_notes"
     if len(notes) > cap:
         return "too_many_rows"
     # the ring holds every schema's notes of the table: a whole-table note covers its own tenant's rows (or every
     # tenant's, when it is _all's), never another schema's, whose rows are still named
-    whole = dict.fromkeys(
-        None if note["tenant"] is None else str(note["tenant"]) for note in notes if note["key_text"] is None
-    )
-    covers_all = None in whole
-    rows = {
-        (tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]), note["tenant"]): None
-        for note in notes
-        if note["key_text"] is not None
-        and not covers_all
-        and (None if note["tenant"] is None else str(note["tenant"])) not in whole
-    }
-    return NotedRows(
-        rows=tuple(
-            ChangedRow(
-                ids=list(ids), columns=dict(cols) if cols else None, tenant=None if tenant is None else str(tenant)
+    whole = dict.fromkeys(None if note[7] is None else str(note[7]) for note in notes if note[4] is None)
+    rows: list[ChangedRow] = []
+    if None not in whole:
+        # the statement answers each (key, columns, tenant) once (its DISTINCT), so each note is one row
+        for note in notes:
+            if note[4] is None:
+                continue
+            token = None if note[7] is None else str(note[7])
+            if token in whole:
+                continue
+            columns = note[6]
+            rows.append(
+                ChangedRow(
+                    ids=[str(key) for key in note[5]],
+                    columns=dict(_columns_of(columns)) or None if columns is not None else None,
+                    tenant=token,
+                )
             )
-            for ids, cols, tenant in rows
-        ),
-        whole_table=bool(whole),
-        whole_tenants=tuple(whole),
-    )
+    return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(whole))
 
 
 @dataclass(frozen=True, slots=True)
