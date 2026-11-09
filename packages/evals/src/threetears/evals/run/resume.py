@@ -20,7 +20,9 @@ the first stays short on its own record. :func:`resume_run` continues the run it
   none of that — its description, say — measures alike: the edit is disclosed on the holding that began after it,
   not refused. A run stored before it froze that digest cannot tell the two apart, so its take-up is refused once
   its template was edited after it began. Nor are the host's labels — a build, a version — the measurement: they
-  are recorded on the holding that began under them (``EvalRun.lifetimes``).
+  are recorded on the holding that began under them (``EvalRun.lifetimes``). Nor is what the host disclosed about the
+  launch (``EvalRun.run_disclosure``: its machine, its load, its build), which is printed as given and never compared:
+  the run keeps the launch's.
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
@@ -121,6 +123,9 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "subject_snapshot",
         # The host's own payload, which the engine never reads.
         "host_payload",
+        # What the host disclosed about the launch (its machine, its load, its build): printed as given, never
+        # compared. The run keeps the launch's; a holding has no field for its own (``RunLifetime``).
+        "run_disclosure",
         # How the pinned roles, apparatus and cell deadline were arrived at, not what they are: those are pinned.
         "apparatus_provenance",
         "model_role_provenance",
@@ -438,7 +443,8 @@ class RunResumption:
         now, for a run never taken up before), and a new holding opens: this process, at :attr:`epoch`, under the
         labels the host captured now and the cost cap the launch resolved, which the run records as its own. A
         template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
-        holding.
+        holding. The host's disclosure is never compared, so a moved one refuses nothing, and the run keeps the one
+        its launch stated: a holding records none of its own.
 
         :param fresh: The run the launch assembled and stamped.
         :ptype fresh: EvalRun

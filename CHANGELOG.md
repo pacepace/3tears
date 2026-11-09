@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a take-up never compares the host's disclosure
+
+**Fixed:** `job_resume` no longer refuses a take-up when a run's disclosure moved. `EvalRun.run_disclosure` is printed
+as given and never compared, but a take-up held it equal, so a host disclosing a reading that moves (a one-minute
+load, a build after a deploy) had nearly every resume refused. The run keeps the disclosure its launch stated; a
+holding records none of its own.
+
+**Hosts:** a resume after a restart or a deploy is taken up whatever the host's disclosure reads now. Nothing stored
+changes.
+
 ### evals: the mint imports only the profile factory its operator names
 
 **Changed:** `python -m threetears.evals.harness mint` requires `--host module:callable` and never imports the

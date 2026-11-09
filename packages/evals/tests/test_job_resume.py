@@ -4,6 +4,8 @@ Pinned:
 
 - **``job_resume`` takes a lost run up again**, through the catalogue every transport calls, and the run's own job
   then reads it ``completed`` with every cell, having spanned two process lifetimes.
+- **A disclosure is never compared**: a run whose host's disclosure moved between its launch and ``job_resume`` (a
+  one-minute load read afresh at every call) is taken up, and keeps the disclosure its launch stated.
 - **Every refusal reaches the caller with its remedy**: a run that would measure otherwise (every difference
   named), one its budget stopped at its cap when no higher cap is named, one that completed; a sweep that completed,
   failed or is live; a sweep or launch id naming nothing; and a job of a kind not resumed (a judge pass's), which
@@ -19,7 +21,7 @@ Pinned:
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from typing import Any
 
@@ -29,7 +31,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import EvalStorage, EvalSweep, SweepArmArguments, SweepArmRecord, SweepLaunchArguments
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll, run_job_id
 from threetears.evals.run import ArmPrice, ArmQuote, EvalLaunch, resumable_jobs
-from threetears.evals.schema import DocumentStore, EvalRun, JobLease, JobLoss
+from threetears.evals.schema import DocumentStore, EvalRun, JobLease, JobLoss, RunDisclosure
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
@@ -70,11 +72,14 @@ def _run(host: OpsHost, run_id: str) -> EvalRun:
     return run
 
 
-async def _lost_run(monkeypatch: pytest.MonkeyPatch) -> tuple[OpsHost, str]:
-    """A run of nine cells whose holder died with three stored and the rest in flight or not started, read lost."""
+async def _lost_run(
+    monkeypatch: pytest.MonkeyPatch, *, run_disclosure: Callable[[], RunDisclosure] | None = None
+) -> tuple[OpsHost, str]:
+    """A run of nine cells whose holder died with three stored and the rest in flight or not started, read lost; its
+    host discloses ``run_disclosure``, and so does every other process over its store."""
     gate = held_extraction(monkeypatch, passing=DONE_BEFORE)
     store = ClockedStore()
-    holder = off_loop(ops_fixture, store=store).host
+    holder = off_loop(ops_fixture, store=store, run_disclosure=run_disclosure).host
     launch_id, run_id = await launched_arm(holder, K)
     rows = holder.eval_host.storage.query_eval_results_by_run
     await until(lambda: len(off_loop(rows, run_id, TOYHOST_SCOPE)) == DONE_BEFORE and gate.held >= 1)
@@ -108,6 +113,33 @@ async def test_job_resume_takes_a_lost_run_up_again_and_its_job_reads_completed(
     run = off_loop(_run, holder, run_id)
     assert run.status == "completed" and len(run.lifetimes) == 2
     assert len(off_loop(holder.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)) == 3 * K
+
+
+async def test_job_resume_takes_a_run_up_though_its_disclosure_moved_and_the_run_keeps_its_launchs(
+    tool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readings: list[float] = []
+
+    def load_now() -> RunDisclosure:
+        # As ``os.getloadavg()[0]`` reads: another value at every call.
+        readings.append(0.25 * (len(readings) + 1))
+        return RunDisclosure(values={"launch_load_1m": readings[-1], "app_version": f"build-{len(readings)}"})
+
+    holder, run_id = await _lost_run(monkeypatch, run_disclosure=load_now)
+    launched = off_loop(_run, holder, run_id).run_disclosure
+    disclosed_at_launch = len(readings)
+    assert launched is not None and launched.values["launch_load_1m"] == readings[-1]
+
+    resumer = other_process(holder)
+    outcome = await _call(tool, resumer, action="job_resume", job_id=run_job_id(run_id))
+
+    assert not outcome.is_error, outcome.text
+    assert len(readings) > disclosed_at_launch, "the take-up's launch read the host's disclosure again, and it moved"
+    (job,) = JobsStarted.model_validate(outcome.structured).jobs
+    assert (await settled(resumer, job.job_id)).state == "completed"
+    run = off_loop(_run, holder, run_id)
+    assert run.status == "completed" and len(run.lifetimes) == 2
+    assert run.run_disclosure == launched, "the run keeps the disclosure its launch stated"
 
 
 async def test_job_resume_refuses_a_run_that_would_measure_otherwise_naming_the_difference_and_how_to_proceed(
