@@ -25,7 +25,7 @@ from __future__ import annotations
 import inspect
 
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from dataclasses import dataclass
@@ -118,6 +118,11 @@ class EpochChange(BaseModel):
         values as text (the load's constants): the rows whose columns equal these are the load's reach, and a follower
         that knows the field reads those rows again rather than the table. A follower built before it reads the
         record as the whole table, which the record also says, so it is never misled
+    :ivar noted_between: for a keys-unknown record of a commit whose rows were too many to name, the database clock's
+        bracket of the commit's change notes, ``(transaction start, just before COMMIT)`` on the committing
+        connection: every note the commit wrote (:mod:`~threetears.core.collections.change_notes`) is in it, so a
+        follower resolves the keys from the notes (perhaps with other commits' keys, which it reads again harmlessly).
+        A follower built before it reads the record as keys unknown and is behind, never misled
     """
 
     table: str
@@ -126,6 +131,7 @@ class EpochChange(BaseModel):
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
     partition: dict[str, str] | None = None
+    noted_between: tuple[datetime, datetime] | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -145,7 +151,27 @@ class EpochChange(BaseModel):
                 f"an epoch change of {self.table!r} at {self.token!r} names a partition only as a whole-table record, "
                 f"and names at least one column"
             )
+        _check_noted_between(self.noted_between, keys_unknown=self.keys_unknown)
         return self
+
+
+def _check_noted_between(noted_between: tuple[datetime, datetime] | None, *, keys_unknown: bool) -> None:
+    """refuse a notes bracket on a record that is not keys unknown, or one that ends before it starts.
+
+    :param noted_between: the bracket, or None
+    :ptype noted_between: tuple[datetime, datetime] | None
+    :param keys_unknown: whether the record is keys unknown
+    :ptype keys_unknown: bool
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if noted_between is None:
+        return
+    if not keys_unknown:
+        raise ValueError("a change's notes bracket is named only on a keys-unknown record")
+    if noted_between[1] < noted_between[0]:
+        raise ValueError(f"a change's notes bracket ends before it starts: {noted_between}")
 
 
 @runtime_checkable
@@ -351,6 +377,7 @@ async def advance_recording(
     keys_unknown: bool = False,
     tenant: str | None = None,
     partition: Mapping[str, str] | None = None,
+    noted_between: tuple[datetime, datetime] | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -372,6 +399,9 @@ async def advance_recording(
     :param partition: a whole-table change's partition (:attr:`EpochChange.partition`), for a source that records it
         (``advance_with_change(partition=)``); one that does not records the whole table, which the partition narrows
     :ptype partition: Mapping[str, str] | None
+    :param noted_between: a keys-unknown change's notes bracket (:attr:`EpochChange.noted_between`), for a source that
+        records it; one that does not records keys unknown, which the bracket would resolve
+    :ptype noted_between: tuple[datetime, datetime] | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -382,22 +412,26 @@ async def advance_recording(
         extra: dict[str, Any] = {}
         if tenant is not None:
             extra["tenant"] = tenant
-        if partition and rows is None and not keys_unknown and _records_partitions(source):
+        if partition and rows is None and not keys_unknown and _takes(source, "partition"):
             extra["partition"] = dict(partition)
+        if noted_between is not None and keys_unknown and _takes(source, "noted_between"):
+            extra["noted_between"] = noted_between
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
 
-def _records_partitions(source: object) -> bool:
-    """whether ``source``'s ``advance_with_change`` takes a partition: a source built before it is handed none.
+def _takes(source: object, field: str) -> bool:
+    """whether ``source``'s ``advance_with_change`` takes ``field``: a source built before it is handed none.
 
     :param source: a source that records changes
     :ptype source: object
-    :return: whether it takes ``partition``
+    :param field: the keyword (``partition``, ``noted_between``)
+    :ptype field: str
+    :return: whether it takes it
     :rtype: bool
     """
     method = getattr(source, "advance_with_change", None)
-    return method is not None and "partition" in inspect.signature(method).parameters
+    return method is not None and field in inspect.signature(method).parameters
 
 
 def changed_row_runs(table_name: str, rows: Sequence[ChangedRow]) -> list[list[ChangedRow]]:
@@ -523,6 +557,7 @@ class _EpochBody(BaseModel):
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
     partition: dict[str, str] | None = None
+    noted_between: tuple[datetime, datetime] | None = None
 
 
 def epoch_change_body(
@@ -531,6 +566,7 @@ def epoch_change_body(
     *,
     keys_unknown: bool = False,
     partition: Mapping[str, str] | None = None,
+    noted_between: tuple[datetime, datetime] | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -547,6 +583,8 @@ def epoch_change_body(
     :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values
         (:attr:`EpochChange.partition`); requires ``rows=None`` and not ``keys_unknown``
     :ptype partition: Mapping[str, str] | None
+    :param noted_between: for a keys-unknown change, its notes bracket (:attr:`EpochChange.noted_between`)
+    :ptype noted_between: tuple[datetime, datetime] | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, or a partition with either
@@ -555,12 +593,14 @@ def epoch_change_body(
     check_change_form(rows, keys_unknown=keys_unknown)
     if partition is not None and (rows is not None or keys_unknown):
         raise ValueError("a partition narrows a whole-table change: pass rows=None without keys_unknown")
+    _check_noted_between(noted_between, keys_unknown=keys_unknown)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
         keys_unknown=keys_unknown,
         rows=list(rows) if rows is not None else [],
         partition=dict(partition) if partition else None,
+        noted_between=noted_between,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -589,6 +629,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             keys_unknown=body.keys_unknown,
             rows=body.rows,
             partition=body.partition,
+            noted_between=body.noted_between,
         )
     except ValidationError as exc:
         raise GenerationUnavailableError(
