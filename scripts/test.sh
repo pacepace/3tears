@@ -10,6 +10,7 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh              # all packages
 #   ./scripts/test.sh core         # just core
 #   ./scripts/test.sh core -v      # core, verbose
+#   ./scripts/test.sh agent/memory # one agent-family package; `agent` runs the whole family
 #   ./scripts/test.sh -v           # all packages, verbose
 
 PACKAGE=""
@@ -22,6 +23,12 @@ if [ $# -gt 0 ] && [[ "$1" != -* ]] && [ -d "packages/$1" ]; then
 fi
 
 EXTRA_ARGS=("$@")
+
+# a package's tests/; a directory of packages with none of its own (agent) runs all of it
+TEST_PATH="packages/$PACKAGE/tests/"
+if [ -n "$PACKAGE" ] && [ ! -d "packages/$PACKAGE/tests" ]; then
+    TEST_PATH="packages/$PACKAGE/"
+fi
 
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
 # outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
@@ -46,13 +53,13 @@ fi
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
     echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off for the old path)" >&2
     if [ -n "$PACKAGE" ]; then
-        exec testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+        exec testament run -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
     fi
     exec testament run -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
 
 if [ -n "$PACKAGE" ]; then
-    uv run pytest "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    uv run pytest "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 else
     # Mirror the CI workflow's invocation (`packages/ tests/` with
     # ``-m "not integration"``). The agent-namespace move
