@@ -497,8 +497,10 @@ class TableCell(EvalDocumentModel):
             "The number as its page decided it, the text every serializer prints for `value` (without `flag`): set "
             "on each number cell whose form the page decided (a rate's or money's, read at its column's or its set's "
             "precision, and on an aspect's own page each level and change its measure's ruler decides), so a reader "
-            "of the JSON prints the page's text and never spells `value` again; dropped whenever the value it states "
-            "changes. Absent where no form was decided, and `value` reads by the number rule, in `unit`."
+            "of the JSON prints the page's text and never spells `value` again. A copy that changes what the number "
+            "is spelled from (its value, unit, decimals, sign, level or money's thousands) drops it, so the page "
+            "decides the copy's text afresh; a field set in place keeps it, so a cell is changed by copying it. "
+            "Absent where no form was decided, and `value` reads by the number rule, in `unit`."
         ),
     )
     status: ChartStatus | None = Field(

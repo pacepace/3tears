@@ -152,7 +152,8 @@ class Marked:
 
 
 #: One marked chart per kind the static page draws (and the kit draws), every value's text a marker no format spells:
-#: ``test_report_kit_contract`` holds every kind a page's chart is drawn in by the static page to one here.
+#: ``test_report_kit_contract`` holds the kinds here to the static page's own registry of drawers
+#: (:data:`~threetears.evals.analysis.report.chart_svg.DRAWERS`), whatever kinds the fixtures' pages draw.
 MARKED_CHARTS: dict[str, Marked] = {
     "bars": Marked(
         "bars",

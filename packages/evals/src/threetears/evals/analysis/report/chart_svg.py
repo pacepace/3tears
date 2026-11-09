@@ -1777,7 +1777,11 @@ def _legend(items: Sequence[LegendItem]) -> str:
 
 #: Each drawn kind, to the function that draws one chart (or one panel) of it at a width.
 _Drawer = Callable[[Any, float], _Drawn]
-_DRAWERS: dict[str, _Drawer] = {
+
+#: Every kind the static page draws, to its drawer: the one registry :func:`chart_drawing` draws from (a kind given no
+#: drawer is shown as its table), so a check of the kinds the static page draws reads them here, never off what some
+#: page happens to draw. Not in ``__all__``: no other module draws from it.
+DRAWERS: dict[str, _Drawer] = {
     "bars": _bars,
     "diverging_bars": _bars,
     "forest": _forest,
@@ -1865,13 +1869,13 @@ def chart_drawing(block: ChartBlock) -> str | None:
     :rtype: str | None
     """
     kit = block.kit_chart()
-    if kit is None or kit[0] not in _DRAWERS:
+    if kit is None or kit[0] not in DRAWERS:
         return None
     kind, data = kit
     chart = KIT_CHARTS[kind].model_validate(data)
     if _holds_no_row(chart):
         return None
-    draw = _DRAWERS[kind]
+    draw = DRAWERS[kind]
     legend: list[LegendItem] | None = getattr(chart, "legend", None)
     parts = [_legend(legend)] if legend else []
     if getattr(chart, "panels", None) is not None:
