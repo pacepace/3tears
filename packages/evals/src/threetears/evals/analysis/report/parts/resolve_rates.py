@@ -416,7 +416,8 @@ def _floor_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
         line = reference_line(context, drawn)
         if line is None and len(margins) == 1:
             below = -next(iter(margins))
-            said = context.forms.chart_note(below, drawn, measure=rate, kind=held_as).text
+            # A margin is declared, not measured: its line reads as declared (``-15 pts``, never ``-15.0 pts``).
+            said = context.forms.declared(below, drawn.unit).text
             line = ChartReference(value=below, label=REFERENCE_TEMPLATE.format(kind="floor", value=said), kind="floor")
         dots = []
         by_arm = {read.arm: read for read in reads}

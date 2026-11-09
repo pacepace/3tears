@@ -774,7 +774,8 @@ def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:
         total_rows=1,
     )
     drawn = grid_html(block)
-    assert "<title>16.7 pts, interval -7.8 to +35.4 pts, margin ±5.0 pts</title>" in drawn
+    # The margin is declared, so it reads as declared (number rule 4), never at the cells' tenth.
+    assert "<title>16.7 pts, interval -7.8 to +35.4 pts, margin ±5 pts</title>" in drawn
     assert '<p class="axis">Each column drawn from -7.8 to 35.4 pts</p>' in drawn
     assert drawn.count('class="viz-margin"') == 2
 
@@ -845,31 +846,6 @@ def test_an_arm_is_one_tag_and_one_colour_on_the_code_page_the_aspect_page_and_t
     assert aspect_page == document, (aspect_page, document)
     # The candidates take A, B in the campaign's declared order, whatever order the scoreboard lists them in.
     assert [code[arm][0] for arm in declared] == ["P", "A", "B"][: len(declared)]
-
-
-# --- a column's percentages at one precision (finding C-15) -------------------------------------------------------
-
-
-def test_a_column_s_percentages_read_whole_unless_whole_percents_would_print_two_of_them_alike() -> None:
-    """Coordinator ruling under the owner's "do what makes sense for usability" (2026-11-07): the code page read
-    ``60%`` beside ``62.9%`` in one column. Percentages read whole, one decimal for the whole column only where whole
-    percents would print two of its values or an interval's ends alike; an exact zero reads ``0%`` in every column;
-    a level written to its own digits keeps them."""
-    rows = [
-        {"arm": TableCell(value="a"), "control": TableCell(value=60.0, unit="%"), "arm_mean": TableCell(value="62.9%")},
-        {"arm": TableCell(value="b"), "control": TableCell(value=69.6, unit="%"), "arm_mean": TableCell(value="63.2%")},
-        {"arm": TableCell(value="c"), "control": TableCell(value=0.0, unit="%"), "arm_mean": TableCell(value="0.0%")},
-    ]
-    forms = PageForms.off_page()
-    laid = forms.rate_columns(rows)
-    assert [row["control"].text for row in laid] == ["60%", "70%", "0%"]
-    assert [row["arm_mean"].text for row in laid] == ["62.9%", "63.2%", "0%"], "62.9 and 63.2 would both read 63%"
-    tight = forms.rate_columns(
-        [{"interval": TableCell(value="[59.6%, 60.4%]")}, {"interval": TableCell(value="[1%, 9%]")}]
-    )
-    assert [row["interval"].text for row in tight] == ["[59.6%, 60.4%]", "[1.0%, 9.0%]"], "an interval's ends apart"
-    level = forms.rate_columns([{"level": TableCell(value="99.69%")}, {"level": TableCell(value="97.5%")}])
-    assert [row["level"].text for row in level] == ["99.69%", "97.5%"]
 
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))

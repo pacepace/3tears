@@ -98,6 +98,13 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
     def test_the_figures_are_not_read_where_an_interval_is(self):
         assert policy_places([3.7], [0.0022]) == 0
 
+    def test_the_decimals_stop_at_six(self):
+        """A half-width finer than a millionth would ask for an eighth decimal; a figure that fine reads as the bound it
+        is under (``< 0.000001``), so the decimals stop at six."""
+        assert policy_places([3e-8]) == 6
+        assert policy_places([3e-6]) == 6
+        assert policy_places([3e-5]) == 5
+
 
 class TestTheBoundaryException:
     """A capped figure or an interval's end that would round onto a boundary takes just enough digits to stay off it

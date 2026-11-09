@@ -139,11 +139,10 @@ def test_the_sweep_meets_refusals_as_well_as_blocks() -> None:
 
 
 def _values(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A page's block as its values table: a chart's own, a table's cells as its Markdown prints them, each number at
-    one precision among the cells that read alike, as block_render reads them."""
+    """A page's block as its values table: a chart's own, each value its decided text; a table's cells as its Markdown
+    prints them, each number at one precision among the cells that read alike, as block_render reads them."""
     if isinstance(block, ChartBlock):
-        headers, body = block.values_table()
-        return headers, even_precision(body)
+        return block.values_table()
     cells = [[row[c.key] for c in block.columns] for row in block.rows]
     return [c.header for c in block.columns], even_precision(
         [[cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells]

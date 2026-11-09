@@ -47,10 +47,9 @@ in a table, a chart, a key's prose or alone, prints at that precision in the pol
 forms (``PageForms.chart_*``) read a figure's measure's precision where they are handed its measure and kind, and
 decide over the chart's own drawn values only where they are not. A written page's table respells no rate
 (:meth:`PageForms.as_printed` records what each prints). Money's column rule (:meth:`PageForms.money_columns`) holds
-on every page, and the rate column rule (:meth:`PageForms.rate_columns`) on the code and aspect pages, each deciding
-over the cells a table already built and recording what every rate or money cell prints; and a stored table's glyph
-scale (:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a page's writer,
-which holds no page's forms and asks its own.
+on every page, deciding over the cells a table already built and recording what every money cell prints; and a stored
+table's glyph scale (:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a
+page's writer, which holds no page's forms and asks its own.
 
 **Why at page assembly.** The bundle is fingerprinted evidence and the report input a stored snapshot that recorded
 writer runs replay, so neither carries presentation. Page assembly is the first place that sees the whole page, and
@@ -77,7 +76,6 @@ from threetears.evals.analysis.quantities import (
     delta_unit,
     is_money,
     number_in,
-    render_cell,
     with_unit,
 )
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
@@ -103,10 +101,6 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
 from threetears.evals.analysis.report.charts import (
     KitChart,
-    bare_places,
-    percent_places,
-    respell_bare,
-    respell_percents,
 )
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
@@ -821,7 +815,7 @@ class PageForms:
         means in one row read alike (#993).
 
         A cell a table's column rule spells (a rate's, money) is recorded there, as it prints
-        (:meth:`rate_columns`, :meth:`money_columns`); any other is recorded here.
+        (:meth:`money_columns`); any other is recorded here.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
@@ -1882,8 +1876,8 @@ class PageForms:
         self, scale: TableCell, unit: str, value: float, low: float, high: float, *, margin: float | None = None
     ) -> Printed:
         """What a table glyph's title states: its figure, its interval and its declared margin, as the scale's cells
-        write them (``-5.0 pts, interval -6.9 to +11.0 pts, margin ±15.0 pts``): a figure in points at the cells'
-        decimals, a point's one where they name none, the margin alike, as the chart's margin line reads it; any other
+        write them (``-5.0 pts, interval -6.9 to +11.0 pts, margin ±15 pts``): a figure in points at the cells'
+        decimals, a point's one where they name none, the margin as declared, as the chart's margin line reads it; any other
         figure as the cells write it (their money form, a bare figure at its column's precision), and the interval in
         its one form at the cells' one precision (``88.1 to 100%``, never ``11`` beside ``-6.9``).
 
@@ -1904,7 +1898,8 @@ class PageForms:
         """
         said = f"{_scale_figure(scale, unit, value)}, interval {_scale_interval(scale, unit, low, high)}"
         if margin is not None:
-            said += f", margin ±{_scale_figure(scale, unit, margin)}"
+            # A margin is declared, not measured: it reads as declared (``±15 pts``), never at the cells' decimals.
+            said += f", margin ±{with_unit(margin, unit)}"
         return self._issue("", "", "lone", value, said, said, "")
 
     def scale_span(self, scale: TableCell, unit: str, low: float, high: float) -> Printed:
@@ -2767,87 +2762,11 @@ class PageForms:
 
     # --- a table's column rules: today's, each deciding over the cells its table already built --------------------
     #
-    # A table states each set of its rates and its money at one precision, decided over the column (or the row) after
-    # its cells are built. These hold those decisions, relocated: a cell keeps its value and glyph, and takes the
-    # decimals its set reads at, or, where it states its figures in words, those words respelled. Each records the
-    # text every cell it reads prints, under the measure its builder named (:meth:`of_measure`), and a number carries
-    # that text as its decided text (``value_text``), so the ledger holds what a rate or money column prints, not only
-    # what its cells were built from. The flip retires both: a cell then prints its measure's text.
-
-    def rate_columns(
-        self,
-        rows: Sequence[Mapping[str, TableCell]],
-        *,
-        bare: Mapping[str, str] | None = None,
-        keep: Collection[str] = (),
-    ) -> list[dict[str, TableCell]]:
-        """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
-        decimal for the whole column only where whole percents would print two of its values alike or an interval's two
-        ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%``
-        never stand on one page (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07;
-        :func:`~threetears.evals.analysis.report.charts.percent_places`).
-
-        A column holding a percentage written to two decimals or more (an interval's confidence level, ``99.69%``) is a
-        level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left
-        as it is; a cell's other words stay as written.
-
-        Every rate's cell it reads is recorded as it prints (``column``), under the measure its builder named
-        (:meth:`of_measure`): a number in percent or in points, a bare figure under a head naming its unit, and a cell
-        stating a rate in its words (``[1.0%, 9.0%]``, ``-7.6 pts``), respelled or not; a number carries the text
-        recorded (``value_text``). A column it keeps is its builder's, recorded where that cell was decided.
-
-        :param rows: The table's rows, by column key.
-        :ptype rows: Sequence[Mapping[str, TableCell]]
-        :param bare: The columns whose head names their unit, ``(%)`` or ``(pts)``
-            (:func:`~threetears.evals.analysis.report.blocks.bare_columns`), so their cells state bare figures
-            (``21.1``, ``[17.2, 25]``), each by the unit it names: every column of one unit in the table reads at one
-            precision by the same rule (a figure type across its columns: points, or percent), its leading figure and
-            its interval's ends. None for none.
-        :ptype bare: Mapping[str, str] | None
-        :param keep: The columns left as their builder wrote them, which are no rate (an interval's level, ``99.69%``
-            beside ``95%``, never rounded to a column's whole percents).
-        :ptype keep: Collection[str]
-        :return: The rows, each column's percentages respelled at its one precision.
-        :rtype: list[dict[str, TableCell]]
-        """
-        bare = {key: unit for key, unit in (bare or {}).items() if key not in keep}
-        keys = list(dict.fromkeys(key for row in rows for key in row))
-        places = {
-            key: chosen
-            for key in keys
-            if key not in bare and key not in keep
-            if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
-        }
-        by_unit = {
-            unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
-            for unit in set(bare.values())
-        }
-        # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
-        # unit's precision, which whole percents' rule for levels never coarsens: a set reads at one precision.
-        by_unit = {
-            unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
-        }
-        figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
-        laid = [
-            {
-                key: _respelled_percents(cell, places[key])
-                if key in places
-                else _respelled_bare(cell, figures[key])
-                if key in figures
-                else cell
-                for key, cell in row.items()
-            }
-            for row in rows
-        ]
-        return [
-            {
-                key: self._issue_cell(cell, built[key])
-                if key not in keep and (_a_rate_cell(cell, key in bare) or _rate_words(cell, key in bare))
-                else cell
-                for key, cell in row.items()
-            }
-            for row, built in zip(laid, rows, strict=True)
-        ]
+    # A table states each set of its money in one form, decided over the column (or the row) after its cells are
+    # built: a cell keeps its value and glyph, and takes the form its set reads in. It records the text every cell it
+    # reads prints, under the measure its builder named (:meth:`of_measure`), and a number carries that text as its
+    # decided text (``value_text``), so the ledger holds what a money column prints, not only what its cells were built
+    # from. A rate's cell prints its measure's text, decided where it is built.
 
     def money_columns(
         self,
@@ -2942,7 +2861,7 @@ class PageForms:
 
     def of_measure(self, cell: TableCell, *, measure: str, kind: _MeasureKind) -> TableCell:
         """A cell a builder made, held as a figure of ``measure`` read as ``kind``, so a column rule that spells it
-        (:meth:`rate_columns`, :meth:`money_columns`) records what it prints under that measure: the ledger then holds a
+        (:meth:`money_columns`) records what it prints under that measure: the ledger then holds a
         rate's or money's table cell by its measure, as it holds every other figure the page prints. Nothing is
         printed, so nothing is issued.
 
@@ -3209,8 +3128,7 @@ def _scale_spell(cell: TableCell, unit: str, number: float) -> str:
 
 def _scale_figure(cell: TableCell, unit: str, number: float) -> str:
     """A figure on a glyph scale as its interval's ends read: in points at the cell's decimals, a point's one where it
-    names none (``-5.0 pts``), the cell's own figure and its declared margin alike (``±15.0 pts``, as the chart's
-    margin line reads it); any other as :func:`_scale_spell` writes it."""
+    names none (``-5.0 pts``); any other as :func:`_scale_spell` writes it."""
     if unit == POINTS and (cell.decimals is None or not cell.unit):
         return f"{spell_at(number, POINT_PLACES if cell.decimals is None else cell.decimals)} {POINTS}"
     return _scale_spell(cell, unit, number)
@@ -3330,35 +3248,6 @@ def _rate_words(cell: TableCell, bare: bool) -> bool:
 
 #: A digit, which a cell's words must hold to state a figure.
 _A_DIGIT = re.compile(r"\d")
-
-
-def _said(cell: TableCell) -> str:
-    """A cell's text as it prints, without its flag: its number in its unit, or its value."""
-    return (
-        cell.amount(float(cell.value)) if cell.unit and isinstance(cell.value, int | float) else render_cell(cell.value)
-    )
-
-
-def _respelled_bare(cell: TableCell, places: int) -> TableCell:
-    """A bare figure's cell at ``places`` decimals (:func:`~threetears.evals.analysis.report.charts.respell_bare`); a
-    number keeps its value and glyph."""
-    if cell.is_number and not cell.unit:
-        return cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_bare(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
-
-
-def _respelled_percents(cell: TableCell, places: int) -> TableCell:
-    """A cell with every percentage it states at ``places`` decimals
-    (:func:`~threetears.evals.analysis.report.charts.respell_percents`); a number held with the percent unit keeps its
-    value, glyph and status and reads at its column's precision, or at the decimals its builder set."""
-    if cell.is_number and cell.unit == PERCENT:
-        # A builder that chose the cell's decimals (a level a change is read from, at its unit's one decimal) keeps them.
-        return cell if cell.decimals is not None else cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_percents(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
 
 
 def _cell_amounts(cell: TableCell) -> list[float | None]:

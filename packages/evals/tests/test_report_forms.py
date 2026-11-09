@@ -16,9 +16,9 @@ Held here, on the pages the plan names:
   from them, so no figure reads one input in another's forms; an aspect page's its bundle; a reader handed both
   refuses a pair that does not match.
 
-The two column rules the tables apply after a cell is built (whole percents per column, a money column's own form)
-are the page's forms' too (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), each recording what every
-rate or money cell prints; a rate's or money's form here is what the cell is built from.
+The column rule the tables apply after a cell is built (a money column's own form) is the page's forms' too
+(:meth:`PageForms.money_columns`), recording what every money cell prints; a rate's or money's form here is what the
+cell is built from.
 """
 
 from __future__ import annotations
@@ -203,9 +203,9 @@ def test_every_measured_or_scored_level_reads_as_the_full_results_print_it(name:
 
 
 @pytest.mark.parametrize("name", _WRITTEN)
-def test_a_rate_column_reads_as_its_levels_through_the_table_s_column_rule(name: str) -> None:
-    """A rate's level is the figure its cell is built from; the table's column rule (whole percents unless two would
-    read alike) then spells the column, so the column rebuilt from the forms reads as printed."""
+def test_a_rate_column_reads_as_its_levels(name: str) -> None:
+    """A rate's level is the figure its cell is built from, and no column rule respells it: each cell prints its
+    measure's level as the page's forms decide it (number rule 5)."""
     held = _written_inputs()[name]
     table = _arms_by_measure(held)
     if table is None:
@@ -220,8 +220,7 @@ def test_a_rate_column_reads_as_its_levels_through_the_table_s_column_rule(name:
             rates.add(column)
     if not rates:
         pytest.skip(f"{name} prints no rate by arm")
-    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(table.columns)))
-    for printed, again in zip(table.rows, redone, strict=True):
+    for printed, again in zip(table.rows, rebuilt, strict=True):
         for column in rates:
             assert again[column].text == printed[column].text, column
 
@@ -791,23 +790,20 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
     assert (form.reads_as, form.level_decimals) == ("measured", decimals)
 
 
-#: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, whose bare
-#: figures the page's rate columns (:meth:`PageForms.rate_columns`) respell by the unit's rule after the cell is built
-#: (``bare_places``): a half-width (``Half-width (pts)``), a pass^k (``Pass^k there (%)``) and the between-cases share
-#: (``Between cases (%)``). Their ledger texts may read otherwise on the page until the flip, when a cell prints its
-#: measure's text; what the column prints is recorded beside them (``column``).
+#: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, as bare figures
+#: (number rule 3: no unit under a head that names it): a half-width (``Half-width (pts)``), a pass^k (``Pass^k there
+#: (%)``) and the between-cases share (``Between cases (%)``). Their ledger texts carry the unit the page leaves to the
+#: head; what the column prints is recorded beside them (``column``).
 _RESPELLED_ROLES = frozenset({"half_width", "pass_k", "share"})
 
 
 def _respelled(forms: PageForms, entry) -> bool:
-    """Whether the page's rate columns (:meth:`PageForms.rate_columns`) respell an issued figure (an entry of
-    ``forms.ledger``) on a code page after its cell is built, by its measure and role, until the flip:
+    """Whether a code page prints an issued figure (an entry of ``forms.ledger``) bare, under a head naming its unit,
+    by its measure and role:
 
     - :data:`_RESPELLED_ROLES`, each under a head naming its unit;
-    - a rate's interval: a pass rate's under ``Interval (pts)``, respelled at a point's decimal, and a measure's
-      ``[76.4%, 99.1%]`` in an interval column, whose percents the rule sets at one precision (``percent_places``);
-    - a measurement's rate level (kind ``measure``): bare under ``Accuracy (%)`` in its matrix, or a percent in a value
-      column, respelled alike.
+    - a rate's interval: a pass rate's under ``Interval (pts)`` or a level's under its head's ``(%)``;
+    - a measurement's rate level (kind ``measure``): bare under ``Accuracy (%)`` in its matrix.
 
     Never excluded: a change's pass rate level and change (kind ``trial``), whose cells carry their decimals, which
     the rule keeps; and an interval's confidence level, which only sentences state and the rule never reads."""
@@ -852,9 +848,9 @@ def _ledger_and_page(page_of: Callable[[], CampaignReport]) -> tuple[PageForms, 
 )
 def test_the_ledger_holds_only_text_the_code_page_prints(page_of: Callable[[], CampaignReport]) -> None:
     """Every text a code page's forms issued is on the page: a decision that compares figures prints nothing and
-    issues nothing. Excluded until the flip, by measure and role: a figure the column rule still respells after its
-    cell is built (:func:`_respelled`), whose digits the rule may change; the column's own record of it is held to the
-    page like every other entry."""
+    issues nothing. Excluded, by measure and role: a figure the page prints bare under a head naming its unit
+    (:func:`_respelled`), whose ledger text carries the unit; the column's own record of it is held to the page like
+    every other entry."""
     forms, body = _ledger_and_page(page_of)
     assert forms.ledger
     missing = [entry for entry in forms.ledger if entry.text not in body and not _respelled(forms, entry)]
@@ -1287,12 +1283,12 @@ def test_every_rate_and_money_cell_an_aspect_page_prints_is_in_its_ledger_under_
 
 
 def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -> None:
-    """The aspect page's check reads each row's own measure, never only whether some measure holds a cell: a rate cell
+    """The aspect page's check reads each row's own measure, never only whether some measure holds a cell: a cell
     recorded under another measure than its row's is unheld, on a table of one cell and on a real page's first
     contrast, whose cells read as unheld once the row is said to state another measure's figures."""
     forms = PageForms.off_page()
-    cell = forms.of_measure(TableCell(value=62.9, unit="%"), measure="latency", kind="measure")
-    (row,) = forms.rate_columns([{"rate": cell}])
+    cell = forms.of_measure(TableCell(value=0.11, unit="usd"), measure="latency", kind="measure")
+    (row,) = forms.money_columns([{"rate": cell}])
     table = TableBlock(
         section="contrasts",
         name="t",
@@ -1304,7 +1300,7 @@ def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -
     )
     assert _unheld([table], forms, by_measure=True, measures={("t", 0): ("latency", "measure")}) == (1, [])
     _, misheld = _unheld([table], forms, by_measure=True, measures={("t", 0): ("accuracy", "measure")})
-    assert misheld == ["t.rate (number): '63%' under ('accuracy', 'measure')"]
+    assert misheld == ["t.rate (number): '$0.11' under ('accuracy', 'measure')"]
 
     page, forms = _aspect_pages("s1_change")["s1 change/billing"]
     tables = [block for block in page.blocks if isinstance(block, TableBlock)]
@@ -1315,27 +1311,17 @@ def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -
 
 
 def test_a_column_rule_records_a_cell_under_the_measure_its_builder_named_and_the_cell_carries_the_text() -> None:
-    """A cell its builder named a figure of a measure is recorded by the column rule under that measure, with what the
-    rule prints (``63%`` of ``62.9%``), and carries that text as its decided text; a cell named of none is recorded
-    under none, as before, and carries its text too."""
+    """A cell its builder named a figure of a measure is recorded by the money columns under that measure, with what
+    the rule prints (``$0.0080`` of ``0.008``), and carries that text as its decided text; a cell named of none is
+    recorded under none, as before, and carries its text too."""
     forms = PageForms.off_page()
-    named = forms.of_measure(TableCell(value=62.9, unit="%"), measure="accuracy", kind="measure")
-    laid = forms.rate_columns([{"rate": named}, {"rate": TableCell(value=70.4, unit="%")}])
-    assert [row["rate"].value_text for row in laid] == ["63%", "70%"]
+    named = forms.of_measure(TableCell(value=0.008, unit="usd"), measure="cost_usd", kind="measure")
+    laid = forms.money_columns([{"cost": named}, {"cost": TableCell(value=0.11, unit="usd")}])
+    assert [row["cost"].value_text for row in laid] == ["$0.0080", "$0.11"]
     assert [(entry.measure, entry.kind, entry.role, entry.text) for entry in forms.ledger] == [
-        ("accuracy", "measure", "column", "63%"),
-        ("", "", "column", "70%"),
+        ("cost_usd", "measure", "column", "$0.0080"),
+        ("", "", "column", "$0.11"),
     ]
-
-
-def test_a_money_column_records_a_cell_under_its_measure_and_a_second_rule_keeps_it() -> None:
-    """Money named a figure of a measure is recorded under it by the money columns, and the rate columns after them
-    read the cell the money columns laid, so a page that applies both records each cell once, by its measure."""
-    forms = PageForms.off_page()
-    cost = forms.of_measure(TableCell(value=0.008, unit="usd"), measure="cost_usd", kind="measure")
-    laid = forms.rate_columns(forms.money_columns([{"cost": cost}, {"cost": TableCell(value=0.11, unit="usd")}]))
-    assert [row["cost"].figure for row in laid] == ["$0.0080", "$0.11"]
-    assert [(entry.measure, entry.text) for entry in forms.ledger] == [("cost_usd", "$0.0080"), ("", "$0.11")]
 
 
 def test_a_chart_of_one_measure_records_each_value_it_draws_under_that_measure() -> None:
@@ -1362,20 +1348,6 @@ def test_a_chart_of_one_measure_records_each_value_it_draws_under_that_measure()
     assert unnamed.ledger == ()
 
 
-def test_a_column_rule_records_the_words_it_respelled_exactly() -> None:
-    """An interval stated in words, ``[1%, 9%]`` beside ``[59.6%, 60.4%]``, reads at the column's one decimal, and the
-    ledger holds exactly what the column prints, each cell once, under no measure."""
-    forms = PageForms.off_page()
-    laid = forms.rate_columns(
-        [{"interval": TableCell(value="[59.6%, 60.4%]")}, {"interval": TableCell(value="[1%, 9%]")}]
-    )
-    assert [row["interval"].figure for row in laid] == ["[59.6%, 60.4%]", "[1.0%, 9.0%]"]
-    assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
-        ("", "", "column", None, "[59.6%, 60.4%]"),
-        ("", "", "column", None, "[1.0%, 9.0%]"),
-    ]
-
-
 def test_the_money_columns_record_each_amount_as_its_column_s_form_prints_it() -> None:
     """A column holding $0.008 and $0.11 reads ``$0.0080`` and ``$0.11``; the ledger holds exactly those, each by its
     amount, and nothing for the cell of words beside them."""
@@ -1390,19 +1362,6 @@ def test_the_money_columns_record_each_amount_as_its_column_s_form_prints_it() -
     assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
         ("", "", "column", 0.008, "$0.0080"),
         ("", "", "column", 0.11, "$0.11"),
-    ]
-
-
-def test_a_column_rule_records_what_it_respelled_not_what_the_cell_was_built_from() -> None:
-    """Whole percents per column respell ``62.9%`` beside ``70.4%`` to ``63%`` and ``70%``: the ledger holds the text
-    printed, under no measure (the rule reads none) and the role ``column``."""
-    forms = PageForms.off_page()
-    rows = [{"rate": TableCell(value=62.9, unit="%")}, {"rate": TableCell(value=70.4, unit="%")}]
-    laid = forms.rate_columns(rows)
-    assert [row["rate"].figure for row in laid] == ["63%", "70%"]
-    assert [(entry.measure, entry.role, entry.text) for entry in forms.ledger] == [
-        ("", "column", "63%"),
-        ("", "column", "70%"),
     ]
 
 
@@ -1660,8 +1619,9 @@ def _held_as(figure: Figure, tabled: Mapping[str, set[tuple[str, str, str]]], he
 
 
 #: The statistics a key reads a measure's level by, which a whole figure is still matched under (a bar's ``701`` ms,
-#: an arm's ``$4.00``): its mean, a bar's or a criterion's value, and an interval's ends.
-_WHOLE_LEVELS = frozenset({"mean", "value", "low", "high"})
+#: an arm's ``$4.00``): its mean, a bar's or a criterion's value, and an interval's ends; and none, the statistic of a
+#: key that reads a level whole by its path alone (``judged.<dim>.<arm>``).
+_WHOLE_LEVELS = frozenset({"mean", "value", "low", "high", None})
 
 #: How many of what it counts a money figure's scale reads per (a cost per 1,000 replies), which a table's cost per one
 #: reply is that figure over.

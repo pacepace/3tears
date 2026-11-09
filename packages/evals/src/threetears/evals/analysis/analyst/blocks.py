@@ -454,10 +454,12 @@ def _parameter(path: str) -> str:
 
 def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
     """A drawn block's values, as the analyst reads them and a report document's page text prints them: a chart's
-    table of every value it draws, or a table's own columns and cells, each cell after its arm's tag where it names an
-    arm, as the page's Markdown prints it; and in either, every number at one
-    precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
-    two figures compared read at one precision. A table's bare numbers (no unit, no words) read alike within their
+    table of every value it draws, each as its chart's text prints it, which its page's forms decided (number rule 5:
+    never respelled, so an interval of ``+3 to +7`` never reads ``+3.0 to +7`` beside a neighbour's tenth); or a
+    table's own columns and cells, each cell after its arm's tag where it names an arm, as the page's Markdown prints
+    it, every number at one precision among the cells that read alike
+    (:func:`~threetears.evals.analysis.report.charts.even_precision`), so two figures compared read at one precision.
+    A table's bare numbers (no unit, no words) read alike within their
     column, which holds one figure: a count beside a distance in another column is no figure read alike, and stays
     whole (``617``, never ``617.0``); a figure in its unit reads alike across the table, so today's ``97.1%`` and its
     line's ``97.0%`` read at one precision.
@@ -468,8 +470,7 @@ def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[s
     :rtype: tuple[list[str], list[list[str]]]
     """
     if isinstance(block, ChartBlock):
-        headers, body = block.values_table()
-        return headers, even_precision(body)
+        return block.values_table()
     columns = [column.header for column in block.columns]
     rows = [
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]

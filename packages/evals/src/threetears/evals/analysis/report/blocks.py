@@ -30,10 +30,6 @@ from threetears.evals.analysis.quantities import (
 )
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
-    bare_at,
-    bare_places,
-    percent_at,
-    respell_bare,
     BarRow,
     BarSegment,
     BarsChart,
@@ -622,14 +618,16 @@ class TableCell(EvalDocumentModel):
         if form is not None:
             return form.spell(number)
         if self.decimals is not None and self.is_number and self.unit == PERCENT:
-            return percent_at(number, self.decimals)
+            # An exact zero reads whole, ``0%``, which states no precision.
+            return "0%" if number == 0 else f"{spell_at(number, self.decimals)}%"
         if self.decimals is not None and self.is_number and not self.unit:
-            # A bare figure under a (%) or (pts) head, at its column's one precision; a change's zero at it too.
-            return spell_at(number, self.decimals) if self.signed and number == 0 else bare_at(number, self.decimals)
+            # A bare figure under a (%) or (pts) head, at its column's one precision; a level's zero reads ``0``, a
+            # change's at the precision.
+            return "0" if number == 0 and not self.signed else spell_at(number, self.decimals)
         if self.decimals is not None and self.is_number and self.unit == POINTS:
             # A change at its unit's precision: a whole one keeps its decimal beside its siblings (`10.0 pts`), and so
             # does a zero (`0.0 pts` beside `-5.0 pts`).
-            return f"{spell_at(number, self.decimals) if number == 0 else bare_at(number, self.decimals)} {POINTS}"
+            return f"{spell_at(number, self.decimals)} {POINTS}"
         if self.decimals is not None and self.is_number and self.unit:
             # Any other unit at its set's one precision (a count's `1.4 notices`, a time's `0.028 s`).
             # A level of exactly zero reads `0 notices`, as a level does wherever it is printed; a change keeps its
@@ -665,7 +663,7 @@ class TableCell(EvalDocumentModel):
         shown = re.search(r"[1-9]", said) is not None
         if self.signed and self.is_number and float(self.value) > 0 and shown and not said.startswith(("+", "<", ">")):  # type: ignore[arg-type]
             said = f"+{said}"
-        return said if self.level is None else f"{percent_at(self.level, 1)} · {said}"
+        return said if self.level is None else f"{spell_at(self.level, 1)}% · {said}"
 
 
 #: The fields a cell's number is spelled from: a copy that changes one drops the text decided from the old ones
@@ -674,8 +672,8 @@ _SPELLED_FROM = frozenset({"value", "unit", "decimals", "signed", "level", "per_
 
 
 #: The ends of a column head that names its cells' unit, so the cells state bare figures (``Pass rate (%)``,
-#: ``Change (pts)``): a table's rate columns read them by their rule
-#: (:meth:`~threetears.evals.analysis.report.forms.PageForms.rate_columns`).
+#: ``Change (pts)``): the page's forms record them as a rate's (:meth:`~threetears.evals.analysis.report.forms.
+#: PageForms.recorded`).
 BARE_UNIT_HEADS = ("(%)", "(pts)")
 
 
@@ -1173,25 +1171,13 @@ class ChartBlock(_Block):
         )
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
-        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture, a column whose
-        head names its unit (``Pass rate (%)``) read at one precision with every column of its unit (a table's rate
-        columns' rule, :meth:`~threetears.evals.analysis.report.forms.PageForms.rate_columns`).
+        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture, each value as
+        its chart's text prints it, which its page's forms decided (number rule 5).
 
         :return: ``(headers, rows)``, each row's cells as text.
         :rtype: tuple[list[str], list[list[str]]]
         """
-        headers, body = self._values_table()
-        units = {at: unit for at, header in enumerate(headers) for unit in BARE_UNIT_HEADS if header.endswith(unit)}
-        for unit in set(units.values()):
-            columns = [at for at, named in units.items() if named == unit]
-            places = bare_places(row[at] for row in body for at in columns if at < len(row))
-            if places is None:
-                continue
-            for row in body:
-                for at in columns:
-                    if at < len(row):
-                        row[at] = respell_bare(row[at], places)
-        return headers, body
+        return self._values_table()
 
     def _values_table(self) -> tuple[list[str], list[list[str]]]:
         if self.data is not None:
