@@ -5,7 +5,8 @@ Pinned:
 - **``job_resume`` takes a lost run up again**, through the catalogue every transport calls, and the run's own job
   then reads it ``completed`` with every cell, having spanned two process lifetimes.
 - **A disclosure is never compared**: a run whose host's disclosure moved between its launch and ``job_resume`` (a
-  one-minute load read afresh at every call) is taken up, and keeps the disclosure its launch stated.
+  one-minute load read afresh at every call) is taken up, and keeps the disclosure its launch stated. So is one
+  taken up under another engine build, which keeps its launch's.
 - **Every refusal reaches the caller with its remedy**: a run that would measure otherwise (every difference
   named), one its budget stopped at its cap when no higher cap is named, one that completed; a sweep that completed,
   failed or is live; a sweep or launch id naming nothing; and a job of a kind not resumed (a judge pass's), which
@@ -140,6 +141,30 @@ async def test_job_resume_takes_a_run_up_though_its_disclosure_moved_and_the_run
     run = off_loop(_run, holder, run_id)
     assert run.status == "completed" and len(run.lifetimes) == 2
     assert run.run_disclosure == launched, "the run keeps the disclosure its launch stated"
+
+
+async def test_job_resume_takes_a_run_up_across_an_engine_upgrade_and_the_run_keeps_its_launchs_build(
+    tool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("threetears.evals.run.launch.package_version", lambda: "0.94.0")
+    monkeypatch.setattr("threetears.evals.run.launch.package_rev", lambda: "a" * 40)
+    holder, run_id = await _lost_run(monkeypatch)
+    assert (off_loop(_run, holder, run_id).package_version, off_loop(_run, holder, run_id).package_rev) == (
+        "0.94.0",
+        "a" * 40,
+    )
+    monkeypatch.setattr("threetears.evals.run.launch.package_version", lambda: "0.95.0")
+    monkeypatch.setattr("threetears.evals.run.launch.package_rev", lambda: "b" * 40)
+    resumer = other_process(holder)
+
+    outcome = await _call(tool, resumer, action="job_resume", job_id=run_job_id(run_id))
+
+    assert not outcome.is_error, outcome.text
+    (job,) = JobsStarted.model_validate(outcome.structured).jobs
+    assert (await settled(resumer, job.job_id)).state == "completed"
+    run = off_loop(_run, holder, run_id)
+    assert run.status == "completed" and len(run.lifetimes) == 2
+    assert (run.package_version, run.package_rev) == ("0.94.0", "a" * 40), "the run keeps its launch's build"
 
 
 async def test_job_resume_refuses_a_run_that_would_measure_otherwise_naming_the_difference_and_how_to_proceed(

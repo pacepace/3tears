@@ -6,15 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a take-up never compares the host's disclosure
+### evals: a take-up never compares the host's disclosure or the engine's build
 
 **Fixed:** `job_resume` no longer refuses a take-up when a run's disclosure moved. `EvalRun.run_disclosure` is printed
 as given and never compared, but a take-up held it equal, so a host disclosing a reading that moves (a one-minute
 load, a build after a deploy) had nearly every resume refused. The run keeps the disclosure its launch stated; a
-holding records none of its own.
+holding records none of its own. Nor does it refuse one across an engine upgrade (`package_version`, `package_rev`)
+or a moved `cap_checked_on_estimates`, which is about admission under the cost cap: the run keeps the launch's build,
+the only one it records, and reads admitted on estimates when either holding was. A resumed run can therefore span
+engine builds, so the framing its judge is sent may change mid-run, and no judge-prompt digest records it.
 
-**Hosts:** a resume after a restart or a deploy is taken up whatever the host's disclosure reads now. Nothing stored
-changes.
+**Hosts:** a resume after a restart, a deploy or an upgrade of 3tears-evals is taken up whatever the host's
+disclosure reads now. A run resumed across an upgrade names only its launch's engine build; launch again for a run
+measured under one build throughout. Nothing stored changes.
 
 ### evals: the mint imports only the profile factory its operator names
 
