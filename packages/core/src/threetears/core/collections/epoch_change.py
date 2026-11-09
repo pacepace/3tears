@@ -22,9 +22,11 @@ core holds only the format and the two protocols, as it does for the generation 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import inspect
+
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from dataclasses import dataclass
 
@@ -112,6 +114,10 @@ class EpochChange(BaseModel):
         apply it, and is behind on the table for that epoch -- serving, logged and counted as
         ``keys_unknown``, never a drop. :attr:`rows` is then empty
     :ivar rows: the rows the advance covered, one per row broadcast of its commit
+    :ivar partition: for a whole-table record of a load from files, the columns every row it loaded holds and their
+        values as text (the load's constants): the rows whose columns equal these are the load's reach, and a follower
+        that knows the field reads those rows again rather than the table. A follower built before it reads the
+        record as the whole table, which the record also says, so it is never misled
     """
 
     table: str
@@ -119,6 +125,7 @@ class EpochChange(BaseModel):
     whole_table: bool = False
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
+    partition: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -132,6 +139,11 @@ class EpochChange(BaseModel):
             raise ValueError(
                 f"an epoch change of {self.table!r} at {self.token!r} names exactly one of its rows, the whole "
                 f"table, or keys unknown"
+            )
+        if self.partition is not None and (not self.whole_table or not self.partition):
+            raise ValueError(
+                f"an epoch change of {self.table!r} at {self.token!r} names a partition only as a whole-table record, "
+                f"and names at least one column"
             )
         return self
 
@@ -338,6 +350,7 @@ async def advance_recording(
     *,
     keys_unknown: bool = False,
     tenant: str | None = None,
+    partition: Mapping[str, str] | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -356,6 +369,9 @@ async def advance_recording(
     :param tenant: the write's tenant, from a writer that knows it (the schema it wrote in): a rowless
         record's key, and that of any row naming none; ``None`` for ``_all``
     :ptype tenant: str | None
+    :param partition: a whole-table change's partition (:attr:`EpochChange.partition`), for a source that records it
+        (``advance_with_change(partition=)``); one that does not records the whole table, which the partition narrows
+    :ptype partition: Mapping[str, str] | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -363,10 +379,25 @@ async def advance_recording(
     """
     check_change_form(rows, keys_unknown=keys_unknown)
     if isinstance(source, _EpochChangeWriter):
-        if tenant is None:
-            return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown)
-        return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, tenant=tenant)
+        extra: dict[str, Any] = {}
+        if tenant is not None:
+            extra["tenant"] = tenant
+        if partition and rows is None and not keys_unknown and _records_partitions(source):
+            extra["partition"] = dict(partition)
+        return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
+
+
+def _records_partitions(source: object) -> bool:
+    """whether ``source``'s ``advance_with_change`` takes a partition: a source built before it is handed none.
+
+    :param source: a source that records changes
+    :ptype source: object
+    :return: whether it takes ``partition``
+    :rtype: bool
+    """
+    method = getattr(source, "advance_with_change", None)
+    return method is not None and "partition" in inspect.signature(method).parameters
 
 
 def changed_row_runs(table_name: str, rows: Sequence[ChangedRow]) -> list[list[ChangedRow]]:
@@ -491,9 +522,16 @@ class _EpochBody(BaseModel):
     whole_table: bool = False
     keys_unknown: bool = False
     rows: list[ChangedRow] = []
+    partition: dict[str, str] | None = None
 
 
-def epoch_change_body(table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False) -> bytes:
+def epoch_change_body(
+    table_name: str,
+    rows: Sequence[ChangedRow] | None,
+    *,
+    keys_unknown: bool = False,
+    partition: Mapping[str, str] | None = None,
+) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
     A record past the record bound is refused, as :func:`epoch_change_record` refuses it: the caller
@@ -506,17 +544,23 @@ def epoch_change_body(table_name: str, rows: Sequence[ChangedRow] | None, *, key
     :ptype rows: Sequence[ChangedRow] | None
     :param keys_unknown: the writer named no rows; requires ``rows=None``
     :ptype keys_unknown: bool
+    :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values
+        (:attr:`EpochChange.partition`); requires ``rows=None`` and not ``keys_unknown``
+    :ptype partition: Mapping[str, str] | None
     :return: the stored body
     :rtype: bytes
-    :raises ValueError: when ``keys_unknown`` is set with rows
+    :raises ValueError: when ``keys_unknown`` is set with rows, or a partition with either
     :raises GenerationUnavailableError: when a record naming rows without their values is past the bound
     """
     check_change_form(rows, keys_unknown=keys_unknown)
+    if partition is not None and (rows is not None or keys_unknown):
+        raise ValueError("a partition narrows a whole-table change: pass rows=None without keys_unknown")
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
         keys_unknown=keys_unknown,
         rows=list(rows) if rows is not None else [],
+        partition=dict(partition) if partition else None,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -544,6 +588,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             whole_table=body.whole_table,
             keys_unknown=body.keys_unknown,
             rows=body.rows,
+            partition=body.partition,
         )
     except ValidationError as exc:
         raise GenerationUnavailableError(

@@ -568,3 +568,47 @@ async def test_a_hub_that_announces_it_is_accepted() -> None:
 
 async def test_an_l3_with_no_broker_between_is_not_asked() -> None:
     await require_generation_by_trigger(_L3())
+
+
+# --- a load's partition ----------------------------------------------------------------------------
+
+
+async def test_a_loads_partition_reads_only_its_rows_and_leaves_the_copy_equal_to_l3(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 200)
+    # a load from files: every row it loaded holds its constants (here the state), recorded as the load's partition
+    l3.put(_rows("OH", 30, votes=4))
+    log.count += 1
+    token = f"inc:{log.count}"
+    log.records[token] = EpochChange(table=_TABLE, token=token, whole_table=True, partition={"state": "OH"})
+    lock.version += 1
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 30  # the load's rows, never the table's 230
+
+
+async def test_a_partition_then_a_key_it_holds_leaves_the_keys_newest_row(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    l3.put(_rows("OH", 5, votes=4))
+    log.count += 1
+    log.records[f"inc:{log.count}"] = EpochChange(
+        table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"state": "OH"}
+    )
+    l3.put([("OH", 2, 99)])
+    l3.delete([("OH", 3)])
+    log.commit([("OH", 2), ("OH", 3)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
+async def test_a_follower_without_partitions_reads_the_record_as_the_whole_table() -> None:
+    registry = CollectionRegistry()
+    dropped: list[str] = []
+    registry.register_derived_cache(_TABLE, on_row=lambda message: None, on_table_dropped=lambda: dropped.append("all"))
+    await registry.apply_epoch_change(
+        EpochChange(table=_TABLE, token="inc:1", whole_table=True, partition={"state": "OH"})
+    )
+    assert dropped == ["all"]

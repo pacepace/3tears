@@ -37,7 +37,7 @@ from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenan
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from threetears.core.collections.epoch_change import ChangedRow
 
@@ -910,6 +910,7 @@ async def advance_for_write(
     schema: str | None,
     keys_unknown: bool = False,
     tenancy: Tenancy | None = None,
+    partition: Mapping[str, str] | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -933,6 +934,9 @@ async def advance_for_write(
         (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`), so it is
         :data:`~threetears.core.tenancy.TENANT_BY_SCHEMA`. ``None`` reads the classes (:func:`tenancy_of_table`)
     :ptype tenancy: Tenancy | None
+    :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values
+        as text (the load's constants): the record names it, so a follower reads those rows again, not the table
+    :ptype partition: Mapping[str, str] | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -951,7 +955,14 @@ async def advance_for_write(
                 f"_all, where none of its pods read it. Name the writer's schema "
                 f"(CollectionRegistry.set_l3_schema, or the broker's schema=)"
             )
-    return await advance_recording(source, table_name, named, keys_unknown=keys_unknown, tenant=owner)
+    return await advance_recording(
+        source,
+        table_name,
+        named,
+        keys_unknown=keys_unknown,
+        tenant=owner,
+        partition=partition if rows is None else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -111,6 +111,11 @@ class Checkpoint:
     rows: int
 
     def encode(self) -> bytes:
+        """the pointer's value: the checkpoint as JSON.
+
+        :return: the bytes
+        :rtype: bytes
+        """
         return json.dumps(
             {
                 "seq": self.seq,
@@ -124,6 +129,15 @@ class Checkpoint:
 
     @classmethod
     def decode(cls, raw: bytes) -> Checkpoint:
+        """a pointer's value read back.
+
+        :param raw: the bytes
+        :ptype raw: bytes
+        :return: the checkpoint
+        :rtype: Checkpoint
+        :raises ValueError: when it is not a checkpoint's JSON
+        :raises KeyError: when a field is missing
+        """
         body = json.loads(raw)
         return cls(
             seq=int(body["seq"]),
