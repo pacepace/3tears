@@ -459,6 +459,9 @@ function kTickLabels(spec,ticks){const m=typeof spec==="string"&&/^(\+?)([a-z]+)
 function namedFmt(spec){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::(\d))?$/.exec(spec);
   if(!m||!Object.hasOwn(K_FMTS,m[2]))throw new Error(`fmt ${JSON.stringify(spec)} is not one of ${Object.keys(K_FMTS).join(", ")} (optionally "+name" or "name:digits")`);
   const f=K_FMTS[m[2]],d=m[3]==null?null:+m[3],signed=m[1]==="+";return v=>{const t=f(v,d);return signed&&v>0?"+"+t:t;};}
+// a drawn value as printed: the text its chart carries for it (value_text, lo_text, …: decided where the chart was
+// made), else the value in the chart's format, which only a chart carrying no text (a host's own) still reaches
+const kAs=(t,f,v)=>t!=null?t:f(v);
 // chart data is untrusted text: escape everything that lands in markup, and accept colors only as token names
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 function kTok(c,fallback){if(c==null)return fallback;if(typeof c!=="string"||!/^--[a-z][a-z0-9-]*$/.test(c))throw new Error(`color ${JSON.stringify(c)} is not a token name such as "--s1"`);return c;}
@@ -698,7 +701,7 @@ function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?
       S("text",{x:m.l-18,y:cy+3.5,"text-anchor":"middle",class:"tag",style:`fill:var(${kOnTag(tc)});font-size:12px;font-weight:600`,text:r.tag},g);}
     if(dots){// a dot at the value and its interval, faint; an open mark where the row has no interval, never a solid one
       const mk=kDotRow(g,x,d0,d1,{...r,value:val},cy,r.color||"--s1","circle",r.lo==null,w-m.r+8,m.r-10,r.strong);if(r.muted)mk.style.opacity=.45;
-      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null||r.hi==null?"":` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));return;}
+      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,opt.fmt,val)+(r.lo==null||r.hi==null?"":` (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`)]));return;}
     if(r.segments){let acc=o;r.segments.forEach((sg,j)=>{const a=x(kClamp(acc,d0,d1)),b=x(kClamp(acc+sg.value,d0,d1));const c=sg.color||r.color||"--s1";
         const sx=Math.min(a,b)+(j?1:0),sw=Math.max(0,Math.abs(b-a)-(j?1:0)),sy=cy-(rowH*.28),sh=rowH*.56;
         if(sg.pattern!=null)kTexture(g,sg.pattern,sx,sy,sw,sh,c,r.muted?.45:1);
@@ -714,12 +717,13 @@ function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?
     // the note past the bar's end, whole, in the very lines the margin was sized on (kNoteMargin), so it fits past any
     // bar's end, or past zero where it does not fit before a bar running left; never swapped for a rounded value
     const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,hi)):x(Math.max(d0,r.lo))):x(v);
-    const nl=r.note!=null?kWrapNote(r.note,w*.3-10):[opt.fmt(val)],nw=Math.max(...nl.map(l=>l.length*6.4));
+    const nl=r.note!=null?kWrapNote(r.note,w*.3-10):[kAs(r.value_text,opt.fmt,val)],nw=Math.max(...nl.map(l=>l.length*6.4));
     const flip=!right&&edge-6-nw<m.l+4;
     const past=Math.max(z,x(Math.min(d1,hi!=null?hi:o)));
     const nx=right?edge+6:flip?past+6:edge-6,nt=S("text",{x:nx,y:cy+4-6*(nl.length-1),"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,j)=>S("tspan",{x:nx,dy:j?12:0,text:l},nt));
-    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null?"":open?` (from ${opt.fmt(r.lo)} up, no upper bound)`:` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));});
+    const lo=r.lo==null?"":kAs(r.lo_text,opt.fmt,r.lo);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,opt.fmt,val)+(r.lo==null?"":open?` (from ${lo} up, no upper bound)`:` (${lo} to ${kAs(r.hi_text,opt.fmt,r.hi)})`)]));});
   if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
   if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
   return s;}
@@ -736,7 +740,8 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
   for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
     se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
-      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`]));});
+      const at=t=>t&&t[i];
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])}–${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
     ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
   // end labels stacked to avoid collisions, to the right of the last point
   // each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line
@@ -778,9 +783,9 @@ function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r
     kLabelText(g,lines(r),m.l-10,cy,r.strong);
     S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
-    const nl=noted?kWrap(r.note,m.r-10):[opt.fmt(r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
+    const nl=noted?kWrap(r.note,m.r-10):[kAs(r.value_text,opt.fmt,r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
-    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`]));});
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} [${kAs(r.lo_text,opt.fmt,r.lo)}, ${kAs(r.hi_text,opt.fmt,r.hi)}]`]));});
   return s;}
 
 // ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
@@ -858,7 +863,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   if(whiskered&&d.level)S("text",{x:w-m.r,y:m.t-4,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
   for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
     if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
-    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${xf(p.x)} · ${yf(p.y)}`]));}
+    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${kAs(p.x_text,xf,p.x)} · ${kAs(p.y_text,yf,p.y)}`]));}
   // the emphasized point is labelled first, then left to right, so it gets the best spot; a point with no label of
   // its own is labelled by its tag, so colour is never the only thing that names a mark
   const labs=pts.map(p=>({p,text:(narrow?p.narrow_label:p.label)||p.tag})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
@@ -883,7 +888,7 @@ function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows
   if(zl){S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);kZeroDraw(s,x(0),zl,m.t-4,"stroke-width:1.5");}
   rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s),st=r.strong||kIsEm(d,r.id);
     kLabelText(g,lines(r),m.l-8,cy,st);kDotRow(g,x,d0,d1,r,cy,c,kShape(r.shape),r.hollow,w-m.r+8,m.r-10,st);
-    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,f,r.value)+(r.lo!=null&&r.hi!=null?` (${kAs(r.lo_text,f,r.lo)} to ${kAs(r.hi_text,f,r.hi)})`:"")]));});
   if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
   if(d.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
   kBetter(s,bw,m.l,w-m.r,h-6);
@@ -905,7 +910,7 @@ function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"grou
     gr.rows.forEach((r,i)=>{const cy=y0+i*rowH+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);kLabelText(g,lines(r),m.l-10,cy,false);
       S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
       mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
-      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${f(r.from)} to ${f(r.to)}`]));});}
+      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${kAs(r.from_text,f,r.from)} to ${kAs(r.to_text,f,r.to)}`]));});}
   if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
   S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:K_RANGE_HEAD},s);
   return s;}
@@ -924,7 +929,7 @@ function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");co
     const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
     for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});if(c.label)cd.appendChild(kPill(c.status,c.label));
       if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
-      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
+      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",c.cost_text!=null?c.cost_text:cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
       if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
     tb.appendChild(tr);}
   t.append(th,tb);wrap.appendChild(t);el.appendChild(wrap);}
@@ -935,9 +940,10 @@ function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kLis
   for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
   for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
     const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
-    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",f(c.value)));
+    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",kAs(c.value_text,f,c.value)));
       if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
-      const meta=[c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
+      const meta=[c.cost_text!=null?c.cost_text:c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,
+        c.latency_text!=null?c.latency_text:c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
       if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
   // tiles keep a legible width; where the columns do not fit, the lattice scrolls inside its own frame, as a table does
   const wrap=H("div",{class:"tbl"});wrap.appendChild(box);el.appendChild(wrap);}
@@ -951,8 +957,8 @@ function kMxCell(bg,fg,main,sub,t){const e=kWithTip(H("div",{class:"c"}),t);e.st
 
 // target matrix of cells: sequential shading in six steps over the domain, n per cell, outline below the floor
 function kHeatmap(el,d){kNeed(d,["domain","fmt"]);const f=namedFmt(d.fmt),nf=d.n_fmt?namedFmt(d.n_fmt):null,[d0,d1]=d.domain;const cols=kList(d,"columns").map(c=>c.label);
-  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5);
-    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,f(c.value),c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(c.value)+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5),t=kAs(c.value_text,f,c.value);
+    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,t,c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,t+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
     if(d.reference&&c.value<d.reference.value)e.classList.add("low");return e;}));}
 
 // difference between two configs: diverging shading, gray within ±neutral, full color at ±saturate
@@ -960,14 +966,16 @@ function kDiffHeatmap(el,d){kNeed(d,["fmt"]);const f=namedFmt(d.fmt),df=d.detail
   el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const v=c.value,mag=Math.min(1,Math.abs(v)/sat),flat=Math.abs(v)<nu;
     const bg=flat?"var(--div-mid)":`color-mix(in oklab, var(${v>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
     const ink=flat?"--ink":kInk(kOkMix(kRGB(v>0?"--div-pos":"--div-neg"),kRGB("--surface"),Math.round(18+mag*72)/100),["--ink","--surface"]);
-    return kMxCell(bg,`var(${ink})`,f(v),c.detail!=null&&df?df(c.detail):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(v)]);}));}
+    const t=kAs(c.value_text,f,v),sub=c.detail_text!=null?c.detail_text:c.detail!=null&&df?df(c.detail):null;
+    return kMxCell(bg,`var(${ink})`,t,sub,c.tip||[`${d.rows[i].label} · ${cols[j]}`,t]);}));}
 
 // errors between classes, rows normalized to 100: the diagonal tinted, off-diagonal cells warn and bad by share
 function kConfusion(el,d){const labels=kList(d,"labels"),M=kList(d,"matrix");const f=namedFmt(d.fmt||"pct:1"),warnAt=d.warn_at==null?1:d.warn_at,badAt=d.bad_at==null?3:d.bad_at;
   if(M.length!==labels.length)throw new Error(`"matrix" has ${M.length} rows for ${labels.length} labels`);
   const rows=M.map((r,i)=>{if(!Array.isArray(r))throw new Error(`"matrix" row ${i} must be a list`);const tot=r.reduce((a,v)=>a+v,0);return {label:labels[i],cells:d.normalized===false?r.map(v=>tot?v/tot*100:0):r};});
+  const T=d.matrix_text;
   el.appendChild(kMxGrid(labels,rows,(v,i,j)=>{const bg=i===j?"var(--seq-1)":v>=badAt?"var(--bad-wash)":v>=warnAt?"var(--warn-wash)":"var(--sunk)";
-    return kMxCell(bg,"var(--ink)",f(v),null,[`${labels[i]} → ${labels[j]}`,`${f(v)} of the row`]);}));}
+    const t=kAs(T&&T[i]&&T[i][j],f,v);return kMxCell(bg,"var(--ink)",t,null,[`${labels[i]} → ${labels[j]}`,`${t} of the row`]);}));}
 
 // what failures look like: cards with a meta line, then the question, fields, judge reason, excerpt and a note
 function kExamples(el,d){const cards=kList(d,"cards");const box=H("div",{class:"ex"});if(d.card_min_rem!=null)box.style.gridTemplateColumns=`repeat(auto-fit,minmax(min(100%,${kNum(d.card_min_rem,0,"card_min_rem")}rem),1fr))`;

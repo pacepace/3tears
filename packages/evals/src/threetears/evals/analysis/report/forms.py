@@ -90,6 +90,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
 from threetears.evals.analysis.report.charts import (
+    KitChart,
     bare_places,
     percent_at,
     percent_places,
@@ -1622,6 +1623,23 @@ class PageForms:
         """
         text = format_number(value)
         return self._issue("", "", "count", value, text, text, "")
+
+    def chart_texts(self, data: KitChart, *, read_at: str = "") -> KitChart:
+        """A chart's data with every value it draws carried as decided text (``value_text``, ``lo_text``,
+        ``hi_text`` and their kin), which the kit and the static page print in place of formatting a value, and its
+        values table prints. Today's decision, relocated, not rewritten: each value as the chart's values table has
+        always spelled it, in the chart's format at ``read_at``'s precision where the format names no unit (the
+        chart's own ``spelled``, the contract's rule, which a host's chart without texts is spelled by too). Nothing
+        enters the ledger: a chart's rows do not name their measure.
+
+        :param data: The chart's data, as its resolver drew it.
+        :ptype data: KitChart
+        :param read_at: The unit its values are read at where its format names none, as its block reads them.
+        :ptype read_at: str
+        :return: The data, every value it draws carrying its text.
+        :rtype: KitChart
+        """
+        return data.spelled(read_at)
 
     def gate_line(self, report_input: ReportInput, criterion: Criterion) -> Printed:
         """A criterion's threshold as a gate row's line states it: as its figure key reads it, money on its

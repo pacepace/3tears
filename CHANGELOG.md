@@ -60,8 +60,22 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
   resolve at their measure's decimals (gap, margin and distance at its change set), so they read as the table does.
   On a rate nothing moves; on another measure with contrasts the decimals can (s2's turn time: 673.3 to 673 ms).
 
+**Added:**
+- Every value a written page's chart draws reaches the kit as decided text: a row, point or cell carries `value_text`,
+  `lo_text` and `hi_text` (and, by kind, `values_text`, `x_text`, `y_text`, `from_text`, `to_text`, `latency_text`,
+  `low_text`, `high_text`, `detail_text`, `matrix_text`; a reference or a stacked bar's segment `value_text`).
+  `kit.js` and the static page print it as it is wherever they would format the value, and the chart's values table
+  prints the same text (kit/API.md). The texts are what each chart draws today, so no page's text moves. A cell's
+  `cost_text` is in the contract, but the package leaves it unset: a gate matrix's and a lattice's costs still draw by
+  `cost_fmt` until the policy flip, as do a heatmap cell's count (`n_fmt`) and rung 5's preference strip, whose shares
+  the kit rounds as before.
+
 **Hosts:** a stored report that cites one of those criterion, weakest or settle keys on a non-rate measure renders
-it at the new decimals; no other text changes. Nothing to change in host code.
+it at the new decimals; no other text changes. A written page's `data-chart` JSON, and a JSON report's chart blocks,
+gain the additive text fields above: a host that re-renders the package's chart JSON with the shipped kit prints the
+package's text for every value, and a host-authored chart without them draws as before, each value formatted by its
+`fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
+yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
 
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 

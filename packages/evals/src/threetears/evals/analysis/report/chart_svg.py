@@ -619,6 +619,12 @@ def _tip_or(tip: list[str] | None, *default: str) -> list[str]:
     return list(tip) if tip else list(default)
 
 
+def _as(text: str | None, f: Callable[[float], str], value: float) -> str:
+    """A drawn value as the kit prints it: the text its chart carries for it, else the value in the chart's format,
+    which only a chart that carries no text (a host's) still reaches."""
+    return text if text is not None else f(value)
+
+
 # =============================================================================
 # The drawn kinds, each the kit's geometry at width w: its marks and its height
 # =============================================================================
@@ -719,10 +725,13 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
             # A dot at the value and its faint interval; an open mark where the row has no interval, never a solid one.
             fade = ";opacity:.45" if r.muted else ""
             marks += _dot_row(x, d0, d1, r, value, cy, color, "circle", r.lo is None, w - mr + 8, mr - 10, strong, fade)
-            spread = f" ({f(r.lo)} to {f(r.hi)})" if r.lo is not None and r.hi is not None else ""
-            out.append(
-                _titled(_tip_or(r.tip, r.label, f(value) + spread), "".join(marks), (0, cy - row_h / 2, w, row_h))
+            spread = (
+                f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
+                if r.lo is not None and r.hi is not None
+                else ""
             )
+            said = _as(r.value_text, f, value)
+            out.append(_titled(_tip_or(r.tip, r.label, said + spread), "".join(marks), (0, cy - row_h / 2, w, row_h)))
             continue
         if r.segments:
             acc = origin
@@ -789,7 +798,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
             edge = x(min(d1, hi)) if right else x(max(d0, r.lo))
         else:
             edge = x(v)
-        notes = _wrapped(r.note, w * 0.3 - 10) if r.note is not None else [f(value)]
+        notes = _wrapped(r.note, w * 0.3 - 10) if r.note is not None else [_as(r.value_text, f, value)]
         note_w = max(len(line) for line in notes) * 6.4
         flip = not right and edge - 6 - note_w < ml + 4
         past = max(z, x(min(d1, hi if hi is not None else origin)))
@@ -803,10 +812,11 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         if r.lo is None:
             spread = ""
         elif open_above:
-            spread = f" (from {f(r.lo)} up, no upper bound)"
+            spread = f" (from {_as(r.lo_text, f, r.lo)} up, no upper bound)"
         else:
-            spread = f" ({f(r.lo)} to {f(_need(r.hi, 'hi'))})"
-        out.append(_titled(_tip_or(r.tip, r.label, f(value) + spread), "".join(marks), (0, cy - row_h / 2, w, row_h)))
+            spread = f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, _need(r.hi, 'hi'))})"
+        said = _as(r.value_text, f, value)
+        out.append(_titled(_tip_or(r.tip, r.label, said + spread), "".join(marks), (0, cy - row_h / 2, w, row_h)))
     if line_ref is not None:
         rx = x(line_ref.value)
         out.append(_line(rx, mt - 6, rx, h - mb, "floor"))
@@ -1093,7 +1103,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
         def at(value: float) -> float:
             return x(max(d0, min(d1, value)))
 
-        lines = _wrapped(r.note, mr - 10) if noted and r.note is not None else [f(r.value)]
+        lines = _wrapped(r.note, mr - 10) if noted and r.note is not None else [_as(r.value_text, f, r.value)]
         marks = [
             _label_text(lines_of(r), ml - 10, cy, strong),
             _line(at(r.lo), cy, at(r.hi), cy, style=f"stroke:var({color});stroke-width:3;stroke-linecap:round"),
@@ -1110,7 +1120,8 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
             ),
             _lines_text(w - mr + 8, cy + 4 - 6 * (len(lines) - 1), lines, "lbl-strong" if strong else "tick"),
         ]
-        tip = _tip_or(r.tip, r.label, f"{f(r.value)} [{f(r.lo)}, {f(r.hi)}]")
+        said = f"{_as(r.value_text, f, r.value)} [{_as(r.lo_text, f, r.lo)}, {_as(r.hi_text, f, r.hi)}]"
+        tip = _tip_or(r.tip, r.label, said)
         out.append(_titled(tip, "".join(marks), (0, cy - row_h / 2, w, row_h)))
     return "".join(out), h
 
@@ -1158,7 +1169,9 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
             )
         )
         for i, v in enumerate(se.values):
-            spread = f" ({f(se.lo[i])}–{f(se.hi[i])})" if se.lo and se.hi else ""
+            low = se.lo_text[i] if se.lo_text else None
+            high = se.hi_text[i] if se.hi_text else None
+            spread = f" ({_as(low, f, se.lo[i])}–{_as(high, f, se.hi[i])})" if se.lo and se.hi else ""
             dot = _el(
                 "circle",
                 {
@@ -1168,7 +1181,8 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
                     "style": f"fill:var({color});stroke:var(--surface);stroke-width:2",
                 },
             )
-            out.append(_titled([f"{se.name} · {cats[i]}", f"{f(v)}{spread}"], dot, (x(i) - 10, y(v) - 10, 20, 20)))
+            said = _as(se.values_text[i] if se.values_text else None, f, v)
+            out.append(_titled([f"{se.name} · {cats[i]}", f"{said}{spread}"], dot, (x(i) - 10, y(v) - 10, 20, 20)))
         ends.append((x(len(cats) - 1), y(se.values[-1]), se.end_label or se.name, bool(se.strong)))
     # Each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line.
     ends.sort(key=lambda end: end[1])
@@ -1421,7 +1435,8 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
                 "circle", {"cx": px, "cy": py, "r": r + 4.5, "style": "fill:none;stroke:var(--ink);stroke-width:1.5"}
             )
         obstacles.append((px - r - 2, py - r - 2, px + r + 2, py + r + 2, 10.0))
-        tip = _tip_or(point.tip, point.label or point.id or "", f"{xf(point.x)} · {yf(point.y)}")
+        said = f"{_as(point.x_text, xf, point.x)} · {_as(point.y_text, yf, point.y)}"
+        tip = _tip_or(point.tip, point.label or point.id or "", said)
         out.append(_titled(tip, marks, (px - 12, py - 12, 24, 24)))
     labels = []
     for point in points:
@@ -1481,11 +1496,14 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         strong = bool(r.strong) or (d.emphasis is not None and r.id == d.emphasis)
         marks = [_label_text(lines_of(r), ml - 8, cy, strong)]
         marks += _dot_row(x, d0, d1, r, r.value, cy, color, r.shape, r.hollow, w - mr + 8, mr - 10, strong)
-        spread = f" ({f(r.lo)} to {f(r.hi)})" if r.lo is not None and r.hi is not None else ""
+        spread = (
+            f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
+            if r.lo is not None and r.hi is not None
+            else ""
+        )
+        said = _as(r.value_text, f, r.value)
         out.append(
-            _titled(
-                _tip_or(r.tip, r.label, f(r.value) + spread), "".join(marks), (ml, cy - row_h / 2, w - ml - mr, row_h)
-            )
+            _titled(_tip_or(r.tip, r.label, said + spread), "".join(marks), (ml, cy - row_h / 2, w - ml - mr, row_h))
         )
     if ref is not None:
         rx = x(ref.value)
@@ -1549,7 +1567,8 @@ def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
                 )
                 + _mark(r.shape, x(_clamp(r.to, d0, d1)), cy, 4, color, r.hollow)
             )
-            tip = _tip_or(r.tip, f"{r.label} · {group.label}", f"{f(r.from_)} to {f(r.to)}")
+            said = f"{_as(r.from_text, f, r.from_)} to {_as(r.to_text, f, r.to)}"
+            tip = _tip_or(r.tip, f"{r.label} · {group.label}", said)
             out.append(_titled(tip, marks, (0, cy - row_h / 2, w, row_h)))
     if ref is not None:
         rx = x(ref.value)
@@ -1587,7 +1606,8 @@ def _matrix(columns: Sequence[str], rows: Sequence[tuple[str, Sequence[_Cell]]],
     heads = [_wrap_all(column, room) for column in columns]
     names = [_wrap_all(label, label_room) for label in labels]
     head_h = 22.0 + (max((len(lines) for lines in heads), default=1) - 1) * 13
-    # A list, so a matrix with no rows (which the heatmaps' models accept) draws its heading row alone.
+    # A list, so a matrix with no rows draws its heading row alone: a confusion matrix of no labels, the one grid
+    # that reaches here without rows (a heatmap given none is shown as its table, _holds_no_row).
     cell_h = max([44.0 if any_sub else 34.0, *(13.0 * len(lines) + 8 for lines in names)])
     h = head_h + len(rows) * (cell_h + gap)
     out: list[str] = []
@@ -1647,12 +1667,13 @@ def _heatmap(d: _HeatLike, w: float) -> _Drawn:
         cells = []
         for j, c in enumerate(row.cells):
             k = int(_clamp(math.floor((c.value - d0) / ((d1 - d0) or 1.0) * 6), 0, 5))
+            said = _as(c.value_text, f, c.value)
             tip = _tip_or(
-                c.tip, f"{row.label} · {columns[j]}", f(c.value) + (f" · n = {_count(c.n)}" if c.n is not None else "")
+                c.tip, f"{row.label} · {columns[j]}", said + (f" · n = {_count(c.n)}" if c.n is not None else "")
             )
             sub = nf(c.n) if c.n is not None and nf is not None else None
             low = d.reference is not None and c.value < d.reference.value
-            cells.append(_Cell(f"var(--seq-{k})", f"var(--seq-t{k})", f(c.value), sub, tip, low))
+            cells.append(_Cell(f"var(--seq-{k})", f"var(--seq-t{k})", said, sub, tip, low))
         rows.append((row.label, cells))
     return _matrix(columns, rows, w)
 
@@ -1676,8 +1697,9 @@ def _diff_heatmap(d: DiffHeatmapChart, w: float) -> _Drawn:
             )
             # the ink that reads best on the cell's own fill, in either theme (kit.js's kInk at draw time)
             ink = "var(--ink)" if flat else f"var({ink_on(fill, _CELL_INKS)})"
-            sub = df(c.detail) if c.detail is not None and df is not None else None
-            cells.append(_Cell(fill, ink, f(c.value), sub, _tip_or(c.tip, f"{row.label} · {columns[j]}", f(c.value))))
+            sub = c.detail_text if c.detail_text is not None else df(c.detail) if c.detail is not None and df else None
+            said = _as(c.value_text, f, c.value)
+            cells.append(_Cell(fill, ink, said, sub, _tip_or(c.tip, f"{row.label} · {columns[j]}", said)))
         rows.append((row.label, cells))
     return _matrix(columns, rows, w)
 
@@ -1691,9 +1713,11 @@ def _confusion(d: _ConfusionLike, w: float) -> _Drawn:
     labels, f = _need(d.labels, "labels"), _kit_format(d.fmt or "pct:1")
     warn_at, bad_at = (1 if d.warn_at is None else d.warn_at), (3 if d.bad_at is None else d.bad_at)
     rows = []
+    texts = d.matrix_text
     for i, shares in enumerate(d.shares()):
         cells = []
         for j, v in enumerate(shares):
+            said = _as(texts[i][j] if texts is not None else None, f, v)
             fill = (
                 "var(--seq-1)"
                 if i == j
@@ -1703,7 +1727,7 @@ def _confusion(d: _ConfusionLike, w: float) -> _Drawn:
                 if v >= warn_at
                 else "var(--sunk)"
             )
-            cells.append(_Cell(fill, "var(--ink)", f(v), None, [f"{labels[i]} → {labels[j]}", f"{f(v)} of the row"]))
+            cells.append(_Cell(fill, "var(--ink)", said, None, [f"{labels[i]} → {labels[j]}", f"{said} of the row"]))
         rows.append((labels[i], cells))
     return _matrix(labels, rows, w)
 

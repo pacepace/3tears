@@ -1021,15 +1021,50 @@ def _draws_money(page: PageChart) -> bool:
     return any("$" in cell for row in rows for cell in row)
 
 
-def _texts(node: Any) -> Iterator[str]:
+def _texts(node: Any, skip: frozenset[str] = frozenset()) -> Iterator[str]:
     if isinstance(node, str):
         yield node
     elif isinstance(node, dict):
-        for value in node.values():
-            yield from _texts(value)
+        for key, value in node.items():
+            if key not in skip:
+                yield from _texts(value, skip)
     elif isinstance(node, list):
         for value in node:
-            yield from _texts(value)
+            yield from _texts(value, skip)
+
+
+#: The chart fields carrying a drawn value's own text (the kit contract's text fields).
+_VALUE_TEXTS = frozenset(
+    {
+        "value_text",
+        "lo_text",
+        "hi_text",
+        "values_text",
+        "x_text",
+        "y_text",
+        "from_text",
+        "to_text",
+        "cost_text",
+        "latency_text",
+        "low_text",
+        "high_text",
+        "detail_text",
+        "matrix_text",
+    }
+)
+
+
+def _value_texts(node: Any) -> Iterator[tuple[str, str]]:
+    """Every value's own text in a chart's data, with the field carrying it."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _VALUE_TEXTS:
+                yield from ((key, text) for text in _texts(value))
+            else:
+                yield from _value_texts(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _value_texts(value)
 
 
 def _page_texts(page: PageChart) -> list[str]:
@@ -1412,7 +1447,15 @@ def _column_texts(page: PageChart) -> list[tuple[str, str, str]]:
     data = page.chart.data.model_dump(mode="json") if page.chart.data is not None else {}
     headers, rows = page.chart.values_table()
     table = [(cell, headers[at] if at < len(headers) else "", "") for row in rows for at, cell in enumerate(row)]
-    return [*((text, "", "") for text in _texts(data)), *table, *((note, "", "") for note in page.notes)]
+    # A value's own text (a point's ``x_text``) names no count, so it reads at its axis title's, never the chart's largest.
+    heads = {"x_text": str(data.get("x_title") or ""), "y_text": str(data.get("y_title") or "")}
+    valued = [(text, heads.get(field, ""), "") for field, text in _value_texts(data)]
+    return [
+        *((text, "", "") for text in _texts(data, skip=_VALUE_TEXTS)),
+        *valued,
+        *table,
+        *((n, "", "") for n in page.notes),
+    ]
 
 
 def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int]], totals: bool) -> int:

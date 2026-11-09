@@ -17,6 +17,13 @@ required fields are checked on each panel as drawn.
 
 Every chart reads without the picture too: :meth:`values_table` is ``(headers, rows)`` of text, what Markdown prints
 and what HTML keeps beside the chart for a screen reader and a page whose script did not run.
+
+Every value a chart draws may carry its text beside it (``value_text``, ``lo_text``, ``hi_text``, and by kind
+``values_text``, ``x_text``, ``from_text``, ``cost_text`` and the rest): the figure as printed, which the kit and the
+static page print in place of formatting the value, and which the values table prints. A page's charts carry it, as
+the page's forms decide it (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`); a chart without it
+(a host's) is spelled by the contract's rule first (:meth:`_Drawable.spelled`), so the table never spells a value of
+its own.
 """
 
 from __future__ import annotations
@@ -192,6 +199,9 @@ class ChartReference(_KitModel):
             "no_preference (diverging bars grow from value; no line)."
         )
     )
+    value_text: str | None = Field(
+        default=None, description="The value as printed (its values table's row); spelled from the format when none."
+    )
 
 
 class LegendItem(_KitModel):
@@ -239,13 +249,34 @@ class _Kind(_KitModel):
             raise ValueError(f"{', '.join(repr(name) for name in missing)} required")
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        """The kind's values as ``(headers, rows)`` of text; ``read_at`` the unit its values are read at where its
-        format names none (:func:`_formatted`), which a kind drawing computed changes spells them at."""
+        """The kind's values as ``(headers, rows)`` of text, each value its text (:meth:`with_texts` first, so a text
+        the kind carries is printed as it is and any other is spelled by the contract's rule); ``read_at`` the unit
+        its values are read at where its format names none (:func:`_formatted`), which a kind drawing computed changes
+        spells them at."""
+        spelled = self.with_texts(read_at)
+        if spelled != self:
+            # Tabulated as spelled, which carries every text and so spells to itself.
+            return spelled.table(legend, read_at)
+        return self._table(legend, read_at)
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+        """The kind's values as a table, every value it draws already carrying its text."""
         raise NotImplementedError
 
     @property
     def _format(self) -> str:
         return str(getattr(self, "fmt", None) or "num")
+
+    def with_texts(self, read_at: str = "") -> Self:
+        """The kind with every value it draws carried as text, as :meth:`_Drawable.spelled` spells a whole chart: one
+        chart, or one panel as drawn (overlaid on its chart's fields). A kind that draws no value comes back as it is.
+
+        :param read_at: The unit its values are read at where its format names none (:func:`_formatted`).
+        :ptype read_at: str
+        :return: The kind, every value it draws carrying its text.
+        :rtype: Self
+        """
+        return self
 
     def kit_data(self) -> dict[str, JsonValue]:
         """The chart's ``data-chart`` JSON, as the kit's contract names it: unset fields left out.
@@ -275,9 +306,49 @@ class _Drawable(_Kind):
                 raise ValueError(f"{where}{exc}") from exc
         return self
 
+    def spelled(self, read_at: str = "") -> Self:
+        """The chart with every value it draws carried as text (``value_text``, ``lo_text``, ``hi_text`` and their
+        kin, each named after its value), which its values table prints and the kit draws in place of formatting the value
+        itself: a text the chart already carries is kept, and any other is spelled in the chart's format by the
+        contract's rule (:func:`_formatted`), at ``read_at``'s precision where the format names no unit. Each panel's
+        own values are spelled in the formats it is drawn with (the chart's, overlaid with its own).
+
+        A page's charts are spelled by the page's forms
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`); a chart that reaches its values table
+        unspelled (a host's, or one read back from before the fields existed) is spelled here first.
+
+        :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
+            the format's own.
+        :ptype read_at: str
+        :return: The chart, every value it draws carrying its text.
+        :rtype: Self
+        """
+        chart = self.with_texts(read_at)
+        panels: list[_PanelText] | None = getattr(chart, "panels", None)
+        if panels is None:
+            return chart
+        fields = _PANEL_FIELDS[type(chart)]
+        unspelled = self.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(_CHART_ONLY))
+        shared = chart.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(_CHART_ONLY))
+        spelled_panels: list[_PanelText] = []
+        for panel in panels:
+            own = panel.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(_PANEL_TEXT))
+            if not own:
+                spelled_panels.append(panel)
+                continue
+            # The panel as drawn, spelled in its own formats. What it carries goes back onto it, and so does a field
+            # it shares whose texts read otherwise in its formats than in the chart's (a reference under a panel's
+            # own format), so the panel draws and tabulates its own texts.
+            drawn = fields.model_validate({**unspelled, **own}).with_texts(read_at)
+            spelled = drawn.model_dump(mode="json", exclude_none=True, by_alias=True)
+            texts = {key: value for key, value in spelled.items() if key in own or shared.get(key) != value}
+            whole = panel.model_dump(mode="json", exclude_none=True, by_alias=True)
+            spelled_panels.append(type(panel).model_validate({**whole, **texts}))
+        return chart.model_copy(update={"panels": spelled_panels})
+
     def values_table(self, read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        """The chart's values as a table a reader without the chart can read: small multiples one after another under
-        a Panel column, a text card as its title and line.
+        """The chart's values as a table a reader without the chart can read, each value its text (:meth:`spelled`):
+        small multiples one after another under a Panel column, a text card as its title and line.
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
             the format's own.
@@ -285,10 +356,11 @@ class _Drawable(_Kind):
         :return: ``(headers, rows)``, each cell text.
         :rtype: tuple[list[str], list[list[str]]]
         """
-        legend: list[LegendItem] = getattr(self, "legend", None) or []
-        if getattr(self, "panels", None) is None:
-            return self.table(legend, read_at)
-        drawn = _drawn(self)
+        chart = self.spelled(read_at)
+        legend: list[LegendItem] = getattr(chart, "legend", None) or []
+        if getattr(chart, "panels", None) is None:
+            return chart.table(legend, read_at)
+        drawn = _drawn(chart)
         tables: list[tuple[_PanelText, list[str], list[list[str]]]] = []
         cards: list[_PanelText] = []
         for panel, one in drawn:
@@ -574,23 +646,62 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
     return _CELL_NUMBER.sub(pad, cell)
 
 
-def _interval(spec: str, low: float | None, high: float | None, read_at: str = "") -> str:
-    """An interval as a table cell: its two ends under the chart's format (at ``read_at``'s precision where it names
-    one: :func:`_formatted`), empty without one."""
-    if low is None or high is None:
-        return ""
+def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, str]:
+    """An interval's two ends as its values table and the kit print them: under the chart's format (at ``read_at``'s
+    precision where it names one: :func:`_formatted`), both at one precision."""
     match = _FORMAT_SPEC.fullmatch(spec)
     if match is not None and (
         _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
     ):
         # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
         at = ends_places(low, high, POINT_PLACES)
-        return f"{_formatted(spec, low, read_at, places=at)} to {_formatted(spec, high, read_at, places=at)}"
+        return _formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at)
     said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
     if said[0] == said[1] and low != high:
         # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
         said = (_formatted(spec, low, read_at, finer=True), _formatted(spec, high, read_at, finer=True))
-    return f"{said[0]} to {said[1]}"
+    return said
+
+
+def _end_texts(
+    spec: str, low: float | None, high: float | None, texts: tuple[str | None, str | None], read_at: str = ""
+) -> tuple[str | None, str | None]:
+    """An interval's end texts: those it carries, the rest spelled (:func:`_ends`); a low end alone (an interval open
+    above) at its own figures; none without a low end."""
+    low_text, high_text = texts
+    if low is None:
+        return low_text, high_text
+    if high is None:
+        return (_formatted(spec, low, read_at) if low_text is None else low_text), high_text
+    if low_text is None or high_text is None:
+        spelled = _ends(spec, low, high, read_at)
+        return (spelled[0] if low_text is None else low_text), (spelled[1] if high_text is None else high_text)
+    return low_text, high_text
+
+
+def _kept(text: str | None, spec: str, value: float | None, read_at: str = "") -> str | None:
+    """A value's text: the one it carries, else spelled in the chart's format (:func:`_formatted`); none for no
+    value."""
+    if text is not None or value is None:
+        return text
+    return _formatted(spec, value, read_at)
+
+
+def _said(text: str | None) -> str:
+    """A drawn value's text, which every chart carries on every value once spelled (:meth:`_Drawable.spelled`).
+
+    :raises ValueError: The value carries none: its chart was tabulated unspelled.
+    """
+    if text is None:
+        raise ValueError("a value is tabulated without its text: spell the chart first")
+    return text
+
+
+def _interval(low: str | None, high: str | None) -> str:
+    """An interval as a table cell: its two ends' texts, empty without one."""
+    if low is None or high is None:
+        return ""
+    return f"{low} to {high}"
 
 
 def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:
@@ -613,20 +724,27 @@ def _restates(note: str | None, value: float | None, said: str, spec: str, read_
 OPEN_ABOVE = "from {low} up, no upper bound"
 
 
-def _bar_interval(spec: str, low: float | None, high: float | None, read_at: str = "") -> str:
+def _bar_interval(low: str | None, high: str | None) -> str:
     """A bar's interval as a table cell: :func:`_interval`'s, or one open above (a low end alone) in words."""
     if low is not None and high is None:
-        return OPEN_ABOVE.format(low=_formatted(spec, low, read_at))
-    return _interval(spec, low, high, read_at)
+        return OPEN_ABOVE.format(low=low)
+    return _interval(low, high)
 
 
-def _reference_row(reference: ChartReference | None, spec: str, width: int, read_at: str = "") -> list[list[str]]:
-    """A chart's reference line as a last table row: its label (or kind) and its value, padded to ``width``, at the
-    precision its rows read at (``read_at``), so a margin reads ``-15.0`` in the table its label says it in."""
+def _reference_row(reference: ChartReference | None, width: int) -> list[list[str]]:
+    """A chart's reference line as a last table row: its label (or kind) and its value's text, padded to ``width``,
+    at the precision its rows read at, so a margin reads ``-15.0`` in the table its label says it in."""
     if reference is None or reference.kind == "no_preference":
         return []
     name = reference.label or reference.kind
-    return [[name, _formatted(spec, reference.value, read_at), *([""] * (width - 2))]]
+    return [[name, _said(reference.value_text), *([""] * (width - 2))]]
+
+
+def _reference_spelled(reference: ChartReference | None, spec: str, read_at: str = "") -> ChartReference | None:
+    """A reference line with its value's text, at the precision its chart's rows read at."""
+    if reference is None or reference.value_text is not None:
+        return reference
+    return reference.model_copy(update={"value_text": _formatted(spec, reference.value, read_at)})
 
 
 #: An interval level with a gloss after it in parentheses: ``99.7% (95% across 16 comparisons)``.
@@ -655,6 +773,9 @@ class BarSegment(_KitModel):
     value: float = Field(description="The part's size, in value units.")
     color: Token | None = Field(default=None, description="The part's colour token; the row's when none.")
     pattern: ChartPattern | None = Field(default=None, description="A texture over the part's colour; solid when none.")
+    value_text: str | None = Field(
+        default=None, description="The part's size as printed (its values table's Parts); spelled from `fmt` when none."
+    )
 
 
 class BarRow(_KitModel):
@@ -682,6 +803,12 @@ class BarRow(_KitModel):
     note: str | None = Field(default=None, description="Printed at the bar's end; the formatted value when none.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
     group: str | None = Field(default=None, description="Rows sharing a group sit under its heading.")
+    value_text: str | None = Field(
+        default=None,
+        description="The bar's value (its segments' sum) as printed (tooltip, end label, values table); spelled from `fmt` when none.",
+    )
+    lo_text: str | None = Field(default=None, description="`lo` as printed; spelled from `fmt` when none.")
+    hi_text: str | None = Field(default=None, description="`hi` as printed; spelled from `fmt` when none.")
 
     @model_validator(mode="after")
     def _one_measure(self) -> Self:
@@ -741,7 +868,12 @@ class _BarsFields(_Kind):
         super().check_drawable()
         _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        spec = self._format
+        rows = None if self.rows is None else [_bar_spelled(row, spec, read_at) for row in self.rows]
+        return self.model_copy(update={"rows": rows, "reference": _reference_spelled(self.reference, spec, read_at)})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
         names: dict[tuple[str | None, ChartPattern | None], str] = {
             (item.color, item.pattern): item.label for item in legend if item.color is not None
@@ -749,7 +881,7 @@ class _BarsFields(_Kind):
         grouped = any(row.group is not None for row in rows)
         stacked = any(row.segments for row in rows)
         intervals = any(row.lo is not None for row in rows)
-        said = [_formatted(self._format, row.total, read_at) for row in rows]
+        said = [_said(row.value_text) for row in rows]
         kept = [
             None if _restates(row.note, row.total, text, self._format, read_at) else row.note
             for row, text in zip(rows, said, strict=True)
@@ -767,7 +899,7 @@ class _BarsFields(_Kind):
         for row, text, note in zip(rows, said, kept, strict=True):
             parts = " · ".join(
                 (f"{names[seg.color, seg.pattern]} " if (seg.color, seg.pattern) in names else "")
-                + _formatted(self._format, seg.value)
+                + _said(seg.value_text)
                 for seg in row.segments or []
             )
             body.append(
@@ -776,12 +908,28 @@ class _BarsFields(_Kind):
                     _tagged(row.tag, row.label),
                     text,
                     *([parts] if stacked else []),
-                    *([_bar_interval(self._format, row.lo, row.hi, read_at)] if intervals else []),
+                    *([_bar_interval(row.lo_text, row.hi_text)] if intervals else []),
                     *([note or ""] if notes else []),
                 ]
             )
-        reference = _reference_row(self.reference, self._format, len(headers) - grouped, read_at)
+        reference = _reference_row(self.reference, len(headers) - grouped)
         return headers, body + [[""] * grouped + line for line in reference]
+
+
+def _bar_spelled(row: BarRow, spec: str, read_at: str) -> BarRow:
+    """A bar with its value, its interval's ends and its segments carried as text (a segment at the format's own
+    precision, as its values table's Parts reads it)."""
+    low, high = _end_texts(spec, row.lo, row.hi, (row.lo_text, row.hi_text), read_at)
+    segments = (
+        None
+        if row.segments is None
+        else [
+            segment.model_copy(update={"value_text": _kept(segment.value_text, spec, segment.value)})
+            for segment in row.segments
+        ]
+    )
+    value = _kept(row.value_text, spec, row.total, read_at)
+    return row.model_copy(update={"value_text": value, "lo_text": low, "hi_text": high, "segments": segments})
 
 
 class BarsPanel(_BarsFields, _PanelText):
@@ -814,6 +962,12 @@ class ForestRow(_KitModel):
     note: str | None = Field(default=None, description="Printed at the row's right edge.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
     group: str | None = Field(default=None, description="Rows sharing a group sit under its heading.")
+    value_text: str | None = Field(
+        default=None,
+        description="The estimate as printed (tooltip, end label, values table); spelled from `fmt` when none.",
+    )
+    lo_text: str | None = Field(default=None, description="`lo` as printed; spelled from `fmt` when none.")
+    hi_text: str | None = Field(default=None, description="`hi` as printed; spelled from `fmt` when none.")
 
 
 class ForestChart(_Drawable):
@@ -837,9 +991,18 @@ class ForestChart(_Drawable):
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
     row_height: float | None = Field(default=None, description="The row pitch in px.")
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        rows = []
+        for row in self.rows:
+            low, high = _end_texts(self.fmt, row.lo, row.hi, (row.lo_text, row.hi_text), read_at)
+            value = _kept(row.value_text, self.fmt, row.value, read_at)
+            rows.append(row.model_copy(update={"value_text": value, "lo_text": low, "hi_text": high}))
+        reference = _reference_spelled(self.reference, self.fmt, read_at)
+        return self.model_copy(update={"rows": rows, "reference": reference})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
-        said = [_formatted(self.fmt, row.value, read_at) for row in self.rows]
+        said = [_said(row.value_text) for row in self.rows]
         kept = [
             None if _restates(row.note, row.value, text, self.fmt, read_at) else row.note
             for row, text in zip(self.rows, said, strict=True)
@@ -857,12 +1020,12 @@ class ForestChart(_Drawable):
                 *([row.group or ""] if grouped else []),
                 row.label,
                 text,
-                _interval(self.fmt, row.lo, row.hi, read_at),
+                _interval(row.lo_text, row.hi_text),
                 *([note or ""] if notes else []),
             ]
             for row, text, note in zip(self.rows, said, kept, strict=True)
         ]
-        reference = _reference_row(self.reference, self.fmt, len(headers) - grouped, read_at)
+        reference = _reference_row(self.reference, len(headers) - grouped)
         return headers, body + [[""] * grouped + line for line in reference]
 
 
@@ -880,6 +1043,11 @@ class LineSeries(_KitModel):
     hi: list[float] | None = Field(default=None, description="The band's high ends, one per category.")
     strong: bool | None = Field(default=None, description="A heavier line and a bold end label.")
     dash: bool | None = Field(default=None, description="A dashed line.")
+    values_text: list[str] | None = Field(
+        default=None, description="Each value as printed (tooltip, values table); spelled from `fmt` when none."
+    )
+    lo_text: list[str] | None = Field(default=None, description="Each band's low end as printed.")
+    hi_text: list[str] | None = Field(default=None, description="Each band's high end as printed.")
 
 
 class LinesChart(_Drawable):
@@ -902,16 +1070,32 @@ class LinesChart(_Drawable):
             for ends in (series.values, series.lo, series.hi):
                 if ends is not None and len(ends) != len(self.categories):
                     raise ValueError(f"series {series.name!r} has {len(ends)} values for {len(self.categories)} x")
+            for texts in (series.values_text, series.lo_text, series.hi_text):
+                if texts is not None and len(texts) != len(self.categories):
+                    raise ValueError(f"series {series.name!r} has {len(texts)} texts for {len(self.categories)} x")
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # A line's values read at the format's own precision, whatever unit its block reads at.
+        series = []
+        for one in self.series:
+            values = one.values_text or [_formatted(self.fmt, value) for value in one.values]
+            low, high = one.lo_text, one.hi_text
+            if one.lo is not None and one.hi is not None and (low is None or high is None):
+                ends = [_ends(self.fmt, lo, hi) for lo, hi in zip(one.lo, one.hi, strict=True)]
+                low = low if low is not None else [end[0] for end in ends]
+                high = high if high is not None else [end[1] for end in ends]
+            series.append(one.model_copy(update={"values_text": values, "lo_text": low, "hi_text": high}))
+        return self.model_copy(update={"series": series})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = [self.x_title or "", *(series.name for series in self.series)]
         body = []
         for index, category in enumerate(self.categories):
             cells = [category]
             for series in self.series:
-                cell = _formatted(self.fmt, series.values[index])
-                if series.lo is not None and series.hi is not None:
-                    cell += f" ({_interval(self.fmt, series.lo[index], series.hi[index])})"
+                cell = _said(series.values_text[index] if series.values_text is not None else None)
+                if series.lo_text is not None and series.hi_text is not None:
+                    cell += f" ({_interval(series.lo_text[index], series.hi_text[index])})"
                 cells.append(cell)
             body.append(cells)
         return headers, body
@@ -942,6 +1126,12 @@ class ScatterPoint(_KitModel):
         default=None,
         description="The arm's letter tag: the point's label where it has none of its own (a crowded chart, a phone), "
         "so its colour is never the only thing that names it.",
+    )
+    x_text: str | None = Field(
+        default=None, description="`x` as printed (tooltip, values table); spelled from `x_fmt` when none."
+    )
+    y_text: str | None = Field(
+        default=None, description="`y` as printed (tooltip, values table); spelled from `y_fmt` when none."
     )
 
 
@@ -1001,21 +1191,37 @@ class _ScatterFields(_Kind):
             if missing := [one for one in path.ids if one not in ids]:
                 raise ValueError(f"a path names points not in `points`: {', '.join(missing)}")
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # Each axis's values read at its format's own precision, whatever unit its block reads at.
         x_fmt, y_fmt = self.x_fmt or "num", self.y_fmt or "num"
-        headers = ["Point", self.x_title or "x", self.y_title or "y"]
-        body = [
-            [
-                _point_name(point),
-                _formatted(x_fmt, point.x),
-                _formatted(y_fmt, point.y),
+        points = (
+            None
+            if self.points is None
+            else [
+                point.model_copy(
+                    update={
+                        "x_text": _kept(point.x_text, x_fmt, point.x),
+                        "y_text": _kept(point.y_text, y_fmt, point.y),
+                    }
+                )
+                for point in self.points
             ]
-            for point in self.points or []
-        ]
-        for reference, spec, column in ((self.x_reference, x_fmt, 1), (self.reference, y_fmt, 2)):
+        )
+        return self.model_copy(
+            update={
+                "points": points,
+                "x_reference": _reference_spelled(self.x_reference, x_fmt),
+                "reference": _reference_spelled(self.reference, y_fmt),
+            }
+        )
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+        headers = ["Point", self.x_title or "x", self.y_title or "y"]
+        body = [[_point_name(point), _said(point.x_text), _said(point.y_text)] for point in self.points or []]
+        for reference, column in ((self.x_reference, 1), (self.reference, 2)):
             if reference is not None:
                 line = [reference.label or reference.kind, "", ""]
-                line[column] = _formatted(spec, reference.value)
+                line[column] = _said(reference.value_text)
                 body.append(line)
         return headers, body
 
@@ -1082,6 +1288,11 @@ class DotIntervalRow(_KitModel):
     strong: bool | None = Field(default=None, description="A bold label.")
     note: str | None = Field(default=None, description="Printed at the row's right edge; nothing when none.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    value_text: str | None = Field(
+        default=None, description="The value as printed (tooltip, values table); spelled from `fmt` when none."
+    )
+    lo_text: str | None = Field(default=None, description="`lo` as printed; spelled from `fmt` when none.")
+    hi_text: str | None = Field(default=None, description="`hi` as printed; spelled from `fmt` when none.")
 
 
 class _DotIntervalFields(_Kind):
@@ -1113,9 +1324,19 @@ class _DotIntervalFields(_Kind):
         super().check_drawable()
         _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        spec = self._format
+        rows = []
+        for row in self.rows or []:
+            low, high = _end_texts(spec, row.lo, row.hi, (row.lo_text, row.hi_text), read_at)
+            value = _kept(row.value_text, spec, row.value, read_at)
+            rows.append(row.model_copy(update={"value_text": value, "lo_text": low, "hi_text": high}))
+        reference = _reference_spelled(self.reference, spec, read_at)
+        return self.model_copy(update={"rows": None if self.rows is None else rows, "reference": reference})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
-        said = [_formatted(self._format, row.value, read_at) for row in rows]
+        said = [_said(row.value_text) for row in rows]
         kept = [
             None if _restates(row.note, row.value, text, self._format, read_at) else row.note
             for row, text in zip(rows, said, strict=True)
@@ -1126,12 +1347,12 @@ class _DotIntervalFields(_Kind):
             [
                 row.label,
                 text,
-                *([_interval(self._format, row.lo, row.hi, read_at)] if self.level else []),
+                *([_interval(row.lo_text, row.hi_text)] if self.level else []),
                 *([note or ""] if notes else []),
             ]
             for row, text, note in zip(rows, said, kept, strict=True)
         ]
-        return headers, body + _reference_row(self.reference, self._format, len(headers), read_at)
+        return headers, body + _reference_row(self.reference, len(headers))
 
 
 class DotIntervalPanel(_DotIntervalFields, _PanelText):
@@ -1158,6 +1379,12 @@ class RangeRow(_KitModel):
     shape: ChartShape | None = Field(default=None, description="The end mark's shape.")
     hollow: bool | None = Field(default=None, description="A hollow end mark (over budget).")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    from_text: str | None = Field(
+        default=None, description="`from` as printed (tooltip, values table); spelled from `fmt` when none."
+    )
+    to_text: str | None = Field(
+        default=None, description="`to` as printed (tooltip, values table); spelled from `fmt` when none."
+    )
 
     @model_serializer(mode="wrap")
     def _from_as_the_contract_spells_it(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -1185,14 +1412,35 @@ class RangeBarsChart(_Drawable):
     reference: ChartReference | None = Field(default=None, description="The budget.")
     legend: list[LegendItem] | None = Field(default=None, description="Drawn above the chart.")
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        groups = [
+            group.model_copy(
+                update={
+                    "rows": [
+                        row.model_copy(
+                            update={
+                                "from_text": _kept(row.from_text, self.fmt, row.from_, read_at),
+                                "to_text": _kept(row.to_text, self.fmt, row.to, read_at),
+                            }
+                        )
+                        for row in group.rows
+                    ]
+                }
+            )
+            for group in self.groups
+        ]
+        return self.model_copy(
+            update={"groups": groups, "reference": _reference_spelled(self.reference, self.fmt, read_at)}
+        )
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["Group", "Row", "From", "To"]
         body = [
-            [group.label, row.label, _formatted(self.fmt, row.from_, read_at), _formatted(self.fmt, row.to, read_at)]
+            [group.label, row.label, _said(row.from_text), _said(row.to_text)]
             for group in self.groups
             for row in group.rows
         ]
-        reference = _reference_row(self.reference, self.fmt, 3, read_at)
+        reference = _reference_row(self.reference, 3)
         return headers, body + [["", *line] for line in reference]
 
 
@@ -1207,6 +1455,11 @@ class GateCell(_KitModel):
     reasons: list[str] | None = Field(default=None, description="The binding reasons.")
     cost: float | None = Field(default=None, description="The cost, under `cost_fmt`.")
     pick: bool | None = Field(default=None, description="The pick on this row: washed and marked.")
+    cost_text: str | None = Field(
+        default=None,
+        description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
+        "package leaves it unset until its costs are decided by measure.",
+    )
 
 
 class GateRow(_KitModel):
@@ -1236,9 +1489,10 @@ class GateMatrixChart(_Drawable):
             if self.cost_fmt is None and any(cell.cost is not None for cell in row.cells):
                 raise ValueError('cells carry "cost", so "cost_fmt" is required')
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = [self.row_header or "", *(column.label for column in self.columns)]
-        costs = _costs_alike(self.cost_fmt, self.cost_unit, [cell.cost for row in self.rows for cell in row.cells])
         body = []
         for row in self.rows:
             label = row.label + "".join(f" ({extra})" for extra in (row.detail, row.flag) if extra)
@@ -1246,7 +1500,7 @@ class GateMatrixChart(_Drawable):
             for cell in row.cells:
                 said = "; ".join(cell.reasons or [])
                 text = f"{cell.label}: {said}" if cell.label and said else cell.label or said
-                cost = next(costs)
+                cost = next(costs) or ""
                 if cost:
                     text = f"{text}, {cost}" if text else cost
                 if cell.pick and self.pick_label:
@@ -1269,6 +1523,17 @@ class LatticeCell(_KitModel):
     status: ChartStatus | None = Field(default=None, description="A status pill.")
     status_label: str | None = Field(default=None, description="The pill's word.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    value_text: str | None = Field(
+        default=None, description="The metric as printed (tile, values table); spelled from `fmt` when none."
+    )
+    cost_text: str | None = Field(
+        default=None,
+        description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
+        "package leaves it unset until its costs are decided by measure.",
+    )
+    latency_text: str | None = Field(
+        default=None, description="The latency as printed; spelled from `latency_fmt` when none."
+    )
 
 
 class LatticeRow(_KitModel):
@@ -1295,24 +1560,49 @@ class LatticeChart(_Drawable):
         super().check_drawable()
         _same_width(self.rows, len(self.columns))
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # A tile's figures read at their formats' own precision, whatever unit its block reads at.
+        rows = []
+        for row in self.rows:
+            cells = []
+            for cell in row.cells:
+                latency = cell.latency_text
+                if latency is None and cell.latency is not None and self.latency_fmt is not None:
+                    latency = _formatted(self.latency_fmt, cell.latency)
+                value = _kept(cell.value_text, self.fmt, cell.value)
+                update = {"value_text": value, "latency_text": latency}
+                cells.append(cell.model_copy(update=update))
+            rows.append(row.model_copy(update={"cells": cells}))
+        return self.model_copy(update={"rows": rows})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = ["", *(column.label for column in self.columns)]
-        costs = _costs_alike(self.cost_fmt, self.cost_unit, [cell.cost for row in self.rows for cell in row.cells])
         body = []
         for row in self.rows:
             cells = [row.label]
             for cell in row.cells:
-                parts = [_formatted(self.fmt, cell.value)]
+                parts = [_said(cell.value_text)]
                 cost = next(costs)
                 if cost:
                     parts.append(cost)
-                if cell.latency is not None and self.latency_fmt is not None:
-                    parts.append(_formatted(self.latency_fmt, cell.latency))
+                if cell.latency_text is not None:
+                    parts.append(cell.latency_text)
                 if cell.status_label:
                     parts.append(cell.status_label)
                 cells.append(" · ".join(parts))
             body.append(cells)
         return headers, body
+
+
+def _cost_texts(fmt: str | None, unit: str | None, cells: Sequence[GateCell | LatticeCell]) -> Iterator[str | None]:
+    """Each cell's cost as its matrix's table prints it, in cell order: the text it carries, else as the table spells it
+    (:func:`_costs_alike`); none for a cell with no cost, or every cell where the block names no cost format."""
+    alike = _costs_alike(fmt, unit, [cell.cost for cell in cells])
+    return iter(
+        [cell.cost_text if cell.cost_text is not None else spelled or None for cell, spelled in zip(cells, alike)]
+    )
 
 
 def _costs_alike(fmt: str | None, unit: str | None, costs: Sequence[float | None]) -> Iterator[str]:
@@ -1349,6 +1639,11 @@ class HeatmapCell(_KitModel):
     low: float | None = Field(default=None, description="Its interval's low end, where it carries one.")
     high: float | None = Field(default=None, description="Its interval's high end; set with `low`.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    value_text: str | None = Field(
+        default=None, description="The value as printed (tile, tooltip, values table); spelled from `fmt` when none."
+    )
+    low_text: str | None = Field(default=None, description="`low` as printed; spelled from `fmt` when none.")
+    high_text: str | None = Field(default=None, description="`high` as printed; spelled from `fmt` when none.")
 
 
 class HeatmapRow(_KitModel):
@@ -1374,24 +1669,37 @@ class _HeatmapFields(_Kind):
         super().check_drawable()
         _same_width(self.rows or [], len(self.columns or []))
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # A cell's figures read at the format's own precision, whatever unit its block reads at.
+        spec = self._format
+        rows = []
+        for row in self.rows or []:
+            cells = []
+            for cell in row.cells:
+                low, high = (cell.low_text, cell.high_text)
+                if cell.low is not None and cell.high is not None:
+                    low, high = _end_texts(spec, cell.low, cell.high, (low, high))
+                value = _kept(cell.value_text, spec, cell.value)
+                cells.append(cell.model_copy(update={"value_text": value, "low_text": low, "high_text": high}))
+            rows.append(row.model_copy(update={"cells": cells}))
+        return self.model_copy(update={"rows": None if self.rows is None else rows})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns or [])]
         body = [
             [
                 row.label,
-                *(
-                    _formatted(self._format, cell.value) + _heat_detail(self._format, cell.low, cell.high, cell.n)
-                    for cell in row.cells
-                ),
+                *(_said(cell.value_text) + _heat_detail(cell.low_text, cell.high_text, cell.n) for cell in row.cells),
             ]
             for row in self.rows or []
         ]
         return headers, body
 
 
-def _heat_detail(spec: str, low: float | None, high: float | None, n: float | None) -> str:
-    """What a heatmap cell's table text adds after its value: its interval and its cases, in parentheses."""
-    said = [_interval(spec, low, high)] if low is not None and high is not None else []
+def _heat_detail(low: str | None, high: str | None, n: float | None) -> str:
+    """What a heatmap cell's table text adds after its value: its interval's ends' texts and its cases, in
+    parentheses."""
+    said = [_interval(low, high)] if low is not None and high is not None else []
     said += [f"n = {format_number(n)}"] if n is not None else []
     return f" ({'; '.join(said)})" if said else ""
 
@@ -1417,6 +1725,13 @@ class DiffHeatmapCell(_KitModel):
     value: float = Field(description="The difference.")
     detail: float | None = Field(default=None, description="Printed small under it (the compared rate).")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+    value_text: str | None = Field(
+        default=None,
+        description="The difference as printed (tile, tooltip, values table); spelled from `fmt` when none.",
+    )
+    detail_text: str | None = Field(
+        default=None, description="The detail as printed; spelled from `detail_fmt` when none."
+    )
 
 
 class DiffHeatmapRow(_KitModel):
@@ -1440,15 +1755,27 @@ class DiffHeatmapChart(_Drawable):
         super().check_drawable()
         _same_width(self.rows, len(self.columns))
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # A cell's figures read at their formats' own precision, whatever unit its block reads at.
+        rows = []
+        for row in self.rows:
+            cells = []
+            for cell in row.cells:
+                detail = cell.detail_text
+                if detail is None and cell.detail is not None and self.detail_fmt:
+                    detail = _formatted(self.detail_fmt, cell.detail)
+                value = _kept(cell.value_text, self.fmt, cell.value)
+                cells.append(cell.model_copy(update={"value_text": value, "detail_text": detail}))
+            rows.append(row.model_copy(update={"cells": cells}))
+        return self.model_copy(update={"rows": rows})
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns)]
-        detail = self.detail_fmt
         body = [
             [
                 row.label,
                 *(
-                    _formatted(self.fmt, cell.value)
-                    + (f" ({_formatted(detail, cell.detail)})" if detail and cell.detail is not None else "")
+                    _said(cell.value_text) + (f" ({cell.detail_text})" if cell.detail_text is not None else "")
                     for cell in row.cells
                 ),
             ]
@@ -1473,12 +1800,20 @@ class _ConfusionFields(_Kind):
     )
     warn_at: float | None = Field(default=None, description="An off-diagonal share warns from here (default 1).")
     bad_at: float | None = Field(default=None, description="An off-diagonal share is bad from here (default 3).")
+    matrix_text: list[list[str]] | None = Field(
+        default=None,
+        description="Each share as printed (tile, tooltip, values table), row by row as drawn; spelled from `fmt` "
+        "when none.",
+    )
 
     def check_drawable(self) -> None:
         super().check_drawable()
         labels, matrix = self.labels or [], self.matrix or []
         if len(matrix) != len(labels) or any(len(row) != len(labels) for row in matrix):
             raise ValueError(f'"matrix" must be {len(labels)} × {len(labels)}, one row and column per label')
+        texts = self.matrix_text
+        if texts is not None and (len(texts) != len(labels) or any(len(row) != len(labels) for row in texts)):
+            raise ValueError(f'"matrix_text" must be {len(labels)} × {len(labels)}, as "matrix" is')
 
     def shares(self) -> list[list[float]]:
         """Each row as shares of 100, as the kit draws it."""
@@ -1487,14 +1822,20 @@ class _ConfusionFields(_Kind):
             return rows
         return [[value / total * 100 if (total := sum(row)) else 0.0 for value in row] for row in rows]
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def with_texts(self, read_at: str = "") -> Self:
+        # A share reads at the format's own precision, whatever unit its block reads at.
+        if self.matrix_text is not None or self.matrix is None:
+            return self
         spec = self.fmt or "pct:1"
+        return self.model_copy(
+            update={"matrix_text": [[_formatted(spec, share) for share in row] for row in self.shares()]}
+        )
+
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         labels = self.labels or []
         headers = ["", *labels]
-        return headers, [
-            [label, *(_formatted(spec, value) for value in row)]
-            for label, row in zip(labels, self.shares(), strict=True)
-        ]
+        texts = self.matrix_text or [[]] * len(labels)
+        return headers, [[label, *(_said(text) for text in row)] for label, row in zip(labels, texts, strict=True)]
 
 
 class ConfusionPanel(_ConfusionFields, _PanelText):
@@ -1516,15 +1857,14 @@ class ConfusionChart(_ConfusionFields, _Drawable):
         if self.panels is None:
             return super().values_table(read_at)
         body: list[list[str]] = []
-        for panel, one in _drawn(self):
+        for panel, one in _drawn(self.spelled(read_at)):
             if panel is None or not isinstance(one, _ConfusionFields):
                 continue
-            spec = one.fmt or "pct:1"
             labels = one.labels or []
-            for expected, shares in zip(labels, one.shares(), strict=True):
+            for expected, texts in zip(labels, one.matrix_text or [[]] * len(labels), strict=True):
                 body += [
-                    [_panel_name(panel), expected, predicted, _formatted(spec, share)]
-                    for predicted, share in zip(labels, shares, strict=True)
+                    [_panel_name(panel), expected, predicted, _said(text)]
+                    for predicted, text in zip(labels, texts, strict=True)
                 ]
         return ["Panel", "True", "Predicted", "Share of the true label"], body
 
@@ -1581,7 +1921,7 @@ class ExamplesChart(_Drawable):
     cards: list[ExampleCard] = Field(description="The cards, in order.")
     card_min_rem: float | None = Field(default=None, description="The narrowest card before a column drops.")
 
-    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+    def _table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         def meta(card: ExampleCard) -> str:
             return " · ".join(
                 item.text if isinstance(item, ExampleMetaText) else item.label for item in card.meta or []

@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis import (
     BarsChart,
     ChartBlock,
+    DotIntervalChart,
     ForestChart,
     RangeBarsChart,
     report_markdown,
@@ -256,3 +257,74 @@ def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_
     assert block.kit_chart() == ("range_bars", data)
     old = {**data, "groups": [{"label": "g", "rows": [{"label": "a", "from_": 1, "to": 2}]}]}
     assert RangeBarsChart.model_validate(old) == RangeBarsChart.model_validate(data)
+
+
+#: A forest whose first row carries its decided texts, as a page's chart does, and whose second carries none, as a
+#: host's chart may.
+_TEXTED_FOREST: dict[str, Any] = {
+    "rows": [
+        {
+            "label": "A",
+            "value": -7.62,
+            "lo": -12.9,
+            "hi": -2.4,
+            "value_text": "-7.6 pts",
+            "lo_text": "-12.9",
+            "hi_text": "-2.4",
+        },
+        {"label": "B", "value": -1.5, "lo": -3.25, "hi": 0.5},
+    ],
+    "domain": [-16, 4],
+    "fmt": "+num:0",
+    "level": "95%",
+    "reference": {"value": -10, "label": "margin", "kind": "margin", "value_text": "-10.0"},
+}
+
+
+def test_a_chart_s_table_prints_each_value_s_text_and_spells_only_a_value_carrying_none() -> None:
+    """A page's chart carries each value's decided text, which its values table prints as it is, never re-spelled
+    from the format; a value carrying none (a host's chart) is spelled in the chart's format, as before."""
+    forest = ForestChart.model_validate(_TEXTED_FOREST)
+
+    assert forest.values_table() == (
+        ["Row", "Change", "95% interval"],
+        [["A", "-7.6 pts", "-12.9 to -2.4"], ["B", "-1.5", "-3.25 to +0.5"], ["margin", "-10.0", ""]],
+    )
+
+
+def test_spelling_a_chart_keeps_every_text_it_carries_and_adds_the_rest_without_touching_a_value() -> None:
+    """``spelled`` fills each missing text in, keeps each carried one, and moves no value; tabulating a chart spells
+    a copy, so a host's chart dumps back to the JSON it was read from."""
+    forest = ForestChart.model_validate(_TEXTED_FOREST)
+
+    spelled = forest.spelled().kit_data()
+
+    assert spelled["rows"] == [
+        _TEXTED_FOREST["rows"][0],
+        {**_TEXTED_FOREST["rows"][1], "value_text": "-1.5", "lo_text": "-3.25", "hi_text": "+0.5"},
+    ]
+    forest.values_table()
+    assert forest.kit_data()["rows"][1] == _TEXTED_FOREST["rows"][1]
+
+
+def test_a_panel_s_values_are_spelled_in_the_format_it_is_drawn_with() -> None:
+    """Each small multiple's texts are spelled in its own format overlaid on the chart's, so a panel at three
+    decimals carries ``49.998%`` beside a panel at none carrying ``50%``."""
+    strip = DotIntervalChart.model_validate(
+        {
+            "domain": [0, 100],
+            "fmt": "pct:0",
+            "level": "95%",
+            "panels": [
+                {"title": "one", "rows": [{"label": "a", "value": 49.998, "lo": 40.01, "hi": 60.2}]},
+                {"title": "two", "fmt": "pct:3", "rows": [{"label": "b", "value": 49.998, "lo": 40.01, "hi": 60.2}]},
+            ],
+        }
+    )
+
+    texts = [
+        (row.value_text, row.lo_text, row.hi_text) for panel in strip.spelled().panels or [] for row in panel.rows or []
+    ]
+
+    assert texts == [("50%", "40%", "60%"), ("49.998%", "40.010%", "60.200%")]
+    assert strip.values_table()[1] == [["one", "a", "50%", "40% to 60%"], ["two", "b", "49.998%", "40.010% to 60.200%"]]
