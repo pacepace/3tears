@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -304,6 +304,11 @@ class IndexDef:
         rows whose covered columns are both NULL collide, as
         ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
         column still holds one row per key while that column is unset.
+    :cvar include: columns the index carries without ordering by them
+        (``INCLUDE (...)`` in the DDL), so a read of them is answered from
+        the index alone. On YugabyteDB a read through an index that does
+        not carry a column visits the table for each row, several times the
+        index read's cost. none may also be in ``columns``.
     """
 
     name: str
@@ -316,6 +321,7 @@ class IndexDef:
     pg_with: tuple[tuple[str, str], ...] | None = None
     desc: tuple[str, ...] = ()
     nulls_not_distinct: bool = False
+    include: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
@@ -340,6 +346,11 @@ class IndexDef:
         if stray:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        twice = [col for col in self.include if col in self.columns]
+        if twice:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): include names {twice!r}, which are already its columns",
             )
         both = [col for col in self.desc if col in dict(self.ops or ())]
         if both:
@@ -410,6 +421,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     pg_with: Mapping[str, str] | None = None,
     desc: str | Sequence[str] = (),
     nulls_not_distinct: bool = False,
+    include: Sequence[str] = (),
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -431,6 +443,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         )
         Index("idx_memories_tags", "tags", using="gin")
         Index("idx_history", "agent_id", "date_created", desc="date_created")
+        Index("t_by_state", "state", "geo", *primary_key, include=("votes", "pad"))
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -466,6 +479,10 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         (``NULLS NOT DISTINCT``); maps to SQLAlchemy's
         ``postgresql_nulls_not_distinct`` dialect kwarg
     :ptype nulls_not_distinct: bool
+    :param include: columns carried without ordering (``INCLUDE (...)``),
+        so a read of them never visits the table; maps to SQLAlchemy's
+        ``postgresql_include`` dialect kwarg
+    :ptype include: Sequence[str]
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -491,6 +508,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         pg_with=pg_with_tuple,
         desc=(desc,) if isinstance(desc, str) else tuple(desc),
         nulls_not_distinct=nulls_not_distinct,
+        include=tuple(include),
     )
 
 
@@ -1131,6 +1149,49 @@ class TableSchema:
         """
         return self._pk_columns
 
+    def keyset_order(self, pinned: Iterable[str] = ()) -> tuple[str, ...]:
+        """the columns a keyset read of the rows ``pinned``'s equality filters name pages on, so an index answers
+        each page in that order.
+
+        A keyset read pages ``ORDER BY`` the columns it is given (:mod:`threetears.core.keyset`). Ordered by the
+        primary key, a read filtered on other columns is found through another index, and every page reads and
+        sorts every row the filters leave. This picks the declared index (or the primary key) that the filters
+        lead furthest: its leading columns all in ``pinned``, and every primary-key column in it, so its columns
+        after that lead are unique among the read's rows. The answer is those columns, in the index's order. An
+        index led by the filters but without the key in it cannot answer a page in order: declare the primary
+        key's columns as its tail (``Index("t_by_state", "state", "geo", *primary_key)``).
+
+        Only a plain ascending btree index is chosen: not a partial one (it holds only its ``where``'s rows), one
+        of another access method, one with a descending column or an operator class. When no index is led by
+        the filters (none pinned, or none such), the primary key. On a tie the primary key wins, then the index
+        declared first.
+
+        A set filter (``= ANY``) pins nothing: its column is read in order, as the index orders it.
+
+        :param pinned: the columns the read's equality filters fix
+        :ptype pinned: Iterable[str]
+        :return: the columns to page on, unique among the rows the filters name
+        :rtype: tuple[str, ...]
+        """
+        fixed = set(pinned)
+        candidates = [self._pk_columns]
+        candidates += [
+            index.columns
+            for index in self.indexes
+            if index.where is None
+            and index.using in (None, "btree")
+            and not index.desc
+            and not index.ops
+            and set(self._pk_columns) <= set(index.columns)
+        ]
+        best, order = 0, self._pk_columns
+        for columns in candidates:
+            led = next((place for place, column in enumerate(columns) if column not in fixed), len(columns))
+            # a lead that pins every column leaves nothing to page on: one row, read by the key
+            if best < led < len(columns):
+                best, order = led, tuple(columns[led:])
+        return order
+
     @property
     def partition_column(self) -> str | None:
         """return the partition-column name, or ``None`` for non-partitioned tables.
@@ -1319,6 +1380,8 @@ class TableSchema:
                 idx_kwargs["postgresql_with"] = dict(idx.pg_with)
             if idx.nulls_not_distinct:
                 idx_kwargs["postgresql_nulls_not_distinct"] = True
+            if idx.include:
+                idx_kwargs["postgresql_include"] = list(idx.include)
             sa.Index(
                 idx.name,
                 *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),

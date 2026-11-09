@@ -7,21 +7,70 @@ page and pages on a unique key until a page comes back without that row. The who
 one leading value (``SqlL3Backend.fetch_led_by``) both page through :func:`read_keyset_pages`, so the
 two cannot drift apart in how they step, stop, or spell a name.
 
-**What bounds a page is the caller's filters, not this loop.** Each page is ``ORDER BY`` the key:
-answered in order by a btree key, but on a YugabyteDB hash-sharded key only when an equality filter
-pins the hashed column and the key named here is the range part that follows it.
+**What bounds a page is the order it is read in.** Each page is ``ORDER BY`` the key named here. A page
+touches about its own rows only when an index answers the filters in that order: its leading columns
+pinned by the equality filters, then the key's columns in the key's order. Otherwise every page reads and
+sorts every row the filters leave (YugabyteDB, a state of 33,222 rows: 34 pages, about 1.13M rows read,
+10.1 s). A filtered reader whose schema declares such an index pages on
+:meth:`~threetears.core.collections.schema_backed.TableSchema.keyset_order`, not the bare primary key.
+
+**How a page steps past its cursor.** After the first page the statement names the cursor three ways, all
+the same rows: ``k1 >= $1``, the row comparison ``(k1, k2, ...) > ($1, $2, ...)``, and its expansion
+``k1 > $1 OR (k1 = $1 AND (k2 > $2 OR ...))``. Postgres seeks the index by the row comparison. YugabyteDB
+seeks no row comparison inside a hashed index's bucket (measured on 2026.1: it reads the bucket from its
+start), so it seeks by the leading bound and applies the expansion in storage, as an index filter; a page
+then reads at most the rows of the cursor's leading value that the page before already read. With only
+the row comparison YugabyteDB rechecks it above storage and cannot push the page's ``LIMIT`` down, reading
+twice a page; with only the expansion Postgres plans a bitmap scan and sorts. A one-column key needs none
+of this: ``(k1) > ($1)`` is a plain comparison both seek by.
+
+**How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
+``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
+broker cuts a reply at, when it cuts by bytes. The first page asks for ``page_size`` rows; each after, for
+as many as the bytes a row took fit in :data:`_BUDGET_SHARE` of the announced cap, so a state's rows take a
+few statements, not one a thousand rows. A broker that announces no cap (one that cuts at
+:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP` rows, or a direct pool) is paged ``page_size``
+rows a statement, as before. A reply the broker cut is the statement's first rows in key order: it is
+taken as a short page, and the read steps past its last row.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.protocol import L3Page
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 
 __all__ = ["KeysetRead", "keyset_arrow_pages", "keyset_pages", "read_keyset_pages"]
+
+#: the share of a byte-capped reply a page is sized to fill: rows vary in width, so a page sized to the whole
+#: cap from the rows before would be cut about half the time
+_BUDGET_SHARE: Final = 0.8
+
+#: the most rows a byte-sized page asks for, whatever its rows' width
+_MOST_ROWS_A_PAGE: Final = 1_000_000
+
+
+def _next_rows(page: L3Page, rows: int, asked: int) -> int:
+    """how many rows the next page asks for: as many as fit in the announced cap at this page's bytes a row;
+    as many as this one when no cap was announced.
+
+    :param page: the page just read
+    :ptype page: L3Page
+    :param rows: how many rows it answered
+    :ptype rows: int
+    :param asked: how many it asked for
+    :ptype asked: int
+    :return: the next page's rows
+    :rtype: int
+    """
+    if page.reply_cap is None or rows == 0 or page.reply_bytes <= 0:
+        return asked
+    fitting = int(page.reply_cap * _BUDGET_SHARE * rows / page.reply_bytes)
+    return max(1, min(fitting, _MOST_ROWS_A_PAGE))
 
 
 @dataclass(frozen=True)
@@ -132,12 +181,23 @@ async def keyset_pages(
     statement = _KeysetStatement(
         select_from, key, where=where, where_any=where_any, page_size=page_size, quote=quote, mark=mark
     )
+    # looked up on the class: a mock's instance answers any name it is asked
+    paged = callable(getattr(type(l3), "fetch_page", None))
+    rows = page_size
     cursor: Sequence[Any] | None = None
     more = True
     while more:
-        page = await l3.fetch(*statement.page(cursor))
-        kept = [dict(row) for row in page[:page_size]]
-        more = len(page) > page_size and bool(kept)
+        if not paged:
+            page = await l3.fetch(*statement.page(cursor))
+            kept = [dict(row) for row in page[:page_size]]
+            more = len(page) > page_size and bool(kept)
+        else:
+            answered = await l3.fetch_page(*statement.page(cursor, rows=rows))
+            page = answered.rows
+            kept = [dict(row) for row in page[:rows]]
+            # a cut page is the statement's first rows in key order: more may follow its last
+            more = (answered.truncated or len(page) > rows) and bool(kept)
+            rows = _next_rows(answered, len(page), rows)
         if more:
             cursor = tuple(kept[-1][column] for column in key)
         del page
@@ -190,12 +250,22 @@ async def keyset_arrow_pages(
     statement = _KeysetStatement(
         select_from, key, where=where, where_any=where_any, page_size=page_size, quote=quote, mark=mark
     )
+    paged = callable(getattr(type(l3), "fetch_arrow_page", None))
+    rows = page_size
     cursor: Sequence[Any] | None = None
     more = True
     while more:
-        page = await l3_fetch_arrow(l3, *statement.page(cursor), types=types)
-        kept = page.slice(0, page_size)
-        more = page.num_rows > page_size and kept.num_rows > 0
+        if not paged:
+            page = await l3_fetch_arrow(l3, *statement.page(cursor), types=types)
+            kept = page.slice(0, page_size)
+            more = page.num_rows > page_size and kept.num_rows > 0
+        else:
+            answered = await l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=types)
+            page = answered.rows
+            kept = page.slice(0, rows)
+            # a cut page is the statement's first rows in key order: more may follow its last
+            more = (answered.truncated or page.num_rows > rows) and kept.num_rows > 0
+            rows = _next_rows(answered, page.num_rows, rows)
         if more:
             last = kept.slice(kept.num_rows - 1, 1).select(list(key)).to_pylist()[0]
             cursor = tuple(last[column] for column in key)
@@ -226,32 +296,53 @@ class _KeysetStatement:
         self._select_from = select_from
         self._key = list(key)
         self._order = ", ".join(quote(column) for column in key)
-        self._tail = f" ORDER BY {self._order} LIMIT {page_size + 1}"
+        self._page_size = page_size
         self._filters, self._values = equality_conditions(where, first=1, quote=quote)
         for column, (array, values) in (where_any or {}).items():
             condition = f"{quote(column)} = ANY(${len(self._values) + 1}::{array})"
             self._filters = f"{self._filters} AND {condition}" if self._filters else condition
             self._values.append(list(values))
         self._mark = mark
+        self._quoted = [quote(column) for column in key]
 
-    def page(self, cursor: Sequence[Any] | None) -> tuple[Any, ...]:
+    def _past(self, before: int) -> str:
+        """the condition naming the rows past the cursor, its values the parameters after the first ``before``.
+
+        The leading bound, the row comparison and its expansion (the module's "How a page steps past its
+        cursor"): the same rows, said so that Postgres and YugabyteDB each seek by one of them.
+
+        :param before: how many parameters the filters bind
+        :ptype before: int
+        :return: the condition
+        :rtype: str
+        """
+        marks = [
+            self._mark(column, before + index) if self._mark is not None else f"${before + index}"
+            for index, column in enumerate(self._key, start=1)
+        ]
+        row = f"({self._order}) > ({', '.join(marks)})"
+        if len(self._key) == 1:
+            return row
+        expanded = f"{self._quoted[-1]} > {marks[-1]}"
+        for column, mark in zip(reversed(self._quoted[:-1]), reversed(marks[:-1]), strict=True):
+            expanded = f"{column} > {mark} OR ({column} = {mark} AND ({expanded}))"
+        return f"{self._quoted[0]} >= {marks[0]} AND {row} AND ({expanded})"
+
+    def page(self, cursor: Sequence[Any] | None, *, rows: int | None = None) -> tuple[Any, ...]:
         """the statement and parameters of the page after ``cursor`` (the first page for None).
 
         :param cursor: the last kept row's key, or None
         :ptype cursor: Sequence[Any] | None
+        :param rows: the rows the page keeps; its ``page_size`` when None. It asks for one more
+        :ptype rows: int | None
         :return: the statement, then its parameters
         :rtype: tuple[Any, ...]
         """
         conditions = [self._filters] if self._filters else []
         params = list(self._values)
         if cursor is not None:
-            marks = ", ".join(
-                self._mark(column, len(self._values) + index)
-                if self._mark is not None
-                else f"${len(self._values) + index}"
-                for index, column in enumerate(self._key, start=1)
-            )
-            conditions.append(f"({self._order}) > ({marks})")
+            conditions.append(self._past(len(self._values)))
             params += list(cursor)
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        return (f"{self._select_from}{where_sql}{self._tail}", *params)
+        limit = (self._page_size if rows is None else rows) + 1
+        return (f"{self._select_from}{where_sql} ORDER BY {self._order} LIMIT {limit}", *params)

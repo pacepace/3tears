@@ -44,6 +44,7 @@ from threetears.core.backends.broker_generation import (
 from threetears.core.backends.protocol import (
     L3AnswerCutError,
     L3_RAIL_ROW_CAP,
+    L3Page,
     LOAD_FILES_MAX_WAIT_SECONDS,
     FileLoad,
     LoadFile,
@@ -784,6 +785,79 @@ class NatsProxyL3Backend:
                 rows=parsed.rows.num_rows,
             )
         return parsed.rows
+
+    async def fetch_page(self, query: str, *params: Any, namespace: str | None = None) -> L3Page:
+        """a keyset page's SELECT: its rows, whether the broker cut them, and its reply's bytes.
+
+        :meth:`fetch` refuses a cut answer; a keyset read takes one, because its rows are the statement's first
+        in key order, and sizes its next page to the cap the reply announces (:mod:`threetears.core.keyset`).
+
+        :param query: parameterized SQL query, a SELECT
+        :ptype query: str
+        :param params: query parameter values
+        :ptype params: Any
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: the page
+        :rtype: L3Page
+        :raises ValueError: when the statement is not a SELECT
+        :raises DataLayerUnavailableError: if the broker returns an error
+        """
+        if statement_operation(query) != "select":
+            raise ValueError("fetch_page reads: its statement is a SELECT")
+        payload = self._query_payload(query, list(params), "select", namespace)
+        reply = await self.nats_request_bytes(
+            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
+        )
+        try:
+            response: dict[str, Any] = json.loads(reply)
+        except ValueError as exc:
+            raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
+        if not response.get("success", False):
+            self.raise_for_failed_reply(response, "L3 query")
+        record_reply_generations(response, ends_write=False)
+        rows = [_deserialize_row(row) for row in response.get("rows") or ()]
+        cap = response.get("max_reply_bytes")
+        return L3Page(
+            rows=rows,
+            truncated=bool(response.get("truncated")),
+            reply_bytes=len(reply),
+            reply_cap=cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None,
+        )
+
+    async def fetch_arrow_page(
+        self, query: str, *params: Any, types: Mapping[str, Any], namespace: str | None = None
+    ) -> L3Page:
+        """:meth:`fetch_page`, its rows one Arrow table as :meth:`fetch_arrow` reads them.
+
+        :param query: parameterized SQL query, a SELECT
+        :ptype query: str
+        :param params: query parameter values
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: the page, its rows a ``pyarrow.Table``
+        :rtype: L3Page
+        :raises ValueError: when the statement is not a SELECT
+        :raises ReplyNotArrowError: when a value is not of its column's type
+        :raises DataLayerUnavailableError: if the broker returns an error
+        """
+        if statement_operation(query) != "select":
+            raise ValueError("fetch_arrow_page reads: its statement is a SELECT")
+        payload = self._query_payload(query, list(params), "select", namespace)
+        reply = await self.nats_request_bytes(
+            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
+        )
+        parsed = await asyncio.to_thread(reply_rows, reply, types)
+        if not parsed.success:
+            try:
+                response: dict[str, Any] = json.loads(reply)
+            except ValueError as exc:
+                raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
+            self.raise_for_failed_reply(response, "L3 query")
+        return L3Page(rows=parsed.rows, truncated=parsed.truncated, reply_bytes=len(reply), reply_cap=parsed.reply_cap)
 
     async def fetchrow(
         self,

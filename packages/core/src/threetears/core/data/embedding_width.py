@@ -543,7 +543,11 @@ def _declared_index_sql(table: str, index: IndexDef) -> str:
     if index.pg_with:
         with_clause = " WITH (" + ", ".join(f"{key} = {value}" for key, value in index.pg_with) + ")"
     where = f" WHERE {index.where}" if index.where else ""
-    sql = f"CREATE {unique}INDEX IF NOT EXISTS {_quote(index.name)} ON {table}{using} ({', '.join(parts)}){with_clause}{where}"
+    include = f" INCLUDE ({', '.join(_quote(name) for name in index.include)})" if index.include else ""
+    sql = (
+        f"CREATE {unique}INDEX IF NOT EXISTS {_quote(index.name)} ON {table}{using} ({', '.join(parts)})"
+        f"{include}{with_clause}{where}"
+    )
     return sql
 
 
