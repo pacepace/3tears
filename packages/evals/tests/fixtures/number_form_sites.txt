@@ -282,7 +282,6 @@ threetears/evals/analysis/report/parts/resolve_table.py | _prices | _prices_draw
 threetears/evals/analysis/report/parts/resolve_table.py | _prices | places_of() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _prices | spell() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _prices_drawn | quantity_of() | 1
-threetears/evals/analysis/report/parts/resolve_table.py | _readings | quantity() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _table | _prices_drawn() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _wide | _column_quantity() | 1
 threetears/evals/analysis/report/serialize_html.py | _aspect_fold | _block() | 1

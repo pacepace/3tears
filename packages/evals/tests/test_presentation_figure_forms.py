@@ -42,6 +42,7 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
@@ -655,8 +656,9 @@ def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_word
 
 
 def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision() -> None:
-    """A forest of changes in points prints its values and their intervals' ends at a point's one decimal, as its end
-    labels and the keys citing its rows read them, never at the float's four figures (``-3.010 | -5.815 to +1.136``)."""
+    """A forest of changes in points prints its values and their intervals' ends at the pass rate's one precision on
+    the page (number policy, rule 1: Kairo's half-width of 3.5 points reads them whole), never at the float's four
+    figures (``-3.010 | -5.815 to +1.136``)."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     look = block_look(held, fact_arms(held))
     spec, faults = complete_chart(
@@ -687,7 +689,9 @@ def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision()
     assert isinstance(drawn.chart, ChartBlock)
     _, rows = values_table(drawn.chart)
     figures = [number for row in rows for cell in row[1:3] for number in re.findall(r"[+-]?\d+\.\d+|[+-]?\d+", cell)]
-    assert figures and all(len(number.partition(".")[2]) == 1 for number in figures), rows
+    places = PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places
+    assert places == 0
+    assert figures and all(len(number.partition(".")[2]) == places for number in figures), rows
 
 
 def test_a_gate_scatter_s_region_label_never_shares_a_row_with_the_budget_s_label() -> None:

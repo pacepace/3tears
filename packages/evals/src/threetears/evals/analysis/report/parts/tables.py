@@ -193,8 +193,9 @@ def arms_table(
         name="options",
         title=OPTIONS_TITLE,
         columns=columns,
-        # Each column's percentages at one precision, as every other table on the page reads them (C-15).
-        rows=forms.rate_columns(rows),
+        # Each rate prints its measure's decided text, at its measure's one precision on the whole page, recorded as
+        # it prints.
+        rows=forms.as_printed(rows),
         order=ARMS_TABLE_ORDER,
         total_rows=len(rows),
     )

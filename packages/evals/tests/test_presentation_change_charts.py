@@ -36,6 +36,7 @@ import pytest
 
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_doc_support import REPORT_DOCS, snapshot_of
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report import ChartBlock, DotIntervalChart
 from threetears.evals.analysis.report.chart_svg import chart_drawing
 from threetears.evals.analysis.report.block_spec import block_look
@@ -139,13 +140,16 @@ def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     label now; its pass-rate forest reads two measures, so each measure's head carries the control's level there."""
     board = _input("prototype5/kairo").scoreboard["September"]
     assert board.passed is not None and board.usable
-    rate = f"{board.passed / board.usable * 100:.1f}%"
+    rate = (
+        PageForms.of(_input("prototype5/kairo")).level(TRIAL_PASS_NAME, board.passed / board.usable, kind="trial").text
+    )
     (passes, _), (cost, cost_notes) = _one("prototype5/kairo", "contrasts"), _one("prototype5/kairo", "contrasts", 1)
     assert isinstance(passes.data, ForestChart) and isinstance(cost.data, ForestChart)
     assert passes.data.zero_label == "no change vs P · September"
     heads = list(dict.fromkeys(row.group for row in passes.data.rows))
-    assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91.5%"], heads
-    assert rate == "85.3%"
+    # Each measure's level at its one precision on the page (number policy, rule 1).
+    assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91%"], heads
+    assert rate == "85%"
     assert cost.data.zero_label == "no change vs P · September ($1.89, mean of 294 cases)"
     assert "Production cost, per 1,000 replies, in dollars." in cost_notes
 
@@ -161,14 +165,16 @@ def test_each_place_carries_the_level_its_change_is_from() -> None:
     second = "brisk-s.low.r1"
     levels = {task.id: task.per_arm[second]["pass_rate"].mean for task in report_input.tasks}
     levels["overall"] = report_input.measures["pass_rate"].per_arm[second].mean
+    places = PageForms.of(report_input).measure("pass_rate").places
+    assert places is not None
     for row in data.rows:
         assert row.note is not None and row.id is not None
         level = levels[row.id]
         assert level is not None
         printed = re.fullmatch(r"[+-][\d.]+ pts from ([\d.]+)%", row.note)
         assert printed is not None, (row.id, row.note)
-        # The level printed is the second arm's own figure there, at the page's one decimal.
-        assert abs(float(printed[1]) - float(level)) <= 0.05, (row.id, row.note, level)
+        # The level printed is the second arm's own figure there, at its measure's one precision on the page.
+        assert abs(float(printed[1]) - float(level)) <= 0.5 * 10**-places, (row.id, row.note, level)
 
 
 def test_a_change_chart_marks_which_way_is_better() -> None:
@@ -235,14 +241,13 @@ def test_a_factor_label_is_never_cut_so_two_rows_read_alike() -> None:
 
 def test_the_margin_band_is_named_and_the_family_level_said() -> None:
     """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why: its head
-    says what the family's intervals hold at together, "99.7% intervals (95% across 16 comparisons)"."""
+    says the guarantee the family's intervals hold at together, "95% intervals (adjusted for 16 comparisons)"."""
     drawn, _ = _one("prototype5/kairo", "contrasts")
     assert isinstance(drawn.data, ForestChart) and drawn.data.reference is not None
-    # The margin's label is one of the chart's labels, read at their one precision beside its rows' ``-7.6 pts``: a
-    # set reads at one precision.
-    assert drawn.data.reference.label == "margin -15.0 pts; shaded: no worse than the margin"
-    assert drawn.data.level == "99.7% (95% across 16 comparisons)"
-    assert "99.7% intervals (95% across 16 comparisons)" in _drawn_texts(drawn)
+    # The margin is declared, so it reads as declared (number policy, rule 4), never ``-15.0``.
+    assert drawn.data.reference.label == "margin -15 pts; shaded: no worse than the margin"
+    assert drawn.data.level == "95% (adjusted for 16 comparisons)"
+    assert "95% intervals (adjusted for 16 comparisons)" in _drawn_texts(drawn)
 
 
 def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
@@ -276,15 +281,15 @@ def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
 @pytest.mark.parametrize(
     ("stored", "read"),
     [
-        ("99.69%", "99.7% (95% across 16 comparisons)"),
-        ("99.95%", "99.95% (95% across 16 comparisons)"),
-        ("99.951%", "99.95% (95% across 16 comparisons)"),
+        ("99.69%", "95% (adjusted for 16 comparisons)"),
+        ("99.95%", "95% (adjusted for 16 comparisons)"),
+        ("99.951%", "95% (adjusted for 16 comparisons)"),
     ],
 )
 def test_a_family_level_reads_alike_in_a_chart_head_and_in_full_results(stored: str, read: str) -> None:
     """The chart head and the Full results table each formatted the family's level, by two rules, so one level could
-    read two ways on one page (``99.951%`` in the head, ``99.95%`` in the table). One function reads it for both, and a
-    level under 100 never reads ``100%``."""
+    read two ways on one page (``99.951%`` in the head, ``99.95%`` in the table). One function reads it for both: the
+    joint guarantee the family holds at, whatever its per-interval level, which never reads ``100%``."""
     held = _input("prototype5/kairo")
     if stored != held.contrast_families[0].level:
         held = held.model_copy(

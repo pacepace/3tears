@@ -166,15 +166,16 @@ class TestTheKairoPlanResolves:
 
     def test_the_recommendation_prints_the_controls_figures(self):
         text = _rendered(_slot("recommendation"))
-        assert "the highest pass rate (85.3%)" in text
-        assert "the highest in-character rate (91.5%)" in text
+        # Each rate at its measure's one precision, read from its uncertainty (number policy, rule 2).
+        assert "the highest pass rate (85%)" in text
+        assert "the highest in-character rate (92%)" in text
         assert "the lowest cost ($1.89 per 1,000 replies)" in text
         assert "(deepseek/deepseek-v4.1-flash)" in text
 
     def test_why_not_prints_each_candidates_uplift_and_contrast(self):
         text = _rendered(_slot("why_not"))
         assert "28% more per reply, in-character -6 points, pass rate -7.6." in text
-        assert "27% more per reply, in-character -4.7 points." in text
+        assert "27% more per reply, in-character -5 points." in text
 
     def test_watch_prints_the_reasoning_shares_in_whole_percents(self):
         assert "spent 55% of its output reasoning against September's 76%" in _rendered(_slot("watch"))
@@ -221,8 +222,8 @@ class TestAPathIsMatchedNotSplit:
         assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
 
     def test_a_dimension_key_with_dots_resolves(self):
-        assert _figure("judged.persona.holds_character.1017", "pct") == "86.6%"
-        assert _figure("contrast.1017.persona.holds_character.delta", "pts") == "-4.7"
+        assert _figure("judged.persona.holds_character.1017", "pct") == "87%"
+        assert _figure("contrast.1017.persona.holds_character.delta", "pts") == "-5"
 
     def test_an_aspect_id_with_spaces_and_parentheses_resolves(self):
         assert _figure("aspects.character adherence (v2).margin") == "15"
@@ -307,12 +308,13 @@ class TestAPathIsMatchedNotSplit:
 
 class TestFilters:
     def test_pct_reads_a_share_and_a_percent_alike(self):
-        assert _figure("judged.persona.holds_character.September", "pct") == "91.5%"
+        assert _figure("judged.persona.holds_character.September", "pct") == "92%"
         assert _figure("judged.persona.prod", "pct", name="r4") == "91.7%"
 
     def test_pts_is_signed_and_one_decimal_at_most(self):
         assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
-        assert _figure("contrast.cor.facts.delta", "pts", name="r4") == "+1"
+        # A change in points of a rate the page holds reads at its measure's one decimal, a whole one too.
+        assert _figure("contrast.cor.facts.delta", "pts", name="r4") == "+1.0"
         assert _figure("contrast.f64.task.delta", "pts", name="r4") == "+0.2"
 
     def test_abs_drops_the_sign(self):
@@ -434,7 +436,7 @@ class TestTasksAndCriteria:
         assert _figure("task.trouble.atlas-m.resolves.mean", "pct", name="r1") == "90%"
 
     def test_dotted_task_and_arm_ids_resolve(self):
-        assert _figure("task.multihop.brisk-s.low.r1.pass_rate.mean", name="r2") == "95.6%"
+        assert _figure("task.multihop.brisk-s.low.r1.pass_rate.mean", name="r2") == "96%"
 
     def test_a_task_names_its_name_and_traffic_share(self):
         assert _figure("task.billing.name", name="r1") == "Billing & account Q&A"

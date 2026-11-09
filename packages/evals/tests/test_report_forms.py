@@ -55,13 +55,12 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
+from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.tables import arms_key, arms_table, pass_rate_cell
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -250,21 +249,16 @@ def test_money_reads_at_the_scale_its_column_draws_it(name: str) -> None:
         pytest.skip(f"{name} prints no money by arm")
 
 
-def test_a_level_alone_reads_by_the_lone_figure_rule_as_a_chart_s_note_does() -> None:
-    """Today a level printed by itself (a chart's note) keeps the lone figure rule, not its set's decimals."""
+def test_a_level_alone_reads_at_its_measure_s_one_precision_as_every_surface_does() -> None:
+    """A level printed by itself (a chart's note, a key no table prints) reads as its table prints it: a measure reads
+    at one precision on the whole page (number policy, rule 1). Kairo's failed-reply notices read ``0.002 notices``,
+    alone or in a column, never the lone rule's ``0.0022 notices``."""
     held = _written_inputs()[KAIRO]
     forms = PageForms.of(held)
-    differing = 0
-    for form in forms.measures:
-        if form.reads_as != "measured" or form.level_decimals is None or form.levels is None:
-            continue
-        for mean in held.measures[form.key].per_arm.values():
-            if mean.mean is None:
-                continue
-            alone = forms.level(form.key, float(mean.mean), alone=True).text
-            assert alone == figure_text(float(mean.mean) * form.factor, form.levels)
-            differing += alone != forms.level(form.key, float(mean.mean)).text
-    assert differing, "Kairo must hold a level whose set's decimals differ from the lone rule for this to test anything"
+    notices = held.measures["failed_reply_notices"].per_arm["September"].mean
+    assert notices is not None
+    alone = forms.level("failed_reply_notices", float(notices), alone=True).text
+    assert alone == forms.level("failed_reply_notices", float(notices)).text == "0.002 notices"
 
 
 # --- the code page ------------------------------------------------------------------------------------------------
@@ -619,8 +613,9 @@ def _unheld(
     """How many rate and money cells the tables print, and each one the page's ledger holds no entry of its own for.
 
     Each cell takes one entry, by role and figure, so a cell is never passed by another cell's entry of the same text: a
-    number the column rule's (``column``, its value and its text); words a column rule read the same, by their text; a
-    level the table keeps as its builder wrote it, the level's (``confidence``); money as its words, the amount's as its
+    number the column rule's (``column``, its value and its text); words its measure decided, by the role it issued
+    them in (``level``, ``change`` or ``interval``), or a column rule read the same, by their text; an interval's level,
+    the level's (``confidence``); money as its words, the amount's as its
     builder issued it (``money`` on a ruler, or its measure's ``change`` or ``level``). ``by_measure``, only an entry
     held under a measure counts, but for an interval's level, which is how a family's intervals were read and belongs to
     no measure; and where ``measures`` names a row's measure, or a cell's, only an entry held under exactly that measure
@@ -663,7 +658,13 @@ def _unheld(
                 if printing == "number":
                     held = take("column", text, float(cell.value))  # type: ignore[arg-type]
                 elif printing == "rate words":
-                    held = take("column", text) or take("confidence", text, any_value=True)
+                    # A rate's words are its measure's decided text, issued in its role; a column rule's, where a table
+                    # still respells them.
+                    held = (
+                        take("column", text)
+                        or any(take(role, text, any_value=True) for role in ("level", "change", "interval"))
+                        or take("confidence", text, any_value=True)
+                    )
                 else:
                     held = any(take(role, text, any_value=True) for role in ("money", "change", "level"))
                 if not held:
@@ -1147,7 +1148,7 @@ _MEASURED_KEYS = [
         "$1.76 to $2.03 per 1,000 replies",
         ["$1.76", "$2.03"],
     ),
-    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-8", ["-8"]),
 ]
 
 
@@ -1431,7 +1432,8 @@ def test_a_comparison_that_names_its_kind_measure_is_never_read_as_a_score() -> 
     altered = _with_contrast(held, index, named, **{contrast.measure: scored})
     tables = _tables(altered)
     row = tables["contrasts"].rows[index]
-    assert row["interval"].text == "-9.00 to +9.00"
+    # Its measure's narrowest half-width is the 9 points given here, so its ends read whole (number policy, rule 2).
+    assert row["interval"].text == "-9 to +9"
     assert not row["measure"].text.endswith("(1–5)")
     heads = [column.header for column in tables["arms_by_measure"].columns]
     assert any(head.endswith("(1–5)") for head in heads), heads
@@ -1500,17 +1502,18 @@ def test_a_printed_figure_lays_out_its_digits_and_unit_apart() -> None:
     ("printed", "expected"),
     [
         (lambda forms: forms.count(12000), spell_count(12000)),
-        (lambda forms: forms.p(0.00008342), format_number(0.00008342)),
-        (lambda forms: forms.effect(0.08475), format_number(0.08475)),
+        (lambda forms: forms.p(0.00008342), "< 0.001"),
+        (lambda forms: forms.p(0.4996), "0.50"),
+        (lambda forms: forms.effect(0.08475), "0.08"),
         (lambda forms: forms.declared(-15.0, "pts"), "-15 pts"),
         (lambda forms: forms.share(0.374), "37%"),
         (lambda forms: forms.multiple(21.05), spell_multiple(21.05)),
         (lambda forms: forms.money_total(1208.0), spell_dollars(1208.0)),
         (lambda forms: forms.money_total(-1.2), spell_dollars(-1.2)),
-        (lambda forms: forms.confidence("99.69%"), interval_level("99.69%", None)),
+        (lambda forms: forms.confidence("99.69%"), "99.69%"),
     ],
 )
-def test_a_figure_that_is_no_measurement_keeps_today_s_fixed_form(
+def test_a_figure_that_is_no_measurement_takes_its_fixed_form(
     printed: Callable[[PageForms], Printed], expected: str
 ) -> None:
     forms = PageForms("written", {})

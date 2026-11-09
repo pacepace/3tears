@@ -109,8 +109,9 @@ def test_a_money_note_restating_its_amount_is_not_printed_beside_it() -> None:
 @pytest.mark.parametrize("run", ["r1-reading-only-bars", "r1-without-its-gates"])
 def test_the_r1_pages_print_no_note_restating_its_value(run: str) -> None:
     page = _page_markdown(run)
-    assert "| +2 | +0.4444 to +3.556 | +2 |" not in page
-    assert "| +2 | +0.4444 to +3.556 |" in page
+    # Each end at its measure's precision, kept off zero (number policy, rules 2 and 3).
+    assert "| +2 | +0.4 to +4 | +2 |" not in page
+    assert "| +2 | +0.4 to +4 |" in page
     assert "| $4.94 | $4.15 to $6.11 | $4.94 |" not in page
 
 
