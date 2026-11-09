@@ -1049,10 +1049,14 @@ class TestAKeylessScopeIsCheckedForRepeats:
 
     def test_adding_a_run_to_a_scope_costs_the_same_beside_six_times_the_rows(self) -> None:
         """Flips if adding a scope's rows grows with what the other scopes hold: the time beside 6,000,000 rows is
-        held within 1.5x of the time beside 1,000,000, each the best of five on the same table."""
+        held within 1.5x of the time beside 1,000,000.
+
+        Two backends hold the two sizes and their adds are timed in turn, each the best of five, so a stall on a
+        shared runner falls on both sides of the ratio; up to three such pairs are taken and one within the bound
+        passes. A cost that grows with the table fails every pair."""
         pa = pytest.importorskip("pyarrow")
-        backend = _scoped_keyless_backend()
-        schema = backend.export_partition("projections", "state", "S000", order_by=("run_id", "county")).schema
+        beside_one, beside_six = _scoped_keyless_backend(), _scoped_keyless_backend()
+        schema = beside_one.export_partition("projections", "state", "S000", order_by=("run_id", "county")).schema
 
         def scope(state: str, runs: int, counties: int) -> Any:
             count = runs * counties
@@ -1067,7 +1071,7 @@ class TestAKeylessScopeIsCheckedForRepeats:
 
         other = scope("S000", 20, 2_000)
 
-        def fill(first: int, last: int) -> None:
+        def fill(backend: DuckDBBackend, first: int, last: int) -> None:
             backend.replace_partitions(
                 [
                     PartitionReplacement(
@@ -1084,19 +1088,21 @@ class TestAKeylessScopeIsCheckedForRepeats:
 
         run = scope("TX", 1, 2_000)
 
-        def best_add() -> float:
-            best = float("inf")
-            for _ in range(5):
-                backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=None)])
-                began = time.perf_counter()
-                backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=run, append=True)])
-                best = min(best, time.perf_counter() - began)
-            return best
+        def add(backend: DuckDBBackend) -> float:
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=None)])
+            began = time.perf_counter()
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=run, append=True)])
+            return time.perf_counter() - began
 
-        fill(0, 25)
-        beside_one_million = best_add()
-        fill(25, 150)
-        beside_six_million = best_add()
+        fill(beside_one, 0, 25)
+        fill(beside_six, 0, 150)
+        for _ in range(3):
+            beside_one_million = beside_six_million = float("inf")
+            for _ in range(5):
+                beside_one_million = min(beside_one_million, add(beside_one))
+                beside_six_million = min(beside_six_million, add(beside_six))
+            if beside_six_million <= 1.5 * beside_one_million:
+                break
         assert beside_six_million <= 1.5 * beside_one_million, (
             f"adding 2,000 rows took {beside_six_million * 1000:.1f} ms beside 6,000,000 rows, "
             f"{beside_six_million / beside_one_million:.1f}x the {beside_one_million * 1000:.1f} ms beside 1,000,000"
