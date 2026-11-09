@@ -28,7 +28,7 @@ from threetears.evals.kernel.numbers import (
     spell_effect,
     spell_p,
 )
-from threetears.evals.analysis.report import build as report_build
+from threetears.evals.analysis.report import forms as report_forms
 from threetears.evals.analysis import quantities
 from threetears.evals.schema.models import LatencyMetrics
 
@@ -273,8 +273,9 @@ class TestAnEffectSize:
 
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
-        """The quantities, the references and the report's builder spell their values with it; nothing holds a copy."""
-        for module in (quantities, references, report_build):
+        """The quantities, the references and a page's forms, which spell every figure the report's builder states,
+        spell their values with it; nothing holds a copy."""
+        for module in (quantities, references, report_forms):
             assert module.format_number is numbers.format_number, module.__name__
 
     def test_no_other_module_defines_a_number_formatter(self):

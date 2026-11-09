@@ -94,6 +94,7 @@ def build_campaign_report(
     arms: Sequence[CampaignArm] | None = None,
     lead: Sequence[ReportBlock] | None = None,
     folds_alone: bool = False,
+    aspect_forms: Mapping[str, PageForms] | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as code's page: under the title the question, where its report is, what warns and the
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
@@ -140,6 +141,12 @@ def build_campaign_report(
         record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
         line, which the page's own Design & provenance would otherwise state once.
     :ptype folds_alone: bool
+    :param aspect_forms: The forms each aspect's own page was built in, by its label
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`, handed to
+        :func:`~threetears.evals.analysis.report.build.build_code_only_report`), which the lead's figures read as that
+        page's verdict line does; an aspect left out has its forms built here, from its page's bundle. They stay the
+        aspects' own: the page's own figures read the campaign's forms.
+    :ptype aspect_forms: Mapping[str, PageForms] | None
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -160,7 +167,11 @@ def build_campaign_report(
         *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms),
-        *(_lead_blocks(campaign, readings, reports, names=names, forms=forms) if lead is None else lead),
+        *(
+            _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms or {})
+            if lead is None
+            else lead
+        ),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
@@ -227,6 +238,7 @@ def _lead_blocks(
     *,
     names: AspectNames,
     forms: PageForms,
+    aspect_forms: Mapping[str, PageForms],
 ) -> list[ReportBlock]:
     """The page's lead, its verdict line, on every page where its caller states no answer of its own: one sentence
     per candidate on each aspect in the campaign's order, naming the reading and both arms; for one arm measured, the arm's pass rate with its count. Never a cost reading, and never a
@@ -255,8 +267,9 @@ def _lead_blocks(
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
         order = aspect.design.measure_order if aspect.design is not None else []
-        # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py).
-        figures = contrast_evidence(report.bundle)
+        # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py), in the forms
+        # its page was built in.
+        figures = contrast_evidence(report.bundle, forms=aspect_forms.get(aspect.label))
         if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=figures):
             sentences += led
             decisions += [

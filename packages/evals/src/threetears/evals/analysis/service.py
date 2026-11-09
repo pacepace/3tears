@@ -42,6 +42,7 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     declared_arm_names,
@@ -1096,6 +1097,9 @@ def _campaign_page(
     orders = {
         aspect.label: aspect.design.measure_order if aspect.design is not None else [] for aspect in campaign.aspects
     }
+    # Each aspect's forms, built once: its page reads them, and so does the campaign page's lead, which states that
+    # page's verdict sentences.
+    forms = {aspect.aspect: PageForms.of_bundle(aspect) for aspect in bundle.aspects}
     reports = {
         aspect.aspect: build_code_only_report(
             aspect,
@@ -1108,6 +1112,7 @@ def _campaign_page(
             bundle_fingerprint=checked.get(aspect.aspect),
             trials=trials,
             measure_order=orders.get(aspect.aspect, []),
+            forms=forms[aspect.aspect],
         )
         for aspect in bundle.aspects
     }
@@ -1123,6 +1128,7 @@ def _campaign_page(
         arms=reader_arms(bundle, tags),
         lead=lead,
         folds_alone=folds_alone,
+        aspect_forms=forms,
     )
     if analysis is None:
         return page
