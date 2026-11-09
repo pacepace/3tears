@@ -198,6 +198,26 @@ SHOULD_FIX_OPEN_MEASURE: Final = f"{WRITER_KIND}.should_fix_open"
 ANALYST_ROUNDS_MEASURE: Final = f"{WRITER_KIND}.analyst_rounds"
 #: The editor's review rounds begun.
 EDITOR_ROUNDS_MEASURE: Final = f"{WRITER_KIND}.editor_rounds"
+
+#: The readings each arm's own editor decides, in the order a reader lists them: what its review clears or leaves open.
+_EDITOR_READINGS: Final = (MUST_FIX_OPEN_MEASURE, FINISHED_MEASURE, SHOULD_FIX_OPEN_MEASURE)
+
+
+def uncompared_readings(*, one_editor: bool) -> tuple[str, ...]:
+    """The readings a candidate's comparison with its control does not count, by measure name, in the order a reader
+    lists them: with two editors (the arms' ``editor.md`` differ), each arm's own editor's (must-fix and should-fix
+    findings open, report finished), which then measure two instruments; none under one editor. Bounces are counted
+    before any editor sees a page, so they are always compared. The promotion read's sentence and the acceptance
+    criterion's table both read this one answer, so a sentence never rests on a reading the table says is not compared.
+
+    :param one_editor: Whether the candidate and the control ran one ``editor.md``.
+    :ptype one_editor: bool
+    :return: The measure names left uncompared.
+    :rtype: tuple[str, ...]
+    """
+    return () if one_editor else _EDITOR_READINGS
+
+
 #: Every turn sent, a turn whose reply never came included.
 TURNS_MEASURE: Final = f"{WRITER_KIND}.turns"
 #: Replies that nothing priced, so the cell's cost is unknown rather than low; a turn whose reply never came reported
@@ -459,5 +479,6 @@ __all__ = [
     "WriterRole",
     "refuse_undeliverable_writer_template",
     "refuse_unfixed_scoring_judge",
+    "uncompared_readings",
     "writer_scoring_rubric",
 ]

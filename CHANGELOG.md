@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a writer verdict never rests on a reading the two arms' editors decide
+
+**Fixed:** with a candidate whose `editor.md` differs from the control's, the writer eval's promotion sentence named
+an editor-decided reading as its reason ("Keep the control: headline-answers is shown worse than shipped on Must-fix
+findings open."), which the acceptance table reports not compared. The sentence now names only readings the comparison
+counts (`writer_contract.uncompared_readings`, which the table reads too), e.g. "Keep the control: headline-answers
+was not shown better than shipped; on the primary reading the evidence cannot tell them apart."; the decision itself
+is unchanged, and so is every sentence when the arms share an editor. `writer_promotion(..., one_editor=)`,
+`WriterPromotion.one_editor` and `WriterResult.one_editor` carry the fact. The writer eval sets it, counting one editor
+only when `editor.md`, the editor's model and the effort all match; a caller that passes nothing, the
+`writer_promotion` action included, gets one editor only when the arms ran the same skill.
+
+**Hosts:** a `writer_promotion` action over arms whose skills differ now leaves each editor's own readings out of its
+`why`, and returns `one_editor: false`.
+
 ### evals: one module decides every figure's form (number forms C1 to C3)
 
 **Changed:**

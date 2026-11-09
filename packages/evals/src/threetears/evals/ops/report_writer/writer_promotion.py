@@ -37,6 +37,14 @@ says what the pass did in one sentence (``stopping_line``).
 **Generic over levers.** The candidate is an arm, and what it changed is read off the arms' recorded lever maps, so a
 model, an effort or a host's own lever is decided as a skill text is.
 
+**Two editors.** A candidate whose ``editor.md`` differs from the control's has each arm's own editor decide its
+must-fix and should-fix findings open and whether its report finished, which then measure two instruments. The rule
+still reads them; the decision's sentence never names one
+(:func:`~threetears.evals.ops.report_writer.writer_contract.uncompared_readings`), and says instead what the readings
+the comparison counts came to. The caller says whether the arms ran one editor (``one_editor``), as the writer eval
+does; a caller that does not say (the ``writer_promotion`` action) is answered for the arms' recorded skill levels: one
+editor when the skills are the same, else two, since a skill that differs may differ in its ``editor.md``.
+
 **What it refuses.** A campaign whose arms were not scored by one judge on one rubric
 (:func:`~threetears.evals.ops.report_writer.writer_contract.refuse_unfixed_scoring_judge`), and one that ran over
 anything but held-out writer cases: each run must name its case set, and each case it ran must be a writer case its
@@ -73,7 +81,11 @@ from threetears.evals.kernel.run_pages import results_without_payloads
 from threetears.evals.ops.jobs import JobStatus
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
-from threetears.evals.ops.report_writer.writer_contract import refuse_unfixed_scoring_judge
+from threetears.evals.ops.report_writer.writer_contract import (
+    SKILL_LEVER,
+    refuse_unfixed_scoring_judge,
+    uncompared_readings,
+)
 from threetears.evals.ops.report_writer.writer_pairwise import (
     PREFERRED_HEADING,
     PairwiseReliability,
@@ -148,6 +160,12 @@ class WriterPromotion(EvalBaseModel):
     unpriced_trials: int = Field(description="Trials of either arm whose spend went unpriced, so not in the costs.")
     writer_model: str = Field(description="The model the candidate arm wrote with.")
     shipped: ShippedSkill = Field(description="The skill ledger's entry for the skill this build ships.")
+    one_editor: bool = Field(
+        default=True,
+        description="Whether the candidate and the control ran one editor.md; with two, each arm's own editor's "
+        "readings (must-fix and should-fix findings open, report finished) measure two instruments, so the decision's "
+        "sentence never names one, though the rule still reads them.",
+    )
 
 
 def _arm(arms: Sequence[CampaignArm], named: str, campaign_id: str) -> CampaignArm:
@@ -341,34 +359,72 @@ def _reads(verdict: Verdict) -> str:
     return f"{outcome}: {verdict.reason_detail}" if verdict.outcome == "untested" and verdict.reason_detail else outcome
 
 
-def _decided(
-    primary: Verdict | None, void: str | None, verdicts: Sequence[Verdict], *, candidate: str, control: str
-) -> tuple[PromotionDecision, str]:
-    """The decision rule (the module docstring), and its sentence."""
-    standing = None if void is not None else primary
-    regressed = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.outcome == "regressed"]
-    guardrails = [verdict for verdict in verdicts if verdict.kind == "guardrail"]
-    worse = [
+def _worse(standing: Verdict | None, verdicts: Sequence[Verdict]) -> list[str]:
+    """What keeps the control: the standing primary regressed, each gated reading regressed, each guardrail breached."""
+    return [
         *(
             [_named("the primary reading", standing)]
             if standing is not None and standing.outcome == "regressed"
             else []
         ),
-        *(_named(verdict.heading, verdict) for verdict in regressed),
-        *(f"guardrail {verdict.heading} (breached)" for verdict in guardrails if verdict.outcome == "breached"),
+        *(
+            _named(verdict.heading, verdict)
+            for verdict in verdicts
+            if verdict.kind == "contrast" and verdict.outcome == "regressed"
+        ),
+        *(
+            f"guardrail {verdict.heading} (breached)"
+            for verdict in verdicts
+            if verdict.kind == "guardrail" and verdict.outcome == "breached"
+        ),
     ]
-    if worse:
-        return "keep", f"Keep the control: {candidate} is shown worse than {control} on {', '.join(worse)}."
+
+
+def _improved(standing: Verdict | None) -> bool:
+    """Whether the standing primary reads improved on the cases a rate needs."""
+    return standing is not None and standing.outcome == "improved" and standing.reason != "too_few_cases"
+
+
+def _decided(
+    primary: Verdict | None,
+    void: str | None,
+    verdicts: Sequence[Verdict],
+    *,
+    candidate: str,
+    control: str,
+    uncompared: Sequence[str] = (),
+) -> tuple[PromotionDecision, str]:
+    """The decision rule (the module docstring), and its sentence.
+
+    The rule reads every verdict. The sentence names only the readings the comparison counts, never one in
+    ``uncompared`` (with two editors, each arm's own editor's): a keep that only those decide says what the counted
+    readings came to (``Keep the control: v2 was not shown better than v1; on the primary reading the evidence cannot
+    tell them apart.``).
+    """
+    standing = None if void is not None else primary
+    unheld_any = any(verdict.kind == "guardrail" and verdict.outcome != "held" for verdict in verdicts)
+    decision: PromotionDecision = (
+        "keep" if _worse(standing, verdicts) else "promote" if _improved(standing) and not unheld_any else "undecided"
+    )
+    counted = [verdict for verdict in verdicts if verdict.name not in uncompared]
+    if worse := _worse(standing, counted):
+        return decision, f"Keep the control: {candidate} is shown worse than {control} on {', '.join(worse)}."
+    lead = "Keep the control:" if decision == "keep" else "Undecided:"
+    guardrails = [verdict for verdict in counted if verdict.kind == "guardrail"]
     unheld = sum(verdict.outcome != "held" for verdict in guardrails)
-    improved = standing is not None and standing.outcome == "improved" and standing.reason != "too_few_cases"
-    if improved and not unheld:
-        return "promote", (
-            f"Promote {candidate}: the judge prefers its pages to {control}'s on the primary reading, no gated "
-            "reading is shown worse and every guardrail is held."
+    if _improved(standing) and not unheld:
+        if decision == "promote":
+            return decision, (
+                f"Promote {candidate}: the judge prefers its pages to {control}'s on the primary reading, no gated "
+                "reading is shown worse and every guardrail is held."
+            )
+        return decision, (
+            f"{lead} the judge prefers {candidate}'s pages to {control}'s on the primary reading, and only readings "
+            "each arm's own editor decides, which are not compared, stand in its way."
         )
-    if improved:
-        return "undecided", (
-            f"Undecided: the judge prefers {candidate}'s pages on the primary reading, but {unheld} of "
+    if _improved(standing):
+        return decision, (
+            f"{lead} the judge prefers {candidate}'s pages on the primary reading, but {unheld} of "
             f"{len(guardrails)} guardrails are not shown held."
         )
     detail = "" if primary is None or primary.reason_detail is None else f" ({primary.reason_detail})"
@@ -379,10 +435,14 @@ def _decided(
     elif primary.reason == "too_few_cases":
         because = f"the primary reading has too few cases to decide{detail}"
     elif primary.outcome == "not_separated":
-        because = f"on the primary reading {cannot_tell_apart([candidate], control)}"
+        # A keep's sentence has named both arms already, so its clause says them once.
+        apart = "the evidence cannot tell them apart" if decision == "keep" else cannot_tell_apart([candidate], control)
+        because = f"on the primary reading {apart}"
     else:
         because = f"the primary reading is {primary.outcome.replace('_', ' ')}{detail}"
-    return "undecided", f"Undecided: {because}, and only an improved primary reading promotes."
+    if decision == "keep":
+        return decision, f"Keep the control: {candidate} was not shown better than {control}; {because}."
+    return decision, f"Undecided: {because}, and only an improved primary reading promotes."
 
 
 def _named(label: str, verdict: Verdict) -> str:
@@ -449,7 +509,13 @@ def _row(verdict: Verdict, role: str) -> list[str]:
 
 
 def writer_promotion(
-    host: EvalHost, campaign_id: str, scope_id: str, *, candidate: str, pairwise_job: JobStatus | None = None
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    candidate: str,
+    pairwise_job: JobStatus | None = None,
+    one_editor: bool | None = None,
 ) -> WriterPromotion:
     """Read whether a report writer campaign's candidate arm should replace its control (the module docstring).
 
@@ -464,6 +530,11 @@ def writer_promotion(
     :param pairwise_job: The completed ``writer_pairwise`` job over this campaign's candidate (``job_poll``'s status),
         whose report holds the primary reading; ``None`` reads no primary, so the read never promotes.
     :ptype pairwise_job: JobStatus | None
+    :param one_editor: Whether the candidate and the control ran one editor (its ``editor.md``, model and effort); with
+        two, the decision's sentence names only the readings the comparison counts
+        (:func:`~threetears.evals.ops.report_writer.writer_contract.uncompared_readings`). ``None`` answers it for the
+        arms' recorded skill levels: one editor when they are the same skill, else two.
+    :ptype one_editor: bool | None
     :return: The decision and what it read.
     :rtype: WriterPromotion
     :raises NotFoundError: No campaign with that id in the scope, or a run it names is not stored.
@@ -506,6 +577,11 @@ def writer_promotion(
             "with its model, so what the candidate changed cannot be read",
             remedy="address each arm from a run (campaign_update), which records its lever map",
         )
+    if one_editor is None:
+        # A skill that differs may differ in its editor.md, so an unsaid editor is read as two: its readings leave the
+        # sentence rather than stand in it as a verdict on the writing.
+        mine, theirs = arm.levers.get(SKILL_LEVER), control.levers.get(SKILL_LEVER)
+        one_editor = (None if mine is None else mine.content_hash) == (None if theirs is None else theirs.content_hash)
     keys = {arm.variant_key, *resolve_control_arm(arm).variant_keys}
     control_keys = {control.variant_key, *resolve_control_arm(control).variant_keys}
     judge_model = runs[0].judge_model
@@ -534,7 +610,14 @@ def writer_promotion(
     primary = None if report is None else report.whole.verdict
     void = None if report is None else _void(report.reliability)
     settle = None if report is None or void is not None else _cases_to_settle(report)
-    decision, why = _decided(primary, void, verdicts, candidate=arm.label, control=control.label)
+    decision, why = _decided(
+        primary,
+        void,
+        verdicts,
+        candidate=arm.label,
+        control=control.label,
+        uncompared=uncompared_readings(one_editor=one_editor),
+    )
     boards = [board for aspect in bundle.aspects for board in aspect.scoreboard]
     costs = {
         side: [
@@ -573,6 +656,7 @@ def writer_promotion(
         unpriced_trials=sum(board.n_cost_unpriced for board in boards if board.variant_key in keys | control_keys),
         writer_model=arm.levers[CANDIDATE_MODEL_LEVER].display,
         shipped=skill_record(load_skill()),
+        one_editor=one_editor,
     )
 
 

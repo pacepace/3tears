@@ -594,6 +594,9 @@ class WriterResult:
     :ivar resolution: The resolution floor's line, as the disclosures carry it.
     :ivar launch_line: Where a run launched in batches stopped launching, as the disclosures carry it; empty for one
         launched at once.
+    :ivar one_editor: Each candidate, by arm: whether its promotion was read as running the control's editor (the
+        same ``editor.md``, editor model and effort), so its editor's own readings compare the writing, as the read
+        records it; empty on the dev side, where no promotion is read.
     """
 
     name: str
@@ -617,6 +620,7 @@ class WriterResult:
     cases: tuple[str, ...] = ()
     resolution: str = ""
     launch_line: str = ""
+    one_editor: dict[str, bool] = field(default_factory=dict)
 
     def __str__(self) -> str:
         """The quiet summary (:meth:`render`)."""
@@ -1315,8 +1319,27 @@ class WriterEval:
         return await run_blocking(
             host.eval_host.blocking_executor,
             lambda: writer_promotion(
-                host.eval_host, campaign_id, self.scope_id, candidate=candidate, pairwise_job=ran.status
+                host.eval_host,
+                campaign_id,
+                self.scope_id,
+                candidate=candidate,
+                pairwise_job=ran.status,
+                one_editor=self._one_editor(candidate),
             ),
+        )
+
+    def _one_editor(self, candidate: str) -> bool:
+        """Whether a candidate runs the control's editor, so its editor's own readings compare the writing: the same
+        ``editor.md``, on the same model (the candidate model, for an arm naming no editor's model of its own), at the
+        same effort. Any of them differing makes the editor another instrument."""
+        mine, control = self.arms[candidate], next(iter(self.arms.values()))
+        return all(
+            ours == theirs
+            for ours, theirs in (
+                (mine.analyst_skill.editor().digest, control.analyst_skill.editor().digest),
+                (mine.editor_model or mine.model_id, control.editor_model or control.model_id),
+                (mine.effort, control.effort),
+            )
         )
 
     def _resolution(self, cases: int, names: frozenset[str]) -> str:
@@ -1666,7 +1689,14 @@ class WriterEval:
             promotions = {
                 arm: kept[arm]
                 if arm in kept
-                else writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
+                else writer_promotion(
+                    host,
+                    campaign_id,
+                    self.scope_id,
+                    candidate=arm,
+                    pairwise_job=ran.status,
+                    one_editor=self._one_editor(arm),
+                )
                 for arm, ran in passes.items()
             }
         arms = {arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()}
@@ -1720,6 +1750,7 @@ class WriterEval:
             cases=cases,
             resolution=resolution,
             launch_line=launch_line or "",
+            one_editor={arm: read.one_editor for arm, read in promotions.items()},
         )
 
 

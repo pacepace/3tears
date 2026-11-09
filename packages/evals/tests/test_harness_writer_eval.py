@@ -10,7 +10,8 @@ whether or not its pages reach the judge.
 Mutations that turn this file red: the pass not run, run in one order, or run without its part of the cap; the
 promotion read made without the pass's job; the pairwise readings missing from the summary or the written page; a cap
 that covers the reports but not the pass admitted; ``question=`` not filed; ``k`` above 1 admitted; a pass refused
-before any call left unsaid or exiting 0.
+before any call left unsaid or exiting 0; a candidate counted as running the control's editor while its
+``editor.md``, its editor's model or its effort differs, or the action claiming one editor over arms whose skills differ.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import socket
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, get_args
 
 import httpx
 import pytest
@@ -40,6 +41,7 @@ from packages.evals.tests.writer_eval_support import (
     lay_recording,
 )
 from threetears.evals import Eval
+from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.analysis import gate_verdicts
@@ -50,8 +52,15 @@ from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND,
+    WRITER_KIND_MEASURES,
+    EffortWord,
+    uncompared_readings,
+    writer_scoring_rubric,
+)
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS
+from threetears.evals.kernel.report_snapshot import report_snapshot_id
 from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.providers import Catalogue, Model, ProviderError
 from threetears.evals.providers.model import DEFAULT_MAX_TOKENS
@@ -181,13 +190,21 @@ def _recordings(
     assert sorted(held_out.values()) == sorted(names)
     for arm, writer in arms.items():
         routed = writer_turns(
-            directory, arm=arm, skill=writer.analyst_skill, cases=held_out, revisions=writer.revisions
+            directory,
+            arm=arm,
+            skill=writer.analyst_skill,
+            cases=held_out,
+            revisions=writer.revisions,
+            editor_model=writer.editor_model,
         )
+        effort = next((word for word in get_args(EffortWord) if word == writer.effort), None)
         for snapshot, name in held_out.items():
-            path = routed.path(WRITER, None, snapshot)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            lines = _silent_lines(SILENT_TURNS + (1 if arm == extra and name == "r1" else 0))
-            path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+            # An arm whose editor runs on a model of its own is routed an editor's file too, never asked: no analyst
+            # reply holds a document for it to review.
+            for path in routed.paths(WRITER, effort, snapshot):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                lines = _silent_lines(SILENT_TURNS + (1 if arm == extra and name == "r1" else 0))
+                path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
 
 def _rates(rows: list[dict[str, Any]]) -> Catalogue:
@@ -894,6 +911,121 @@ async def test_two_arms_differing_only_in_revisions_each_replay_their_own_record
             in text
         )
     assert "unasked" not in text
+    assert offline == []
+
+
+def _editor_variant() -> AnalystSkill:
+    """The shipped skill with one sentence added to ``editor.md``: another editor (its text is read stripped, so a
+    blank line would not differ)."""
+    files = dict(load_skill().files)
+    files["editor.md"] = f"{files['editor.md'].rstrip()}\n\nReview each report once more before you answer.\n"
+    return AnalystSkill(files=files)
+
+
+@pytest.mark.parametrize(
+    ("variant", "one_editor"),
+    [
+        pytest.param(lambda: Writer(WRITER, skill=_variant()), True, id="only SKILL.md differs"),
+        pytest.param(lambda: Writer(WRITER, skill=_editor_variant()), False, id="editor.md differs"),
+        pytest.param(
+            lambda: Writer(WRITER, skill=load_skill(), editor_model="report-writer-editor"),
+            False,
+            id="the editor's model differs",
+        ),
+        pytest.param(lambda: Writer(WRITER, skill=load_skill(), effort="low"), False, id="the effort differs"),
+    ],
+)
+async def test_a_candidate_runs_the_control_s_editor_only_when_its_editor_md_model_and_effort_all_match(
+    tmp_path: Path, offline: list[object], variant: Callable[[], Writer], one_editor: bool
+) -> None:
+    arms = {"shipped": Writer(WRITER, skill=load_skill()), "variant": variant()}
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+
+    result = await _eval(tmp_path, arms).run()
+
+    assert result.decisions.keys() == {"variant"}
+    # What the promotion read was told, as it records it: read once, at the end, every case launched at once.
+    assert result.one_editor == {"variant": one_editor}
+    if not one_editor:
+        assert not any(heading in result.promotion_why["variant"] for heading in _uncompared_headings())
+    assert offline == []
+
+
+def _uncompared_headings() -> set[str]:
+    """Each editor-decided reading's heading, as a promotion's sentence would name it."""
+    uncompared = uncompared_readings(one_editor=False)
+    return {measure.reader_name for measure in WRITER_KIND_MEASURES if measure.name in uncompared}
+
+
+async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_editor(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """Under a rule to stop, two cases launched one at a time: the pass is refused after the first, so the candidate is
+    held there and its promotion read at its stop. It differs from the control in its effort alone, a skill the read
+    would count as one editor on its own, so only the eval telling it says two."""
+    arms = {"shipped": Writer(WRITER, skill=load_skill()), "variant": Writer(WRITER, skill=load_skill(), effort="low")}
+    kairo = kairo_case(tmp_path / "cases")
+    # The same report written over another campaign's snapshot: its id is the campaign's and the input's, so another.
+    snapshot = kairo.snapshot
+    assert snapshot.campaign_id is not None
+    campaign = f"{snapshot.campaign_id}-again"
+    again = kairo.model_copy(
+        update={
+            "name": "kairo-again",
+            "snapshot": snapshot.model_copy(
+                update={
+                    "campaign_id": campaign,
+                    "id": report_snapshot_id(campaign, snapshot.report_input_digest),
+                }
+            ),
+        }
+    )
+    again.write(tmp_path / "cases" / "kairo-again.json.gz")
+    for arm, writer in arms.items():
+        cases = {case.snapshot.id: case.name for case in (kairo, again)}
+        routed = writer_turns(tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases=cases)
+        effort = next((word for word in get_args(EffortWord) if word == writer.effort), None)
+        for snapshot in cases:
+            lay_recording(routed.path(WRITER, effort, snapshot), kairo_report(WRITER, WRITER))
+
+    result = await _eval(tmp_path, arms, judge=FakeDearPairJudge(), stop_when="separated", batch_size=1).run()
+
+    (why,) = result.pairwise_unread.values()
+    assert why.startswith("refused before any call: ")
+    assert result.launch_line, "the run launched in batches"
+    assert result.one_editor == {"variant": False}
+    assert not any(heading in result.promotion_why["variant"] for heading in _uncompared_headings())
+    assert offline == []
+
+
+async def test_the_action_unsaid_reads_arms_whose_skills_differ_as_two_editors(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """The writer eval knows the two arms' editor.md match, though their skills differ; the action, told nothing,
+    reads the arms' recorded skill levels and counts two editors, the direction that keeps an editor's reading out
+    of the sentence."""
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+    result = await _eval(tmp_path, arms).run()
+    assert result.one_editor == {"variant": True}
+
+    (read_only,) = eval_catalogue().mount_all(read_only_tools())
+    read = await read_only.call(
+        {
+            "action": "writer_promotion",
+            "campaign_id": result.campaign_id,
+            "candidate": "variant",
+            "pairwise_job": result.pairwise["variant"].job_id,
+        },
+        host=OpsHost.reading(result.host),
+        caller=Caller(scope_id=SCOPE, identity="test"),
+    )
+    assert not read.is_error, read.text
+    assert read.structured is not None
+    assert read.structured["one_editor"] is False
+    assert read.structured["decision"] == result.decisions["variant"]
     assert offline == []
 
 
