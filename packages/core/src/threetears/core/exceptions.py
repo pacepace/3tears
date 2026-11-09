@@ -21,6 +21,7 @@ __all__ = [
     "L2WriteRefusedError",
     "L2ScopeError",
     "L2ScopeNotConfiguredError",
+    "SchemaTenantUnknownError",
 ]
 
 
@@ -48,6 +49,16 @@ class L2LostError(GenerationUnavailableError):
     An L2-first commit is its change message, so a write meeting it does not commit; the refiller
     puts the log back from L3 at its old sequences. Never answered by starting a new log, which no
     follower could follow from its mark.
+    """
+
+
+class SchemaTenantUnknownError(GenerationUnavailableError):
+    """Raised when a write to an agent-schema table would be recorded without the schema it ran in.
+
+    A ``TENANT_BY_SCHEMA`` table's change records are keyed by the schema (``s-<schema>``), the only key that
+    table's pods read it under. A record with no schema would go on ``_all``, where none of them reads, so the
+    write's followers would never hear of it; the record is refused instead. A process that writes L3 itself names
+    its schema with ``CollectionRegistry.set_l3_schema``; a pod's writes go through the broker, which names it.
     """
 
 

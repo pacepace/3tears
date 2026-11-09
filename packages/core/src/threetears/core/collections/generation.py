@@ -32,9 +32,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from threetears.core.collections.epoch_change import advance_recording
+from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -115,7 +115,9 @@ class GenerationSource(Protocol):
         ...
 
 
-async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str]) -> dict[str, str]:
+async def announce_unheard_writes(
+    source: GenerationSource, tables: Iterable[str], *, schema: str | None = None
+) -> dict[str, str]:
     """advance each table once for writes that no collection made and no row broadcast names.
 
     For a writer that changes rows it cannot list -- a schema migration, a restore, a bulk repair
@@ -131,6 +133,9 @@ async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str
     :ptype source: GenerationSource
     :param tables: the tables written; each is advanced once
     :ptype tables: Iterable[str]
+    :param schema: the schema the writes ran in: an agent-schema table's record goes under it
+        (:func:`advance_for_write`); ``None`` for a platform writer, which an agent-schema table refuses
+    :ptype schema: str | None
     :return: each table's token, as :meth:`GenerationSource.advance` returned it
     :rtype: dict[str, str]
     :raises GenerationUnavailableError: when any table could not be advanced, or its advance returned
@@ -141,7 +146,7 @@ async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str
     for table in sorted(set(tables)):
         try:
             # a write nobody listed the rows of: its reach is the table
-            token = await advance_recording(source, table, None)
+            token = await advance_for_write(source, table, None, schema=schema)
         except GenerationUnavailableError as exc:
             failed[table] = str(exc)
             continue
@@ -924,12 +929,22 @@ async def advance_for_write(
     :ptype keys_unknown: bool
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
+    :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
+        and the write names no schema: never put on ``_all``, where none of its pods read it
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
     :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
     tenancy = tenancy_of_table(table_name)
     owner = schema_tenant(schema) if tenancy.kind == "schema" and schema else None
     named = rows_with_tenants(tenancy, rows) if rows else rows
+    if tenancy.kind == "schema" and owner is None and records_changes(source):
+        unnamed = rows is None or any(row.tenant is None for row in rows)
+        if unnamed:
+            raise SchemaTenantUnknownError(
+                f"{table_name!r} is declared per schema and its write names no schema: its record would go on "
+                f"_all, where none of its pods read it. Name the writer's schema "
+                f"(CollectionRegistry.set_l3_schema, or the broker's schema=)"
+            )
     return await advance_recording(source, table_name, named, keys_unknown=keys_unknown, tenant=owner)
 
 

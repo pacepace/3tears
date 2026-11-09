@@ -48,6 +48,7 @@ __all__ = [
     "read_logged_epoch_change",
     "walk_by_count",
     "advance_recording",
+    "records_changes",
     "changed_row_runs",
     "check_change_form",
     "epoch_change_record",
@@ -315,6 +316,19 @@ def check_change_form(rows: Sequence[ChangedRow] | None, *, keys_unknown: bool) 
     """
     if keys_unknown and rows is not None:
         raise ValueError("keys_unknown=True names no rows: pass rows=None")
+
+
+def records_changes(source: object) -> bool:
+    """whether ``source`` stores each advance's change itself (an epoch source that keeps the change log).
+
+    A pod's source does not: its broker advances for it and names the change.
+
+    :param source: a generation source
+    :ptype source: object
+    :return: whether it records changes
+    :rtype: bool
+    """
+    return isinstance(source, _EpochChangeWriter)
 
 
 async def advance_recording(

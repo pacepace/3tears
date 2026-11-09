@@ -43,10 +43,10 @@ from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
     EpochChange,
-    advance_recording,
     changed_row_runs,
     epoch_change_record,
     read_epoch_change,
+    records_changes,
 )
 from threetears.core.collections.delete_cascade import (
     DeleteCascade,
@@ -54,7 +54,7 @@ from threetears.core.collections.delete_cascade import (
     read_delete_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
-from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
     WRITE_GENERATION_UNDECLARED,
@@ -63,6 +63,7 @@ from threetears.core.collections.generation import (
     UndeclaredWriteGeneration,
     WriteGeneration,
     WriteGenerationDeclaration,
+    advance_for_write,
     note_generation_class,
     note_l2_first_class,
     note_tenancy_class,
@@ -72,7 +73,7 @@ from threetears.core.collections.generation import (
     tables_with_write_generation,
 )
 from threetears.core.collections.l2_degrade import degrade_l2
-from threetears.core.collections.l2_first import L2First, L2FirstEpochs, complete_mark
+from threetears.core.collections.l2_first import L2First, L2FirstEpochs, L2FirstSupport
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
     L2Order,
@@ -93,6 +94,7 @@ from threetears.core.exceptions import (
     L2EpochRegressedError,
     L2ScopeNotConfiguredError,
     L2WriteRefusedError,
+    SchemaTenantUnknownError,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.nats.errors import KvError
@@ -133,6 +135,21 @@ def _undeclared_tenancy_records() -> Any:
             "_all key (every reader of the table sees them); declare one (threetears.core.tenancy)"
         ),
         label_names=("table",),
+    )
+
+
+def _unnamed_schema_message(table: str) -> str:
+    """why a write to an agent-schema table with no schema named is refused.
+
+    :param table: the table
+    :ptype table: str
+    :return: the message
+    :rtype: str
+    """
+    return (
+        f"{table!r} is declared TENANT_BY_SCHEMA and this process records its writes' changes itself, but its "
+        f"registry names no schema: the records would go on _all, where none of the table's pods read it. Name the "
+        f"schema the registry's L3 writes land in with CollectionRegistry.set_l3_schema(...)"
     )
 
 
@@ -199,10 +216,6 @@ _CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
 
 #: compare-and-swap rounds an L2-first save takes on its key before it reports the key contended.
 _L2_FIRST_SWAP_ROUNDS: Final = 30
-
-#: how long the marker a dropped L2-first state key leaves lives: one settled epoch is one key, so a
-#: marker kept for ever would fill the bucket with one per epoch.
-_L2_FIRST_STATE_MARKER_TTL: Final = timedelta(seconds=5)
 
 #: compare-and-swap rounds an advance of an L2-kept write generation takes before it gives up
 _L2_GENERATION_CAS_ATTEMPTS: Final = 16
@@ -940,6 +953,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         #: this process's advances of an L2-kept write generation take turns (_advance_l2_generation)
         self._l2_generation_lock = asyncio.Lock()
         self._refuse_unsound_negative_cache()
+        self._refuse_an_unnamed_schema()
         if self.l2_first is not None and self._nats_client is not None and self.l3_pool is None:
             raise ValueError(
                 f"{type(self).__name__} commits L2-first and has no L3 to save to: wire an L3 pool, or "
@@ -1756,7 +1770,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         if source is None:
             return None
         try:
-            token = await advance_recording(source, self.table_name, self._with_tenants(changed))
+            token = await advance_for_write(
+                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named()
+            )
             if token is None:
                 # a source that advanced nothing (a pod whose broker names no generation for the
                 # table). A switched-on table may write on regardless; an absence cache may not,
@@ -1798,6 +1814,58 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self.tenancy.kind == "undeclared":
             _note_undeclared_tenancy(self.table_name)
         return rows_with_tenants(self.tenancy, changed)
+
+    def _l3_schema_named(self) -> str | None:
+        """the schema this collection's L3 writes land in, as its registry names it (``set_l3_schema``).
+
+        :return: the schema, or ``None`` when the registry names none
+        :rtype: str | None
+        """
+        registry = self.registry
+        return None if registry is None else registry.l3_schema
+
+    def _record_rows(self, changed: Sequence[ChangedRow]) -> list[ChangedRow]:
+        """``changed`` as this process records them itself (an L2-first commit): each row under its tenant.
+
+        The declared tenancy names every row's tenant: a tenant column's value, or, for a ``TENANT_BY_SCHEMA``
+        table, the schema this collection's L3 writes land in. A schema table whose registry names no schema is
+        refused, never put on ``_all``, where none of its pods read it.
+
+        :param changed: the rows
+        :ptype changed: Sequence[ChangedRow]
+        :return: the rows, each with its tenant
+        :rtype: list[ChangedRow]
+        :raises SchemaTenantUnknownError: when the table is declared per schema and the registry names no schema
+        """
+        rows = list(self._with_tenants(changed) or ())
+        if self.tenancy.kind != "schema":
+            return rows
+        schema = self._l3_schema_named()
+        if schema is None:
+            raise SchemaTenantUnknownError(_unnamed_schema_message(self.table_name))
+        return [
+            row if row.tenant is not None else row.model_copy(update={"tenant": schema_tenant(schema)}) for row in rows
+        ]
+
+    def _refuse_an_unnamed_schema(self) -> None:
+        """refuse, at construction, an agent-schema collection whose own writes would be recorded with no schema.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table is declared per schema, records its changes (switched on, caching
+            absences, or committing L2-first), its registry's source keeps the change log itself, and the
+            registry names no schema
+        """
+        registry = self.registry
+        if self.tenancy.kind != "schema" or registry is None or registry.l3_schema is not None:
+            return
+        recorded = (
+            isinstance(self.write_generation, WriteGeneration | L2WriteGeneration)
+            or self.negative_cache_max_age is not None
+            or self.l2_first is not None
+        )
+        if recorded and records_changes(registry.generation_source):
+            raise ValueError(_unnamed_schema_message(self.table_name))
 
     async def _bump_generation(self, changed: Sequence[ChangedRow] | None) -> _Bump:
         """advance this table's write generation once, for one commit that changed ``changed``.
@@ -1849,7 +1917,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         covered = await self._marks_before_advance(registry)
         rows = 1 if changed is None else len(changed)
         try:
-            token = await advance_recording(source, self.table_name, self._with_tenants(changed))
+            token = await advance_for_write(
+                source, self.table_name, self._with_tenants(changed), schema=self._l3_schema_named()
+            )
         except GenerationNotCommittedError as exc:
             # the commit did not land (a rolled-back transaction settling): nothing to advance
             log.info(
@@ -4113,95 +4183,38 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return self.l2_first is not None and self.l2_first.wait_for_l3
 
-    def l2_first_state_key(self, *parts: str) -> str:
-        """the L2 key of one piece of this table's L2-first bookkeeping, under the principal's scope.
+    @property
+    def l2_first_support(self) -> L2FirstSupport:
+        """the L2-first saver's and refiller's access to this collection: bookkeeping, save from L2, refill L2.
 
-        ``{scope}._l2first.{table}.{parts...}``: in the same bucket and under the same grant as the rows,
-        and never a row's key, since ``_l2first`` cannot be a table name.
+        One collaborator the collection owns rather than nine methods on every collection's surface, for
+        :mod:`~threetears.core.collections.l2_first` only.
 
-        :param parts: the piece's name, as key tokens
-        :ptype parts: str
-        :return: the key
-        :rtype: str
-        :raises L2ScopeNotConfiguredError: when the registry carries no ``kv_key_scope``
+        :return: the collaborator, built once
+        :rtype: L2FirstSupport
         """
-        scope = self._registry.kv_key_scope
-        if scope is None:
-            raise L2ScopeNotConfiguredError(f"{self.table_name}: no kv_key_scope, so no L2-first state key")
-        return ".".join((scope, "_l2first", self.table_name, *parts))
-
-    async def read_l2_first_state(self, *parts: str) -> bytes | None:
-        """one piece of this table's L2-first bookkeeping, or ``None`` when L2 holds none.
-
-        :param parts: the piece's name
-        :ptype parts: str
-        :return: its value
-        :rtype: bytes | None
-        :raises KvError: when L2 cannot be read
-        """
-        kv = await self._ensure_kv()
-        return None if kv is None else await kv.get(key=self.l2_first_state_key(*parts))
-
-    async def write_l2_first_state(self, value: bytes, *parts: str) -> None:
-        """set one piece of this table's L2-first bookkeeping.
-
-        :param value: its value
-        :ptype value: bytes
-        :param parts: the piece's name
-        :ptype parts: str
-        :return: nothing
-        :rtype: None
-        :raises KvError: when L2 refuses it
-        """
-        kv = await self._ensure_kv()
-        if kv is not None:
-            await kv.put(key=self.l2_first_state_key(*parts), value=value)
-
-    async def drop_l2_first_state(self, *parts: str) -> None:
-        """remove one piece of this table's L2-first bookkeeping, leaving a marker that lapses.
-
-        :param parts: the piece's name
-        :ptype parts: str
-        :return: nothing
-        :rtype: None
-        :raises KvError: when L2 refuses it
-        """
-        kv = await self._ensure_kv()
-        if kv is not None:
-            await kv.delete(key=self.l2_first_state_key(*parts), marker_ttl=_L2_FIRST_STATE_MARKER_TTL)
-
-    async def l2_complete(self) -> bool:
-        """whether L2 holds this table complete: the refiller filled it, and NATS has not lost it since.
-
-        :return: ``True`` when the refiller's mark is in L2
-        :rtype: bool
-        :raises L2LostError: when L2 cannot be read, so whether it is complete cannot be told
-        """
-        try:
-            return await self.read_l2_first_state("complete") is not None
-        except KvError as exc:
-            degrade_l2(
-                exc,
-                table=self.table_name,
-                op="get",
-                what="L2 unreadable while asking whether it holds an L2-first table complete",
-                l2_is_the_store=True,
-                refused_as=L2LostError(f"{self.table_name}: L2 cannot be read ({type(exc).__name__}: {exc})"),
+        support: L2FirstSupport | None = getattr(self, "_l2_first_support_held", None)
+        if support is None:
+            support = L2FirstSupport(
+                table_name=self.table_name,
+                scope_of=lambda: self._registry.kv_key_scope,
+                ensure_kv=self._ensure_kv,
+                l2_key=self.l2_key,
+                apply=self._l2_first_apply,
+                decode=self._decode_l2_value,
+                is_expired=self._row_is_expired,
+                save=self.save_to_store,
+                delete=self.delete_from_store,
+                pages=self._l3_pages,
+                id_of_changed=self._id_of_changed,
+                id_of_row=self._id_of_row,
+                entry_lifetime=self._l2_entry_lifetime,
+                encode=lambda row: self.serialize(self._normalise_datetimes_for_write(row)),
             )
-            raise
+            self._l2_first_support_held = support
+        return support
 
-    async def mark_l2_complete(self, generation: str | None) -> None:
-        """record that L2 holds this table complete, as of ``generation``: the refiller's last step.
-
-        :param generation: the table's generation when the refill finished
-        :ptype generation: str | None
-        :return: nothing
-        :rtype: None
-        :raises KvError: when L2 refuses it
-        """
-        await self.write_l2_first_state(complete_mark(generation), "complete")
-
-    def l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
+    def _l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
         """every row L3 holds for this table, a page at a time, for the refiller.
 
         The refiller's one whole-table read of L3, made by one claimed worker after L2 is lost, never by
@@ -4216,7 +4229,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         raise NotImplementedError(
             f"{type(self).__name__} commits L2-first and cannot read its L3 table in pages, so L2 cannot be put "
-            f"back from L3: override l3_pages"
+            f"back from L3: override _l3_pages"
         )
 
     def _id_of_changed(self, row: ChangedRow) -> Any:
@@ -4239,82 +4252,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         values = tuple(row[column] for column in self.primary_key_columns)
         return values[0] if len(values) == 1 else values
-
-    async def carry_to_l3(self, row: ChangedRow) -> None:
-        """make L3 hold what L2 holds for one committed key: its row, or no row.
-
-        Safe to repeat and safe out of order: it writes L2's value as it is now, whichever epoch asked.
-        A key L2 holds no row for is deleted from L3 only while L2 holds the table complete.
-
-        :param row: the changed row an epoch named
-        :ptype row: ChangedRow
-        :return: nothing
-        :rtype: None
-        :raises L2LostError: when L2 holds no row for the key and does not hold the table complete
-        :raises KvError: when L2 cannot be read
-        :raises Exception: whatever L3 raised: a refusal, or a failure to reach it
-        """
-        entity_id = self._id_of_changed(row)
-        kv = await self._ensure_kv()
-        if kv is None:
-            raise L2LostError(f"{self.table_name}: no L2 to save from")
-        raw, latest = await kv.get_latest(key=self.l2_key(entity_id))
-        if row.l2_revision is not None and latest == row.l2_revision and raw != row.value:
-            # the key is where the committing writer read it: it died before applying its row, so the
-            # saver applies it now, at that revision; a write since would have moved the key on
-            await self._l2_first_apply(kv, entity_id, row.value, latest)
-            raw, latest = await kv.get_latest(key=self.l2_key(entity_id))
-        held: dict[str, Any] | None = None
-        if raw is not None:
-            decoded = self._decode_l2_value(raw)
-            if isinstance(decoded, dict) and not self._row_is_expired(decoded):
-                held = decoded
-        if held is not None:
-            await self.save_to_store(held, None)
-            return
-        if not await self.l2_complete():
-            raise L2LostError(f"{self.table_name}: L2 holds no row for {entity_id!s} and is not complete")
-        await self.delete_from_store(entity_id)
-
-    async def refill_l2_from_l3(self, *, page_size: int) -> int:
-        """put every row L3 holds into L2, where L2 holds nothing at all for its key.
-
-        A key L2 holds anything for -- a write made since L2 was lost, or its delete -- is left alone:
-        each row is written at revision zero, which lands only on a key with no message.
-
-        :param page_size: rows read from L3 per statement
-        :ptype page_size: int
-        :return: how many rows were put back
-        :rtype: int
-        :raises KvError: when L2 refuses a row
-        """
-        kv = await self._ensure_kv()
-        if kv is None:
-            return 0
-        written = 0
-        async for page in self.l3_pages(page_size=page_size):
-            for row in page:
-                if self._row_is_expired(row):
-                    continue
-                entity_id = self._id_of_row(row)
-                lifetime = self._l2_entry_lifetime(row)
-                timed = {} if lifetime is None else {"ttl": lifetime}
-                payload = self.serialize(self._normalise_datetimes_for_write(row))
-                try:
-                    landed = await kv.update(key=self.l2_key(entity_id), value=payload, revision=0, **timed)
-                except KvError as exc:
-                    degrade_l2(
-                        exc,
-                        table=self.table_name,
-                        op="refill",
-                        what="L2 refused a row the refiller put back from L3",
-                        l2_is_the_store=True,
-                        entity_id=entity_id,
-                    )
-                    raise
-                if landed is not None:
-                    written += 1
-        return written
 
     def _l2_first_epochs(self) -> L2FirstEpochs:
         """the epoch log this collection's L2-first writes commit through.
@@ -4419,7 +4356,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             parts = split_generation_token(change.token)
             try:
                 if parts is not None:
-                    await self.write_l2_first_state(b"1", "settled", parts[0], str(parts[1]))
+                    await self.l2_first_support.write_state(b"1", "settled", parts[0], str(parts[1]))
             # prawduct:allow prawduct/broad-except -- the write is saved; the saver redoes this harmlessly
             except Exception as exc:
                 contain(
@@ -4468,7 +4405,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         bump = _NO_BUMP
         withdrawn = False
         try:
-            token = await epochs.advance_continuing(self.table_name, [changed])
+            token = await epochs.advance_continuing(self.table_name, self._record_rows([changed]))
         except GenerationUnavailableError as exc:
             log.error(
                 "the withdrawal of an L2-first write did not commit; L2 keeps the value L3 did not take until the "
@@ -4544,7 +4481,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 update={"l3_pending": True, "value": payload, "l2_revision": revision}
             )
             with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
-                token = await epochs.advance_continuing(self.table_name, [changed])
+                token = await epochs.advance_continuing(self.table_name, self._record_rows([changed]))
                 self._registry.account_generation(self.table_name, token)
                 won = await self._l2_first_apply(kv, entity_id, payload, revision)
                 if won is not None and self._l1 is not None and self._l1_fence.still_newest(ticket):
@@ -4613,7 +4550,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             update={"l3_pending": True, "value": None, "l2_revision": revision}
         )
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True):
-            token = await epochs.advance_continuing(self.table_name, [changed])
+            token = await epochs.advance_continuing(self.table_name, self._record_rows([changed]))
             self._registry.account_generation(self.table_name, token)
             won = await self._l2_first_apply(kv, entity_id, None, revision)
         self._evict_l1(entity_id)
@@ -4649,7 +4586,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if lookup.revision is None:
             raise L2LostError(f"{self.table_name}: L2 could not be read for {entity_id!s}, and L3 is not read")
-        if not await self.l2_complete():
+        if not await self.l2_first_support.complete():
             raise L2LostError(
                 f"{self.table_name}: L2 does not hold the table complete (lost, or not yet refilled); "
                 f"{entity_id!s} is not held here"
@@ -5518,7 +5455,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             if row is not None and self._row_is_expired(row):
                 row = None
-            if row is None and self.reads_l2_first and not await self.l2_complete():
+            if row is None and self.reads_l2_first and not await self.l2_first_support.complete():
                 # L2 is this table's record and does not hold it complete: "no row" would be a guess
                 raise L2LostError(f"{self.table_name}: L2 does not hold the table complete; {entity_id!s} is unknown")
             if row is None and ordered and not self.reads_l2_first:

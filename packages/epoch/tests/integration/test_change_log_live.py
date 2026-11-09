@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from threetears.core.collections.change_notes import NotedChange
-from threetears.agent.acl.collections import GroupMemberCollection
+from threetears.agent.knowledge.collections import ConceptCollection
 from threetears.core.tenancy import PodTenants, value_tenant
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import RestoreTooLargeError, GenerationUnavailableError, L2LostError
@@ -52,6 +52,8 @@ async def _restore(
 pytestmark = pytest.mark.integration
 
 _TABLE = "group_members"
+#: a platform table keyed by its customer column (ConceptCollection declares tenant_column("customer_id"))
+_CUSTOMER_TABLE = ConceptCollection.schema.name
 _OTHER = "role_assignments"
 
 
@@ -188,19 +190,19 @@ async def test_a_full_log_refuses_and_its_fill_is_measured(nats_container: str) 
 async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_container: str) -> None:
     async with _client(nats_container) as nc:
         source = EpochGenerationSource(nc)
-        start = await source.current(_TABLE)
+        start = await source.current(_CUSTOMER_TABLE)
         a, b = value_tenant("tenant-a"), value_tenant("tenant-b")
-        await source.advance_with_change(_TABLE, [ChangedRow(ids=["a1"], tenant=a)])
-        await source.advance_with_change(_TABLE, [ChangedRow(ids=["b1"], tenant=b)])
-        whole = await source.advance_with_change(_TABLE, None)
-        newest_a = await source.advance_with_change(_TABLE, [ChangedRow(ids=["a2"], tenant=a)])
+        await source.advance_with_change(_CUSTOMER_TABLE, [ChangedRow(ids=["a1"], tenant=a)])
+        await source.advance_with_change(_CUSTOMER_TABLE, [ChangedRow(ids=["b1"], tenant=b)])
+        whole = await source.advance_with_change(_CUSTOMER_TABLE, None)
+        newest_a = await source.advance_with_change(_CUSTOMER_TABLE, [ChangedRow(ids=["a2"], tenant=a)])
 
-        # group_members is a platform table with a customer column: a pod reads it under its customer and _all
-        assert GroupMemberCollection.tenancy.kind == "column"
+        # a platform table with a customer column: a pod reads it under its customer and _all
+        assert ConceptCollection.tenancy.kind == "column"
         mine = EpochGenerationReader(nc, tenants=PodTenants(customer="tenant-a"))
-        head = await mine.read(_TABLE)
+        head = await mine.read(_CUSTOMER_TABLE)
         assert head == newest_a
-        walk = await mine.changes_after(_TABLE, start, head)
+        walk = await mine.changes_after(_CUSTOMER_TABLE, start, head)
         assert walk.complete
         assert [(c.whole_table, [r.ids[0] for r in c.rows]) for c in walk.changes] == [
             (False, ["a1"]),
@@ -209,13 +211,13 @@ async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_
         ], "its own records and _all's, through filtered consumers; never tenant b's"
 
         everyone = EpochGenerationReader(nc)
-        walk = await everyone.changes_after(_TABLE, start, newest_a)
+        walk = await everyone.changes_after(_CUSTOMER_TABLE, start, newest_a)
         assert len(walk.changes) == 4, "a platform reader reads every tenant through the wildcard"
 
         theirs = EpochGenerationReader(nc, tenants=PodTenants(customer="tenant-b"))
-        assert await theirs.read(_TABLE) == newest_a.rpartition(":")[0] + ":" + whole.rpartition(":")[2], (
+        assert await theirs.read(_CUSTOMER_TABLE) == newest_a.rpartition(":")[0] + ":" + whole.rpartition(":")[2], (
             "tenant b's newest is the _all record"
         )
-        async with aclosing(mine.watch(_TABLE)) as tokens:
+        async with aclosing(mine.watch(_CUSTOMER_TABLE)) as tokens:
             first = await asyncio.wait_for(anext(tokens), timeout=10)
             assert first in {newest_a, whole}

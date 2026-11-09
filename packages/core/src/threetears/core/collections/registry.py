@@ -310,6 +310,7 @@ class CollectionRegistry:
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
         self._write_marks_schema: str | None = None
+        self._l3_schema: str | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
@@ -616,6 +617,32 @@ class CollectionRegistry:
         :rtype: None
         """
         self._write_marks_schema = schema
+
+    def set_l3_schema(self, schema: str | None) -> None:
+        """name the schema this registry's L3 writes land in, so an agent-schema table's records name their schema.
+
+        A process that writes L3 itself and records each write's change (an epoch source that keeps the change
+        log) keys a ``TENANT_BY_SCHEMA`` table's records by the schema the write ran in
+        (:func:`~threetears.core.collections.generation.advance_for_write`). Unset, such a collection refuses to
+        be built, and an advance of one is refused: its records would go on ``_all``, where none of that schema's
+        pods read the table. A process whose writes go through the broker (a pod) never needs it: the broker names
+        the schema.
+
+        :param schema: the schema, or ``None`` to leave it unnamed
+        :ptype schema: str | None
+        :return: nothing
+        :rtype: None
+        """
+        self._l3_schema = schema
+
+    @property
+    def l3_schema(self) -> str | None:
+        """the schema this registry's L3 writes land in (:meth:`set_l3_schema`), or ``None``.
+
+        :return: the schema, or ``None`` when unset
+        :rtype: str | None
+        """
+        return self._l3_schema
 
     @property
     def write_marks_schema(self) -> str | None:

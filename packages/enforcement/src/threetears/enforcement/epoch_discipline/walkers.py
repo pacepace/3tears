@@ -196,6 +196,7 @@ _L3_READS: Final[frozenset[str]] = frozenset(
         "read_all",
         "rows_at",
         "l3_pages",
+        "_l3_pages",
         "keyset_pages",
     }
 )
@@ -211,7 +212,7 @@ _L3_SEGMENT: Final[re.Pattern[str]] = re.compile(r"(?i)(pool|conn|backend|(^|_)l
 
 #: L3 reads distinctive enough to count on any receiver.
 _L3_DISTINCT_READS: Final[frozenset[str]] = frozenset(
-    {"fetch_from_store", "list_entities", "rows_at", "fetch_scope", "l3_pages", "keyset_pages"}
+    {"fetch_from_store", "list_entities", "rows_at", "fetch_scope", "l3_pages", "_l3_pages", "keyset_pages"}
 )
 
 _SQL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--[^\n]*")

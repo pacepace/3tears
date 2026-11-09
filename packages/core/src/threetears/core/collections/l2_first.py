@@ -58,9 +58,13 @@ from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk
 from threetears.core.collections.generation import split_generation_token
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.collections.l2_degrade import degrade_l2
+from threetears.core.exceptions import GenerationUnavailableError, L2LostError, L2ScopeNotConfiguredError
+from threetears.nats.errors import KvError
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
     from threetears.core.collections.base import BaseCollection
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.coordination.lease import HeldLease
@@ -69,11 +73,11 @@ __all__ = [
     "L2_FIRST",
     "L2First",
     "L2FirstEpochs",
+    "L2FirstSupport",
     "L2FirstTableStatus",
     "L2Refiller",
     "L3Saver",
     "SaverPass",
-    "complete_mark",
     "l2_first_status",
     "run_l2_first_worker",
 ]
@@ -381,8 +385,10 @@ class L3Saver:
         for change in walk.changes:
             if not await self._save_epoch(collection, change, result):
                 return
-            await collection.write_l2_first_state(change.token.encode("utf-8"), "saved")  # convert at border: KV value
-        await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
+            await collection.l2_first_support.write_state(
+                change.token.encode("utf-8"), "saved"
+            )  # convert at border: KV value
+        await collection.l2_first_support.write_state(head.encode("utf-8"), "saved")  # convert at border: KV value
 
     async def _start(self, collection: BaseCollection[Any], incarnation: str) -> int:
         """the count after which this table's epochs are unsaved.
@@ -399,7 +405,7 @@ class L3Saver:
         :return: the count
         :rtype: int
         """
-        held = await collection.read_l2_first_state("saved")
+        held = await collection.l2_first_support.read_state("saved")
         parts = None if held is None else split_generation_token(held.decode("utf-8"))
         return parts[1] if parts is not None and parts[0] == incarnation else 0
 
@@ -418,15 +424,15 @@ class L3Saver:
         table = collection.table_name
         token = change.token
         incarnation, count = _parts(table, token)
-        if await collection.read_l2_first_state("settled", incarnation, str(count)) is not None:
+        if await collection.l2_first_support.read_state("settled", incarnation, str(count)) is not None:
             result.settled += 1
-            await collection.drop_l2_first_state("settled", incarnation, str(count))
+            await collection.l2_first_support.drop_state("settled", incarnation, str(count))
             return True
         for row in change.rows:
             if not row.l3_pending:
                 continue
             try:
-                await collection.carry_to_l3(row)
+                await collection.l2_first_support.carry_to_l3(row)
             # prawduct:allow prawduct/broad-except -- a refusal is counted and passed; anything else stops the table here and is raised by run_pass
             except Exception as exc:
                 if not _is_l3_refusal(exc):
@@ -474,9 +480,9 @@ class L3Saver:
         :return: ``True`` when the writer marked it settled
         :rtype: bool
         """
-        if await collection.read_l2_first_state("settled", incarnation, str(count)) is None:
+        if await collection.l2_first_support.read_state("settled", incarnation, str(count)) is None:
             return False
-        await collection.drop_l2_first_state("settled", incarnation, str(count))
+        await collection.l2_first_support.drop_state("settled", incarnation, str(count))
         self._deferred.tokens.discard(token)
         return True
 
@@ -527,12 +533,12 @@ class L2Refiller:
         """
         table = collection.table_name
         head = await self._epochs.read(table)
-        if head is None or await collection.l2_complete():
+        if head is None or await collection.l2_first_support.complete():
             return False
-        rows = await collection.refill_l2_from_l3(page_size=_REFILL_PAGE_ROWS)
-        if await collection.read_l2_first_state("saved") is None:
-            await collection.write_l2_first_state(head.encode("utf-8"), "saved")  # convert at border: KV value
-        await collection.mark_l2_complete(head)
+        rows = await collection.l2_first_support.refill_from_l3(page_size=_REFILL_PAGE_ROWS)
+        if await collection.l2_first_support.read_state("saved") is None:
+            await collection.l2_first_support.write_state(head.encode("utf-8"), "saved")  # convert at border: KV value
+        await collection.l2_first_support.mark_complete(head)
         _count(_REFILLED, table)
         log.warning(
             "an L2-first table was put back into L2 from L3; a pod behind on it catches up from here",
@@ -579,7 +585,7 @@ async def l2_first_status(registry: CollectionRegistry, *, epochs: L2FirstEpochs
     for collection in l2_first_collections(registry):
         table = collection.table_name
         head = await epochs.read(table)
-        held = await collection.read_l2_first_state("saved")
+        held = await collection.l2_first_support.read_state("saved")
         saved = None if held is None else held.decode("utf-8")
         head_parts = None if head is None else split_generation_token(head)
         saved_parts = None if saved is None else split_generation_token(saved)
@@ -592,7 +598,7 @@ async def l2_first_status(registry: CollectionRegistry, *, epochs: L2FirstEpochs
             L2FirstTableStatus(
                 table=table,
                 generation=head,
-                complete=await collection.l2_complete(),
+                complete=await collection.l2_first_support.complete(),
                 saved_through=saved,
                 unsaved_epochs=unsaved,
             )
@@ -630,7 +636,242 @@ async def run_l2_first_worker(
         await asyncio.sleep(every.total_seconds())
 
 
-def complete_mark(token: str | None) -> bytes:
+#: how long the marker a dropped L2-first state key leaves lives: one settled epoch is one key, so a
+#: marker kept for ever would fill the bucket with one per epoch.
+_L2_FIRST_STATE_MARKER_TTL: Final = timedelta(seconds=5)
+
+
+class L2FirstSupport:
+    """what the saver and the refiller do to one L2-first collection: its bookkeeping, a save from L2, a refill.
+
+    Owned by the collection (``BaseCollection.l2_first_support``), which hands it the operations it needs, so
+    none of them is public on every collection. Only this module's workers use it.
+    """
+
+    def __init__(
+        self,
+        *,
+        table_name: str,
+        scope_of: Callable[[], str | None],
+        ensure_kv: Callable[[], Awaitable[Any]],
+        l2_key: Callable[[Any], str],
+        apply: Callable[[Any, Any, bytes | None, int], Awaitable[int | None]],
+        decode: Callable[[bytes], Any],
+        is_expired: Callable[[dict[str, Any]], bool],
+        save: Callable[..., Awaitable[int]],
+        delete: Callable[[Any], Awaitable[None]],
+        pages: Callable[..., AsyncIterator[list[dict[str, Any]]]],
+        id_of_changed: Callable[[ChangedRow], Any],
+        id_of_row: Callable[[dict[str, Any]], Any],
+        entry_lifetime: Callable[[dict[str, Any]], timedelta | None],
+        encode: Callable[[dict[str, Any]], bytes],
+    ) -> None:
+        """capture the collection's operations; no I/O.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :param scope_of: the registry's key scope, read when a key is built
+        :ptype scope_of: Callable[[], str | None]
+        :param ensure_kv: the collection's L2 bucket, bound on first use
+        :ptype ensure_kv: Callable[[], Awaitable[Any]]
+        :param l2_key: a row's L2 key
+        :ptype l2_key: Callable[[Any], str]
+        :param apply: applies a committed value to its key at a revision
+        :ptype apply: Callable[[Any, Any, bytes | None, int], Awaitable[int | None]]
+        :param decode: decodes an L2 value
+        :ptype decode: Callable[[bytes], Any]
+        :param is_expired: whether a row is past its expiry
+        :ptype is_expired: Callable[[dict[str, Any]], bool]
+        :param save: the collection's L3 save
+        :ptype save: Callable[..., Awaitable[int]]
+        :param delete: the collection's L3 delete
+        :ptype delete: Callable[[Any], Awaitable[None]]
+        :param pages: the collection's L3 rows, a page at a time
+        :ptype pages: Callable[..., AsyncIterator[list[dict[str, Any]]]]
+        :param id_of_changed: a changed row's key
+        :ptype id_of_changed: Callable[[ChangedRow], Any]
+        :param id_of_row: a whole row's key
+        :ptype id_of_row: Callable[[dict[str, Any]], Any]
+        :param entry_lifetime: an L2 entry's lifetime for a row
+        :ptype entry_lifetime: Callable[[dict[str, Any]], timedelta | None]
+        :param encode: a row as its L2 value
+        :ptype encode: Callable[[dict[str, Any]], bytes]
+        """
+        self._table = table_name
+        self._scope = scope_of
+        self._ensure_kv = ensure_kv
+        self._l2_key = l2_key
+        self._apply = apply
+        self._decode = decode
+        self._is_expired = is_expired
+        self._save = save
+        self._delete = delete
+        self._l3_pages = pages
+        self._id_of_changed = id_of_changed
+        self._id_of_row = id_of_row
+        self._entry_lifetime = entry_lifetime
+        self._encode = encode
+
+    def state_key(self, *parts: str) -> str:
+        """the L2 key of one piece of this table's L2-first bookkeeping, under the principal's scope.
+
+        ``{scope}._l2first.{table}.{parts...}``: in the same bucket and under the same grant as the rows,
+        and never a row's key, since ``_l2first`` cannot be a table name.
+
+        :param parts: the piece's name, as key tokens
+        :ptype parts: str
+        :return: the key
+        :rtype: str
+        :raises L2ScopeNotConfiguredError: when the registry carries no ``kv_key_scope``
+        """
+        scope = self._scope()
+        if scope is None:
+            raise L2ScopeNotConfiguredError(f"{self._table}: no kv_key_scope, so no L2-first state key")
+        return ".".join((scope, "_l2first", self._table, *parts))
+
+    async def read_state(self, *parts: str) -> bytes | None:
+        """one piece of this table's L2-first bookkeeping, or ``None`` when L2 holds none.
+
+        :param parts: the piece's name
+        :ptype parts: str
+        :return: its value
+        :rtype: bytes | None
+        :raises KvError: when L2 cannot be read
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            return None
+        value: bytes | None = await kv.get(key=self.state_key(*parts))
+        return value
+
+    async def write_state(self, value: bytes, *parts: str) -> None:
+        """set one piece of this table's L2-first bookkeeping.
+
+        :param value: its value
+        :ptype value: bytes
+        :param parts: the piece's name
+        :ptype parts: str
+        :raises KvError: when L2 refuses it
+        """
+        kv = await self._ensure_kv()
+        if kv is not None:
+            await kv.put(key=self.state_key(*parts), value=value)
+
+    async def drop_state(self, *parts: str) -> None:
+        """remove one piece of this table's L2-first bookkeeping, leaving a marker that lapses.
+
+        :param parts: the piece's name
+        :ptype parts: str
+        :raises KvError: when L2 refuses it
+        """
+        kv = await self._ensure_kv()
+        if kv is not None:
+            await kv.delete(key=self.state_key(*parts), marker_ttl=_L2_FIRST_STATE_MARKER_TTL)
+
+    async def complete(self) -> bool:
+        """whether L2 holds this table complete: the refiller filled it, and NATS has not lost it since.
+
+        :return: ``True`` when the refiller's mark is in L2
+        :rtype: bool
+        :raises L2LostError: when L2 cannot be read, so whether it is complete cannot be told
+        """
+        try:
+            return await self.read_state("complete") is not None
+        except KvError as exc:
+            degrade_l2(
+                exc,
+                table=self._table,
+                op="get",
+                what="L2 unreadable while asking whether it holds an L2-first table complete",
+                l2_is_the_store=True,
+                refused_as=L2LostError(f"{self._table}: L2 cannot be read ({type(exc).__name__}: {exc})"),
+            )
+            raise
+
+    async def mark_complete(self, generation: str | None) -> None:
+        """record that L2 holds this table complete, as of ``generation``: the refiller's last step.
+
+        :param generation: the table's generation when the refill finished
+        :ptype generation: str | None
+        :raises KvError: when L2 refuses it
+        """
+        await self.write_state(_complete_mark(generation), "complete")
+
+    async def carry_to_l3(self, row: ChangedRow) -> None:
+        """make L3 hold what L2 holds for one committed key: its row, or no row.
+
+        Safe to repeat and safe out of order: it writes L2's value as it is now, whichever epoch asked.
+        A key L2 holds no row for is deleted from L3 only while L2 holds the table complete.
+
+        :param row: the changed row an epoch named
+        :ptype row: ChangedRow
+        :raises L2LostError: when L2 holds no row for the key and does not hold the table complete
+        :raises KvError: when L2 cannot be read
+        :raises Exception: whatever L3 raised: a refusal, or a failure to reach it
+        """
+        entity_id = self._id_of_changed(row)
+        kv = await self._ensure_kv()
+        if kv is None:
+            raise L2LostError(f"{self._table}: no L2 to save from")
+        raw, latest = await kv.get_latest(key=self._l2_key(entity_id))
+        if row.l2_revision is not None and latest == row.l2_revision and raw != row.value:
+            # the key is where the committing writer read it: it died before applying its row, so the
+            # saver applies it now, at that revision; a write since would have moved the key on
+            await self._apply(kv, entity_id, row.value, latest)
+            raw, latest = await kv.get_latest(key=self._l2_key(entity_id))
+        held: dict[str, Any] | None = None
+        if raw is not None:
+            decoded = self._decode(raw)
+            if isinstance(decoded, dict) and not self._is_expired(decoded):
+                held = decoded
+        if held is not None:
+            await self._save(held, None)
+            return
+        if not await self.complete():
+            raise L2LostError(f"{self._table}: L2 holds no row for {entity_id!s} and is not complete")
+        await self._delete(entity_id)
+
+    async def refill_from_l3(self, *, page_size: int) -> int:
+        """put every row L3 holds into L2, where L2 holds nothing at all for its key.
+
+        A key L2 holds anything for -- a write made since L2 was lost, or its delete -- is left alone:
+        each row is written at revision zero, which lands only on a key with no message.
+
+        :param page_size: rows read from L3 per statement
+        :ptype page_size: int
+        :return: how many rows were put back
+        :rtype: int
+        :raises KvError: when L2 refuses a row
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            return 0
+        written = 0
+        async for page in self._l3_pages(page_size=page_size):
+            for row in page:
+                if self._is_expired(row):
+                    continue
+                entity_id = self._id_of_row(row)
+                lifetime = self._entry_lifetime(row)
+                timed = {} if lifetime is None else {"ttl": lifetime}
+                try:
+                    landed = await kv.update(key=self._l2_key(entity_id), value=self._encode(row), revision=0, **timed)
+                except KvError as exc:
+                    degrade_l2(
+                        exc,
+                        table=self._table,
+                        op="refill",
+                        what="L2 refused a row the refiller put back from L3",
+                        l2_is_the_store=True,
+                        entity_id=entity_id,
+                    )
+                    raise
+                if landed is not None:
+                    written += 1
+        return written
+
+
+def _complete_mark(token: str | None) -> bytes:
     """the value of the mark that L2 holds a table complete.
 
     :param token: the generation the refill completed under

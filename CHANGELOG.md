@@ -16,7 +16,7 @@ within its tenant. A table declares its tenancy (`BaseCollection.tenancy` / `Tab
 `TENANT_BY_SCHEMA`, `tenant_column(...)`, `no_tenant(reason)`); a tenant column joins the invalidation columns;
 an undeclared table, a whole-table change and a keys-unknown change go on `_all`, which every follower reads.
 `ChangedRow.tenant` names a row's tenant (not stored in the record; the key carries it). The writer appends
-each tenant's rows under its key; `EpochGenerationReader(tenants=[...])` reads those keys and `_all`, merged by
+each tenant's rows under its key; `EpochGenerationReader(tenants=PodTenants(...))` reads each table under the keys its declared tenancy names, merged by
 the log's sequence, through named consumers filtered on the keys (`NatsChangeLog.records_after`) and direct
 gets by subject, never a message get by sequence; a reader with no tenants reads every tenant by wildcard.
 Detection is unchanged per key: first sequence and incarnation, one mark per table. The change notes carry
@@ -42,6 +42,17 @@ the notes cannot say. `tenancy_of_table(table)` answers a table's declaration. A
 no schema is said and counted (`threetears_epoch_change_schema_record_untenanted_total{table}`).
 `FakeChangeLog.granted_reads` refuses a read outside a test's grant, and `read_keys` lists what was read.
 
+**Changed (core):** every write a process records itself names its tenant. An L2-first commit's record goes under
+its row's tenant like any other. An in-process write to a `TENANT_BY_SCHEMA` table goes under the schema its
+registry names (`CollectionRegistry.set_l3_schema`); a registry whose source keeps the change log and names no
+schema refuses to build such a collection, and an advance with no schema raises `SchemaTenantUnknownError`, never
+puts the record on `_all`. `announce_unheard_writes(..., schema=)` and the delete cascade take the same schema.
+A process that writes L3 directly with a recording source must call `set_l3_schema` (the hub, identity-core).
+
+**Changed (core):** the L2-first saver's and refiller's operations on a collection are one collaborator,
+`BaseCollection.l2_first_support` (`L2FirstSupport`), not nine public methods on every collection; a collection
+over a SQL table overrides `_l3_pages`.
+
 **Added (enforcement, core):** tenancy is declared, never guessed. The collection census fails on any concrete
 collection class with no tenancy declaration (the framework's own and a consumer's, through the shared
 `find_census_problems`), and on `no_tenant` without a reason; every framework class now declares one. At runtime
@@ -52,9 +63,11 @@ an undeclared table keeps `_all`, logging one WARNING per table and counting eac
 
 **Changed (core):** the write-mark reconciler records a row-level epoch for a missed write: it reads the marked
 table's change notes since its oldest mark (`noted_rows_since`) and names their keys and invalidation columns, so
-followers evict those rows instead of dropping the table. It names the whole table only for a whole-table note (a
-truncate, a load) or when the notes cannot say, said at WARNING and counted
-(`collection_write_marks_whole_table_total{reason}`).
+followers evict those rows instead of dropping the table. A whole-table note (a truncate, a load) is recorded as the
+whole table under its own tenant, and covers that tenant's rows only: another schema's missed rows in the same
+window are still named under theirs. When the notes cannot say (not covered, no notes, more than 10 000 rows, no
+ring) the advance is keys unknown (every follower behind on the table, never told to drop it), under each schema
+holding an agent-schema table, said at WARNING and counted (`collection_write_marks_keys_unknown_total{reason}`).
 
 **Changed (core):** the keeper's restore sizes the coverage in the database and streams its notes a page at a time
 (at most 5000 rows of one table held), and the ring also switches when the current table holds its switch size over

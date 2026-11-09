@@ -2072,7 +2072,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
 
-    def l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
+    def _l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
         """every row of the table, in key order, a page per statement, read-coerced as :meth:`fetch_from_store` reads one.
 
         :param page_size: rows per page; ``page_size + 1`` must not pass the transport's cap

@@ -12,6 +12,16 @@ requesting a responder and reading a sequenced feed, both served from node B, wh
 in lame-duck mode (``nats-server --signal ldm``) and then exits. Nothing is lost -- no request fails,
 no feed message is missing -- and the pod is on node B before node A closes it.
 
+The feed is in order everywhere but the handover itself. Core NATS orders a subject's messages along one
+route, and a server move puts a second route beside the first for a moment: a message still on node A's
+route can arrive after one node B delivered directly, for as long as the pod still holds its old connection
+on node A (kept for the work it carries until node A closes it). So the test allows an inversion only inside
+the handover window -- the feed numbers published from the moment node A entered lame-duck mode to the
+moment the pod's old connection was closed, widened at each end by the most messages the pod was ever
+behind by before the move -- and requires order everywhere else. Nothing that carries data depends on cross-server order: a follower walks
+the numbered change log from its mark, so a late row broadcast only evicts, and an epoch is applied by its
+sequence, never by its arrival.
+
 A second test pins the same property for a PINNED run of publishes (a token stream): a handover in
 the middle of the run, onto the other node, still delivers the run in order. It also reports whether a
 publish made on the successor overtook the run's tail -- two connections on two nodes are two
@@ -33,7 +43,7 @@ from datetime import timedelta
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
-from threetears.nats import IncomingMessage, NatsClient, Subject
+from threetears.nats import REAUTH_RETIRE_DRAIN_SECONDS, SYNC_REPLY_BUDGET_SECONDS, IncomingMessage, NatsClient, Subject
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -46,6 +56,9 @@ _LAME_DUCK_GRACE = "3s"
 #: how long the workload runs after the server is told to shut down: the grace, the spread of its
 #: closes, and its exit, with margin.
 _WORKLOAD_AFTER_LDM_SECONDS = 38.0
+#: how long the workload runs before the server is told to shut down, and again after the handover ends: the
+#: stretches on either side where the feed must be in order
+_STEADY_SECONDS = 1.0
 _TICK_SECONDS = 0.02
 
 
@@ -208,9 +221,19 @@ async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything
             answered = 0
             published = 0
             moved_at: float | None = None
+            #: the feed numbers published when node A entered lame-duck mode, when the pod was on node B, and
+            #: when the pod's old connection on node A was closed (the end of the handover)
+            published_at_ldm: int | None = None
+            published_at_move: int | None = None
+            published_at_retired: int | None = None
+            # rationale: the end of the handover is when the old connection closes, and only the raw connection
+            # it was says so; the wrapper keeps no public handle on a connection it has replaced
+            leaving = pod.raw
+            #: the most feed messages the pod was behind by before the move: the in-flight depth of one route
+            in_flight = 0
 
             async def _requests() -> None:
-                nonlocal answered, moved_at
+                nonlocal answered, moved_at, published_at_move, published_at_retired, in_flight
                 seq = 0
                 while not stop.is_set():
                     seq += 1
@@ -226,6 +249,11 @@ async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything
                         answered += 1
                     if moved_at is None and _port_of(pod) == port_b:
                         moved_at = time.monotonic()
+                        published_at_move = published
+                    if published_at_ldm is None:
+                        in_flight = max(in_flight, published - len(feed_seen))
+                    elif published_at_retired is None and leaving.is_closed:
+                        published_at_retired = published
                     await asyncio.sleep(_TICK_SECONDS)
 
             async def _feed() -> None:
@@ -236,27 +264,47 @@ async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything
                     await asyncio.sleep(_TICK_SECONDS)
 
             workers = [asyncio.create_task(_requests()), asyncio.create_task(_feed())]
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(_STEADY_SECONDS)
             ldm_at = time.monotonic()
+            published_at_ldm = published
             _enter_lame_duck(node_a)
             await asyncio.sleep(_WORKLOAD_AFTER_LDM_SECONDS)
+            # the handover ends when node A has closed the pod's old connection: bounded by the lame-duck grace and
+            # duration, and the pod's own retirement of it (its longest request, then the drain)
+            ends_by = time.monotonic() + SYNC_REPLY_BUDGET_SECONDS + REAUTH_RETIRE_DRAIN_SECONDS
+            while not leaving.is_closed and time.monotonic() < ends_by:
+                await asyncio.sleep(_TICK_SECONDS)
+            # and the feed runs on past it, so order after the handover is checked too
+            await asyncio.sleep(_STEADY_SECONDS)
             stop.set()
             await asyncio.gather(*workers)
             await service.flush()
             await asyncio.sleep(0.5)
 
             missing = sorted(set(range(1, published + 1)) - set(feed_seen))
+            assert published_at_ldm is not None
+            # the handover ends when the old connection closes; still open at the end, it spans the whole run
+            ended = published if published_at_retired is None else published_at_retired
+            window = range(published_at_ldm - max(in_flight, 1), ended + max(in_flight, 1) + 1)
+            inversions = [(a, b) for a, b in zip(feed_seen, feed_seen[1:], strict=False) if a > b]
+            outside = [number for number in feed_seen if number not in window]
             print(  # noqa: T201 - the counts are the evidence this test exists for
                 f"\nlame-duck handover: moved to node B {((moved_at or ldm_at) - ldm_at) * 1000:.0f}ms after "
                 f"node A entered lame-duck mode; {answered} requests answered, {len(failures)} failed; "
                 f"{published} feed messages published, {len(missing)} missing, "
-                f"in order: {feed_seen == sorted(feed_seen)}"
+                f"{len(inversions)} inversion(s) {inversions}, handover window {window.start}..{window.stop - 1} "
+                f"(in flight {in_flight}, old connection closed at feed {published_at_retired})"
             )
+            assert published_at_retired is not None, "the pod's old connection on node A was never closed"
+            assert published > published_at_retired, "the feed ran on past the handover"
             assert moved_at is not None, "the pod never moved to node B"
             assert moved_at - ldm_at < 3.0, "the pod did not move before node A began closing clients"
             assert failures == []
             assert missing == []
-            assert feed_seen == sorted(feed_seen)
+            assert outside == sorted(outside), "the feed is in order outside the handover window"
+            assert all(a in window and b in window for a, b in inversions), (
+                f"an inversion outside the handover window {window.start}..{window.stop - 1}: {inversions}"
+            )
             await pod.shutdown(drain_timeout=timedelta(seconds=2))
             await service.shutdown(drain_timeout=timedelta(seconds=2))
 

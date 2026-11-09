@@ -38,7 +38,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
-from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.epoch_change import ChangedRow, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
 from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
@@ -759,8 +759,8 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
         await reconciler.run_pass()
         assert (await last()).whole_table, "a truncate's note names the whole table, and so does its epoch"
 
-        # a mark older than the coverage (the ring has switched since): the notes cannot vouch for it, so the
-        # whole table, said and counted
+        # a mark older than the coverage (the ring has switched since): the notes cannot vouch for it, so keys
+        # unknown (every follower behind on the table, none told to drop it), said and counted
         await pool.execute(
             f"UPDATE {schema}.threetears_change_note_ring SET switch_no = switch_no + 1, previous_switched_at = now()"
         )
@@ -768,9 +768,114 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
         await pool.execute(f"UPDATE {schema}.collection_write_marks SET date_created = now() - interval '1 day'")
         with caplog.at_level(logging.WARNING):
             await reconciler.run_pass()
-        assert (await last()).whole_table
-        said = [r.__dict__["extra_data"] for r in caplog.records if "advanced as the whole table" in r.getMessage()]
+        unnamed = await last()
+        assert unnamed.keys_unknown and not unnamed.whole_table
+        said = [r.__dict__["extra_data"] for r in caplog.records if "advanced as keys unknown" in r.getMessage()]
         assert said == [{"table": table, "reason": "not_covered"}]
+
+
+class TestTheReconcilerKeysEachSchemasChange:
+    """under TENANT_BY_SCHEMA every agent schema's notes of a table share the ring, and a mark names no schema."""
+
+    async def test_one_schemas_truncate_never_hides_anothers_missed_rows(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        other = f"{schema}_b"
+
+        class _PerSchema(BaseCollection[Any]):
+            """the table, declared per schema, so the reconciler and a pod's reader key it by schema."""
+
+            tenancy = TENANT_BY_SCHEMA
+
+            @property
+            def table_name(self) -> str:
+                return table
+
+        assert tenancy_of_table(table) == _PerSchema.tenancy
+        await pool.execute(f"CREATE SCHEMA {other}")
+        try:
+            await pool.execute(f"CREATE TABLE {other}.{table} (id TEXT PRIMARY KEY, owner TEXT, n TEXT)")
+            bus = FakeNatsClient()
+            source = EpochGenerationSource(bus)
+            await source.start_log()
+            keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0))
+            await keeper.install()
+            await keeper.install_triggers([NotedTable(table=table, keys=("id",), tenancy=TENANT_BY_SCHEMA)])
+            for statement in write_marks_ddl(schema):
+                await pool.execute(statement)
+            await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+            reconciler = WriteMarkReconciler(
+                pool, generation_source=source, marks_schema=schema, tables=lambda: [table]
+            )
+            await pool.execute(f"INSERT INTO {other}.{table} VALUES ('seed', 'o', '1')")
+            await reconciler.run_pass()
+            mine = EpochGenerationReader(bus, tenants=PodTenants(schema=schema))
+            theirs = EpochGenerationReader(bus, tenants=PodTenants(schema=other))
+            mark_mine, mark_theirs = await mine.read(table), await theirs.read(table)
+            assert mark_mine is not None and mark_theirs is not None
+
+            # agent A's writer commits rows and dies before its advance; agent B's table is truncated meanwhile
+            await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('a1', 'o', '1'), ('a2', 'o', '1')")
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute(f"TRUNCATE {other}.{table}")
+                await conn.execute(f"INSERT INTO {other}.{table} VALUES ('b1', 'o', '1')")
+            await reconciler.run_pass()
+
+            head = await mine.read(table)
+            assert head is not None and head != mark_mine, "A's pods see their own missed rows"
+            walk = await mine.changes_after(table, mark_mine, head)
+            assert walk.complete
+            assert sorted(row.ids[0] for change in walk.changes for row in change.rows) == ["a1", "a2"]
+            assert not any(change.whole_table for change in walk.changes), "B's truncate is not A's"
+            head = await theirs.read(table)
+            assert head is not None
+            walk = await theirs.changes_after(table, mark_theirs, head)
+            assert walk.complete and any(change.whole_table for change in walk.changes), "B's truncate is B's"
+            assert not any(row.ids[0].startswith("a") for change in walk.changes for row in change.rows)
+        finally:
+            await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
+
+    async def test_unnamed_writes_are_keys_unknown_under_every_schema_holding_the_table(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        pool, schema, table = ring
+        other = f"{schema}_b"
+
+        class _PerSchema(BaseCollection[Any]):
+            tenancy = TENANT_BY_SCHEMA
+
+            @property
+            def table_name(self) -> str:
+                return table
+
+        await pool.execute(f"CREATE SCHEMA {other}")
+        try:
+            await pool.execute(f"CREATE TABLE {other}.{table} (id TEXT PRIMARY KEY, owner TEXT, n TEXT)")
+            bus = FakeNatsClient()
+            source = EpochGenerationSource(bus)
+            await source.start_log()
+            # no change-note ring at all: the notes cannot name anything (notes_unavailable)
+            for statement in write_marks_ddl(schema):
+                await pool.execute(statement)
+            await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+            reconciler = WriteMarkReconciler(
+                pool, generation_source=source, marks_schema=schema, tables=lambda: [table]
+            )
+            await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('a1', 'o', '1')")
+            await reconciler.run_pass()
+            log = bus.change_log(EPOCH_CHANGES_BUCKET)
+            entries = await log.records_after(f"*.{table}.e", 0, 100)
+            assert sorted(entry.key for entry in entries) == sorted(
+                [
+                    f"{schema_tenant(schema)}.{table}.e",
+                    f"{schema_tenant(other)}.{table}.e",
+                ]
+            ), "one keys-unknown record under each schema holding the table, none on _all"
+            for entry in entries:
+                assert read_epoch_change_body(entry.value, table, f"log:{entry.seq}").keys_unknown
+        finally:
+            await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
 
 
 class TestANoteCarriesItsTenant:

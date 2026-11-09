@@ -31,13 +31,13 @@ pytestmark = pytest.mark.integration
 _SCOPE = "live-denylist"
 
 
-async def _migrated_pool(db_url: str) -> asyncpg.Pool:
+async def _migrated_pool(db_url: str) -> tuple[asyncpg.Pool, str]:
     """a fresh schema carrying the coordination tables, and a pool bound to it.
 
     :param db_url: the container's connection URL
     :ptype db_url: str
-    :return: the pool
-    :rtype: asyncpg.Pool
+    :return: the pool, and the schema it writes in
+    :rtype: tuple[asyncpg.Pool, str]
     """
     schema = f"denylist_{uuid.uuid4().hex[:8]}"
     admin = await asyncpg.connect(db_url)
@@ -50,27 +50,29 @@ async def _migrated_pool(db_url: str) -> asyncpg.Pool:
     migration_registry = CollectionRegistry()
     migration_registry.configure(l3_pool=SqlL3Backend(pool))
     await create_coordination_tables(DataStore(uuid.uuid4(), migration_registry))
-    return pool
+    return pool, schema
 
 
-def _registry(nats: NatsClient, pool: asyncpg.Pool) -> CollectionRegistry:
+def _registry(nats: NatsClient, pool: asyncpg.Pool, schema: str) -> CollectionRegistry:
     """one replica's registry, with the real epoch-backed write generation."""
     l1 = SQLiteBackend(db_name=f"live_denylist_{uuid.uuid4().hex[:8]}")
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=nats, l3_pool=SqlL3Backend(pool), kv_key_scope=_SCOPE)
     registry.set_generation_source(EpochGenerationSource(nats))
+    # this process writes the coordination tables itself and records their changes: it names their schema
+    registry.set_l3_schema(schema)
     return registry
 
 
 async def test_a_revocation_and_a_redemption_survive_a_broker_wipe(db_container: str, nats_container: str) -> None:
     namespace = f"coord{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
-    pool = await _migrated_pool(db_container)
+    pool, schema = await _migrated_pool(db_container)
     try:
         async with await NatsClient.connect(
             nats_url=nats_container, nats_subject_namespace=namespace, client_name="denylist"
         ) as nats:
-            registry = _registry(nats, pool)
+            registry = _registry(nats, pool, schema)
             guard = RevocationGuard(registry, purpose="standing", ttl_seconds=3600)
             ledger = RedemptionLedger(registry, purpose="refresh_jti", ttl_seconds=3600)
             revoked_at = datetime.now(UTC)
@@ -81,7 +83,7 @@ async def test_a_revocation_and_a_redemption_survive_a_broker_wipe(db_container:
             js = nats.jetstream_context()
             await js.delete_stream(f"KV_{namespace}-collections")
 
-            fresh_registry = _registry(nats, pool)
+            fresh_registry = _registry(nats, pool, schema)
             fresh_guard = RevocationGuard(fresh_registry, purpose="standing", ttl_seconds=3600)
             fresh_ledger = RedemptionLedger(fresh_registry, purpose="refresh_jti", ttl_seconds=3600)
             assert await fresh_guard.is_revoked_before("sub:p1", moment=revoked_at - timedelta(minutes=5)) is True, (

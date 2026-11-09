@@ -24,8 +24,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.collections.epoch_change import ChangedRow, advance_recording
-from threetears.core.collections.generation import primary_key_of_table, tables_with_write_generation
+from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.generation import (
+    advance_for_write,
+    primary_key_of_table,
+    tables_with_write_generation,
+)
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
 
@@ -187,7 +191,13 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
         ]
         try:
             # keyed when the keys are known; otherwise an epoch whose keys are unknown -- never the whole table
-            token = await advance_recording(source, rows.table_name, named or None, keys_unknown=not named)
+            token = await advance_for_write(
+                source,
+                rows.table_name,
+                named or None,
+                schema=None if registry is None else registry.l3_schema,
+                keys_unknown=not named,
+            )
             if not isinstance(token, str) or not token:
                 raise GenerationUnavailableError(
                     f"the source advanced {rows.table_name} without returning a generation"

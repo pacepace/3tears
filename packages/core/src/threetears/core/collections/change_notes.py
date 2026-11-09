@@ -1590,9 +1590,11 @@ def _change(
 class NotedRows:
     """what the change notes say a table's writes since a time changed.
 
-    :ivar rows: each distinct row the notes name, with its invalidation columns; empty for a whole-table note
+    :ivar rows: each distinct row the notes name that no whole-table note covers, with its invalidation columns and
+        its tenant
     :ivar whole_table: a note of the whole table (a truncate, a file load) is among them
-    :ivar whole_tenants: each such note's tenant, ``None`` for ``_all``
+    :ivar whole_tenants: each such note's tenant, ``None`` for ``_all``: it covers that tenant's rows (``_all``'s,
+        every tenant's), never another schema's
     """
 
     rows: tuple[ChangedRow, ...] = ()
@@ -1651,14 +1653,20 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     )
     if not notes:
         return "no_notes"
-    whole = [note for note in notes if note["key_text"] is None]
-    if whole:
-        tenants = dict.fromkeys(None if note["tenant"] is None else str(note["tenant"]) for note in whole)
-        return NotedRows(whole_table=True, whole_tenants=tuple(tenants))
     if len(notes) > cap:
         return "too_many_rows"
+    # the ring holds every schema's notes of the table: a whole-table note covers its own tenant's rows (or every
+    # tenant's, when it is _all's), never another schema's, whose rows are still named
+    whole = dict.fromkeys(
+        None if note["tenant"] is None else str(note["tenant"]) for note in notes if note["key_text"] is None
+    )
+    covers_all = None in whole
     rows = {
-        (tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]), note["tenant"]): None for note in notes
+        (tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]), note["tenant"]): None
+        for note in notes
+        if note["key_text"] is not None
+        and not covers_all
+        and (None if note["tenant"] is None else str(note["tenant"])) not in whole
     }
     return NotedRows(
         rows=tuple(
@@ -1666,7 +1674,9 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
                 ids=list(ids), columns=dict(cols) if cols else None, tenant=None if tenant is None else str(tenant)
             )
             for ids, cols, tenant in rows
-        )
+        ),
+        whole_table=bool(whole),
+        whole_tenants=tuple(whole),
     )
 
 

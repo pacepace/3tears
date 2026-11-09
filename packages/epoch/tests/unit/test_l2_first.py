@@ -41,7 +41,8 @@ from threetears.core.collections.l2_first import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import GenerationUnavailableError, L2LostError
+from threetears.core.exceptions import GenerationUnavailableError, L2LostError, SchemaTenantUnknownError
+from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EPOCH_CHANGES_BUCKET,
@@ -166,7 +167,7 @@ class _Results(BaseCollection[_Row]):
         self._l3.rows.pop(str(entity_id), None)
         self._l3.notes.append(str(entity_id))
 
-    def l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
+    def _l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
         rows = [dict(row) for row in self._l3.rows.values()]
 
         async def pages() -> AsyncIterator[list[dict[str, Any]]]:
@@ -570,3 +571,85 @@ class TestEveryReadAndWritePathStaysOnL2:
     async def test_a_save_cannot_join_a_callers_transaction(self, fleet: _Fleet) -> None:
         with pytest.raises(ValueError, match="L2-first"):
             await fleet.writing.save_entity(fleet.writing.create({"id": "precinct-1", "votes": "1"}), conn=object())
+
+
+_BY_VOTES = "results_by_votes"
+_OWNED = "results_owned"
+_OWNED_PLAIN = "results_owned_plain"
+
+
+class _ByVotes(_Results):
+    """an L2-first table keyed for tenancy by a column: each commit's record goes under that row's tenant."""
+
+    tenancy = tenant_column("votes")
+    _table: ClassVar[str] = _BY_VOTES
+
+
+class _Owned(_Results):
+    """an L2-first agent-schema table: each commit's record goes under the schema the registry names."""
+
+    tenancy = TENANT_BY_SCHEMA
+    _table: ClassVar[str] = _OWNED
+
+
+class _OwnedPlain(_Results):
+    """an agent-schema table written L3-first, in-process, through a source that records its changes."""
+
+    tenancy = TENANT_BY_SCHEMA
+    l2_first = None
+    _table: ClassVar[str] = _OWNED_PLAIN
+
+
+def _tenant_pod(bus: FakeNatsClient, *, schema: str | None) -> _Pod:
+    pod = _Pod(bus)
+    for table in (_BY_VOTES, _OWNED, _OWNED_PLAIN):
+        l1 = SQLiteBackend(db_name=f"l2_first_{uuid.uuid4().hex[:8]}")
+        l1.initialize(_metadata(table))
+        pod.registry.bind_table(table, l1_backend=l1)
+    pod.registry.set_l3_schema(schema)
+    return pod
+
+
+async def _keys(bus: FakeNatsClient, table: str) -> list[str]:
+    return [entry.key for entry in await bus.change_log(EPOCH_CHANGES_BUCKET).records_after(f"*.{table}.e", 0, 100)]
+
+
+class TestEveryOwnWriteNamesItsTenant:
+    """the writes a process records itself (L2-first commits, in-process L3 writes) key their records by tenancy."""
+
+    async def test_an_l2_first_commit_goes_under_its_rows_tenant(self) -> None:
+        bus = FakeNatsClient()
+        pod = _tenant_pod(bus, schema=None)
+        await pod.source.start_log()
+        await _save(_ByVotes(pod.registry, _L3()), "p1", "customer-a")
+        assert await _keys(bus, _BY_VOTES) == [f"{value_tenant('customer-a')}.{_BY_VOTES}.e"]
+
+    async def test_an_l2_first_commit_of_a_schema_table_goes_under_the_registrys_schema(self) -> None:
+        bus = FakeNatsClient()
+        pod = _tenant_pod(bus, schema="agent_a")
+        await pod.source.start_log()
+        await _save(_Owned(pod.registry, _L3()), "p1", "1")
+        assert await _keys(bus, _OWNED) == [f"{schema_tenant('agent_a')}.{_OWNED}.e"]
+
+    async def test_an_in_process_write_of_a_schema_table_goes_under_the_registrys_schema(self) -> None:
+        bus = FakeNatsClient()
+        pod = _tenant_pod(bus, schema="agent_a")
+        await pod.source.start_log()
+        await _save(_OwnedPlain(pod.registry, _L3()), "p1", "1")
+        assert await _keys(bus, _OWNED_PLAIN) == [f"{schema_tenant('agent_a')}.{_OWNED_PLAIN}.e"]
+
+    @pytest.mark.parametrize("cls", [_Owned, _OwnedPlain])
+    def test_a_schema_table_whose_registry_names_no_schema_is_refused(self, cls: type[_Results]) -> None:
+        pod = _tenant_pod(FakeNatsClient(), schema=None)
+        with pytest.raises(ValueError, match=f"'{cls._table}' is declared TENANT_BY_SCHEMA"):
+            cls(pod.registry, _L3())
+
+    async def test_an_advance_with_no_schema_is_refused_never_put_on_all(self) -> None:
+        bus = FakeNatsClient()
+        pod = _tenant_pod(bus, schema="agent_a")
+        await pod.source.start_log()
+        collection = _OwnedPlain(pod.registry, _L3())
+        pod.registry.set_l3_schema(None)
+        with pytest.raises(SchemaTenantUnknownError):
+            await _save(collection, "p1", "1")
+        assert await _keys(bus, _OWNED_PLAIN) == [], "nothing went on _all"
