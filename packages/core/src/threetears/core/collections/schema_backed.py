@@ -50,6 +50,8 @@ from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.backends.protocol import (
+    ANALYZE_AFTER_ROWS,
+    AnalyzingStore,
     BulkDeletingStore,
     ManyKeyReadingStore,
     ReturningDeletingStore,
@@ -2538,6 +2540,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # committed, and a reply lost or timed out may follow a load the broker finished
             await self._drop_and_advance_after_failure("load from files failed", exc)
             raise
+        if written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
+            # a reload's rows: the planner reads the table blind until it is analysed, once, after the last request
+            try:
+                await store.analyze(self.table_name)
+            # prawduct:allow prawduct/broad-except -- the rows are loaded; stale statistics cost plans, not data
+            except Exception as exc:
+                contain(
+                    exc, log=log, what="could not analyse a table after loading it", extra={"table": self.table_name}
+                )
         await self._drop_and_advance("loaded from files", rows=written, requests=len(requests))
         return written
 
