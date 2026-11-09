@@ -55,6 +55,15 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
+        attr_name="_partitions_staged",
+        rationale=(
+            "the loads' partitions whose rows a pass staged and has not yet applied, kept to put back if the pass "
+            "fails; they come from the epoch change log, which a restart walks again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
         attr_name="_staged",
         rationale=(
             "each table's change staged beside the copy and not yet applied, by table: names of staging tables in the copy's own DuckDB, which holds the rows; a restart drops them and reads the keys again"

@@ -75,7 +75,9 @@ class _L3:
         self.fail_next = False
 
     def put(self, rows: Sequence[tuple[str, int, int]]) -> None:
-        self.db.executemany(f"INSERT OR REPLACE INTO {_TABLE} VALUES (?, ?, ?)", [list(r) for r in rows])
+        self.db.executemany(
+            f"INSERT OR REPLACE INTO {_TABLE} (state, geo_id, votes) VALUES (?, ?, ?)", [list(r) for r in rows]
+        )
 
     def delete(self, keys: Sequence[tuple[str, int]]) -> None:
         self.db.executemany(f"DELETE FROM {_TABLE} WHERE state = ? AND geo_id = ?", [list(k) for k in keys])
@@ -612,3 +614,37 @@ async def test_a_follower_without_partitions_reads_the_record_as_the_whole_table
         EpochChange(table=_TABLE, token="inc:1", whole_table=True, partition={"state": "OH"})
     )
     assert dropped == ["all"]
+
+
+async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it() -> None:
+    """a load's constants include a version stamp the copy does not hold: L3 filters on it, and only that load's rows
+    are read."""
+    l3, log, lock = _L3(), _Log(), _Seqlock()
+    l3.db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN ver BIGINT DEFAULT 0")
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    table = FollowedTable(
+        name=_TABLE,
+        key=_KEY,
+        columns=_COLUMNS,
+        l3_kinds=(("state", STRING_TYPE), ("geo_id", BIGINT_TYPE), ("votes", BIGINT_TYPE), ("ver", BIGINT_TYPE)),
+    )
+    follower = CopyFollower(
+        registry, [table], backend, l3, settled=lock.settled, generation=log.current, changes=log, page_size=50
+    )
+    follower.register()
+    l3.put(_rows("VA", 40))
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.db.executemany(f"INSERT INTO {_TABLE} VALUES (?, ?, ?, 5)", [["OH", i, 2] for i in range(12)])
+    log.count += 1
+    log.records[f"inc:{log.count}"] = EpochChange(
+        table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"ver": "5"}
+    )
+    lock.version += 1
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 12

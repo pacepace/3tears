@@ -174,6 +174,9 @@ class FollowedTable:
     columns: tuple[Column, ...]
     order: tuple[str, ...] = ()
     partition_order: tuple[str, ...] = ()
+    #: every column L3 holds and its type tag, the copy's or not: a load's partition may name a column the copy does
+    #: not hold (a version stamp), which the read of its rows still filters on
+    l3_kinds: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         held = {column.name for column in self.columns}
@@ -199,7 +202,8 @@ class FollowedTable:
         key = schema.primary_key if isinstance(schema.primary_key, tuple) else (schema.primary_key,)
         wanted = None if columns is None else set(columns)
         held = tuple(c for c in schema.columns if wanted is None or c.name in wanted)
-        return cls(name=schema.name, key=tuple(key), columns=held, order=tuple(order))
+        kinds = tuple((c.name, c.column_type) for c in schema.columns)
+        return cls(name=schema.name, key=tuple(key), columns=held, order=tuple(order), l3_kinds=kinds)
 
     @property
     def read_order(self) -> tuple[str, ...]:
@@ -213,16 +217,19 @@ class FollowedTable:
     def kind(self, column: str) -> str:
         """a column's type tag.
 
-        :param column: a column the copy holds
+        :param column: a column the copy holds, or one its L3 table holds
         :ptype column: str
         :return: its type tag
         :rtype: str
-        :raises ValueError: when the copy does not hold it
+        :raises ValueError: when neither names it
         """
         for held in self.columns:
             if held.name == column:
                 return held.column_type
-        raise ValueError(f"{self.name}: the copy does not hold {column!r}")
+        for name, kind in self.l3_kinds:
+            if name == column:
+                return kind
+        raise ValueError(f"{self.name}: neither the copy nor its schema names {column!r}")
 
     def key_cast(self, column: str) -> str:
         """the SQL type a key column's text is cast to.
@@ -362,9 +369,8 @@ class CopyFollower:
         self._whole: set[str] = set()
         #: the loads' partitions heard and not yet applied, by table: each the columns its rows hold and their values
         self._partitions: dict[str, list[dict[str, str]]] = {name: [] for name in self._tables}
-        #: the partition stages read and not yet applied, applied after the whole tables and before the keys
-        self._staged_parts: list[tuple[StagedChange, dict[str, str]]] = []
-        self._part_seq = 0
+        #: the loads' partitions staged and not yet applied, by table, put back to be read again if a pass fails
+        self._partitions_staged: dict[str, list[dict[str, str]]] = {}
         self._lock = asyncio.Lock()
         self._poked = asyncio.Event()
         self._removers: list[Callable[[], None]] = []
@@ -537,14 +543,7 @@ class CopyFollower:
             pending = {name: keys for name, keys in self._pending.items() if keys}
             whole = set(self._whole)
             partitions = {name: list(parts) for name, parts in self._partitions.items() if parts}
-            if (
-                not pending
-                and not whole
-                and not partitions
-                and not self._staged
-                and not self._staged_parts
-                and first == self._status.stamp
-            ):
+            if not pending and not whole and not partitions and not self._staged and first == self._status.stamp:
                 self._say(FollowerPhase.FOLLOWING, "current")
                 return True
             # taken with the keys, no await between: every key of an epoch at or below these marks is among them
@@ -570,7 +569,7 @@ class CopyFollower:
             self._mark += 1
             mark = self._mark
             try:
-                rows = await asyncio.to_thread(self._backend.apply_staged, self._apply_order(), mark=mark)
+                rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
             except BaseException:
                 await self._forget_stages()
                 raise
@@ -579,7 +578,7 @@ class CopyFollower:
                 del self._stamps[min(self._stamps)]
             self._staged = {}
             self._staged_keys = {}
-            self._staged_parts = []
+            self._partitions_staged = {}
             self._rows_since_mark += rows
             self._status.stamp = first
             self._status.applied += 1
@@ -638,11 +637,11 @@ class CopyFollower:
                 self._whole.add(name)
             else:
                 self._pending[name] |= self._staged_keys.get(name, set())
-        for change, partition in self._staged_parts:
-            self._partitions[change.table].append(partition)
+        for name, parts in self._partitions_staged.items():
+            self._partitions[name].extend(parts)
         self._staged = {}
         self._staged_keys = {}
-        self._staged_parts = []
+        self._partitions_staged = {}
         stages = await asyncio.to_thread(self._backend.staged_stages)
         if stages:
             await asyncio.to_thread(self._backend.drop_stage, *stages)
@@ -684,22 +683,13 @@ class CopyFollower:
             )
             self._staged_keys.setdefault(name, set()).update(keys)
 
-    def _apply_order(self) -> list[StagedChange]:
-        """what is staged, in the order it is applied: tables read whole, then loads' partitions, then keys.
-
-        A key read after a partition (a row a later write changed or deleted) is applied after it, so the copy holds
-        the key's newest row; every stage was read at a stamp no later than the one it is applied at.
-
-        :return: the changes
-        :rtype: list[StagedChange]
-        """
-        whole = [change for change in self._staged.values() if change.whole]
-        keyed = [change for change in self._staged.values() if not change.whole]
-        return [*whole, *(change for change, _ in self._staged_parts), *keyed]
-
     async def _stage_partitions(self, partitions: Mapping[str, list[dict[str, str]]], whole: set[str]) -> None:
-        """stage each load's rows beside the copy: the rows whose columns hold the load's values, read from L3 a page
-        at a time by those columns, after the copy's rows of them leave.
+        """stage each load's rows beside the copy as keyed changes: the rows whose columns hold the load's values, read
+        from L3 a page at a time by those columns (an index led by them, :attr:`FollowedTable.partition_order`).
+
+        A load from files only inserts (a key L3 already holds fails it), so its reach is exactly the rows it read
+        back: each is staged by its key, onto the table's keyed stage, as a key a write named would be. A partition
+        may name a column the copy does not hold (a version stamp): L3 filters on it, and the copy needs none.
 
         :param partitions: each table's loads' partitions heard since
         :ptype partitions: Mapping[str, list[dict[str, str]]]
@@ -713,29 +703,34 @@ class CopyFollower:
             if name in whole or (held is not None and held.whole):
                 continue
             table = self._tables[name]
+            keys_stage = f"{STAGE_PREFIX}{name}__keys"
+            rows_stage = f"{STAGE_PREFIX}{name}__rows"
+            types = rail_arrow_types(table.columns)
+            selected = ", ".join(quote_identifier(column) for column in types)
             for partition in parts:
-                self._part_seq += 1
-                keys_stage = f"{STAGE_PREFIX}{name}__p{self._part_seq}__keys"
-                rows_stage = f"{STAGE_PREFIX}{name}__p{self._part_seq}__rows"
-                columns = tuple(sorted(partition))
-                values = pa.table({column: pa.array([partition[column]], pa.string()) for column in columns})
-                await asyncio.to_thread(self._backend.stage_keys, keys_stage, name, columns, values)
-                types = rail_arrow_types(table.columns)
-                selected = ", ".join(quote_identifier(column) for column in types)
                 pages = keyset_arrow_pages(
                     self._l3,
                     f"SELECT {selected} FROM {quote_identifier(name)}",  # noqa: S608 - trusted identifiers
                     table.partition_order or table.key,
                     types=types,
-                    where={column: _typed(table.kind(column), partition[column]) for column in columns},
+                    where={column: _typed(table.kind(column), value) for column, value in sorted(partition.items())},
                     page_size=self._page_size,
                 )
                 async for page in pages:
+                    if page.num_rows == 0:
+                        continue
+                    await asyncio.to_thread(
+                        self._backend.stage_keys,
+                        keys_stage,
+                        name,
+                        table.key,
+                        page.select(list(table.key)),
+                        rows_stage=rows_stage,
+                    )
                     await asyncio.to_thread(self._backend.stage_rows, rows_stage, name, page, table.key)
-                await asyncio.to_thread(self._backend.stage_rows, rows_stage, name, pa.table({}), table.key)
-                self._staged_parts.append(
-                    (StagedChange(table=name, key=columns, keys=keys_stage, rows=rows_stage), dict(partition))
-                )
+                self._partitions_staged.setdefault(name, []).append(dict(partition))
+            if name in self._partitions_staged:
+                self._staged[name] = StagedChange(table=name, key=table.key, keys=keys_stage, rows=rows_stage)
 
     async def _stage_whole(self, table: FollowedTable, rows_stage: str) -> None:
         types = rail_arrow_types(table.columns)
