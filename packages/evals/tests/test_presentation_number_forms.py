@@ -370,7 +370,7 @@ def test_a_chart_s_values_table_reads_its_values_at_the_digits_its_format_names(
         level="95%",
     )
     _, rows = ChartBlock(section="scorecard", chart="dot_interval", title="t", data=chart).values_table()
-    assert rows == [["lead-first", "49.998%", "40.000% to 60.000%"]], rows
+    assert rows == [["lead-first", "49.998%", "40.000 to 60.000%"]], rows
 
 
 # --- an interval never runs past what its measure can take (plan 4.5 row 2) -------------------------------------------

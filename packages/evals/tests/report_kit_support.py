@@ -206,7 +206,7 @@ MARKED_CHARTS: dict[str, Marked] = {
             "fmt": "num",
             "level": "95%",
         },
-        (("a", "FV [FL, FH]"),),
+        (("a", "FV (FL to FH)"),),
         ("FV",),
     ),
     "lines": Marked(
@@ -228,7 +228,7 @@ MARKED_CHARTS: dict[str, Marked] = {
             "fmt": "num",
             "level": "95%",
         },
-        (("s · c1", "LV1 (LL1–LH1)"), ("s · c2", "LV2 (LL2–LH2)")),
+        (("s · c1", "LV1 (LL1 to LH1)"), ("s · c2", "LV2 (LL2 to LH2)")),
     ),
     "scatter_frontier": Marked(
         "scatter_frontier",

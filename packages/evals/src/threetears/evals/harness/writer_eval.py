@@ -668,11 +668,13 @@ class WriterResult:
         )
 
     def _readings(self) -> list[str]:
-        """The readings table: a row per measure some arm carries, then per judged dimension, a column per arm."""
+        """The readings table: a row per measure some arm carries, then per judged dimension, a column per arm. A rate
+        (a boolean or pass/fail measure's, a pass/fail dimension's) reads as a percent and the count it is of, every
+        other reading as its mean."""
         measures = self.host.profile.measures
-        rows: dict[str, dict[str, float]] = {}
-        # Each row's measure, by its key and kind, which the label a reader sees may rename.
-        read: dict[str, tuple[str, str]] = {}
+        rows: dict[str, dict[str, tuple[float, int]]] = {}
+        # Each row's measure, by its key and kind, which the label a reader sees may rename, and whether it is a rate.
+        read: dict[str, tuple[str, str, bool]] = {}
         for arm, summary in self.arms.items():
             for measure in summary.measures:
                 if measure.mean is not None:
@@ -680,23 +682,25 @@ class WriterResult:
                     label = (
                         descriptor.reader_name if descriptor is not None and descriptor.reader_name else measure.name
                     )
-                    rows.setdefault(label, {})[arm] = measure.mean
-                    read.setdefault(label, (measure.name, "measure"))
+                    rows.setdefault(label, {})[arm] = (measure.mean, measure.n)
+                    rate = descriptor is not None and (descriptor.data_type == "boolean" or descriptor.pass_fail)
+                    read.setdefault(label, (measure.name, "measure", rate))
             for dimension in summary.judged:
                 if dimension.mean is not None:
-                    rows.setdefault(f"{dimension.name} (judged)", {})[arm] = dimension.mean
-                    read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged"))
+                    rows.setdefault(f"{dimension.name} (judged)", {})[arm] = (dimension.mean, dimension.n)
+                    passes = dimension.scale == "pass_fail"
+                    read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged", passes))
         head = ["| reading | " + " | ".join(self.arms) + " |", "|---|" + "---|" * len(self.arms)]
         forms = PageForms.off_page()
-        body = [
-            f"| {label} | "
-            + " | ".join(
-                forms.reading(row[arm], measure=read[label][0], kind=read[label][1]).text if arm in row else "-"
-                for arm in self.arms
+        body = []
+        for label, row in rows.items():
+            key, kind, rate = read[label]
+            said = (
+                {arm: printed.text for arm, printed in forms.rate_readings(row, measure=key, kind=kind).items()}
+                if rate
+                else {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
             )
-            + " |"
-            for label, row in rows.items()
-        ]
+            body.append(f"| {label} | " + " | ".join(said.get(arm, "-") for arm in self.arms) + " |")
         return [*head, *body] if body else ["no reading: no arm's results carry a measure"]
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
@@ -1797,15 +1801,21 @@ def _preference_figure(
         return []
 
     # Each candidate's share reads at its own precision everywhere it appears: its table row, its line, the answer and
-    # its mark. Where the candidates' precisions differ, each is a panel of its own, with its own format, so no share
-    # is padded to another's decimals (``61.000%`` beside ``49.998%``).
+    # its mark, whose tooltip and values table print the text its forms decided. Where the candidates' precisions
+    # differ, each is a panel of its own, with its own format, so no share is padded to another's decimals
+    # (``61.000%`` beside ``49.998%``).
     def row(arm: str, shares: PreferenceShares) -> DotIntervalRow:
+        ends = shares.interval
         return DotIntervalRow(
             label=arm,
             value=shares.candidate,
-            lo=None if shares.interval is None else shares.interval[0],
-            hi=None if shares.interval is None else shares.interval[1],
-            hollow=True if shares.interval is None else None,
+            lo=None if ends is None else ends[0],
+            hi=None if ends is None else ends[1],
+            hollow=True if ends is None else None,
+            value_text=shares.share_percent(shares.candidate),
+            # The interval's unit is written once, after its high end (``15 to 89%``), as a page writes an interval.
+            lo_text=None if ends is None else shares.share_text(ends[0]),
+            hi_text=None if ends is None else shares.share_percent(ends[1]),
         )
 
     formats = {shares.fmt for _, _, shares in drawn}
@@ -1833,7 +1843,7 @@ def _preference_figure(
         line = f"{arm} {candidate_share}% · {control} {control_share}% (50% is even)"
         if shares.ends is not None:
             low, high = shares.ends
-            line += f", {level} interval {low}% to {high}%"
+            line += f", {level} interval {low} to {high}%"  # the unit once, as every interval reads
         lines.append(
             DisclosureBlock(section="scorecard", source="comparisons", text=f"{line}; {_primary_reads(read)}.")
         )

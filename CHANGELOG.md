@@ -79,10 +79,9 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
   `lo_text` and `hi_text` (and, by kind, `values_text`, `x_text`, `y_text`, `from_text`, `to_text`, `latency_text`,
   `low_text`, `high_text`, `detail_text`, `matrix_text`; a reference or a stacked bar's segment `value_text`).
   `kit.js` and the static page print it as it is wherever they would format the value, and the chart's values table
-  prints the same text (kit/API.md). The texts are what each chart draws today, so no page's text moves. A cell's
-  `cost_text` is in the contract, but the package leaves it unset: a gate matrix's and a lattice's costs still draw by
-  `cost_fmt` until the policy flip, as do a heatmap cell's count (`n_fmt`) and rung 5's preference strip, whose shares
-  the kit rounds as before.
+  prints the same text (kit/API.md). Each value's text is the one its chart drew before; how an interval's ends are
+  joined, and a matrix's costs, move (Hosts, C5b, below). A heatmap cell's count still draws by `n_fmt`, a count's
+  fixed form.
 - A table cell carries the text its page decided for its number, `TableCell.value_text`: set on every rate and money
   cell a table's column rule spells, and on an aspect page's level and change cells, and printed by every serializer
   in place of spelling `value`. A copy that changes what the number is spelled from (`value`, `unit`, `decimals`,
@@ -98,6 +97,15 @@ gain the additive text fields above: a host that re-renders the package's chart 
 package's text for every value, and a host-authored chart without them draws as before, each value formatted by its
 `fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
 yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
+
+**Hosts (number forms C5b):** every chart the kit (`kit.js` and its `docs/eval-report-kit/kit/` copy) or the static
+page draws joins an interval's ends as `low to high`, and the package's ends write the unit once: a forest tooltip
+reads `-8 (-13 to -2)` (was `-8 [-13, -2]`), a line point's `85% (80 to 89%)` (was `85% (80%–89%)`), money
+`$1.89 ($1.76 to 2.03)`. A host's chart without text fields draws its values as before, but its tooltips in the new
+join, each end in its `fmt` (`80% to 89%`). A gate matrix's and a lattice's cells
+carry `cost_text` (`$4.60 per 1,000 conversations`, where the kit drew `$5 per 1,000 conversations`). Rung 5's
+preference strip carries its texts and names `pct:0`; its readings table reads a rate as `43% (3 of 7)` (was `0.43`).
+A host matching a tooltip, a cost or a format updates its match.
 
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 

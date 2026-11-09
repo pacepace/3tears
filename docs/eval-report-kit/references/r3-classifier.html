@@ -740,7 +740,7 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
     se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
       const at=t=>t&&t[i];
-      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])}–${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])} to ${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
     ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
   // end labels stacked to avoid collisions, to the right of the last point
   // each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line
@@ -784,7 +784,7 @@ function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
     const nl=noted?kWrap(r.note,m.r-10):[kAs(r.value_text,opt.fmt,r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
-    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} [${kAs(r.lo_text,opt.fmt,r.lo)}, ${kAs(r.hi_text,opt.fmt,r.hi)}]`]));});
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`]));});
   return s;}
 
 // ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
