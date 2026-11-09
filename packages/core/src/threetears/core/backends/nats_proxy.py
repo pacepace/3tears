@@ -37,6 +37,7 @@ from threetears.core.backends.broker_generation import (
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
     GENERATIONS_REPLY_FIELD,
+    HUB_CAPABILITIES_FIELD,
     forget_reply_generations,
     named_changed_rows,
     record_reply_generations,
@@ -730,6 +731,19 @@ class NatsProxyL3Backend:
         rows: list[dict[str, Any]] = response.get("rows", [])
         result = [_deserialize_row(row) for row in rows]
         return result
+
+    async def hub_capabilities(self) -> frozenset[str]:
+        """what the hub's broker says it can do: the capability names its ``l3.query`` reply carries
+        (:data:`~threetears.core.backends.broker_generation.HUB_CAPABILITIES_FIELD`), asked with a read that touches
+        no table. A broker built before the field answers none.
+
+        :return: the capability names
+        :rtype: frozenset[str]
+        :raises DataLayerUnavailableError: if the broker returns an error
+        """
+        response = await self._send_query("SELECT 1 AS one", [], "select", None)
+        named = response.get(HUB_CAPABILITIES_FIELD) or ()
+        return frozenset(str(name) for name in named)
 
     async def fetch_arrow(
         self,

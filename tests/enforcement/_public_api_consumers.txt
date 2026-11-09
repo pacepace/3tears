@@ -129,3 +129,5 @@ packages/core/src/threetears/core/collections/copy_follower.py:CopyFollower  # b
 packages/core/src/threetears/core/collections/copy_follower.py:FollowerPhase  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/refresh_service.py reports the copy's phase in its status
 packages/core/src/threetears/core/collections/copy_follower.py:FollowerStatus  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/refresh_service.py reads the copy's status
 packages/core/src/threetears/core/collections/write_marks.py:tables_switched_by_trigger  # bluelabsio/14-eng-ai-bot: src/aibots/hub/broker/proxy.py advances a tool pod's own tables switched on by their trigger (feat/generation-by-trigger)
+packages/core/src/threetears/core/collections/copy_follower.py:HubCapabilityMissingError  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/serve.py holds readiness off, naming the missing hub capability
+packages/core/src/threetears/core/collections/copy_follower.py:require_generation_by_trigger  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/serve.py asks it before the copy serves

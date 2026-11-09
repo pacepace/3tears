@@ -30,7 +30,14 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
-from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
+from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
+from threetears.core.collections.copy_follower import (  # noqa: E402
+    CopyFollower,
+    FollowedTable,
+    FollowerPhase,
+    HubCapabilityMissingError,
+    require_generation_by_trigger,
+)
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 
@@ -535,3 +542,29 @@ async def test_a_part_that_does_not_read_back_whole_makes_the_start_read_l3() ->
     assert second.staged_stages() == []
     assert await follower.catch_up()
     assert _copy(second) == l3.held()
+
+
+# --- the hub it needs ----------------------------------------------------------------------------
+
+
+class _Hub:
+    """an L3 reached through the hub's broker, announcing what it was built with."""
+
+    def __init__(self, announced: frozenset[str]) -> None:
+        self.announced = announced
+
+    async def hub_capabilities(self) -> frozenset[str]:
+        return self.announced
+
+
+async def test_a_hub_that_does_not_advance_trigger_switched_tables_is_refused_by_name() -> None:
+    with pytest.raises(HubCapabilityMissingError, match=GENERATION_BY_TRIGGER):
+        await require_generation_by_trigger(_Hub(frozenset()))
+
+
+async def test_a_hub_that_announces_it_is_accepted() -> None:
+    await require_generation_by_trigger(_Hub(frozenset({GENERATION_BY_TRIGGER, "other"})))
+
+
+async def test_an_l3_with_no_broker_between_is_not_asked() -> None:
+    await require_generation_by_trigger(_L3())

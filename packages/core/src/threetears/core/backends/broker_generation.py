@@ -78,7 +78,9 @@ __all__ = [
     "CHANGED_ROWS_FIELD",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
+    "GENERATION_BY_TRIGGER",
     "GENERATION_UNAVAILABLE_ERROR_CODE",
+    "HUB_CAPABILITIES_FIELD",
     "BrokerGenerationSource",
     "GenerationReader",
     "forget_reply_generations",
@@ -88,6 +90,18 @@ __all__ = [
 ]
 
 _logger = get_logger(__name__)
+
+#: the reply field in which the hub's broker names what it can do, on every ``l3.query`` reply: a list of
+#: capability names. A broker built before it sends none, which a pod reads as no capability at all. The hub
+#: imports this name.
+HUB_CAPABILITIES_FIELD: Final = "hub_capabilities"
+
+#: the broker advances a table switched on by its write-mark trigger alone (a tool pod's own table, which no class
+#: the hub imports declares), keyed by the schema it lives in
+#: (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`). A pod whose copy follows such
+#: tables (:class:`~threetears.core.collections.copy_follower.CopyFollower`) refuses to serve without it: a hub
+#: without it advances nothing for them, and the copy would be silently stale.
+GENERATION_BY_TRIGGER: Final = "generation_by_trigger"
 
 #: the request field naming, for each table a collection's write changes, the rows it changes:
 #: ``{table: [ChangedRow, ...]}``, each row as ``ChangedRow`` dumps it (``ids``, and the optional

@@ -60,6 +60,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
 
@@ -75,9 +76,11 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a follower says
 
 __all__ = [
     "CopyFollower",
+    "HubCapabilityMissingError",
     "FollowedTable",
     "FollowerPhase",
     "FollowerStatus",
+    "require_generation_by_trigger",
 ]
 
 log = get_logger(__name__)
@@ -94,6 +97,41 @@ _KEY_CASTS: Final[Mapping[str, str]] = {
     NUMERIC_TYPE: "numeric",
     DATETIMETZ_TYPE: "timestamptz",
 }
+
+
+class HubCapabilityMissingError(RuntimeError):
+    """the hub's broker lacks a capability a copy follower needs: the copy would be silently stale, so it never serves.
+
+    :ivar capability: the capability's name
+    """
+
+    def __init__(self, capability: str) -> None:
+        self.capability = capability
+        super().__init__(
+            f"the hub does not announce {capability!r}: it advances no generation for a pod's own tables switched on "
+            f"by their trigger, so a copy following them would never hear a change. Deploy the hub that announces it "
+            f"before this pod; the pod stays not ready until then"
+        )
+
+
+async def require_generation_by_trigger(l3: Any) -> None:
+    """refuse, before a copy follower serves, a hub whose broker does not advance trigger-switched tables.
+
+    An L3 reached through the hub's broker (anything with ``hub_capabilities``) must announce
+    :data:`~threetears.core.backends.broker_generation.GENERATION_BY_TRIGGER`. An L3 reached directly (a SQL pool, a
+    test's) has no broker between: its writers advance their own generations, and nothing is asked.
+
+    :param l3: the pod's L3
+    :ptype l3: Any
+    :return: nothing
+    :rtype: None
+    :raises HubCapabilityMissingError: when the hub does not announce it
+    """
+    probe = getattr(l3, "hub_capabilities", None)
+    if probe is None:
+        return
+    if GENERATION_BY_TRIGGER not in await probe():
+        raise HubCapabilityMissingError(GENERATION_BY_TRIGGER)
 
 
 @dataclass(frozen=True, slots=True)
