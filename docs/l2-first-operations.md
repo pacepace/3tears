@@ -56,7 +56,7 @@ This page is for whoever wires, runs and watches it. The design is in the module
 
 Every record is keyed by tenant first (see the facts table). A writer splits one commit's rows by tenant: each
 row's `ChangedRow.tenant`, named by the collection from its declared tenant column, or by the writer that knows
-the row's schema (the hub's broker, for an agent-schema table). A whole-table or keys-unknown change carries no
+the row's schema (the hub's broker, for an agent-schema table, through `advance_for_write(source, table, rows, schema=...)`, which applies the table's declaration). A whole-table or keys-unknown change carries no
 row: an agent-schema table's goes under the schema the writer names (it belongs to that schema alone), a
 platform table's on `_all`. The change notes carry the same tenant, from the trigger (the row's schema, or its
 tenant column, by the same token rule; a truncate or file load of a schema table notes its schema), so a restore

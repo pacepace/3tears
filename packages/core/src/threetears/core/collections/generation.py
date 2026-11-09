@@ -33,11 +33,13 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.collections.epoch_change import advance_recording
-from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
+
+    from threetears.core.collections.epoch_change import ChangedRow
 
 __all__ = [
     "L2_WRITE_GENERATION",
@@ -53,6 +55,7 @@ __all__ = [
     "UndeclaredWriteGeneration",
     "WriteGeneration",
     "WriteGenerationDeclaration",
+    "advance_for_write",
     "announce_unheard_writes",
     "note_generation_class",
     "primary_key_of_table",
@@ -892,6 +895,42 @@ def tenancy_of_table(table_name: str) -> Tenancy:
             if isinstance(tenancy, Tenancy):
                 return tenancy
     return TENANCY_UNDECLARED
+
+
+async def advance_for_write(
+    source: GenerationSource,
+    table_name: str,
+    rows: Sequence[ChangedRow] | None,
+    *,
+    schema: str | None,
+    keys_unknown: bool = False,
+) -> str | None:
+    """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
+
+    For a writer that runs other principals' statements and knows the schema they ran in (the hub's broker): a
+    pod names no tenant (``ChangedRow.tenant`` is never sent), so the writer names it here, by the one rule. An
+    agent-schema table's records, rowless ones too, go under ``schema``'s tenant; a table with a tenant column
+    names each row's from the row, and its rowless records go on ``_all``; any other table's go on ``_all``.
+
+    :param source: the writer's generation source
+    :ptype source: GenerationSource
+    :param table_name: the table
+    :ptype table_name: str
+    :param rows: the rows the committed write changed; ``None`` when its reach is the whole table
+    :ptype rows: Sequence[ChangedRow] | None
+    :param schema: the schema the write ran in; ``None`` when it names none
+    :ptype schema: str | None
+    :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
+    :ptype keys_unknown: bool
+    :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
+    :rtype: str | None
+    :raises GenerationUnavailableError: when the advance, or the record of its change, failed
+    :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
+    """
+    tenancy = tenancy_of_table(table_name)
+    owner = schema_tenant(schema) if tenancy.kind == "schema" and schema else None
+    named = rows_with_tenants(tenancy, rows) if rows else rows
+    return await advance_recording(source, table_name, named, keys_unknown=keys_unknown, tenant=owner)
 
 
 @dataclass(frozen=True, slots=True)

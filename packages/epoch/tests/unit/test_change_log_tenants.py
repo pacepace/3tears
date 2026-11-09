@@ -25,6 +25,7 @@ from threetears.agent.acl.collections import GroupMemberCollection
 from threetears.core.collections import BaseCollection
 from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.tenancy import (
@@ -310,3 +311,29 @@ class TestTheAccessMachineryIsFollowedAcrossCustomers:
         await follower.catch_up_generation(table, token, changes=reader)
         assert not follower.behind_on(table)
         assert follower.generation_marks.recorded(table) == token
+
+
+class TestAWriterThatKnowsTheSchemaNamesEachRecordsTenant:
+    """``advance_for_write``: the broker names the schema its statement ran in; 3tears applies the one rule."""
+
+    async def test_each_table_by_its_declaration(self) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        own = schema_tenant("agent_a")
+        await advance_for_write(source, _OWN_TABLE, [ChangedRow(ids=["n1"])], schema="agent_a")
+        await advance_for_write(source, _OWN_TABLE, None, schema="agent_a", keys_unknown=True)
+        await advance_for_write(
+            source, _TABLE, [ChangedRow(ids=["w1"], columns={"customer_id": "customer-a"})], schema="platform"
+        )
+        await advance_for_write(source, _TABLE, None, schema="platform")
+        await advance_for_write(source, "group_members", [ChangedRow(ids=["g1"])], schema="platform")
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        keys = [entry.key for entry in await log.records_after(">", 0, 100)]
+        assert keys == [
+            epoch_change_key(_OWN_TABLE, own),
+            epoch_change_key(_OWN_TABLE, own),
+            epoch_change_key(_TABLE, _A),
+            epoch_change_key(_TABLE, None),
+            epoch_change_key("group_members", None),
+        ]
