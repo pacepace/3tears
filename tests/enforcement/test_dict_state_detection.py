@@ -508,6 +508,24 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/plans.py",
+        class_name="WholeScanGuard",
+        attr_name="_sizes",
+        rationale=(
+            "a test helper's count of each table a guarded statement's plan names, taken once per guard; it lives "
+            "and dies with the one load-path test that wrapped its connection, and no pod runs it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/plans.py",
+        class_name="WholeScanGuard",
+        attr_name="_returned",
+        rationale=(
+            "a test helper's tally of rows the guarded statements returned per table, to catch a whole read made "
+            "a keyed page at a time; it lives and dies with the one load-path test that wrapped its connection"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeChangeLog",
         attr_name="_seen_ids",

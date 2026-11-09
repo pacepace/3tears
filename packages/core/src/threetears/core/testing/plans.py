@@ -39,6 +39,7 @@ from typing import Any
 
 __all__ = [
     "PlanRecorder",
+    "WholeScanGuard",
     "explain_write",
     "on_yugabyte",
     "plan_problems",
@@ -327,3 +328,190 @@ def plan_problems(
                 f"{' '.join(plan.sql.split())[:200]}"
             )
     return problems
+
+
+#: the rows from which a table read whole fails a :class:`WholeScanGuard`
+_DEFAULT_WHOLE_ROWS = 1_000
+
+#: the share of a table's rows a block may read by key, page after page, before it counts as reading it whole
+_DEFAULT_PAGED_SHARE = 0.5
+
+
+def _whole_scans(plan: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
+    """each relation ``plan`` reads whole: a sequential scan (with or without a filter), or an index scan with no
+    index condition (every entry of the index, in its order).
+
+    :param plan: a plan node, as ``EXPLAIN (VERBOSE, FORMAT JSON)`` gives it (actuals not needed)
+    :ptype plan: Mapping[str, Any]
+    :return: ``(schema-qualified relation, how)`` for each
+    :rtype: Iterator[tuple[str, str]]
+    """
+    node = plan.get("Node Type", "")
+    relation = plan.get("Relation Name")
+    if relation is not None:
+        qualified = f"{plan.get('Schema', 'public')}.{relation}"
+        if node == "Seq Scan":
+            yield qualified, "sequential scan" + (" with a filter" if "Filter" in plan else "")
+        elif node in {"Index Scan", "Index Only Scan", "Index Scan Backward"} and "Index Cond" not in plan:
+            yield qualified, f"{node.lower()} with no index condition"
+    for child in plan.get("Plans", ()):
+        yield from _whole_scans(child)
+
+
+def _relations(plan: Mapping[str, Any]) -> Iterator[str]:
+    """every schema-qualified relation ``plan`` scans.
+
+    :param plan: a plan node
+    :ptype plan: Mapping[str, Any]
+    :return: the relations
+    :rtype: Iterator[str]
+    """
+    if plan.get("Relation Name") is not None:
+        yield f"{plan.get('Schema', 'public')}.{plan['Relation Name']}"
+    for child in plan.get("Plans", ()):
+        yield from _relations(child)
+
+
+class WholeScanGuard:
+    """an asyncpg connection that fails a load-path test on any statement reading a whole table.
+
+    The runtime half of the no-whole-reads rule (:mod:`threetears.enforcement.no_whole_reads`): hand it to the code
+    under test in place of the connection, run a steady-state load (or a follower's catch-up, a cache's refresh),
+    and call :meth:`check`, or use it as ``async with WholeScanGuard(conn) as guarded:``. Every statement through
+    ``fetch``, ``fetchrow``, ``fetchval``, ``execute`` and ``executemany`` is ``EXPLAIN (VERBOSE, FORMAT JSON)``-ed
+    first (never ``ANALYZE``: nothing runs twice, and a write is planned, not done), then run as asked. It fails on:
+
+    - a plan that scans a table of ``threshold_rows`` or more whole: a sequential scan, or an index scan with no
+      index condition (the table counted once, by the guard, per relation);
+    - a ``TRUNCATE``;
+    - reads by key that, page after page, return ``paged_share`` or more of such a table: a whole read through a
+      keyset pager, whose every page alone looks keyed.
+
+    Seed the tables past ``threshold_rows`` and run the analyses the database would have (``ANALYZE``), so the
+    planner chooses as it would in production; an empty table scans whole for free and proves nothing.
+
+    :param conn: an asyncpg connection (or anything with its ``fetch`` / ``fetchval`` / ``execute``)
+    :ptype conn: Any
+    :param threshold_rows: the rows from which a table read whole fails
+    :ptype threshold_rows: int
+    :param paged_share: the share of such a table that keyed reads may return before they count as reading it whole
+    :ptype paged_share: float
+    """
+
+    def __init__(
+        self, conn: Any, *, threshold_rows: int = _DEFAULT_WHOLE_ROWS, paged_share: float = _DEFAULT_PAGED_SHARE
+    ) -> None:
+        self._conn = conn
+        self._threshold = threshold_rows
+        self._share = paged_share
+        self._sizes: dict[str, int] = {}
+        self._returned: dict[str, int] = {}
+        self._problems: list[str] = []
+        #: every statement seen, in order
+        self.statements: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    async def __aenter__(self) -> WholeScanGuard:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if exc[0] is None:
+            self.check()
+
+    @property
+    def problems(self) -> list[str]:
+        """every whole read seen so far, one line each.
+
+        :return: the problems, paged reads included
+        :rtype: list[str]
+        """
+        paged = [
+            f"keyed reads returned {returned} of {relation}'s {self._sizes[relation]} rows "
+            f"(over {self._share:.0%}): the table was read whole, a page at a time"
+            for relation, returned in sorted(self._returned.items())
+            if self._sizes.get(relation, 0) >= self._threshold and returned >= self._share * self._sizes[relation]
+        ]
+        return [*self._problems, *paged]
+
+    def check(self) -> None:
+        """fail when any statement read a table whole.
+
+        :return: nothing
+        :rtype: None
+        :raises AssertionError: naming each whole read and its statement
+        """
+        found = self.problems
+        if found:
+            raise AssertionError(f"{len(found)} whole read(s) on a load path:\n" + "\n".join(found))
+
+    async def _size(self, relation: str) -> int:
+        if relation not in self._sizes:
+            schema, _, table = relation.partition(".")
+            self._sizes[relation] = int(
+                await self._conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')  # noqa: S608 - plan's names
+            )
+        return self._sizes[relation]
+
+    async def _plan(self, sql: str, args: Sequence[Any]) -> list[str]:
+        """judge one statement's plan before it runs.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param args: its parameters
+        :ptype args: Sequence[Any]
+        :return: the relations it reads (for the paged count)
+        :rtype: list[str]
+        """
+        self.statements.append(sql)
+        words = sql.lstrip().split(None, 1)
+        first = words[0].upper() if words else ""
+        relations: list[str] = []
+        if first == "TRUNCATE":
+            self._problems.append(f"TRUNCATE on a load path: {' '.join(sql.split())[:200]}")
+        elif first in {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "VALUES", "TABLE"}:
+            explained = await self._conn.fetchval(f"EXPLAIN (VERBOSE, FORMAT JSON) {sql}", *args)
+            document = json.loads(explained) if isinstance(explained, str) else explained
+            plan = document[0]["Plan"]
+            for relation, how in _whole_scans(plan):
+                size = await self._size(relation)
+                if size >= self._threshold:
+                    self._problems.append(
+                        f"{how} of {relation} ({size} rows, from {self._threshold}): {' '.join(sql.split())[:200]}"
+                    )
+            relations = list(dict.fromkeys(_relations(plan)))
+        return relations
+
+    async def _count(self, relations: list[str], rows: int) -> None:
+        if len(relations) == 1:
+            await self._size(relations[0])
+            self._returned[relations[0]] = self._returned.get(relations[0], 0) + rows
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        """``fetch``, after its plan is judged."""
+        relations = await self._plan(sql, args)
+        rows = await self._conn.fetch(sql, *args)
+        await self._count(relations, len(rows))
+        return rows
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        """``fetchrow``, after its plan is judged."""
+        await self._plan(sql, args)
+        return await self._conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        """``fetchval``, after its plan is judged."""
+        await self._plan(sql, args)
+        return await self._conn.fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: Any) -> Any:
+        """``execute``, after its plan is judged."""
+        await self._plan(sql, args)
+        return await self._conn.execute(sql, *args)
+
+    async def executemany(self, sql: str, args: Sequence[Sequence[Any]]) -> Any:
+        """``executemany``, after its plan (for the first row of parameters) is judged."""
+        if args:
+            await self._plan(sql, args[0])
+        return await self._conn.executemany(sql, args)
