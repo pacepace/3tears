@@ -1120,7 +1120,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
             ),
             _lines_text(w - mr + 8, cy + 4 - 6 * (len(lines) - 1), lines, "lbl-strong" if strong else "tick"),
         ]
-        said = f"{_as(r.value_text, f, r.value)} [{_as(r.lo_text, f, r.lo)}, {_as(r.hi_text, f, r.hi)}]"
+        said = f"{_as(r.value_text, f, r.value)} ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
         tip = _tip_or(r.tip, r.label, said)
         out.append(_titled(tip, "".join(marks), (0, cy - row_h / 2, w, row_h)))
     return "".join(out), h
@@ -1171,7 +1171,7 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
         for i, v in enumerate(se.values):
             low = se.lo_text[i] if se.lo_text else None
             high = se.hi_text[i] if se.hi_text else None
-            spread = f" ({_as(low, f, se.lo[i])}–{_as(high, f, se.hi[i])})" if se.lo and se.hi else ""
+            spread = f" ({_as(low, f, se.lo[i])} to {_as(high, f, se.hi[i])})" if se.lo and se.hi else ""
             dot = _el(
                 "circle",
                 {

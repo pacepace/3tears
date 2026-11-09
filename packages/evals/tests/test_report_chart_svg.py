@@ -188,7 +188,7 @@ def _drawn_in(fmt: str, value: float) -> str:
     data = {"rows": [row], "domain": [min(value, 0) - 1, max(value, 0) + 1], "fmt": fmt, "level": "95%"}
     drawing = chart_drawing(_block(chart="forest", data=data))
     assert drawing is not None
-    (written,) = {match[1] for match in re.finditer(r"([^\n<>\[]+) \[\1, \1\]", html.unescape(drawing))}
+    (written,) = {match[1] for match in re.finditer(r"([^\n<>(]+) \(\1 to \1\)", html.unescape(drawing))}
     return written.strip()
 
 

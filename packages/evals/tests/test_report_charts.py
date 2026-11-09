@@ -135,7 +135,7 @@ def test_a_panel_takes_the_chart_s_fields_and_a_text_panel_needs_none() -> None:
     }
     headers, rows = _block("dot_interval", data).values_table()
     assert headers == ["Panel", "Row", "Value", "95% interval"]
-    assert rows == [["P", "a", "50%", "40% to 60%"], ["Q", "Nothing to draw here.", "", ""]]
+    assert rows == [["P", "a", "50%", "40 to 60%"], ["Q", "Nothing to draw here.", "", ""]]
 
 
 def test_a_dot_strip_of_figures_without_intervals_needs_no_level_and_prints_none() -> None:
@@ -225,7 +225,7 @@ def test_a_bar_with_a_low_end_and_no_high_end_reads_as_an_interval_open_above() 
     }
     headers, rows = _block("bars", data).values_table()
     assert headers == ["Row", "Value", "95% interval"]
-    assert rows == [["open", "$2", "from $1.5 up, no upper bound"], ["bounded", "$3", "$2.5 to $3.5"]]
+    assert rows == [["open", "$2", "from $1.5 up, no upper bound"], ["bounded", "$3", "$2.5 to 3.5"]]
 
 
 def test_markdown_prints_every_chart_s_values_table() -> None:
@@ -326,5 +326,5 @@ def test_a_panel_s_values_are_spelled_in_the_format_it_is_drawn_with() -> None:
         (row.value_text, row.lo_text, row.hi_text) for panel in strip.spelled().panels or [] for row in panel.rows or []
     ]
 
-    assert texts == [("50%", "40%", "60%"), ("49.998%", "40.010%", "60.200%")]
-    assert strip.values_table()[1] == [["one", "a", "50%", "40% to 60%"], ["two", "b", "49.998%", "40.010% to 60.200%"]]
+    assert texts == [("50%", "40", "60%"), ("49.998%", "40.010", "60.200%")]
+    assert strip.values_table()[1] == [["one", "a", "50%", "40 to 60%"], ["two", "b", "49.998%", "40.010 to 60.200%"]]

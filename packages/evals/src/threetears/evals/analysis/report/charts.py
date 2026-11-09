@@ -662,19 +662,38 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
 
 def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, str]:
     """An interval's two ends as its values table and the kit print them: under the chart's format (at ``read_at``'s
-    precision where it names one: :func:`_formatted`), both at one precision."""
+    precision where it names one: :func:`_formatted`), both at one precision, the unit written once
+    (:func:`_unit_once`)."""
     match = _FORMAT_SPEC.fullmatch(spec)
     if match is not None and (
         _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
     ):
         # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
         at = ends_places(low, high, POINT_PLACES)
-        return _formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at)
+        said = (_formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at))
+        return _unit_once(spec, said)
     said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
     if said[0] == said[1] and low != high:
         # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
         said = (_formatted(spec, low, read_at, finer=True), _formatted(spec, high, read_at, finer=True))
-    return said
+    return _unit_once(spec, said)
+
+
+def _unit_once(spec: str, ends: tuple[str, str]) -> tuple[str, str]:
+    """An interval's two end texts with their format's unit written once, as the page writes an interval (number rule
+    3): after the high end where it follows the number (``15 to 89%``, ``-1.0 to +5.0 pts``), on the low end where it
+    leads it (``$3.90 to 4.30``). So every drawer joins the two texts as they are, and never strips a unit itself.
+    Ends that do not both carry the unit are as they were."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    unit = _FORMAT_UNITS.get(match[2], "") if match is not None else ""
+    low, high = ends
+    if not unit:
+        return ends
+    if unit == MONEY:
+        return (low, high.replace("$", "", 1)) if "$" in low and "$" in high else ends
+    if low.endswith(unit) and high.endswith(unit):
+        return low.removesuffix(unit).rstrip(), high
+    return ends
 
 
 def _end_texts(
@@ -1478,7 +1497,7 @@ class GateCell(_KitModel):
     cost_text: str | None = Field(
         default=None,
         description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
-        "package leaves it unset until its costs are decided by measure.",
+        "package sets it to the cost as the page's money writes it.",
     )
 
 
@@ -1511,7 +1530,7 @@ class GateMatrixChart(_Drawable):
 
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        # A cost the package draws carries its text; a host's cost without one is spelled here from `cost_fmt`.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = [self.row_header or "", *(column.label for column in self.columns)]
         body = []
@@ -1550,7 +1569,7 @@ class LatticeCell(_KitModel):
     cost_text: str | None = Field(
         default=None,
         description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
-        "package leaves it unset until its costs are decided by measure.",
+        "package sets it to the cost as the page's money writes it.",
     )
     latency_text: str | None = Field(
         default=None, description="The latency as printed; spelled from `latency_fmt` when none."
@@ -1598,7 +1617,7 @@ class LatticeChart(_Drawable):
 
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        # A cost the package draws carries its text; a host's cost without one is spelled here from `cost_fmt`.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = ["", *(column.label for column in self.columns)]
         body = []

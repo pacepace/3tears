@@ -193,7 +193,7 @@ async def test_the_share_reads_alike_in_the_table_the_figure_s_values_its_line_a
     tmp_path: Path, offline: None
 ) -> None:
     """V6's review: the table's share is one set with the figure drawn above it, the line under that figure and the
-    page's answer, so each prints it alike: the figure's values table and tooltips in its format's digits (``pct``
+    page's answer, so each prints it alike: the figure's values table and tooltips in its format's digits (``pct:0``
     where the set reads whole, ``pct:3`` at three decimals), never coarser than the line, and both share columns of a
     row one kind."""
     result = await _replayed(tmp_path)
@@ -204,7 +204,7 @@ async def test_the_share_reads_alike_in_the_table_the_figure_s_values_its_line_a
     figure = next(block for block in result.page.blocks if isinstance(block, ChartBlock))
     assert isinstance(figure.data, DotIntervalChart)
     places = len(share.partition(".")[2])
-    assert figure.data.fmt == ("pct" if places == 0 else f"pct:{places}")
+    assert figure.data.fmt == f"pct:{places}"
     _, values = figure.values_table()
     assert values[0][1] == f"{share}%", (values, share)
     said = [block.text for block in result.page.blocks if isinstance(block, DisclosureBlock)]
@@ -273,12 +273,12 @@ async def test_each_candidate_s_share_reads_at_its_own_precision_in_its_panel_it
     result = await _two_candidates(tmp_path, monkeypatch)
     figure = next(block for block in result.page.blocks if isinstance(block, ChartBlock))
     assert isinstance(figure.data, DotIntervalChart) and figure.data.panels is not None, "one panel per candidate"
-    assert [(panel.title, panel.fmt) for panel in figure.data.panels] == [("wide", "pct"), ("near", "pct:3")]
+    assert [(panel.title, panel.fmt) for panel in figure.data.panels] == [("wide", "pct:0"), ("near", "pct:3")]
     expected = {"wide": ("61", "39", "30", "90"), "near": ("49.998", "50.002", "40.000", "60.000")}
     _, values = figure.values_table()
     assert values == [
-        ["wide", "wide", "61%", "30% to 90%"],
-        ["near", "near", "49.998%", "40.000% to 60.000%"],
+        ["wide", "wide", "61%", "30 to 90%"],
+        ["near", "near", "49.998%", "40.000 to 60.000%"],
     ], values
     side = next(block for block in result.page.blocks if isinstance(block, TableBlock) and block.name == "side_by_side")
     said = " ".join(block.text for block in result.page.blocks if isinstance(block, DisclosureBlock))
@@ -294,7 +294,7 @@ async def test_each_candidate_s_share_reads_at_its_own_precision_in_its_panel_it
             control,
             f"{low} to {high}",
         )
-        assert f"{arm} {share}% · shipped {control}% (50% is even), 95% interval {low}% to {high}%" in said, said
+        assert f"{arm} {share}% · shipped {control}% (50% is even), 95% interval {low} to {high}%" in said, said
         assert f"gave {arm} {share}% of its preference" in answer, answer
     # Each end of the axis names the candidate in words, never one candidate's name for both.
     assert figure.data.better == ("prefers shipped", "prefers the candidate")

@@ -286,17 +286,29 @@ class PreferenceShares:
     places: int
 
     def share_text(self, value: float) -> str:
-        """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
-        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
-        three are one set, and a set reads at one precision, so each keeps the set's decimals, a whole one too
-        (``80.000`` beside ``99.998``).
+        """One of the three as text, without its ``%``: :meth:`share_percent`'s digits, so the table, the line, the
+        answer and the strip's marks read one text.
 
         :param value: One of the three.
         :ptype value: float
         :return: Its text.
         :rtype: str
         """
-        return f"{value:.{self.places}f}"
+        return self.share_percent(value).removesuffix(PERCENT)
+
+    def share_percent(self, value: float) -> str:
+        """One of the three with its ``%``, rounded half to even at :attr:`places` whatever its significant figures
+        (:func:`policy_percent`): an end of ``99.998`` short of all, a share of ``49.9996`` off even, and two shares
+        that sum to 100 as printed (``91.071`` and ``8.929``). The three are one set, and a set reads at one precision,
+        so each keeps the set's decimals, a whole one too (``80.000`` beside ``99.998``); only an exact zero reads
+        whole, ``0%``: a share of none states no precision.
+
+        :param value: One of the three.
+        :ptype value: float
+        :return: Its text.
+        :rtype: str
+        """
+        return policy_percent(value, self.places)
 
     def cell(self, value: float) -> CellValue:
         """A share as a table cell, decided once for both shares: numbers where the set reads whole (the one number
@@ -313,9 +325,10 @@ class PreferenceShares:
 
     @property
     def fmt(self) -> str:
-        """The kit's format a chart draws the shares in, at the set's decimals, so its values table and its tooltips
-        read each share as the line under it does (``pct:3`` for ``49.998%``); ``pct`` where they read whole."""
-        return "pct" if self.places == 0 else f"pct:{self.places}"
+        """The kit's format a chart draws the shares in, naming the set's decimals where they read whole too
+        (``pct:3`` for ``49.998%``, ``pct:0``): a format that names none leaves the kit's own "as many decimals as it
+        needs" to any share drawn without its text."""
+        return f"pct:{self.places}"
 
     @property
     def ends(self) -> tuple[str, str] | None:
@@ -1597,6 +1610,34 @@ class PageForms:
         """
         text = f"{value:.{_READING_PLACES}f}"
         return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
+
+    def rate_readings(
+        self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
+    ) -> dict[str, Printed]:
+        """A rate's readings across an off-page table's row, one per arm, each a percent and the count it is of
+        (``14% (1 of 7)``), never a fraction at two decimals (``0.14``), which reads as no rate. The row is one
+        measure, so every arm's reads at one precision: the table reads no interval, so two significant figures of
+        its least figure but zero, at most one decimal, each kept off 0% and 100% (:func:`policy_places`,
+        :func:`policy_rate`). Of a measure: a boolean measure's rate, or a pass/fail judged dimension's, in the
+        rung-5 readings table.
+
+        :param reads: Each arm's rate, 0 to 1, and the trials it was read on, by arm.
+        :ptype reads: Mapping[str, tuple[float, int]]
+        :param measure: The measure's key.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``).
+        :ptype kind: _MeasureKind
+        :return: Each arm's reading, by arm.
+        :rtype: dict[str, Printed]
+        """
+        places = policy_places((), [rate * 100 for rate, _ in reads.values()], capped=True)
+        readings = {}
+        for arm, (rate, n) in reads.items():
+            percent = policy_rate(rate * 100, places)
+            text = f"{percent} ({spell_count(round(rate * n))} of {spell_count(n)})"
+            digits = percent.removesuffix(PERCENT)
+            readings[arm] = self._issue(*_keyed(measure, kind), "reading", rate, text, digits, PERCENT)
+        return readings
 
     def echoed(self, value: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A value an author declared, echoed back in a refusal or an error as Python's general format writes it

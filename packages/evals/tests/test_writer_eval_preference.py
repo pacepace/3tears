@@ -9,7 +9,8 @@ shipped has 48%, and the 95% interval on lead-first's share runs 15% to 89% (on 
 Mutations that turn this file red: a Difference column back on the table; the control's share missing, or not 100 less
 the candidate's as printed; the interval printed on the difference's scale; the figure missing from the head of the
 Scorecard, its even line not at 50 or unlabelled, or its dot and interval not the table's figures; the reading line
-under it missing the control's share or the even point.
+under it missing the control's share or the even point; the strip's marks drawn without their texts; a rate in the
+readings table read as a fraction.
 """
 
 from __future__ import annotations
@@ -66,13 +67,25 @@ def test_the_scorecard_opens_on_the_preference_drawn_against_even(rung5: WriterR
     assert [(row.label, row.value, row.lo, row.hi, row.hollow) for row in chart.rows or []] == [
         ("lead-first", 52, 15, 89, None)
     ]
-    assert (chart.domain, chart.fmt, chart.level) == ((0, 100), "pct", "95%")
+    assert (chart.domain, chart.fmt, chart.level) == ((0, 100), "pct:0", "95%")
+    # Its mark carries the table's figures as text, so its tooltip and values table print them, not the kit's rule.
+    assert [(row.value_text, row.lo_text, row.hi_text) for row in chart.rows or []] == [("52%", "15", "89%")]
     # The baseline is drawn and named: even, at 50.
     assert chart.reference is not None
     assert (chart.reference.value, chart.reference.label) == (50, "even (50%)")
     assert figure.title == "Share of the judge's preference against shipped"
     # Under the figure, one line: the candidate's share, the control's, the even point, the interval and the reading.
     assert isinstance(line, DisclosureBlock)
-    assert line.text == "lead-first 52% · shipped 48% (50% is even), 95% interval 15% to 89%; cannot tell apart."
+    assert line.text == "lead-first 52% · shipped 48% (50% is even), 95% interval 15 to 89%; cannot tell apart."
     html = rung5.write(tmp_path / "report")["html"].read_text(encoding="utf-8")
     assert "even (50%)" in html and "lead-first 52% · shipped 48% (50% is even)" in html
+
+
+def test_the_readings_table_reads_a_rate_as_a_percent_and_the_count_it_is_of(rung5: WriterResult) -> None:
+    """Report finished read ``0.43`` and ``0.86``, a rate written as a fraction at two decimals; it reads as a
+    percent and the cases it counts, at the precision its row's figures give, and a mean that is no rate (bounces, a
+    count) reads as before."""
+    lines = rung5.render().splitlines()
+
+    assert "| Report finished | 43% (3 of 7) | 86% (6 of 7) |" in lines
+    assert "| Bounces | 0.86 | 1.00 |" in lines
