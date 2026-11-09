@@ -108,6 +108,9 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "save_entity": "a write of an entity the caller already holds; it returns no other row",
     "save_to_store": "the L3 leg of save_entity; writes the caller's own entity",
     "save_ordered_to_store": "the ordered L3 write behind save_entity; writes the caller's own entities",
+    "save_many_to_store": (
+        "the L2-first saver's many-row L3 upsert of rows already committed and announced at L2; returns no row"
+    ),
     "save_rows": "a bulk write of rows the caller supplies; it returns no stored row",
     "persist_to_store": "the write-buffer flush of entities callers already saved",
     "delete": "a delete by key must reach the row whether or not this task may read it",

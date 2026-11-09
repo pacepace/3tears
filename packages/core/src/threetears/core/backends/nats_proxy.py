@@ -55,7 +55,7 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.backends.statement_operation import is_resendable, statement_operation
-from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage
+from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,

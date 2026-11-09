@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid7
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
-from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, NotedKeysReader
+from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
     EpochChange,
     EpochChangeReader,
@@ -154,6 +155,38 @@ _NOTED_ROWS_PER_YIELD: Final = 500
 
 #: why the notes could not name an epoch's keys, as a reader answers it -> the reason this registry is behind
 _NOTES_BEHIND: Final[dict[str, str]] = {"not_covered": "notes_not_covered", "notes_unavailable": "notes_unavailable"}
+
+
+async def _noted_pages(
+    reader: NotedKeysReader, table: str, noted_between: tuple[datetime, datetime]
+) -> AsyncGenerator[NotedKeysPage | str]:
+    """a keys-unknown commit's noted keys, a page at a time, each read only once the one before is consumed.
+
+    :param reader: what reads the change notes
+    :ptype reader: NotedKeysReader
+    :param table: the table
+    :ptype table: str
+    :param noted_between: the commit's notes bracket
+    :ptype noted_between: tuple[datetime, datetime]
+    :return: each page; or, last, the :data:`BEHIND_REASONS` key of why the notes cannot name the keys
+    :rtype: AsyncGenerator[NotedKeysPage | str]
+    """
+    cursor: NotedKeysCursor | None = None
+    while True:
+        page = await reader.noted_keys(
+            table,
+            noted_between=noted_between,
+            cursor=cursor,
+            limit=_NOTED_KEYS_PAGE_ROWS,
+            max_bytes=_NOTED_KEYS_PAGE_BYTES,
+        )
+        if not isinstance(page, NotedKeysPage):
+            yield _NOTES_BEHIND.get(page, "notes_unavailable")
+            return
+        yield page
+        if page.next is None:
+            return
+        cursor = page.next
 
 
 #: the most rows one batched invalidation message names: a few hundred bytes each, far under a NATS payload
@@ -1167,30 +1200,22 @@ class CollectionRegistry:
         reader = self._noted_keys
         if change.noted_between is None or reader is None:
             return "keys_unknown"
-        cursor: NotedKeysCursor | None = None
-        while True:
-            page = await reader.noted_keys(
-                change.table,
-                noted_between=change.noted_between,
-                cursor=cursor,
-                limit=_NOTED_KEYS_PAGE_ROWS,
-                max_bytes=_NOTED_KEYS_PAGE_BYTES,
-            )
-            if not isinstance(page, NotedKeysPage):
-                return _NOTES_BEHIND.get(page, "notes_unavailable")
-            columns = page.columns or (None,) * len(page.keys)
-            for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
-                if index and not index % _NOTED_ROWS_PER_YIELD:
-                    # a page of many rows yields between runs of them, so the loop answers everything else between
-                    await asyncio.sleep(0)
-                await self._apply_row_message(
-                    CacheInvalidationMessage(
-                        table=change.table, ids=list(ids), columns=None if held is None else dict(held)
+        async with aclosing(_noted_pages(reader, change.table, change.noted_between)) as pages:
+            async for page in pages:
+                if isinstance(page, str):
+                    return page
+                columns = page.columns or (None,) * len(page.keys)
+                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
+                    if index and not index % _NOTED_ROWS_PER_YIELD:
+                        # a page of many rows yields between runs of them, so the loop answers everything else
+                        # between
+                        await asyncio.sleep(0)
+                    await self._apply_row_message(
+                        CacheInvalidationMessage(
+                            table=change.table, ids=list(ids), columns=None if held is None else dict(held)
+                        )
                     )
-                )
-            if page.next is None:
-                return None
-            cursor = page.next
+        return None
 
     def behind_on(self, table_name: str) -> bool:
         """whether this registry is behind on ``table_name``: an epoch it has not been able to apply.
