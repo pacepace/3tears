@@ -48,8 +48,8 @@ retired planned page) are here, once:
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
 - **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
-  prints, a chart's head and a table's cell alike: to one decimal (``99.7%``), more only where one would round a level under 100 to ``100%``, and, where its
-  family corrects its comparisons together, what the family holds at once (``99.7% (95% across 16 comparisons)``).
+  prints, a chart's head and a table's cell alike: where its family corrects its comparisons together, the joint
+  guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input states it, never rounded.
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
@@ -73,7 +73,7 @@ from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.quantities import MONEY, POINTS
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import (
@@ -735,10 +735,10 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
     if stored.kind == "margin":
         # A margin is in points, on the change axis below zero, whatever the chart's own quantity scales.
         value = -figure.value
-        # A margin is read on the pass rate's readings, so its line is a figure of the pass rate.
-        points = context.forms.chart_quantity("points", change=True, measure=TRIAL_PASS_NAME, kind="trial")
-        said = context.forms.chart_note(value, points, measure=TRIAL_PASS_NAME, kind="trial").text
-        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=said)
+        # A margin is declared, not measured, so its line and its values table read it as declared (``-15 pts``).
+        declared = context.forms.declared(value, POINTS)
+        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=declared.text)
+        return ChartReference(value=value, label=label, kind=stored.kind, value_text=declared.digits)
     else:
         value = figure.value * drawn.factor
         criterion = _keyed_criterion(stored.key, context.report_input)

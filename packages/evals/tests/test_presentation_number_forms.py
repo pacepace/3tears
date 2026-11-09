@@ -44,7 +44,7 @@ from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.report.forms import PageForms, figure_places
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at
 
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
@@ -208,17 +208,18 @@ def test_the_corrected_comparisons_read_each_figure_at_its_measure_s_one_precisi
     rows = [{key: cell.text for key, cell in row.items()} for row in kairo_tables["contrasts"].rows]
     said = {(row["arm"], row["measure"]): row for row in rows}
     held = said["qwen3.8-flash", "Persona holds character"]
-    assert (held["change"], held["interval"]) == ("-6.0 pts", "-11.6 pts to -2.2 pts")
+    assert (held["change"], held["interval"]) == ("-6 pts", "-12 to -2 pts")
     outcome = said["qwen3.8-flash", "Outcome (1–5)"]
     assert (outcome["change"], outcome["interval"]) == ("-0.21", "-0.31 to -0.12")
     notices = said["1017", "Failed-reply notices"]
-    assert (notices["change"], notices["interval"]) == ("-0.0022 notices", "-0.0069 notices to +0.0025 notices")
-    assert {row["level"] for row in rows} == {"99.7% (95% across 16 comparisons)"}
+    assert (notices["change"], notices["interval"]) == ("-0.002 notices", "-0.007 to +0.002 notices")
+    assert {row["level"] for row in rows} == {"95% (adjusted for 16 comparisons)"}
 
 
 def test_a_change_of_float_residue_leaves_its_measure_s_other_changes_at_their_precision() -> None:
     """A change of ``5.5e-17`` notices beside Kairo's ``-0.0022`` spelled the column ``-0.002229654403567447 notices``
-    and itself ``+0.000000000000000055 notices``. The residue reads as its bound, and the rest as they did."""
+    and itself ``+0.000000000000000055 notices``. The residue reads as the zero it is, whole (``0 notices``), and the
+    rest at their measure's precision."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     residue = [
         contrast.model_copy(update={"delta": 5.5e-17})
@@ -235,8 +236,8 @@ def test_a_change_of_float_residue_leaves_its_measure_s_other_changes_at_their_p
         if row["measure"].text == "Failed-reply notices"
     }
     assert said == {
-        "1017": ("-0.0022 notices", "-0.0069 notices to +0.0025 notices"),
-        "qwen3.8-flash": ("< 0.000001 notices", "-0.0069 notices to +0.0025 notices"),
+        "1017": ("-0.002 notices", "-0.007 to +0.002 notices"),
+        "qwen3.8-flash": ("0 notices", "-0.007 to +0.002 notices"),
     }, said
 
 
@@ -252,7 +253,7 @@ def test_a_judged_score_reads_at_two_decimals_and_an_exact_zero_whole_in_every_f
     outcome = [row[key].text for row in arms.rows if key in row]
     assert outcome and all(re.fullmatch(r"\d\.\d{2}", text) for text in outcome), outcome
     notices = [cell.text for row in arms.rows for key, cell in row.items() if "notices" in cell.text]
-    assert "0.0022 notices" in notices and "0 notices" in notices, notices
+    assert "0.002 notices" in notices and "0 notices" in notices, notices
 
 
 def test_a_measured_figure_reads_on_the_scorecard_as_the_full_results_print_it() -> None:
@@ -465,7 +466,7 @@ def test_a_written_page_s_change_never_reaches_past_its_measure_s_scale() -> Non
     tables = {table.name: table for table in every_table(held, look, forms=PageForms.of(held))}
     said = {(row["arm"].text, row["measure"].text): row["interval"].text for row in tables["contrasts"].rows}
     assert said["qwen3.8-flash", "Outcome (1–5)"] == "-4.00 to +0.10"
-    assert said["1017", "Failed-reply notices"] == "-0.0069 notices to +0.0025 notices"
+    assert said["1017", "Failed-reply notices"] == "-0.007 to +0.002 notices"
 
 
 # --- the review's observations ------------------------------------------------------------------------------------------
@@ -481,10 +482,10 @@ def test_a_key_reads_a_score_and_a_measure_s_interval_at_the_table_s_precision()
         == "-0.31 to -0.12"
     )
     notices = format_figure(resolve("contrast.1017.failed_reply_notices.interval", held), forms=PageForms.of(held))
-    assert notices == "-0.0069 notices to +0.0025 notices", notices
+    assert notices == "-0.007 to +0.002 notices", notices
     assert (
         format_figure(resolve("contrast.1017.failed_reply_notices.delta", held), forms=PageForms.of(held))
-        == "-0.0022 notices"
+        == "-0.002 notices"
     )
 
 
@@ -509,18 +510,22 @@ def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_
         arm: format_figure(resolve(f"contrast.{arm}.{_NOTICES}.delta", held), forms=PageForms.of(held))
         for arm in tabled
     }
-    assert tabled == keyed == {"1017": "-0.0022 notices", "qwen3.8-flash": "-0.5000 notices"}, (tabled, keyed)
+    assert tabled == keyed == {"1017": "-0.002 notices", "qwen3.8-flash": "-0.500 notices"}, (tabled, keyed)
 
 
-def test_a_measure_s_set_is_placed_as_it_is_drawn() -> None:
-    """The keys' copy of the set rule placed a measure's figures as stored, the Full results' as drawn (at its
-    quantity's factor). No unit the page draws at a factor reaches the rule today, so the one owner is held directly:
-    a set drawn a thousand times over reads three decimals fewer."""
+def test_a_measure_s_places_are_read_from_its_narrowest_half_width_as_printed() -> None:
+    """A measure's decimals come from its uncertainty (number policy, rule 2): the narrowest half-width among its
+    headline intervals, as printed, to its first significant figure. Kairo's failed-reply notices: the control's
+    interval is 0.0031 either side, so every notice figure reads to three decimals; its send-message check, a share
+    printed in percent, is 0.64 points either side at its narrowest, so it reads to a tenth."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
-    assert figure_places(held, _NOTICES) == 4, "the control: 0.0022 notices, two figures"
-    assert figure_places(held, _NOTICES, factor=1000.0) == 1
-    assert figure_places(held, _NOTICES, change=True) == 4
-    assert figure_places(held, _NOTICES, change=True, factor=1000.0) == 1
+    forms = PageForms.of(held)
+    notices = forms.measure(_NOTICES)
+    assert notices.places == 3
+    assert notices.half_width is not None and round(notices.half_width, 4) == 0.0031
+    check = next(form for form in forms.measures if form.key.startswith("goal_state:"))
+    assert check.places == 1
+    assert check.half_width is not None and round(check.half_width, 2) == 0.64
 
 
 def test_a_figure_under_a_millionth_reads_as_its_bound_and_asks_for_no_decimals() -> None:
@@ -531,7 +536,8 @@ def test_a_figure_under_a_millionth_reads_as_its_bound_and_asks_for_no_decimals(
 
 
 def test_a_family_level_under_100_never_reads_100() -> None:
-    """A corrected level of 99.95% read ``100%``, which no interval holds at."""
+    """A corrected level of 99.95% read ``100%``, which no interval holds at. Its heading now states the guarantee the
+    family holds at, and the level itself, where it is printed, reads as stored, never rounded."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     held = held.model_copy(
         update={
@@ -541,7 +547,8 @@ def test_a_family_level_under_100_never_reads_100() -> None:
     )
     look: PageLook = block_look(held, fact_arms(held))
     (contrasts,) = [table for table in every_table(held, look, forms=PageForms.of(held)) if table.name == "contrasts"]
-    assert {row["level"].text for row in contrasts.rows} == {"99.95% (95% across 16 comparisons)"}
+    assert {row["level"].text for row in contrasts.rows} == {"95% (adjusted for 16 comparisons)"}
+    assert PageForms.of(held).confidence("99.95%").text == "99.95%"
 
 
 def test_a_change_reads_at_its_table_s_precision_however_its_family_spells_it() -> None:
@@ -562,12 +569,13 @@ def test_a_change_reads_at_its_table_s_precision_however_its_family_spells_it() 
     ]
     notices = "compare.1017.September.failed_reply_notices.overall"
     assert (said(f"{notices}.difference"), said(f"{notices}.interval")) == (
-        "-0.0022 notices",
-        "-0.0069 notices to +0.0025 notices",
+        "-0.002 notices",
+        "-0.007 to +0.002 notices",
     )
     stratum = "strata.taste.1017.__outcome__"
     assert (said(f"{stratum}.mean"), said(f"{stratum}.vs_control")) == ("4.76", "+0.10")
-    assert said("strata.music_tech.qwen3.8-flash.__outcome__.vs_control") == "0.00"
+    # An exact zero reads whole: it states no precision (number policy, rule 4).
+    assert said("strata.music_tech.qwen3.8-flash.__outcome__.vs_control") == "0"
     assert said(f"{compare}.half_width") == "0.09358"
     assert said(f"{compare}.level") == "99.69%"
 

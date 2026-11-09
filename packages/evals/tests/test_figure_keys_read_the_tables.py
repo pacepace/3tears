@@ -66,10 +66,9 @@ def s2() -> ReportInput:
 
 @pytest.fixture(scope="module")
 def measured_s2(s2: ReportInput, kairo: ReportInput) -> ReportInput:
-    """s2 with beta's turn time at 701.37 ms, which the number rule spells ``701.4`` and the measure's levels' set
-    (whole, from 401 ms up) ``701``, and one comparison on the turn time of -3.7 ms, which puts the measure's changes
-    at one decimal: a gap of 98.63 ms reads ``98.63`` by the number rule, ``99`` at the levels' set and ``98.6`` at the
-    changes'."""
+    """s2 with beta's turn time at 701.37 ms and one comparison on the turn time of -3.7 ms (-6.0 to -1.4), whose
+    half-width of 2.3 ms puts every figure of the measure at one decimal (number policy, rule 2): ``701.4 ms``, and a
+    gap of 98.63 ms ``98.6``."""
     turn = s2.measures["total_ms"]
     beta = turn.per_arm["beta"].model_copy(update={"mean": 701.37})
     turn = turn.model_copy(update={"per_arm": {**turn.per_arm, "beta": beta}})
@@ -97,7 +96,7 @@ def test_a_contrast_key_reads_its_change_and_interval_as_the_comparisons_table(k
 def test_a_measure_key_reads_its_mean_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("measure.failed_reply_notices.September.mean", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "measure:failed_reply_notices", arm="September")
-    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.0022 notices"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.002 notices"
     assert PageForms.of(kairo).level("failed_reply_notices", _level(figure)).text == tabled
 
 
@@ -105,8 +104,9 @@ def test_a_measure_s_interval_and_a_bar_s_read_their_ends_at_the_measure_s_level
     """The arms-by-measure table prints the turn time whole, and a measure's ``ci`` and a bar's ``interval`` on it read
     both ends whole too."""
     assert _cell(_table(s2, "arms_by_measure"), "measure:total_ms", arm="beta") == "701 ms"
-    assert _said("measure.total_ms.beta.ci", s2) == "673 ms–729 ms"
-    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673 ms–729 ms"
+    # The unit written once, after the high end (number policy, rule 3).
+    assert _said("measure.total_ms.beta.ci", s2) == "673–729 ms"
+    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673–729 ms"
 
 
 def test_a_judged_key_reads_its_score_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
@@ -145,11 +145,11 @@ def test_a_pooled_interval_on_a_score_off_the_rubric_reads_by_the_number_rule_as
 
 
 def test_a_derived_interval_on_a_rate_reads_its_ends_as_the_cells_table_reads_a_rate() -> None:
-    """The interval derived from a target matrix's cells reads its ends in percent to a decimal, as the cells table
-    prints each cell's rate (``93.8%``)."""
+    """The interval derived from a target matrix's cells reads its ends in percent at the rate's one precision, as the
+    cells table prints each cell's rate (``94%``)."""
     held = _held("prototype4/r3-without-its-configs")
-    assert _cell(_table(held, "cells"), "arm:atlas-m.zero", cells="Simple × Science") == "93.8%"
-    assert _said("overall_interval.balanced_accuracy.atlas-m.zero.interval", held) == "89.5–90.1%"
+    assert _cell(_table(held, "cells"), "arm:atlas-m.zero", cells="Simple × Science") == "94%"
+    assert _said("overall_interval.balanced_accuracy.atlas-m.zero.interval", held) == "89–90%"
 
 
 def test_a_pooled_interval_on_a_score_reads_its_ends_at_a_score_s_two_decimals(kairo: ReportInput) -> None:
@@ -223,19 +223,21 @@ def test_a_derived_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_
     figure = resolve("overall_interval.balanced_accuracy.atlas-m.zero.interval", held)
     assert isinstance(figure.value, tuple)
     low, high = (forms.level("balanced_accuracy", end).text for end in figure.value)
-    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "89 ms–90 ms"
+    # Each end as the table prints a level, the unit written once, after the high end (number policy, rule 3).
+    assert format_figure(figure, forms=forms) == f"{low.removesuffix(' ms')}–{high}" == "89–90 ms"
 
 
 def test_a_criterion_s_figure_and_its_interval_s_ends_read_at_its_measure_s_levels_set(
     measured_s2: ReportInput,
 ) -> None:
-    """The criterion's figure is the turn time's level, which the arms-by-measure table prints whole (``701 ms``, where
-    the number rule reads ``701.4 ms``), and its interval's ends read whole too."""
+    """The criterion's figure is the turn time's level, which the arms-by-measure table prints at the measure's one
+    precision (its comparison's half-width of 2.3 ms reads it to a tenth: ``701.4 ms``), and its interval's ends read
+    at it too."""
     forms = PageForms.of(measured_s2)
     value, low, high = (resolve(f"{_CRITERION}.{field}", measured_s2) for field in ("value", "low", "high"))
     tabled = _cell(_table(measured_s2, "arms_by_measure"), "measure:total_ms", arm="beta")
-    assert format_figure(value, forms=forms) == tabled == "701 ms"
-    assert (format_figure(low, forms=forms), format_figure(high, forms=forms)) == ("673 ms", "729 ms")
+    assert format_figure(value, forms=forms) == tabled == "701.4 ms"
+    assert (format_figure(low, forms=forms), format_figure(high, forms=forms)) == ("673.3 ms", "728.7 ms")
     for figure in (value, low, high):
         assert forms.level("total_ms", _level(figure)).text == format_figure(figure, forms=forms), figure.path
 
@@ -251,7 +253,7 @@ def test_the_weakest_margin_reads_its_figure_and_its_margin_as_its_criterion_s_k
     """The weakest margin is beta's turn-time criterion: its figure reads as the criterion's ``value`` and the table's
     cell, its margin as the criterion's ``gap``."""
     tabled = _cell(_table(measured_s2, "arms_by_measure"), "measure:total_ms", arm="beta")
-    assert _said("weakest.value", measured_s2) == _said(f"{_CRITERION}.value", measured_s2) == tabled == "701 ms"
+    assert _said("weakest.value", measured_s2) == _said(f"{_CRITERION}.value", measured_s2) == tabled == "701.4 ms"
     assert _said("weakest.margin", measured_s2) == _said(f"{_CRITERION}.gap", measured_s2) == "98.6 ms"
 
 

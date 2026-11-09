@@ -60,6 +60,7 @@ import dataclasses
 import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
@@ -152,7 +153,9 @@ _AS_DOTS = frozenset({"strata", "tasks", "compare", "configs", "levers"})
 class _Change:
     """One drawn change: its row's id, label, colour, group and panel, its value and interval, and how it reads; the
     level of what it is compared with (``base``, spelled, and what that level counts, ``count``) where the input
-    holds it; and the measure it is a change of (``measure`` and ``kind``; both empty for a preference's, of none)."""
+    holds it; and the measure it is a change of (``measure`` and ``kind``; both empty for a preference's, of none).
+    Where the page's forms decide the measure's digits, its value's and its interval's ends' texts as they print them
+    (``texts``), which its row carries, so its values table and its labels read as every other surface of the page."""
 
     id: str
     label: str
@@ -169,6 +172,46 @@ class _Change:
     count: str = ""
     measure: str = ""
     kind: str | None = ""
+    texts: tuple[str, str | None, str | None] | None = None
+
+
+class _HasEnds(Protocol):
+    """An interval as the page's forms print it, by its two ends' digits."""
+
+    @property
+    def low_digits(self) -> str: ...
+
+    @property
+    def high_digits(self) -> str: ...
+
+
+def _end_digits(ends: _HasEnds | None) -> tuple[str, str] | None:
+    """An interval's two ends' digits as the page's forms printed them; None for no interval."""
+    return None if ends is None else (ends.low_digits, ends.high_digits)
+
+
+def _decided(
+    context: ChartContext,
+    drawn: Quantity,
+    measure: str,
+    kind: str | None,
+    said: str,
+    ends: tuple[str, str] | None,
+) -> tuple[str, str | None, str | None] | None:
+    """A row's value and interval ends as the page's forms print them, where they decide its measure's digits; None
+    for money, which the chart settles on one ruler after its rows are drawn, and for a measure the forms hold no
+    digits of, whose row its chart's format spells."""
+    if drawn.unit == MONEY or not measure:
+        return None
+    try:
+        form = context.forms.measure(measure, kind=kind)
+    except KeyError:
+        # A measure the page states no form of (a chart of a measure the input names only in a slice) keeps its
+        # chart's format.
+        return None
+    if form.places is None:
+        return None
+    return (said, None if ends is None else ends[0], None if ends is None else ends[1])
 
 
 def _in_one_form(
@@ -451,7 +494,9 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
         interval = reading.within_interval
         low, high = (float(interval[0]), float(interval[1])) if interval is not None else (None, None)
         direction = "worse" if high is not None and high < 0 else "better" if low is not None and low > 0 else ""
-        tip = [look.name, forms.chart_note(float(reading.change), drawn, measure=rate, kind="trial").text]
+        printed = forms.chart_note(float(reading.change), drawn, measure=rate, kind="trial")
+        tip = [look.name, printed.text]
+        ends = None
         if low is not None and high is not None:
             ends = forms.chart_interval(low, high, drawn, measure=rate, kind="trial")
             tip[1] += f", {ends.text}"
@@ -469,6 +514,7 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
                 count=count,
                 measure=rate,
                 kind="trial",
+                texts=_decided(context, drawn, rate, "trial", printed.digits, _end_digits(ends)),
             )
         )
     return changes, drawn
@@ -509,8 +555,10 @@ def _contrast_changes(
             )
             words = contrast_words(report_input, contrast, named)
             direction = {"regressed": "worse", "improved": "better"}.get(contrast.verdict, "")
-            said = context.forms.chart_note(value, here, measure=group.key, kind=contrast.kind).text
+            printed = context.forms.chart_note(value, here, measure=group.key, kind=contrast.kind)
+            said = printed.text
             tip = [look.name, words, said]
+            ends = None
             if interval is not None:
                 ends = context.forms.chart_interval(*interval, here, measure=group.key, kind=contrast.kind)
                 tip[2] += f", {ends.text}"
@@ -538,6 +586,7 @@ def _contrast_changes(
                     count=count,
                     measure=group.key,
                     kind=contrast.kind,
+                    texts=_decided(context, here, group.key, contrast.kind, printed.digits, _end_digits(ends)),
                 )
             )
     keys = [group.key for group in groups]
@@ -892,10 +941,13 @@ def _analysed_change(
     """One row an analysis computed, as a change: bold where its interval clears zero, muted where it holds it; what
     it is compared with (``base``) where the input states it; on ``measure``, the measure the analysis compared."""
     forms, kind = context.forms, figure_kind(context, measure)
-    said = forms.chart_note(value, drawn, measure=measure, kind=kind).text
+    printed = forms.chart_note(value, drawn, measure=measure, kind=kind)
+    said = printed.text
     tip = [*head, said]
+    ends = None
     if interval is not None:
-        tip[-1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).text}"
+        ends = forms.chart_interval(*interval, drawn, measure=measure, kind=kind)
+        tip[-1] += f", {ends.text}"
     return _Change(
         id=row_id,
         label=label,
@@ -910,6 +962,7 @@ def _analysed_change(
         base=base,
         measure=measure,
         kind=kind,
+        texts=_decided(context, drawn, measure, kind, printed.digits, _end_digits(ends)),
     )
 
 
@@ -1166,6 +1219,7 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
 def _forest_row(change: _Change, context: ChartContext) -> ForestRow:
     if change.interval is None:
         raise context.refuse(f"row {change.label!r} carries no interval, and a forest draws intervals")
+    texts = _row_texts(change)
     return ForestRow(
         id=change.id,
         label=change.label,
@@ -1178,6 +1232,9 @@ def _forest_row(change: _Change, context: ChartContext) -> ForestRow:
         note=change.note,
         tip=change.tip,
         group=change.group,
+        value_text=texts[0],
+        lo_text=texts[1],
+        hi_text=texts[2],
     )
 
 
@@ -1193,9 +1250,8 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
 def _family_level(context: ChartContext) -> str:
     """A forest's level as its head prints it (:meth:`~threetears.evals.analysis.report.forms.PageForms.confidence`,
     which reads :func:`~threetears.evals.analysis.report.forms.interval_level`, the form a table's cell prints it in):
-    where its contrasts are one family's, corrected together at the chart's level, that level and what the family
-    holds at together, ``99.7% (95% across 16 comparisons)`` (the kit prints ``99.7% intervals (95% across 16
-    comparisons)``)."""
+    where its contrasts are one family's, corrected together at the chart's level, the joint guarantee the family
+    holds at, ``95% (adjusted for 16 comparisons)`` (the kit prints ``95% intervals (adjusted for 16 comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
     return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
@@ -1242,6 +1298,7 @@ def _bar_row(change: _Change, level: str, *, dots: bool = False) -> BarRow:
     descriptive rule cannot tell it from zero; a dot with an interval is never faded, its interval saying how sure it
     is, so no row reads surer than one whose interval holds zero."""
     interval = change.interval if level else None
+    texts = _row_texts(change, with_interval=interval is not None)
     return BarRow(
         id=change.id,
         label=change.label,
@@ -1255,7 +1312,19 @@ def _bar_row(change: _Change, level: str, *, dots: bool = False) -> BarRow:
         note=change.note,
         tip=change.tip,
         group=change.group,
+        value_text=texts[0],
+        lo_text=texts[1],
+        hi_text=texts[2],
     )
+
+
+def _row_texts(change: _Change, *, with_interval: bool = True) -> tuple[str | None, str | None, str | None]:
+    """A row's decided texts (:attr:`_Change.texts`): its value's, and its interval's two ends' where the row draws
+    its interval; each None where the forms decide none, which the chart's format spells."""
+    if change.texts is None:
+        return None, None, None
+    value, low, high = change.texts
+    return (value, low, high) if with_interval else (value, None, None)
 
 
 def _diverging(context: ChartContext) -> Drawn:

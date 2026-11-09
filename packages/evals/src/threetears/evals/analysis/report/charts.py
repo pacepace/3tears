@@ -780,13 +780,13 @@ def _reference_spelled(reference: ChartReference | None, spec: str, read_at: str
     return reference.model_copy(update={"value_text": _formatted(spec, reference.value, read_at)})
 
 
-#: An interval level with a gloss after it in parentheses: ``99.7% (95% across 16 comparisons)``.
+#: An interval level with a gloss after it in parentheses: ``95% (adjusted for 16 comparisons)``.
 _GLOSSED_LEVEL = re.compile(r"^(\S+) (\(.+\))$")
 
 
 def _interval_head(level: str | None) -> str:
     """A values table's interval column head: ``95% interval``; a glossed level keeps its gloss last, as the chart's
-    head does (``99.7% interval (95% across 16 comparisons)``)."""
+    head does (``95% interval (adjusted for 16 comparisons)``)."""
     glossed = _GLOSSED_LEVEL.fullmatch(level or "")
     return f"{glossed[1]} interval {glossed[2]}" if glossed else f"{level} interval"
 

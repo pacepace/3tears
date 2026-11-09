@@ -69,6 +69,7 @@ from threetears.evals.analysis.report.parts.charting import (
     contrast_groups,
     contrast_words,
     figure_interval,
+    figure_kind,
     measure_words,
     money_words,
     slice_name,
@@ -84,6 +85,7 @@ from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.analyst.settle import SettleRow
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report_input import (
     BarRead,
     Cell,
@@ -143,6 +145,35 @@ def _number(value: float | None, unit: str, interval: tuple[float, float] | None
     return TableCell(value=value, unit=unit, low=low, high=high)
 
 
+def _decided(
+    context: ChartContext,
+    key: str,
+    kind: str | None,
+    value: float,
+    interval: tuple[float, float] | None,
+    *,
+    change: bool,
+) -> tuple[TableCell, TableCell | None] | None:
+    """A measure's figure and its interval as the page's forms print them, each a cell of its decided text, where the
+    forms decide the measure's digits (number policy, rule 1: one precision on the whole page); None for money, which
+    its column's one form spells, and for a figure of a measure the page states no form of. ``value`` and ``interval``
+    are as the input holds them."""
+    forms = context.forms
+    try:
+        form = forms.measure(key, kind=kind)
+    except KeyError:
+        # A figure of a measure the page's forms hold no form of keeps its column's number rule.
+        return None
+    if form.places is None:
+        return None
+    said = forms.change(key, value, kind=kind) if change else forms.level(key, value, kind=kind)
+    cell = forms.of_measure(TableCell(value=said.text), measure=key, kind=form.kind)
+    if interval is None:
+        return cell, None
+    ends = forms.interval(key, interval[0], interval[1], kind=kind, change=change)
+    return cell, forms.of_measure(TableCell(value=ends.text), measure=key, kind=form.kind)
+
+
 def _words(value: str | None) -> TableCell:
     return TableCell(value=value or None)
 
@@ -154,22 +185,27 @@ def _kept_arms(context: ChartContext, held: Iterator[str]) -> list[str]:
 
 def _figure_cell(
     context: ChartContext, key: str, stat: Stat | None, drawn: Quantity, arm: str = ""
-) -> tuple[TableCell, str]:
+) -> tuple[TableCell, TableCell | None, str]:
     """A figure's cell, drawn as its column's quantity (``drawn``: every figure the column holds, so its money reads in
     one form), and its measure's name as the table writes it (per 1,000 replies for money per reply drawn so); an
-    arm's overall figure carries the interval code computes where the table's level is computed here."""
+    arm's overall figure carries the interval code computes where the table's level is computed here. A measure the
+    page's forms decide prints its decided text, its interval in a cell of its own; money stays a number, which its
+    column's one form spells."""
     report_input = context.report_input
     # The column's head names what its money is drawn per, replacing the label's own count (the one owner's words).
     name = money_words(report_input, key, drawn)
     read = stat_value(report_input, key, stat) if stat is not None else None
     if stat is None or read is None:
-        return TableCell(value=None), name
+        return TableCell(value=None), None, name
     if read[1] != "mean":
         interval = None
     else:
         interval = figure_interval(context, key, arm, stat) if arm else stat_interval(stat)
+    kind = figure_kind(context, key)
+    if drawn.unit != MONEY and (decided := _decided(context, key, kind, read[0], interval, change=False)):
+        return decided[0], decided[1], name
     shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
-    return _number(read[0] * drawn.factor, drawn.unit, shown), name
+    return _number(read[0] * drawn.factor, drawn.unit, shown), None, name
 
 
 def _column_quantity(context: ChartContext, key: str, stats: Iterable[Stat | None]) -> Quantity:
@@ -179,20 +215,22 @@ def _column_quantity(context: ChartContext, key: str, stats: Iterable[Stat | Non
 
 
 def _readings(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
-    points = quantity("points", change=True)
     by_arm = {row.arm: row.item for row in context.rows() if isinstance(row.item, Reading)}
+    forms = context.forms
     for arm in context.arm_order(by_arm):
         reading = by_arm[arm]
         interval = reading.within_interval
-        yield {
-            "arm": _arm(context, arm),
-            "change": _number(
-                float(reading.change),
-                points.unit,
-                (float(interval[0]), float(interval[1])) if interval is not None else None,
-            ),
-            "reading": _words(humanize("dimension", reading.reading)),
-        }
+        # A reading is the pass rate's change, in points already, which the page's forms print at the pass rate's
+        # one precision, as every other surface of the page does.
+        drawn = forms.chart_quantity("points", change=True, measure=TRIAL_PASS_NAME, kind="trial")
+        said = forms.chart_note(float(reading.change), drawn, measure=TRIAL_PASS_NAME, kind="trial")
+        row: _Row = {"arm": _arm(context, arm), "change": TableCell(value=said.text)}
+        if interval is not None:
+            ends = forms.chart_interval(
+                float(interval[0]), float(interval[1]), drawn, measure=TRIAL_PASS_NAME, kind="trial"
+            )
+            row[f"change{_INTERVAL_COLUMN}"] = TableCell(value=ends.text)
+        yield row | {"reading": _words(humanize("dimension", reading.reading))}
 
 
 def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -211,6 +249,28 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             contrast = group.by_arm[arm]
             drawn = drawn_as[units[arm]]
             interval = contrast.interval
+            decided = (
+                _decided(
+                    context,
+                    key,
+                    contrast.kind,
+                    float(contrast.delta),
+                    (float(interval[0]), float(interval[1])) if interval is not None else None,
+                    change=True,
+                )
+                if drawn.unit != MONEY and contrast.delta is not None
+                else None
+            )
+            if decided is not None:
+                change, ends = decided
+                yield {
+                    "arm": _arm(context, arm),
+                    "measure": _words(contrast_words(report_input, contrast, group.aspect if group.split else None)),
+                    "change": change,
+                    **({f"change{_INTERVAL_COLUMN}": ends} if ends is not None else {}),
+                    "verdict": _words(humanize("dimension", contrast.verdict)),
+                }
+                continue
             yield {
                 "arm": _arm(context, arm),
                 "measure": _words(
@@ -261,9 +321,11 @@ def _wide(
         row = dict(own)
         for key in keys:
             arm = arms[index] if arms is not None else ""
-            cell, name = _figure_cell(context, key, figures.get(key), columns[key], arm)
+            cell, interval, name = _figure_cell(context, key, figures.get(key), columns[key], arm)
             named.setdefault(key, name)
             row[f"{_MEASURE_COLUMN}{key}"] = cell
+            if interval is not None:
+                row[f"{_MEASURE_COLUMN}{key}{_INTERVAL_COLUMN}"] = interval
         built.append(row)
     laid += [(f"{_MEASURE_COLUMN}{key}", named[key]) for key in keys]
     yield from built
@@ -616,6 +678,10 @@ def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) ->
     return laid, [{column.key: row[column.key] for column in laid if column.key in row} for row in filled]
 
 
+#: The sources whose rows an analysis computes, each figure printed as its key reads it (compare, settle, levers).
+_AS_KEYED = frozenset({"compare", "settle", "levers"})
+
+
 def _filled(columns: list[TableColumn], rows: list[_Row], *, keep: set[str]) -> tuple[list[TableColumn], list[_Row]]:
     """The columns some row fills (a value that is not absent), the first, the row's label, and those in ``keep`` (the
     measures a query names) always among them; the rows with only those (this module's columns no row fills)."""
@@ -625,10 +691,6 @@ def _filled(columns: list[TableColumn], rows: list[_Row], *, keep: set[str]) -> 
         if at == 0 or column.key in keep or any(row[column.key].value is not None for row in rows if column.key in row)
     ]
     return kept, [{column.key: row[column.key] for column in kept if column.key in row} for row in rows]
-
-
-#: The sources whose rows an analysis computes, each figure printed as its key reads it (compare, settle, levers).
-_AS_KEYED = frozenset({"compare", "settle", "levers"})
 
 
 def _table(context: ChartContext) -> Drawn:
@@ -653,9 +715,9 @@ def _table(context: ChartContext) -> Drawn:
     source = cost_basis(report_input).source
     beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
     money = context.forms.money_columns(rows, reconciles=beside)
-    # A table of what an analysis computes prints each figure as its key reads it (this module's docstring), so the
-    # prose citing it reads alike; every other table reads its percentages at one precision per column.
-    laid = money if context.query.source in _AS_KEYED else context.forms.rate_columns(money, bare=bare_columns(columns))
+    # Every rate prints its measure's decided text, so no column respells it: a table of what an analysis computes
+    # prints each figure as its key reads it (this module's docstring), and every other is recorded as it prints.
+    laid = money if context.query.source in _AS_KEYED else context.forms.as_printed(money, bare=bare_columns(columns))
     columns, rows = _with_intervals(columns, laid, context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
