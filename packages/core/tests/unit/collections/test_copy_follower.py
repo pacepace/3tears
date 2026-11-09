@@ -24,6 +24,7 @@ import json
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any
 
@@ -43,6 +44,7 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     FollowedTable,
     FollowerPhase,
     HubCapabilityMissingError,
+    PartialStamp,
     require_generation_by_trigger,
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
@@ -51,6 +53,7 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange, Ep
 from threetears.nats import Subject  # noqa: E402
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from prometheus_client import REGISTRY  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -59,6 +62,10 @@ _COLUMNS = (
     Column(name="geo_id", column_type=BIGINT_TYPE),
     Column(name="votes", column_type=BIGINT_TYPE),
 )
+
+
+def _whole_reads_counted(table: str, why: str) -> float:
+    return REGISTRY.get_sample_value("copy_follower_whole_reads_total", {"table": table, "why": why}) or 0.0
 
 
 def _metadata() -> MetaData:
@@ -675,9 +682,12 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
     )
     lock.version += 1
     l3.rows_read = 0
+    legacy = _whole_reads_counted(_TABLE, "legacy_whole_record")
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
-    assert l3.rows_read == 12
+    # 0.95.0: a partition no key leads is an older writer's whole record, read once and counted, never a scan by it
+    assert l3.rows_read == 53  # 52 rows, a page and its one-row look past
+    assert _whole_reads_counted(_TABLE, "legacy_whole_record") == legacy + 1
 
 
 class _Notes:
@@ -856,3 +866,351 @@ async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
     assert asked["max_bytes"] == 500, "held under half the payload the bus announces"
     assert asked["cursor"] == {"slot": 2, "after": at.isoformat()}
     assert "tenant" not in asked, "the broker names the tenant from the caller's verified schema, never the request"
+
+
+# --- a write in progress holds only its scopes (0.95.0) -------------------------------------------------------------
+
+
+class _Scopes:
+    """the writer's record as ScopeEpochs answers it: each scope's epoch, and the scopes a write in progress holds."""
+
+    def __init__(self) -> None:
+        self.version = 1
+        self.epochs: dict[str, int] = {"state:VA": 1, "state:IL": 1}
+        self.held: frozenset[str] | None = None
+        self.on_read: Any = None
+        self.reads = 0
+
+    async def settled(self) -> Any:
+        self.reads += 1
+        if self.on_read is not None and self.on_read[0] == self.reads:
+            self.on_read[1]()
+        if self.held is None:
+            return SimpleNamespace(version=self.version, epochs=dict(self.epochs), pending=frozenset())
+        return Unsettled("a long write", epochs=dict(self.epochs), pending=self.held, version=self.version)
+
+    def commit(self, *scopes: str) -> None:
+        self.version += 1
+        for scope in scopes:
+            self.epochs[scope] = self.version
+
+
+def _scoped_world(
+    lock: _Scopes, *, checkpoint_from: DuckDBBackend | None = None
+) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
+    l3, log = _L3(), _Log()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+    )
+    follower.register()
+    return l3, log, backend, follower
+
+
+def _of(backend: DuckDBBackend, state: str) -> list[tuple[Any, ...]]:
+    return [row for row in _copy(backend) if row[0] == state]
+
+
+def _l3_of(l3: _L3, state: str) -> list[tuple[Any, ...]]:
+    return [row for row in l3.held() if row[0] == state]
+
+
+async def test_a_commit_beside_a_held_write_reaches_the_copy_and_the_held_scope_stays_settled() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled_il = _of(backend, "IL")
+    # a long AP write holds IL: its rows land part way
+    lock.held = frozenset({"state:IL"})
+    l3.put([("IL", 0, 50), ("IL", 9, 50)])
+    log.commit([("IL", 0), ("IL", 9)])
+    # an LSF run commits VA beside it
+    l3.put([("VA", 1, 77)])
+    log.commit([("VA", 1)])
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA")
+    assert _of(backend, "IL") == settled_il
+    stamp = follower.stamp
+    assert isinstance(stamp, PartialStamp)
+    assert stamp.held == frozenset({"state:IL"})
+    assert stamp.epoch("state:VA") == lock.version and stamp.epoch("state:IL") == 1
+    assert follower.status().pending == {_TABLE: 2}
+    # the write commits: IL follows
+    lock.commit("state:IL")
+    lock.held = None
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_new_replica_is_ready_during_a_long_write_for_every_scope_it_can() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    lock.held = frozenset({"state:IL"})
+    await follower.warm()
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA")
+    assert _of(backend, "IL") == []
+    assert follower.stamp is not None and follower.stamp.held == frozenset({"state:IL"})
+    lock.commit("state:IL")
+    lock.held = None
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 5  # IL alone, as a key range: never the table again
+
+
+async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5))
+    log.commit([("VA", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    before, stamp = _copy(backend), follower.stamp
+    l3.put([("VA", 1, 9)])
+    log.commit([("VA", 1)])
+    # the write takes VA between the pass's two reads of the record
+    lock.on_read = (lock.reads + 2, lambda: setattr(lock, "held", frozenset({"state:VA"})))
+    assert not await follower.catch_up()
+    assert _copy(backend) == before and follower.stamp == stamp
+    assert backend.staged_stages() == [] or follower.status().pending == {_TABLE: 1}
+    lock.commit("state:VA")
+    lock.held = None
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
+async def test_an_apply_that_fails_keeps_its_stages_and_the_next_pass_reads_nothing(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    l3.put([("VA", 1, 5)])
+    log.commit([("VA", 1)])
+    lock.version += 1
+    real = backend.apply_staged
+    calls = {"n": 0}
+
+    def failing(*args: Any, **kwargs: Any) -> int:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("the copy's apply failed")
+        return real(*args, **kwargs)
+
+    backend.apply_staged = failing  # type: ignore[method-assign]
+    with pytest.raises(OSError):
+        await follower.catch_up()
+    assert backend.staged_stages()
+    l3.rows_read, l3.statements = 0, 0
+    assert await follower.catch_up()
+    assert (l3.rows_read, l3.statements) == (0, 0)
+    assert _copy(backend) == l3.held()
+
+
+async def test_drops_heard_before_the_read_are_one_whole_read_and_counted(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    l3.put(_rows("OH", 3))
+    log.commit(None)
+    log.commit(None)
+    lock.version += 1
+    l3.statements = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.statements == 1  # one page of 13 rows: the two records were one read
+
+
+async def test_a_partition_no_key_leads_is_an_older_writers_whole_record_never_a_scan_by_it() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 4))
+    log.commit([("VA", i) for i in range(4)])
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.put([("VA", 9, 1)])
+    log.count += 1
+    log.records[f"inc:{log.count}"] = EpochChange(
+        table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"votes": "1"}
+    )
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
+# --- a load's or a clear's key prefixes, an operator's reset, a table behind (0.95.0) -------------------------------
+
+
+def _record_whole(log: _Log, **reach: Any) -> str:
+    log.count += 1
+    token = f"inc:{log.count}"
+    log.records[token] = EpochChange(table=_TABLE, token=token, whole_table=True, **reach)
+    return token
+
+
+async def test_a_load_of_many_key_prefixes_reads_each_as_a_key_range_in_one_batched_read(world: Any) -> None:
+    """an AP load covers many races of a state: its record names every office's key prefix, and the follower reads
+    those prefixes' rows, all of them in one statement, never the table."""
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 200)
+    l3.put(_rows("OH", 7, votes=4) + _rows("TX", 9, votes=4))
+    l3.delete([("VA", 0)])
+    _record_whole(log, prefixes=[{"state": "OH"}, {"state": "TX"}])
+    lock.version += 1
+    l3.rows_read, l3.statements = 0, 0
+    before = _whole_reads_counted(_TABLE, "legacy_whole_record")
+    assert await follower.catch_up()
+    assert [row for row in _copy(backend) if row[0] != "VA"] == [row for row in l3.held() if row[0] != "VA"]
+    assert (l3.rows_read, l3.statements) == (16, 1)
+    assert _whole_reads_counted(_TABLE, "legacy_whole_record") == before
+
+
+async def test_two_column_key_prefixes_read_only_their_rows_and_replace_them(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 50)
+    l3.put([("VA", 3, 30)])
+    l3.delete([("VA", 4)])
+    _record_whole(log, prefixes=[{"state": "VA", "geo_id": "3"}, {"state": "VA", "geo_id": "4"}])
+    lock.version += 1
+    l3.rows_read, l3.statements = 0, 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert (l3.rows_read, l3.statements) == (1, 1)
+
+
+async def test_a_reset_reads_its_table_again_as_that_tables_cold_start_counted_apart(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 30)
+    l3.delete([("VA", i) for i in range(30)])
+    l3.put(_rows("OH", 4))
+    _record_whole(log, reason="reset")
+    lock.version += 1
+    resets, legacy = _whole_reads_counted(_TABLE, "reset"), _whole_reads_counted(_TABLE, "legacy_whole_record")
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert _whole_reads_counted(_TABLE, "reset") == resets + 1
+    assert _whole_reads_counted(_TABLE, "legacy_whole_record") == legacy
+
+
+async def test_a_reset_is_read_during_a_long_write_as_a_first_start_is() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    lock.held = frozenset({"state:IL"})
+    l3.put([("VA", 2, 40), ("IL", 1, 40)])
+    _record_whole(log, reason="reset")
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA")
+    assert _of(backend, "IL") == []  # the held scope is read once the write commits
+    lock.commit("state:IL")
+    lock.held = None
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 5
+
+
+def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
+    """a table keyed by a column that leads without the scope (an office's key), its scope in the row only."""
+    l3, log = _L3(), _Log()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=("geo_id", "state"), columns=_COLUMNS, scope=("state", "state:"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+    )
+    follower.register()
+    return l3, log, backend, follower
+
+
+async def test_a_prefix_whose_scope_is_in_its_rows_applies_beside_a_held_write_unless_a_row_is_held() -> None:
+    lock = _Scopes()
+    l3, log, backend, follower = _office_world(lock)
+    l3.put([("VA", 3, 1), ("VA", 7, 1), ("IL", 7, 1)])
+    log.commit([("3", "VA"), ("7", "VA"), ("7", "IL")])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled = _copy(backend)
+    lock.held = frozenset({"state:IL"})
+    # a load of office 3 (VA's alone) and office 7 (rows of VA and of the held IL) commits beside the write
+    l3.put([("VA", 3, 9), ("VA", 7, 9), ("IL", 7, 9)])
+    _record_whole(log, prefixes=[{"geo_id": "3"}])
+    _record_whole(log, prefixes=[{"geo_id": "7"}])
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert ("VA", 3, 9) in _copy(backend)
+    assert [row for row in _copy(backend) if row[1] == 7] == [row for row in settled if row[1] == 7]
+    lock.commit("state:IL")
+    lock.held = None
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
+async def test_a_table_the_log_lost_is_caught_up_from_its_notes_never_read_whole(noted_world: Any) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 100)
+    # an epoch the log lost: its record is gone, so the registry is behind on the table
+    when = datetime.now(UTC)
+    l3.put([("VA", 5, 50), ("VA", 500, 1)])
+    l3.delete([("VA", 6)])
+    log.commit(None, keep=False)
+    registry.set_noted_keys_reader(_Notes([(when, ("VA", "5")), (when, ("VA", "500")), (when, ("VA", "6"))]))
+    lock.version += 1
+    l3.rows_read = 0
+    cold = _whole_reads_counted(_TABLE, "cold_start")
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 2  # the noted keys' rows, never the table's
+    assert follower.status().behind == {}
+    assert _whole_reads_counted(_TABLE, "cold_start") == cold
+
+
+class _WholeNotes(_Notes):
+    """notes naming a whole-table write in the bracket: a file load, a large copy, a reset."""
+
+    async def noted_keys(self, table: str, **kwargs: Any) -> NotedKeysPage | str:
+        page = await super().noted_keys(table, **kwargs)
+        assert isinstance(page, NotedKeysPage)
+        return NotedKeysPage(keys=page.keys, whole_table=True, next=None)
+
+
+async def test_notes_naming_a_whole_write_leave_the_table_behind_never_read_whole(noted_world: Any) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 20)
+    before = _copy(backend)
+    l3.put(_rows("OH", 3))
+    log.commit(None, keep=False)
+    registry.set_noted_keys_reader(_WholeNotes([(datetime.now(UTC), ("OH", "0"))]))
+    lock.version += 1
+    l3.rows_read = 0
+    assert not await follower.catch_up()
+    assert follower.status().behind == {_TABLE: "notes_whole"}
+    assert _copy(backend) == before
+    assert l3.rows_read == 0

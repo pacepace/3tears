@@ -637,11 +637,14 @@ class Unsettled:
     :ivar reason: what the writer says of the write (which one, how long it has run)
     :ivar epochs: each part's version as last committed, when the writer records touches; ``None`` when it does not
     :ivar pending: the parts the write in progress has touched (its rows there may be committed part way)
+    :ivar version: the last committed write's version, when the writer names it
     """
 
     reason: str
     epochs: Mapping[str, int] | None = None
     pending: frozenset[str] = frozenset()
+    #: the last committed write's version, when the writer's record names it
+    version: int | None = None
 
 
 @dataclass(frozen=True)
