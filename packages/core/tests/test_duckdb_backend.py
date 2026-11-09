@@ -7,6 +7,7 @@ from typing import Any
 import importlib
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -48,7 +49,8 @@ def _make_metadata() -> MetaData:
 duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.base import UnsupportedL1ColumnError  # noqa: E402
-from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement  # noqa: E402
+from threetears.core.testing.calibrate import budget_problem  # noqa: E402
 from threetears.core.utils.cpu_quota import effective_cpu_count  # noqa: E402
 
 
@@ -977,3 +979,111 @@ class TestKeylessTables:
         backend = _keyless_backend()
         with pytest.raises(ValueError, match="key-less table 'results'"):
             backend.load_parquet("results", tmp_path / "none.parquet")
+
+
+def _scoped_keyless_backend() -> DuckDBBackend:
+    """a key-less table whose key leads with its scope column, as the reports pod's projections are kept."""
+    metadata = MetaData()
+    Table(
+        "projections",
+        metadata,
+        Column("state", String(8), primary_key=True),
+        Column("run_id", Integer, primary_key=True),
+        Column("county", String(64), primary_key=True),
+        Column("votes", Integer),
+    )
+    backend = DuckDBBackend(keyless=["projections"])
+    backend.initialize(metadata)
+    return backend
+
+
+def _projection_rows(state: str, runs: range, counties: int) -> list[dict[str, Any]]:
+    return [
+        {"state": state, "run_id": run, "county": f"c{county:04d}", "votes": run * county}
+        for run in runs
+        for county in range(counties)
+    ]
+
+
+class TestAKeylessScopeIsCheckedAlone:
+    """a key-less table whose key includes the scope column checks a scope's added rows against that scope only:
+    no other scope's row can hold their keys, and the table has no index to look them up by."""
+
+    def test_a_repeat_in_the_scope_is_refused_and_the_same_key_elsewhere_cannot_exist(self) -> None:
+        """Flips if a key the scope holds is added again, or another scope's rows refuse a scope's own."""
+        pytest.importorskip("pyarrow")
+        backend = _scoped_keyless_backend()
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "TX",
+                    rows=_projection_rows("TX", range(1), 3),
+                    primary_key=("state", "run_id", "county"),
+                ),
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "CA",
+                    rows=_projection_rows("CA", range(1), 3),
+                    primary_key=("state", "run_id", "county"),
+                ),
+            ]
+        )
+        arrow = backend.export_partition("projections", "state", "TX", order_by=("run_id", "county")).slice(0, 1)
+        with pytest.raises(duckdb.ConstraintException, match="name a key it holds"):
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=arrow, append=True)])
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "TX",
+                    rows=_projection_rows("TX", range(1, 2), 3),
+                    primary_key=("state", "run_id", "county"),
+                    append=True,
+                )
+            ]
+        )
+        assert backend.execute_query("SELECT count(*) AS n FROM projections")[0]["n"] == 9
+
+    def test_adding_a_run_to_a_scope_keeps_within_twice_a_plain_insert_whatever_the_other_scopes_hold(self) -> None:
+        """Flips if adding a scope's rows reads every other scope's rows to check their keys: the time grows with
+        the table, not the rows added. Measured against inserting the same rows into a keyed table."""
+        pa = pytest.importorskip("pyarrow")
+        backend = _scoped_keyless_backend()
+        others = [
+            PartitionReplacement(
+                "projections",
+                "state",
+                f"S{n:02d}",
+                rows=_projection_rows(f"S{n:02d}", range(20), 2_000),
+                primary_key=("state", "run_id", "county"),
+            )
+            for n in range(25)
+        ]
+        backend.replace_partitions(others)
+        added = backend.export_partition("projections", "state", "S00", order_by=("run_id", "county")).slice(0, 0)
+        run = pa.Table.from_pylist(_projection_rows("TX", range(1), 20_000), schema=added.schema)
+        plain = duckdb.connect()
+        # the bare operation: the run's rows inserted where their key is held unique, as the keyed table's index
+        # would hold it
+        plain.execute(
+            "CREATE TABLE plain (state VARCHAR, run_id INTEGER, county VARCHAR, votes INTEGER, "
+            "PRIMARY KEY (state, run_id, county))"
+        )
+        baseline = took = float("inf")
+        for _ in range(3):
+            plain.execute("DELETE FROM plain")
+            began = time.perf_counter()
+            plain.register("chunk", run)
+            plain.execute("INSERT INTO plain BY NAME SELECT * FROM chunk")
+            plain.unregister("chunk")
+            baseline = min(baseline, time.perf_counter() - began)
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=None)])
+            began = time.perf_counter()
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=run, append=True)])
+            took = min(took, time.perf_counter() - began)
+        problem = budget_problem("adding a 20,000-row run beside 1,000,000 rows", took, baseline)
+        assert problem is None, problem
