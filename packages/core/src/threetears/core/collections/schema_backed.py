@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -2802,6 +2802,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             cas=original_timestamp,
             conn=conn,
         )
+
+    @property
+    def save_many_to_store(self) -> Callable[[list[dict[str, Any]]], Awaitable[int]] | None:
+        """the L3 save of many rows in a few statements, as :meth:`save_to_store` saves each with no fence; ``None``
+        where it would write them otherwise (a table not upserted on conflict, a store that saves a row at a
+        time).
+
+        The L2-first saver writes a backlog of committed rows through it (:mod:`threetears.core.collections.l2_first`).
+
+        :return: the save, or ``None``
+        :rtype: Callable[[list[dict[str, Any]]], Awaitable[int]] | None
+        """
+        store = self._durable_store()
+        if self.schema.on_conflict != "update" or not isinstance(store, BulkDurableStore):
+            return None
+
+        async def save_many(rows: list[dict[str, Any]]) -> int:
+            written: int = await store.upsert_many(
+                self.schema.name, rows, max_rows=self.BULK_MAX_ROWS, max_bytes=self.BULK_MAX_BYTES
+            )
+            return written
+
+        return save_many
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete one row from L3 by primary key via the :class:`DurableStore` seam.

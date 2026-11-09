@@ -82,7 +82,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -785,6 +785,21 @@ class FakeKvBucket:
             marker = self._marker(key)
             return (None, marker if marker is not None else 0)
         return (entry.value, entry.revision)
+
+    async def get_latest_many(
+        self, *, keys: Sequence[str], batched: bool = False
+    ) -> dict[str, tuple[bytes | None, int]]:
+        """:meth:`get_latest` of many keys, as :meth:`threetears.nats.kv.NatsKvBucket.get_latest_many` answers them.
+
+        :param keys: the keys to read
+        :ptype keys: Sequence[str]
+        :param batched: whether the real one would batch; the answers are the same either way
+        :ptype batched: bool
+        :return: each key -> ``(value, revision)``
+        :rtype: dict[str, tuple[bytes | None, int]]
+        """
+        del batched
+        return {key: await self.get_latest(key=key) for key in dict.fromkeys(keys)}
 
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         """CAS update. returns new revision or ``None`` on mismatch.
