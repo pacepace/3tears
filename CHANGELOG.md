@@ -8,6 +8,53 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch, nats: load paths that grew with the table now grow with the change
+
+Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large
+sequential scans inside nested loops, from `EXPLAIN ANALYZE` in a rolled-back transaction; YugabyteDB's storage
+counts) and/or a real-size budget calibrated in the test (`threetears.core.testing.calibrate`: twice the
+database's own time for the bare operation on the same rows), shown failing on the old code. Numbers are
+YugabyteDB 2026.1 (b118) on a laptop.
+
+- **Keyset reads in an index's order (core).** `TableSchema.keyset_order` pages a filtered read in the order of
+  the index its filters lead (declare the key as that index's tail); the cursor adds a leading bound and the
+  row comparison's expansion, which YugabyteDB seeks by. An index can `include` columns. Pages size to the
+  reply cap a broker announces (`max_reply_bytes`, `L3Page`). Texas-size read: 4.3 s, 34x rows scanned ->
+  168 ms, 1.07x.
+- **Change notes (core).** Each ring table gains `(table_name, noted_at) INCLUDE (...)` and two partial indexes
+  (whole-table notes; notes written without a slot); `noted_rows_since` is one statement, reading the previous
+  table only until the last switch's fence has passed (1,278 ms -> 2.56 ms at 1M notes, 1.6x the same index read alone); the scrub's looks are distinct index scans (205 rows for 205); the emptying walks the key's
+  hash (or id), never re-reading its own tombstones. A copy of 10,000 rows or more is noted whole
+  (`WHOLE_COPY_ROWS`), as a file load is: the row trigger's `WHEN` skips every row of a whole-marked
+  transaction and a statement trigger (`threetears_change_note_whole_write`) writes its one note (a 50,000-row
+  copy on YugabyteDB: 47,464 ms -> 233 ms, 1.45x a plain `COPY`).
+- **Bulk writes (core).** `delete_rows` deletes and reads the rows its messages name in one `DELETE ...
+  RETURNING` a batch of keys (`ReturningDeletingStore.delete_many_returning`; 5,000 rows on YugabyteDB: 1,947 ms
+  -> 157 ms, 1.9x one keyed delete), its keys enrolled first and restated in one pass
+  (`CallerTransaction.restate_many`); a delete that fails first is settled by key alone and counted
+  (`threetears_collection_deletes_settled_by_key_total`). A direct load of a reload's rows is analysed after its last request (`AnalyzingStore`; a
+  state's geography read planned blind: 157 ms -> 0.4 ms). A collection's copy is cut by what its connection
+  carries (`copy_bounds`): one `COPY` on a direct connection; on the rail, requests sized to the cap the hub
+  announces (`max_request_bytes`, else `max_reply_bytes`; at most 12 MiB), or 1,000-row batches when it announces
+  none.
+- **Write marks (core).** Coordination migration v004 indexes `collection_write_marks (table_name, id)`.
+- **DuckDB (core), checked.** Adding rows to one scope of a key-less table was measured flat in the table's size
+  (1M and 6M rows alike); nothing changed, and a test holds it flat.
+- **Invalidations (core), expand step.** `CacheInvalidationMessage.more_rows` names further rows of one write;
+  every receiver of this release hears it as one message a row. Sending it (`CollectionRegistry.batch_invalidations`)
+  stays off until every process reads it (5,000 rows: 330 ms -> 22 ms, unlocked).
+- **L2-first saver (core, nats): a dormant path.** No consumer runs `run_l2_first_worker` today. The saver now
+  saves a window of epochs in the collection's many-row save (`save_many_to_store`), reading the window's
+  settled marks in one listing; 1,000 epochs, L3 on YugabyteDB, L2 in memory: 3,744 ms -> 46 ms, 3.5x a
+  one-statement upsert of 1,000 rows (12-13 ms). `NatsKvBucket.get_latest_many(batched=True)` reads keys in batched
+  direct gets (NATS 2.11+; about 16 ms per 1,000 keys against 103 ms single gets), only on a connection granted
+  the body-carried direct get, which pods never are: the worker turns it on (its runner is an infrastructure
+  identity), a library caller does not, and an unanswered batch is probed for a second and the bucket read a
+  key at a time after. Its receiver declares the new `request-reply` sender posture
+  (`threetears.enforcement.sender_posture`: a fresh `new_inbox()` subject, replying to the request sent beside it,
+  ended with it), which holds because no principal's grants reach another connection's inbox
+  (`tests/enforcement/test_inbox_prefixes_are_private.py`).
+
 ### core, epoch, nats: the epoch change log keyed by tenant
 
 **Changed (epoch, core, nats):** every change record is keyed `{tenant}.{table}.e`
