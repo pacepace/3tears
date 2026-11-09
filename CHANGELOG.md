@@ -99,6 +99,16 @@ package's text for every value, and a host-authored chart without them draws as 
 `fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
 yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
 
+**Hosts (prose keys, C5b):** a settle row's `level` and the `weakest.interval` key now resolve to their level as a
+number (the analyst serves `value` 0.95, `kind` `number`, `scale` `share`), and `reads` says the words (`95%
+one-sided`): a host that read those words from `value` reads them from `reads`. `weakest.interval` states what its
+interval guarantees, `the 95% interval, adjusted for 16 comparisons`, or `the 95% interval` where nothing is adjusted,
+in place of `the multiplicity-corrected 99.69% interval` and `the plain 95% interval, uncorrected`, so a stored report
+citing it renders the new words. A contrast family's and a contrast's `level` keys still read the per-interval level
+as the input states it (`99.69%`).
+The key grammar gains a `signed` filter, which prints a criterion's `gap` or `weakest.margin` with its `+` in any unit;
+without it they print no `+`, as before, so a stored report renders as it did.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

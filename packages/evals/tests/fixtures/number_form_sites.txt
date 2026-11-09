@@ -208,10 +208,7 @@ threetears/evals/analysis/report/doc_page/html.py | doc_page_html | _explore() |
 threetears/evals/analysis/report/doc_page/html.py | doc_page_html | grid_html() | 1
 threetears/evals/analysis/report/figure_keys.py | _assumed_cases | round() | 2
 threetears/evals/analysis/report/figure_keys.py | _scale_of | held_means() | 1
-threetears/evals/analysis/report/figure_keys.py | _sided_level | format_number() | 1
 threetears/evals/analysis/report/figure_keys.py | _unanswered_figure | group_thousands() | 1
-threetears/evals/analysis/report/figure_keys.py | _weakest | _weakest_interval_words() | 1
-threetears/evals/analysis/report/figure_keys.py | _weakest_interval_words | format_number() | 1
 threetears/evals/analysis/report/figure_keys.py | figure_unit | held_means() | 2
 threetears/evals/analysis/report/figure_keys.py | rubric_score | held_means() | 1
 threetears/evals/analysis/report/html_parts.py | _frame_widths | _id_rem() | 1
