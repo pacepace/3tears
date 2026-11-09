@@ -31,6 +31,7 @@ from typing import Any, Final
 
 from threetears.observe import get_logger
 
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -65,6 +66,9 @@ _AS_OF: Final = "as_of"
 def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
     """the fence table, for the owner to declare among its tables: one row per signal.
 
+    It lives among its owner's tables, in the owner's own schema, so its tenancy is that schema
+    (``TENANT_BY_SCHEMA``): a change record of it belongs to that owner alone.
+
     :param name: the table's name
     :ptype name: str
     :return: the schema, keyed on ``signal``
@@ -82,6 +86,7 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         on_conflict="update",
+        tenancy=TENANT_BY_SCHEMA,
     )
 
 

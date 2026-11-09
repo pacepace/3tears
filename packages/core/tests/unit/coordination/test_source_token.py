@@ -90,3 +90,9 @@ def test_the_fence_table_is_keyed_on_the_signal() -> None:
         "date_created",
         "date_updated",
     }
+
+
+def test_the_fence_table_lives_in_its_owners_schema() -> None:
+    from threetears.core.tenancy import TENANT_BY_SCHEMA
+
+    assert source_tokens_schema("my_tokens").tenancy == TENANT_BY_SCHEMA
