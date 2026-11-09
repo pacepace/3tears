@@ -113,6 +113,8 @@ __all__ = [
     "SharedRead",
     "SharedVersion",
     "epochs_version",
+    "merge_parts",
+    "merged_rows",
     "plain_name",
     "private_bytes",
     "query_batches",
@@ -946,6 +948,134 @@ def read_version(root: Path | str, version: str) -> Iterator[MappedVersion]:
         yield mapped
     finally:
         _KEPT_VERSIONS.give_back(str(root), mapped)
+
+
+def _part_files(directory: Path, table: str) -> dict[str, Path]:
+    """each part of ``table`` a version (or a result) directory holds, by part name; the schema file is not a part.
+
+    :param directory: the directory
+    :ptype directory: Path
+    :param table: the table
+    :ptype table: str
+    :return: part name -> its file
+    :rtype: dict[str, Path]
+    """
+    prefix = f"{table}{_PART_SEPARATOR}"
+    return {
+        entry.name[len(prefix) : -len(_TABLE_SUFFIX)]: entry
+        for entry in directory.iterdir()
+        if entry.name.startswith(prefix)
+        and entry.name.endswith(_TABLE_SUFFIX)
+        and entry.name != f"{prefix}{_TABLE_SUFFIX}"
+    }
+
+
+def merged_rows(root: Path | str, version: str, table: str, names: Sequence[str]) -> Callable[[], Any]:
+    """what opens the rows of ``names`` (parts of ``table`` in ``version``) as one reader, in part-name order.
+
+    For :class:`Parts` (a merged part :meth:`SharedArrowStore.publish` writes as it reaches it) and for a worker's
+    :meth:`SegmentSlot.write`: the reader maps each part's file and hands on its record batches, so the merge copies
+    each byte of the group once, into the new file, and reads nothing else. While the reader is open it holds a
+    shared ``flock`` on the version, as any reader of it does, so no sweep retires the version under it.
+
+    :param root: the store's directory
+    :ptype root: Path | str
+    :param version: the version holding the parts
+    :ptype version: str
+    :param table: the table held in parts
+    :ptype table: str
+    :param names: the parts to merge
+    :ptype names: Sequence[str]
+    :return: a callable taking no argument that returns a ``pyarrow.RecordBatchReader`` of their rows
+    :rtype: Callable[[], pa.RecordBatchReader]
+    """
+    path = Path(root) / _VERSIONS_DIR / _valid_name(version, "version")
+    _valid_name(table, "table")
+    ordered = sorted(_valid_name(name, "part") for name in names)
+
+    def held() -> int:
+        descriptor = _locked(path, fcntl.LOCK_SH)
+        if descriptor is None:
+            raise LookupError(f"shared Arrow version {version!r} is gone")
+        return descriptor
+
+    def opened() -> Any:
+        descriptor = held()
+        try:
+            files = _part_files(path, table)
+            missing = [name for name in ordered if name not in files]
+            if missing:
+                raise LookupError(f"shared Arrow version {version!r} holds no part {missing} of table {table!r}")
+            schema = _file_schema(path / f"{table}{_PART_SEPARATOR}{_TABLE_SUFFIX}")
+        finally:
+            os.close(descriptor)
+
+        def batches() -> Iterator[Any]:
+            # held again from the first batch to the last: a reader never read takes no lock and leaves none behind
+            again = held()
+            try:
+                for name in ordered:
+                    with pa.memory_map(str(files[name]), "r") as mapped:
+                        reader = ipc.open_file(mapped)
+                        for index in range(reader.num_record_batches):
+                            yield reader.get_batch(index)
+            finally:
+                os.close(again)
+
+        return pa.RecordBatchReader.from_batches(schema, batches())
+
+    return opened
+
+
+def merge_parts(store: SharedArrowStore, version: str, table: str, names: Sequence[str], into: str) -> Parts:
+    """the :class:`Parts` that merge ``names`` (parts of ``table`` in ``version``) into one part, ``into``.
+
+    Publish them on the version (``store.publish(new, {table: merge_parts(...)}, base=version)``): every part of the
+    base outside the group is hard-linked, each part of the group is dropped, and ``into`` is written from the group's
+    mapped files (:func:`merged_rows`), so the merge writes the group's bytes once and nothing else. A reader sees the
+    same rows in the same order before and after: the group must be a run of neighbours in part-name order, and
+    ``into`` must sort into the run's place (``f"{first}.1"`` after the first part's name ``first``, say), so no other
+    part falls between. ``into`` may be one of ``names``.
+
+    Run it where the store is owned (the serving process, on a thread: the write is Arrow IPC and releases the
+    interpreter lock). A worker process merges into a result instead, through :func:`merged_rows` and
+    :meth:`SegmentSlot.write`, and the serving process links the claimed file as the part (:class:`Parts`).
+
+    :param store: the store holding ``version``
+    :ptype store: SharedArrowStore
+    :param version: the version to merge in
+    :ptype version: str
+    :param table: the table held in parts
+    :ptype table: str
+    :param names: the parts to merge, at least two
+    :ptype names: Sequence[str]
+    :param into: the merged part's name
+    :ptype into: str
+    :return: the table's parts for :meth:`SharedArrowStore.publish`: ``into`` -> the merged rows, each other name -> None
+    :rtype: Parts
+    :raises ValueError: for fewer than two parts, a name that is not one plain path segment, a group that is not a run
+        of neighbours, or an ``into`` that would sort past another part
+    :raises LookupError: when the version is not held, or holds no such part
+    """
+    group = sorted({_valid_name(name, "part") for name in names})
+    _valid_name(into, "part")
+    if len(group) < 2:
+        raise ValueError(f"a merge takes at least two parts of {table!r}, not {group}")
+    with store.lease(version) as held:
+        files = _part_files(held.path, _valid_name(table, "table"))
+        schema = _file_schema(held.path / f"{table}{_PART_SEPARATOR}{_TABLE_SUFFIX}") if files else None
+    missing = [name for name in group if name not in files]
+    if schema is None or missing:
+        raise LookupError(f"shared Arrow version {version!r} holds no part {missing or group} of table {table!r}")
+    others = sorted(set(files) - set(group))
+    low, high = group[0], group[-1]
+    between = [name for name in others if min(low, into) < name < max(high, into)]
+    if between:
+        raise ValueError(
+            f"merging {group} of {table!r} into {into!r} would move parts {between} past merged rows: merge neighbours, "
+            f"into a name that sorts in their place"
+        )
+    return Parts(schema=schema, parts={**dict.fromkeys(group), into: merged_rows(store.root, version, table, group)})
 
 
 @dataclass(frozen=True)

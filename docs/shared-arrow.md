@@ -13,7 +13,7 @@ and that work reads, or produces, more data than you want copied per process.
 | Fact | Value |
 |---|---|
 | Install | `3tears[snapshot]` (pyarrow and duckdb) |
-| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables` |
+| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables, merge_parts, merged_rows` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
 | File format | Arrow IPC file format, uncompressed, one file per table, or per part for a table given as `Parts`. A mapped column is the file's bytes. |
@@ -110,6 +110,46 @@ store.publish("v2", {"races": Parts(schema, {
 - Every part must have exactly the table's `schema`; a table whose columns changed from the base's is refused
   (`ValueError`): publish it without `base`.
 - `base` is held for the write; a base the store no longer holds raises `LookupError`.
+
+## Merge a group of parts into one
+
+A table kept as many small parts (one per load run, say) merges neighbouring parts into one, so readers map fewer
+files and a publish names fewer parts. `merge_parts` returns the `Parts` to publish on the version: the group's parts
+are dropped, every other part is the base's own file (hard-linked), and the merged part is written from the group's
+mapped files as the publish reaches it. A merge writes the group's bytes once and nothing else.
+
+```python
+from threetears.core.shared_arrow import merge_parts
+
+# runs r0000 .. r0009 of v7 become one part, r0000.1; the rest of v7 is linked
+store.publish("v8", {"lsf": merge_parts(store, "v7", "lsf", [f"r{i:04d}" for i in range(10)], "r0000.1")}, base="v7")
+
+# a level up: merged parts merge again the same way
+store.publish("v9", {"lsf": merge_parts(store, "v8", "lsf", ["r0000.1", "r0010.1"], "r0000.2")}, base="v8")
+```
+
+- Readers see the same rows in the same order before and after. That holds because a merge takes neighbours only:
+  the group must be a run in part-name order, and the merged name must sort into the run's place (`f"{first}.1"`
+  sorts after `first` and before the next part, since `.` sorts before every digit and letter). Anything else is
+  refused (`ValueError`), as is a group of fewer than two parts; a part the version does not hold raises `LookupError`.
+- Run it where the store is owned (the serving process, on a thread: the write is Arrow IPC and releases the
+  interpreter lock).
+- In a worker process, merge into a result instead. `merged_rows(root, version, table, names)` opens the group's
+  rows as one reader and holds the version's shared lock while it reads (the serving process holds a lease on the
+  version for the job, as for any read). Write it into the job's slot, then link the claimed file as the part:
+
+```python
+# worker process
+slot.write({"merged": merged_rows(root, "v7", "lsf", names)()})
+
+# serving process, on a thread
+segment = store.claim(slot)
+store.publish("v8", {"lsf": Parts(schema, {**dict.fromkeys(names), "r0000.1": segment.files["merged"]})}, base="v7")
+segment.close()  # the version holds its own link to the file
+```
+
+- The tiering policy (which groups merge, how many levels, rewriting only the merged part that holds a dropped run)
+  is the caller's. These two calls are the only primitive it needs.
 
 ## Publish a scoped snapshot's copy
 
