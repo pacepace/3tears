@@ -123,6 +123,15 @@ without it they print no `+`, as before, so a stored report renders as it did.
 `interval_text` now joins an interval in the one form every page prints, `low to high` (`0.05 to 0.45`), where it
 wrote `[low, high]`; a host matching that text, or any code or aspect page's `[a, b]` interval, updates its match.
 
+**Hosts (number policy, one set per campaign):** a measure reads at one precision on every page of its campaign, the
+written page included. A campaign's report input gains `stated_widths`, the half-width of every interval its code page
+and aspect pages state, by the page that states it, which the written page reads its decimals from beside its own; an
+input built without them (a host's bare input) reads its own intervals alone, as before. A campaign's written page can
+read finer than it did: Kairo's qwen change reads `-7.6` (was `-8`), as its code page does. A campaign's report input
+digests differently, so a snapshot frozen from it has a new id, and a stored plan's recorded input no longer matches
+the campaign's. A judge's preference share, and each end of its interval, keeps off even as it keeps off none and all:
+`49.7%`, never `50%`.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

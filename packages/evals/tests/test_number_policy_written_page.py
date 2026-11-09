@@ -44,29 +44,35 @@ def _row(*cells: str) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
-def test_the_options_table_s_pass_rate_reads_whole_with_its_counts() -> None:
-    """Options table, pass rate: ``85% (765 of 897)``, as before."""
+def test_the_options_table_s_pass_rate_reads_at_its_campaign_s_precision_with_its_counts() -> None:
+    """Options table, pass rate: ``85.3% (765 of 897)``. The pass rate's set is the campaign's, whose narrowest interval
+    is the code page's pooled change, ±2.86 points: a tenth (rule 2), on this page as on every other."""
     assert _row(
-        "P · September", "Control (recommended)", "deepseek/deepseek-v4.1-flash", "85% (765 of 897)", "$1.89"
+        "P · September", "Control (recommended)", "deepseek/deepseek-v4.1-flash", "85.3% (765 of 897)", "$1.89"
     ) in (_lines())
 
 
 def test_the_change_chart_s_head_reads_the_pass_rate_at_its_measure_s_precision() -> None:
-    """Change chart head: ``Pass rate · September 85%``, never ``85.3%`` (half-width 3.5 points: whole percents)."""
+    """Change chart head: ``Pass rate · September 85.3%``, at the tenth the campaign's narrowest pass rate interval
+    sets (±2.86 points, the code page's pooled change), never the whole percents this page's own ±3.5 would set."""
     heads = [line for line in _lines() if line.startswith("| Pass rate · September")]
-    assert heads and all(line.startswith("| Pass rate · September 85% |") for line in heads), heads
+    assert heads and all(line.startswith("| Pass rate · September 85.3% |") for line in heads), heads
 
 
-def test_the_change_chart_reads_qwen_s_change_its_interval_and_its_note_whole() -> None:
-    """Change chart, qwen3.8-flash: ``-8 · -13 to -2 · -8 pts worse``."""
-    assert _row("Pass rate · September 85%", "A · qwen3.8-flash", "-8", "-13 to -2", "-8 pts worse") in _lines()
+def test_the_change_chart_reads_qwen_s_change_its_interval_and_its_note_at_a_tenth() -> None:
+    """Change chart, qwen3.8-flash: ``-7.6 · -12.9 to -1.8 · -7.6 pts worse``, as the code page reads it."""
+    assert (
+        _row("Pass rate · September 85.3%", "A · qwen3.8-flash", "-7.6", "-12.9 to -1.8", "-7.6 pts worse") in _lines()
+    )
 
 
 def test_1017_s_change_reads_as_its_prose_does() -> None:
-    """Prose, 1017: its drop of ``3`` points sits beside ``-3 (-7 to +3)``, no longer beside ``-3.0``."""
+    """Prose, 1017: its drop of ``3.0`` points sits beside ``-3.0 (-7.4 to +2.6)``, at the pass rate's one precision."""
     lines = _lines()
-    assert _row("Pass rate · September 85%", "B · 1017", "-3", "-7 to +3", "-3 pts cannot tell apart") in lines
-    assert any("1017 (B)'s drop of 3 points" in line for line in lines)
+    assert (
+        _row("Pass rate · September 85.3%", "B · 1017", "-3.0", "-7.4 to +2.6", "-3.0 pts cannot tell apart") in lines
+    )
+    assert any("1017 (B)'s drop of 3.0 points" in line for line in lines)
 
 
 def test_the_margin_reads_as_declared_on_the_chart_and_in_the_prose() -> None:
@@ -77,14 +83,15 @@ def test_the_margin_reads_as_declared_on_the_chart_and_in_the_prose() -> None:
     assert not any("-15.0" in line for line in lines)
 
 
-def test_holds_character_reads_whole_for_every_arm() -> None:
-    """Holds character, arm by measure: ``91% · 85% · 87%`` (its comparisons' narrowest half-width is 4.05 points)."""
-    assert _row("Persona holds character", "91%", "85%", "87%") in _lines()
+def test_holds_character_reads_at_its_campaign_s_tenth_for_every_arm() -> None:
+    """Holds character, arm by measure: ``91.5% · 85.4% · 86.6%``. Its comparisons' narrowest half-width is 4.05
+    points, but its campaign's is 2.54, an arm's own interval on its aspect's page: a tenth (rule 2)."""
+    assert _row("Persona holds character", "91.5%", "85.4%", "86.6%") in _lines()
 
 
 def test_holds_character_s_strata_read_at_its_one_precision() -> None:
-    """Holds character, strata: ``66%, 43%, 46%`` off lane, as the measure reads everywhere on the page."""
-    assert _row("off lane", "Persona holds character", "38", "66%", "43%", "46%") in _lines()
+    """Holds character, strata: ``65.8%, 42.9%, 45.6%`` off lane, as the measure reads everywhere in its campaign."""
+    assert _row("off lane", "Persona holds character", "38", "65.8%", "42.9%", "45.6%") in _lines()
 
 
 def test_the_send_message_check_keeps_its_decimal() -> None:
@@ -125,8 +132,8 @@ def test_adjusted_p_values_read_as_apa_writes_them() -> None:
 
 
 def test_a_corrected_comparison_s_interval_writes_its_unit_once() -> None:
-    """Corrected comparison interval: ``-13 to -2 pts``, never ``-12.9 pts to -1.8 pts``."""
-    assert any(line.startswith("| A · qwen3.8-flash | Pass rate | -8 pts | -13 to -2 pts |") for line in _lines())
+    """Corrected comparison interval: ``-12.9 to -1.8 pts``, never ``-12.9 pts to -1.8 pts``."""
+    assert any(line.startswith("| A · qwen3.8-flash | Pass rate | -7.6 pts | -12.9 to -1.8 pts |") for line in _lines())
 
 
 def test_only_the_family_level_key_prints_the_per_interval_level() -> None:
@@ -153,3 +160,17 @@ def test_a_preference_reads_at_its_interval_s_precision() -> None:
         "99.5",
         ("99.0", "100.0"),
     )
+
+
+def test_a_preference_keeps_off_even_as_it_keeps_off_none_and_all() -> None:
+    """Even, 50%, is a preference's boundary (the owner's "important boundaries"): an end of ``49.7`` that read ``50``
+    would hide that the interval crosses even, so it takes the one decimal that keeps it off, and so does a share of
+    ``49.7``; the set reads at that one precision. A share exactly even reads ``50``, as above."""
+    forms = PageForms.off_page()
+    crossing = forms.preference(0.6, (-0.006, 0.406))
+    assert crossing is not None and (crossing.share_text(crossing.candidate), crossing.ends) == (
+        "60.0",
+        ("49.7", "70.3"),
+    )
+    short = forms.preference(0.497, (-0.3, 0.3))
+    assert short is not None and (short.share_text(short.candidate), short.ends) == ("49.7", ("35.0", "65.0"))

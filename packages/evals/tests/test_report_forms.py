@@ -36,6 +36,7 @@ import pytest
 from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
@@ -87,6 +88,7 @@ from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpu
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.report_shapes_support import s1_change, s2_choice, s3_measurement, s4_change
 
 
@@ -543,6 +545,21 @@ def test_the_code_page_s_readings_set_the_precision_of_every_aspect_page_the_eng
     assert on_aspects and on_code
     assert all(tenth.fullmatch(text) for text in on_aspects), on_aspects
     assert all(tenth.fullmatch(text) for text in on_code), on_code
+
+
+def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
+    """One table per campaign: a campaign's report input freezes the half-widths its code page and aspect pages state
+    (``stated_widths``), so Kairo's written page reads the pass rate at the tenth its narrowest interval sets (the code
+    page's pooled change, ±2.86 points), as its aspect's page does. Built without them, as a bare input is, the written
+    page reads the whole points its own intervals set (the control)."""
+    bundle = kairo_bundle()
+    held = report_input(bundle)
+    (aspect,) = PageForms.of_aspects(bundle.aspects, bundle.readings).values()
+    on_aspect = aspect.contrast_places(TRIAL_PASS_NAME, "trial")
+    assert on_aspect is not None and on_aspect.change == 1
+    assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 1
+    bare = held.model_copy(update={"stated_widths": None})
+    assert PageForms.of(bare).measure(TRIAL_PASS_NAME, kind="trial").places == 0
 
 
 def test_a_judged_bar_reads_alike_on_the_code_page_and_its_aspect_page() -> None:
@@ -1405,7 +1422,7 @@ def _kairo_rate() -> str:
 
 #: Kairo's rate, money and pass-rate keys, each with the measure and kind its figures are held under, the role, and
 #: the texts the key prints of it: a rate's level and interval in percent, money per 1,000 replies, the pass rate's
-#: change in points.
+#: change in points, at the tenth its campaign's narrowest interval sets (the code page's pooled change, ±2.86 points).
 _MEASURED_KEYS = [
     ("measure.{rate}.September.mean", ("{rate}", "measure"), "level", "99.7%", ["99.7"]),
     ("measure.{rate}.September.ci", ("{rate}", "measure"), "interval", "98.6–99.9%", ["98.6", "99.9"]),
@@ -1423,7 +1440,7 @@ _MEASURED_KEYS = [
         "$1.76 to $2.03 per 1,000 replies",
         ["$1.76", "$2.03"],
     ),
-    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-8", ["-8"]),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
 ]
 
 

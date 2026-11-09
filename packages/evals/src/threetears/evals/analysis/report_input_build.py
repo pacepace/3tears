@@ -108,6 +108,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import declared_check_name, measure_name
@@ -259,6 +260,7 @@ class _Builder:
                     for insight in bundle.aspects[0].prior_insights
                 ],
                 **tallies,
+                "stated_widths": PageForms.stated_widths(bundle.aspects, bundle.readings),
                 # Only where a run recorded its rig, so an input over runs that recorded none carries no key.
                 **({"apparatus": apparatus} if (apparatus := self.apparatus()) is not None else {}),
             }

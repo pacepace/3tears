@@ -354,7 +354,7 @@ class Figure:
 
     A figure said in words keeps its numbers as numbers, so the page's forms print each, as they print every other
     figure, and no number reads one way in a sentence and another beside it. ``said_between`` is the words a number
-    figure is said between (``95% one-sided``, ``the plain 95% interval, uncorrected``); ``counts``, a text figure's
+    figure is said between (``95% one-sided``, ``the 95% interval``); ``counts``, a text figure's
     counts by word, each printed after its word (``timeout 1,204, refused 3``), the figure's ``value`` holding the same
     listing, as a tool serves it.
 
@@ -727,10 +727,22 @@ def _level(path: str, value: float | None, what: str) -> Figure:
     return replace(_number(path, value, what, "share"), level=True)
 
 
-def _joint(family: ContrastFamily | None) -> tuple[float, int] | None:
-    """What a correcting family guarantees together (:attr:`Figure.joint`): one minus its alpha, over its size; None
-    for no family, one that corrects nothing (``none``), or one that states no alpha or size."""
-    if family is None or family.alpha is None or not family.family_size or family.correction == "none":
+def joint_level(family: ContrastFamily | None) -> tuple[float, int] | None:
+    """What a correcting family's intervals guarantee together, the one owner of it: one minus its alpha (a share,
+    ``0.95``) over the family's size, which a figure in the package's words holds (:attr:`Figure.joint`) and every
+    heading states (:func:`~threetears.evals.analysis.report.forms.interval_level`). None for no family, one that
+    corrects nothing (no correction, or ``none``), one that states no alpha, and one of fewer than two comparisons,
+    which adjusts nothing: its interval reads ``95%``, never "adjusted for 1 comparisons".
+
+    :param family: The contrast family, or None.
+    :ptype family: ContrastFamily | None
+    :return: The joint level and the family's size, or None.
+    :rtype: tuple[float, int] | None
+    """
+    if family is None or family.alpha is None:
+        return None
+    corrected = (family.correction or "").strip().lower() not in ("", "none")
+    if not corrected or not family.family_size or family.family_size < 2:
         return None
     return (1.0 - float(family.alpha), family.family_size)
 
@@ -3632,7 +3644,7 @@ def _weakest_interval(report_input: ReportInput, margin: Margin, path: str) -> F
             (held for held in report_input.contrast_families if held.aspect in (margin.aspect, None) and held.level),
             None,
         )
-        joint = _joint(family)
+        joint = joint_level(family)
         if joint is None:
             # The family states no joint guarantee to say, and the per-interval level is no reading text's.
             return _text(path, "the multiplicity-corrected interval", "which interval the weakest margin is read on")
@@ -8072,6 +8084,7 @@ __all__ = [
     "gain_axis",
     "is_figure_key",
     "is_rubric_score",
+    "joint_level",
     "key_form",
     "key_subjects",
     "keys_in",
