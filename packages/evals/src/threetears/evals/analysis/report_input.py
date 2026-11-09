@@ -438,11 +438,18 @@ class Level(_Part):
     name: str | None = Field(default=None, description="What a reader calls it.")
 
 
+#: The unit of a measure that is a share on 0 to 1 (a host's fraction): a rate, read in percent.
+SHARE_UNIT = "share"
+
+
 class Measure(_Part):
     """One measure: what it means and each arm's figure on it."""
 
     label: str | None = Field(default=None, description="What a reader calls it.")
-    unit: str | None = Field(default=None, description="Its unit, e.g. usd, pct, ms, usd_per_1k.")
+    unit: str | None = Field(
+        default=None,
+        description="Its unit, e.g. usd, pct, ms, usd_per_1k; share for a fraction on 0 to 1, which reads as a rate.",
+    )
     higher_is_better: bool | None = Field(default=None, description="Which way is better.")
     merit_axis: str | None = Field(default=None, description="The merit axis it counts toward.")
     means: str | None = Field(default=None, description="Its definition.")

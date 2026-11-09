@@ -646,7 +646,8 @@ def _descriptive(
     forms, kind = context.forms, figure_kind(context, key)
     if mine.change is not None and (theirs is None or stat_value(context.report_input, key, mine) is None):
         change = float(mine.change) * drawn.factor
-        said = forms.chart_note(change, drawn, measure=key, kind=kind).text
+        printed = forms.chart_note(change, drawn, measure=key, kind=kind)
+        said = printed.text
         return _Change(
             id=arm,
             label=look.label,
@@ -658,6 +659,7 @@ def _descriptive(
             tip=[*head, look.name, said],
             measure=key,
             kind=kind,
+            texts=_decided(context, drawn, key, kind, printed.digits, None),
         )
     mine_value = stat_value(context.report_input, key, mine)
     theirs_value = stat_value(context.report_input, key, theirs) if theirs is not None else None
@@ -671,7 +673,9 @@ def _descriptive(
     level = _level_quantity(context, key, keys)
     base = forms.chart_level(theirs_value[0] * level.factor, level, measure=key, kind=kind).text
     mine_level = forms.chart_level(mine_value[0] * level.factor, level, measure=key, kind=kind).text
-    said = forms.chart_note(change, drawn, measure=key, kind=kind).text
+    # The bar's value as its note prints it, at its measure's precision, never at the float's four figures.
+    printed = forms.chart_note(change, drawn, measure=key, kind=kind)
+    said = printed.text
     tip = [*head, f"{control.name} {base} · {look.name} {mine_level}", said]
     return _Change(
         id=arm,
@@ -690,6 +694,7 @@ def _descriptive(
         ),
         measure=key,
         kind=kind,
+        texts=_decided(context, drawn, key, kind, printed.digits, None),
     )
 
 

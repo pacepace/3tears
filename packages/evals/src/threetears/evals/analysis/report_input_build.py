@@ -72,6 +72,7 @@ from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report_input import (
+    SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
     ANALYST_CONTRAST_FIELDS,
     ApparatusConfound,
@@ -735,13 +736,17 @@ class _Builder:
         label = (declared_check_name(aspect.goal_check_names, name) or check) if check is not None else None
         if facts is None:
             return {"label": label, "grade": "pass_fail" if check is not None else None}
+        grade = _grade(facts)
+        # A share on 0–1 that declares no unit (a host's fraction, ``value_range=(0, 1)``) is a rate, which carries its
+        # "%" on every page (number rule 4), as the code page reads it from the same descriptor.
+        share = not facts.unit and grade is None and facts.value_range == (0.0, 1.0)
         return {
             "label": label if label is not None else measure_name(name, facts.reader_name),
-            "unit": facts.unit,
+            "unit": SHARE_UNIT if share else facts.unit,
             "higher_is_better": facts.higher_is_better,
             "merit_axis": facts.merit_axis,
             "means": capped_text(facts.reader_prose or facts.description or "", MEANING_CHARS) or None,
-            "grade": _grade(facts),
+            "grade": grade,
         }
 
     def judged(self) -> dict[str, Judged]:

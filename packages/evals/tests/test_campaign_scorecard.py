@@ -984,3 +984,12 @@ async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_
         "Measuring spend, all roles, per 1,000 replies",
         "Production cost, per 1,000 replies",
     }
+
+
+def test_a_choice_s_pairs_state_their_joint_guarantee_never_each_pair_s_own_level() -> None:
+    """s2's pairs were tested at their own step-down levels (97.5% to 98.33%); the package's words under the table state
+    what the family holds together, as every heading does (owner ruling, level in headings), and leave each pair's own
+    level to the Method."""
+    said = campaign_report_markdown(s2_choice().page())
+    assert "The intervals hold together at 95% (adjusted for 3 comparisons)." in said.splitlines()
+    assert "98.33%" not in said and "tested at, from" not in said

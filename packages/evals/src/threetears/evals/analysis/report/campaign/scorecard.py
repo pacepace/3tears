@@ -88,6 +88,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
+from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, reason_words
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, humanize
@@ -1491,14 +1492,13 @@ def pair_blocks(
         )
     )
     notes = [CHOICE_NOTE]
-    if levels:
-        low, high = min(levels), max(levels)
-        notes.append(
-            f"Each interval is read at {_level_text(forms, low)}."
-            if _told_apart(forms, low) == _told_apart(forms, high)
-            else f"Each interval is read at the level its pair was tested at, from {_level_text(forms, low)} to "
-            f"{_level_text(forms, high)}."
-        )
+    if len(levels) > 1:
+        # The package's own words state what the pairs' intervals guarantee together (owner ruling, level in
+        # headings): each pair's own step-down level is the Method's, never this line's.
+        joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, 1.0 - readings.alpha), size=len(levels))
+        notes.append(f"The intervals hold together at {joint}.")
+    elif levels:
+        notes.append(f"Each interval is read at {_level_text(forms, levels[0])}.")
     notes += [
         _rig_line(names(pair.aspect), f"the difference between {pair.first_label} and {pair.second_label}", pair.rig)
         for pair in readings.pairs

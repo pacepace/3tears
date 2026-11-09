@@ -235,6 +235,16 @@ def test_an_interval_s_ends_carry_its_unit_once_so_a_drawer_only_joins_them() ->
     assert _first_ends("r5/r5-run/bars") == ("$1.89", "$1.76", "$2.03")
 
 
+def test_a_change_over_strata_draws_its_value_at_its_measure_s_precision() -> None:
+    """r5's strata bars drew ``-22.93`` beside a note of ``-23 pts``: a change of one stratum reads as the page's forms
+    print its measure, whole points here (number rule 1), in its bar's value and its note alike."""
+    (chart,) = [block for name, block in _page_charts() if name == "r5/r5-anchor/diverging_bars"]
+    rows = getattr(chart.data, "rows", None) or [row for panel in chart.data.panels or [] for row in panel.rows or []]  # type: ignore[union-attr]
+    assert (rows[0].label, rows[0].value_text, rows[0].note) == ("off lane", "-23", "-23 pts from 66%")
+    # Every bar's value is its note's figure (a change of 0.11 keeps its tenth off zero, in both).
+    assert all(row.note is not None and row.note.startswith(f"{row.value_text} pts ") for row in rows)
+
+
 def _text_fields() -> list[tuple[type[BaseModel], str]]:
     """Every text field a public chart model defines, with the model."""
     return sorted(

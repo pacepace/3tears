@@ -126,6 +126,7 @@ from threetears.evals.analysis.report.cost_unit import (
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import TOLD_APART, arm_tags, reader_arm_name, text_levers, told_apart
 from threetears.evals.analysis.report_input import (
+    SHARE_UNIT,
     Arm,
     Aspect,
     Cell,
@@ -674,6 +675,8 @@ def _measure_scale(measure: Measure) -> tuple[Scale, str]:
     unit = measure.unit or ""
     if unit == "pct":
         return "percent", ""
+    if unit == SHARE_UNIT:
+        return "share", ""
     if unit == "usd":
         return "usd", ""
     if unit == "usd_per_1k":
@@ -6864,6 +6867,8 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
         unit = measure.unit or ""
         if unit == "pct":
             return "percent"
+        if unit == SHARE_UNIT:
+            return "share"
         if not unit and measure.grade in ("pass_fail", "class_label"):
             return _rate_unit(held_means(report_input, key))
         return unit
