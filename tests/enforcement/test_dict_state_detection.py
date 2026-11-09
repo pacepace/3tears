@@ -53,6 +53,38 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged",
+        rationale=(
+            "each table's change staged beside the copy and not yet applied, by table: names of staging tables in the copy's own DuckDB, which holds the rows; a restart drops them and reads the keys again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged_keys",
+        rationale=(
+            "the keys each staged change was read for, kept to put back as pending when a pass fails; the keys come from the epoch change log, which a restart walks again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_stamps",
+        rationale=(
+            "the writer's stamp and epoch marks of each recent change applied, by the mark DuckDB commits with it: a reader's snapshot names its mark, and a restart starts from a checkpoint or L3"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staging_marks",
+        rationale=(
+            "each table's epoch mark when a pass took its keys, held for the change that pass applies; read off the registry's own marks"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="MappedTables",
         attr_name="_by_inode",

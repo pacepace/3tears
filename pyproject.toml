@@ -592,6 +592,9 @@ module = [
     "threetears.core.collections.scoped_snapshot",
     # and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
     "threetears.core.collections.complete_copy",
+    # and a copy follower's keyed reads and its checkpoint's parts (Arrow IPC)
+    "threetears.core.collections.copy_follower",
+    "threetears.core.collections.copy_checkpoint",
     "threetears.core.backends.arrow_reply",
     "threetears.core.backends.sql",
     "threetears.datasources.export_read",
