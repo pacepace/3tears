@@ -215,6 +215,12 @@ async def _gz(text: _Answer) -> bytes:
 #: on a laptop; what this rules out is one call holding the lock for a whole answer (0.9 s for the series, 2026-10-31)
 LOOP_MAY_BE_LATER = 0.015
 
+#: how many times a loop-timing bound is measured, each time the work's lateness and then the floor beside plain
+#: Python for as long, back to back. A runner's other batches add to both only while they run, so a measurement taken
+#: while one started beside it can miss by their load, not the code's; the bound holds when one pair meets it. A
+#: call holding the lock for a whole answer misses in every pair (0.9 s against 15 ms)
+TIMING_PAIRS = 3
+
 
 #: the most work one encoder call may do: a value, a mapping's key, or 64 characters of text each one unit
 CALL_BUDGET = 8192
@@ -381,12 +387,17 @@ class TestTheLoopRunsWhileALargeAnswerIsWritten:
     async def test_the_loop_runs_as_it_does_beside_any_python_thread_while_an_answer_is_written(
         self, answer: Any
     ) -> None:
-        late, took, text = await _late_while(answer_json, answer)
-        floor, _, _ = await _late_while(_busy, took)
-        assert len(text) > 5_000_000
-        assert late < floor + LOOP_MAY_BE_LATER, (
-            f"the loop ran {late * 1000:.1f} ms late while the answer was written, "
-            f"{floor * 1000:.1f} ms beside plain Python as long"
+        pairs: list[tuple[float, float]] = []
+        for _ in range(TIMING_PAIRS):
+            late, took, text = await _late_while(answer_json, answer)
+            floor, _, _ = await _late_while(_busy, took)
+            assert len(text) > 5_000_000
+            pairs.append((late, floor))
+            if late < floor + LOOP_MAY_BE_LATER:
+                break
+        assert any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs), (
+            "the loop ran late while the answer was written, in every pair: "
+            + "; ".join(f"{late * 1000:.1f} ms, {floor * 1000:.1f} ms beside plain Python" for late, floor in pairs)
         )
 
 
@@ -471,9 +482,8 @@ async def _late_during(work: Callable[[], Awaitable[Any]]) -> tuple[float, float
 class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
     async def test_storing_and_reading_a_large_answer_holds_the_loop_no_longer_than_any_python_thread(self) -> None:
         text = _large_answer_text()
-        bus = FakeNatsClient()
 
-        def replica(*, l1: bool = False) -> VersionedAnswers:
+        def replica(bus: FakeNatsClient, *, l1: bool = False) -> VersionedAnswers:
             registry = CollectionRegistry()
             backend: Any = None
             if l1:
@@ -485,23 +495,34 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
         async def compute() -> str:
             return text
 
-        # both keep an L1, as a serving pod does: the writer keeps the answer it stored
-        writer, reader = replica(l1=True), replica(l1=True)
         expected = text.encode("utf-8")
-        for name, answers, outcome in (
-            ("stored", writer, AnswerOutcome.COMPUTED),
-            ("read from L2", reader, AnswerOutcome.READ),
-            ("read from L1", reader, AnswerOutcome.READ),
-        ):
-            late, took, given = await _late_during(
-                lambda answers=answers: answers.answer_with_outcome("v1", "large", compute, order=1)
-            )
-            floor, _, _ = await _late_while(_busy, took)
-            assert given.outcome is outcome
-            assert len(given.body) > 4_000_000 and gzip.decompress(given.body) == expected
-            assert late < floor + LOOP_MAY_BE_LATER, (
-                f"the loop ran {late * 1000:.1f} ms late while a large answer was {name}, "
-                f"{floor * 1000:.1f} ms beside plain Python as long"
+        steps = ("stored", "read from L2", "read from L1")
+        pairs: dict[str, list[tuple[float, float]]] = {name: [] for name in steps}
+        for _ in range(TIMING_PAIRS):
+            # a fresh bus and replicas each time, so each is stored, read from L2 and read from L1 again. Both keep
+            # an L1, as a serving pod does: the writer keeps the answer it stored
+            bus = FakeNatsClient()
+            writer, reader = replica(bus, l1=True), replica(bus, l1=True)
+            for name, answers, outcome in (
+                (steps[0], writer, AnswerOutcome.COMPUTED),
+                (steps[1], reader, AnswerOutcome.READ),
+                (steps[2], reader, AnswerOutcome.READ),
+            ):
+                late, took, given = await _late_during(
+                    lambda answers=answers: answers.answer_with_outcome("v1", "large", compute, order=1)
+                )
+                floor, _, _ = await _late_while(_busy, took)
+                assert given.outcome is outcome
+                assert len(given.body) > 4_000_000 and gzip.decompress(given.body) == expected
+                pairs[name].append((late, floor))
+            if all(any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs[name]) for name in steps):
+                break
+        for name in steps:
+            assert any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs[name]), (
+                f"the loop ran late while a large answer was {name}, in every pair: "
+                + "; ".join(
+                    f"{late * 1000:.1f} ms, {floor * 1000:.1f} ms beside plain Python" for late, floor in pairs[name]
+                )
             )
 
 

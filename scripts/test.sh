@@ -46,7 +46,19 @@ fi
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
     echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off for the old path)" >&2
     if [ -n "$PACKAGE" ]; then
-        exec testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+        # a path goes to the default suite alone; the package's loop_timing tests run in their own suite
+        # (.testament.toml), one batch a runner at a time
+        status=0
+        testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || status=$?
+        timing=0
+        testament run --suite loop_timing -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || timing=$?
+        # 5: the package has no loop_timing test (pytest's "no tests collected")
+        [ "$timing" -eq 5 ] && timing=0
+        if [ "$status" -ne 0 ] || [ "$timing" -ne 0 ]; then
+            echo "test.sh: default suite exit ${status}, loop_timing suite exit ${timing}" >&2
+            exit 1
+        fi
+        exit 0
     fi
     exec testament run -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
