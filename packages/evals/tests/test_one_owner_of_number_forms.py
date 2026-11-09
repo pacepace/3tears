@@ -10,16 +10,22 @@ This test keeps that migration honest:
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
   (``kernel/numbers.py`` and ``analysis/report/forms.py``), and in ``kit.js`` the digit primitives and the named
   formats used outside ``K_FMTS`` / ``fmt``. A package function that returns what a site produced is a primitive
-  too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. So is a public
-  free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and role, is the
-  migrated route.
+  too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. That holds where
+  the figure reaches the return through a helper that hands back what it is given (``with_unit`` hands
+  ``number_in``'s figure to ``_joined``), by an argument, a nested call or a local: the helper is derived, not listed,
+  and alone, handed a value nobody decided, it is no site. A primitive stored in a table or bound to a name is a site
+  where it is stored, and a wrapper property is one where ``self`` reads it. So is a public free function of
+  ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and role, is the migrated route.
 * **The ratchet** compares the walk with ``fixtures/number_form_sites.txt``, keyed by (module, enclosing qualname,
   form) with a count. A moved line keeps its entry; a new site in the same function, or in a new one, fails. An entry
   that overstates its count, or names nothing, also fails, so every migration cuts the file and the list only
   shrinks.
 * **What the wrapper rule cannot see** is a stated limit, not a hidden one: a figure reached through another object's
-  method of a common name, lines appended then joined, a ``yield``, a tuple unpacked, a lambda table, or digits
-  derived as ``floor(v + 0.5)``. A function's nested returns count as its own, which over-counts, the safe way.
+  method of a common name, a property read through anything but ``self``, or a method handed on by reference from
+  anything but ``self``; lines appended then joined, a ``yield``, a tuple unpacked; a formatter a factory returns (a
+  nested function, a lambda or a ``functools.partial``, as ``chart_svg._kit_format`` does), and a lambda table, each
+  counted once where its site is written rather than at every call of it; or digits derived as ``floor(v + 0.5)``. A
+  function's nested returns count as its own, which over-counts, the safe way.
 * **The permanent list** (:data:`_PERMANENT`) names the few sites whose fixed form is right for good (SVG
   coordinates and opacities, the kit's formats restated for the static page), each with its reason.
 
@@ -34,8 +40,8 @@ import bisect
 import functools
 import re
 from collections import Counter
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -284,6 +290,59 @@ def _dotted(module: str) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+@dataclass(frozen=True)
+class _Signature:
+    """A function's parameters as a call binds them, to tell which parameter an argument reaches.
+
+    :ivar positional: The parameters an argument binds by place, less a method's ``self`` or ``cls``.
+    :ivar keyword_only: The parameters an argument binds by name only.
+    :ivar star: The ``*args`` parameter, or ``None``.
+    :ivar double_star: The ``**kwargs`` parameter, or ``None``.
+    """
+
+    positional: tuple[str, ...]
+    keyword_only: tuple[str, ...]
+    star: str | None
+    double_star: str | None
+
+    @classmethod
+    def of(cls, function: ast.FunctionDef | ast.AsyncFunctionDef, *, method: bool) -> _Signature:
+        arguments = function.args
+        positional = tuple(argument.arg for argument in (*arguments.posonlyargs, *arguments.args))
+        static = any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in function.decorator_list)
+        return cls(
+            positional[1:] if method and not static else positional,
+            tuple(argument.arg for argument in arguments.kwonlyargs),
+            arguments.vararg.arg if arguments.vararg else None,
+            arguments.kwarg.arg if arguments.kwarg else None,
+        )
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        extra = tuple(name for name in (self.star, self.double_star) if name is not None)
+        return (*self.positional, *self.keyword_only, *extra)
+
+    def bound(self, call: ast.Call) -> Iterator[tuple[ast.expr, frozenset[str]]]:
+        """Each argument of ``call`` with the parameters it may bind: one where the source says which, every one it
+        could reach where an unpacked ``*`` or ``**`` hides it."""
+        by_place = (*self.positional, *([self.star] if self.star else []))
+        for place, argument in enumerate(call.args):
+            if isinstance(argument, ast.Starred):
+                yield argument, frozenset(by_place[place:])
+            elif place < len(self.positional):
+                yield argument, frozenset({self.positional[place]})
+            elif self.star is not None:
+                yield argument, frozenset({self.star})
+        by_name = (*self.positional, *self.keyword_only)
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                yield keyword.value, frozenset((*by_name, *([self.double_star] if self.double_star else [])))
+            elif keyword.arg in by_name:
+                yield keyword.value, frozenset({keyword.arg})
+            elif self.double_star is not None:
+                yield keyword.value, frozenset({self.double_star})
+
+
 class _Index:
     """The walked modules' definitions and imports, to tell which function a call reaches.
 
@@ -300,6 +359,11 @@ class _Index:
         self.imports: dict[str, dict[str, tuple[str, str | None]]] = {}
         #: Each method name, with ``(module, "Class.name")`` of every method that bears it.
         self.methods: dict[str, set[tuple[str, str]]] = {}
+        #: Each function's parameters, by its key (``(module, name)``, or ``(module, "Class.name")`` for a method);
+        #: nested functions of one name in one module share a key, as they share it everywhere in the walk.
+        self.signatures: dict[tuple[str, str], list[_Signature]] = {}
+        #: The methods read as attributes (a property, a cached one), by their key: reading one runs it.
+        self.properties: set[tuple[str, str]] = set()
         for module, tree in trees.items():
             self.defined[module] = {
                 node.name
@@ -308,8 +372,12 @@ class _Index:
             }
             self.imports[module] = dict(self._imports(module, tree))
             for function, reached, cls in _definitions(tree):
+                key = _key(module, function, reached, cls)
                 if reached == "method":
-                    self.methods.setdefault(function.name, set()).add((module, f"{cls}.{function.name}"))
+                    self.methods.setdefault(function.name, set()).add(key)
+                    if any(_reads_as_attribute(decorator) for decorator in function.decorator_list):
+                        self.properties.add(key)
+                self.signatures.setdefault(key, []).append(_Signature.of(function, method=reached == "method"))
 
     def _imports(self, module: str, tree: ast.Module) -> Iterator[tuple[str, tuple[str, str | None]]]:
         package = _dotted(module).split(".") if module.endswith("__init__.py") else _dotted(module).split(".")[:-1]
@@ -347,12 +415,63 @@ class _Lookup:
     :ivar functions: ``(module, name)`` of every module-level or nested function found to be a wrapper.
     :ivar methods: ``(module, "Class.name")`` of every method found to be a wrapper.
     :ivar primitives: The names a call is a site by: the rule's, the plan's and ``forms.py``'s public functions.
+    :ivar carriers: Each function, by its key, that returns what some of its parameters were given, with those
+        parameters: a call that hands one of them a form returns that form, so it carries a site to its caller.
     """
 
     index: _Index
     functions: frozenset[tuple[str, str]] = frozenset()
     methods: frozenset[tuple[str, str]] = frozenset()
     primitives: frozenset[str] = _BASE_PRIMITIVES
+    carriers: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+
+    def callees(self, func: ast.expr, where: tuple[str, str]) -> list[tuple[str, str]]:
+        """The keys of the package functions a call of ``func`` reaches, resolved as :meth:`named` resolves a wrapper.
+
+        An attribute call on anything but ``self``, ``cls`` or a module alias is taken to reach a method only when
+        every method of that name in the package carries a parameter, so a common name reaches nothing.
+        """
+        module, cls = where
+        signatures = self.index.signatures
+        if isinstance(func, ast.Name):
+            if (module, func.id) in signatures:
+                return [(module, func.id)]
+            resolved = self.index.resolve(module, func.id)
+            return [resolved] if resolved in signatures else []
+        if not isinstance(func, ast.Attribute):
+            return []
+        name, owner = func.attr, func.value
+        if isinstance(owner, ast.Name):
+            if owner.id in ("self", "cls") and (module, f"{cls}.{name}") in signatures:
+                return [(module, f"{cls}.{name}")]
+            alias = self.index.module_alias(module, owner.id)
+            if alias is not None:
+                resolved = self.index.resolve(alias, name)
+                return [resolved] if resolved in signatures else []
+        defined = self.index.methods.get(name, set())
+        if defined and name not in _BUILTIN_METHODS and all(key in self.carriers for key in defined):
+            return sorted(defined)
+        return []
+
+    def read(self, node: ast.expr, where: tuple[str, str]) -> str | None:
+        """The wrapper ``node`` runs by reading it as an attribute (``self.figure``, a property that returns a form),
+        or ``None``. Only through ``self`` or ``cls``: by name alone, ``.figure`` or ``.text`` is every dataclass's
+        field too."""
+        if not (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)):
+            return None
+        if not (isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")):
+            return None
+        key = (where[0], f"{where[1]}.{node.attr}")
+        return node.attr if key in self.methods and key in self.index.properties else None
+
+    def carried(self, call: ast.Call, where: tuple[str, str]) -> list[ast.expr]:
+        """The arguments of ``call`` whose value the function it reaches returns."""
+        found = []
+        for key in self.callees(call.func, where):
+            carrying = self.carriers.get(key, frozenset())
+            for signature in self.index.signatures[key] if carrying else ():
+                found += [argument for argument, bound in signature.bound(call) if bound & carrying]
+        return found
 
     def named(self, node: ast.expr, where: tuple[str, str], *, as_value: bool = False) -> str | None:
         """The primitive ``node`` names, called (or, with ``as_value``, handed on as a function value), or ``None``.
@@ -487,12 +606,36 @@ class _PythonForms(ast.NodeVisitor):
         if isinstance(node, ast.Call):
             if (form := _call_form(node, self.where, self.lookup)) is not None:
                 self._add(node, form, ast.unparse(node))
-            # A primitive handed on as a function value (``map(format_number, ...)``, ``key=spell_at``) decides
-            # where it is applied, which is here.
-            for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
-                if (handed := self.lookup.named(argument, self.where, as_value=True)) is not None:
-                    self._add(argument, f"{handed}()", ast.unparse(argument))
+        elif (read := self.lookup.read(node, self.where)) is not None:  # a property is called by reading it
+            self._add(node, f"{read}()", ast.unparse(node))
+        # A primitive handed on as a function value (``map(format_number, ...)``, ``key=spell_at``, a table of
+        # formatters, a name bound to one) decides where it is applied, which the walk cannot follow, so it is
+        # counted where it is handed on, which is here.
+        for value in _handed_values(node):
+            if (handed := self.lookup.named(value, self.where, as_value=True)) is not None:
+                self._add(value, f"{handed}()", ast.unparse(value))
         super().generic_visit(node)
+
+
+def _handed_values(node: ast.AST) -> list[ast.expr]:
+    """The expressions ``node`` hands on as values: a call's arguments, and, by bare name, a dict's values, a
+    collection's elements and what an assignment binds.
+
+    Outside a call only a bare name counts: an attribute there (``family.interval_level``) is far likelier a field
+    read than a method handed on. An annotation or an ``isinstance`` test reads a class, not a formatter, and is none
+    of these. A function returning a formatter it built is a factory, whose site is counted where it is written.
+    """
+    if isinstance(node, ast.Call):
+        return [*node.args, *(keyword.value for keyword in node.keywords)]
+    if isinstance(node, ast.Dict):
+        values: list[ast.expr | None] = list(node.values)
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        values = list(node.elts)
+    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+        values = [node.value]
+    else:
+        values = []
+    return [value for value in values if isinstance(value, ast.Name)]
 
 
 def _spelled(node: ast.AST | None, where: tuple[str, str], lookup: _Lookup, spelled: set[str]) -> bool:
@@ -528,6 +671,8 @@ def _spelled(node: ast.AST | None, where: tuple[str, str], lookup: _Lookup, spel
         return _spelled(node.elt, where, lookup, spelled)
     if isinstance(node, (ast.Starred, ast.Subscript, ast.Await)):
         return _spelled(node.value, where, lookup, spelled)
+    if isinstance(node, ast.Attribute):
+        return lookup.read(node, where) is not None
     if isinstance(node, ast.Call):
         form = _call_form(node, where, lookup)
         if form is not None and (module, ast.unparse(node), form) not in _PERMANENT:
@@ -540,7 +685,21 @@ def _spelled(node: ast.AST | None, where: tuple[str, str], lookup: _Lookup, spel
             joins_lines = isinstance(func.value, ast.Constant) and "\n" in str(func.value.value)
             carried = [func.value, *node.args]
             return not joins_lines and any(_spelled(part, where, lookup, spelled) for part in carried)
+        # A package helper that returns what it was handed (a unit joined on, a sign put in front) hands a form it
+        # was given back: the call is the form where its argument is.
+        return any(_spelled(argument, where, lookup, spelled) for argument in lookup.carried(node, where))
     return False
+
+
+def _reads_as_attribute(decorator: ast.expr) -> bool:
+    """Whether ``decorator`` makes a method one read as an attribute: ``property``, ``cached_property``."""
+    name = decorator.attr if isinstance(decorator, ast.Attribute) else getattr(decorator, "id", "")
+    return name in ("property", "cached_property")
+
+
+def _key(module: str, function: ast.FunctionDef | ast.AsyncFunctionDef, reached: str, cls: str) -> tuple[str, str]:
+    """A function's key in the walk: ``(module, "Class.name")`` for a method, ``(module, name)`` for any other."""
+    return (module, f"{cls}.{function.name}") if reached == "method" else (module, function.name)
 
 
 def _definitions(tree: ast.Module) -> Iterator[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]]:
@@ -562,9 +721,18 @@ def _definitions(tree: ast.Module) -> Iterator[tuple[ast.FunctionDef | ast.Async
                         yield inner, "nested", cls
 
 
-def _returns_a_form(function: ast.FunctionDef | ast.AsyncFunctionDef, where: tuple[str, str], lookup: _Lookup) -> bool:
-    """Whether what ``function`` returns is a figure's form, directly or through a local it spelled."""
-    spelled: set[str] = set()
+def _returns_a_form(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    where: tuple[str, str],
+    lookup: _Lookup,
+    given: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether what ``function`` returns is a figure's form, directly or through a local it spelled.
+
+    ``given`` names parameters taken to hold a form already, which asks whether the function hands back what it was
+    given rather than whether it decides a form itself.
+    """
+    spelled: set[str] = set(given)
     body = list(ast.walk(function))
     for _ in range(2):  # twice, so a local spelled from one assigned below it in the source is still seen
         for node in body:
@@ -589,16 +757,38 @@ def _reached_names(function: ast.FunctionDef | ast.AsyncFunctionDef, module: str
     return frozenset(names)
 
 
+def _carried_parameters(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, where: tuple[str, str], lookup: _Lookup, parameters: Iterable[str]
+) -> frozenset[str]:
+    """The parameters whose value ``function`` returns, each found alone so a parameter is never credited with what
+    another one carries; read one by one only where all of them together carry anything."""
+    parameters = frozenset(parameters)
+    if not parameters or not _returns_a_form(function, where, lookup, parameters):
+        return frozenset()
+    return frozenset(name for name in parameters if _returns_a_form(function, where, lookup, frozenset({name})))
+
+
 def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVES) -> _Lookup:
-    """Every function over the walked modules that returns a form, to the fixed point.
+    """Every function over the walked modules that returns a form, and every one that returns what it was handed,
+    to the fixed point.
 
     A helper that returns what a site produced is a primitive itself, and so is one that returns what such a helper
-    produced, so a call rerouted through a wrapper is still a site where it is called. The owners are not walked, so
-    routing through them stays the remedy, and a permanent site wraps nothing. After the first pass only a function
-    that names a wrapper found in the pass before can become one, so only those are read again.
+    produced, so a call rerouted through a wrapper is still a site where it is called. A helper that only hands back
+    what it was given (``_joined(text, unit)``) decides nothing, so a call to it is no site; but a function that hands
+    it a form, through an argument, a nested call or a local, returns that form and is a wrapper. The owners are not
+    walked, so routing through them stays the remedy, and a permanent site wraps nothing. After the first pass only a
+    function that names a wrapper or a carrier found in the pass before can change, so only those are read again.
     """
     candidates = [
-        (function, module, cls, reached, _reached_names(function, module, index))
+        (
+            function,
+            module,
+            cls,
+            reached == "method",
+            _key(module, function, reached, cls),
+            _reached_names(function, module, index),
+            _Signature.of(function, method=reached == "method").names,
+        )
         for module, tree in index.trees.items()
         for function, reached, cls in _definitions(tree)
         if not function.name.startswith("__")
@@ -606,18 +796,28 @@ def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVE
     lookup = _Lookup(index, primitives=primitives)
     fresh: frozenset[str] | None = None
     while True:
-        functions: set[tuple[str, str]] = set()
-        methods: set[tuple[str, str]] = set()
-        for function, module, cls, reached, names in candidates:
-            key = (module, f"{cls}.{function.name}") if reached == "method" else (module, function.name)
+        wrappers: dict[tuple[str, str], bool] = {}
+        carriers: dict[tuple[str, str], frozenset[str]] = {}
+        for function, module, cls, method, key, names, parameters in candidates:
             if key in lookup.functions or key in lookup.methods or (fresh is not None and not names & fresh):
                 continue
             if _returns_a_form(function, (module, cls), lookup):
-                (methods if reached == "method" else functions).add(key)
-        if not functions and not methods:
+                wrappers[key] = method
+                continue
+            known = lookup.carriers.get(key, frozenset()) | carriers.get(key, frozenset())
+            carrying = _carried_parameters(function, (module, cls), lookup, parameters)
+            if carrying - known:
+                carriers[key] = known | carrying
+        if not wrappers and not carriers:
             return lookup
-        fresh = frozenset(name.rsplit(".", 1)[-1] for _module, name in functions | methods)
-        lookup = _Lookup(index, lookup.functions | functions, lookup.methods | methods, primitives)
+        fresh = frozenset(name.rsplit(".", 1)[-1] for _module, name in (*wrappers, *carriers))
+        lookup = _Lookup(
+            index,
+            lookup.functions | {key for key, method in wrappers.items() if not method},
+            lookup.methods | {key for key, method in wrappers.items() if method},
+            primitives,
+            {**lookup.carriers, **carriers},
+        )
 
 
 def _walk_python(sources: dict[str, str], primitives: frozenset[str] = _BASE_PRIMITIVES) -> list[_Site]:
@@ -1305,6 +1505,131 @@ class TestAWrapperIsAPrimitive:
         under = [path.relative_to(tmp_path).as_posix() for path in _modules_under(_SPELLING_TREES[:1], tmp_path)]
         assert walked == under == ["threetears/evals/analysis/report/figures.py"]
         assert _FORMS in _OWNERS
+
+
+#: A helper that decides nothing and hands back the text it was given, joined to its unit: ``quantities._joined``'s
+#: shape, which ``with_unit`` hands ``number_in``'s figure.
+_JOINED = "def _joined(text, unit):\n    return text if not unit else f'{text} {unit}'\n\n"
+
+
+class TestASiteHandedThroughAHelperIsStillASite:
+    """A function that hands a site's figure to a helper returning what it was given returns that figure, so it is a
+    wrapper and its callers are sites; a helper handed a value nobody decided stays no site, and neither do its
+    callers."""
+
+    @pytest.mark.parametrize(
+        ("body", "inner"),
+        [
+            # Through an argument: with_unit's shape, number_in's figure handed straight to _joined.
+            ("    return _joined(spell_at(v, 1), unit)\n", ("figure", "spell_at()", "spell_at(v, 1)")),
+            # Through a nested call: the figure passes two helpers that each hand it back.
+            (
+                "    return _joined(_trimmed(spell_at(v, 1)), unit)\n",
+                ("figure", "spell_at()", "spell_at(v, 1)"),
+            ),
+            # Through a local the helper builds before handing it on.
+            (
+                "    text = spell_at(v, 1)\n    return _joined(text, unit=unit)\n",
+                ("figure", "spell_at()", "spell_at(v, 1)"),
+            ),
+        ],
+        ids=["argument", "nested-call", "local"],
+    )
+    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body, inner):
+        source = (
+            _JOINED
+            + "def _trimmed(text):\n    return text.strip()\n\n"
+            + f"def figure(v, unit):\n{body}\n"
+            + "def head(v):\n    return f'{figure(v, \"ms\")} mean'\n\n"
+            + "def row(v):\n    return head(v)\n"
+        )
+        assert _forms(_python_sites(source)) == [
+            inner,
+            ("head", "figure()", "figure(v, 'ms')"),
+            ("row", "head()", "head(v)"),
+        ]
+
+    def test_a_value_only_passed_through_decides_nothing(self):
+        """The helper and every caller handing it a raw value or a name are no site; only the call that hands it a
+        figure is one, beside them, so the helper itself is never taken for a primitive. Nor is a figure handed to a
+        parameter the helper does not return."""
+        source = (
+            _JOINED
+            + "def _first(text, other):\n    return text\n\n"
+            + "def label(name, unit):\n    return _joined(name, unit)\n\n"
+            + "def header(name):\n    return label(name, 'ms')\n\n"
+            + "def aside(name, v):\n    return _first(name, spell_at(v, 1))\n\n"
+            + "def checked(v):\n    return aside('n', v)\n\n"
+            + "def figure(v):\n    return _joined(spell_at(v, 1), 'ms')\n\n"
+            + "def head(v):\n    return figure(v)\n"
+        )
+        assert _forms(_python_sites(source)) == [
+            ("aside", "spell_at()", "spell_at(v, 1)"),
+            ("figure", "spell_at()", "spell_at(v, 1)"),
+            ("head", "figure()", "figure(v)"),
+        ]
+
+    def test_a_method_handing_a_figure_to_its_own_helper_is_a_wrapper(self):
+        source = (
+            "class Ruler:\n"
+            "    def _joined(self, text, *, unit):\n        return f'{text} {unit}'\n"
+            "    def figure(self, v):\n        return self._joined(spell_at(v, 1), unit='ms')\n"
+            "    def head(self, v):\n        return self.figure(v)\n"
+        )
+        assert _forms(_python_sites(source)) == [
+            ("Ruler.figure", "spell_at()", "spell_at(v, 1)"),
+            ("Ruler.head", "figure()", "self.figure(v)"),
+        ]
+
+    def test_the_package_s_own_with_unit_is_a_primitive(self):
+        """``with_unit`` hands ``number_in``'s figure to ``_joined``, so every call to it is a site (C3g review)."""
+        quantities = "threetears/evals/analysis/quantities.py"
+        sources = {
+            quantities: (_SOURCE_ROOT / quantities).read_text(encoding="utf-8"),
+            "threetears/evals/caller.py": (
+                "from threetears.evals.analysis.quantities import signed_with_unit, with_unit\n\n"
+                "def level(v):\n    return with_unit(100 * v, '%')\n\n"
+                "def change(v):\n    return signed_with_unit(v, 'pts')\n"
+            ),
+        }
+        called = {(site.qualname, site.form) for site in _walk_python(sources) if site.module.endswith("caller.py")}
+        assert called == {("level", "with_unit()"), ("change", "signed_with_unit()")}
+
+
+class TestAPrimitiveHandedOnAsAValueIsASite:
+    """A primitive stored to be applied later decides where it is applied, which the walk cannot follow, so it is a
+    site where it is handed on."""
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("FORMATS = {'num': format_number, 'pct': percent}\n", ("<module>", "format_number()", "format_number")),
+            ("FORMATS = [format_number, str]\n", ("<module>", "format_number()", "format_number")),
+            ("spell = format_number\n", ("<module>", "format_number()", "format_number")),
+        ],
+        ids=["dict", "list", "bound-name"],
+    )
+    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source, expected):
+        assert _forms(_python_sites(source)) == [expected]
+
+    def test_an_annotation_a_class_test_or_a_field_read_is_not(self):
+        source = (
+            "def f(form: MoneyForm, family) -> MoneyForm:\n"
+            "    level = family.interval_level\n"
+            "    return {'level': family.interval_level, 'form': form}\n"
+        )
+        assert _python_sites(source) == []
+
+    def test_a_property_that_returns_a_form_is_a_site_where_self_reads_it(self):
+        source = (
+            "class Cell:\n"
+            "    @property\n    def figure(self):\n        return spell_at(self.value, 1)\n"
+            "    @property\n    def text(self):\n        said = self.figure\n        return said\n"
+        )
+        assert _forms(_python_sites(source)) == [
+            ("Cell.figure", "spell_at()", "spell_at(self.value, 1)"),
+            ("Cell.text", "figure()", "self.figure"),
+        ]
 
 
 class TestTheWalkSeesEveryKitForm:
