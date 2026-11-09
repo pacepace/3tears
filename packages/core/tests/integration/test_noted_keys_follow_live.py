@@ -138,7 +138,7 @@ async def db(db_container: str) -> AsyncIterator[_Db]:
         await conn.execute(
             trigger_function_sql(notes_schema=schema, table_schema=schema, table=_TABLE, keys=_KEY, columns=())
         )
-        for statement in note_trigger_sql(notes_schema=schema, table_schema=schema, table=_TABLE):
+        for statement in note_trigger_sql(notes_schema=schema, table_schema=schema, table=_TABLE).values():
             await conn.execute(statement)
         await conn.execute(
             f"INSERT INTO {schema}.{_TABLE} SELECT 'VA', g, 1 FROM generate_series(1, $1) g",  # noqa: S608

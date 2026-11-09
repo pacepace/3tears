@@ -490,7 +490,7 @@ async def _give_as_its_schemas_run_does(pool: asyncpg.Pool, notes_schema: str, s
             tenancy=noted.tenancy,
         )
     )
-    for statement in note_trigger_sql(notes_schema=notes_schema, table_schema=schema, table=noted.table):
+    for statement in note_trigger_sql(notes_schema=notes_schema, table_schema=schema, table=noted.table).values():
         await pool.execute(statement)
 
 
