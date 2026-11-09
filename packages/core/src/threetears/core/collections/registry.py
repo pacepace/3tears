@@ -127,6 +127,23 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     return SqlL3Backend(l3_pool)
 
 
+#: the most rows one batched invalidation message names: a few hundred bytes each, far under a NATS payload
+_ROWS_A_MESSAGE: Final = 500
+
+
+class InvalidatedRow(BaseModel):
+    """one more row a :class:`CacheInvalidationMessage` names, beside the one its own fields name.
+
+    :ivar ids: stringified pk values in declared column order
+    :ivar l2_current_scope: as :attr:`CacheInvalidationMessage.l2_current_scope`, for this row
+    :ivar columns: as :attr:`CacheInvalidationMessage.columns`, for this row
+    """
+
+    ids: list[str]
+    l2_current_scope: str | None = None
+    columns: dict[str, str | None] | None = None
+
+
 class CacheInvalidationMessage(BaseModel):
     """typed wire envelope for cross-pod cache invalidation broadcasts.
 
@@ -181,9 +198,16 @@ class CacheInvalidationMessage(BaseModel):
         ``None`` when the collection declares none, or the write saw no row
         (an eviction that names only a key).
 
+    :ivar more_rows: further rows of the same table, the same origin and the same advance, each handled
+        exactly as a message of its own would be (and each counted toward ``bump_rows``): one message for a
+        write of many rows, not one a row. ``None`` for a message naming one row.
+
     Every field after ``ids`` is optional and was added after the envelope first
     shipped; a receiver that predates one ignores it, and a message without it is
-    handled as it was before the field existed.
+    handled as it was before the field existed. ``more_rows`` is the exception: a
+    receiver that predates it would evict the first row and not the rest, so a
+    registry sends it only when switched on (:attr:`CollectionRegistry.batch_invalidations`),
+    once every process on the bus reads it (expand, then migrate, then contract).
     """
 
     table: str
@@ -193,6 +217,28 @@ class CacheInvalidationMessage(BaseModel):
     generation: str | None = None
     bump_rows: int | None = None
     columns: dict[str, str | None] | None = None
+    more_rows: list[InvalidatedRow] | None = None
+
+    def each_row(self) -> list[CacheInvalidationMessage]:
+        """this message as one message a row: itself, then one for each of :attr:`more_rows`.
+
+        :return: the messages, in order
+        :rtype: list[CacheInvalidationMessage]
+        """
+        rows = [self.model_copy(update={"more_rows": None})]
+        for row in self.more_rows or ():
+            rows.append(
+                CacheInvalidationMessage(
+                    table=self.table,
+                    ids=row.ids,
+                    origin=self.origin,
+                    l2_current_scope=row.l2_current_scope,
+                    generation=self.generation,
+                    bump_rows=self.bump_rows,
+                    columns=row.columns,
+                )
+            )
+        return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +374,10 @@ class CollectionRegistry:
         # skip self-published messages and avoid evicting rows it just
         # wrote. An opaque token, never used as a UUID.
         self._origin_id: str = str(uuid7())  # convert at border: invalidation wire-envelope origin token
+        #: whether a write of many rows is broadcast as one message naming them all
+        #: (:attr:`CacheInvalidationMessage.more_rows`) rather than one a row. Off until every process on
+        #: the bus reads that field: a reader from before it would evict a message's first row only
+        self.batch_invalidations = False
         self._scan_cache: ScanCache | None = None
         # The invalidation listener's lifecycle state, set together by
         # :meth:`start_invalidation_listener` and cleared together by
@@ -1338,13 +1388,15 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
-            await self._apply_row_message(message)
-            # Counted as heard only once everything above has run to the end: a row whose
-            # eviction raised part-way is one this registry cannot vouch for, and leaving it
-            # uncounted is what makes the next catch-up apply its epoch's change record. A message naming no
-            # generation -- a table not switched on, an older publisher -- counts nothing.
-            if message.generation is not None and message.bump_rows is not None:
-                self._generation_marks.hear(message.table, message.generation, message.bump_rows)
+            # a message naming many rows is heard as one message a row, in order
+            for row in message.each_row() if message.more_rows else (message,):
+                await self._apply_row_message(row)
+                # Counted as heard only once everything above has run to the end: a row whose
+                # eviction raised part-way is one this registry cannot vouch for, and leaving it
+                # uncounted is what makes the next catch-up apply its epoch's change record. A message naming no
+                # generation -- a table not switched on, an older publisher -- counts nothing.
+                if row.generation is not None and row.bump_rows is not None:
+                    self._generation_marks.hear(row.table, row.generation, row.bump_rows)
 
         # SubscribeError propagates deliberately: cache coherence is not
         # optional, so a process that cannot subscribe must fail its startup
@@ -1686,6 +1738,60 @@ class CollectionRegistry:
                     },
                 },
             )
+
+    async def publish_invalidations(
+        self, nats_client: NatsClient | None, table_name: str, messages: Sequence[CacheInvalidationMessage]
+    ) -> None:
+        """publish the row messages of one write of many rows: one message for them all when
+        :attr:`batch_invalidations` is on (up to :data:`_ROWS_A_MESSAGE` rows each), else one a row.
+
+        Locally exactly as :meth:`publish_invalidation` a row at a time: this process's scans of the table are
+        dropped, and each row reaches its derived caches. A failed publish is logged as one is there.
+
+        :param nats_client: connected typed NATS wrapper client; ``None`` publishes nothing
+        :ptype nats_client: NatsClient | None
+        :param table_name: the table every message names
+        :ptype table_name: str
+        :param messages: the row messages, each built by :meth:`row_message`
+        :ptype messages: Sequence[CacheInvalidationMessage]
+        :return: nothing
+        :rtype: None
+        """
+        self.drop_local_scans(table_name)
+        for message in messages:
+            self.tell_derived_caches(message)
+        if nats_client is None or not messages:
+            return
+        envelopes: list[CacheInvalidationMessage] = list(messages)
+        if self.batch_invalidations:
+            envelopes = [
+                chunk[0].model_copy(
+                    update={
+                        "more_rows": [
+                            InvalidatedRow(ids=row.ids, l2_current_scope=row.l2_current_scope, columns=row.columns)
+                            for row in chunk[1:]
+                        ]
+                        or None
+                    }
+                )
+                for chunk in (
+                    messages[start : start + _ROWS_A_MESSAGE] for start in range(0, len(messages), _ROWS_A_MESSAGE)
+                )
+            ]
+        for envelope in envelopes:
+            try:
+                await nats_client.publish(subject=Subjects.cache_invalidate(), message=envelope)
+            except PublishError as exc:
+                log.warning(
+                    "Failed to publish invalidation signal",
+                    extra={
+                        "extra_data": {
+                            "table": table_name,
+                            "rows": 1 + len(envelope.more_rows or ()),
+                            "error": str(exc),
+                        }
+                    },
+                )
 
     def drop_local_scans(self, table_name: str) -> None:
         """the local half of an invalidation: this process's cached scans of a table it just wrote.
