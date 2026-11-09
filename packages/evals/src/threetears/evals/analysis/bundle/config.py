@@ -369,20 +369,6 @@ def _resolve_config(
     return flat, frozenset(resolution.overlaid | (set(recovery) & set(flat)))
 
 
-def _effective_values(run: EvalRun, results: list[ResultView], *, profile: HostProfile) -> dict[str, str]:
-    """Each lever whose value IS established, as plain strings.
-
-    Levers resolving to ``unknown`` are absent rather than present-and-empty: a
-    caller comparing cohorts must be unable to accidentally treat "we could not
-    establish this" as a level.
-    """
-    return {
-        lever: eff.value
-        for lever, eff in _effective_config(run, results, profile=profile).items()
-        if eff.value is not None
-    }
-
-
 def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, dict[str, EffectiveLever]]) -> str | None:
     """Read one lever's value for a score record, resolved the way the run lenses resolve it.
 

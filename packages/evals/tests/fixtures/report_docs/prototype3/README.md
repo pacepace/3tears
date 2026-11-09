@@ -12,20 +12,13 @@ The third prototype, run after the W2-fix and W2b waves on report-kit/analyst @b
 
 Every call matched the first prototype's. The analysts used 41 to 56 tool calls each (first prototype: 52 to 86) and logged 28 capability gaps across the five (first prototype: 66 for the same five). Every cited figure key read on its snapshot in every round. Each must_fix finding was an analyst misreading or overclaiming a correct tool result, except r3's last, where a rounding filter dropped a cost multiple's unit word.
 
-Files in each directory:
-- `report.json`: the final report document (draft `report-doc/1`).
-- `blocks.txt`: each evidence block's `block_render` text. It stands in for the page, since the claims renderer is W3's.
-- `notes.md`: the analyst's reasoning note, the tools it used, and a section for each revision.
-- `gaps.json`: every `capability_gap` call.
-- `editor.json`, `editor2.json`, `editor3.json`: each round's review.
-- `round1/`, `round2/`: earlier drafts with the review they received.
-- `work/`, `editor-work/`: the raw tool output each agent saved.
+Each directory now holds only `doc.json`, the one file the tests read. The run's other files (`report.json`, `blocks.txt`, `notes.md`, `gaps.json`, each round's review, the earlier drafts and the agents' raw tool output) were removed, since nothing read them; git holds them at 83be8d3de.
 
 The editor read values tables, not a rendered page.
 
 ## Converted documents (`doc.json`)
 
-Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
+Each directory's `doc.json` is the run's `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). The conversion:
 - adds `recommends`, read by hand from the call this README and the report's decision state. It holds only an arm the report recommends: a tradeoff's lean ("our lean, not a recommendation") stays in its prose and recommends none, as does a report that ships nothing yet;
 - fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
 - drops `snapshot_id` where the draft carried one: the stored record names its snapshot;

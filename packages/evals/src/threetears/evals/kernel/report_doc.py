@@ -57,8 +57,8 @@ is never half-read: one this build's :class:`ReportDoc` does not accept is refus
 change to :class:`ReportDoc` (or to anything it holds), to the generation record or to a stored session always moves
 :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`, so a stale document is refused by its version
 first, before its body is read, with the remedy to drop it and write the report again; and a document at the current
-version always reads. The degraded read of plan §2.3 ("a doc that no longer validates") therefore arises only as that
-version refusal.
+version always reads. A stored document that no longer validates therefore reaches a reader only as that version
+refusal, never as a page read in part.
 """
 
 from __future__ import annotations

@@ -247,8 +247,10 @@ def test_a_fallback_naming_an_unset_variable_is_refused_when_the_model_is_built(
     monkeypatch.setenv(FALLBACKS, f"{LUMENS},ANTHROPIC_API_KEY_UNSET")
     monkeypatch.delenv("ANTHROPIC_API_KEY_UNSET", raising=False)
 
-    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY_UNSET"):
+    with pytest.raises(ValueError) as raised:
         opus(KeyedServer({}))
+
+    assert str(raised.value) == (f"{FALLBACKS} entries 2 name variables the environment does not set (counting from 1)")
 
 
 async def test_a_tool_turn_fails_over_as_a_completion_does(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -371,16 +373,51 @@ def test_credit_spent_is_the_credit_notice_and_a_402_and_nothing_else(
 
 
 @pytest.mark.parametrize(
-    "listed", [PRIMARY, f"{LUMENS},{LUMENS}", f"{LUMENS}, {PRIMARY}"], ids=["itself", "twice", "itself-after"]
+    ("listed", "places"),
+    [(PRIMARY, "1"), (f"{LUMENS},{LUMENS}", "2"), (f"{LUMENS}, {PRIMARY}", "2")],
+    ids=["itself", "twice", "itself-after"],
 )
 def test_a_fallback_list_naming_the_primary_or_one_variable_twice_is_refused_when_the_model_is_built(
-    monkeypatch: pytest.MonkeyPatch, listed: str
+    monkeypatch: pytest.MonkeyPatch, listed: str, places: str
 ) -> None:
     keys(monkeypatch, PRIMARY, LUMENS)
     monkeypatch.setenv(FALLBACKS, listed)
 
-    with pytest.raises(ValueError, match=f"{FALLBACKS} names {PRIMARY} itself or one variable twice"):
+    with pytest.raises(ValueError) as raised:
         opus(KeyedServer({}))
+
+    assert str(raised.value) == (f"{FALLBACKS} entries {places} repeat {PRIMARY} or an earlier entry (counting from 1)")
+
+
+def test_a_key_shaped_like_a_variable_name_is_refused_by_its_position_and_never_printed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    keys(monkeypatch, PRIMARY, LUMENS)
+    pasted = f"FAKEKEY{uuid.uuid4().hex}"
+    monkeypatch.setenv(FALLBACKS, f"{LUMENS}, {pasted}")
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(ValueError) as raised:
+        opus(KeyedServer({}))
+
+    assert str(raised.value) == (f"{FALLBACKS} entries 2 name variables the environment does not set (counting from 1)")
+    assert all(pasted not in message for message in (str(raised.value), repr(raised.value), caplog.text))
+
+
+def test_a_key_pasted_into_the_fallback_list_is_refused_by_its_position_and_never_printed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    keys(monkeypatch, PRIMARY, LUMENS)
+    pasted = f"sk-ant-api03-FAKE-{uuid.uuid4().hex}"
+    monkeypatch.setenv(FALLBACKS, f"{LUMENS}, {pasted}")
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(ValueError) as raised:
+        opus(KeyedServer({}))
+
+    assert (
+        str(raised.value)
+        == f"{FALLBACKS} entry 2 is not a variable's name (counting from 1); list each key by its variable"
+    )
+    assert all(pasted not in message for message in (str(raised.value), repr(raised.value), caplog.text))
 
 
 def test_no_repr_or_str_of_a_model_with_fallbacks_or_of_anything_it_holds_prints_a_key(

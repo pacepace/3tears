@@ -742,9 +742,10 @@ python -m threetears.evals.harness export --host module:callable --scope SCOPE -
 ```
 
 `--host` names the zero-argument callable that returns the host's `EvalHost`, whose store holds the campaign.
-`--built-by` names the factory the mint rebuilds the profile from, and is written into `profile.json`; omitted, it is
-`--host`, which the mint accepts too, since it reads only the profile of the host a factory returns. It must be
-`module:callable`, importable wherever the mint runs; an export naming anything else is refused. The command writes
+`--built-by` names the factory the profile came from, written into `profile.json` as `built_by`: provenance, which the
+mint never imports. Omitted, it is `--host`, which the mint's operator can pass as the mint's own `--host` too, since
+the mint reads only the profile of the host a factory returns. It must be `module:callable`; an export naming
+anything else is refused. The command writes
 `documents.json`, `profile.json` and `manifest.json` as the directory `DIR`, which must not exist yet or be empty: it
 writes them into a new sibling directory and renames that to `DIR`, so either all three are there or none is, and a
 run that fails part-way can simply run again. It exits 0 when the files are written, 2 when the export is refused (a
@@ -752,7 +753,7 @@ campaign the scope does not hold, a `DIR` holding files, a factory that does not
 judge value in a form its document's type does not record), and 3 when the factory raises.
 
 A host whose code serves the engine's actions exports with no code of its own: `campaign_export` (read) takes
-`campaign_id` and, optionally, `built_by`, reads the caller's scope, and returns `documents`, `profile` and `manifest`
+`campaign_id` and, optionally, `built_by` (provenance the profile records; the mint never imports it), reads the caller's scope, and returns `documents`, `profile` and `manifest`
 as its JSON. A closure past one page is paged by whole documents, under `page.byte_ceiling` bytes of them a page, each
 page carrying the profile and the manifest whole; its text names the next call (`export_after_doc_type` with
 `export_after_document_id`). Join the pages' documents in order.
@@ -763,11 +764,12 @@ most of it traces) once, through the command line or the function below, each of
 
 So the action is bounded. While it gathers the closure it counts each document it keeps as canonical JSON (sorted
 keys, no whitespace, ASCII, so its characters and its bytes as text), and it refuses the moment the total passes the
-host's ceiling, naming the bytes reached and the ceiling. No read returns more than 16 whole documents: a read by a
-field fetches the matching ids first, the store leaving out every other field the type's model declares, then the
-documents 16 at a time, each 16 counted before the next is read. So a refused call holds at most the ceiling and 16
-documents. Two things sit outside the count: the three whole-type scans (rubric dims, launches and judge profiles,
-small types read whole and filtered), and a field a stored document carries that its model does not declare, which
+host's ceiling, naming the bytes reached and the ceiling. No read by id or by field returns more than 16 whole
+documents: a read by a field fetches the matching ids first, the store leaving out every other field the type's model
+declares, then the documents 16 at a time, each 16 counted before the next is read. So those reads leave a refused
+call holding at most the ceiling and 16 documents. Two things sit outside that bound: the three whole-type scans
+(rubric dims, launches and judge profiles, small types each read whole in one read and filtered, only the documents
+kept counted), and a field a stored document carries that its model does not declare, which
 the read of ids cannot leave out.
 
 The ceiling counts JSON, not heap. Decoded, a document takes about 3 to 5 times its JSON on the heap (3.3 to 4.8
@@ -814,11 +816,14 @@ nothing to the host's store:
 ```
 python -m threetears.evals.harness mint --documents documents.json --profile profile.json --manifest manifest.json \
     --campaign CAMPAIGN --name NAME --group GROUP [--stratum STRATUM] [--withhold NOTE ...] [--skill DIR] \
-    [--as-of INSTANT] [--scope SCOPE] [--host module:callable] [--created-by WHO] --out NAME.json.gz
+    [--as-of INSTANT] [--scope SCOPE] --host module:callable [--created-by WHO] --out NAME.json.gz
 ```
 
-It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds. The mint runs where the host's `built_by` module imports; if the host's package is not installed in that environment, put its source on `PYTHONPATH` for the command. The
-three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:
+It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds.
+`--host` names the profile's factory, and it is the only module the mint imports. The mint never imports the
+`built_by` an export names: a host's chat agent can call `campaign_export` and choose it, and the mint runs in the
+operator's environment, so the operator names the code. The mint runs where the `--host` module imports; if the host's
+package is not installed in that environment, put its source on `PYTHONPATH` for the command. The three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:
 a refusal of the documents, the manifest or the declaration comes first. `--scope` reads only the documents of that
 scope; omitted, the campaign is read in the scope its document carries, and an export holding it in two is refused.
 
@@ -844,12 +849,13 @@ the bundle an analysis of this campaign reads, so the export carries it. Nothing
 
 | Key | What it is |
 |---|---|
-| `built_by` | the factory, `module:callable`: no arguments, returning the `HostProfile` the runs were measured under, or the `EvalHost` carrying it (only its profile is read) |
+| `built_by` | provenance: the factory, `module:callable`, the exporter says the profile came from. The mint checks it is text and never imports it |
 | `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
 
 The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
 sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built
-live from `built_by` (or `--host`, which takes its place), and a live profile whose digest is not the declared one is
+live from `--host`: a zero-argument `module:callable` returning the `HostProfile` the runs were measured under, or
+the `EvalHost` carrying it (only its profile is read). A live profile whose digest is not the declared one is
 refused, naming both: the campaign was measured under other sweepables or another world.
 
 **`manifest.json`** names the documents that reasoned on the campaign; any other key is the host's:

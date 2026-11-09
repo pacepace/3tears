@@ -3,7 +3,7 @@
 :func:`check_report_doc` returns every verdict at once, each a :class:`DocVerdict` naming the invariant, the field
 path, what is wrong and where to go to mend it, so one revision can mend them all. They go back to the analyst as
 text, and storing a document re-runs them and refuses on any. ``docs/eval-report-kit/ANALYST.md`` §7 lists the
-invariants; the W3 plan §3 says how each is checked.
+invariants; the numbered list below says how each is checked here.
 
 **Every check is mechanical.** A check reads the document's fields by path and the snapshot's report input, and
 nothing else: no code path here reads ``story``, a slot's word as a choice, a claim's weight or a block's kind to
@@ -49,7 +49,8 @@ refused, so a revision sees everything at once.
    rendered page's text above the appendix is checked the same way where the caller passes it
    (``above_appendix_text``, the renderer's ``above_appendix_text(page)``), which catches what the renderer itself
    prints: a caveat id, a measure key in a header. That text leaves out the example cards the renderer draws, which
-   print their trial and case ids and are exempt (plan §2.2, input 11).
+   print their trial and case ids and are exempt: a card quotes one trial of one case, and its ids are how a reader
+   finds that evidence.
 6. **Method is present**: at least one item. The full-results appendix is the renderer's, always built.
 
 Invariant 7 (``check.py`` at 1200, 1104, 688 and 390 px, light and dark) needs a browser, so it is not checked at

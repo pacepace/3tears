@@ -24,8 +24,8 @@ naming no report when it is not, :class:`ReportNotStored` included. Each is on t
 recorded on this module's logger at error level and on the result (:attr:`ReportWritten.gaps_not_stored`), beside the
 records to store again. A write that crashes before its end loses its gaps, as it loses the write.
 
-**Keys.** The caller passes the model (plan §4.6): a host builds ``Model(id, provider="anthropic", api_key=...)``
-from the key it holds. Nothing here reads an environment variable.
+**Keys.** The caller passes the model, since the key is the host's to hold: a host builds
+``Model(id, provider="anthropic", api_key=...)`` from the key it holds. Nothing here reads an environment variable.
 
 **Under a dollar budget, a run that cannot be priced never starts.** A dollar budget (:class:`ReportBudget`) admits
 every turn on its price ceiling, so before anything is frozen or sent the model is asked whether its turns can be
@@ -75,7 +75,7 @@ log = get_logger(__name__)
 class ReportWritten:
     """What writing a report came to.
 
-    :ivar ending: How the writing loop ended (plan §4.4).
+    :ivar ending: How the writing loop ended (the loop's endings, :mod:`~threetears.evals.ops.report_writer.loop`).
     :ivar snapshot_id: The snapshot it was written from.
     :ivar stored: The stored document; ``None`` for an ending that stores nothing.
     :ivar outcome: The loop's outcome: the reviews, the rounds, a refusal's faults, why it ended.
@@ -187,7 +187,7 @@ async def report_write(
     :ptype analysis_id: str | None
     :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
     :ptype withhold: Collection[str]
-    :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
+    :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
     :ptype limits: WriterLimits | None
     :param tally: The tally every turn is counted in, when the caller keeps it (a job that must say what a run it
         stopped had spent); a fresh one when ``None``.

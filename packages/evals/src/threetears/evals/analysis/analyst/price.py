@@ -153,9 +153,6 @@ _UNDECIDED_SAYS = (
     "to fail, and is not priced; each place with no figure is under unknown"
 )
 
-#: How an option is named in a refusal's list of what a parameter takes.
-_SLICE_KINDS: tuple[SliceKind, ...] = ("task", "strata", "cells")
-
 #: How a move's price interval reads: both ends stated, the high end unbounded, no interval stated, or no price.
 Bounds = Literal["bounded", "unbounded_above", "unstated", "no_price"]
 

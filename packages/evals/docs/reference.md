@@ -814,7 +814,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 **Classes**
 
 - **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
-- **`AnalystLimits`** · dataclass · What the analyst's rounds are held to (plan §4.3).
+- **`AnalystLimits`** · dataclass · What the analyst's rounds are held to, so every draft and revision ends within bounded calls and bounces.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
 - **`CampaignExport`** · *host contract* · model · One campaign's closure: its documents, the host's profile declaration and the manifest.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
@@ -822,7 +822,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CaseRenamed`** · *host contract* · model · A renamed case: which, and its name before and after.
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
-- **`EditorLimits`** · dataclass · What each review round is held to (plan §4.3).
+- **`EditorLimits`** · dataclass · What each review round is held to, so every review ends within a bounded number of calls.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
@@ -834,9 +834,9 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`ReportBudget`** · class · The host's cap for one report, shared by every session that writes it: dollars, or tokens, and either with turns.
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
-- **`SessionLimits`** · dataclass · What every turn of a session is held to (plan §4.3).
+- **`SessionLimits`** · dataclass · What every turn of a session is held to, so no turn's reply or prompt grows past what its budget admitted.
 - **`TemplateListing`** · model · A scope's templates.
-- **`WriterLimits`** · dataclass · What the writing loop is held to (plan §4.3).
+- **`WriterLimits`** · dataclass · What the writing loop is held to, so every report ends within bounded rounds, whatever the reviews say.
 
 **Constants**
 
@@ -1551,7 +1551,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `bars_overridden` | array of `string` | Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect label holds no slash), the aspect and measure the page's bars table names it by. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
-| `built_by` | `string` or `null` | The module:callable, importable where the host's code is, that returns this host's profile (or the host) with no arguments: the factory the mint rebuilds the profile from. Omitted, the profile names none, and the mint is given one (--host). |
+| `built_by` | `string` or `null` | Provenance: the module:callable this host's profile comes from, recorded in the profile as built_by. The mint never imports it; its operator names the factory (--host). Omitted, the profile names none. |
 | `call_reason` | `string` | Why the call was made, in the decider's words. |
 | `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...], short_name?}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. short_name is what a page prints for the arm where space is tight (chart labels, table cells), at most 32 characters and no other arm's label or short name; omitted, the page computes one from what differs from the control. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |

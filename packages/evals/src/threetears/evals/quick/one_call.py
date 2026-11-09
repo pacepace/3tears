@@ -457,18 +457,6 @@ def refuse_unusable_margins(
             )
 
 
-def refuse_a_store_beside_a_host(store: DocumentStore | None, host: EvalHost | None) -> None:
-    """Refuse ``store=`` beside ``host=``: a host brings its own storage, and one call stores in one place.
-
-    :raises ValueError: Both were given.
-    """
-    if store is not None and host is not None:
-        raise ValueError(
-            f"store= is where the host this call builds keeps the runs, and host {host.profile.host_id!r} brings its "
-            "own storage; pass one or the other (as_host([...], store=...) builds a host over a store)"
-        )
-
-
 #: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
 _MARGIN_ON_A_GUARDRAIL = (
     "{name!r} is declared a guardrail and given a margin too: a guardrail is never contrasted, so a margin for "
@@ -2081,7 +2069,6 @@ __all__ = [
     "callable_host",
     "callable_kind",
     "callable_kind_contracts",
-    "refuse_a_store_beside_a_host",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",

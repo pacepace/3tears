@@ -674,8 +674,8 @@ def test_a_live_run_says_how_many_fallback_keys_each_key_has_and_names_no_key(
 def test_a_fallback_naming_an_unset_variable_is_refused_before_its_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A ``_FALLBACKS`` entry the environment does not set is refused by name before anything is made or bought, as a
-    missing key is: the run would otherwise stop on it only once the first key's credit ran out."""
+    """A ``_FALLBACKS`` entry the environment does not set is refused, by its position, before anything is made or
+    bought, as a missing key is: the run would otherwise stop on it only once the first key's credit ran out."""
     for name in KEYS:
         monkeypatch.setenv(name, "unused")
     monkeypatch.setenv("ANTHROPIC_API_KEY_FALLBACKS", "ANTHROPIC_API_KEY_UNSET")
@@ -687,16 +687,20 @@ def test_a_fallback_naming_an_unset_variable_is_refused_before_its_directory(
 
     monkeypatch.setattr(writer_acceptance, "acceptance", launched)
     out = tmp_path / "out"
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY_FALLBACKS names ANTHROPIC_API_KEY_UNSET"):
+    with pytest.raises(
+        SystemExit, match="ANTHROPIC_API_KEY_FALLBACKS entries 1 name variables the environment does not set"
+    ):
         writer_acceptance.main(["--cap-usd", "45", "--out", str(out)])
     assert not out.exists()
 
 
 @pytest.mark.parametrize(
-    "listed", ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_LUMENS"], ids=["itself", "twice"]
+    ("listed", "places"),
+    [("ANTHROPIC_API_KEY", "1"), ("ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_LUMENS", "2")],
+    ids=["itself", "twice"],
 )
 def test_a_fallback_list_the_client_refuses_is_refused_before_its_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, listed: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, listed: str, places: str
 ) -> None:
     """A ``_FALLBACKS`` list naming the key's own variable, or one variable twice, is what the client refuses when a
     model is built: the script reads it with the client's reader and refuses it before anything is made."""
@@ -710,7 +714,9 @@ def test_a_fallback_list_the_client_refuses_is_refused_before_its_directory(
 
     monkeypatch.setattr(writer_acceptance, "acceptance", launched)
     out = tmp_path / "out"
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY_FALLBACKS names ANTHROPIC_API_KEY"):
+    with pytest.raises(
+        SystemExit, match=f"ANTHROPIC_API_KEY_FALLBACKS entries {places} repeat ANTHROPIC_API_KEY or an earlier entry"
+    ):
         writer_acceptance.main(["--cap-usd", "45", "--out", str(out)])
     assert not out.exists()
 

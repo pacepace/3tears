@@ -8,7 +8,8 @@ files. :func:`campaign_export` assembles them, read-only, from the host's store:
   ``id``, ``scope_id`` and ``doc_type``), each ``(doc_type, id)`` once, in ``(doc_type, id)`` order;
 - ``profile``: the host's declarations (:class:`ProfileDeclaration`), with ``host_declarations_digest``
   (:func:`~threetears.evals.analysis.host_declarations_digest`, the digest every analysis bundle records) and
-  ``built_by``, the ``module:callable`` that rebuilds the live profile: the two fields the mint reads;
+  ``built_by``, the ``module:callable`` the profile came from, as provenance: the mint checks the digest and never
+  imports ``built_by``, since its operator names the factory;
 - ``manifest``: the documents that reasoned on the campaign (so a case withholds the notes they lead to), the count of
   every document type the engine stores, what the closure could not resolve, and the package version that wrote it.
 
@@ -36,10 +37,11 @@ naming the document the next page starts after. The pages' documents, joined, ar
 response for a client, not the read: every page call reads the whole closure, so a very large campaign is exported
 once, whole. So the action holds a ceiling (``max_bytes``, its host's
 :attr:`~threetears.evals.ops.OpsHost.campaign_export_max_bytes`, in characters of canonical JSON), counted as the
-closure is gathered and refused the moment it passes. Under a ceiling no read returns more than a chunk of whole
-documents: a field read fetches ids first, every other field its type's model declares left out, then the documents
-a chunk at a time, so a refused call holds the ceiling and one chunk. The three whole-type scans (rubric dims,
-launches, judge profiles) read their small types whole and are not counted. The command line and the function, which
+closure is gathered and refused the moment it passes. Under a ceiling no read by id or by field returns more than a
+chunk of whole documents: a field read fetches ids first, every other field its type's model declares left out, then
+the documents a chunk at a time, so those reads leave a refused call holding the ceiling and one chunk. The three
+whole-type scans (rubric dims, launches, judge profiles) are outside that bound: each reads its small type whole in
+one read, however many documents it holds, and only the documents a scan keeps are counted. The command line and the function, which
 read the closure once in a process of their own, hold no ceiling and read each type in one read. Pages are not a snapshot: a write between two calls can drop a document or move the manifest, and the
 manifest's ``closure_keys_digest`` then differs from the first page's.
 """
@@ -94,8 +96,9 @@ _VALUE = ConfigDict(frozen=True, extra="forbid")
 #: a page alone. An action's result is read whole into a client, and a page at this ceiling stays near a megabyte.
 _PAGE_BYTES: Final = 1_000_000
 
-#: The most whole documents one store read returns while a ceiling holds (:meth:`_Closure._fetch`): a read's documents
-#: arrive together before any is counted, so what one export holds is at most its ceiling and one chunk. Sixteen keeps
+#: The most whole documents one store read by id or by field returns while a ceiling holds (:meth:`_Closure._fetch`):
+#: a read's documents arrive together before any is counted, so what those reads hold is at most the ceiling and one
+#: chunk. A whole-type scan (:meth:`_Closure.scan`) is not chunked. Sixteen keeps
 #: a chunk of the heaviest stored documents (a trace of a long conversation, a report snapshot's frozen bundle, at a
 #: few hundred kilobytes to a few megabytes each) to tens of megabytes at worst, at one store round trip per sixteen.
 _CHUNK: Final = 16
@@ -243,17 +246,18 @@ class ProfileDeclaration(BaseModel):
     """A host profile's declarations, serialized: everything of a :class:`~threetears.evals.kernel.host.HostProfile`
     that is not a callable.
 
-    The mint reads two fields: ``built_by``, the factory it rebuilds the live profile from (the freeze calls the
-    profile's readers, which no file carries), and ``host_declarations_digest``, which that profile must reproduce.
-    The rest is the host's record of what its campaign was measured under.
+    The mint checks ``host_declarations_digest``, which the live profile its operator names must reproduce (the freeze
+    calls the profile's readers, which no file carries). ``built_by`` is provenance, never imported: a caller of the
+    ``campaign_export`` action chooses it, so the mint runs only the factory its operator names. The rest is the
+    host's record of what its campaign was measured under.
     """
 
     model_config = _VALUE
 
     host_id: str
     built_by: str | None = Field(
-        description="The module:callable that, called with no arguments where the host's code imports, returns the "
-        "profile or the host carrying it; None when the export names none, and the mint is then given one (--host)."
+        description="Provenance: the module:callable the profile came from, as its exporter named it; None when it "
+        "named none. The mint never imports it; its operator names the factory (--host)."
     )
     host_declarations_digest: str = Field(
         min_length=64,
@@ -413,7 +417,7 @@ def _declaration(profile: HostProfile, built_by: str | None) -> ProfileDeclarati
 
 
 def _checked_built_by(built_by: str | None) -> str | None:
-    """``built_by`` as a mint reads it, ``module:callable``, or a refusal: a mint reads any other text as no factory."""
+    """``built_by`` as provenance names a factory, ``module:callable``, or a refusal: other text names no code."""
     if built_by is None:
         return None
     module_name, colon, attribute = built_by.partition(":")
@@ -421,7 +425,7 @@ def _checked_built_by(built_by: str | None) -> str | None:
         raise ValidationFailedError(
             f"built_by names a profile factory as module:callable, not {built_by!r}",
             remedy="name the zero-argument callable that returns the host's profile, or its host, as "
-            "package.module:callable; or leave it out, and name it to the mint with --host",
+            "package.module:callable; or leave it out",
         )
     return built_by
 
@@ -460,8 +464,10 @@ class _Closure:
     def _count(self, document: Mapping[str, Any]) -> None:
         """Add a kept document's size to the running total, refusing the moment it passes the ceiling.
 
-        Counted as each document is kept, and every read under a ceiling returns at most :data:`_CHUNK` whole
-        documents (:meth:`_fetch`), so a refused export holds at most the ceiling and one chunk.
+        Counted as each document is kept, and every read by id or by field under a ceiling returns at most
+        :data:`_CHUNK` whole documents (:meth:`_fetch`), so those reads leave a refused export holding at most the
+        ceiling and one chunk. A whole-type scan (:meth:`scan`) returns its type whole, past the chunk, and only what
+        the caller keeps of it is counted here.
         """
         if self._max_bytes is None:
             return
@@ -515,7 +521,11 @@ class _Closure:
         return self._fetch(doc_type, _unique(str(document["id"]) for document in light))
 
     def scan(self, doc_type: str) -> list[dict[str, Any]]:
-        """Every document of ``doc_type`` in the scope, NOT kept: for a list-valued link the caller filters itself."""
+        """Every document of ``doc_type`` in the scope, NOT kept: for a list-valued link the caller filters itself.
+
+        One read of the whole type, under a ceiling too: it is not chunked, and nothing it returns is counted until
+        the caller keeps it. Only small types are scanned (rubric dims, launches, judge profiles).
+        """
         return self._storage.stored_documents(doc_type, self._scope)
 
     def keep(self, doc_type: str, documents: Iterable[Mapping[str, Any]]) -> None:
@@ -783,8 +793,8 @@ def campaign_export(
     :ptype scope_id: str
     :param campaign_id: The campaign.
     :ptype campaign_id: str
-    :param built_by: The ``module:callable`` that rebuilds ``host``'s profile (or ``host``) with no arguments where
-        the host's code imports, which the mint calls; ``None`` to name none, and the mint is then given it (--host).
+    :param built_by: Provenance: the ``module:callable`` ``host``'s profile (or ``host``) comes from, recorded in the
+        profile; ``None`` to name none. The mint never imports it: its operator names the factory (``--host``).
     :ptype built_by: str | None
     :param paged: Read one page of the export (:class:`CampaignExportPage`) rather than all of it.
     :ptype paged: bool

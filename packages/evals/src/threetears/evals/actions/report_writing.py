@@ -10,8 +10,8 @@ stored session may drop a result's body and call the tool again for it. Both mou
 snapshot already frozen, so neither tool writes, runs the writing loop, and stores what its ending stores through the
 store gate. Its result and its refusal (``ReportWritten``, ``ReportNotStored``) are the operation's, named here too.
 
-**Keys.** The caller passes the model (plan §4.6): a host builds ``Model(id, provider="anthropic", api_key=...)``
-from the key it holds. Nothing here reads an environment variable.
+**Keys.** The caller passes the model, since the key is the host's to hold: a host builds
+``Model(id, provider="anthropic", api_key=...)`` from the key it holds. Nothing here reads an environment variable.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ async def write_report(
     :ptype analysis_id: str | None
     :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
     :ptype withhold: Collection[str]
-    :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
+    :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
     :ptype limits: WriterLimits | None
     :param prefix: The host's prefix for its eval tools.
     :ptype prefix: str

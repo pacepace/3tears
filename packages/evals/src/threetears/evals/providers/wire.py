@@ -107,6 +107,11 @@ KEY_VARIABLES: Final[Mapping[Provider, str]] = {
 }
 
 
+#: What an environment variable's name is: a letter or underscore, then letters, digits and underscores. A key
+#: carries a hyphen (``sk-ant-...``), so a key pasted where a name belongs is never one.
+_VARIABLE_NAME: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def fallback_key_variables(variable: str) -> tuple[str, ...]:
     """The variables ``<variable>_FALLBACKS`` names, in order: the keys tried after ``variable``'s when one's credit is
     spent. The one reading of that list, for the client and for a script that checks it before launch.
@@ -117,15 +122,25 @@ def fallback_key_variables(variable: str) -> tuple[str, ...]:
     :ptype variable: str
     :return: The fallback variables' names, in the order they are tried.
     :rtype: tuple[str, ...]
-    :raises ValueError: The list names ``variable`` itself, one variable twice, or a variable the environment does
-        not set, naming it; never a value.
+    :raises ValueError: An entry that is no variable name, the list naming ``variable`` itself or one variable twice,
+        or an entry the environment does not set. Each refusal names entries by their position alone: an operator who
+        pastes a spare key in place of its variable's name must never see it printed, whatever the key looks like.
     """
     listed = f"{variable}_FALLBACKS"
     names = tuple(name.strip() for name in os.environ.get(listed, "").split(",") if name.strip())
-    if variable in names or len(set(names)) != len(names):
-        raise ValueError(f"{listed} names {variable} itself or one variable twice: {', '.join(names)}")
-    if unset := [name for name in names if not os.environ.get(name)]:
-        raise ValueError(f"{listed} names {', '.join(unset)}, which the environment does not set")
+    if malformed := [str(place) for place, name in enumerate(names, start=1) if not _VARIABLE_NAME.fullmatch(name)]:
+        which = f"entry {malformed[0]} is" if len(malformed) == 1 else f"entries {', '.join(malformed)} are"
+        raise ValueError(f"{listed} {which} not a variable's name (counting from 1); list each key by its variable")
+    if repeated := [
+        str(place) for place, name in enumerate(names, start=1) if name == variable or name in names[: place - 1]
+    ]:
+        raise ValueError(
+            f"{listed} entries {', '.join(repeated)} repeat {variable} or an earlier entry (counting from 1)"
+        )
+    if unset := [str(place) for place, name in enumerate(names, start=1) if not os.environ.get(name)]:
+        raise ValueError(
+            f"{listed} entries {', '.join(unset)} name variables the environment does not set (counting from 1)"
+        )
     return names
 
 
