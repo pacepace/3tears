@@ -39,7 +39,7 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns
 from threetears.evals.analysis.analyst.cited import cite
-from threetears.evals.analysis.report.build import contrast_evidence
+from threetears.evals.analysis.report.build import build_code_only_report, contrast_evidence
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
 from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
@@ -1000,3 +1000,16 @@ def test_an_aspect_page_s_forms_carry_their_bundle() -> None:
         contrast_evidence(second, forms=forms)
     with pytest.raises(ValueError, match="hold no aspect's bundle"):
         _ = PageForms.of(_written_inputs()[KAIRO]).bundle
+
+
+def test_an_aspect_page_built_in_handed_forms_reads_as_one_built_in_its_own() -> None:
+    """A caller that reads an aspect page's verdict sentences apart (a campaign's page) builds the page's forms once
+    and hands them in: the same bundle's forms lay out the page its own would, and another bundle's are refused, so
+    no page prints in forms decided over other evidence."""
+    shape = s3_measurement()
+    first, second = list(shape.bundles.values())[:2]
+    own = build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z")
+    handed = build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(first))
+    assert handed == own
+    with pytest.raises(ValueError, match="not built from"):
+        build_code_only_report(first, assembled_at="2026-11-09T00:00:00Z", forms=PageForms.of_bundle(second))
