@@ -7,6 +7,7 @@ from typing import Any
 import importlib
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -48,7 +49,7 @@ def _make_metadata() -> MetaData:
 duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.base import UnsupportedL1ColumnError  # noqa: E402
-from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement  # noqa: E402
 from threetears.core.utils.cpu_quota import effective_cpu_count  # noqa: E402
 
 
@@ -977,3 +978,126 @@ class TestKeylessTables:
         backend = _keyless_backend()
         with pytest.raises(ValueError, match="key-less table 'results'"):
             backend.load_parquet("results", tmp_path / "none.parquet")
+
+
+def _scoped_keyless_backend() -> DuckDBBackend:
+    """a key-less table whose key leads with its scope column, as the reports pod's projections are kept."""
+    metadata = MetaData()
+    Table(
+        "projections",
+        metadata,
+        Column("state", String(8), primary_key=True),
+        Column("run_id", Integer, primary_key=True),
+        Column("county", String(64), primary_key=True),
+        Column("votes", Integer),
+    )
+    backend = DuckDBBackend(keyless=["projections"])
+    backend.initialize(metadata)
+    return backend
+
+
+def _projection_rows(state: str, runs: range, counties: int) -> list[dict[str, Any]]:
+    return [
+        {"state": state, "run_id": run, "county": f"c{county:04d}", "votes": run * county}
+        for run in runs
+        for county in range(counties)
+    ]
+
+
+class TestAKeylessScopeIsCheckedForRepeats:
+    """a key-less table whose key includes the scope column refuses a scope's added rows that repeat a key the scope
+    holds, and takes the same key in another scope."""
+
+    def test_a_repeat_in_the_scope_is_refused_and_the_same_key_elsewhere_cannot_exist(self) -> None:
+        """Flips if a key the scope holds is added again, or another scope's rows refuse a scope's own."""
+        pytest.importorskip("pyarrow")
+        backend = _scoped_keyless_backend()
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "TX",
+                    rows=_projection_rows("TX", range(1), 3),
+                    primary_key=("state", "run_id", "county"),
+                ),
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "CA",
+                    rows=_projection_rows("CA", range(1), 3),
+                    primary_key=("state", "run_id", "county"),
+                ),
+            ]
+        )
+        arrow = backend.export_partition("projections", "state", "TX", order_by=("run_id", "county")).slice(0, 1)
+        with pytest.raises(duckdb.ConstraintException, match="name a key it holds"):
+            backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=arrow, append=True)])
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    "projections",
+                    "state",
+                    "TX",
+                    rows=_projection_rows("TX", range(1, 2), 3),
+                    primary_key=("state", "run_id", "county"),
+                    append=True,
+                )
+            ]
+        )
+        assert backend.execute_query("SELECT count(*) AS n FROM projections")[0]["n"] == 9
+
+    def test_adding_a_run_to_a_scope_costs_the_same_beside_six_times_the_rows(self) -> None:
+        """Flips if adding a scope's rows grows with what the other scopes hold: the time beside 6,000,000 rows is
+        held within 1.5x of the time beside 1,000,000, each the best of five on the same table."""
+        pa = pytest.importorskip("pyarrow")
+        backend = _scoped_keyless_backend()
+        schema = backend.export_partition("projections", "state", "S000", order_by=("run_id", "county")).schema
+
+        def scope(state: str, runs: int, counties: int) -> Any:
+            count = runs * counties
+            return pa.table(
+                {
+                    "state": pa.array([state] * count, pa.string()),
+                    "run_id": pa.array([n // counties for n in range(count)], pa.int32()),
+                    "county": pa.array([f"c{n % counties:04d}" for n in range(count)], pa.string()),
+                    "votes": pa.array(range(count), pa.int32()),
+                }
+            ).cast(schema)
+
+        other = scope("S000", 20, 2_000)
+
+        def fill(first: int, last: int) -> None:
+            backend.replace_partitions(
+                [
+                    PartitionReplacement(
+                        "projections",
+                        "state",
+                        f"S{n:03d}",
+                        arrow=other.set_column(0, "state", pa.array([f"S{n:03d}"] * other.num_rows, pa.string())).cast(
+                            schema
+                        ),
+                    )
+                    for n in range(first, last)
+                ]
+            )
+
+        run = scope("TX", 1, 2_000)
+
+        def best_add() -> float:
+            best = float("inf")
+            for _ in range(5):
+                backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=None)])
+                began = time.perf_counter()
+                backend.replace_partitions([PartitionReplacement("projections", "state", "TX", arrow=run, append=True)])
+                best = min(best, time.perf_counter() - began)
+            return best
+
+        fill(0, 25)
+        beside_one_million = best_add()
+        fill(25, 150)
+        beside_six_million = best_add()
+        assert beside_six_million <= 1.5 * beside_one_million, (
+            f"adding 2,000 rows took {beside_six_million * 1000:.1f} ms beside 6,000,000 rows, "
+            f"{beside_six_million / beside_one_million:.1f}x the {beside_one_million * 1000:.1f} ms beside 1,000,000"
+        )
