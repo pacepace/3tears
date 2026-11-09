@@ -27,7 +27,9 @@ ordered index adds a hot tail to every write.
 first and takes the database-wide DDL lock
 (:func:`~threetears.core.data.migrations.ddl_lock.database_ddl_lock`) only when a trigger is missing,
 with a bounded wait; a busy lock defers the install. :meth:`WriteMarkReconciler.run_pass` issues no
-DDL, so the drain never waits behind it. Callers run them as separate tasks.
+DDL, so the drain never waits behind it. Callers run them as separate tasks. The install is the backstop
+for one schema, the one whose declarations it is given: a same-named table in another schema is another owner's,
+reported and never switched on by its name; each schema's own migration runs give its tables their triggers.
 
 **Several reconcilers at once are safe.** Two that read the same page both advance the same tables,
 which costs one extra advance each, and both delete the same ids, which is idempotent. A
@@ -120,6 +122,12 @@ _APPLIED = counter(
 _INSTALLS_DEFERRED = counter(
     "collection_write_marks_installs_deferred_total",
     description="trigger installs deferred because the database's DDL lock was busy",
+)
+_MISSING_ELSEWHERE = gauge(
+    "collection_write_marks_missing_elsewhere",
+    description="switched-on table names found without the write-mark trigger in a schema other than the one the "
+    "install backstop serves: not installed there (a same-named table of another owner is not switched on by a name), "
+    "so nonzero means a schema its migrations never reached, or another owner's table of that name",
 )
 _PENDING = gauge(
     "collection_write_marks_pending",
@@ -220,8 +228,10 @@ async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: I
     return frozenset(str(row["table_name"]) for row in rows)
 
 
-async def tables_missing_the_trigger(pool: SqlConnection, tables: Iterable[str]) -> list[tuple[str, str]]:
-    """every ``(schema, table)`` of the named tables, in any schema, that has no write-mark trigger.
+async def tables_missing_the_trigger(
+    pool: SqlConnection, tables: Iterable[str], *, schema: str | None = None
+) -> list[tuple[str, str]]:
+    """every ``(schema, table)`` of the named tables that has no write-mark trigger: in ``schema``, or in any.
 
     A catalogue read: no DDL, no lock.
 
@@ -229,6 +239,8 @@ async def tables_missing_the_trigger(pool: SqlConnection, tables: Iterable[str])
     :ptype pool: SqlConnection
     :param tables: the switched-on table names
     :ptype tables: Iterable[str]
+    :param schema: the one schema to look in; None for every schema
+    :ptype schema: str | None
     :return: the tables without one
     :rtype: list[tuple[str, str]]
     """
@@ -236,7 +248,7 @@ async def tables_missing_the_trigger(pool: SqlConnection, tables: Iterable[str])
     if not names:
         return []
     rows = await pool.fetch(_MISSING_SQL, names, WRITE_MARK_TRIGGER)
-    return [(row["table_schema"], row["table_name"]) for row in rows]
+    return [(row["table_schema"], row["table_name"]) for row in rows if schema is None or row["table_schema"] == schema]
 
 
 async def install_write_mark_triggers(
@@ -244,9 +256,18 @@ async def install_write_mark_triggers(
     *,
     marks_schema: str,
     tables: Iterable[str],
+    table_schema: str | None = None,
     policy: DdlLockPolicy = INSTALL_LOCK_POLICY,
 ) -> list[str]:
-    """give every switched-on table, in every schema, its write-mark trigger; say which got one.
+    """give every switched-on table of the declaring schema its write-mark trigger; say which got one.
+
+    The backstop for the schema whose declarations ``tables`` are (``table_schema``; the queue's own schema when
+    None): a table there created before the trigger existed, or whose migration run could not give it one. Only
+    that schema: a table is switched on by its owner's declaration, and a table of the same name in another schema
+    (a tool pod's own table) is another owner's, switched on or off by that owner's own migrations
+    (:func:`~threetears.core.data.migrations.write_marks.give_switched_tables_their_trigger` on every run in its
+    schema). A same-named table without the trigger in another schema is reported, never installed: a log line and
+    the ``collection_write_marks_missing_elsewhere`` gauge, so a schema its migrations never reached shows.
 
     Reads the catalogue first and returns at once when nothing is missing. Otherwise takes the
     database-wide DDL lock on one connection, with ``policy``'s bounded wait, reads again under it,
@@ -257,8 +278,10 @@ async def install_write_mark_triggers(
     :ptype pool: SqlPool
     :param marks_schema: the schema holding the queue and its function
     :ptype marks_schema: str
-    :param tables: the switched-on table names
+    :param tables: the switched-on table names, as ``table_schema``'s owner declares them
     :ptype tables: Iterable[str]
+    :param table_schema: the schema the tables are declared in; None for ``marks_schema``
+    :ptype table_schema: str | None
     :param policy: how long to wait for the DDL lock
     :ptype policy: DdlLockPolicy
     :return: ``schema.table`` for each trigger this call created
@@ -266,13 +289,23 @@ async def install_write_mark_triggers(
     """
     # an L2-first table advances before its L3 write, so a mark on it would only ever be covered
     names = sorted(set(tables) - tables_written_l2_first())
-    if not await tables_missing_the_trigger(pool, names):
+    scope = table_schema or marks_schema
+    unmarked = await tables_missing_the_trigger(pool, names)
+    elsewhere = [f"{schema}.{table}" for schema, table in unmarked if schema != scope]
+    _MISSING_ELSEWHERE.set(len(elsewhere))
+    if elsewhere:
+        log.info(
+            "switched-on table names without the write-mark trigger outside the declaring schema; not installed "
+            "there: each is another owner's table, or a schema its migrations never reached",
+            extra={"extra_data": {"declaring_schema": scope, "tables": elsewhere}},
+        )
+    if len(elsewhere) == len(unmarked):
         return []
     created: list[str] = []
     async with pool.acquire() as conn:
         try:
             async with database_ddl_lock(ConnectionSession(conn), policy):
-                missing = await tables_missing_the_trigger(conn, names)
+                missing = await tables_missing_the_trigger(conn, names, schema=scope)
                 if missing:
                     # the function the row trigger calls, replacing the one that marked every statement
                     await conn.execute(write_marks_ddl(marks_schema)[1])
@@ -421,6 +454,9 @@ class WriteMarkReconciler:
     :param notes_schema: the schema holding the change-note ring the marked writes' notes are read from;
         ``None`` is ``marks_schema``
     :ptype notes_schema: str | None
+    :param tables_schema: the schema ``tables`` are declared in, the only one the install backstop gives triggers
+        in (:func:`install_write_mark_triggers`); ``None`` is ``marks_schema``
+    :ptype tables_schema: str | None
     """
 
     def __init__(
@@ -434,6 +470,7 @@ class WriteMarkReconciler:
         max_pages: int = _MAX_PAGES_PER_PASS,
         lease: KVLease | None = None,
         notes_schema: str | None = None,
+        tables_schema: str | None = None,
     ) -> None:
         if page_size < 1 or max_pages < 1:
             raise ValueError("a reconcile pass reads at least one page of at least one mark")
@@ -442,18 +479,22 @@ class WriteMarkReconciler:
         self._marks = f"{quote_identifier(marks_schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         self._marks_schema = marks_schema
         self._notes_schema = notes_schema or marks_schema
+        self._tables_schema = tables_schema or marks_schema
         self._tables = tables
         self._page_size = page_size
         self._max_pages = max_pages
         self._lease = lease
 
     async def install_triggers(self) -> list[str]:
-        """give every switched-on table that lacks one its trigger: the backstop, under the DDL lock.
+        """give every switched-on table of the declaring schema that lacks one its trigger: the backstop, under the
+        DDL lock (:func:`install_write_mark_triggers`).
 
         :return: ``schema.table`` for each trigger created
         :rtype: list[str]
         """
-        return await install_write_mark_triggers(self._pool, marks_schema=self._marks_schema, tables=self._tables())
+        return await install_write_mark_triggers(
+            self._pool, marks_schema=self._marks_schema, tables=self._tables(), table_schema=self._tables_schema
+        )
 
     async def run_pass(self) -> MarkPass:
         """read the queue's state, then drain under the lease when there is one. Issues no DDL.

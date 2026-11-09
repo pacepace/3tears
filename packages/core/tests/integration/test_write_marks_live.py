@@ -3,7 +3,10 @@
 Against a real database (the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to run it
 against YugabyteDB). These are the gates Chunk 12 asked for:
 
-- every switched-on table carries the trigger, in every schema, and a table without it is found;
+- the install backstop gives a switched-on table its trigger in the schema that declares it, and only there: a
+  table of the same name in another schema is another owner's (a tool pod's own table) and is reported, never
+  switched on by its name; every schema's own migration run gives its declared tables their trigger, on every run,
+  a table that predates the trigger included (until 0.95.0 the backstop gave the trigger in every schema);
 - a write whose generation advance never happened (the writer cancelled or killed after its commit)
   leaves a mark the next pass applies, and a rolled-back write leaves none;
 - two concurrent writers to one table both commit: the mark is an insert, so they never contend.
@@ -83,26 +86,74 @@ async def _marks(pool: asyncpg.Pool, platform: str) -> list[str]:
     return [row["table_name"] for row in rows]
 
 
-async def test_every_switched_on_table_carries_the_trigger_in_every_schema(
+async def test_the_backstop_switches_on_the_declaring_schemas_table_and_never_a_same_named_one_elsewhere(
     schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
+    """two schemas share a table name, as a tool pod's own ``coordination_redemptions`` shares the hub's: the hub's
+    backstop, declaring the platform's, gives the platform's its trigger and leaves the other's as its owner made
+    it, reported."""
     pool, platform, agent = schemas
     before = await tables_missing_the_trigger(pool, [_TABLE])
     assert {(platform, _TABLE), (agent, _TABLE)} <= set(before)
 
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    assert await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE]) == [f"{platform}.{_TABLE}"]
     # a second installer (another replica) finds nothing to do and raises nothing
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    assert await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE]) == []
 
-    after = await tables_missing_the_trigger(pool, [_TABLE])
-    assert not {(platform, _TABLE), (agent, _TABLE)} & set(after)
+    after = set(await tables_missing_the_trigger(pool, [_TABLE]))
+    assert (platform, _TABLE) not in after
+    assert (agent, _TABLE) in after
+    assert await tables_missing_the_trigger(pool, [_TABLE], schema=platform) == []
+    # a write to each: only the declaring schema's table leaves a mark
+    await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('pod', 1)")
+    assert await _marks(pool, platform) == []
+    await pool.execute(f"INSERT INTO {platform}.{_TABLE} VALUES ('hub', 1)")
+    assert await _marks(pool, platform) == [_TABLE]
+
+
+async def test_every_migration_run_gives_an_agent_schemas_declared_table_its_trigger(db_container: str) -> None:
+    """what now carries every agent schema's trigger: the migration runner's own hook, on every run in that schema,
+    a table that predates the trigger (or lost it) included."""
+    from threetears.core.coordination.migrations import register as register_coordination
+    from threetears.core.data.migrations import MigrationRunner, MigrationScope
+
+    schema = f"marks_agent_run_{uuid.uuid4().hex[:8]}"
+    conn = await asyncpg.connect(db_container)
+    try:
+        await conn.execute(f"CREATE SCHEMA {schema}")
+        await conn.execute(f"SET search_path TO {schema}")
+
+        async def start() -> int:
+            runner = MigrationRunner()
+            register_coordination(runner, scope=MigrationScope.AGENT)
+            return await runner.apply_for_agent_schema(ConnectionSession(conn))
+
+        assert await start() > 0
+        assert await tables_missing_the_trigger(conn, ["coordination_revocations"], schema=schema) == []
+
+        # a table from before the trigger existed: the next start, applying no migration, gives it one
+        await conn.execute(f"DROP TRIGGER {WRITE_MARK_TRIGGER} ON {schema}.coordination_revocations")
+        assert await tables_missing_the_trigger(conn, ["coordination_revocations"], schema=schema) == [
+            (schema, "coordination_revocations")
+        ]
+        assert await start() == 0
+        assert await tables_missing_the_trigger(conn, ["coordination_revocations"], schema=schema) == []
+        await conn.execute(
+            "INSERT INTO coordination_revocations (purpose, key, revoked_at, expires_at, date_created, date_updated) "
+            "VALUES ('standing', 'k', now(), now() + interval '1 day', now(), now())"
+        )
+        marks = await conn.fetch(f"SELECT table_name FROM {schema}.{WRITE_MARKS_TABLE}")
+        assert [row["table_name"] for row in marks] == ["coordination_revocations"]
+    finally:
+        await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await conn.close()
 
 
 async def test_a_committed_write_whose_advance_never_ran_is_applied_by_the_next_pass(
     schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
 
     # the writer commits and dies before advancing anything
     await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1)")
@@ -127,7 +178,7 @@ async def test_a_cancelled_writer_whose_commit_landed_still_leaves_its_mark(
     schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
 
     async def write_then_be_cancelled() -> None:
         await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('c', 3)")
@@ -146,7 +197,7 @@ async def test_a_statement_that_changes_no_row_leaves_no_mark(schemas: tuple[asy
     # the hub's idempotent namespace insert on every tool pod's handshake changed nothing and still marked, and
     # each mark is an advance no follower heard, so every follower dropped the table about twice a minute
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
     await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1)")
     await pool.execute(f"DELETE FROM {platform}.{WRITE_MARKS_TABLE}")
 
@@ -164,7 +215,9 @@ async def test_a_write_of_many_rows_in_one_transaction_leaves_one_mark(
     schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    # each schema's table switched on by the backstop serving it
+    for schema in (agent, platform):
+        await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=schema)
 
     await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1), ('b', 2), ('c', 3)")
     assert await _marks(pool, platform) == [_TABLE]
@@ -179,7 +232,7 @@ async def test_a_row_rolled_back_to_a_savepoint_takes_its_mark_back_and_a_later_
     schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
 
     async with pool.acquire() as conn, conn.transaction():
         savepoint = conn.transaction()
@@ -205,7 +258,7 @@ async def test_an_install_over_the_statement_trigger_replaces_it_so_a_write_mark
         f"FOR EACH STATEMENT EXECUTE FUNCTION {platform}.{MARK_FUNCTION}()"
     )
 
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
 
     triggers = await pool.fetch(
         "SELECT g.tgname, (g.tgtype & 1) = 1 AS per_row FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
@@ -221,7 +274,7 @@ async def test_an_install_over_the_statement_trigger_replaces_it_so_a_write_mark
 
 async def test_two_concurrent_writers_to_one_table_both_commit(schemas: tuple[asyncpg.Pool, str, str]) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
     started = asyncio.Event()
     both_in = asyncio.Barrier(2)
 
@@ -334,7 +387,7 @@ async def test_a_collection_write_that_advanced_itself_leaves_no_mark(
 ) -> None:
     # its own advance is heard; the reconciler's second one from its mark was not, and every follower dropped
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
     rows, writer_pool, source = await _switched_writer(db_container, platform, agent)
     try:
         await rows.save_entity(rows.create({"id": "a", "n": 1}))
@@ -350,7 +403,7 @@ async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_mark
     db_container: str, schemas: tuple[asyncpg.Pool, str, str]
 ) -> None:
     pool, platform, agent = schemas
-    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=agent)
     rows, writer_pool, source = await _switched_writer(db_container, platform, agent, l3=_DiesBeforeClearing)
     try:
         await rows.save_entity(rows.create({"id": "a", "n": 1}))
