@@ -1293,18 +1293,29 @@ def _held_as(figure: Figure, tabled: Mapping[str, set[tuple[str, str, str]]], he
     and role, or nothing where no one cell's figure is the key's.
 
     A figure is matched by its number, on its own scale or a percent's (``85.3`` and points read against a share's
-    ``0.853``), to a cell of the measure its path names (by its id, or a criterion's ``measure``). A key whose path
-    names none is of a figure the page holds without naming it: the pass rate or the cost. A figure in points is a
+    ``0.853``), money on the table's (a cost per 1,000 of ``1.892`` against a cost per reply of ``0.001892``), to a cell
+    of the measure its path names (by its id, or a criterion's ``measure``). A key whose path names none is of a figure
+    the page holds without naming it: the pass rate or the cost. (So a floor's change on its own measure, which
+    ``settle.floor`` reads with no measure in its path, would be passed over; no fixture states one.) A figure in points
+    is a
     difference or a spread of a rate, never its level, so it is matched to changes, as a change is; any other to
-    levels and money. A whole figure (a count, a zero, a 1–5 score's step) is held by many cells alike, and two cells
-    of one value under two measures or roles name neither: both are passed over."""
+    levels and money. A zero and a count are passed over (a zero half-width reads like a measure's zero level, a count of
+    cases needed like a level in percent, each the one cell of its value); so is any other whole figure but a level
+    (:data:`_WHOLE_LEVELS`) or one whose key says where the tables hold it (``ledger_as``), since a declared line, a
+    threshold, an adjusted p of 1 or a count of repeats reads like a whole level too. Two cells of one value under two
+    measures or roles name neither."""
     value = figure.value
-    if not isinstance(value, float) or value.is_integer():
+    if not isinstance(value, float) or value == 0 or figure.scale == "count":
+        return ()
+    if value.is_integer() and figure.ledger_as is None and figure.statistic not in _WHOLE_LEVELS:
         return ()
     named = figure.measure or (figure.set_of[0] if figure.set_of is not None else "")
     unnamed = {pass_rate_measure(held)[0], *(cost_measure(held) or ())[:1]}
     as_change = figure.change or figure.scale == "points"
-    values = (value, value / 100) if figure.scale in ("points", "percent") else (value,)
+    if figure.scale in ("points", "percent"):
+        values: tuple[float, ...] = (value, value / 100)
+    else:
+        values = (value / _PER_COUNT.get(figure.scale, 1),)
     found = {
         cell
         for number in values
@@ -1312,6 +1323,23 @@ def _held_as(figure: Figure, tabled: Mapping[str, set[tuple[str, str, str]]], he
         if (cell[2] == "change") == as_change and (cell[0] == named if named else cell[0] in unnamed)
     }
     return found.pop() if len(found) == 1 else ()
+
+
+#: The statistics a key reads a measure's level by, which a whole figure is still matched under (a bar's ``701`` ms,
+#: an arm's ``$4.00``): its mean, a bar's or a criterion's value, and an interval's ends.
+_WHOLE_LEVELS = frozenset({"mean", "value", "low", "high"})
+
+#: How many of what it counts a money figure's scale reads per (a cost per 1,000 replies), which a table's cost per one
+#: reply is that figure over.
+_PER_COUNT = {"usd_per_1k": 1_000, "usd_per_1m": 1_000_000}
+
+#: The families a table's cells are read from by key whose paths name no measure, each with the measure and role the
+#: table holds its figure under: wherever a fixture's table holds that cell, the walk must match its key, so a family
+#: whose figure no longer matches (on a scale read wrong) fails here rather than passing unchecked.
+_READ_BY_KEY: dict[str, tuple[Callable[[ReportInput], tuple[str, str] | None], str]] = {
+    "pass_rate": (pass_rate_measure, "level"),
+    "cost_per_1k": (cost_measure, "money"),
+}
 
 
 @pytest.mark.parametrize("name", _WRITTEN_FIXTURES)
@@ -1345,6 +1373,38 @@ def test_a_key_records_a_figure_a_table_prints_under_the_measure_and_role_the_ta
         checked.add(key.split(".")[0])
     assert checked, f"{name}: its tables print figures keys read, so this must check some"
     assert not misheld, misheld
+    held_cells = {cell for cells in tabled.values() for cell in cells}
+    for family, (measure_of, role) in _READ_BY_KEY.items():
+        measure = measure_of(held)
+        if measure is not None and (*measure, role) in held_cells:
+            assert family in checked, f"{name}: the table holds {family}'s {role}, and no {family} key matched it"
+
+
+def test_a_bar_s_figure_records_under_its_measure_in_the_role_the_table_holds_it() -> None:
+    """On s2 each arm's figure against a bar records under the bar's measure, as its level (``701 ms``) or, on a money
+    measure, as money (``$4.00 per 1,000 replies``), never as a lone figure; where the page's tables print that
+    measure (the turn time; s2 prints its cost under the page's cost, not the measuring spend the bar reads), the key's
+    entry is the cell's."""
+    held = _fixture_inputs()["s2"]
+    tabled = _tabled(held)
+    forms = PageForms.of(held)
+    roles: set[str] = set()
+    for read in held.bars:
+        figure = resolve(f"aspects.{read.aspect}.bar.{read.measure}.{read.arm}.value", held)
+        expected = (
+            read.measure,
+            "measure",
+            "money" if figure.scale in ("usd", "usd_per_1k", "usd_per_1m") else "level",
+        )
+        start = len(forms.ledger)
+        format_figure(figure, forms=forms)
+        recorded = [(entry.measure, entry.kind, entry.role) for entry in forms.ledger[start:]]
+        assert recorded == [expected], (read, recorded)
+        if (cell := _held_as(figure, tabled, held))[:1] == (read.measure,):
+            assert cell == expected, (read, cell)
+        roles.add(expected[2])
+    assert roles == {"level", "money"}, roles
+    assert any(cell[0] == "total_ms" for cells in tabled.values() for cell in cells), "s2's tables print the turn time"
 
 
 # --- the ledger and the fixed forms -------------------------------------------------------------------------------
