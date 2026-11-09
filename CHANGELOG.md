@@ -19,6 +19,12 @@ packages (bumped in lock-step).
   Built on a thread. A 12 MB copy's rows: 210 ms of JSON -> 40 ms of Arrow. A hub that does not announce it,
   rows that as Arrow pass the request's budget, and a process without pyarrow are sent JSON as before.
 
+### core: an Arrow reply's page is sized by the bytes the hub's cap measured it by (`rows_bytes`)
+
+A hub that builds an `l3.query` Arrow reply from the records (never through JSON) cuts it by its IPC bytes and says so
+as `rows_bytes`. The client reads `rows_bytes`, else `rows_json_bytes` (a hub before, which measures by JSON bytes), so
+the keyset pager sizes each next page by what the cap cut by. The hub sends both names for one release (expand).
+
 ### core: an index YugabyteDB cannot build is refused where it is declared
 
 YugabyteDB 2026.1 refuses an index of more than 32 columns, its `INCLUDE` columns counted ("cannot use more than 32

@@ -176,6 +176,31 @@ async def test_an_arrow_page_that_says_its_json_bytes_is_sized_as_its_json_would
     assert abs(asked["arrow"] - asked["json"]) <= 1, asked
 
 
+async def test_an_arrow_page_is_sized_by_the_bytes_the_hub_says_its_cap_measured_them_by() -> None:
+    """a hub that builds Arrow replies from the records measures them by their IPC bytes and says so as
+    ``rows_bytes``; a hub before says their JSON's as ``rows_json_bytes``. The page's bytes are the named ones, the new
+    name first, so the keyset pager sizes the next page by what the cap cut by."""
+    rows = [{**_ROWS[0], "id": index} for index in range(3)]
+
+    def said(**names: int) -> bytes:
+        reply = _arrow_reply(rows, rows_json_bytes=False, max_reply_bytes=4096)
+        size = int.from_bytes(reply[8:12], "big")
+        envelope = {**json.loads(reply[12 : 12 + size]), **names}
+        head = json.dumps(envelope, separators=(",", ":")).encode()
+        return b"L3ARROW1" + struct.pack("!I", len(head)) + head + reply[12 + size :]
+
+    pages = {}
+    for form, names in {"new": {"rows_bytes": 100}, "old": {"rows_json_bytes": 100}, "both": {"rows_bytes": 100,
+                        "rows_json_bytes": 900}}.items():  # fmt: skip
+        reply = said(**names)
+        proxy, _ = _proxy(reply)
+        page = await proxy.fetch_arrow_page("SELECT * FROM t LIMIT 10", types=_TYPES)
+        envelope_bytes = int.from_bytes(reply[8:12], "big")
+        pages[form] = page.reply_bytes - envelope_bytes
+    # the rows' bytes as named, plus the key between envelope and rows the JSON reply would carry
+    assert pages["new"] == pages["old"] == pages["both"]
+
+
 async def test_an_arrow_reply_is_read_on_another_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     threads: list[tuple[int, bool]] = []
     read = arrow_reply.read_reply

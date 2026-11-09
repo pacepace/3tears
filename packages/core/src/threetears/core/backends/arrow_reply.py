@@ -199,9 +199,11 @@ def _arrow_reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
     if not rows.schema.equals(expected, check_metadata=False):
         raise ReplyNotArrowError(f"an Arrow rail reply's rows are {rows.schema}, not the types asked for")
     cap = envelope.get("max_reply_bytes")
-    rows_json = envelope.get("rows_json_bytes")
-    # the JSON reply's bytes are its envelope's, its rows' and the key between; a hub that does not say its rows'
-    # bytes gives 0, and the keyset pager keeps its page's rows rather than size them by the Arrow's smaller bytes
+    # the bytes the broker's cap measured the rows by: rows_bytes (their IPC stream's, for a reply built from the
+    # records), or rows_json_bytes, the name a hub before rows_bytes says it by (their JSON's)
+    rows_json = envelope.get("rows_bytes", envelope.get("rows_json_bytes"))
+    # the reply's bytes as the cap counts them are its envelope's, its rows' and the key between; a hub that does not
+    # say its rows' bytes gives 0, and the keyset pager keeps its page's rows rather than size them by a guess
     json_bytes = 0
     if isinstance(rows_json, int) and not isinstance(rows_json, bool) and rows_json >= 0:
         json_bytes = size + _ROWS_KEY_BYTES + rows_json
