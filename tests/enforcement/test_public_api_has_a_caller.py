@@ -274,20 +274,25 @@ class TestPublicApiHasACaller:
     def test_every_moved_module_is_a_real_move(self, scan: _Scan) -> None:
         """guard the guard: a map entry with a mistyped path would excuse nothing, silently.
 
-        The old path is gone from the tree and was in history at or before the baseline (still true once a
-        later tag is the baseline); the new path is in the tree.
+        The old path is gone from the tree and was in a release at or before the baseline (still true once a
+        later tag is the baseline); the new path is in the tree. Read from the release tags' own trees, never by
+        walking history: a test runner may hold the tags and their trees without the commits between them.
         """
+        tags = release_tags(_REPO_ROOT)
+        released = sorted(tag for tag, version in tags.items() if version <= tags[scan.baseline])
+        assert released, f"no release tag at or before {scan.baseline}"
         for old, new in _MOVED_MODULES:
             assert not (_REPO_ROOT / old).exists(), f"{old} is still in the tree; it did not move"
             assert (_REPO_ROOT / new).is_file(), f"{new} is not in the tree"
-            history = subprocess.run(
-                ["git", "rev-list", "-1", scan.baseline, "--", old],
-                cwd=_REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            assert history.stdout.strip(), f"{old} never existed at or before {scan.baseline}"
+            holding = [
+                tag
+                for tag in released
+                if subprocess.run(
+                    ["git", "cat-file", "-e", f"{tag}:{old}"], cwd=_REPO_ROOT, capture_output=True, check=False
+                ).returncode
+                == 0
+            ]
+            assert holding, f"{old} is in no release at or before {scan.baseline}"
 
     def test_every_name_added_since_the_last_release_has_a_caller_or_names_one(self, scan: _Scan) -> None:
         ledger = _ledger()
