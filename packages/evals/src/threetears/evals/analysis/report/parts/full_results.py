@@ -57,7 +57,7 @@ from dataclasses import replace
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns, bare_columns, percent_columns
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
 from threetears.evals.analysis.report.figure_keys import (
@@ -115,6 +115,7 @@ def _table(
     columns: Sequence[TableColumn],
     rows: list[dict[str, TableCell]],
     order: str,
+    forms: PageForms,
     *,
     by_row: Sequence[str | None] | None = None,
     reconciles: Collection[str] = (),
@@ -123,14 +124,15 @@ def _table(
     where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
     that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
     carries the per-1,000 mark beside it. An interval's level is no rate: it reads as :func:`_level` wrote it, never
-    rounded to a column's whole percents."""
-    laid = percent_columns(money_columns(rows, by_row=by_row, reconciles=reconciles), bare=bare_columns(list(columns)))
+    rounded to a column's whole percents. The page's forms hold both column rules, and record what each prints."""
+    money = forms.money_columns(rows, by_row=by_row, reconciles=reconciles)
+    laid = forms.rate_columns(money, bare=bare_columns(list(columns)), keep=(_LEVEL,))
     return TableBlock(
         section=WRITER_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=[{**row, **({_LEVEL: written[_LEVEL]} if _LEVEL in written else {})} for row, written in zip(laid, rows)],
+        rows=laid,
         order=order,
         total_rows=len(rows),
     )
@@ -275,7 +277,16 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
         if costed:
             cells["cost_per_1k"] = _cost(report_input, arm)
         rows.append(cells)
-    return [_table("arms_by_measure", columns, rows, "in the campaign's arm order", reconciles=_beside_a_month(report_input))]
+    return [
+        _table(
+            "arms_by_measure",
+            columns,
+            rows,
+            "in the campaign's arm order",
+            forms,
+            reconciles=_beside_a_month(report_input),
+        )
+    ]
 
 
 def _measured_aspects(report_input: ReportInput) -> list[Aspect]:
@@ -366,7 +377,11 @@ def _arms_by_aspect_and_measure(
                 else TableCell(value=None)
             )
         rows.append(cells)
-    return [_table("arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, reconciles=_beside_a_month(report_input))]
+    return [
+        _table(
+            "arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input)
+        )
+    ]
 
 
 def _beside_a_month(report_input: ReportInput) -> frozenset[str]:
@@ -448,7 +463,7 @@ def _contrasts(report_input: ReportInput, look: PageLook, forms: PageForms) -> l
                 value=look.reader("aspect", contrast.aspect) if contrast.aspect is not None else None
             )
         rows.append(cells)
-    return [_table("contrasts", columns, rows, "in the pipeline's order")]
+    return [_table("contrasts", columns, rows, "in the pipeline's order", forms)]
 
 
 # --- strata, tasks and cells -----------------------------------------------------------------------------------------
@@ -487,7 +502,7 @@ def _slices_table(
             rows.append(cells)
             kinds.append(key)
     order = "in the input's order, each slice's measures in the order it holds them"
-    return _table(name, columns, rows, order, by_row=kinds)
+    return _table(name, columns, rows, order, forms, by_row=kinds)
 
 
 def _strata(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
@@ -570,7 +585,7 @@ def _gate_matrix_full(report_input: ReportInput, look: PageLook, forms: PageForm
                 arm = column.key.removeprefix("arm:")
                 cells[column.key] = _gate_cell(report_input, forms, criterion, arm, task, cell)
             rows.append(cells)
-    return [_table("gate_matrix_full", columns, rows, "each criterion as declared, at each place it is read")]
+    return [_table("gate_matrix_full", columns, rows, "each criterion as declared, at each place it is read", forms)]
 
 
 # --- the configurations ----------------------------------------------------------------------------------------------
@@ -590,7 +605,7 @@ def _configs(report_input: ReportInput, look: PageLook, forms: PageForms) -> lis
             named = next((held.name or held.id for held in factor.levels if held.id == level), level)
             cells[f"factor:{factor.id}"] = TableCell(value=named)
         rows.append(cells)
-    return [_table("configs", columns, rows, "in the input's order")]
+    return [_table("configs", columns, rows, "in the input's order", forms)]
 
 
 #: Each table, to its builder, in the order the appendix lays them out.

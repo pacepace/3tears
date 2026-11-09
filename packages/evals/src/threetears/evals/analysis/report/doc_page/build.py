@@ -481,6 +481,7 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
         caption=caption,
         level=spec.level,
         unit=spec.unit,
+        # The axis's ends are what the chart declares it drawn over, each as the page prints a declared value.
         domain=" to ".join(reader.forms.declared(end).text for end in spec.domain),
         reference=_reference(spec, reader.forms),
         degraded=degraded,

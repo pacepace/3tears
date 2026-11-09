@@ -44,7 +44,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, percent_columns
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
@@ -848,14 +848,15 @@ def test_a_column_s_percentages_read_whole_unless_whole_percents_would_print_two
         {"arm": TableCell(value="b"), "control": TableCell(value=69.6, unit="%"), "arm_mean": TableCell(value="63.2%")},
         {"arm": TableCell(value="c"), "control": TableCell(value=0.0, unit="%"), "arm_mean": TableCell(value="0.0%")},
     ]
-    laid = percent_columns(rows)
+    forms = PageForms.off_page()
+    laid = forms.rate_columns(rows)
     assert [row["control"].text for row in laid] == ["60%", "70%", "0%"]
     assert [row["arm_mean"].text for row in laid] == ["62.9%", "63.2%", "0%"], "62.9 and 63.2 would both read 63%"
-    tight = percent_columns(
+    tight = forms.rate_columns(
         [{"interval": TableCell(value="[59.6%, 60.4%]")}, {"interval": TableCell(value="[1%, 9%]")}]
     )
     assert [row["interval"].text for row in tight] == ["[59.6%, 60.4%]", "[1.0%, 9.0%]"], "an interval's ends apart"
-    level = percent_columns([{"level": TableCell(value="99.69%")}, {"level": TableCell(value="97.5%")}])
+    level = forms.rate_columns([{"level": TableCell(value="99.69%")}, {"level": TableCell(value="97.5%")}])
     assert [row["level"].text for row in level] == ["99.69%", "97.5%"]
 
 

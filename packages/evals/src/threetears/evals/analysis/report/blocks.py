@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import Field, JsonValue, model_validator
@@ -33,9 +33,7 @@ from threetears.evals.analysis.report.charts import (
     bare_at,
     bare_places,
     percent_at,
-    percent_places,
     respell_bare,
-    respell_percents,
     BarRow,
     BarSegment,
     BarsChart,
@@ -49,7 +47,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
-from threetears.evals.kernel.numbers import POINT_PLACES, MoneyForm, money_form, spell_at
+from threetears.evals.kernel.numbers import MoneyForm, spell_at
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -626,78 +624,9 @@ class TableCell(EvalDocumentModel):
         return said if self.level is None else f"{percent_at(self.level, 1)} · {said}"
 
 
-def money_columns(
-    rows: Sequence[Mapping[str, TableCell]],
-    *,
-    by_row: Sequence[str | None] | None = None,
-    reconciles: Collection[str] = (),
-) -> list[dict[str, TableCell]]:
-    """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
-    table shows, across its rows and columns: by default a column's (a table of arms by measure); where ``by_row``
-    names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
-    the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
-    :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
-    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, every set a rate
-    (money per the count the table's head names), in whole dollars from $10. Each cell writes its value and its interval's ends at one precision, the
-    finest of them needs, and one significant figure more where its own interval's ends would otherwise read alike
-    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.places_of`), so $0.008 reads ``$0.0080`` beside ``$0.11``, never
-    ``$0.1100``. A table states the count its money is drawn per in its
-    head or its row, never as a mark on the amount. The values are as stored, so the decimals state no digit a value
-    does not hold; a cell of words, of another unit, or already carrying a form its builder chose from a wider set, is
-    left as it is.
-
-    :param rows: The table's rows, by column key.
-    :ptype rows: Sequence[Mapping[str, TableCell]]
-    :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set by
-        its column); unset for a table whose every set is a column.
-    :ptype by_row: Sequence[str | None] | None
-    :param reconciles: The sets a total computed from each amount is printed beside (a cost per 1,000 at a declared
-        monthly volume), whose amounts take a third figure where two would leave them off that total
-        (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
-    :ptype reconciles: Collection[str]
-    :return: The rows, each money cell carrying its set's form.
-    :rtype: list[dict[str, TableCell]]
-    """
-
-    def chosen(cell: TableCell) -> bool:
-        return cell.is_number and is_money(cell.unit) and cell.decimals is None
-
-    def set_of(at: int, key: str) -> tuple[str, str]:
-        kind = by_row[at] if by_row is not None else None
-        return ("row", kind) if kind is not None else ("column", key)
-
-    held: dict[tuple[str, str], list[float]] = {}
-    for at, row in enumerate(rows):
-        for key, cell in row.items():
-            if chosen(cell):
-                held.setdefault(set_of(at, key), []).extend(
-                    float(number)
-                    for number in (cell.value, cell.low, cell.high)
-                    if isinstance(number, int | float) and not isinstance(number, bool)
-                )
-    forms = {name: money_form(amounts, rate=True, reconciles=name[1] in reconciles) for name, amounts in held.items()}
-    return [
-        {
-            key: cell.model_copy(
-                update={"decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell), ends=(cell.low, cell.high))}
-            )
-            if chosen(cell)
-            else cell
-            for key, cell in row.items()
-        }
-        for at, row in enumerate(rows)
-    ]
-
-
-def _cell_amounts(cell: TableCell) -> list[float | None]:
-    """A money cell's amounts: its value and its interval's ends."""
-    value = cell.value
-    point = float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-    return [point, cell.low, cell.high]
-
-
 #: The ends of a column head that names its cells' unit, so the cells state bare figures (``Pass rate (%)``,
-#: ``Change (pts)``): :func:`percent_columns` reads them by its rule.
+#: ``Change (pts)``): a table's rate columns read them by their rule
+#: (:meth:`~threetears.evals.analysis.report.forms.PageForms.rate_columns`).
 BARE_UNIT_HEADS = ("(%)", "(pts)")
 
 
@@ -710,88 +639,6 @@ def bare_columns(columns: Sequence[TableColumn]) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     return {column.key: unit for column in columns for unit in BARE_UNIT_HEADS if column.header.endswith(unit)}
-
-
-def percent_columns(
-    rows: Sequence[Mapping[str, TableCell]], *, bare: Mapping[str, str] | None = None
-) -> list[dict[str, TableCell]]:
-    """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
-    decimal for the whole column only where whole percents would print two of its values alike or an interval's two
-    ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%`` never
-    stand on one page (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07;
-    :func:`~threetears.evals.analysis.report.charts.percent_places`).
-
-    A column holding a percentage written to two decimals or more (an interval's confidence level, ``99.69%``) is a
-    level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left as
-    it is; a cell's other words stay as written.
-
-    :param rows: The table's rows, by column key.
-    :ptype rows: Sequence[Mapping[str, TableCell]]
-    :param bare: The columns whose head names their unit, ``(%)`` or ``(pts)``, so their cells state bare figures
-        (``21.1``, ``[17.2, 25]``), each by the unit it names: every column of one unit in the table reads at one
-        precision by the same rule (a figure type across its columns: points, or percent), its leading figure and its
-        interval's ends. None for none.
-    :ptype bare: Mapping[str, str] | None
-    :return: The rows, each column's percentages respelled at its one precision.
-    :rtype: list[dict[str, TableCell]]
-    """
-    bare = bare or {}
-    keys = list(dict.fromkeys(key for row in rows for key in row))
-    places = {
-        key: chosen
-        for key in keys
-        if key not in bare
-        if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
-    }
-    by_unit = {
-        unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
-        for unit in set(bare.values())
-    }
-    # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
-    # unit's precision, which whole percents' rule for levels never coarsens: a set reads at one precision.
-    by_unit = {
-        unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
-    }
-    figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
-    return [
-        {
-            key: _respelled_percents(cell, places[key])
-            if key in places
-            else _respelled_bare(cell, figures[key])
-            if key in figures
-            else cell
-            for key, cell in row.items()
-        }
-        for row in rows
-    ]
-
-
-def _respelled_bare(cell: TableCell, places: int) -> TableCell:
-    """A bare figure's cell at ``places`` decimals (:func:`respell_bare`); a number keeps its value and glyph."""
-    if cell.is_number and not cell.unit:
-        return cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_bare(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
-
-
-def _said(cell: TableCell) -> str:
-    """A cell's text as it prints, without its flag: its number in its unit, or its value."""
-    return (
-        cell.amount(float(cell.value)) if cell.unit and isinstance(cell.value, int | float) else render_cell(cell.value)
-    )
-
-
-def _respelled_percents(cell: TableCell, places: int) -> TableCell:
-    """A cell with every percentage it states at ``places`` decimals (:func:`respell_percents`); a number held with
-    the percent unit keeps its value, glyph and status and reads at its column's precision, or at the decimals its
-    builder set."""
-    if cell.is_number and cell.unit == PERCENT:
-        # A builder that chose the cell's decimals (a level a change is read from, at its unit's one decimal) keeps them.
-        return cell if cell.decimals is not None else cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_percents(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -1252,8 +1099,8 @@ class ChartBlock(_Block):
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
         """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture, a column whose
-        head names its unit (``Pass rate (%)``) read at one precision with every column of its unit
-        (:func:`percent_columns`'s rule).
+        head names its unit (``Pass rate (%)``) read at one precision with every column of its unit (a table's rate
+        columns' rule, :meth:`~threetears.evals.analysis.report.forms.PageForms.rate_columns`).
 
         :return: ``(headers, rows)``, each row's cells as text.
         :rtype: tuple[list[str], list[list[str]]]
@@ -1565,6 +1412,5 @@ __all__ = [
     "interval_text",
     "interval_value_text",
     "reading_anchor",
-    "money_columns",
     "table_row",
 ]

@@ -71,7 +71,7 @@ from threetears.evals.kernel.numbers import (
     spell_stored_counts,
 )
 from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.blocks import bare_columns, money_columns, percent_columns
+from threetears.evals.analysis.report.blocks import bare_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figures import (
@@ -746,7 +746,8 @@ def _page(
     # with what was not tested, though they are laid out with the questions).
     order = list(SECTION_TITLES)
     blocks.sort(key=lambda block: order.index(block.section))
-    blocks = [_in_one_form(block) for block in _anchored(blocks)]
+    # Its tables take the column rules through the page's own forms, the bundle's, decided once above.
+    blocks = [_in_one_form(block, forms) for block in _anchored(blocks)]
     return Report(
         # The heading is the campaign's name; what it compares is the arms line under it.
         title=name,
@@ -757,13 +758,15 @@ def _page(
     )
 
 
-def _in_one_form(block: ReportBlock) -> ReportBlock:
+def _in_one_form(block: ReportBlock, forms: PageForms) -> ReportBlock:
     """A table with each column's money in one form chosen from the column's own values, by the one owner of money's
-    scale (:func:`~threetears.evals.analysis.report.blocks.money_columns`, #993); any other block as it is."""
+    scale (:meth:`~threetears.evals.analysis.report.forms.PageForms.money_columns`, #993), and each column's
+    percentages at one precision (:meth:`~threetears.evals.analysis.report.forms.PageForms.rate_columns`); any other
+    block as it is."""
     if not isinstance(block, TableBlock):
         return block
     # The code-only report's money in a table is drawn per a count its heading names, so it never carries the mark.
-    rows = percent_columns(money_columns(block.rows), bare=bare_columns(block.columns))
+    rows = forms.rate_columns(forms.money_columns(block.rows), bare=bare_columns(block.columns))
     return block.model_copy(update={"rows": rows})
 
 

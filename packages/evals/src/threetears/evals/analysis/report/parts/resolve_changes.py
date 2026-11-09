@@ -1191,9 +1191,11 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
 
 
 def _family_level(context: ChartContext) -> str:
-    """A forest's level as its head prints it (:func:`interval_level`, the form a table's cell prints it in): where its
-    contrasts are one family's, corrected together at the chart's level, that level and what the family holds at
-    together, ``99.7% (95% across 16 comparisons)`` (the kit prints ``99.7% intervals (95% across 16 comparisons)``)."""
+    """A forest's level as its head prints it (:meth:`~threetears.evals.analysis.report.forms.PageForms.confidence`,
+    which reads :func:`~threetears.evals.analysis.report.forms.interval_level`, the form a table's cell prints it in):
+    where its contrasts are one family's, corrected together at the chart's level, that level and what the family
+    holds at together, ``99.7% (95% across 16 comparisons)`` (the kit prints ``99.7% intervals (95% across 16
+    comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
     return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
