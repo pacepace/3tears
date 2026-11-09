@@ -34,6 +34,7 @@ __all__ = [
     "ArrowL3Reader",
     "L3_RAIL_ROW_CAP",
     "L3Page",
+    "ManyKeyReadingStore",
     "LOAD_FILES_MAX_WAIT_SECONDS",
     "BulkDeletingStore",
     "BulkDurableStore",
@@ -609,6 +610,39 @@ class LoadingStore(Protocol):
         :ptype timeout_ms: int
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
+        """
+        ...
+
+
+@runtime_checkable
+class ManyKeyReadingStore(Protocol):
+    """A durable store that reads many rows of one table by whole key at once.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_rows` reads the rows
+    it deletes through, when the collection's messages carry columns of each. A store without it is asked a key at
+    a time through :meth:`DurableStore.fetch_one`.
+    """
+
+    async def fetch_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """Read every row of ``table`` whose primary key is one of ``keys``, each as ``fetch_one`` reads it.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one read may name
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the backend's own
+        :ptype conn: Any
+        :return: each held row under its key as ``keys`` names it; a key no row holds left out
+        :rtype: dict[tuple[Any, ...], dict[str, Any]]
         """
         ...
 

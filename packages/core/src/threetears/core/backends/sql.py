@@ -1234,6 +1234,61 @@ class SqlL3Backend:
         )
         return len(named)
 
+    async def fetch_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """the rows of a schema-registered table named by whole ``keys``, each read as :meth:`fetch_one` reads it.
+
+        ``max_rows`` keys a statement (:func:`~threetears.core.backends.schema_sql.build_whole_key_select_sql`),
+        led by the key: not a statement a key. A key no row holds is left out.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names; at least one
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the pool
+        :ptype conn: Any
+        :return: each held row, under its key as ``keys`` names it
+        :rtype: dict[tuple[Any, ...], dict[str, Any]]
+        :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one, a key is not
+            as wide as the table's key, or a key column has no array form
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"fetch_many needs the schema of {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        key_columns = [schema.column(name) for name in schema.pk_columns]
+        # each key as the statement binds it, and as the caller named it
+        named: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        for key in keys:
+            if len(key) != len(key_columns):
+                raise ValueError(
+                    f"{table}: a key to read has {len(key)} values where the table's key has {len(key_columns)}"
+                )
+            bound = tuple(
+                schema_sql.normalize_write_value(column, value) for column, value in zip(key_columns, key, strict=True)
+            )
+            named[bound] = tuple(key)
+        found: dict[tuple[Any, ...], dict[str, Any]] = {}
+        sql = schema_sql.build_whole_key_select_sql(schema)
+        bounds = list(named)
+        for start in range(0, len(bounds), max_rows):
+            batch = bounds[start : start + max_rows]
+            for row in await self._fetch(sql, *(list(column) for column in zip(*batch, strict=True)), conn=conn):
+                read = dict(row)
+                bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
+                if bound in named:
+                    found[named[bound]] = schema_sql.coerce_row(schema, read)
+        return found
+
     async def fetch_led_by(
         self,
         table: str,
@@ -1467,6 +1522,12 @@ class SqlL3Backend:
             result = await conn.execute(query, *params)
             return result if isinstance(result, str) else ""
         return await self.execute(query, *params)
+
+    async def _fetch(self, query: str, *params: Any, conn: Any = None) -> list[dict[str, Any]]:
+        """Fetch rows on ``conn`` when supplied (transactional override), else the pool."""
+        if conn is not None:
+            return [dict(row) for row in await conn.fetch(query, *params)]
+        return await self.fetch(query, *params)
 
     async def _fetchrow(self, query: str, *params: Any, conn: Any = None) -> dict[str, Any] | None:
         """Fetch one row on ``conn`` when supplied (transactional override), else the pool."""

@@ -51,6 +51,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
+    ManyKeyReadingStore,
     BulkDurableStore,
     CopyingStore,
     DurableStore,
@@ -2635,16 +2636,23 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
             )
         entity_keys: list[Any] = []
+        # a collection whose row messages carry columns reads each row before it goes, on the caller's
+        # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
+        # many (one a key was a round trip each, on the rail a NATS request each), a read a key where it
+        # cannot, none for a collection that declares no columns
+        held: dict[tuple[Any, ...], dict[str, Any]] | None = None
+        if self.invalidation_columns and named and isinstance(store, ManyKeyReadingStore):
+            held = await store.fetch_many(self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn)
         for key in named:
             entity_key = key if width > 1 else key[0]
-            # a collection whose row messages carry columns reads each row before it goes, on the
-            # caller's transaction, so the message can say whose it was; one read per key, and
-            # none for a collection that declares no columns
-            seen = (
-                await store.fetch_one(self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn)
-                if self.invalidation_columns
-                else None
-            )
+            if not self.invalidation_columns:
+                seen = None
+            elif held is not None:
+                seen = held.get(key)
+            else:
+                seen = await store.fetch_one(
+                    self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn
+                )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
             transaction.enroll(self, entity_key, row=seen)
             entity_keys.append(entity_key)
