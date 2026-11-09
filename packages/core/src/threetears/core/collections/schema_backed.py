@@ -63,6 +63,7 @@ from threetears.core.backends.protocol import (
     LoadingStore,
     OrderedDurableStore,
     TruncatingStore,
+    copy_bounds,
     load_requests,
     side_by_side_requests,
 )
@@ -2357,9 +2358,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype rows: list[dict[str, Any]]
         :param conn: the caller's connection
         :ptype conn: Any
-        :param max_rows: the most rows one copy carries; :attr:`BULK_MAX_ROWS` when None
+        :param max_rows: the most rows one copy carries; when neither bound is given, :func:`copy_bounds`
         :ptype max_rows: int | None
-        :param max_bytes: the most bytes one copy's request comes to; :attr:`BULK_MAX_BYTES` when None
+        :param max_bytes: the most bytes one copy's request comes to; when neither bound is given, :func:`copy_bounds`
         :ptype max_bytes: int | None
         :return: rows written
         :rtype: int
@@ -2367,6 +2368,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if not rows:
             return 0
         if isinstance(store, CopyingStore):
+            if max_rows is None and max_bytes is None:
+                max_rows, max_bytes = copy_bounds(conn, len(rows))
             return await store.copy_many(
                 self.table_name,
                 rows,

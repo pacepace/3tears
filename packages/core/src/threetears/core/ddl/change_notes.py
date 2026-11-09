@@ -46,9 +46,10 @@ __all__ = [
     "NOTE_PUT_FUNCTION",
     "NOTE_RING_SIZE",
     "NOTE_SLOT_SETTING",
-    "NOTE_TRIGGER",
+    "NOTE_TRIGGERS",
     "NOTE_TRUNCATE_TRIGGER",
     "NOTE_WHOLE_SETTING",
+    "WHOLE_COPY_ROWS",
     "MARKS_TABLE",
     "RING_TABLE",
     "change_notes_ddl",
@@ -95,10 +96,14 @@ NOTE_PUT_FUNCTION: Final = _RING_FUNCTION
 #: the function a whole-table note is written through, once per transaction and table
 _WHOLE_FUNCTION: Final = "threetears_change_note_whole"
 
-#: the row trigger on every noted table, and its statement trigger for ``TRUNCATE``; both run the table's own
-#: function, which names the tenant of a whole-table note by the table's declaration
+#: the triggers on every noted table, all running the table's own function, which names the tenant of a
+#: whole-table note by the table's declaration: the row trigger, which fires only outside a transaction marked
+#: whole (its ``WHEN`` is checked without calling the function, so a whole load's rows cost no call each); the
+#: statement trigger for ``TRUNCATE``; and the statement trigger that writes a whole-marked write's one note
 NOTE_TRIGGER: Final = "threetears_change_note"
 NOTE_TRUNCATE_TRIGGER: Final = "threetears_change_note_truncate_table"
+NOTE_WHOLE_TRIGGER: Final = "threetears_change_note_whole_write"
+NOTE_TRIGGERS: Final = (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER, NOTE_WHOLE_TRIGGER)
 
 #: the ``TRUNCATE`` trigger an install before the tenant of a whole-table note was named gave a table: it ran a
 #: shared function that put every truncate on ``_all``. Dropped where the table's own trigger is created
@@ -110,6 +115,13 @@ _TABLE_FUNCTION_PREFIX: Final = "threetears_note_"
 #: the transaction-local setting a whole-table write (a file load) sets, so every row it copies is one
 #: whole-table note rather than a note each: the load's epoch names the whole table too
 NOTE_WHOLE_SETTING: Final = "threetears.note_whole"
+
+#: the rows a transaction copies from which it is marked whole (:data:`NOTE_WHOLE_SETTING`): one note for the
+#: table rather than one a row. The notes name at most this many rows a table to the write-mark reconciler
+#: (more are advanced with their keys unknown), so a note a row past it costs a write each and names nothing.
+#: The hub's ``l3.tx.copy`` counts a session's copied rows against it; a direct connection's
+#: :meth:`~threetears.core.backends.sql.SqlL3Backend.copy_many` its own call's
+WHOLE_COPY_ROWS: Final = 10_000
 
 
 def slot_max_age(fence: timedelta) -> timedelta:
@@ -512,8 +524,11 @@ def trigger_function_sql(
     )
 
 
-def note_trigger_sql(*, notes_schema: str, table_schema: str, table: str) -> tuple[str, str]:
-    """the statements that give one table its row trigger and its ``TRUNCATE`` trigger.
+def note_trigger_sql(*, notes_schema: str, table_schema: str, table: str) -> dict[str, str]:
+    """the statements that give one table its triggers (:data:`NOTE_TRIGGERS`), by trigger name.
+
+    The row trigger's ``WHEN`` and the whole-write trigger's are each other's complement, so a write is noted
+    by exactly one of them: a row each, or one whole-table note for the transaction.
 
     :param notes_schema: the schema holding the ring and the table's function
     :ptype notes_schema: str
@@ -521,18 +536,21 @@ def note_trigger_sql(*, notes_schema: str, table_schema: str, table: str) -> tup
     :ptype table_schema: str
     :param table: the table
     :ptype table: str
-    :return: the two ``CREATE TRIGGER`` statements
-    :rtype: tuple[str, str]
+    :return: each trigger's ``CREATE TRIGGER`` statement
+    :rtype: dict[str, str]
     """
     owner = quote_identifier(notes_schema)
     target = f"{quote_identifier(table_schema)}.{quote_identifier(table)}"
     function = f"{owner}.{quote_identifier(note_function_name(table_schema, table))}"
-    return (
-        f"CREATE TRIGGER {quote_identifier(NOTE_TRIGGER)} AFTER INSERT OR UPDATE OR DELETE ON {target} "
-        f"FOR EACH ROW EXECUTE FUNCTION {function}()",
-        f"CREATE TRIGGER {quote_identifier(NOTE_TRUNCATE_TRIGGER)} AFTER TRUNCATE ON {target} "
+    whole = f"current_setting('{NOTE_WHOLE_SETTING}', true)"
+    return {
+        NOTE_TRIGGER: f"CREATE TRIGGER {quote_identifier(NOTE_TRIGGER)} AFTER INSERT OR UPDATE OR DELETE ON {target} "
+        f"FOR EACH ROW WHEN ({whole} IS DISTINCT FROM '1') EXECUTE FUNCTION {function}()",
+        NOTE_TRUNCATE_TRIGGER: f"CREATE TRIGGER {quote_identifier(NOTE_TRUNCATE_TRIGGER)} AFTER TRUNCATE ON {target} "
         f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()",
-    )
+        NOTE_WHOLE_TRIGGER: f"CREATE TRIGGER {quote_identifier(NOTE_WHOLE_TRIGGER)} AFTER INSERT OR UPDATE OR DELETE "
+        f"ON {target} FOR EACH STATEMENT WHEN ({whole} = '1') EXECUTE FUNCTION {function}()",
+    }
 
 
 def legacy_truncate_trigger_drop_sql(*, table_schema: str, table: str) -> str:

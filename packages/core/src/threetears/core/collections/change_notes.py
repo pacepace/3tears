@@ -117,7 +117,7 @@ from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
     MARKS_TABLE,
     NOTE_RING_SIZE,
-    NOTE_TRIGGER,
+    NOTE_TRIGGERS,
     NOTE_TRUNCATE_TRIGGER,
     legacy_truncate_trigger_drop_sql,
     RING_TABLE,
@@ -784,7 +784,7 @@ class ChangeNoteKeeper:
         ]
         triggers = {
             (str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"]))
-            for row in await reader.fetch(_TRIGGERS_SQL, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
+            for row in await reader.fetch(_TRIGGERS_SQL, list(NOTE_TRIGGERS))
         }
         types: dict[tuple[str, str], dict[str, str]] = {}
         for row in await reader.fetch(_COLUMN_TYPES_SQL, sorted(noted)):
@@ -805,9 +805,7 @@ class ChangeNoteKeeper:
                 notes_schema=self._schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
             )
             stale = bodies.get(note_function_name(schema, table)) != wanted
-            missing = tuple(
-                name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (schema, table, name) not in triggers
-            )
+            missing = tuple(name for name in NOTE_TRIGGERS if (schema, table, name) not in triggers)
             if stale or missing:
                 work.append(_Install(table_schema=schema, noted=each, function=stale, triggers=missing))
         return work
@@ -858,13 +856,12 @@ class ChangeNoteKeeper:
                     tenancy=each.tenancy,
                 )
             )
-        row, truncate = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
+        statements = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
         if NOTE_TRUNCATE_TRIGGER in install.triggers:
             # a table given its triggers before a truncate's note named its tenant ran the shared function
             await conn.execute(legacy_truncate_trigger_drop_sql(table_schema=install.table_schema, table=each.table))
-        for name, statement in ((NOTE_TRIGGER, row), (NOTE_TRUNCATE_TRIGGER, truncate)):
-            if name in install.triggers:
-                await conn.execute(statement)
+        for name in install.triggers:
+            await conn.execute(statements[name])
 
     async def ring(self) -> NoteRingState:
         """the ring row, and the database's clock.

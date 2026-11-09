@@ -21,7 +21,7 @@ from typing import Any
 from threetears.core.collections.generation import NotedTable
 from threetears.core.ddl.change_notes import (
     NOTE_PUT_FUNCTION,
-    NOTE_TRIGGER,
+    NOTE_TRIGGERS,
     NOTE_TRUNCATE_TRIGGER,
     legacy_truncate_trigger_drop_sql,
     inexact_note_columns,
@@ -99,7 +99,7 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
         return []
     triggers = {
         (str(row["table_name"]), str(row["trigger_name"]))
-        for row in await store.query(_TRIGGERS_HERE, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
+        for row in await store.query(_TRIGGERS_HERE, list(NOTE_TRIGGERS))
     }
     types: dict[str, dict[str, str]] = {}
     for row in await store.query(_COLUMN_TYPES_HERE, present):
@@ -122,7 +122,7 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
             notes_schema=notes_schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
         )
         stale = bodies.get(note_function_name(here, table)) != wanted
-        missing = [name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (table, name) not in triggers]
+        missing = [name for name in NOTE_TRIGGERS if (table, name) not in triggers]
         if not stale and not missing:
             continue
         if stale:
@@ -136,13 +136,12 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
                     tenancy=each.tenancy,
                 )
             )
-        row, truncate = note_trigger_sql(notes_schema=notes_schema, table_schema=here, table=table)
+        statements = note_trigger_sql(notes_schema=notes_schema, table_schema=here, table=table)
         if NOTE_TRUNCATE_TRIGGER in missing:
             # a table given its triggers before a truncate's note named its tenant ran the shared function
             await store.execute(legacy_truncate_trigger_drop_sql(table_schema=here, table=table))
-        for name, statement in ((NOTE_TRIGGER, row), (NOTE_TRUNCATE_TRIGGER, truncate)):
-            if name in missing:
-                await store.execute(statement)
+        for name in missing:
+            await store.execute(statements[name])
         given.append(f"{here}.{table}")
     if given:
         log.info("noted tables given their change-note triggers", extra={"extra_data": {"tables": given}})

@@ -97,6 +97,30 @@ __all__ = [
 
 _logger = get_logger(__name__)
 
+#: the most bytes one ``l3.tx.copy`` request carries, whatever cap the hub announces: well under the
+#: platform's 16 MiB NATS ``max_payload``, so a request never meets the broker's refusal
+_COPY_REQUEST_CEILING_BYTES = 12 * 1024 * 1024
+
+
+def _copy_request_budget(cap: int | None, max_payload: int | None) -> int | None:
+    """the bytes one ``l3.tx.copy`` request is sized to: the cap a hub announced, under
+    :data:`_COPY_REQUEST_CEILING_BYTES` and three quarters of the server's ``max_payload``; None when no cap is announced.
+
+    :param cap: the announced request cap, or the reply cap when the hub announces none apart; None when neither
+    :ptype cap: int | None
+    :param max_payload: the NATS server's ``max_payload``, or None when unknown
+    :ptype max_payload: int | None
+    :return: the budget, or None
+    :rtype: int | None
+    """
+    if cap is None:
+        return None
+    budget = min(cap, _COPY_REQUEST_CEILING_BYTES)
+    if max_payload is not None:
+        budget = min(budget, max_payload * 3 // 4)
+    return budget
+
+
 #: the broker's ``error_code`` for a statement the database refused with an SQLSTATE in class
 #: 23 (integrity constraint violation). a reply carrying it also carries the server's fields
 #: -- ``sqlstate``, ``constraint_name``, ``table_name``, ``schema_name``, ``column_name`` and,
@@ -700,6 +724,11 @@ class NatsProxyL3Backend:
         else:
             raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
             self.timeout_ms = int(raw) if raw is not None else 5000
+        #: the reply cap the hub last announced (``max_reply_bytes``), and the request cap when it announces one
+        #: apart (``max_request_bytes``): they size a copy's requests (:meth:`_ProxyConnection.copy_budget_bytes`);
+        #: None until a reply names one
+        self.announced_reply_cap: int | None = None
+        self.announced_request_cap: int | None = None
 
     async def fetch(
         self,
@@ -817,13 +846,37 @@ class NatsProxyL3Backend:
             self.raise_for_failed_reply(response, "L3 query")
         record_reply_generations(response, ends_write=False)
         rows = [_deserialize_row(row) for row in response.get("rows") or ()]
-        cap = response.get("max_reply_bytes")
         return L3Page(
             rows=rows,
             truncated=bool(response.get("truncated")),
             reply_bytes=len(reply),
-            reply_cap=cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None,
+            reply_cap=self.remember_reply_cap(response.get("max_reply_bytes")),
         )
+
+    @property
+    def broker_max_payload(self) -> int | None:
+        """the largest message the NATS server takes, as its connection says; None when it has not said.
+
+        :return: the server's ``max_payload``, or None
+        :rtype: int | None
+        """
+        payload = getattr(self._nc, "max_payload", None)
+        if isinstance(payload, int) and not isinstance(payload, bool) and payload > 0:
+            return payload
+        return None
+
+    def remember_reply_cap(self, cap: Any) -> int | None:
+        """keep the reply cap a reply announced, for sizing later requests; the cap, or None when it named none.
+
+        :param cap: the reply's ``max_reply_bytes``
+        :ptype cap: Any
+        :return: the cap, when a positive integer
+        :rtype: int | None
+        """
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+            return None
+        self.announced_reply_cap = cap
+        return cap
 
     async def fetch_arrow_page(
         self, query: str, *params: Any, types: Mapping[str, Any], namespace: str | None = None
@@ -857,7 +910,12 @@ class NatsProxyL3Backend:
             except ValueError as exc:
                 raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
             self.raise_for_failed_reply(response, "L3 query")
-        return L3Page(rows=parsed.rows, truncated=parsed.truncated, reply_bytes=len(reply), reply_cap=parsed.reply_cap)
+        return L3Page(
+            rows=parsed.rows,
+            truncated=parsed.truncated,
+            reply_bytes=len(reply),
+            reply_cap=self.remember_reply_cap(parsed.reply_cap),
+        )
 
     async def fetchrow(
         self,
@@ -2061,6 +2119,23 @@ class _ProxyConnection:
             "rows": [[transport_param(value) for value in record] for record in records],
         }
 
+    def copy_budget_bytes(self) -> int | None:
+        """the bytes one ``l3.tx.copy`` request is sized to: the hub's announced request cap, or its reply cap when
+        it announces none apart, under :data:`_COPY_REQUEST_CEILING_BYTES` and the broker's ``max_payload``; None
+        until the hub has announced one.
+
+        A copy cut at a fixed thousand rows sent fifty requests for a 50,000-row reload, each a round trip and a
+        ``COPY`` of its own, which cost the database two and a half times one ``COPY`` of the rows. Sized by
+        bytes, a reload is a few requests. A hub that announces no cap keeps the fixed batches its requests
+        were sized for.
+
+        :return: the budget, in bytes, or None
+        :rtype: int | None
+        """
+        return _copy_request_budget(
+            self._backend.announced_request_cap or self._backend.announced_reply_cap, self._backend.broker_max_payload
+        )
+
     def copy_request_bytes(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> int:
         """the bytes of the ``l3.tx.copy`` message :meth:`copy_records_to_table` sends for ``records``.
 
@@ -2244,6 +2319,11 @@ class _ProxyTransaction:
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")
+        # a hub that announces its caps here sizes the session's copies from its first request
+        self._backend.remember_reply_cap(response.get("max_reply_bytes"))
+        request_cap = response.get("max_request_bytes")
+        if isinstance(request_cap, int) and not isinstance(request_cap, bool) and request_cap > 0:
+            self._backend.announced_request_cap = request_cap
         raw_tx_id = response.get("tx_id")
         if not isinstance(raw_tx_id, str):
             raise DataLayerUnavailableError(

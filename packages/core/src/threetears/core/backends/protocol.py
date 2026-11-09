@@ -37,6 +37,7 @@ __all__ = [
     "ManyKeyReadingStore",
     "ReturningDeletingStore",
     "LOAD_FILES_MAX_WAIT_SECONDS",
+    "copy_bounds",
     "ANALYZE_AFTER_ROWS",
     "AnalyzingStore",
     "BulkDeletingStore",
@@ -560,6 +561,31 @@ class LoadResult:
 #: the rows a load writes to a table from which the table is analysed after it (:class:`AnalyzingStore`): a
 #: reload's, not ordinary writes, which auto-analyze keeps up with. The hub's broker asks the same of its loads
 ANALYZE_AFTER_ROWS: Final = 10_000
+
+
+def copy_bounds(conn: Any, rows: int) -> tuple[int | None, int | None]:
+    """the row and byte bounds of one copy of ``rows`` rows on ``conn``, when its caller names neither.
+
+    - The L3 rail, its hub's cap announced (``copy_budget_bytes``): bytes alone cut it, each request sized to
+      that cap, so a reload is a few requests, not one a thousand rows.
+    - A connection that streams a copy (no ``copy_request_bytes``: asyncpg's own): one ``COPY`` of every row,
+      which is what the database's bulk path costs; cut, it cost two and a half times that on YugabyteDB.
+    - The rail of a hub that announces no cap: None, None, so the caller's fixed batches stand.
+
+    :param conn: the connection the copy goes to
+    :ptype conn: Any
+    :param rows: the rows copied
+    :ptype rows: int
+    :return: the most rows and the most bytes one copy carries, each None where the caller's default stands
+    :rtype: tuple[int | None, int | None]
+    """
+    budget = getattr(conn, "copy_budget_bytes", None)
+    announced = budget() if callable(budget) else None
+    if isinstance(announced, int) and not isinstance(announced, bool) and announced > 0:
+        return max(rows, 1), announced
+    if not callable(getattr(conn, "copy_request_bytes", None)):
+        return max(rows, 1), None
+    return None, None
 
 
 @runtime_checkable

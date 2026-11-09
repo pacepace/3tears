@@ -55,7 +55,7 @@ from threetears.core.backends.protocol import (
     TruncatingStore,
     parse_rowcount,
 )
-from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING
+from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyset import read_keyset_pages
@@ -432,7 +432,13 @@ def _copy_batches(
     key_positions = [names.index(name) for name in schema.pk_columns]
     params.sort(key=lambda values: tuple(values[position] for position in key_positions))
     measure = getattr(conn, "copy_request_bytes", None)
-    measured = measure(table, names, []) if callable(measure) else None
+    if not callable(measure):
+        # a direct connection streams a copy, so nothing bounds its bytes: rows alone cut it, and no row is
+        # encoded only to be measured (a third of a 50,000-row copy's preparation)
+        return names, [
+            [tuple(values) for values in params[start : start + max_rows]] for start in range(0, len(params), max_rows)
+        ]
+    measured = measure(table, names, [])
     base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
     batches = schema_sql.bulk_batches(
         params,
@@ -933,8 +939,14 @@ class SqlL3Backend:
         ``l3.tx.copy`` request on the rail's. Columns and values are the ones :meth:`upsert_many`
         would bind (:func:`schema_sql.insert_columns_for_data`, :func:`schema_sql.build_insert_params`),
         so the two forms write the same row. Batches split by ``max_rows`` and, where the connection
-        measures its request (``copy_request_bytes``), by ``max_bytes`` of the whole request; with no
-        measure, by the rows' values alone.
+        measures its request (``copy_request_bytes``: the rail's), by ``max_bytes`` of the whole request; a
+        direct connection streams the copy, so its batches are cut by rows alone.
+
+        A copy of :data:`~threetears.core.ddl.change_notes.WHOLE_COPY_ROWS` rows or more on a direct
+        connection marks its transaction whole (:data:`~threetears.core.ddl.change_notes.NOTE_WHOLE_SETTING`):
+        one change note for the table, not a note (a write) a row that names nothing past that many. On
+        the rail's connection the broker marks it, counting the session's copied rows; a client may not
+        set it there.
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
@@ -963,6 +975,8 @@ class SqlL3Backend:
         names, batches = await asyncio.to_thread(
             _copy_batches, schema, table, rows, max_rows=max_rows, max_bytes=max_bytes, conn=conn
         )
+        if len(rows) >= WHOLE_COPY_ROWS and getattr(conn, "copy_request_bytes", None) is None:
+            await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
         written = 0
         for batch in batches:
             await conn.copy_records_to_table(table, records=batch, columns=names)
