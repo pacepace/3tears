@@ -226,10 +226,13 @@ def _first_ends(where: str) -> tuple[str | None, str | None, str | None]:
 
 
 def test_an_interval_s_ends_carry_its_unit_once_so_a_drawer_only_joins_them() -> None:
-    """Number rule 3: an interval writes its unit once, after its high end, or on its low end where the unit leads
-    the number, so the kit and the static page join the ends' texts as they are (``98% (95.8 to 100%)``)."""
-    assert _first_ends("r1/r1-anchor/dot_interval") == ("98%", "95.8", "100%")
-    assert _first_ends("r5/r5-run/bars") == ("$1.89", "$1.76", "2.03")
+    """Number rule 3: an interval writes its unit once, after its high end, at its figure's precision, so the kit and
+    the static page join the ends' texts as they are (``98% (96 to 100%)``). Money keeps its own form, each end with its ``$``, as the page's
+    forms write a money interval (``$1.76 to $2.03``), so a chart's tooltip reads it as its page's table does."""
+    # r1's pass rate reads whole (its intervals' half-widths are 2 to 6 points), so its ends do too: never "95.8"
+    # beside "98%" (number rules 1 and 3).
+    assert _first_ends("r1/r1-anchor/dot_interval") == ("98%", "96", "100%")
+    assert _first_ends("r5/r5-run/bars") == ("$1.89", "$1.76", "$2.03")
 
 
 def _text_fields() -> list[tuple[type[BaseModel], str]]:

@@ -424,7 +424,14 @@ def _money_text(value: float, drawn: Quantity) -> str:
     return f"{sign}{text}"
 
 
-def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -> Quantity:
+#: The kit's formats whose digits a measure's decimals name (``pct:0``, ``+num:1``, ``ms:0``): every one a chart draws
+#: a measured figure in but money's, whose digits are its one form's (this module's money).
+_PLACED_FORMATS = frozenset({"num", "pct", "pts", "ms", "s"})
+
+
+def quantity(
+    unit: str, values: Sequence[float] = (), *, change: bool = False, places: int | None = None
+) -> Quantity:
     """How a quantity in ``unit`` is drawn (this module's table).
 
     :param unit: The figure's unit, as the page reads it: ``share``, ``percent`` (or ``pct``), ``points``, ``usd``,
@@ -439,9 +446,28 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
     :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
     :ptype change: bool
+    :param places: The decimals its measure reads at on the page, which its format names, so a value the kit writes
+        with no text beside it (a host's re-render) reads as the page prints it; None for the unit's own format.
+    :ptype places: int | None
     :return: The quantity.
     :rtype: Quantity
     """
+    drawn = _unplaced(unit, values, change=change)
+    return drawn if places is None else _at_places(drawn, places)
+
+
+def _at_places(drawn: Quantity, places: int) -> Quantity:
+    """A quantity whose format names ``places`` as its digits; money's, and a format whose digits mean something else,
+    as it was."""
+    sign = "+" if drawn.fmt.startswith("+") else ""
+    name = drawn.fmt.removeprefix("+").partition(":")[0]
+    if drawn.unit == MONEY or name not in _PLACED_FORMATS:
+        return drawn
+    return replace(drawn, fmt=f"{sign}{name}:{places}")
+
+
+def _unplaced(unit: str, values: Sequence[float], *, change: bool) -> Quantity:
+    """:func:`quantity`'s quantity at its unit's own format."""
     sign = "+" if change else ""
     if unit in ("share", "percent", "pct"):
         factor = 100.0 if unit == "share" else 1.0
@@ -522,7 +548,7 @@ def in_change_form(amounts: Quantity, changes: Iterable[float], widths: Iterable
     return replace(amounts, change=True, fmt=_money_fmt("+", form), money=form)
 
 
-def quantity_of(unit: str, figures: Iterable[float], *, change: bool = False) -> Quantity:
+def quantity_of(unit: str, figures: Iterable[float], *, change: bool = False, places: int | None = None) -> Quantity:
     """How a quantity in ``unit`` is drawn, from the figures it draws as the input states them (before any factor):
     :func:`quantity` over them at the unit's own factor, so its money is spelled in the one form of the whole set
     (this module's money), drawn a thousand times over where some amount is under a cent.
@@ -533,11 +559,13 @@ def quantity_of(unit: str, figures: Iterable[float], *, change: bool = False) ->
     :ptype figures: Iterable[float]
     :param change: Whether the figures are changes, read signed.
     :ptype change: bool
+    :param places: The decimals its measure reads at, as :func:`quantity` takes them.
+    :ptype places: int | None
     :return: The quantity; draw each figure at its ``factor``.
     :rtype: Quantity
     """
     factor = quantity(unit, change=change).factor
-    return quantity(unit, [figure * factor for figure in figures], change=change)
+    return quantity(unit, [figure * factor for figure in figures], change=change, places=places)
 
 
 def figure_text(value: float, drawn: Quantity) -> str:

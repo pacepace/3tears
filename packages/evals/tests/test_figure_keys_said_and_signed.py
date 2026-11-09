@@ -90,7 +90,10 @@ def test_an_arms_unanswered_reasons_read_each_count_grouped_as_a_count_reads() -
 
 @pytest.mark.parametrize(
     ("name", "reads", "signed"),
-    [("r1", "0", "0"), ("r2", "0.1", "+0.1"), ("r3", "0.7", "+0.7"), ("r4", "-0.6", "-0.6"), ("r5", "2.2", "+2.2")],
+    # r3's balanced accuracy states no interval, so it reads whole (two figures of its least level, 78.2), and r5's
+    # pass rate reads whole points from its compared intervals (owner ruling, set digits): 0.7 and 2.15 read 1 and 2.
+    # r2's 0.1 keeps its tenth, as a figure that would print as zero keeps the digit that holds it off zero.
+    [("r1", "0", "0"), ("r2", "0.1", "+0.1"), ("r3", "1", "+1"), ("r4", "-0.6", "-0.6"), ("r5", "2", "+2")],
 )
 def test_the_weakest_margin_is_a_change_that_prints_no_plus_unless_a_filter_signs_it(
     name: str, reads: str, signed: str
@@ -108,10 +111,11 @@ def test_kairos_stored_prose_reads_its_weakest_margin_as_a_distance_inside_the_m
     watch = next(slot["text"] for slot in plan["decision"]["slots"] if slot["key"] == "watch")
     held = _input("r5")
     names = {arm.id: arm.name or arm.id for arm in held.arms}
-    assert "2.2 points inside the margin" in render(watch, names, forms=PageForms.of(held))
-    assert "+2.2 points inside" not in render(watch, names, forms=PageForms.of(held))
-    assert render("{weakest.margin|pts}", names, forms=PageForms.of(held)) == "+2.2"
-    assert render("{weakest.margin|signed}", names, forms=PageForms.of(held)) == "+2.2"
+    # In whole points, the pass rate's precision (owner ruling, set digits); the margin's 2.15 reads 2.
+    assert "sits 2 points inside the margin" in render(watch, names, forms=PageForms.of(held))
+    assert "+2 points inside" not in render(watch, names, forms=PageForms.of(held))
+    assert render("{weakest.margin|pts}", names, forms=PageForms.of(held)) == "+2"
+    assert render("{weakest.margin|signed}", names, forms=PageForms.of(held)) == "+2"
 
 
 @pytest.mark.parametrize(("name", "reads"), [("r2", "clears it by 0.1"), ("r4", "clears it by -0.6")])

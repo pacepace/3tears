@@ -101,10 +101,12 @@ yet: every value they draw is already a note or a tooltip. Nothing to change in 
 **Hosts (number forms C5b):** every chart the kit (`kit.js` and its `docs/eval-report-kit/kit/` copy) or the static
 page draws joins an interval's ends as `low to high`, and the package's ends write the unit once: a forest tooltip
 reads `-8 (-13 to -2)` (was `-8 [-13, -2]`), a line point's `85% (80 to 89%)` (was `85% (80%–89%)`), money
-`$1.89 ($1.76 to 2.03)`. A host's chart without text fields draws its values as before, but its tooltips in the new
-join, each end in its `fmt` (`80% to 89%`). A gate matrix's and a lattice's cells
-carry `cost_text` (`$4.60 per 1,000 conversations`, where the kit drew `$5 per 1,000 conversations`). Rung 5's
+`$1.89 ($1.76 to $2.03)`, each end with its `$` as the page writes money. A host's chart without text fields draws its
+values as before, but its tooltips in the new join, each end in its `fmt` (`80% to 89%`). A gate matrix's and a
+lattice's cells carry `cost_text` (`$4.60 per 1,000 conversations`, where the kit drew `$5 per 1,000 conversations`). Rung 5's
 preference strip carries its texts and names `pct:0`; its readings table reads a rate as `43% (3 of 7)` (was `0.43`).
+Every chart's format names its digits, its measure's decimals on the page (`pct:0`, `+num:1`, `ms:0`; was `pct`,
+`+num:0`, `ms`), so a host re-rendering the chart JSON with no text fields writes each value as the page prints it.
 A host matching a tooltip, a cost or a format updates its match.
 
 **Hosts (prose keys, C5b):** a settle row's `level` and the `weakest.interval` key now resolve to their level as a

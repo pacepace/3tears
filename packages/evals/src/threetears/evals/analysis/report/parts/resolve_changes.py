@@ -795,12 +795,14 @@ def _preference_changes(context: ChartContext) -> tuple[list[_Change], Quantity,
     preference = context.report_input.human_pref
     if preference is None:
         raise context.refuse("the input holds no human preference")
-    # A human preference is a share of raters, no measure's figure.
-    drawn = context.forms.chart_quantity("percent")
-    changes = []
+    # A human preference is a share of raters, no measure's figure: its format names the digits its shares read at.
+    items: list[PreferenceRow] = []
     for row in context.rows():
         assert isinstance(row.item, PreferenceRow)
-        item = row.item
+        items.append(row.item)
+    drawn = context.forms.chart_quantity("percent", [float(item.prefers_control) for item in items])
+    changes = []
+    for item in items:
         value = float(item.prefers_control)
         width = float(item.half_width) if item.half_width is not None else None
         said = context.forms.chart_note(value, drawn).text

@@ -681,16 +681,14 @@ def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, s
 
 def _unit_once(spec: str, ends: tuple[str, str]) -> tuple[str, str]:
     """An interval's two end texts with their format's unit written once, as the page writes an interval (number rule
-    3): after the high end where it follows the number (``15 to 89%``, ``-1.0 to +5.0 pts``), on the low end where it
-    leads it (``$3.90 to 4.30``). So every drawer joins the two texts as they are, and never strips a unit itself.
-    Ends that do not both carry the unit are as they were."""
+    3): after the high end (``15 to 89%``, ``-1.0 to +5.0 pts``). Money keeps its own form, each end with its ``$``
+    (``$3.90 to $4.30``), as the page's forms write a money interval. So every drawer joins the two texts as they are,
+    and never strips a unit itself. Ends that do not both carry the unit are as they were."""
     match = _FORMAT_SPEC.fullmatch(spec)
     unit = _FORMAT_UNITS.get(match[2], "") if match is not None else ""
     low, high = ends
-    if not unit:
+    if not unit or unit == MONEY:
         return ends
-    if unit == MONEY:
-        return (low, high.replace("$", "", 1)) if "$" in low and "$" in high else ends
     if low.endswith(unit) and high.endswith(unit):
         return low.removesuffix(unit).rstrip(), high
     return ends

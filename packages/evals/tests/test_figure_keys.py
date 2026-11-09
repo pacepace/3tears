@@ -149,7 +149,8 @@ class TestTheKairoPlanResolves:
 
     def test_the_lede_prints_the_drop_by_its_interval_ends_in_two_sentences(self):
         lede = _rendered(_plan()["lede"])
-        assert lede.startswith("qwen3.8-flash (A) has a lower pass rate, by 3.4 to 10.8 points")
+        # Whole points: the pass rate's compared intervals set its digits (owner ruling, set digits), not "3.4 to 10.8".
+        assert lede.startswith("qwen3.8-flash (A) has a lower pass rate, by 3 to 11 points")
         assert "neither candidate beats September on anything this campaign measured" in lede
         assert lede.endswith("would change the answer.")
         assert lede.count(". ") == 1
@@ -158,9 +159,10 @@ class TestTheKairoPlanResolves:
         watch = _rendered(_slot("watch"))
         # Re-pinned from 10.8 and 4.2: the worst case is read on the multiplicity-corrected interval, not the plain 95%
         # one (10.8), and the plan page names the interval beside it. Re-pinned again from 12.6 and 2.4: the bounded
-        # rate interval (shape 65) moved that corrected bound to 12.85.
+        # rate interval (shape 65) moved that corrected bound to 12.85. Then to 13 and 2: the pass rate reads in whole
+        # points, its compared intervals' precision (owner ruling, set digits), and 13 + 2 still closes the 15 margin.
         assert watch.startswith(
-            "The weakest margin: qwen3.8-flash (A)'s worst drop, 12.8 points, sits 2.2 points inside the margin on "
+            "The weakest margin: qwen3.8-flash (A)'s worst drop, 13 points, sits 2 points inside the margin on "
             "character adherence (v2)"
         )
 
@@ -174,7 +176,7 @@ class TestTheKairoPlanResolves:
 
     def test_why_not_prints_each_candidates_uplift_and_contrast(self):
         text = _rendered(_slot("why_not"))
-        assert "28% more per reply, in-character -6 points, pass rate -7.6." in text
+        assert "28% more per reply, in-character -6 points, pass rate -8." in text
         assert "27% more per reply, in-character -5 points." in text
 
     def test_watch_prints_the_reasoning_shares_in_whole_percents(self):
@@ -219,7 +221,7 @@ def _references(chart: dict[str, Any]) -> list[dict[str, Any]]:
 class TestAPathIsMatchedNotSplit:
     def test_an_arm_id_with_dots_resolves(self):
         assert _figure("reasoning_ratio.qwen3.8-flash", "pct") == "68%"
-        assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
+        assert _figure("reading.qwen3.8-flash.change", "pts") == "-8"
 
     def test_a_dimension_key_with_dots_resolves(self):
         assert _figure("judged.persona.holds_character.1017", "pct") == "87%"
@@ -312,14 +314,15 @@ class TestFilters:
         assert _figure("judged.persona.prod", "pct", name="r4") == "91.7%"
 
     def test_pts_is_signed_and_one_decimal_at_most(self):
-        assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
+        # Kairo's pass rate reads in whole points: its compared intervals set the measure's digits (owner ruling).
+        assert _figure("reading.qwen3.8-flash.change", "pts") == "-8"
         # A change in points of a rate the page holds reads at its measure's one decimal, a whole one too.
         assert _figure("contrast.cor.facts.delta", "pts", name="r4") == "+1.0"
         assert _figure("contrast.f64.task.delta", "pts", name="r4") == "+0.2"
 
     def test_abs_drops_the_sign(self):
-        assert _figure("reading.qwen3.8-flash.change", "abs|pts") == "7.6"
-        assert _figure("reading.qwen3.8-flash.interval", "abs|pts") == "3.4 to 10.8"
+        assert _figure("reading.qwen3.8-flash.change", "abs|pts") == "8"
+        assert _figure("reading.qwen3.8-flash.interval", "abs|pts") == "3 to 11"
 
     def test_usd_reads_dollars_and_cents(self):
         assert _figure("cost_per_1k.qwen3.8-flash", "usd") == "$2.43"
@@ -382,7 +385,7 @@ class TestFilters:
         assert _figure("strata.off_lane.loss_share", "pct10") == "50%"
 
     def test_interval_joins_with_to(self):
-        assert _figure("reading.1017.interval", "interval") == "-5.8 to +1.1"
+        assert _figure("reading.1017.interval", "interval") == "-6 to +1"
         ci = _figure("measure.production_replicating_cost.September.ci", "interval|usd_per_1k")
         assert ci.startswith("$1.7") and ci.endswith(" per 1,000 replies to $2.03 per 1,000 replies")
 
@@ -490,8 +493,9 @@ class TestDerivedValues:
         assert resolve("strata.off_lane.loss_share", report_input).value == pytest.approx(per_arm["qwen3.8-flash"])
 
     def test_a_flip_margin_is_the_readings_worst_drop(self):
-        assert _figure("flip_margin.qwen3.8-flash") == "10.8"
-        assert _figure("flip_margin.1017") == "5.8"
+        # At the pass rate's whole points (owner ruling, set digits): 10.8 and 5.8 read 11 and 6.
+        assert _figure("flip_margin.qwen3.8-flash") == "11"
+        assert _figure("flip_margin.1017") == "6"
 
     def test_a_cost_stated_per_million_replies_is_its_cost_per_1k_over_a_thousand(self):
         report_input = _input("r3")

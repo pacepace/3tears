@@ -225,7 +225,7 @@ def test_a_bar_with_a_low_end_and_no_high_end_reads_as_an_interval_open_above() 
     }
     headers, rows = _block("bars", data).values_table()
     assert headers == ["Row", "Value", "95% interval"]
-    assert rows == [["open", "$2", "from $1.5 up, no upper bound"], ["bounded", "$3", "$2.5 to 3.5"]]
+    assert rows == [["open", "$2", "from $1.5 up, no upper bound"], ["bounded", "$3", "$2.5 to $3.5"]]
 
 
 def test_markdown_prints_every_chart_s_values_table() -> None:

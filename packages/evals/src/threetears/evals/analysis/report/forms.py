@@ -1531,7 +1531,7 @@ class PageForms:
             "", "", "confidence", level, text, text.removesuffix(PERCENT), PERCENT, held=self.told_apart(level)
         )
 
-    def declared(self, value: float | None, unit: str = "") -> Printed:
+    def declared(self, value: float | None, unit: str = "", *, signed: bool = False) -> Printed:
         """A value the input declares (a margin, a floor, a setting) exactly as declared, in its unit
         (:func:`policy_declared`): ``-15 pts``, never ``-15.0 pts``. It was chosen, not measured, so no measure's
         decimals reach it.
@@ -1540,10 +1540,15 @@ class PageForms:
         :ptype value: float | None
         :param unit: Its unit; empty for none.
         :ptype unit: str
+        :param signed: Whether a positive value carries its ``+``, as one read beside a signed change does (``+15
+            pts``).
+        :ptype signed: bool
         :return: The value.
         :rtype: Printed
         """
         digits = policy_declared(value)
+        if signed and value is not None and math.isfinite(value):
+            digits = plus_signed(digits, value)
         text = _joined(digits, unit) if value is not None and math.isfinite(value) else digits
         return self._issue("", "", "declared", value, text, digits, unit if text != digits else "")
 
@@ -1802,7 +1807,8 @@ class PageForms:
         share ``(1 + d) / 2``. Each end is held within 0 to 100%, the scale a share lies on. The shares and the ends
         read at one precision, read from the interval's uncertainty as a rate's is (:func:`policy_places`, at most one
         decimal: ``40 to 60%``), with just enough more that none prints on none, all or even, the share where neither
-        arm is preferred (an end of ``49.7%``, never ``50%``; :func:`policy_bounded_places`).
+        arm is preferred (an end of ``49.7%``, never ``50%``; :func:`policy_bounded_places`), and that two ends do not
+        print alike (``67.01 to 67.03``, never ``67.0 to 67.0``).
 
         :param share: The candidate's share, 0 to 1; None when nothing was scored.
         :ptype share: float | None
@@ -1818,6 +1824,10 @@ class PageForms:
         widths = [] if ends is None else [(ends[1] - ends[0]) / 2]
         held = policy_places(widths, [points], capped=True)
         places = max(policy_bounded_places(value, held, bounds=_PREFERENCE_BOUNDS) for value in [points, *(ends or [])])
+        if ends is not None:
+            # Two ends that would print alike take the decimals that tell them apart (number rule 3), and the shares
+            # read at them too, so they still sum to 100 at one precision.
+            places = ends_places(ends[0], ends[1], places)
         candidate = round(points, places)
         shares = PreferenceShares(
             candidate=candidate,
@@ -1978,10 +1988,12 @@ class PageForms:
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
         :ptype kind: _MeasureKind
-        :return: The quantity.
+        :return: The quantity, its format naming its measure's decimals (``pct:0``), so a value the kit writes with no
+            text beside it reads as the page prints it.
         :rtype: Quantity
         """
-        return quantity(unit, values, change=change)
+        drawn = quantity(unit, values, change=change)
+        return quantity(unit, values, change=change, places=self._named_places(drawn, values, measure, kind))
 
     @overload
     def chart_quantity_of(self, unit: str, figures: Iterable[float], *, change: bool = False) -> Quantity: ...
@@ -2014,10 +2026,13 @@ class PageForms:
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
         :ptype kind: _MeasureKind
-        :return: The quantity.
+        :return: The quantity, its format naming its measure's decimals, as :meth:`chart_quantity`'s does.
         :rtype: Quantity
         """
-        return quantity_of(unit, figures, change=change)
+        figures = tuple(figures)
+        drawn = quantity_of(unit, figures, change=change)
+        named = self._named_places(drawn, [figure * drawn.factor for figure in figures], measure, kind)
+        return quantity_of(unit, figures, change=change, places=named)
 
     def chart_amounts(self, report_input: ReportInput, keys: Sequence[str]) -> Quantity:
         """The one ruler a change chart's money is drawn on: money's scale over every mean the input holds of every
@@ -2198,6 +2213,18 @@ class PageForms:
             return None
         form = self._measures.get((measure, _measure_kind(kind)))
         return None if form is None else form.places
+
+    def _named_places(self, drawn: Quantity, values: Iterable[float], measure: str, kind: _MeasureKind) -> int | None:
+        """The decimals a chart's format names: its measure's (:meth:`_chart_places`); for a figure of no measure the
+        page holds (a preference, an empty chart's axis), the unit's own where its format names them (a score's two),
+        else its drawn values' as a set with no interval reads them, two significant figures of the least
+        (:func:`set_places`), none for no value; None for money, whose digits are its one form's."""
+        if drawn.unit == MONEY:
+            return None
+        places = self._chart_places(drawn, measure, kind)
+        if places is not None:
+            return places
+        return None if ":" in drawn.fmt else set_places(values)
 
     def chart_count(self, count: float) -> Printed:
         """A count as a chart's words print it, whole and grouped

@@ -94,6 +94,7 @@ from threetears.evals.analysis.report.parts.charting import (
     factor_token,
     figure_stat,
     figure_kind,
+    floor_rate,
     measure_words,
     money_words,
     point_labels,
@@ -448,13 +449,14 @@ def _floor_cell(context: ChartContext, floor: FloorRead | None) -> GateCell:
     if floor is None:
         return GateCell(status="neutral", label=NO_READING)
     # A floor's drop and margin are points of the rate it is read on.
-    rate = floor.reading or floor.speaks_for or ""
+    rate = floor_rate(floor)
     kind = figure_kind(context, rate)
     points = context.forms.chart_quantity("points", change=True, measure=rate, kind=kind)
     reasons = []
     if floor.worst_drop is not None and floor.margin is not None:
         drop = context.forms.chart_note(float(floor.worst_drop), points, measure=rate, kind=kind).text
-        margin = context.forms.chart_note(float(floor.margin), points, measure=rate, kind=kind).text
+        # A margin prints as declared (number rule 4): "+15 pts", never at its rate's decimals, "+15.0 pts".
+        margin = context.forms.declared(float(floor.margin), points.unit, signed=True).text
         reasons.append(FLOOR_REASON_TEMPLATE.format(drop=drop, margin=margin))
     if floor.reading:
         reasons.append(FLOOR_READS_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading, prose=True)))
