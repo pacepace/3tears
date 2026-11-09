@@ -107,6 +107,16 @@ carry `cost_text` (`$4.60 per 1,000 conversations`, where the kit drew `$5 per 1
 preference strip carries its texts and names `pct:0`; its readings table reads a rate as `43% (3 of 7)` (was `0.43`).
 A host matching a tooltip, a cost or a format updates its match.
 
+**Hosts (prose keys, C5b):** a settle row's `level` and the `weakest.interval` key now resolve to their level as a
+number (the analyst serves `value` 0.95, `kind` `number`, `scale` `share`), and `reads` says the words (`95%
+one-sided`): a host that read those words from `value` reads them from `reads`. `weakest.interval` states what its
+interval guarantees, `the 95% interval, adjusted for 16 comparisons`, or `the 95% interval` where nothing is adjusted,
+in place of `the multiplicity-corrected 99.69% interval` and `the plain 95% interval, uncorrected`, so a stored report
+citing it renders the new words. A contrast family's and a contrast's `level` keys still read the per-interval level
+as the input states it (`99.69%`).
+The key grammar gains a `signed` filter, which prints a criterion's `gap` or `weakest.margin` with its `+` in any unit;
+without it they print no `+`, as before, so a stored report renders as it did.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

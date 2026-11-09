@@ -112,7 +112,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import CENT, format_number, group_thousands
+from threetears.evals.kernel.numbers import CENT, group_thousands
 from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.cost_unit import (
     REPLIES,
@@ -134,6 +134,7 @@ from threetears.evals.analysis.report_input import (
     Criterion,
     Depth,
     FailedTrials,
+    FloorRead,
     Judged,
     LateCriterion,
     Measure,
@@ -200,7 +201,7 @@ _PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "us
 
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
 #: ``pct10``), plus ``abs`` and ``interval``, in any order.
-Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole", "words"]
+Filter = Literal["pct", "pts", "abs", "signed", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole", "words"]
 _FILTERS: tuple[str, ...] = get_args(Filter)
 _SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10", "usd_whole", "words"})
 #: The filters that choose a key's spelling, at most one to a key, in the grammar's order.
@@ -211,6 +212,8 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
+    "signed": "a change with its sign, `+` on a rise: a criterion's gap or the weakest margin, which reads without "
+    "one as a distance the prose's own words place (`inside the margin`), in any unit",
     "usd": "dollars, in one form for the key's whole family: each amount to two significant figures, cents at least, "
     "and the family moved per 1,000 more of what it counts where any of its amounts is under a cent",
     "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
@@ -348,6 +351,23 @@ class Figure:
     the page's cost, a reading's change the pass rate's, a percentile a level), that measure, its kind and the role,
     which the page's ledger records the figure under in place of ``set_of``'s; None where ``set_of`` says it. It is the
     ledger's alone: the decimals a key prints at still read ``set_of``, so naming where a figure is held moves no digit.
+
+    A figure said in words keeps its numbers as numbers, so the page's forms print each, as they print every other
+    figure, and no number reads one way in a sentence and another beside it. ``said_between`` is the words a number
+    figure is said between (``95% one-sided``, ``the plain 95% interval, uncorrected``); ``counts``, a text figure's
+    counts by word, each printed after its word (``timeout 1,204, refused 3``), the figure's ``value`` holding the same
+    listing, as a tool serves it.
+
+    ``distance`` marks a change read as a distance from a line (a criterion's ``gap``, the weakest margin): it is a
+    change (``change``), so the page's forms hold and decide it as its measure's change, but it prints no ``+``, since
+    the prose's own words say which side of the line it is on ("inside the margin", "over the line"); a miss keeps its
+    ``-``. The ``signed`` filter prints its ``+``, in any unit, and ``pts`` does in points.
+
+    ``joint`` marks a level said in the package's own words as the guarantee a correcting family holds together: the
+    figure's value is that joint level (one minus the family's alpha, ``95%``), and ``joint`` holds it with the
+    family's size, which the words print where they hold ``{comparisons}`` (``the 95% interval, adjusted for
+    16 comparisons``, owner ruling Q3); None for every other figure. The per-interval level a correction sets
+    (``99.69%``) is no such figure: its own keys state it as the input does.
     """
 
     path: str
@@ -369,6 +389,10 @@ class Figure:
     set_of: tuple[str, str] | None = field(default=None, compare=False, repr=False)
     measure: str = field(default="", compare=False, repr=False)
     ledger_as: tuple[str, str, Role] | None = field(default=None, compare=False, repr=False)
+    said_between: tuple[str, str] = ("", "")
+    counts: tuple[tuple[str, int], ...] = ()
+    distance: bool = field(default=False, compare=False, repr=False)
+    joint: tuple[float, int] | None = field(default=None, compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -497,6 +521,37 @@ def _a_floor_s_change(
     return _MARGIN_LEDGER(report_input, values, figure) if read.reading is None else None
 
 
+#: The rate a family's figures in points are differences of, with its kind, from the input and the ids its path
+#: matched (:attr:`_Family.rate`); None where the input names no measure it holds.
+type _RateOf = Callable[[ReportInput, tuple[str, ...]], tuple[str, str] | None]
+
+
+def _the_pass_rate(report_input: ReportInput, _values: tuple[str, ...]) -> tuple[str, str] | None:
+    """The rate of a family that reads an aspect's pass rate (a reading, a margin, two arms apart): the pass rate's."""
+    return pass_rate_measure(report_input)
+
+
+def _floor_rate(report_input: ReportInput, read: FloorRead) -> tuple[str, str] | None:
+    """The rate a floor read is read on, with its kind: the rate it names (``reading``), a judged dimension or the one
+    measure of that key, or the aspect's pass rate where it names none; None where it names a rate the input holds no
+    one measure of, which is no measure's, never the pass rate's."""
+    if read.reading is None:
+        return pass_rate_measure(report_input)
+    if read.reading in report_input.judged:
+        return (read.reading, "judged")
+    named = [key for key in report_input.measures if key == read.reading or goal_check_of(key) == read.reading]
+    return (named[0], "measure") if len(named) == 1 else None
+
+
+def _a_floor_s_rate(report_input: ReportInput, values: tuple[str, ...]) -> tuple[str, str] | None:
+    """The rate of a floor family's figures, from the floor read its path names (its aspect, floor and arm)."""
+    aspect_id, floor, arm_id = values[:3]
+    read = next(
+        held for held in report_input.floors if (held.aspect, held.floor, held.arm) == (aspect_id, floor, arm_id)
+    )
+    return _floor_rate(report_input, read)
+
+
 @dataclass(frozen=True)
 class _Family:
     """One path family: its slots in order, what it reads, and how its matched ids and statistic become a figure.
@@ -509,7 +564,9 @@ class _Family:
     1,000 for a cost gap, the measure's means for a contrast), whose form the change reads in; ``None`` from it, or no
     ``compares``, reads the family's own amounts (:func:`_money_amounts`). ``ledger_as`` says where the page's tables
     hold a figure of the family whose path names no measure they hold it under, or whose statistic names no role they
-    hold it in (:attr:`Figure.ledger_as`); every family reads a percentile of its measure as a level of it.
+    hold it in (:attr:`Figure.ledger_as`); every family reads a percentile of its measure as a level of it. ``rate`` is
+    the rate a family's figures in points are differences of where its path names no measure (an aspect's pass rate, a
+    floor's own rate), whose set they read at; None for a family that names its measure, or reads none.
     """
 
     slots: tuple[_Slot, ...]
@@ -521,6 +578,7 @@ class _Family:
     derived_note: str = ""
     compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None
     ledger_as: _LedgerAs = _a_percentile_is_a_level
+    rate: _RateOf | None = None
 
     def form(self) -> str:
         return ".".join(slot.spelling if isinstance(slot, _Word) else slot.name for slot in self.slots)
@@ -667,6 +725,14 @@ def _number(
 def _level(path: str, value: float | None, what: str) -> Figure:
     """An interval's confidence level, a share, read in percent as stated (:class:`Figure`'s ``level``)."""
     return replace(_number(path, value, what, "share"), level=True)
+
+
+def _joint(family: ContrastFamily | None) -> tuple[float, int] | None:
+    """What a correcting family guarantees together (:attr:`Figure.joint`): one minus its alpha, over its size; None
+    for no family, one that corrects nothing (``none``), or one that states no alpha or size."""
+    if family is None or family.alpha is None or not family.family_size or family.correction == "none":
+        return None
+    return (1.0 - float(family.alpha), family.family_size)
 
 
 def _end(path: str, interval: tuple[float, float] | None, statistic: str, what: str) -> float:
@@ -1535,8 +1601,8 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
 
 def held_means(report_input: ReportInput, key: str) -> list[float]:
     """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell.
-    The one walk of them: a set's precision (:func:`~threetears.evals.analysis.report.forms.figure_places`), a money
-    ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds all read this set.
+    The one walk of them: a money ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds
+    all read this set.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -1660,11 +1726,15 @@ def _criterion_places(report_input: ReportInput, prior: tuple[str, ...]) -> list
 
 
 def _gap_figure(report_input: ReportInput, path: str, measure: str, line: float, gap: float, what: str) -> Figure:
-    """A gap from a threshold on a measure, signed toward passing: in points for a rate, else in the measure's units."""
+    """A gap from a threshold on a measure, signed toward passing: in points for a rate, else in the measure's units.
+    It is a change on the measure (#1127 item 4), read at the precision of the measure's changes, and a distance, which
+    prints no ``+`` (:attr:`Figure.distance`)."""
     scale, unit = _scale_of(report_input, measure, (line,))
     if scale in ("share", "percent"):
-        return _number(path, gap * 100 if scale == "share" else gap, what, "points")
-    return _number(path, gap, what, scale, unit=unit)
+        read = _number(path, gap * 100 if scale == "share" else gap, what, "points", change=True)
+    else:
+        read = _number(path, gap, what, scale, unit=unit, change=True)
+    return replace(read, distance=True)
 
 
 def _criterion_figure_field(
@@ -1684,8 +1754,8 @@ def _criterion_figure_field(
         )
         return replace(read, derived=True) if figure.derived else read
     gap = figure.value - threshold if criterion.direction == "higher_is_better" else threshold - figure.value
-    # A gap is a difference on the measure the criterion reads, so it reads at that measure's changes' set; it is not
-    # marked a change, which would sign it (``+99 ms``), and the page prints it unsigned today.
+    # A gap is a change on the measure the criterion reads, so it reads at that measure's changes' set; as a distance it
+    # prints no ``+`` (``99 ms``), the prose saying which side of the threshold it is on.
     read = _gap_figure(report_input, path, criterion.measure, threshold, gap, "the figure's gap from the threshold")
     return replace(read, measure=criterion.measure)
 
@@ -3066,10 +3136,11 @@ def _unanswered_figure(rows: Sequence[Unanswered], field: str | None, path: str)
                 reasons[word] = reasons.get(word, 0) + count
         if not reasons:
             raise _unstated(path, "names the reasons the arm's calls went unanswered, which no role counted")
-        ordered = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
-        return Figure(
-            path=path, kind="text", value=", ".join(f"{word} {group_thousands(str(count))}" for word, count in ordered)
-        )
+        ordered = tuple(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
+        # Each count is printed by the page's forms, as a count anywhere on the page is (Figure.counts); the value a
+        # tool serves beside that text keeps the grouped form it has always had.
+        value = ", ".join(f"{word} {group_thousands(str(count))}" for word, count in ordered)
+        return Figure(path=path, kind="text", value=value, counts=ordered)
     if any(row.calls is None for row in rows):
         raise _unstated(
             path, f"names the arm's {field}, and a role that counted unanswered calls did not count its calls"
@@ -3530,22 +3601,59 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     return f"the margin on {aspect}" if margin.kind == "margin" else f"the floor on {aspect}"
 
 
-def _weakest_interval_words(margin: Margin) -> str:
-    """Which interval a weakest margin's worst case is read on, in words: the multiplicity-corrected interval of the
-    arm's pass-rate contrast where the input holds one (with its level), else the plain interval at the nominal level
-    with no correction (a reading's and a floor's); a criterion's figure is read as measured, on no interval.
+#: In a figure's words (:attr:`Figure.said_between`), where the size of the family a joint level holds across is
+#: printed, as a count (:attr:`Figure.joint`).
+_COMPARISONS_SLOT = "{comparisons}"
 
+
+def _weakest_interval(report_input: ReportInput, margin: Margin, path: str) -> Figure:
+    """Which interval a weakest margin's worst case is read on, in the package's own words, which state what the
+    interval guarantees: the 95% interval adjusted for its family's comparisons where the worst case is read on the
+    arm's multiplicity-corrected pass-rate contrast (``the 95% interval, adjusted for 16 comparisons``), the joint level
+    and the family's size each a number the page's forms print; the nominal 95% interval where nothing is adjusted (a
+    reading's and a floor's, ``the 95% interval``); a criterion's figure is read as measured, on no interval. The
+    per-interval level a correction sets (``99.69%``) is no reading text's: Method and the glossary state it.
+
+    :param report_input: The report input, whose contrast families say what a corrected interval guarantees together.
+    :ptype report_input: ReportInput
     :param margin: The weakest margin.
     :ptype margin: Margin
-    :return: The words ``{weakest.interval}`` prints.
-    :rtype: str
+    :param path: The key.
+    :ptype path: str
+    :return: What ``{weakest.interval}`` prints.
+    :rtype: Figure
     """
+    what = "the level of the interval the weakest margin is read on"
     if margin.kind == "criterion":
-        return "the figure as measured, on no interval"
+        return _text(path, "the figure as measured, on no interval", "which interval the weakest margin is read on")
     if margin.corrected:
-        level = f" {margin.level}" if margin.level else ""
-        return f"the multiplicity-corrected{level} interval"
-    return f"the plain {format_number(INTERVAL_LEVEL * 100)}% interval, uncorrected"
+        # The family that set its level, as the margin's reading found it: the first on its aspect, or on every aspect.
+        family = next(
+            (held for held in report_input.contrast_families if held.aspect in (margin.aspect, None) and held.level),
+            None,
+        )
+        joint = _joint(family)
+        if joint is None:
+            # The family states no joint guarantee to say, and the per-interval level is no reading text's.
+            return _text(path, "the multiplicity-corrected interval", "which interval the weakest margin is read on")
+        read = _level(path, joint[0], what)
+        return replace(
+            read, said_between=("the ", f" interval, adjusted for {_COMPARISONS_SLOT} comparisons"), joint=joint
+        )
+    return replace(_level(path, INTERVAL_LEVEL, what), said_between=("the ", " interval"))
+
+
+def _weakest_rate(report_input: ReportInput, found: Margin) -> tuple[str, str] | None:
+    """The rate a weakest margin read on an interval is a difference of: a floor's own rate (:func:`_floor_rate`), or
+    the aspect's pass rate, which a reading's margin reads."""
+    if found.kind == "floor":
+        read = next(
+            held
+            for held in report_input.floors
+            if (held.aspect, held.floor, held.arm) == (found.aspect, found.source, found.arm)
+        )
+        return _floor_rate(report_input, read)
+    return pass_rate_measure(report_input)
 
 
 def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -3569,13 +3677,17 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
     if field == "criterion":
         return _text(path, _margin_name(found, report_input), "what the weakest margin is read against")
     if field == "interval":
-        return _text(path, _weakest_interval_words(found), "which interval the weakest margin is read on")
+        return _weakest_interval(report_input, found, path)
     if found.kind != "criterion":
         if field == "margin":
-            return _number(path, found.gap, "the weakest margin", "points")
-        return _number(
-            path, found.value if field == "value" else found.line, f"the weakest {field}", "points", change=True
-        )
+            # A gap is a change in points (#1127 item 4) and a distance from the line, which prints no ``+``.
+            read = replace(_number(path, found.gap, "the weakest margin", "points", change=True), distance=True)
+        elif field == "value":
+            read = _number(path, found.value, "the weakest value", "points", change=True)
+        else:
+            # The line is declared (minus the margin), which prints as declared: it is no change.
+            read = _number(path, found.line, "the weakest threshold", "points")
+        return replace(read, set_of=_weakest_rate(report_input, found))
     scale, unit = _scale_of(report_input, found.measure or "", (found.line,))
     if field == "value":
         # A criterion's figure is a level of the measure it reads, as its own key's is (:func:`_criterion_figure_field`).
@@ -4255,10 +4367,10 @@ def _trials(path: str, cases: float, spread: Spread) -> Figure:
 
 
 def _sided_level(path: str, level: float, sided: Literal[1, 2]) -> Figure:
-    """A settle figure's level as words that carry its sidedness (``95% one-sided``), so no citation of it reads as the
-    two-sided intervals a page prints when it is not one."""
-    percent = format_number(level * 100)
-    return Figure(path=path, kind="text", value=f"{percent}% {'one-sided' if sided == 1 else 'two-sided'}")
+    """A settle figure's level, said with its sidedness (``95% one-sided``), so no citation of it reads as the
+    two-sided intervals a page prints when it is not one: the level a number the page's forms print, as every level."""
+    read = _level(path, level, "the level the design is sized at")
+    return replace(read, said_between=("", " one-sided" if sided == 1 else " two-sided"))
 
 
 def _settle_line(
@@ -4422,7 +4534,8 @@ def _settle_margin_figure(report_input: ReportInput, values: tuple[str, ...], pa
     if margin is None:
         raise _unstated(path, f"reads {arm_id}'s reading on {aspect_id} against its margin, and none is declared")
     if field == "line":
-        return _number(path, -margin, "the margin's line: the drop the reading may show", "points", change=True)
+        # A declared line prints as declared, never at a measure's changes' precision, so it is not marked a change.
+        return _number(path, -margin, "the margin's line: the drop the reading may show", "points")
     spread = _reading_spread(aspect, arm_id, path)
     if field == "change":
         return _number(path, spread.mean, "the reading's change from the control", "points", change=True)
@@ -4528,7 +4641,8 @@ def _settle_floor_figure(report_input: ReportInput, values: tuple[str, ...], pat
             path, f"reads {arm_id}'s read of floor {floor} against its margin, which the read does not state"
         )
     if field == "line":
-        return _number(path, -float(read.margin), "the floor's line: the drop it allows", "points", change=True)
+        # A declared line prints as declared, never at a measure's changes' precision, so it is not marked a change.
+        return _number(path, -float(read.margin), "the floor's line: the drop it allows", "points")
     spread = _floor_spread(report_input, aspect_id, floor, arm_id, path)
     if field == "change":
         return _number(
@@ -4854,6 +4968,7 @@ def _family_of(
     derived_note: str = "",
     compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None,
     ledger_as: _LedgerAs = _a_percentile_is_a_level,
+    rate: _RateOf | None = None,
 ) -> _Family:
     return _Family(
         slots=slots,
@@ -4865,6 +4980,7 @@ def _family_of(
         derived_note=derived_note,
         compares=compares,
         ledger_as=ledger_as,
+        rate=rate,
     )
 
 
@@ -4984,6 +5100,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "reading's change from the control (in points), then what a criterion's settle reads, the spread read off "
         "the reading's own interval at its stated level, each arm running the size in cases",
         resolve=_settle_margin_figure,
+        rate=_the_pass_rate,
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.margin.answers.fast.v2.cases_needed",
@@ -5001,6 +5118,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "where the floor speaks for its pass rate, else the candidate's rate on the floor's own measure minus the "
         "control's, their spreads combined as independent",
         resolve=_settle_floor_figure,
+        rate=_a_floor_s_rate,
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.floor.answers.answers/rate_drop/*.fast.v2.wrong_side",
@@ -5027,6 +5145,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived_note=_SEPARATION_NOTE,
         example="settle.passed.answers.fast.v2.base.cases_needed",
         ledger_as=_of_the_pass_rate({"first": "level", "second": "level", "difference": "change"}),
+        rate=_the_pass_rate,
     ),
 )
 
@@ -5503,6 +5622,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_ASPECT_FIELDS, "<field>"),
         what="the one asked aspect",
         resolve=_asked_aspect_field,
+        rate=_the_pass_rate,
     ),
     _family_of(
         _Word("aspects"),
@@ -5510,6 +5630,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_ASPECT_FIELDS, "<field>"),
         what="any aspect, by id",
         resolve=_named_aspect_field,
+        rate=_the_pass_rate,
     ),
     _family_of(
         _Word("reading"),
@@ -5518,6 +5639,7 @@ _FAMILIES: tuple[_Family, ...] = (
         what="an arm's reading on the asked aspect: its change from the control, in points",
         resolve=_asked_reading,
         ledger_as=_READING_LEDGER,
+        rate=_the_pass_rate,
     ),
     _family_of(
         _Word("aspects"),
@@ -5528,6 +5650,7 @@ _FAMILIES: tuple[_Family, ...] = (
         what="an arm's reading on any aspect",
         resolve=_named_reading,
         ledger_as=_READING_LEDGER,
+        rate=_the_pass_rate,
     ),
     _family_of(
         _Word("contrast"),
@@ -5693,6 +5816,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<candidate>", _asked_reading_arms),
         what="the margin above which a candidate's asked reading holds: its interval's worst drop",
         resolve=_flip_margin,
+        rate=_the_pass_rate,
         derived=True,
     ),
     _family_of(
@@ -5770,6 +5894,7 @@ _FAMILIES: tuple[_Family, ...] = (
         what="a pair reading on one aspect: the first arm minus the second, in points, as the input orders them; "
         "`ahead` is the arm shown ahead",
         resolve=_pair,
+        rate=_the_pass_rate,
         example="aspects.speed.pair.base.fast.v2.change|pts",
     ),
     _family_of(
@@ -5783,6 +5908,7 @@ _FAMILIES: tuple[_Family, ...] = (
         "for): `held_above` is the margin above which it holds (minus the interval's low end), `broken_at` the margin "
         "at or below which it breaks (minus the high end)",
         resolve=_floor,
+        rate=_a_floor_s_rate,
         derived_statistics=_FLOOR_DERIVED,
         example="aspects.answers.floor.answers/rate_drop/*.fast.v2.held_above",
     ),
@@ -5813,6 +5939,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<candidate>", _named_reading_arms),
         what="the margin above which a candidate's reading on one aspect holds: its interval's worst drop",
         resolve=_aspect_flip_margin,
+        rate=_the_pass_rate,
         derived=True,
         example="aspects.answers.flip_margin.fast.v2",
     ),
@@ -6452,6 +6579,8 @@ def parse_key(inner: str, span: tuple[int, int] | None = None) -> FigureKey:
     spellings = [name for name in filters if name in _SPELLINGS]
     if len(spellings) > 1:
         raise _refuse(inner, f"names two spellings, {' and '.join(spellings)}; keep one")
+    if "abs" in filters and "signed" in filters:
+        raise _refuse(inner, "names `abs` and `signed`, which read its sign two ways; keep one")
     if path.startswith(_ARM_PREFIX) and filters:
         raise _refuse(inner, "is an arm, which takes no filter")
     return FigureKey(path=path, filters=tuple(filters), span=span)
@@ -6619,8 +6748,10 @@ def _statistic_of(reading: _Reading) -> str | None:
 def _set_of(reading: _Reading, figure: Figure, report_input: ReportInput) -> tuple[str, str] | None:
     """The measure a figure is of, as the page's tables print it, with its kind: the measure or judged dimension a key
     names (or its figure carries, :attr:`Figure.measure`), a judged score on the 1–5 rubric as ``judged``, a measure as
-    ``measure``, how each trial ended as ``trial`` (the pass rate's comparisons); None for a key naming none. Which of
-    its figures read at a set's decimals is the page's forms' to decide
+    ``measure``, how each trial ended as ``trial`` (the pass rate's comparisons); and a figure in points whose path
+    names no measure as the rate its family reads (:attr:`_Family.rate`: the pass rate for a reading, an aspect's
+    margin or two arms apart, a floor's own rate), so a key spelling it in points reads at that rate's precision as its
+    table does. None for a key naming none. Which of its figures read at a set's decimals is the page's forms' to decide
     (:meth:`~threetears.evals.analysis.report.forms.PageForms.key_number`)."""
     for value in (figure.measure,) if figure.measure else _named_measures(reading):
         if rubric_score(report_input, value):
@@ -6631,7 +6762,8 @@ def _set_of(reading: _Reading, figure: Figure, report_input: ReportInput) -> tup
             return (value, "judged")
         if value == TRIAL_PASS_NAME:
             return (value, "trial")
-    return None
+    rate = reading.family.rate
+    return rate(report_input, reading.values) if rate is not None and figure.scale == "points" else None
 
 
 #: The id slots that name a measure or a judged dimension, as a path spells them.
@@ -7136,10 +7268,12 @@ def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
     chosen = next((name for name in filters if name in _SPELLINGS), None)
     if chosen is not None:
         return chosen
+    # A distance reads unsigned unless a filter signs it (Figure.distance).
+    signs = figure.change and not figure.distance
     defaults: dict[str, str] = {
         "share": "pts" if figure.change else "pct",
         "percent": "pts" if figure.change else "pct",
-        "points": "pts" if figure.change else "points",
+        "points": "pts" if signs else "points",
         "usd": "usd",
         "usd_per_1k": "usd",
         "usd_per_1m": _PER_MILLION,
@@ -7154,7 +7288,7 @@ def _spell(
     the grammar's, and every number's text is the page's forms' (each ``PageForms.key_*``)."""
     if absolute:
         value = abs(value)
-    signed = figure.change and not absolute
+    signed = figure.change and not figure.distance and not absolute
     rate = figure.scale in ("share", "percent")
     hundred = value * 100 if figure.scale == "share" else value
     if spelling in ("pct", "pct10"):
@@ -7179,7 +7313,8 @@ def _spell(
             return _Spelled(amount, f" {words}")
         # Per 1,000 of what the cost counts (a reply's cost under a cent reads ``$0.49 per 1,000 replies``, never a
         # bare ``$0.00049`` a reader takes for a total), or per 1,000,000 where the family is under a cent even so: the
-        # ruler moves (the one owner's rule), and the count is said with the amount (Q4).
+        # ruler moves (the one owner's rule), and the count is said with the amount, since an amount whose count is
+        # left unsaid reads as one per reply, a thousand or a million times what it is.
         return _Spelled(f"{amount} {words}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
@@ -7230,7 +7365,9 @@ def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageFor
     unit once otherwise (``27–28%``). A plain figure of a measure the page's tables print, and an interval's two ends,
     read at the precision the page's forms decide for it. Every number it prints, and how an interval's ends read
     together and are joined, is the forms' (each ``PageForms.key_*``), each recorded in their ledger: this chooses the
-    spelling the filters name and refuses one that does not suit.
+    spelling the filters name and refuses one that does not suit. A figure said in words prints its number between
+    them (:attr:`Figure.said_between`), and a text figure of counts prints each count after its word
+    (:attr:`Figure.counts`), so a number in words reads as the page's forms print it too.
 
     :param figure: What a key resolved to; not an arm, which :func:`render` names.
     :ptype figure: Figure
@@ -7245,7 +7382,12 @@ def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageFor
         ``interval`` on a single number, any filter on text.
     :raises ValueError: The figure is an arm.
     """
-    text = _formatted_figure(figure, tuple(filters), forms)
+    before, after = figure.said_between
+    if figure.joint is not None and _COMPARISONS_SLOT in after:
+        # The family's size reads as a count anywhere on the page does, by the page's forms.
+        size = _formatted_figure(_count(figure.path, figure.joint[1]), (), forms)
+        after = after.replace(_COMPARISONS_SLOT, size)
+    text = before + _formatted_figure(figure, tuple(filters), forms) + after
     return f"{text} ({figure.priced_in_part})" if figure.priced_in_part else text
 
 
@@ -7257,7 +7399,17 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...], forms: PageForms
     if figure.kind == "text":
         if chosen:
             raise _refuse(figure.path, "is text, which takes no filter")
+        if figure.counts:
+            # Each count reads as a count anywhere on the page does, by the page's forms.
+            return ", ".join(
+                f"{word} {_formatted_figure(_count(figure.path, count), (), forms)}" for word, count in figure.counts
+            )
         return str(figure.value)
+    if "signed" in chosen:
+        if not figure.change:
+            raise _refuse(figure.path, "is no change, and `signed` signs a change")
+        # A distance signed on request reads as the change it is (Figure.distance).
+        figure = replace(figure, distance=False)
     spelling = _spelling_for(figure, chosen)
     absolute = "abs" in chosen
     if figure.kind == "number":
@@ -7612,6 +7764,7 @@ _FILTER_EXAMPLES: dict[str, str] = {
     "pct": "pass_rate.base|pct",
     "pts": "contrast.fast.v2.tone.kept.delta|pts",
     "abs": "reading.fast.v2.change|abs|pts",
+    "signed": "criteria.p95.fast.v2.gap|signed",
     "usd": "cost_per_1k.base|usd",
     "int": "aspect.margin|int",
     "pct10": "strata.off_topic.loss_share|pct10",
@@ -7660,7 +7813,7 @@ def _grammar_rules() -> list[str]:
 def _grammar_filters(example: ReportInput, names: Mapping[str, str], forms: PageForms) -> list[str]:
     """The grammar's filters, each with its example rendered in the made-up input's forms, and what a key prints:
     everything after its paths."""
-    lines = ["Filters (one spelling at most, plus `abs` and `interval`):"]
+    lines = ["Filters (one spelling at most, plus `abs` or `signed`, and `interval`):"]
     for name in _FILTERS:
         key = parse_key(_FILTER_EXAMPLES[name])
         shown = format_figure(resolve(key.path, example), key.filters, forms=forms)
