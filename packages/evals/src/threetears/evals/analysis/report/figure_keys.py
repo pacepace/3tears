@@ -184,7 +184,7 @@ from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goa
 if TYPE_CHECKING:
     # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
     # caller hands its page's forms in, and the type is named for the checker alone.
-    from threetears.evals.analysis.report.forms import PageForms
+    from threetears.evals.analysis.report.forms import PageForms, Role
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
 FigureKind = Literal["number", "interval", "text", "arm"]
@@ -343,7 +343,11 @@ class Figure:
     so a key reads its figure as the table beside it does; None for a figure of neither, which keeps the number rule.
     Nor does ``measure``: the measure or judged dimension a figure is of where its path names it by another id (a
     criterion's figure, named by the criterion), so the figure reads at that measure's set as its table prints it; empty
-    where the path names the measure itself, or names none.
+    where the path names the measure itself, or names none. Nor does ``ledger_as``: where the page's tables print the
+    figure under a measure its path does not name, or in a role its statistic does not say (an arm's cost per reply is
+    the page's cost, a reading's change the pass rate's, a percentile a level), that measure, its kind and the role,
+    which the page's ledger records the figure under in place of ``set_of``'s; None where ``set_of`` says it. It is the
+    ledger's alone: the decimals a key prints at still read ``set_of``, so naming where a figure is held moves no digit.
     """
 
     path: str
@@ -364,6 +368,7 @@ class Figure:
     statistic: str | None = field(default=None, compare=False, repr=False)
     set_of: tuple[str, str] | None = field(default=None, compare=False, repr=False)
     measure: str = field(default="", compare=False, repr=False)
+    ledger_as: tuple[str, str, Role] | None = field(default=None, compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -416,6 +421,65 @@ def _number_options(path: str, at: int) -> list[str]:
     return [whole, match.group(0)] if decimals else [whole]
 
 
+#: Where a page's tables hold a family's figure, for its ledger (:attr:`Figure.ledger_as`): the measure, its kind and
+#: the role, read from the input, the ids the path matched and the figure as resolved (its statistic, its set); None
+#: where its set says it.
+type _LedgerAs = Callable[[ReportInput, tuple[str, ...], Figure], tuple[str, str, Role] | None]
+
+
+def _a_percentile_is_a_level(
+    _report_input: ReportInput, _values: tuple[str, ...], figure: Figure
+) -> tuple[str, str, Role] | None:
+    """A percentile of a measure (a turn time's ``p95``) is a level of it, and money's its money, as a table that states
+    the measure by its percentiles prints it; every family that reads a measure's statistics reads its percentiles so."""
+    if figure.set_of is None or figure.statistic not in PERCENTILE_NAMES:
+        return None
+    return (*figure.set_of, "money" if figure.scale in _SCALE_COUNTS else "level")
+
+
+def _of_the_pass_rate(roles: Mapping[str, Role]) -> _LedgerAs:
+    """A family whose figures, by statistic, are the pass rate's (:func:`pass_rate_measure`), each in the role given:
+    a reading's change, its ends, two arms' pass rates and the difference between them, which a path names by its arms
+    and aspect alone."""
+
+    def held(report_input: ReportInput, _values: tuple[str, ...], figure: Figure) -> tuple[str, str, Role] | None:
+        role = roles.get(figure.statistic or "")
+        return None if role is None else (*pass_rate_measure(report_input), role)
+
+    return held
+
+
+def _a_reply_cost_is_the_cost(
+    report_input: ReportInput, _values: tuple[str, ...], figure: Figure
+) -> tuple[str, str, Role] | None:
+    """An arm's cost per reply is the page's cost (:func:`cost_measure`), held as the money its cost per 1,000 and its
+    table's cost cell are; nothing where the page reads its cost from no measure."""
+    measure = cost_measure(report_input)
+    if measure is None or figure.statistic != "reply_cost_usd":
+        return None
+    return (*measure, "money")
+
+
+#: A reading's figures that are the pass rate's: its change and that change's ends.
+_READING_LEDGER = _of_the_pass_rate({"change": "change", "interval": "change", "low": "change", "high": "change"})
+
+#: A reading's change against its margin, as a settle reads it: the pass rate's.
+_MARGIN_LEDGER = _of_the_pass_rate({"change": "change"})
+
+
+def _a_floor_s_change(
+    report_input: ReportInput, values: tuple[str, ...], figure: Figure
+) -> tuple[str, str, Role] | None:
+    """A floor's change, as a settle reads it, where the floor speaks for the aspect's pass rate: the reading's change,
+    the pass rate's (:func:`_floor_spread`); a floor on its own measure reads a difference of two means no table holds,
+    so nothing."""
+    aspect_id, floor, arm_id, _field = values
+    read = next(
+        held for held in report_input.floors if (held.aspect, held.floor, held.arm) == (aspect_id, floor, arm_id)
+    )
+    return _MARGIN_LEDGER(report_input, values, figure) if read.reading is None else None
+
+
 @dataclass(frozen=True)
 class _Family:
     """One path family: its slots in order, what it reads, and how its matched ids and statistic become a figure.
@@ -426,7 +490,9 @@ class _Family:
     interval" line for a derived family that is not descriptive: one whose figures are read off stated spreads.
     ``compares`` gives, for a family whose money figures are changes, the amounts a change compares (each arm's cost per
     1,000 for a cost gap, the measure's means for a contrast), whose form the change reads in; ``None`` from it, or no
-    ``compares``, reads the family's own amounts (:func:`_money_amounts`).
+    ``compares``, reads the family's own amounts (:func:`_money_amounts`). ``ledger_as`` says where the page's tables
+    hold a figure of the family whose path names no measure they hold it under, or whose statistic names no role they
+    hold it in (:attr:`Figure.ledger_as`); every family reads a percentile of its measure as a level of it.
     """
 
     slots: tuple[_Slot, ...]
@@ -437,6 +503,7 @@ class _Family:
     example: str = ""
     derived_note: str = ""
     compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None
+    ledger_as: _LedgerAs = _a_percentile_is_a_level
 
     def form(self) -> str:
         return ".".join(slot.spelling if isinstance(slot, _Word) else slot.name for slot in self.slots)
@@ -4769,6 +4836,7 @@ def _family_of(
     example: str = "",
     derived_note: str = "",
     compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None,
+    ledger_as: _LedgerAs = _a_percentile_is_a_level,
 ) -> _Family:
     return _Family(
         slots=slots,
@@ -4779,6 +4847,7 @@ def _family_of(
         example=example,
         derived_note=derived_note,
         compares=compares,
+        ledger_as=ledger_as,
     )
 
 
@@ -4901,6 +4970,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.margin.answers.fast.v2.cases_needed",
+        ledger_as=_MARGIN_LEDGER,
     ),
     _family_of(
         _Word("settle"),
@@ -4917,6 +4987,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.floor.answers.answers/rate_drop/*.fast.v2.wrong_side",
+        ledger_as=_a_floor_s_change,
     ),
     _family_of(
         _Word("settle"),
@@ -4938,6 +5009,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.passed.answers.fast.v2.base.cases_needed",
+        ledger_as=_of_the_pass_rate({"first": "level", "second": "level", "difference": "change"}),
     ),
 )
 
@@ -5428,6 +5500,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_READING_STATISTICS),
         what="an arm's reading on the asked aspect: its change from the control, in points",
         resolve=_asked_reading,
+        ledger_as=_READING_LEDGER,
     ),
     _family_of(
         _Word("aspects"),
@@ -5437,6 +5510,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_READING_STATISTICS),
         what="an arm's reading on any aspect",
         resolve=_named_reading,
+        ledger_as=_READING_LEDGER,
     ),
     _family_of(
         _Word("contrast"),
@@ -5488,6 +5562,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_SCOREBOARD_STATISTICS),
         what="how an arm's trials came out. " + _SCOREBOARD_FAILED,
         resolve=_scoreboard,
+        ledger_as=_a_reply_cost_is_the_cost,
     ),
     _family_of(
         _Word("calls.unanswered"),
@@ -5652,6 +5727,7 @@ _FAMILIES: tuple[_Family, ...] = (
         what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
+        ledger_as=_a_reply_cost_is_the_cost,
     ),
     _family_of(
         *_ON_ASPECT,
@@ -6507,6 +6583,8 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
             statistic=_statistic_of(reading),
             set_of=figure.set_of or _set_of(reading, figure, report_input),
         )
+        # Where the tables hold it is the ledger's alone (Figure.ledger_as): set_of above still picks its digits.
+        figure = replace(figure, ledger_as=reading.family.ledger_as(report_input, reading.values, figure))
     return replace(figure, derived=figure.derived or _is_derived(reading))
 
 

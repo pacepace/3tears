@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from threetears.evals.analysis import ChartBlock
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report import charts as chart_models
-from threetears.evals.analysis.report.chart_svg import chart_drawing
+from threetears.evals.analysis.report.chart_svg import DRAWERS, chart_drawing
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS, StoredCharts, drawn_charts, stored_charts
 from packages.evals.tests.report_kit_support import MARKED_CHARTS
@@ -199,15 +199,18 @@ def _drawn(svg: str) -> tuple[list[tuple[str, ...]], list[str]]:
     return tips, [html.unescape(text) for text in re.findall(r">([^<>]+)</(?:tspan|text)>", svg)]
 
 
-def test_every_kind_the_static_page_draws_on_a_page_has_a_marked_chart() -> None:
-    """Each kind a page's chart is drawn in by the static page has a marked chart of its own (:data:`MARKED_CHARTS`),
-    so a kind a page draws is never left out of the per-kind check below: a new kind a resolver draws fails here until
-    its markers are written."""
-    drawn = {block.chart for _, block in _page_charts() if chart_drawing(block) is not None}
+def test_every_kind_the_static_page_draws_has_a_marked_chart() -> None:
+    """Each kind the static page draws (its drawers' own registry, :data:`~threetears.evals.analysis.report.chart_svg.
+    DRAWERS`, which :func:`~threetears.evals.analysis.report.chart_svg.chart_drawing` draws from) has a marked chart of
+    its own (:data:`MARKED_CHARTS`), and every marked chart is of a kind it draws. So a kind is never left out of the
+    per-kind check below because no fixture's page happens to draw it: a new drawer fails here until its markers are
+    written."""
     marked = {one.kind for one in MARKED_CHARTS.values()}
 
-    assert drawn, "the fixtures' pages draw charts, so this must check some"
-    assert drawn <= marked, f"drawn by the static page with no marked chart: {sorted(drawn - marked)}"
+    assert set(DRAWERS) - marked == set(), (
+        f"drawn by the static page with no marked chart: {sorted(set(DRAWERS) - marked)}"
+    )
+    assert marked - set(DRAWERS) == set(), f"marked, but no kind the static page draws: {sorted(marked - set(DRAWERS))}"
 
 
 @pytest.mark.parametrize("name", list(MARKED_CHARTS))

@@ -2249,8 +2249,9 @@ class PageForms:
         text = format_number(value) if places is None else spell_at(value, places)
         text = group_thousands(text) if figure.scale == "count" else text
         if figure.kind != "interval":
-            role: Role = "lone" if places is None else "change" if figure.change else "level"
-            self._issue(*_key_set(figure), role, value, text, text, "")
+            # Recorded where the tables hold it (_key_role), whatever set its digits read: a criterion's figure of a
+            # measure with no set of levels is still that measure's level.
+            self._issue(*_key_set(figure), _key_role(figure), value, text, text, "")
         return text
 
     def key_plain_ends(
@@ -2989,8 +2990,14 @@ def _two_figures(low: float, high: float) -> tuple[str, str]:
 
 
 def _key_set(figure: Figure) -> tuple[str, str]:
-    """The key a figure key's printed part is held under in the ledger: the measure whose set it reads, by its kind,
-    or neither for a figure of no measure's set (a count, an adjusted p)."""
+    """The key a figure key's printed part is held under in the ledger: the measure the page's tables hold it under
+    where its family names one its path does not (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.
+    ledger_as`, an arm's cost per reply under the page's cost), else the measure whose set it reads, by its kind, or
+    neither for a figure of no measure's set (a count, an adjusted p). The decimals it prints at read its set alone
+    (:meth:`PageForms._key_figure_places`), so where it is held moves no digit."""
+    if figure.ledger_as is not None:
+        key, kind, _role = figure.ledger_as
+        return (key, _measure_kind(kind))
     if figure.set_of is None:
         return ("", "")
     key, kind = figure.set_of
@@ -3002,9 +3009,12 @@ _MONEY_SCALES = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
 
 
 def _key_role(figure: Figure) -> Role:
-    """What a key's figure is to the measure whose set it is held under: its level or its change where it is a figure
-    the page's tables print of that measure (:func:`_tabled`), else a lone figure, as :meth:`PageForms.key_number`
-    holds one it spells by the number rule."""
+    """What a key's figure is to the measure it is held under: the role the page's tables hold it in where its family
+    names one its statistic does not (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.ledger_as`, a
+    percentile as a level); else its level or its change where it is a figure the page's tables print of that measure
+    (:func:`_tabled`), whether or not its digits read at the measure's set; else a lone figure."""
+    if figure.ledger_as is not None:
+        return figure.ledger_as[2]
     if figure.set_of is None or not _tabled(figure):
         return "lone"
     if figure.change:

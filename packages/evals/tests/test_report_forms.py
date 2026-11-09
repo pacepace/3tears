@@ -45,7 +45,16 @@ from threetears.evals.analysis.report.build import (
     build_code_only_report_in_forms,
     contrast_evidence,
 )
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    cost_measure,
+    figure_key_grammar,
+    format_figure,
+    key_form,
+    pass_rate_measure,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
@@ -58,7 +67,7 @@ from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PA
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.words import judged_heading, reading_heading
-from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput
+from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput, Unanswered
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.kernel.chart_query import PlannedChart
 from threetears.evals.harness import read_writer_cases
@@ -599,9 +608,9 @@ def _printing(cell: TableCell, bare: bool) -> str | None:
     return None
 
 
-#: Each table row's measure and reading, by the table's name and the row's place in it: what each rate or money cell
-#: of the row states a figure of.
-_RowMeasures = Mapping[tuple[str, int], tuple[str, str]]
+#: Each table row's measure and reading, by the table's name and the row's place in it, or one cell's, by its column
+#: too (a table of an arm per row and a measure per column): what each rate or money cell states a figure of.
+_RowMeasures = Mapping[tuple[str, int] | tuple[str, int, str], tuple[str, str]]
 
 
 def _unheld(
@@ -614,8 +623,8 @@ def _unheld(
     level the table keeps as its builder wrote it, the level's (``confidence``); money as its words, the amount's as its
     builder issued it (``money`` on a ruler, or its measure's ``change`` or ``level``). ``by_measure``, only an entry
     held under a measure counts, but for an interval's level, which is how a family's intervals were read and belongs to
-    no measure; and where ``measures`` names a row's measure, only an entry held under exactly that measure and reading
-    counts for that row's cells."""
+    no measure; and where ``measures`` names a row's measure, or a cell's, only an entry held under exactly that measure
+    and reading counts for that cell."""
     entries = Counter((entry.role, entry.value, entry.text, entry.measure, entry.kind) for entry in forms.ledger)
     own: tuple[str, str] | None = None
 
@@ -644,11 +653,11 @@ def _unheld(
     for table in tables:
         bare = bare_columns(table.columns)
         for at, row in enumerate(table.rows):
-            own = (measures or {}).get((table.name, at))
             for key, cell in row.items():
                 printing = _printing(cell, key in bare)
                 if printing is None:
                     continue
+                own = (measures or {}).get((table.name, at, key)) or (measures or {}).get((table.name, at))
                 checked += 1
                 text = cell.figure
                 if printing == "number":
@@ -703,21 +712,45 @@ def test_every_rate_and_money_cell_a_code_page_prints_is_in_its_ledger(page_of: 
 _NO_MEASURE_CODE_CELLS = frozenset({("precision", "between"), ("test_setup", "detail")})
 
 
+def _pass_rate_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+    """Each row's measure on a code page of pass-rate readings: every one is the pass rate's, how each trial ended."""
+    return {(table.name, at): (TRIAL_PASS_NAME, "trial") for table in tables for at in range(len(table.rows))}
+
+
+def _measurement_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+    """Each row's measure on a code page of measurements, read off the readings its campaign's page is built from, in
+    the order its tables lay their rows out: the measures table's a reading per row, the scorecard's an aspect's
+    measure per row."""
+    read = s3_measurement().readings.measures
+    by_table = {
+        "measures": [reading.measure for reading in read],
+        "scorecard": [measure for _aspect, measure in dict.fromkeys((one.aspect, one.measure) for one in read)],
+    }
+    expected: dict[tuple[str, int], tuple[str, str]] = {}
+    for table in tables:
+        if table.name in by_table:
+            assert len(by_table[table.name]) == len(table.rows), table.name
+            expected |= {(table.name, at): (measure, "measure") for at, measure in enumerate(by_table[table.name])}
+    assert expected, "a measurement's code page prints its measures, so this must name some"
+    return expected
+
+
 @pytest.mark.parametrize(
-    "page_of",
+    ("page_of", "measures_of"),
     [
-        pytest.param(lambda: _scaled_page(), id="scaled"),
-        pytest.param(lambda: _scaled_page(two_aspects=True), id="scaled_two_aspects"),
-        pytest.param(lambda: s3_measurement().page(), id="measurement"),
+        pytest.param(lambda: _scaled_page(), _pass_rate_rows, id="scaled"),
+        pytest.param(lambda: _scaled_page(two_aspects=True), _pass_rate_rows, id="scaled_two_aspects"),
+        pytest.param(lambda: s3_measurement().page(), _measurement_rows, id="measurement"),
     ],
 )
 def test_every_rate_and_money_cell_a_code_page_prints_is_held_under_its_measure(
     page_of: Callable[[], CampaignReport],
+    measures_of: Callable[[CampaignReport, list[TableBlock]], dict[tuple[str, int], tuple[str, str]]],
 ) -> None:
-    """The code page's tables hold each rate and money cell under the measure it states a figure of (the pass rate's
-    levels, changes, pass^k and half-widths; each measure's value and interval), so a page-level test of one measure
-    to one precision sees the code page's columns too; a figure of no measure (:data:`_NO_MEASURE_CODE_CELLS`) is left
-    out."""
+    """The code page's tables hold each rate and money cell under the measure its row states a figure of (the pass
+    rate's levels, changes, pass^k and half-widths; each measure's value and interval), read off the page's readings,
+    so a page-level test of one measure to one precision sees the code page's columns too, and a cell recorded under
+    another row's measure fails; a figure of no measure (:data:`_NO_MEASURE_CODE_CELLS`) is left out."""
     page, forms = _page_and_forms(page_of)
     tables = [
         block.model_copy(
@@ -731,7 +764,7 @@ def test_every_rate_and_money_cell_a_code_page_prints_is_held_under_its_measure(
         for block in page.blocks
         if isinstance(block, TableBlock)
     ]
-    checked, unmeasured = _unheld(tables, forms, by_measure=True)
+    checked, unmeasured = _unheld(tables, forms, by_measure=True, measures=measures_of(page, tables))
     assert checked, "a code page prints rates and money, so this must check some"
     assert not unmeasured, unmeasured
 
@@ -756,8 +789,9 @@ _UNMEASURED_WRITTEN_TABLES = frozenset({"gate_matrix_full"})
 @pytest.mark.parametrize("name", _WRITTEN)
 def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_held_under_its_measure(name: str) -> None:
     """The Full results and the options table hold each rate and money cell under the measure it states a figure of
-    (a level, a change and its interval, a cost, a pass rate), so a page-level test of one measure to one precision sees
-    the written page's rate and money columns too; an interval's level is no measure's."""
+    (a level, a change and its interval, a cost, a pass rate), read off the input for each row or column
+    (:func:`_written_cell_measures`), so a page-level test of one measure to one precision sees the written page's rate
+    and money columns too, and a cell recorded under another's measure fails; an interval's level is no measure's."""
     held = _written_inputs()[name]
     forms = PageForms.of(held)
     look = block_look(held, fact_arms(held))
@@ -766,8 +800,81 @@ def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_held_under_i
         for table in (*every_table(held, look, forms=forms), arms_table(held, look, (), forms=forms))
         if table.name not in _UNMEASURED_WRITTEN_TABLES
     ]
-    _, unmeasured = _unheld(tables, forms, by_measure=True)
+    _, unmeasured = _unheld(tables, forms, by_measure=True, measures=_written_cell_measures(held, tables))
     assert not unmeasured, unmeasured
+
+
+def test_a_cell_recorded_under_another_measure_fails_the_written_and_code_pages_checks() -> None:
+    """The written and code pages' checks read each cell's own measure, never only whether some measure holds it: on
+    Kairo's written page a comparison's row, the options table's pass rate and the arms table's cost each read as
+    unheld once said to state another measure's figures, and so does the measurement code page's first scorecard row."""
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    look = block_look(held, fact_arms(held))
+    tables = [*every_table(held, look, forms=forms), arms_table(held, look, (), forms=forms)]
+    measures = _written_cell_measures(held, tables)
+    for cell, printed in (
+        (("contrasts", 0), "contrasts.change"),
+        (("options", 0, "pass_rate"), "options.pass_rate"),
+        (("arms_by_measure", 0, "measure:cost_usd"), "arms_by_measure.measure:cost_usd"),
+    ):
+        moved = {**measures, cell: ("another_measure", "measure")}
+        _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
+        assert misheld and all(line.startswith(printed) and "another_measure" in line for line in misheld), misheld
+
+    page, forms = _page_and_forms(lambda: s3_measurement().page())
+    tables = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
+    moved = {**_measurement_rows(page, tables), ("scorecard", 0): ("another_measure", "measure")}
+    _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
+    assert misheld and all(line.startswith("scorecard.") and "another_measure" in line for line in misheld), misheld
+
+
+def _slice_rows(slices: list[Mapping[str, Mapping[str, object]]], arms: list[str]) -> list[str]:
+    """A slice table's measure per row, as it lays them out: each slice in the input's order, each measure the slices
+    hold in the order they first hold it, a row wherever an arm the table shows holds the measure there."""
+    measures = list(dict.fromkeys(key for per_arm in slices for figures in per_arm.values() for key in figures))
+    return [key for per_arm in slices for key in measures if any(key in per_arm.get(arm, {}) for arm in arms)]
+
+
+def _written_cell_measures(
+    held: ReportInput, tables: list[TableBlock]
+) -> dict[tuple[str, int] | tuple[str, int, str], tuple[str, str]]:
+    """Each rate and money cell's measure on a written page, read off its input in the order its tables lay their rows
+    out: an arm's column by the measure it names (``measure:<key>``, ``judged:<key>``), its pass rate and its cost by
+    the measures the page reads them from (:func:`~threetears.evals.analysis.report.figure_keys.pass_rate_measure`,
+    :func:`~threetears.evals.analysis.report.figure_keys.cost_measure`); a comparison's row by its contrast, in the
+    pipeline's order; a stratum's, a task's or a cell's row by the measure it states (a judged dimension no measure
+    shares as a judged one)."""
+    cost = cost_measure(held)
+    named = {"pass_rate": pass_rate_measure(held), **({"cost_per_1k": cost} if cost is not None else {})}
+    slices = {
+        "strata": [stratum.per_arm for stratum in held.strata],
+        "tasks": [task.per_arm for task in held.tasks],
+        "cells": [cell.per_arm for cell in held.cells.values()],
+    }
+    expected: dict[tuple[str, int] | tuple[str, int, str], tuple[str, str]] = {}
+    for table in tables:
+        if table.name in ("arms_by_measure", "options"):
+            for at, row in enumerate(table.rows):
+                for column in row:
+                    prefix, _, key = column.partition(":")
+                    measure = (key, prefix) if prefix in ("measure", "judged") else named.get(column)
+                    if measure is not None:
+                        expected[(table.name, at, column)] = measure
+        elif table.name == "contrasts":
+            assert len(held.contrasts) == len(table.rows), table.name
+            expected |= {
+                (table.name, at): (one.measure, one.kind or "measure") for at, one in enumerate(held.contrasts)
+            }
+        elif table.name in slices:
+            arms = [column.key.removeprefix("arm:") for column in table.columns if column.key.startswith("arm:")]
+            rows = _slice_rows(slices[table.name], arms)
+            assert len(rows) == len(table.rows), table.name
+            expected |= {
+                (table.name, at): (key, "judged" if key in held.judged and key not in held.measures else "measure")
+                for at, key in enumerate(rows)
+            }
+    return expected
 
 
 @functools.cache
@@ -1050,107 +1157,194 @@ def test_a_rate_or_money_key_records_what_it_prints_under_its_measure(
     ]
 
 
-#: The written fixtures every key family is read on: Kairo round 2 and the five misfit inputs.
-_WRITTEN_FIXTURES = ("kairo round 2", "r1", "r2", "r3", "r4", "r5")
+#: The written fixtures every key family is read on: Kairo round 2 and the five misfit inputs, then the inputs that
+#: state what none of them does: r5 with one arm's unanswered calls counted, a campaign of several aspects with pairs
+#: and bars (prototype 2's s2), and r2 with its gates read in each task (rung 5's).
+_WRITTEN_FIXTURES = (
+    "kairo round 2",
+    "r1",
+    "r2",
+    "r3",
+    "r4",
+    "r5",
+    "r5 with lost calls",
+    "s2",
+    "r2 with its gates read in each task",
+)
 
 #: The roles a table holds a figure of a measure by, as a key may print the same figure: its level, its money, its
 #: change.
 _FIGURE_ROLES = frozenset({"level", "money", "change"})
 
 
+def _with_lost_calls(held: ReportInput) -> ReportInput:
+    """The input with its second arm's candidate calls counted unanswered: one retried and three lost of 898."""
+    arm = held.arms[1].id
+    counted = {"candidate": Unanswered(retried=1, lost=3, calls=894, share=4 / 898)}
+    rows = {**held.scoreboard, arm: held.scoreboard[arm].model_copy(update={"unanswered": counted})}
+    return held.model_copy(update={"scoreboard": rows})
+
+
 @functools.cache
 def _fixture_inputs() -> dict[str, ReportInput]:
     snapshots = fixture_snapshots("s")
-    return {name: frozen_input(snapshots[name]) for name in _WRITTEN_FIXTURES}
+    inputs = {name: frozen_input(snapshots[name]) for name in _WRITTEN_FIXTURES[:6]}
+    return inputs | {
+        "r5 with lost calls": _with_lost_calls(inputs["r5"]),
+        "s2": ReportInput.model_validate(snapshot_of("prototype2/s2").report_input),
+        "r2 with its gates read in each task": _written_inputs()["rung 5 r2 with its gates read in each task"],
+    }
 
 
-#: A figure as printed: its sign, a dollar sign, its digits and whatever follows (a unit, a count's words).
-_PRINTED = re.compile(r"([+\-]?)(\$?)(\d[\d,]*(?:\.\d+)?)(.*)")
-
-#: How a printed figure is found in a table: its number, whether it is money, and whether it is a change.
-_Said = tuple[float, bool, bool]
-
-
-def _said_as(text: str, *, change: bool) -> _Said | None:
-    """A printed figure's number, money or not, and change or not; None for text that is no figure."""
-    read = _PRINTED.fullmatch(text.strip())
-    if read is None:
-        return None
-    sign, dollar, digits, _unit = read.groups()
-    number = float(digits.replace(",", ""))
-    return (-number if sign == "-" else number, bool(dollar), change)
+@functools.cache
+def _family_forms() -> tuple[str, ...]:
+    """Every family's form, as the grammar lists its paths: the resolver's own families, written by the code that
+    reads them (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_grammar`), so a family added is walked
+    with no list here to extend."""
+    grammar = figure_key_grammar(forms_of=PageForms.of)
+    paths = grammar.split("\nPaths:\n", 1)[1].split("\nFilters", 1)[0]
+    return tuple(re.findall(r"^- `([^`]+)`:", paths, re.MULTILINE))
 
 
-def _table_figures(held: ReportInput) -> dict[_Said, set[tuple[str, str, str]]]:
-    """Every figure of a measure the page's tables print, by how it is printed, with the measure, kind and role each
-    is held under. A figure a table prints whole is left out: a count, a 1–5 score's step or a rate of 100% is held
-    by many figures alike, so it names none of them."""
+#: What a refusal names after the start of a path it stopped at: each id, statistic or word that may come next.
+_NAMED_NEXT = re.compile(r"`([^`]*)`")
+
+#: How a refusal names a slot a number fills (a hypothetical line, a count of cases), and the number it is read with.
+_A_NUMBER = " (a number)"
+_SOME_NUMBER = "1"
+
+
+def _next_in_path(start: str, held: ReportInput) -> list[str]:
+    """What may follow the start of a path (ending in a dot) on an input, as the resolver's refusal names it: nothing
+    where no family reads the start. A refusal names a few dozen at most, so a slot offering more is walked through
+    the ones it names."""
+    try:
+        resolve(start, held)
+    except UnresolvableReference as refusal:
+        stopped = f"after `{start}` comes "
+        said = str(refusal)
+        return _NAMED_NEXT.findall(said.split(stopped, 1)[1]) if stopped in said else []
+    raise AssertionError(f"{start!r} ends in a dot, which no key does, and resolved")
+
+
+@functools.cache
+def _every_key(name: str, forms: tuple[str, ...]) -> tuple[str, ...]:
+    """Every key the input offers in the families given, walked from each family's leading words through each of its
+    slots as the resolver names what may come next there: every id the input holds, each statistic, a number where
+    the slot takes one; a slot the input fills with nothing (``none in this input``) ends the walk there."""
+    held = _fixture_inputs()[name]
+    starts = {form.split("<", 1)[0] for form in forms}
+    keys = {start for start in starts if not start.endswith(".")}
+    pending = sorted(start for start in starts if start.endswith("."))
+    walked: set[str] = set()
+    while pending:
+        start = pending.pop()
+        if start in walked:
+            continue
+        walked.add(start)
+        for named in _next_in_path(start, held):
+            if named.endswith(_A_NUMBER):
+                named = _SOME_NUMBER
+            elif named.startswith("<"):
+                continue
+            keys.add(start + named)
+            pending.append(f"{start}{named}.")
+    return tuple(sorted(keys))
+
+
+def test_the_key_walk_reaches_every_family() -> None:
+    """The walk below reads a key of every family the resolver knows on some fixture, so no family's figure escapes it
+    for want of a list naming it: each fixture is walked through the families no earlier one reached."""
+    forms = set(_family_forms())
+    unreached = set(forms)
+    for name in _WRITTEN_FIXTURES:
+        held = _fixture_inputs()[name]
+        for key in _every_key(name, _family_forms()):
+            if not unreached:
+                break
+            try:
+                resolve(key, held)
+            except UnresolvableReference:
+                # NOSILENT: a key the input states no figure for reaches no family; the walk reads every combination of
+                # the input's ids, and skips these.
+                continue
+            unreached.discard(key_form(key, held).form)
+    assert len(forms) > 100, "the grammar lists every family, so this must read them"
+    assert not unreached, sorted(unreached)
+
+
+def _tabled(held: ReportInput) -> dict[str, set[tuple[str, str, str]]]:
+    """Every figure of a measure the page's tables print, by its value (to ten significant figures, which no
+    rounding a table applies touches), with the measure, kind and role each is held under."""
     forms = PageForms.of(held)
     look = block_look(held, fact_arms(held))
     every_table(held, look, forms=forms)
     arms_table(held, look, (), forms=forms)
     arms_key(held, look, forms=forms)
-    held_figures: dict[_Said, set[tuple[str, str, str]]] = {}
+    held_figures: dict[str, set[tuple[str, str, str]]] = {}
     for entry in forms.ledger:
-        said = _said_as(entry.text, change=entry.role == "change")
-        if entry.measure and entry.role in _FIGURE_ROLES and said is not None and not said[0].is_integer():
-            held_figures.setdefault(said, set()).add((entry.measure, entry.kind, entry.role))
+        if entry.measure and entry.role in _FIGURE_ROLES and isinstance(entry.value, float):
+            held_figures.setdefault(f"{entry.value:.10g}", set()).add((entry.measure, entry.kind, entry.role))
     return held_figures
 
 
-def _figure_keys(held: ReportInput) -> Iterator[str]:
-    """A key of every family whose figure a table prints, for every arm and measure the input names: an arm's pass
-    rate and cost, an arm's level on a measure or a judged dimension, a comparison's change, a stratum's, a task's and
-    a cell's level, and each of them on every aspect."""
-    arms = [arm.id for arm in held.arms]
-    keys = [f"pass_rate.{arm}" for arm in arms] + [f"cost_per_1k.{arm}" for arm in arms]
-    keys += [f"measure.{key}.{arm}.mean" for key, measure in held.measures.items() for arm in measure.per_arm]
-    keys += [f"judged.{key}.{arm}.mean" for key, judged in held.judged.items() for arm in judged.per_arm]
-    keys += [f"contrast.{contrast.arm}.{contrast.measure}.delta" for contrast in held.contrasts]
-    sliced = [(f"strata.{stratum.id}", stratum.per_arm) for stratum in held.strata]
-    sliced += [(f"task.{task.id}", task.per_arm) for task in held.tasks]
-    sliced += [(f"cells.{cell.row}.{cell.column}", cell.per_arm) for cell in held.cells.values()]
-    keys += [
-        f"{where}.{arm}.{key}.mean" for where, per_arm in sliced for arm, stats in per_arm.items() for key in stats
-    ]
-    yield from keys
-    yield from (f"aspects.{aspect.id}.{key}" for aspect in held.aspects for key in keys)
+def _held_as(figure: Figure, tabled: Mapping[str, set[tuple[str, str, str]]], held: ReportInput) -> tuple[str, ...]:
+    """The table cell a key's figure is the figure of, by its value, never by how either prints it: its measure, kind
+    and role, or nothing where no one cell's figure is the key's.
+
+    A figure is matched by its number, on its own scale or a percent's (``85.3`` and points read against a share's
+    ``0.853``), to a cell of the measure its path names (by its id, or a criterion's ``measure``). A key whose path
+    names none is of a figure the page holds without naming it: the pass rate or the cost. A figure in points is a
+    difference or a spread of a rate, never its level, so it is matched to changes, as a change is; any other to
+    levels and money. A whole figure (a count, a zero, a 1–5 score's step) is held by many cells alike, and two cells
+    of one value under two measures or roles name neither: both are passed over."""
+    value = figure.value
+    if not isinstance(value, float) or value.is_integer():
+        return ()
+    named = figure.measure or (figure.set_of[0] if figure.set_of is not None else "")
+    unnamed = {pass_rate_measure(held)[0], *(cost_measure(held) or ())[:1]}
+    as_change = figure.change or figure.scale == "points"
+    values = (value, value / 100) if figure.scale in ("points", "percent") else (value,)
+    found = {
+        cell
+        for number in values
+        for cell in tabled.get(f"{number:.10g}", ())
+        if (cell[2] == "change") == as_change and (cell[0] == named if named else cell[0] in unnamed)
+    }
+    return found.pop() if len(found) == 1 else ()
 
 
 @pytest.mark.parametrize("name", _WRITTEN_FIXTURES)
-def test_a_key_records_a_figure_a_table_prints_as_the_table_does(name: str) -> None:
-    """Every key whose figure a table also prints records it under the measure and role the table holds it by, with
-    the text the key prints: an arm's pass rate is the pass rate's level wherever it is read, its cost the cost
-    measure's money, whatever the key's path names. A figure a table prints is found by how both print it (its number,
-    money or not) and whether it is a change; a figure printed alike under two measures names neither, and is passed
-    over."""
+def test_a_key_records_a_figure_a_table_prints_under_the_measure_and_role_the_table_holds_it_by(name: str) -> None:
+    """Every key of every family whose figure a table prints records it under the measure and role the table holds it
+    by, never as a lone figure: an arm's pass rate is the pass rate's level wherever it is read, its cost per reply the
+    page's cost's money, a reading's change the pass rate's change, a percentile its measure's level, whatever the
+    key's path names. Each key is matched to the cell its figure is (:func:`_held_as`), and its text may still differ
+    from the cell's until the policy flip; where it is held, which no digit reads, may not."""
     held = _fixture_inputs()[name]
-    tabled = _table_figures(held)
+    tabled = _tabled(held)
+    forms = PageForms.of(held)
     checked: set[str] = set()
-    for key in _figure_keys(held):
+    misheld: list[tuple[str, str, tuple[str, ...], set[tuple[str, str, str]]]] = []
+    for key in _every_key(name, _family_forms()):
         try:
             figure = resolve(key, held)
         except UnresolvableReference:
             # NOSILENT: a key the input states no figure for (an arm a measure does not read, a slice it does not
             # cut) is no figure a table prints; the walk reads every combination of the input's ids and skips these.
             continue
-        if figure.kind != "number":
+        if figure.kind != "number" or not (cell := _held_as(figure, tabled, held)):
             continue
-        forms = PageForms.of(held)
+        start = len(forms.ledger)
         written = format_figure(figure, forms=forms)
-        for entry in forms.ledger:
-            said = _said_as(entry.text, change=figure.change)
-            held_as = tabled.get(said, set()) if said is not None else set()
-            if len({(measure, kind) for measure, kind, _role in held_as}) != 1:
-                continue
-            assert entry.text in written, (key, written, entry)
-            assert (entry.measure, entry.kind, entry.role) in held_as, (key, written, entry, sorted(held_as))
-            checked.add(key.split(".")[0])
-    roles = {role for held_as in tabled.values() for _measure, _kind, role in held_as}
-    measures = {measure for held_as in tabled.values() for measure, _kind, _role in held_as}
-    # An arm's cost and pass rate are the figures whose key names no measure: where a table prints one, its key is read.
-    assert "money" not in roles or "cost_per_1k" in checked, f"{name}: the table's cost is read by no key"
-    assert TRIAL_PASS_NAME not in measures or "pass_rate" in checked, f"{name}: the table's pass rate by no key"
+        recorded = {
+            (entry.measure, entry.kind, entry.role) for entry in forms.ledger[start:] if entry.role != "interval"
+        }
+        if recorded != {cell}:
+            misheld.append((key, written, cell, recorded))
+        checked.add(key.split(".")[0])
+    assert checked, f"{name}: its tables print figures keys read, so this must check some"
+    assert not misheld, misheld
 
 
 # --- the ledger and the fixed forms -------------------------------------------------------------------------------
