@@ -461,7 +461,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: (OpsHost.campaign_export_max_bytes) is refused, naming the bytes reached, and is exported once with the command line.
 #: The evals tool moved again when writer_promotion's result gained one_editor (whether the two arms ran one editor, so
 #: the promotion sentence names only readings the comparison counts).
-_EVALS_BYTES = "df98ffe896d89e40281cb4a2bc57501c20b2c55693c61eeb521bbe2081eef3d3"
+#: The evals tool moved again when campaign_export's built_by description came to say it is provenance the mint never
+#: imports (its operator names the factory with --host).
+_EVALS_BYTES = "ca0dc621a893d04cbf8315a6f0f8c4d45e15066b0ab2ecde73fe6cd6124db70d"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
