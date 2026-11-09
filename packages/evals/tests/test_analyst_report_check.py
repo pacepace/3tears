@@ -461,14 +461,20 @@ def _served(tool: MountedTool) -> list[str]:
 #: (OpsHost.campaign_export_max_bytes) is refused, naming the bytes reached, and is exported once with the command line.
 #: The evals tool moved again when writer_promotion's result gained one_editor (whether the two arms ran one editor, so
 #: the promotion sentence names only readings the comparison counts).
-_EVALS_BYTES = "df98ffe896d89e40281cb4a2bc57501c20b2c55693c61eeb521bbe2081eef3d3"
+#: The evals tool moved again when campaign_export's built_by came to be provenance only (the mint imports the factory
+#: its operator names with --host, never the one a profile declares): its parameter's description says so.
+_EVALS_BYTES = "ca0dc621a893d04cbf8315a6f0f8c4d45e15066b0ab2ecde73fe6cd6124db70d"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
 #: The editor's and the analyst's moved again when money came to read to two significant figures per amount, cents at
 #: least whatever its size (owner ruling Q3, 2026-11-07): the `usd` filter's line says so, and the grammar's
 #: `cost_per_month` example reads "$1,892.00".
-_EDITOR_BYTES = "cf93329095e3a8138150332f22d45ced7b45b60ba5bd97e5d222c832ab5fc122"
+#: The editor's and the analyst's moved again at number forms C5b, in the figure-key grammar they serve: the key
+#: grammar's `signed` line (a criterion's gap and the weakest margin read as a bare distance, signed only when a writer
+#: asks, ``{criteria.p95.fast.v2.gap|signed}`` reading "+520 ms"), and, in the editor's, the stratum, aspect-stratum,
+#: cell and criterion examples read at their measure's one precision on the page ("-15.0", "55.0%", "90.0%").
+_EDITOR_BYTES = "732b6512f40df870ed40c75463cb97aa8da4ada2dbf0dd1646ae627e7bd2a469"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -492,7 +498,9 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "ecf238df0e2311587b950a91f4d27e2665fa3c1415f1dfe473ce32c44a83dd02"
+#: Moved at number forms C5b: the figure-key grammar's `signed` line, a criterion's gap and the weakest margin signed
+#: only when a writer asks (``{criteria.p95.fast.v2.gap|signed}`` reads "+520 ms").
+_ANALYST_BYTES = "71da0d922b25223640cfb868d85cb805a8f1474d7af02f58e98f3dfd1d3f496e"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:
