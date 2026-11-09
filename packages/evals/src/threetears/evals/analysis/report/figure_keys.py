@@ -7085,10 +7085,9 @@ def _spell(
         return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
     if figure.unit in _KEPT_UNITS:
         return _Spelled(f"{spell_multiple(value)} {figure.unit}")
-    # A plain figure the page's tables print at a set's decimals reads at them here too (a score's ``-0.21``).
+    # A plain figure the page's tables print at a set's decimals reads at them here too (a score's ``-0.21``), and a
+    # count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
     text = forms.key_number(figure, value)
-    # A count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
-    text = group_thousands(text) if figure.scale == "count" else text
     text = plus_signed(text, value) if signed else text
     if not figure.unit:
         return _Spelled(text)

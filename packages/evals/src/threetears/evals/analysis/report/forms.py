@@ -37,7 +37,11 @@ The
 differences between surfaces that reproduce today's page (a chart's note spelling a figure alone, ``alone``) are named
 where they are taken, so the flip removes them in one place.
 A chart's forms (``PageForms.chart_*``) still decide over a chart's own drawn values, as today; each takes the measure
-and kind of a measure's figure (``chart_amounts`` its measures' keys), and C5 re-decides them by measure there.
+and kind of a measure's figure (``chart_amounts`` its measures' keys), and C5 re-decides them by measure there. So do a
+table's column rules (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), over the cells a table already
+built, each recording what every rate or money cell prints; and a stored table's glyph scale
+(:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a page's writer, which holds
+no page's forms and asks its own.
 
 **Why at page assembly.** The bundle is fingerprinted evidence and the report input a stored snapshot that recorded
 writer runs replay, so neither carries presentation. Page assembly is the first place that sees the whole page, and
@@ -48,13 +52,22 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_readings import CampaignReadings, MeasureReading
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
+from threetears.evals.analysis.quantities import (
+    MONEY,
+    PERCENT,
+    POINTS,
+    UNSPACED_UNITS,
+    is_money,
+    number_in,
+    render_cell,
+    with_unit,
+)
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.figure_keys import (
@@ -71,7 +84,13 @@ from threetears.evals.analysis.report.figure_keys import (
     rubric_score,
 )
 from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
-from threetears.evals.analysis.report.charts import percent_at
+from threetears.evals.analysis.report.charts import (
+    bare_places,
+    percent_at,
+    percent_places,
+    respell_bare,
+    respell_percents,
+)
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report_input import Contrast, ContrastFamily, Criterion, ReportInput
@@ -84,6 +103,7 @@ from threetears.evals.kernel.numbers import (
     ends_places,
     format_number,
     format_signed,
+    group_thousands,
     money_form,
     set_places,
     spell_at,
@@ -137,6 +157,7 @@ Role = Literal[
     "preference",
     "pass_k",
     "half_width",
+    "column",
 ]
 
 #: Which page a set of forms is for: a written page (a report input), a campaign's code page, or an off-page surface
@@ -1018,8 +1039,9 @@ class PageForms:
         return tuple(self._money(amount, form.spell(amount), measure, kind) for amount in held)
 
     def money_on(self, ruler: MoneyRuler, amount: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
-        """An amount of money on a ruler a surface laid over its set, in the ruler's one form. Of none today: every
-        arm's total spend, every role's.
+        """An amount of money on a ruler a surface laid over its set, in the ruler's one form. Of a measure: an arm's
+        cost in the options table (the measure the page reads its cost from), a gate's figure and threshold on a money
+        criterion (the measure the criterion reads). Of none: an arm's total spend, a role's.
 
         :param ruler: The set's ruler.
         :ptype ruler: MoneyRuler
@@ -1084,6 +1106,110 @@ class PageForms:
         )
         self._issue("", "", "preference", share, shares.share_text(candidate), shares.share_text(candidate), PERCENT)
         return shares
+
+    def glyph_title(self, value: float, low: float, high: float, *, unit: str, margin: float | None = None) -> Printed:
+        """What an interval glyph drawn with no table's text beside it states in its title, as it prints one today:
+        the figure in its unit by the number rule, then its interval as the row's own interval cell spells it (the unit
+        on each end where it sits on the number, ``[88.1%, 100%]``, ``[-$0.01, $0.06]``; once after the bracket
+        otherwise, ``[-4.2, 2] pts``), then a declared margin, ``±5 pts``. A table's glyph states its cells' text
+        instead; this is the glyph's own, of no measure.
+
+        :param value: The figure, in ``unit``.
+        :ptype value: float
+        :param low: The interval's low end, in ``unit``.
+        :ptype low: float
+        :param high: The interval's high end, in ``unit``.
+        :ptype high: float
+        :param unit: The unit the figures are in; empty for none.
+        :ptype unit: str
+        :param margin: A declared margin either side of zero, or None.
+        :ptype margin: float | None
+        :return: The title.
+        :rtype: Printed
+        """
+        if unit == PERCENT or is_money(unit):
+            interval = f"[{with_unit(low, unit)}, {with_unit(high, unit)}]"
+        else:
+            interval = interval_text(low, high, unit) + (f" {unit}" if unit else "")
+        said = f"{with_unit(value, unit)}, interval {interval}"
+        if margin is not None:
+            said += f", margin ±{with_unit(margin, unit)}"
+        return self._issue("", "", "lone", value, said, said, "")
+
+    # --- a table's glyph scale: today's, read off the cells a stored table holds -----------------------------------
+    #
+    # A table's interval glyphs are drawn on one scale per column (or per unit, on a matrix), whose ends the line under
+    # the table states and whose figures each glyph's title states, both as the scale's cells write their figures. A
+    # page's writer lays them out from a stored table, which holds its cells' decimals and money forms but no page's
+    # forms, so it asks forms of its own and these read the decision off the scale's cell, relocated.
+
+    def glyph_said(
+        self, scale: TableCell, unit: str, value: float, low: float, high: float, *, margin: float | None = None
+    ) -> Printed:
+        """What a table glyph's title states: its figure, its interval and its declared margin, as the scale's cells
+        write them (``-5.0 pts, interval [-6.9, 11.0] pts, margin ±15.0 pts``): a figure in points at the cells'
+        decimals, a point's one where they name none, the margin alike, as the chart's margin line reads it; any other
+        figure as the cells write it (their money form, a bare figure at its column's precision), and the interval's
+        two ends at the cells' one precision (``[88.1%, 100%]``, never ``11`` beside ``-6.9``).
+
+        :param scale: The scale's cell, which spells a number as the column's cells do.
+        :ptype scale: TableCell
+        :param unit: The unit the scale's figures are read in: the cell's own, else the one its column's head names.
+        :ptype unit: str
+        :param value: The glyph's figure.
+        :ptype value: float
+        :param low: Its interval's low end.
+        :ptype low: float
+        :param high: Its interval's high end.
+        :ptype high: float
+        :param margin: A declared margin either side of zero, or None.
+        :ptype margin: float | None
+        :return: The title.
+        :rtype: Printed
+        """
+        said = f"{_scale_figure(scale, unit, value)}, interval {_scale_interval(scale, unit, low, high)}"
+        if margin is not None:
+            said += f", margin ±{_scale_figure(scale, unit, margin)}"
+        return self._issue("", "", "lone", value, said, said, "")
+
+    def scale_span(self, scale: TableCell, unit: str, low: float, high: float) -> Printed:
+        """A glyph scale's ends as the line under its table states them, its unit once: ``-7.8 to 35.4 pts``, ``83.9%
+        to 100%``, ``$0.031 to $0.10``; a score or a count to two significant figures (``-0.31 to 0.12``, ``-0.0069 to
+        0.0025 notices``), one more only where two would print its ends alike (the review's P45).
+
+        :param scale: The scale's cell, which spells a number as the column's cells do.
+        :ptype scale: TableCell
+        :param unit: The unit the scale's figures are read in.
+        :ptype unit: str
+        :param low: The scale's low end.
+        :ptype low: float
+        :param high: The scale's high end.
+        :ptype high: float
+        :return: The span.
+        :rtype: Printed
+        """
+        if scale.unit and (unit == PERCENT or is_money(unit)):
+            text = f"{_scale_spell(scale, unit, low)} to {_scale_spell(scale, unit, high)}"
+        elif (places := _scale_places(scale, unit)) is not None and unit != PERCENT:
+            # The ends of a set, at its one precision (`-12.8 to 10.0 pts`, never `10 pts` beside `-12.8`).
+            if unit == POINTS:
+                # A scale in points, its margin's ends among them, reads at a point's one decimal, as the chart's
+                # margin line and the glyph's title do (``-15.0 to 15.0 pts``).
+                places = max(POINT_PLACES, places)
+            at = ends_places(low, high, places)
+            text = f"{spell_at(low, at)} to {spell_at(high, at)}" + (f" {unit}" if unit else "")
+        elif unit in (PERCENT, POINTS):
+            ends = f"{number_in(low, unit)} to {number_in(high, unit)}"
+            text = (
+                f"{_scale_spell(scale, unit, low)} to {_scale_spell(scale, unit, high)}"
+                if unit == PERCENT
+                else f"{ends} {unit}"
+            )
+        else:
+            spelled = _two_figures(low, high)
+            text = f"{spelled[0]} to {spelled[1]}" + (f" {unit}" if unit else "")
+        self._issued.append(_Issued("", "", "interval", (low, high), text))
+        return Printed(value=None, text=text, digits=text, unit="")
 
     def _money(self, amount: float | None, text: str, measure: str, kind: _MeasureKind) -> Printed:
         return self._issue(*_keyed(measure, kind), "money", amount, text, _digits_of(text, MONEY), MONEY)
@@ -1385,7 +1511,9 @@ class PageForms:
     # A figure key (:mod:`~threetears.evals.analysis.report.figure_keys`) prints a plain figure of a measure at the
     # precision the page's tables print that measure's set at, and an interval's two ends at one precision. These hold
     # that decision, relocated. Each prints a part of a key's text, which ``format_figure`` finishes with the key's
-    # filters and unit, so nothing is issued; the flip decides a key's whole text here, by its measure and role.
+    # sign, filters and unit; each records the part it prints, under the measure whose set it reads, so the ledger
+    # holds every figure a key prints and a page-level test can hold a key's text to its table's. The flip decides a
+    # key's whole text here, by its measure and role.
 
     def key_places(self, key: str, *, kind: _MeasureKind, change: bool) -> int | None:
         """The decimals a figure key's plain figure of a measure reads at, as the page's tables print it: a judged
@@ -1416,6 +1544,9 @@ class PageForms:
         change, an interval or one of its ends, a criterion's figure or its gap), else by the lone figure rule, as an
         adjusted p or a count of repeats keeps it.
 
+        A count's thousands are grouped (``4,000,000``), as a sentence states a count. A number figure's digits are
+        recorded as printed; an interval's ends are recorded by :meth:`key_plain_ends`, which reads them both.
+
         :param figure: What the key resolved to: its measure's key and kind and its statistic say which set it is of.
         :ptype figure: Figure
         :param value: The number, as the key spells it (an interval's end, or the figure's own value).
@@ -1424,7 +1555,12 @@ class PageForms:
         :rtype: str
         """
         places = self._key_figure_places(figure)
-        return format_number(value) if places is None else spell_at(value, places)
+        text = format_number(value) if places is None else spell_at(value, places)
+        text = group_thousands(text) if figure.scale == "count" else text
+        if figure.kind != "interval":
+            role: Role = "lone" if places is None else "change" if figure.change else "level"
+            self._issue(*_key_set(figure), role, value, text, text, "")
+        return text
 
     def key_plain_ends(
         self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str], *, absolute: bool
@@ -1449,6 +1585,8 @@ class PageForms:
         unit = f" {figure.unit}" if figure.unit else ""
         bare = [number.removesuffix(unit) if unit else number for number in numbers]
         if any(abs(value) >= WHOLE_FROM for value in values) or any(not _PLAIN_END.fullmatch(n) for n in bare):
+            # The ends stay as the key spelled each alone, which is what it prints.
+            self._key_ends(figure, values, (numbers[0], numbers[1]))
             return None
         shown = [abs(value) if absolute else value for value in values]
         held = self._key_figure_places(figure)
@@ -1459,6 +1597,7 @@ class PageForms:
             plus_signed(text, value) if signed and float(text) != 0 else text
             for text, value in zip(texts, shown, strict=True)
         )
+        self._key_ends(figure, values, (low + unit, high + unit))
         return low + unit, high + unit
 
     def key_points_ends(self, figure: Figure, values: tuple[float, float], *, absolute: bool) -> tuple[str, str]:
@@ -1481,7 +1620,14 @@ class PageForms:
         low, high = (
             spell_at(abs(value), at) if absolute else plus_signed(spell_at(value, at), value) for value in hundred
         )
+        self._key_ends(figure, values, (low, high))
         return low, high
+
+    def _key_ends(self, figure: Figure, values: tuple[float, float], texts: tuple[str, str]) -> None:
+        """An interval's two ends as a key prints them, each recorded apart (a key's sentence may join them by a dash,
+        a ``to`` or its unit), under the measure whose set the key reads."""
+        key = _key_set(figure)
+        self._issued += [_Issued(*key, "interval", values, text) for text in texts]
 
     def _key_figure_places(self, figure: Figure) -> int | None:
         """A key's figure's set's decimals (:meth:`key_places`), where the figure is one the page's tables print of the
@@ -1492,6 +1638,166 @@ class PageForms:
         key, kind = figure.set_of
         change = figure.change or (bool(figure.measure) and figure.statistic in _CRITERION_GAPS)
         return self.key_places(key, kind=kind, change=change)
+
+    # --- a table's column rules: today's, each deciding over the cells its table already built --------------------
+    #
+    # A table states each set of its rates and its money at one precision, decided over the column (or the row) after
+    # its cells are built. These hold those decisions, relocated: a cell keeps its value and glyph, and takes the
+    # decimals its set reads at, or, where it states its figures in words, those words respelled. Each records the
+    # text every cell it reads prints, so the ledger holds what a rate or money column prints, not only what its cells
+    # were built from. The flip retires both: a cell then prints its measure's text.
+
+    def rate_columns(
+        self,
+        rows: Sequence[Mapping[str, TableCell]],
+        *,
+        bare: Mapping[str, str] | None = None,
+        keep: Collection[str] = (),
+    ) -> list[dict[str, TableCell]]:
+        """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
+        decimal for the whole column only where whole percents would print two of its values alike or an interval's two
+        ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%``
+        never stand on one page (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07;
+        :func:`~threetears.evals.analysis.report.charts.percent_places`).
+
+        A column holding a percentage written to two decimals or more (an interval's confidence level, ``99.69%``) is a
+        level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left
+        as it is; a cell's other words stay as written.
+
+        Every rate's cell it reads is recorded as it prints (``column``): a number in percent or in points, a bare
+        figure under a head naming its unit, and a cell stating a rate in its words (``[1.0%, 9.0%]``, ``-7.6 pts``),
+        respelled or not; a column it keeps is its builder's, recorded where that cell was decided.
+
+        :param rows: The table's rows, by column key.
+        :ptype rows: Sequence[Mapping[str, TableCell]]
+        :param bare: The columns whose head names their unit, ``(%)`` or ``(pts)``
+            (:func:`~threetears.evals.analysis.report.blocks.bare_columns`), so their cells state bare figures
+            (``21.1``, ``[17.2, 25]``), each by the unit it names: every column of one unit in the table reads at one
+            precision by the same rule (a figure type across its columns: points, or percent), its leading figure and
+            its interval's ends. None for none.
+        :ptype bare: Mapping[str, str] | None
+        :param keep: The columns left as their builder wrote them, which are no rate (an interval's level, ``99.69%``
+            beside ``95%``, never rounded to a column's whole percents).
+        :ptype keep: Collection[str]
+        :return: The rows, each column's percentages respelled at its one precision.
+        :rtype: list[dict[str, TableCell]]
+        """
+        bare = {key: unit for key, unit in (bare or {}).items() if key not in keep}
+        keys = list(dict.fromkeys(key for row in rows for key in row))
+        places = {
+            key: chosen
+            for key in keys
+            if key not in bare and key not in keep
+            if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
+        }
+        by_unit = {
+            unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
+            for unit in set(bare.values())
+        }
+        # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
+        # unit's precision, which whole percents' rule for levels never coarsens: a set reads at one precision.
+        by_unit = {
+            unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
+        }
+        figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
+        laid = [
+            {
+                key: _respelled_percents(cell, places[key])
+                if key in places
+                else _respelled_bare(cell, figures[key])
+                if key in figures
+                else cell
+                for key, cell in row.items()
+            }
+            for row in rows
+        ]
+        for row in laid:
+            for key, cell in row.items():
+                if key in keep:
+                    continue
+                if _a_rate_cell(cell, key in bare) or _rate_words(cell, key in bare):
+                    self._issue_cell(cell)
+        return laid
+
+    def money_columns(
+        self,
+        rows: Sequence[Mapping[str, TableCell]],
+        *,
+        by_row: Sequence[str | None] | None = None,
+        reconciles: Collection[str] = (),
+    ) -> list[dict[str, TableCell]]:
+        """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
+        table shows, across its rows and columns: by default a column's (a table of arms by measure); where ``by_row``
+        names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
+        the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
+        :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
+        such cell is written in it (:meth:`~threetears.evals.analysis.report.blocks.TableCell.amount`): plain dollars
+        to two significant figures, every set a rate (money per the count the table's head names), in whole dollars
+        from $10. Each cell writes its value and its interval's ends at one precision, the finest of them needs, and
+        one significant figure more where its own interval's ends would otherwise read alike
+        (:meth:`~threetears.evals.kernel.numbers.MoneyForm.places_of`), so $0.008 reads ``$0.0080`` beside ``$0.11``,
+        never ``$0.1100``. A table states the count its money is drawn per in its head or its row, never as a mark on
+        the amount. The values are as stored, so the decimals state no digit a value does not hold; a cell of words, of
+        another unit, or already carrying a form its builder chose from a wider set, is left as it is.
+
+        Every money number it reads is recorded as it prints (``column``), a form its builder chose too.
+
+        :param rows: The table's rows, by column key.
+        :ptype rows: Sequence[Mapping[str, TableCell]]
+        :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set
+            by its column); unset for a table whose every set is a column.
+        :ptype by_row: Sequence[str | None] | None
+        :param reconciles: The sets a total computed from each amount is printed beside (a cost per 1,000 at a declared
+            monthly volume), whose amounts take a third figure where two would leave them off that total
+            (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
+        :ptype reconciles: Collection[str]
+        :return: The rows, each money cell carrying its set's form.
+        :rtype: list[dict[str, TableCell]]
+        """
+
+        def chosen(cell: TableCell) -> bool:
+            return cell.is_number and is_money(cell.unit) and cell.decimals is None
+
+        def set_of(at: int, key: str) -> tuple[str, str]:
+            kind = by_row[at] if by_row is not None else None
+            return ("row", kind) if kind is not None else ("column", key)
+
+        held: dict[tuple[str, str], list[float]] = {}
+        for at, row in enumerate(rows):
+            for key, cell in row.items():
+                if chosen(cell):
+                    held.setdefault(set_of(at, key), []).extend(
+                        float(number)
+                        for number in (cell.value, cell.low, cell.high)
+                        if isinstance(number, int | float) and not isinstance(number, bool)
+                    )
+        forms = {
+            name: money_form(amounts, rate=True, reconciles=name[1] in reconciles) for name, amounts in held.items()
+        }
+        laid = [
+            {
+                key: cell.model_copy(
+                    update={
+                        "decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell), ends=(cell.low, cell.high))
+                    }
+                )
+                if chosen(cell)
+                else cell
+                for key, cell in row.items()
+            }
+            for at, row in enumerate(rows)
+        ]
+        for row in laid:
+            for cell in row.values():
+                if cell.is_number and is_money(cell.unit):
+                    self._issue_cell(cell)
+        return laid
+
+    def _issue_cell(self, cell: TableCell) -> None:
+        """A cell's text as it prints, without its flag (which says how the cell reads, not its figure), recorded under
+        no measure: a table's column rule reads its cells, never their measures."""
+        value = float(cell.value) if cell.is_number else None  # type: ignore[arg-type]
+        self._issued.append(_Issued("", "", "column", value, cell.figure))
 
     # --- the ledger --------------------------------------------------------------------------------------------------
 
@@ -1644,6 +1950,124 @@ def _measure_kind(kind: _MeasureKind) -> str:
     """A measure's kind as its forms are keyed: a contrast that names none is a measure's own, as every decision reads
     it, so one measure never takes two forms."""
     return "measure" if kind is None else kind
+
+
+def _scale_spell(cell: TableCell, unit: str, number: float) -> str:
+    """A number on a glyph scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``; a
+    bare figure at its column's one precision (``2.7``) where the cell carries one."""
+    if cell.unit or (cell.decimals is not None and not unit):
+        return cell.amount(number)
+    return with_unit(number, unit)
+
+
+def _scale_figure(cell: TableCell, unit: str, number: float) -> str:
+    """A figure on a glyph scale as its interval's ends read: in points at the cell's decimals, a point's one where it
+    names none (``-5.0 pts``), the cell's own figure and its declared margin alike (``±15.0 pts``, as the chart's
+    margin line reads it); any other as :func:`_scale_spell` writes it."""
+    if unit == POINTS and (cell.decimals is None or not cell.unit):
+        return f"{spell_at(number, POINT_PLACES if cell.decimals is None else cell.decimals)} {POINTS}"
+    return _scale_spell(cell, unit, number)
+
+
+def _scale_places(cell: TableCell, unit: str) -> int | None:
+    """The decimals a glyph scale's cells read at: their own, a point's one decimal for a change in a rate; None where
+    the cells leave it to the number rule (a percent's column rule, money's form)."""
+    if is_money(unit) or (unit == PERCENT and cell.unit):
+        return None
+    if cell.decimals is not None:
+        return cell.decimals
+    return POINT_PLACES if unit == POINTS else None
+
+
+def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
+    """An interval on a glyph scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``, both
+    ends at the cells' one precision (``[-6.9, 11.0] pts``, never ``11``)."""
+    on_number = unit == PERCENT or is_money(unit) or not unit
+    if (places := _scale_places(cell, unit)) is not None and unit != PERCENT:
+        at = ends_places(low, high, places)
+        ends = f"[{spell_at(low, at)}, {spell_at(high, at)}]"
+        return ends if on_number or not unit else f"{ends} {unit}"
+    if on_number:
+        return f"[{_scale_spell(cell, unit, low)}, {_scale_spell(cell, unit, high)}]"
+    return f"[{number_in(low, unit)}, {number_in(high, unit)}] {unit}"
+
+
+def _two_figures(low: float, high: float) -> tuple[str, str]:
+    """A scale's two ends rounded to the decimals that give the smaller end two significant figures (none from ten up),
+    one more only where two would print the ends alike, each then spelled by the number rule."""
+    stated = [abs(end) for end in (low, high) if end != 0]
+    if not stated:
+        return "0", "0"
+    decimals = max(0, 1 - math.floor(math.log10(min(stated))))
+    spelled = (format_number(round(low, decimals)), format_number(round(high, decimals)))
+    if spelled[0] == spelled[1] and low != high:
+        decimals += 1
+        spelled = (format_number(round(low, decimals)), format_number(round(high, decimals)))
+    return spelled
+
+
+def _key_set(figure: Figure) -> tuple[str, str]:
+    """The key a figure key's printed part is held under in the ledger: the measure whose set it reads, by its kind,
+    or neither for a figure of no measure's set (a count, an adjusted p)."""
+    if figure.set_of is None:
+        return ("", "")
+    key, kind = figure.set_of
+    return (key, _measure_kind(kind))
+
+
+def _a_rate_cell(cell: TableCell, bare: bool) -> bool:
+    """Whether a cell states a rate's figure as a number a table's rate column prints: in percent, in points, or bare
+    under a head naming its unit."""
+    return cell.is_number and (cell.unit in (PERCENT, POINTS) or (bare and not cell.unit))
+
+
+def _rate_words(cell: TableCell, bare: bool) -> bool:
+    """Whether a cell states a rate's figure in its words, which a table's rate column reads and may respell: a
+    percent or a change in points (``[1.0%, 9.0%]``, ``85% (765 of 897)``, ``-7.6 pts``), or any figure under a head
+    naming its unit (``[17.2, 25]``)."""
+    if cell.is_number or not isinstance(cell.value, str) or not _A_DIGIT.search(cell.value):
+        return False
+    return bare or PERCENT in cell.value or POINTS in cell.value
+
+
+#: A digit, which a cell's words must hold to state a figure.
+_A_DIGIT = re.compile(r"\d")
+
+
+def _said(cell: TableCell) -> str:
+    """A cell's text as it prints, without its flag: its number in its unit, or its value."""
+    return (
+        cell.amount(float(cell.value)) if cell.unit and isinstance(cell.value, int | float) else render_cell(cell.value)
+    )
+
+
+def _respelled_bare(cell: TableCell, places: int) -> TableCell:
+    """A bare figure's cell at ``places`` decimals (:func:`~threetears.evals.analysis.report.charts.respell_bare`); a
+    number keeps its value and glyph."""
+    if cell.is_number and not cell.unit:
+        return cell.model_copy(update={"decimals": places})
+    text = _said(cell)
+    respelled = respell_bare(text, places)
+    return cell if respelled == text else cell.model_copy(update={"value": respelled})
+
+
+def _respelled_percents(cell: TableCell, places: int) -> TableCell:
+    """A cell with every percentage it states at ``places`` decimals
+    (:func:`~threetears.evals.analysis.report.charts.respell_percents`); a number held with the percent unit keeps its
+    value, glyph and status and reads at its column's precision, or at the decimals its builder set."""
+    if cell.is_number and cell.unit == PERCENT:
+        # A builder that chose the cell's decimals (a level a change is read from, at its unit's one decimal) keeps them.
+        return cell if cell.decimals is not None else cell.model_copy(update={"decimals": places})
+    text = _said(cell)
+    respelled = respell_percents(text, places)
+    return cell if respelled == text else cell.model_copy(update={"value": respelled})
+
+
+def _cell_amounts(cell: TableCell) -> list[float | None]:
+    """A money cell's amounts: its value and its interval's ends."""
+    value = cell.value
+    point = float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+    return [point, cell.low, cell.high]
 
 
 # --- an interval's level, an interval's words and a count, as every surface prints them -------------------------------

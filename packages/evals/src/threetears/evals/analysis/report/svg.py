@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import html
 
-from threetears.evals.analysis.report.blocks import interval_text
-from threetears.evals.analysis.quantities import PERCENT, is_money, with_unit
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.hashing import round_figures
 
 
@@ -92,8 +91,8 @@ def interval_glyph_svg(
     :ptype scale: tuple[float, float]
     :param margin: A declared margin either side of zero, or None.
     :ptype margin: float | None
-    :param said: What the glyph's title states, as the table's cells write its figures; None for the number rule's
-        spelling in ``unit``.
+    :param said: What the glyph's title states, as the table's cells write its figures; None for the glyph's own
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.glyph_title`), which no page's table states.
     :ptype said: str | None
     :return: The ``<svg>`` element.
     :rtype: str
@@ -106,9 +105,8 @@ def interval_glyph_svg(
 
     middle = _GLYPH_HEIGHT / 2
     if said is None:
-        said = f"{with_unit(value, unit)}, interval {_interval_words(low, high, unit)}"
-        if margin is not None:
-            said += f", margin ±{with_unit(margin, unit)}"
+        # A glyph drawn alone belongs to no page, so it states its figures through forms of its own.
+        said = PageForms.off_page().glyph_title(value, low, high, unit=unit, margin=margin).text
     marks = [
         f'<line class="viz-track" x1="{tenth_px(x_of(first))}" y1="{middle}" x2="{tenth_px(x_of(last))}" y2="{middle}"></line>'
     ]
@@ -136,15 +134,6 @@ def interval_glyph_svg(
         f'<svg class="viz-glyph" viewBox="0 0 {_GLYPH_WIDTH} {_GLYPH_HEIGHT}" role="img">'
         f"<title>{_escape(said)}</title>" + "".join(marks) + "</svg>"
     )
-
-
-def _interval_words(low: float, high: float, unit: str) -> str:
-    """An interval as a glyph's title says it, as the row's own interval cell spells it: the unit on each end where
-    it sits on the number (``[88.1%, 100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise
-    (``[-4.2, 2] pts``)."""
-    if unit == PERCENT or is_money(unit):
-        return f"[{with_unit(low, unit)}, {with_unit(high, unit)}]"
-    return interval_text(low, high, unit) + (f" {unit}" if unit else "")
 
 
 def _escape(text: str) -> str:

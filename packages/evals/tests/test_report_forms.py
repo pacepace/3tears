@@ -14,7 +14,8 @@ Held here, on the pages the plan names:
   fixed form, so a page-level test can hold one figure to one text across surfaces.
 
 The two column rules the tables apply after a cell is built (whole percents per column, a money column's own form)
-stay the tables' until they are relocated; a rate's or money's form here is what the cell is built from.
+are the page's forms' too (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), each recording what every
+rate or money cell prints; a rate's or money's form here is what the cell is built from.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from __future__ import annotations
 import functools
 import math
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from unittest import mock
@@ -32,11 +34,13 @@ from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns, percent_columns
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns
+from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
@@ -55,6 +59,7 @@ from threetears.evals.kernel.numbers import (
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpus
+from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_shapes_support import s3_measurement
 
 
@@ -186,7 +191,7 @@ def test_a_rate_column_reads_as_its_levels_through_the_table_s_column_rule(name:
             rates.add(column)
     if not rates:
         pytest.skip(f"{name} prints no rate by arm")
-    redone = percent_columns(rebuilt, bare=bare_columns(list(table.columns)))
+    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(table.columns)))
     for printed, again in zip(table.rows, redone, strict=True):
         for column in rates:
             assert again[column].text == printed[column].text, column
@@ -291,7 +296,7 @@ def test_the_scaled_campaign_s_pass_rate_reads_as_its_scorecard_prints_it() -> N
             }
         )
     # The interval column's head names its unit, (pts), so the page's column rule writes its ends at a point's decimal.
-    redone = percent_columns(rebuilt, bare=bare_columns(list(aspects.columns)))
+    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(aspects.columns)))
     for printed, again in zip(aspects.rows, redone, strict=True):
         assert (again["change"].text, again["interval"].text) == (printed["change"].text, printed["interval"].text)
 
@@ -325,7 +330,7 @@ def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
             rebuilt[index]["value"] = value.model_copy(update={"value": level, "unit": "", "decimals": None})
             rebuilt[index]["interval"] = table.rows[index]["interval"].model_copy(update={"value": interval})
     assert kinds == {"rate", "money"}
-    redone = percent_columns(rebuilt, bare=bare_columns(list(table.columns)))
+    redone = forms.rate_columns(rebuilt, bare=bare_columns(list(table.columns)))
     for printed, again in zip(table.rows, redone, strict=True):
         assert again["value"].text == printed["value"].text
         assert again["interval"].text == printed["interval"].text
@@ -457,15 +462,16 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
 
 
 #: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, whose bare
-#: figures ``blocks.percent_columns`` respells by the unit's rule after the cell is built (``bare_places``): a
-#: half-width (``Half-width (pts)``), a pass^k (``Pass^k there (%)``) and the between-cases share (``Between cases
-#: (%)``). Until C3e relocates the rule, their ledger texts may read otherwise on the page.
+#: figures the page's rate columns (:meth:`PageForms.rate_columns`) respell by the unit's rule after the cell is built
+#: (``bare_places``): a half-width (``Half-width (pts)``), a pass^k (``Pass^k there (%)``) and the between-cases share
+#: (``Between cases (%)``). Their ledger texts may read otherwise on the page until the flip, when a cell prints its
+#: measure's text; what the column prints is recorded beside them (``column``).
 _RESPELLED_ROLES = frozenset({"half_width", "pass_k", "share"})
 
 
 def _respelled(forms: PageForms, entry) -> bool:
-    """Whether ``blocks.percent_columns`` respells an issued figure (an entry of ``forms.ledger``) on a code page
-    after its cell is built, by its measure and role, until C3e:
+    """Whether the page's rate columns (:meth:`PageForms.rate_columns`) respell an issued figure (an entry of
+    ``forms.ledger``) on a code page after its cell is built, by its measure and role, until the flip:
 
     - :data:`_RESPELLED_ROLES`, each under a head naming its unit;
     - a rate's interval: a pass rate's under ``Interval (pts)``, respelled at a point's decimal, and a measure's
@@ -508,8 +514,9 @@ def _ledger_and_page(page_of: Callable[[], CampaignReport]) -> tuple[PageForms, 
 )
 def test_the_ledger_holds_only_text_the_code_page_prints(page_of: Callable[[], CampaignReport]) -> None:
     """Every text a code page's forms issued is on the page: a decision that compares figures prints nothing and
-    issues nothing. Excluded until C3e, by measure and role: a figure the column rule still respells after its cell is
-    built (:func:`_respelled`), whose digits the rule may change."""
+    issues nothing. Excluded until the flip, by measure and role: a figure the column rule still respells after its
+    cell is built (:func:`_respelled`), whose digits the rule may change; the column's own record of it is held to the
+    page like every other entry."""
     forms, body = _ledger_and_page(page_of)
     assert forms.ledger
     missing = [entry for entry in forms.ledger if entry.text not in body and not _respelled(forms, entry)]
@@ -550,6 +557,202 @@ def test_the_control_cell_issues_only_the_level_it_prints(two_aspects: bool) -> 
 def _scaled_page(*, two_aspects: bool = False) -> CampaignReport:
     corpus = hot_path_corpus(scale=1, two_aspects=two_aspects)
     return campaign_report(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
+
+
+# --- the ledger holds what a rate or money column prints, and what a prose key prints ------------------------------
+
+#: A money figure a cell states as its words (an arm's cost, spelled on its column's ruler): ``$0.49``, ``-$1.20``.
+_MONEY_WORDS = re.compile(r"[-+]?\$[\d,]+(?:\.\d+)?")
+
+
+def _printing(cell: TableCell, bare: bool) -> str | None:
+    """How a cell prints a rate's or money's figure, or None for a cell that prints neither: ``number`` (in percent, in
+    points or in money, or bare under a head naming its unit), ``rate words`` (a percent or points stated in its words,
+    ``[1.0%, 9.0%]``, or any figure under such a head) or ``money words`` (an amount as its words, ``$0.49``)."""
+    if cell.is_number:
+        return "number" if cell.unit in ("%", "pts", "usd") or (bare and not cell.unit) else None
+    if not isinstance(cell.value, str):
+        return None
+    if _MONEY_WORDS.fullmatch(cell.value):
+        return "money words"
+    if re.search(r"\d", cell.value) and (bare or "%" in cell.value or "pts" in cell.value):
+        return "rate words"
+    return None
+
+
+def _unheld(tables: list[TableBlock], forms: PageForms) -> tuple[int, list[str]]:
+    """How many rate and money cells the tables print, and each one the page's ledger holds no entry of its own for.
+
+    Each cell takes one entry, by role and figure, so a cell is never passed by another cell's entry of the same text: a
+    number the column rule's (``column``, its value and its text); words a column rule read the same, by their text; a
+    level the table keeps as its builder wrote it, the level's (``confidence``); money as its words, the amount's as its
+    builder issued it (``money`` on a ruler, or its measure's ``change`` or ``level``)."""
+    entries = Counter((entry.role, entry.value, entry.text) for entry in forms.ledger)
+
+    def take(role: str, text: str, value: object = None, *, any_value: bool = False) -> bool:
+        found = next(
+            (
+                key
+                for key, count in entries.items()
+                if count > 0 and key[0] == role and key[2] == text and (any_value or key[1] == value)
+            ),
+            None,
+        )
+        if found is None:
+            return False
+        entries[found] -= 1
+        return True
+
+    checked, missing = 0, []
+    for table in tables:
+        bare = bare_columns(table.columns)
+        for row in table.rows:
+            for key, cell in row.items():
+                printing = _printing(cell, key in bare)
+                if printing is None:
+                    continue
+                checked += 1
+                text = cell.figure
+                if printing == "number":
+                    held = take("column", text, float(cell.value))  # type: ignore[arg-type]
+                elif printing == "rate words":
+                    held = take("column", text) or take("confidence", text, any_value=True)
+                else:
+                    held = any(take(role, text, any_value=True) for role in ("money", "change", "level"))
+                if not held:
+                    missing.append(f"{table.name}.{key} ({printing}): {text!r}")
+    return checked, missing
+
+
+def _page_and_forms(page_of: Callable[[], CampaignReport]) -> tuple[CampaignReport, PageForms]:
+    """A code page and the one forms it was built with."""
+    built: list[PageForms] = []
+    real = PageForms.of_campaign
+
+    def capture(readings: CampaignReadings, reports: Mapping[str, Report]) -> PageForms:
+        forms = real(readings, reports)
+        built.append(forms)
+        return forms
+
+    with mock.patch.object(PageForms, "of_campaign", side_effect=capture):
+        page = page_of()
+    (forms,) = built
+    return page, forms
+
+
+@pytest.mark.parametrize(
+    "page_of",
+    [
+        pytest.param(lambda: _scaled_page(), id="scaled"),
+        pytest.param(lambda: _scaled_page(two_aspects=True), id="scaled_two_aspects"),
+        pytest.param(lambda: s3_measurement().page(), id="measurement"),
+    ],
+)
+def test_every_rate_and_money_cell_a_code_page_prints_is_in_its_ledger(page_of: Callable[[], CampaignReport]) -> None:
+    """The page's own tables print each rate and money figure as its forms recorded it: the column rules record the
+    text a cell prints, not only what the cell was built from, so a page-level test of one figure to one text sees
+    every rate and money column. Each aspect's fold is that aspect's own page, with forms of its own."""
+    page, forms = _page_and_forms(page_of)
+    tables = [block for block in page.blocks if isinstance(block, TableBlock)]
+    checked, missing = _unheld(tables, forms)
+    assert checked, "a code page prints rates and money, so this must check some"
+    assert not missing, missing
+
+
+@pytest.mark.parametrize("name", _WRITTEN)
+def test_every_rate_and_money_cell_a_written_page_s_tables_print_is_in_its_ledger(name: str) -> None:
+    """The Full results and the options table print each rate and money figure as the page's forms recorded it."""
+    held = _written_inputs()[name]
+    forms = PageForms.of(held)
+    look = block_look(held, fact_arms(held))
+    tables = [*every_table(held, look, forms=forms), arms_table(held, look, (), forms=forms)]
+    checked, missing = _unheld(tables, forms)
+    assert checked, f"{name} prints a pass rate or a cost, so this must check some"
+    assert not missing, missing
+
+
+def test_a_column_rule_records_the_words_it_respelled_exactly() -> None:
+    """An interval stated in words, ``[1%, 9%]`` beside ``[59.6%, 60.4%]``, reads at the column's one decimal, and the
+    ledger holds exactly what the column prints, each cell once, under no measure."""
+    forms = PageForms.off_page()
+    laid = forms.rate_columns(
+        [{"interval": TableCell(value="[59.6%, 60.4%]")}, {"interval": TableCell(value="[1%, 9%]")}]
+    )
+    assert [row["interval"].figure for row in laid] == ["[59.6%, 60.4%]", "[1.0%, 9.0%]"]
+    assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
+        ("", "", "column", None, "[59.6%, 60.4%]"),
+        ("", "", "column", None, "[1.0%, 9.0%]"),
+    ]
+
+
+def test_the_money_columns_record_each_amount_as_its_column_s_form_prints_it() -> None:
+    """A column holding $0.008 and $0.11 reads ``$0.0080`` and ``$0.11``; the ledger holds exactly those, each by its
+    amount, and nothing for the cell of words beside them."""
+    forms = PageForms.off_page()
+    laid = forms.money_columns(
+        [
+            {"arm": TableCell(value="A"), "cost": TableCell(value=0.008, unit="usd")},
+            {"arm": TableCell(value="B"), "cost": TableCell(value=0.11, unit="usd")},
+        ]
+    )
+    assert [row["cost"].figure for row in laid] == ["$0.0080", "$0.11"]
+    assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
+        ("", "", "column", 0.008, "$0.0080"),
+        ("", "", "column", 0.11, "$0.11"),
+    ]
+
+
+def test_a_column_rule_records_what_it_respelled_not_what_the_cell_was_built_from() -> None:
+    """Whole percents per column respell ``62.9%`` beside ``70.4%`` to ``63%`` and ``70%``: the ledger holds the text
+    printed, under no measure (the rule reads none) and the role ``column``."""
+    forms = PageForms.off_page()
+    rows = [{"rate": TableCell(value=62.9, unit="%")}, {"rate": TableCell(value=70.4, unit="%")}]
+    laid = forms.rate_columns(rows)
+    assert [row["rate"].figure for row in laid] == ["63%", "70%"]
+    assert [(entry.measure, entry.role, entry.text) for entry in forms.ledger] == [
+        ("", "column", "63%"),
+        ("", "column", "70%"),
+    ]
+
+
+#: The prose keys read on the fixtures each states: a measure's level and its interval at the levels' set, a judged
+#: score's change and its interval at a score's two decimals, a count per trial at its set.
+_KEYS = {
+    "prototype2/s2": ("measure.total_ms.beta.mean", "measure.total_ms.beta.ci"),
+    "prototype5/kairo": (
+        "contrast.qwen3.8-flash.__outcome__.delta",
+        "contrast.qwen3.8-flash.__outcome__.interval",
+        "measure.failed_reply_notices.September.mean",
+    ),
+}
+
+
+@pytest.mark.parametrize(("name", "key"), [(name, key) for name, keys in _KEYS.items() for key in keys])
+def test_a_prose_key_records_each_figure_it_prints_under_its_measure(name: str, key: str) -> None:
+    """A key that prints a measure's figure at its set records each figure it prints, under that measure: the ledger
+    holds the text a key prints, as it holds a table's, so a page-level test can hold the two to one text."""
+    held = ReportInput.model_validate(snapshot_of(name).report_input)
+    forms = PageForms.of(held)
+    figure = resolve(key, held)
+    assert figure.set_of is not None
+    written = format_figure(figure, forms=forms)
+    entries = forms.ledger
+    assert entries, f"{key} printed {written!r} and recorded nothing"
+    assert all(entry.text in written for entry in entries), (written, entries)
+    measure, kind = figure.set_of
+    assert {(entry.measure, entry.kind) for entry in entries} == {(measure, "measure" if kind is None else kind)}
+    assert {entry.role for entry in entries} == (
+        {"interval"} if figure.kind == "interval" else {"change"} if figure.change else {"level"}
+    )
+
+
+def test_a_key_s_count_is_recorded_with_its_thousands_grouped_as_it_prints() -> None:
+    """A count a sentence states groups its thousands, and the ledger holds it as printed."""
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    count = Figure(path="made.count", kind="number", value=4_000_000.0, scale="count")
+    assert format_figure(count, forms=forms) == "4,000,000"
+    assert [entry.text for entry in forms.ledger] == ["4,000,000"]
 
 
 # --- the ledger and the fixed forms -------------------------------------------------------------------------------

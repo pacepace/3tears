@@ -45,7 +45,7 @@ from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_num
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
@@ -255,7 +255,9 @@ def test_a_rate_reads_two_significant_figures_at_every_magnitude_and_a_total_kee
     assert rate.decimals == 0, "a chart's ticks read whole dollars at the fewest"
     total = money_form([123.4, 1234.0])
     assert [total.spell(amount) for amount in (123.4, 1234.0)] == ["$123.40", "$1,234.00"]
-    rows = money_columns([{"cost": TableCell(value=123.4, unit=MONEY)}, {"cost": TableCell(value=7.5, unit=MONEY)}])
+    rows = PageForms.off_page().money_columns(
+        [{"cost": TableCell(value=123.4, unit=MONEY)}, {"cost": TableCell(value=7.5, unit=MONEY)}]
+    )
     assert [row["cost"].text for row in rows] == ["$120", "$7.50"]
 
 
@@ -362,7 +364,7 @@ def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:
     """A column holding $0.008 and $0.11 reads both to two significant figures, in plain dollars: never $0.008 beside
     $0.11, nor $0.1100 beside $0.0080 (owner ruling 2026-11-07); each cell is its own value at its own figures, so it
     states no digit the value does not hold."""
-    rows = money_columns(
+    rows = PageForms.off_page().money_columns(
         [
             {"arm": TableCell(value="A"), "cost": TableCell(value=0.008, unit="usd")},
             {"arm": TableCell(value="B"), "cost": TableCell(value=0.11, unit="usd")},

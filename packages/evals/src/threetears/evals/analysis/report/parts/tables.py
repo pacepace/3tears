@@ -37,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, percent_columns
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
     REPLIES,
@@ -191,7 +191,7 @@ def arms_table(
         title=OPTIONS_TITLE,
         columns=columns,
         # Each column's percentages at one precision, as every other table on the page reads them (C-15).
-        rows=percent_columns(rows),
+        rows=forms.rate_columns(rows),
         order=ARMS_TABLE_ORDER,
         total_rows=len(rows),
     )
@@ -295,7 +295,11 @@ def _cost_cell(
     if share is not None:
         marks.append(share)
     marks += unanswered
-    return TableCell(value=ruler.spell(costs[aspect, arm]), flag="; ".join(marks) or None)
+    # The cost is a figure of the measure the page reads it from, where that is a measure (not the scoreboard).
+    source = cost_basis(report_input).source
+    measure = source if source in report_input.measures else ""
+    cost = forms.money_on(ruler, costs[aspect, arm], measure=measure)
+    return TableCell(value=cost.text, flag="; ".join(marks) or None)
 
 
 def _priced_share(pricing: Pricing | None) -> str | None:

@@ -48,7 +48,7 @@ An arm is the kit's chip (its tag and name); every number is spelled by the pack
 a row an analysis computed (compare, settle, levers) prints each figure as its key reads it, so the table and prose
 citing the key read alike.
 Money reads in one form per column (#993), chosen from every amount the column holds, its intervals' ends included
-(:func:`~threetears.evals.analysis.report.blocks.money_columns`, :func:`~threetears.evals.kernel.numbers.money_form`):
+(:meth:`~threetears.evals.analysis.report.forms.PageForms.money_columns`, :func:`~threetears.evals.kernel.numbers.money_form`):
 each amount to two significant figures, cents at least, one more only where two would print an interval's ends alike,
 and per 1,000 where one is under a cent; a change column's set is its changes'. A query's arms keep the rows of those
 arms, on sources whose rows are of no one arm too.
@@ -59,7 +59,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Sequence
 
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns, bare_columns, percent_columns
+from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
@@ -652,10 +652,10 @@ def _table(context: ChartContext) -> Drawn:
     # The page's cost per 1,000, where a monthly volume is declared, reads as the month printed from it does.
     source = cost_basis(report_input).source
     beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
-    money = money_columns(rows, reconciles=beside)
+    money = context.forms.money_columns(rows, reconciles=beside)
     # A table of what an analysis computes prints each figure as its key reads it (this module's docstring), so the
     # prose citing it reads alike; every other table reads its percentages at one precision per column.
-    laid = money if context.query.source in _AS_KEYED else percent_columns(money, bare=bare_columns(columns))
+    laid = money if context.query.source in _AS_KEYED else context.forms.rate_columns(money, bare=bare_columns(columns))
     columns, rows = _with_intervals(columns, laid, context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (

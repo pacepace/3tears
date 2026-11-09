@@ -116,7 +116,6 @@ from threetears.evals.analysis.report_decision import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
@@ -478,7 +477,8 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
         caption=caption,
         level=spec.level,
         unit=spec.unit,
-        domain=" to ".join(format_number(end) for end in spec.domain),
+        # The axis's ends are what the chart declares it drawn over, each as the page prints a declared value.
+        domain=" to ".join(reader.forms.declared(end).text for end in spec.domain),
         reference=_reference(spec, reader.report_input, reader.forms),
         degraded=degraded,
     )

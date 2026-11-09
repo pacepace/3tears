@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.analysis.report.blocks import TableBlock, bare_columns, percent_columns
+from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.build import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
 from threetears.evals.analysis.style import CANNOT_TELL_APART
@@ -196,9 +196,12 @@ def build_campaign_report(
     ]
     if readings.readings or readings.pairs:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
-    # Each table's percentages at one precision per column (percent_columns), as the aspects' pages read theirs.
+    # Each table's percentages at one precision per column (the page's forms' rate columns), as the aspects' pages
+    # read theirs; its money keeps the form its cells were built in, which the money columns record.
     blocks = [
-        block.model_copy(update={"rows": percent_columns(block.rows, bare=bare_columns(block.columns))})
+        block.model_copy(
+            update={"rows": forms.rate_columns(forms.money_columns(block.rows), bare=bare_columns(block.columns))}
+        )
         if isinstance(block, TableBlock)
         else block
         for block in blocks

@@ -54,7 +54,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from threetears.evals.analysis.report.figure_keys import Figure, criterion_ruler, format_figure, reader_name, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    criterion_ruler,
+    format_figure,
+    held_kind,
+    reader_name,
+    resolve,
+)
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
@@ -200,26 +207,30 @@ def _read(
     meets = figure.value >= threshold if higher else figure.value <= threshold
     interval = _interval(figure)
     borderline = interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold)
-    if line.scale in _MONEY_SCALES:
-        # Money on the one owner's ruler (#993): both figures in its form, its count named once, in the criterion's
-        # name (its own count replaced), never a per-1,000 mark.
-        ruler, own = criterion_ruler(report_input, criterion, line)
-        name = ruler.label(name, line.per, own)
-        if not meets:
-            return "fail", f"{name} {ruler.spell(figure.value)} {_MISSED[criterion.direction]} {ruler.spell(threshold)}"
-        if borderline and interval is not None:
-            if figure.ci is not None:
-                words = "derived interval " if figure.derived else "interval "
-                spread = f", {words}{ruler.spell(interval[0])}–{ruler.spell(interval[1])}"
-            else:
-                spread = f" ±{ruler.spell(float(figure.half_width or 0))}"
-            return "borderline", f"{name} {ruler.spell(figure.value)}{spread}"
-        return "pass", ""
     if meets and not borderline:
         return "pass", ""
     # A reason is a gate check's sentence, read off any page, so it states each figure in the forms its input's page
     # would print it in.
     forms = PageForms.of(report_input)
+    if line.scale in _MONEY_SCALES:
+        # Money on the one owner's ruler (#993): both figures in its form, its count named once, in the criterion's
+        # name (its own count replaced), never a per-1,000 mark. Each amount is a figure of what the criterion reads.
+        ruler, own = criterion_ruler(report_input, criterion, line)
+        name = ruler.label(name, line.per, own)
+        kind = held_kind(report_input, criterion.measure)
+
+        def spelled(amount: float) -> str:
+            return forms.money_on(ruler, amount, measure=criterion.measure, kind=kind).text
+
+        if not meets:
+            return "fail", f"{name} {spelled(figure.value)} {_MISSED[criterion.direction]} {spelled(threshold)}"
+        # Borderline: the figure's interval made it so, its stated ends or its half-width either side.
+        if figure.ci is not None:
+            words = "derived interval " if figure.derived else "interval "
+            spread = f", {words}{spelled(figure.ci[0])}–{spelled(figure.ci[1])}"
+        else:
+            spread = f" ±{spelled(float(figure.half_width or 0))}"
+        return "borderline", f"{name} {spelled(figure.value)}{spread}"
     stated = format_figure(replace(line, value=figure.value), forms=forms)
     if not meets:
         return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line, forms=forms)}"
