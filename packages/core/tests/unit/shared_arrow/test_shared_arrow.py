@@ -37,6 +37,7 @@ from threetears.core.shared_arrow import (
     SharedArrowStore,
     epochs_version,
     read_version,
+    version_files,
 )
 
 ROWS = 200_000
@@ -128,8 +129,8 @@ class TestManyProcessesShareOneCopy:
     async def test_three_workers_read_one_mapping(
         self, store: SharedArrowStore, pool: SharedArrowPool, where: Path
     ) -> None:
-        version = store.publish("v1", {TABLE: _table(3)})
-        path = str(version.path / f"{TABLE}.arrow")
+        store.publish("v1", {TABLE: _table(3)})
+        path = str(version_files(store.root, "v1")[f"{TABLE}.arrow"].path)
         signals = str(where / "signals")
         answers = [
             result.value
@@ -200,7 +201,8 @@ class TestRetirementWaitsForEveryReader:
         lease = store.lease()
         store.publish("v2", {TABLE: _table(2)})
         store.publish("v3", {TABLE: _table(3)})
-        assert store.versions() == ("v1", "v3"), "v2 went at once; v1 is leased"
+        store.settle()
+        assert store.versions() == ("v1", "v3"), "v2 went once the publish's sweep ran; v1 is leased"
         lease.release()
         assert store.versions() == ("v3",)
         lease.release()  # harmless twice
@@ -251,6 +253,7 @@ class TestRetirementWaitsForEveryReader:
         first = SharedArrowStore(where / "shm", max_bytes=64 << 20)
         first.publish("v1", {TABLE: _table(1)})
         first.publish("v2", {TABLE: _table(2)})
+        first.settle()
         orphan = first.reserve(1 << 20)
         orphan.write({TABLE: _table(1, rows=10)})
         held = os.open(where / "shm" / "versions" / "v2" / ".lock", os.O_RDONLY)
@@ -398,11 +401,13 @@ class TestTheDirectoryIsBounded:
         assert store.refused == 1
         lease.release()
         store.publish("v3", {TABLE: _table(3)})
+        store.settle()
         assert store.versions() == ("v3",)
 
     def test_many_versions_hold_only_the_current_one(self, store: SharedArrowStore) -> None:
         for value in range(10):
             last = store.publish(f"v{value}", {TABLE: _table(value)})
+        store.settle()
         assert store.versions() == ("v9",)
         assert store.held_bytes() == last.nbytes
         assert store.retired == 9
@@ -481,6 +486,7 @@ class TestPublishing:
         swept = SweptMidPublish(where / "shm", max_bytes=64 << 20)
         swept.publish("v1", {TABLE: _table(1, rows=10)})
         swept.publish("v2", {TABLE: _table(2, rows=10)})
+        swept.settle()
         assert swept.versions() == ("v2",)
 
     @pytest.mark.parametrize("name", ["", ".hidden", "../up", "a/b", "CURRENT", "x" * 129])
@@ -540,8 +546,8 @@ class TestTheServingProcessReadsInPlace:
     async def test_the_serving_process_and_its_workers_read_one_mapping(
         self, store: SharedArrowStore, pool: SharedArrowPool, where: Path
     ) -> None:
-        version = store.publish("v1", {TABLE: _table(3)})
-        path = os.path.realpath(version.path / f"{TABLE}.arrow")
+        store.publish("v1", {TABLE: _table(3)})
+        path = os.path.realpath(version_files(store.root, "v1")[f"{TABLE}.arrow"].path)
         signals = str(where / "signals")
         reader = store.reader()
         try:
@@ -595,12 +601,14 @@ class TestTheServingProcessReadsInPlace:
             pass
         assert reader.status()["version"] == "v1"
         store.publish("v2", {TABLE: _table(2)})
-        assert store.versions() == ("v2",), "the reader let v1 go at the publish, not at its next read"
+        store.settle()
+        assert store.versions() == ("v2",), "the reader let v1 go after the publish, not at its next read"
         assert reader.status()["version"] is None
         with reader.read() as read:
             assert _serving_sum(read) == 2 * ROWS
         reader.close()
         store.publish("v3", {TABLE: _table(3)})
+        store.settle()
         assert store.versions() == ("v3",)
 
     async def test_a_worker_and_the_serving_reader_hold_their_versions_apart(
@@ -679,6 +687,7 @@ class TestTheServingProcessReadsInPlace:
         with pytest.raises(RuntimeError, match="no views"), reader.read():
             pass
         store.publish("v2", {TABLE: _table(2, rows=10)})
+        store.settle()
         assert store.versions() == ("v2",), "the failed mapping released its lease"
         reader.close()
 
@@ -704,25 +713,28 @@ def _parts(values: dict[str, int], rows: int = 1_000) -> Parts:
 
 
 def _inode(store: SharedArrowStore, version: str, file_name: str) -> int:
-    return (store.root / "versions" / version / file_name).stat().st_ino
+    return version_files(store.root, version)[file_name].path.stat().st_ino
 
 
 class TestPartsAreSharedAcrossVersions:
     def test_a_version_rewrites_only_the_parts_that_changed(self, store: SharedArrowStore) -> None:
         first = store.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2, "TX": 3}), "whole": _table(5, rows=10)})
         with store.lease("v1"):
-            store.publish(
+            second = store.publish(
                 "v2",
                 {TABLE: Parts(schema=_table(0, rows=0).schema, parts={"GA": _table(20, 1_000), "TX": None})},
                 base="v1",
             )
             assert _inode(store, "v1", "t@VA.arrow") == _inode(store, "v2", "t@VA.arrow"), "VA is the same file"
             assert _inode(store, "v1", "t@GA.arrow") != _inode(store, "v2", "t@GA.arrow")
-            assert not (store.root / "versions" / "v2" / "t@TX.arrow").exists(), "TX was dropped"
+            assert "t@TX.arrow" not in version_files(store.root, "v2"), "TX was dropped"
             assert _inode(store, "v1", "whole.arrow") == _inode(store, "v2", "whole.arrow"), "a table not named is kept"
-            # the shared file counted once: v1 whole, plus v2's own GA part and schema file
-            v2_own = sum((store.root / "versions" / "v2" / name).stat().st_size for name in ("t@GA.arrow", "t@.arrow"))
-            assert store.held_bytes() == first.nbytes + v2_own
+            # the shared files counted once: v1 whole, plus what v2 holds that v1 does not
+            v1_files, v2_files = version_files(store.root, "v1"), version_files(store.root, "v2")
+            shared = sum(
+                held.nbytes for name, held in v2_files.items() if name in v1_files and v1_files[name].path == held.path
+            )
+            assert store.held_bytes() == first.nbytes + second.nbytes - shared
         reader = store.reader()
         with reader.read() as read:
             assert read.tables[TABLE].num_rows == 2_000
@@ -979,6 +991,7 @@ class TestTheSweepRemovesOutsideTheLock:
         askers: list[threading.Thread] = []
         monkeypatch.setattr(shutil, "rmtree", watched)
         store.publish("v2", {TABLE: _table(2, rows=10)})
+        store.settle()
         for asking in askers:
             asking.join()
         assert store.versions() == ("v2",)
@@ -1019,7 +1032,7 @@ class TestAWorkersResultBecomesAPart:
         assert segment is not None
         source = segment.files["t.GA"]
         store.publish("v2", {TABLE: Parts(schema=schema, parts={"GA": source})}, base="v1")
-        assert (store.root / "versions" / "v2" / "t@GA.arrow").stat().st_ino == source.stat().st_ino
+        assert version_files(store.root, "v2")["t@GA.arrow"].path.stat().st_ino == source.stat().st_ino
         segment.close()
         with MappedVersion(store.root, "v2") as mapped:
             assert mapped.tables[TABLE].column("a").to_pylist() == [20] * 1000 + [1] * 1000

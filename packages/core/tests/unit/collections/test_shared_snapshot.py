@@ -22,7 +22,7 @@ import pyarrow as pa  # noqa: E402
 
 from threetears.core.collections.scoped_snapshot import SnapshotTable, VersionedRead  # noqa: E402
 from threetears.core.collections.shared_snapshot import SharedSnapshot  # noqa: E402
-from threetears.core.shared_arrow import SharedArrowStore  # noqa: E402
+from threetears.core.shared_arrow import SharedArrowStore, version_files  # noqa: E402
 
 TABLES = (
     SnapshotTable(name="results", scope_column="state", key=("race", "county")),
@@ -60,7 +60,7 @@ def _rows(cursor: Any, table: str) -> list[tuple[object, ...]]:
 
 def _inode(store: SharedArrowStore, version: str, table: str, scope: str) -> int:
     # a plain scope names its part as it is
-    return (store.root / "versions" / version / f"{table}@{scope}.arrow").stat().st_ino
+    return version_files(store.root, version)[f"{table}@{scope}.arrow"].path.stat().st_ino
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ class TestPublishingTheCopy:
             for table in ("results", "races"):
                 assert _inode(store, first.name, table, "VA") == _inode(store, second.name, table, "VA")
                 assert _inode(store, first.name, table, "GA") != _inode(store, second.name, table, "GA")
-                assert not (store.root / "versions" / second.name / f"{table}@TX.arrow").exists()
+                assert f"{table}@TX.arrow" not in version_files(store.root, second.name)
         assert shared.scopes_written == 3 + 1
         with reader.read() as read:
             assert read.version == second.name
@@ -152,8 +152,8 @@ class TestPublishingTheCopy:
             )
         copy.execute("DELETE FROM results WHERE state = 'TX'")
         third = shared.publish(_read(copy, {"VA": 1, "GA": 3}))
-        assert not (store.root / "versions" / third.name / "results@TX.arrow").exists()
-        assert (store.root / "versions" / third.name / "races@TX.arrow").exists(), "races still holds TX"
+        assert "results@TX.arrow" not in version_files(store.root, third.name)
+        assert "races@TX.arrow" in version_files(store.root, third.name), "races still holds TX"
         with reader.read() as read:
             for table in ("results", "races"):
                 assert _rows(read.cursor, table) == _rows(copy, table)
@@ -184,6 +184,6 @@ class TestPublishingTheCopy:
         connection.execute("CREATE TABLE races (race VARCHAR, state VARCHAR, name VARCHAR)")
         _set_state(connection, scope, 1)
         version = SharedSnapshot(store, TABLES).publish(_read(connection, {scope: 1}))
-        parts = {path.name for path in version.path.iterdir() if path.name.startswith("results@")}
+        parts = {name for name in version_files(store.root, version.name) if name.startswith("results@")}
         assert (f"results@{scope}.arrow" in parts) is plain
         assert len(parts) == 2, "the schema file and the scope's one part"

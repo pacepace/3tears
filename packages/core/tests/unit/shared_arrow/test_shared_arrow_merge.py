@@ -2,7 +2,7 @@
 
 The contracts (``merge_parts``, ``merged_rows``). A tiered publish (a level-1 part per ten run parts, and so on) merges
 neighbouring parts into one: every reader of the new version sees exactly the rows, in the same order, it saw before;
-the parts outside the group are the base's own files (hard links, the same inode); and the only bytes written are the
+the parts outside the group are the base's own files (the same files, named again); and the only bytes written are the
 merged part's, no more than the group's own files hold. A group that is not a run of neighbours, or a merged name that
 sorts past another part, would reorder rows, so it is refused.
 """
@@ -23,6 +23,7 @@ from threetears.core.shared_arrow import (
     merge_parts,
     merged_rows,
     read_version,
+    version_files,
 )
 
 #: the run parts of the table, and the rows each holds (a few batches each, as a run's load writes them)
@@ -69,12 +70,8 @@ def _version(store: SharedArrowStore, version: str) -> Path:
     return store.root / "versions" / version
 
 
-def _inodes(path: Path) -> dict[str, tuple[int, int]]:
-    return {
-        entry.name: (entry.stat().st_ino, entry.stat().st_size)
-        for entry in path.iterdir()
-        if entry.name.endswith(".arrow")
-    }
+def _inodes(store: SharedArrowStore, version: str) -> dict[str, tuple[int, int]]:
+    return {name: (held.path.stat().st_ino, held.nbytes) for name, held in version_files(store.root, version).items()}
 
 
 def _rows(store: SharedArrowStore, version: str) -> dict[str, list[object]]:
@@ -88,12 +85,12 @@ class TestAMergedGroup:
     ) -> None:
         group = [_name(index) for index in range(10)]
         before = _rows(store, "v1")
-        old = _inodes(_version(store, "v1"))
+        old = _inodes(store, "v1")
         parts = merge_parts(store, "v1", "lsf", group, into=f"{group[0]}.1")
         store.publish("v2", {"lsf": parts}, base="v1")
         after = _rows(store, "v2")
         assert after == before
-        new = _inodes(_version(store, "v2"))
+        new = _inodes(store, "v2")
         # every part outside the group, and the other table, is the base's own file
         kept = {name for name in old if not any(name == f"lsf@{part}.arrow" for part in group)}
         kept.discard("lsf@.arrow")

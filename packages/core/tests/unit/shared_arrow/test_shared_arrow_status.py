@@ -147,6 +147,8 @@ class TestStatusIsExact:
 
         def check(step: str) -> None:
             steps.append(step)
+            # what a publish leaves runs on the store's thread: compared once it has
+            store.settle()
             assert _told(store) == _walked(store), f"after {step}"
 
         check("an empty store")
@@ -198,6 +200,7 @@ class TestStatusIsExact:
         first.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2})})
         with first.lease("v1"):
             first.publish("v2", {TABLE: _parts({"GA": 20})}, base="v1")
+            first.settle()
             # a restart while a reader (a worker of the old process, say) still holds v1
             again = SharedArrowStore(tmp_path / "shm", max_bytes=64 << 20)
             assert _told(again) == _walked(again)
@@ -211,6 +214,7 @@ class TestTwoSweepsRemovingOneDirectory:
         store.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2})})
         held = store.lease("v1")
         store.publish("v2", {"other": _table(4)})
+        store.settle()
         # sweep A (the lease's release) retires v1; its removal leaves one file and its listing of what is left
         # waits for sweep B, which removes the directory whole and forgets it
         left_listed, b_done = threading.Event(), threading.Event()

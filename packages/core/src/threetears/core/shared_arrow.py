@@ -11,8 +11,11 @@ them: every process mapping a file shares its pages, and a mapped Arrow column I
 **Three hand-offs, one owner.** The serving process owns the directory through one :class:`SharedArrowStore`:
 
 - *Down, versions*: :meth:`SharedArrowStore.publish` writes a data version's tables once; workers map it read-only
-  (:func:`read_version`) and run DuckDB over it without copying (:meth:`MappedTables.connect`). Each version has a
-  directory of its own, staged under a hidden name and renamed into place whole; the newest is current.
+  (:func:`read_version`) and run DuckDB over it without copying (:meth:`MappedTables.connect`). Each version is a
+  directory holding a manifest that names its files, staged under a hidden name and renamed into place whole; the
+  newest is current. The files themselves live in the parts directory, one directory per publish holding the files it
+  wrote, never written again, and a version made from another (``base=``) names the other's files it keeps: a publish
+  writes the files it changes and one manifest, whatever the version holds besides (:func:`version_files`).
 - *Up, results*: :meth:`SharedArrowStore.reserve` gives a job a :class:`SegmentSlot` -- a small value that pickles
   over whatever channel hands the job to its worker -- the worker writes its result tables into it
   (:meth:`SegmentSlot.write`), and the serving process maps them (:meth:`SharedArrowStore.claim`): no row is pickled
@@ -35,8 +38,15 @@ them: every process mapping a file shares its pages, and a mapped Arrow column I
 slot holds an exclusive one on its staging lock. The
 operating system drops a lock when its holder closes it or dies. A sweep, after every publish, release, claim and
 discard, deletes every version that is not current and that no reader holds, every result whose slot nobody owns, every
-hand-off released that no worker maps, and every staging directory whose writer is gone. A new store removes whatever the directory held that no live process
-holds (a container restarted in the same pod keeps its ``emptyDir``). There is no timer and no TTL.
+hand-off released that no worker maps, and every staging directory whose writer is gone. A part file goes when the
+last version naming it is retired: a reader holding a version holds every file its manifest names. A new store removes
+whatever the directory held that no live process holds (a container restarted in the same pod keeps its
+``emptyDir``), part files no version it kept names among it, and a version written before manifests (a directory
+holding its files itself) is read, kept while held and removed as any other. There is no timer and no TTL.
+
+**A publish does what it changes.** The sweep a publish leaves -- readers told, superseded versions retired, their
+files removed -- runs after it returns, on the store's own thread: one at a time, a publish meanwhile asking for one
+more, never a pile (:meth:`SharedArrowStore.settle` waits for it). A publish that finds no room sweeps first itself.
 
 **Bounded.** A store is given the bytes it may hold, every version, result and hand-off together (``max_bytes``, set
 below the volume's own limit, since a pod whose ``emptyDir`` passes its ``sizeLimit`` is evicted). An open slot counts at the
@@ -74,14 +84,13 @@ import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
 from threetears.observe import contain, get_logger, remove_tree
 
-from threetears.core.utils.atomic_write import atomic_write_sync
 
 # pyarrow alone carries the store, its slots and hand-offs, and the pool: a process that never opens DuckDB (the hub,
 # offloading its broker's work) needs no duckdb, and only the calls that open it say so
@@ -120,6 +129,7 @@ __all__ = [
     "SharedLease",
     "SharedRead",
     "SharedVersion",
+    "VersionFile",
     "epochs_version",
     "merge_parts",
     "merged_rows",
@@ -127,14 +137,22 @@ __all__ = [
     "private_bytes",
     "query_batches",
     "read_version",
+    "version_files",
 ]
 
 log = get_logger(__name__)
 
-#: the store's three parts: published versions, workers' results, and the tables handed to one job each
+#: the store's four parts: published versions (each a manifest), the files they name, workers' results, and the tables
+#: handed to one job each
 _VERSIONS_DIR: Final = "versions"
+_PARTS_DIR: Final = "parts"
 _SEGMENTS_DIR: Final = "segments"
 _HANDOFFS_DIR: Final = "handoffs"
+
+#: the file in each version's directory naming its files: a header line, then one line a file,
+#: ``{file name}\t{its directory under the parts directory}\t{its bytes}``
+_MANIFEST_FILE: Final = "MANIFEST"
+_MANIFEST_HEADER: Final = "shared-arrow manifest 1\n"
 
 #: what a hand-off's bound adds to its tables' bytes when the caller names none: the file's schema and footer, and
 #: per record batch its message and each buffer's padding (Arrow IPC pads every buffer to 8 bytes)
@@ -362,8 +380,8 @@ def _directory_files(path: Path) -> dict[tuple[int, int], int]:
 def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> int:
     """the bytes the files directly in a directory hold, each file once however many names it has.
 
-    A version that reuses another's parts holds hard links to the same files, whose pages exist once: ``seen``, shared
-    across directories, counts each file (by device and inode) the first time it is met.
+    A claimed result linked into a version as a part is one file under two names, whose pages exist once: ``seen``,
+    shared across directories, counts each file (by device and inode) the first time it is met.
 
     :param path: the directory
     :ptype path: Path
@@ -383,16 +401,17 @@ def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> in
 
 class _HeldFiles:
     """the store's own tally of the files its directories hold, so :meth:`SharedArrowStore.status` reads numbers and
-    never the file system: each directory's files recorded as it takes its final name (a version published, a
-    hand-off written, a result claimed, a directory found at the start) and forgotten once it is removed.
+    never the file system: each directory's files recorded as it takes its final name (a version published, the part
+    files a publish wrote, a hand-off written, a result claimed, a directory found at the start) and forgotten once it
+    is removed; a part file is dropped from its directory's record as it is removed (:meth:`drop`).
 
     Exact as :meth:`SharedArrowStore.held_bytes` counts: a file is counted once however many directories hold a link
-    to it (a version's parts linked from its base, a claimed result linked as a part), by (device, inode), and its
-    bytes go only when the last directory holding it goes. Files never change after their directory takes its name,
-    so what a directory held then is what it holds until it is removed. An inode met again at another size is a file
-    the system reused the number for (the old one removed while its directory's removal was still being recorded):
-    the newer size is the true one. Mutated under the store's ``_state``; :attr:`view` is replaced whole on each
-    change, so a reader takes it without the lock.
+    to it (a claimed result linked as a part), by (device, inode), and its bytes go only when the last directory holding
+    it goes. Files never change after their directory takes its name, so what a directory held then is what it holds
+    until it is removed, or a part file of it is. An inode met again at another size is a file the system reused the
+    number for (the old one removed while its directory's removal was still being recorded): the newer size is the true
+    one. Mutated under the store's ``_state``; :attr:`view` is replaced whole on each change, so a reader takes it
+    without the lock.
 
     :ivar view: (bytes held, the versions' names, the hand-offs held), each as of the last change
     """
@@ -404,8 +423,21 @@ class _HeldFiles:
         self._dirs: dict[Path, dict[tuple[int, int], int]] = {}
         #: (device, inode) -> [directories holding it, its bytes]
         self._links: dict[tuple[int, int], list[int]] = {}
+        #: the versions and hand-offs recorded under their own names: what :attr:`view` lists, kept as directories are
+        #: recorded, renamed and forgotten, so a change never walks every directory recorded (a part directory each
+        #: publish whose files a version still names)
+        self._listed: set[Path] = set()
         self._bytes = 0
         self.view: tuple[int, tuple[str, ...], int] = (0, (), 0)
+
+    @property
+    def bytes(self) -> int:
+        """the bytes recorded. Read under the store's ``_state``.
+
+        :return: bytes
+        :rtype: int
+        """
+        return self._bytes
 
     def __contains__(self, path: Path) -> bool:
         """whether a directory is recorded.
@@ -439,7 +471,29 @@ class _HeldFiles:
                 if link[1] != size:
                     self._bytes += size - link[1]
                     link[1] = size
+        if self._lists(path):
+            self._listed.add(path)
         self._viewed()
+
+    def drop(self, path: Path, keys: Sequence[tuple[int, int]]) -> int | None:
+        """files of a recorded directory were removed: each goes from its record, its bytes with it when no other
+        directory holds it.
+
+        :param path: the directory
+        :ptype path: Path
+        :param keys: the files removed, by (device, inode)
+        :ptype keys: Sequence[tuple[int, int]]
+        :return: the files its record holds now; None when it is not recorded
+        :rtype: int | None
+        """
+        files = self._dirs.get(path)
+        if files is None:
+            return None
+        for key in keys:
+            if files.pop(key, None) is not None:
+                self._unlinked(key)
+        self._viewed()
+        return len(files)
 
     def moved(self, old: Path, new: Path) -> None:
         """a directory was renamed (retired out of its name): its files are recorded under its new name.
@@ -454,6 +508,9 @@ class _HeldFiles:
         files = self._dirs.pop(old, None)
         if files is not None:
             self._dirs[new] = files
+            self._listed.discard(old)
+            if self._lists(new):
+                self._listed.add(new)
             self._viewed()
 
     def forget(self, path: Path) -> None:
@@ -478,13 +535,34 @@ class _HeldFiles:
         files = self._dirs.pop(path, None)
         if files is None:
             return False
+        self._listed.discard(path)
         for key in files:
-            link = self._links[key]
-            link[0] -= 1
-            if link[0] == 0:
-                del self._links[key]
-                self._bytes -= link[1]
+            self._unlinked(key)
         return True
+
+    def _unlinked(self, key: tuple[int, int]) -> None:
+        """one directory's link to a file is gone: the file's bytes go when it was the last.
+
+        :param key: the file, by (device, inode)
+        :ptype key: tuple[int, int]
+        :return: nothing
+        :rtype: None
+        """
+        link = self._links[key]
+        link[0] -= 1
+        if link[0] == 0:
+            del self._links[key]
+            self._bytes -= link[1]
+
+    def _lists(self, path: Path) -> bool:
+        """whether :attr:`view` lists a directory: a version or a hand-off under its own name.
+
+        :param path: the directory
+        :ptype path: Path
+        :return: whether it does
+        :rtype: bool
+        """
+        return path.parent in (self._versions, self._handoffs) and not path.name.startswith(".")
 
     def _viewed(self) -> None:
         """replace :attr:`view` with what is recorded now.
@@ -492,10 +570,8 @@ class _HeldFiles:
         :return: nothing
         :rtype: None
         """
-        versions = tuple(
-            sorted(path.name for path in self._dirs if path.parent == self._versions and not path.name.startswith("."))
-        )
-        handoffs = sum(1 for path in self._dirs if path.parent == self._handoffs and not path.name.startswith("."))
+        versions = tuple(sorted(path.name for path in self._listed if path.parent == self._versions))
+        handoffs = sum(1 for path in self._listed if path.parent == self._handoffs)
         self.view = (self._bytes, versions, handoffs)
 
 
@@ -548,7 +624,15 @@ def _batches(source: Any) -> tuple[Any, Iterator[Any]]:
     raise TypeError(f"a shared Arrow table is a pyarrow Table or RecordBatchReader, not {type(source).__name__}")
 
 
-def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: Callable[[], int], *, what: str) -> int:
+def _write_file(
+    path: Path,
+    schema: Any,
+    batches: Iterator[Any],
+    room: Callable[[], int],
+    *,
+    what: str,
+    reclaim: Callable[[], object] | None = None,
+) -> os.stat_result:
     """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room`` (asked before each batch: a
     store's room shrinks while a publish writes, as results are reserved beside it).
 
@@ -562,8 +646,11 @@ def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: Callable[
     :ptype room: Callable[[], int]
     :param what: what it holds, for an error
     :ptype what: str
-    :return: the bytes written
-    :rtype: int
+    :param reclaim: called once when a batch would pass ``room``, before the batch is refused (a sweep: what a publish
+        left to the store's thread may not have gone yet); None to refuse at once
+    :ptype reclaim: Callable[[], object] | None
+    :return: the file written, as ``os.stat`` reads it
+    :rtype: os.stat_result
     :raises SharedArrowFullError: when it would take more than ``room``
     :raises ValueError: when a batch's columns are not ``schema``
     """
@@ -573,9 +660,12 @@ def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: Callable[
             if not batch.schema.equals(schema):
                 raise ValueError(f"{what}: a batch's columns are not the table's ({batch.schema} vs {schema})")
             if sink.tell() + batch.nbytes > room():
-                raise SharedArrowFullError(f"{what} would pass the bytes it may take")
+                if reclaim is not None:
+                    reclaim()
+                if sink.tell() + batch.nbytes > room():
+                    raise SharedArrowFullError(f"{what} would pass the bytes it may take")
             writer.write_batch(batch)
-    return path.stat().st_size
+    return os.stat(path)
 
 
 def _file_schema(path: Path) -> Any:
@@ -590,13 +680,12 @@ def _file_schema(path: Path) -> Any:
         return ipc.open_file(mapped).schema
 
 
-def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[], int], base: Path | None = None) -> int:
-    """write each table as uncompressed Arrow IPC in ``directory``, refusing a batch that would pass ``room``; with a
-    ``base`` version, link in every file of it that ``tables`` does not replace.
+def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[], int]) -> int:
+    """write each table as uncompressed Arrow IPC in ``directory`` (a result's or a hand-off's: a directory holding its
+    files itself), refusing a batch that would pass ``room``.
 
-    A table given whole is one file; one given as :class:`Parts` is a schema file and a file per part, and with a base
-    holding it in parts keeps every base part ``Parts`` does not name. A table of the base that ``tables`` does not
-    name is kept whole. A linked file is the base's own (a hard link): no byte is written and none counted again.
+    A table given whole is one file; one given as :class:`Parts` is a schema file and a file per part (a part given as
+    None is no file).
 
     :param directory: where
     :ptype directory: Path
@@ -604,13 +693,11 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
     :ptype tables: Mapping[str, Any]
     :param room: the bytes every new file together may take, now (asked before each batch)
     :ptype room: Callable[[], int]
-    :param base: the version directory to keep what is not replaced from, or None
-    :ptype base: Path | None
     :return: the bytes written
     :rtype: int
     :raises SharedArrowFullError: when they would take more than ``room``
-    :raises ValueError: when a table or part name is not one plain path segment, a part's columns are not its
-        table's, or a table in parts changed its columns from the base's (publish it without a base)
+    :raises ValueError: when a table or part name is not one plain path segment, or a part's columns are not its
+        table's
     """
     written = 0
 
@@ -624,22 +711,7 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
             for part in source.parts:
                 _valid_name(part, "part")
             schema_file = f"{name}{_PART_SEPARATOR}{_TABLE_SUFFIX}"
-            written += _write_file(directory / schema_file, source.schema, iter(()), left, what=name)
-            kept: list[Path] = []
-            if base is not None and (base / schema_file).is_file():
-                if not _file_schema(base / schema_file).equals(source.schema):
-                    raise ValueError(f"table {name!r} changed its columns from the base version's; publish it whole")
-                prefix = f"{name}{_PART_SEPARATOR}"
-                kept = [
-                    entry
-                    for entry in base.iterdir()
-                    if entry.name.startswith(prefix)
-                    and entry.name != schema_file
-                    and entry.name.endswith(_TABLE_SUFFIX)
-                    and entry.name[len(prefix) : -len(_TABLE_SUFFIX)] not in source.parts
-                ]
-            for entry in kept:
-                os.link(entry, directory / entry.name)
+            written += _write_file(directory / schema_file, source.schema, iter(()), left, what=name).st_size
             for part, rows in source.parts.items():
                 if rows is None:
                     continue
@@ -653,37 +725,359 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
                 part_schema, batches = _batches(rows)
                 if not part_schema.equals(source.schema):
                     raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
-                written += _write_file(path, source.schema, batches, left, what=f"table {name!r} part {part!r}")
+                written += _write_file(path, source.schema, batches, left, what=f"table {name!r} part {part!r}").st_size
         else:
             schema, batches = _batches(source)
             path = directory / f"{name}{_TABLE_SUFFIX}"
-            written += _write_file(path, schema, batches, left, what=f"table {name!r}")
-    if base is not None:
-        for entry in base.iterdir():
-            table = _table_of(entry.name)
-            if table is not None and table not in tables:
-                os.link(entry, directory / entry.name)
+            written += _write_file(path, schema, batches, left, what=f"table {name!r}").st_size
     return written
 
 
-def _shared_files(path: Path, mapped: Mapping[tuple[int, int], Any]) -> dict[tuple[int, int], Any]:
-    """the mapped files (by device and inode) that the directory ``path`` holds too: what a mapping of it may take.
+@dataclass(frozen=True)
+class _Manifest:
+    """a version's files as its ``MANIFEST`` names them, held by the store for every version it holds: per table, each
+    file's line (``{file name}\\t{its part directory}\\t{its bytes}\\n``), those lines joined, and the bytes its files
+    hold. A version made from another shares every table it leaves alone with it -- the same mappings, never copied --
+    so a publish copies only the tables it changes, and a sweep compares only the tables that differ.
+
+    :ivar lines: table -> file name -> its line
+    :ivar text: table -> its lines, joined in the order of ``lines``
+    :ivar nbytes: table -> the bytes its files hold
+    :ivar file_bytes: the bytes of the ``MANIFEST`` file itself
+    """
+
+    lines: Mapping[str, Mapping[str, str]]
+    text: Mapping[str, str]
+    nbytes: Mapping[str, int]
+    file_bytes: int = 0
+
+    def joined(self) -> str:
+        """the ``MANIFEST`` file's text: the header, then every table's lines.
+
+        :return: the text
+        :rtype: str
+        """
+        return _MANIFEST_HEADER + "".join(self.text.values())
+
+
+def _line_of(file_name: str, part_dir: str, size: int) -> str:
+    """a manifest's line for one file.
+
+    :param file_name: the file's name, as a version names it (``{table}@{part}.arrow``, ``{table}.arrow``)
+    :ptype file_name: str
+    :param part_dir: its directory under the parts directory
+    :ptype part_dir: str
+    :param size: its bytes
+    :ptype size: int
+    :return: the line
+    :rtype: str
+    """
+    return f"{file_name}\t{part_dir}\t{size}\n"
+
+
+def _line_fields(line: str) -> tuple[str, str, int]:
+    """a manifest line's file name, part directory and bytes.
+
+    :param line: the line
+    :ptype line: str
+    :return: (file name, part directory, bytes)
+    :rtype: tuple[str, str, int]
+    """
+    name, part_dir, size = line.rstrip("\n").split("\t")
+    return name, part_dir, int(size)
+
+
+def _line_rel(line: str) -> str:
+    """the file a manifest line names, as a path under the parts directory (``{part dir}/{file name}``).
+
+    :param line: the line
+    :ptype line: str
+    :return: the path, relative to the parts directory
+    :rtype: str
+    """
+    name, part_dir, _ = _line_fields(line)
+    return f"{part_dir}/{name}"
+
+
+def _parsed_manifest(text: str) -> _Manifest:
+    """a ``MANIFEST`` file's text as the store holds it.
+
+    :param text: the text, its header first
+    :ptype text: str
+    :return: the manifest
+    :rtype: _Manifest
+    :raises ValueError: for a line naming a file that is no table's
+    """
+    lines: dict[str, dict[str, str]] = {}
+    nbytes: dict[str, int] = {}
+    for line in text.splitlines(keepends=True)[1:]:
+        name, _, size = _line_fields(line)
+        table = _table_of(name)
+        if table is None:
+            raise ValueError(f"a shared Arrow manifest names a file that is no table's: {name!r}")
+        lines.setdefault(table, {})[name] = line
+        nbytes[table] = nbytes.get(table, 0) + size
+    joined = {table: "".join(held.values()) for table, held in lines.items()}
+    return _Manifest(lines=lines, text=joined, nbytes=nbytes, file_bytes=len(text))
+
+
+def _manifest_text(path: Path) -> str | None:
+    """the text of a version directory's ``MANIFEST``, or None for a directory holding its files itself (a result, a
+    hand-off, a version written before manifests) or gone.
+
+    :param path: the directory
+    :ptype path: Path
+    :return: the text, or None
+    :rtype: str | None
+    :raises ValueError: for a manifest this code does not read
+    """
+    try:
+        text = (path / _MANIFEST_FILE).read_text()
+    except FileNotFoundError:
+        # NOSILENT: no manifest is a directory holding its files itself (or one gone): the caller lists it
+        return None
+    if not text.startswith(_MANIFEST_HEADER):
+        raise ValueError(f"shared Arrow manifest {path / _MANIFEST_FILE} is not one this code reads")
+    return text
+
+
+def _mapped_files(path: Path) -> list[tuple[str, str, Any]]:
+    """the table files of a directory, in name order: each one's name, its path, and what identifies it among mapped
+    files (:attr:`MappedTables.by_inode`): its manifest line for a version's file (a line names one file, never
+    reused), its (device, inode) for a file the directory holds itself.
+
+    :param path: the directory
+    :ptype path: Path
+    :return: (file name, path, identity), sorted by name
+    :rtype: list[tuple[str, str, Any]]
+    """
+    text = _manifest_text(path)
+    if text is None:
+        # every file of a directory is on its device; a directory entry carries its inode (no stat a file)
+        device = path.stat().st_dev
+        with os.scandir(path) as listing:
+            return sorted(
+                (entry.name, entry.path, (device, entry.inode()))
+                for entry in listing
+                if _table_of(entry.name) is not None
+            )
+    parts = f"{path.parent.parent / _PARTS_DIR}{os.sep}"
+    files: list[tuple[str, str, Any]] = []
+    for line in text.splitlines(keepends=True)[1:]:
+        name, part_dir, _ = _line_fields(line)
+        files.append((name, f"{parts}{part_dir}{os.sep}{name}", line))
+    # names are unique: the sort never compares further
+    files.sort(key=lambda file: file[0])
+    return files
+
+
+@dataclass(frozen=True)
+class VersionFile:
+    """one file a version holds (:func:`version_files`).
+
+    :ivar path: the file, to map or open read-only; never written, renamed or removed by a reader
+    :ivar nbytes: its bytes
+    """
+
+    path: Path
+    nbytes: int
+
+
+def _files_of(path: Path) -> dict[str, VersionFile]:
+    """the table files of a version's directory (:func:`version_files`), by the name the version gives each.
+
+    :param path: the directory
+    :ptype path: Path
+    :return: file name -> the file
+    :rtype: dict[str, VersionFile]
+    """
+    text = _manifest_text(path)
+    if text is None:
+        with os.scandir(path) as listing:
+            return {
+                entry.name: VersionFile(Path(entry.path), entry.stat().st_size)
+                for entry in listing
+                if _table_of(entry.name) is not None
+            }
+    parts = path.parent.parent / _PARTS_DIR
+    files: dict[str, VersionFile] = {}
+    for line in text.splitlines(keepends=True)[1:]:
+        name, part_dir, size = _line_fields(line)
+        files[name] = VersionFile(parts / part_dir / name, size)
+    return files
+
+
+def version_files(root: Path | str, version: str) -> dict[str, VersionFile]:
+    """every table file a version holds, by the name the version gives it: ``{table}.arrow`` for a table written whole,
+    ``{table}@.arrow`` (its columns, no rows) and ``{table}@{part}.arrow`` for one in :class:`Parts`.
+
+    A version names its files in a manifest: each file is where the publish that wrote it put it, under the store's
+    parts directory, and a version made from another names the other's files it keeps, so the version's own directory
+    holds no table file. Read a version's files through this, never by listing its directory. Hold the version while
+    the files are read (a lease, :func:`read_version`, a :class:`MappedVersion`): a file goes once no version held names
+    it. A version written before manifests holds its files itself, and is listed.
+
+    :param root: the store's directory
+    :ptype root: Path | str
+    :param version: the version
+    :ptype version: str
+    :return: file name -> the file
+    :rtype: dict[str, VersionFile]
+    :raises FileNotFoundError: when the version is gone
+    """
+    return _files_of(Path(root) / _VERSIONS_DIR / _valid_name(version, "version"))
+
+
+def _write_parts(
+    part_dir: Path,
+    tables: Mapping[str, Any],
+    base: _Manifest | None,
+    room: Callable[[], int],
+    reclaim: Callable[[], object],
+) -> tuple[_Manifest, dict[str, os.stat_result], int]:
+    """write a version's new files into ``part_dir`` (made only when a file is written) and make its manifest: the
+    files ``tables`` names, and every file of ``base`` they do not replace, named as the base names it.
+
+    A table given whole is one file; one given as :class:`Parts` is a schema file and a file per part, and with a base
+    holding it in parts keeps every base part ``Parts`` does not name. A table of the base that ``tables`` does not
+    name is kept whole. What is kept is the base's own lines: no file is touched for it, and a table left alone is the
+    base's own mapping.
+
+    :param part_dir: the publish's own directory under the parts directory
+    :ptype part_dir: Path
+    :param tables: name -> a table, a reader of its batches, what opens either, or :class:`Parts`
+    :ptype tables: Mapping[str, Any]
+    :param base: the manifest of the version to keep what is not replaced from, or None
+    :ptype base: _Manifest | None
+    :param room: the bytes every new file together may take, now (asked before each batch)
+    :ptype room: Callable[[], int]
+    :param reclaim: called before a batch past ``room`` is refused (:func:`_write_file`)
+    :ptype reclaim: Callable[[], object]
+    :return: the manifest, each file written or linked into ``part_dir`` by name, and the bytes written
+    :rtype: tuple[_Manifest, dict[str, os.stat_result], int]
+    :raises SharedArrowFullError: when they would take more than ``room``
+    :raises ValueError: when a part's columns are not its table's, or a table in parts changed its columns from the
+        base's (publish it without a base)
+    """
+    made: dict[str, os.stat_result] = {}
+    written = 0
+
+    def left() -> int:
+        return room() - written
+
+    def placed(file_name: str) -> Path:
+        if not made and not part_dir.is_dir():
+            part_dir.mkdir()
+        return part_dir / file_name
+
+    def recorded(table_lines: dict[str, str], file_name: str, stat: os.stat_result) -> int:
+        # the file's line in its table, replacing the base's: what the table's bytes grow by
+        made[file_name] = stat
+        before = table_lines.get(file_name)
+        table_lines[file_name] = _line_of(file_name, part_dir.name, stat.st_size)
+        return stat.st_size - (0 if before is None else _line_fields(before)[2])
+
+    lines: dict[str, Mapping[str, str]] = {} if base is None else dict(base.lines)
+    text: dict[str, str] = {} if base is None else dict(base.text)
+    nbytes: dict[str, int] = {} if base is None else dict(base.nbytes)
+    for name, source in tables.items():
+        _valid_name(name, "table")
+        table_lines: dict[str, str] = {}
+        size = 0
+        if isinstance(source, Parts):
+            for part in source.parts:
+                _valid_name(part, "part")
+            schema_file = f"{name}{_PART_SEPARATOR}{_TABLE_SUFFIX}"
+            held = None if base is None else base.lines.get(name)
+            if held is not None and schema_file in held:
+                _, held_dir, _ = _line_fields(held[schema_file])
+                if not _file_schema(part_dir.parent / held_dir / schema_file).equals(source.schema):
+                    raise ValueError(f"table {name!r} changed its columns from the base version's; publish it whole")
+                table_lines = dict(held)
+                size = nbytes[name]
+            path = placed(schema_file)
+            stat = _write_file(path, source.schema, iter(()), left, what=name, reclaim=reclaim)
+            written += stat.st_size
+            size += recorded(table_lines, schema_file, stat)
+            for part, rows in source.parts.items():
+                file_name = f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
+                if rows is None:
+                    dropped = table_lines.pop(file_name, None)
+                    size -= 0 if dropped is None else _line_fields(dropped)[2]
+                    continue
+                path = placed(file_name)
+                if isinstance(rows, Path):
+                    # a file already in the store (a worker's result): linked, its pages never copied
+                    if not _file_schema(rows).equals(source.schema):
+                        raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
+                    os.link(rows, path)
+                    size += recorded(table_lines, file_name, os.stat(path))
+                    continue
+                part_schema, batches = _batches(rows)
+                if not part_schema.equals(source.schema):
+                    raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
+                stat = _write_file(
+                    path, source.schema, batches, left, what=f"table {name!r} part {part!r}", reclaim=reclaim
+                )
+                written += stat.st_size
+                size += recorded(table_lines, file_name, stat)
+        else:
+            schema, batches = _batches(source)
+            file_name = f"{name}{_TABLE_SUFFIX}"
+            stat = _write_file(placed(file_name), schema, batches, left, what=f"table {name!r}", reclaim=reclaim)
+            written += stat.st_size
+            size += recorded(table_lines, file_name, stat)
+        lines[name] = table_lines
+        text[name] = "".join(table_lines.values())
+        nbytes[name] = size
+    return _Manifest(lines=lines, text=text, nbytes=nbytes), made, written
+
+
+def _imported(flat: Path, part_dir: Path) -> _Manifest:
+    """a version written before manifests (its directory holding its files itself) as a manifest: each of its files
+    linked into ``part_dir``, once, so a version made from it names them as any other. Only a store started over such
+    a directory, held by a reader that outlived the process before, ever meets one.
+
+    :param flat: the version's directory
+    :ptype flat: Path
+    :param part_dir: a directory of its own under the parts directory
+    :ptype part_dir: Path
+    :return: the manifest
+    :rtype: _Manifest
+    """
+    part_dir.mkdir()
+    lines: list[str] = []
+    with os.scandir(flat) as listing:
+        for entry in sorted(listing, key=lambda each: each.name):
+            if _table_of(entry.name) is not None:
+                os.link(entry.path, part_dir / entry.name)
+                lines.append(_line_of(entry.name, part_dir.name, entry.stat().st_size))
+    return _parsed_manifest(_MANIFEST_HEADER + "".join(lines))
+
+
+def _shared_files(path: Path, mapped: Mapping[Any, Any]) -> dict[Any, Any]:
+    """the mapped files that the version directory ``path`` holds too (:func:`_mapped_files` identifies each): what a
+    mapping of it may take.
 
     :param path: a version's directory
     :ptype path: Path
-    :param mapped: files mapped already, by (device, inode)
-    :ptype mapped: Mapping[tuple[int, int], pa.Table]
+    :param mapped: files mapped already, by identity
+    :ptype mapped: Mapping[Any, pa.Table]
     :return: those of them ``path`` holds; empty when it is gone
-    :rtype: dict[tuple[int, int], pa.Table]
+    :rtype: dict[Any, pa.Table]
     """
     try:
-        device = path.stat().st_dev
-        with os.scandir(path) as listing:
-            held = {(device, entry.inode()) for entry in listing}
+        text = _manifest_text(path)
+        if text is None:
+            device = path.stat().st_dev
+            with os.scandir(path) as listing:
+                held: set[Any] = {(device, entry.inode()) for entry in listing}
+        else:
+            held = set(text.splitlines(keepends=True))
     except FileNotFoundError:
         # NOSILENT: the version is gone already: nothing to lend its first read
         return {}
-    return {inode: table for inode, table in mapped.items() if inode in held}
+    return {identity: table for identity, table in mapped.items() if identity in held}
 
 
 class _Pin:
@@ -741,8 +1135,9 @@ class MappedTables:
     with ``pin=True``, its directory's shared lock too, so a store keeps counting the files until the last buffer
     over them is freed. Without ``pin`` it keeps neither the lock nor its files' place in the store.
 
-    A version made from another (``base=``) holds most of its files as hard links to the other's: given the other's
-    mapped files (``reuse``, its :attr:`by_inode`), a file that is the same file (device and inode) is taken from it as
+    A version made from another (``base=``) names most of the other's files as its own: given the other's
+    mapped files (``reuse``, its :attr:`by_inode`), a file that is the same file (its manifest line, or for a directory
+    holding its files itself its device and inode) is taken from it as
     it is, never mapped again, so a version's first read maps only what changed. The pages are the same either way: a
     file is never written once it is in place. The caller keeps every file it lends linked or mapped while this is
     made (a lease, a lock, or the mapping itself, which keeps an unlinked file's inode, and so its number, in use).
@@ -753,9 +1148,9 @@ class MappedTables:
     :ptype path: Path
     :param lock: whether to hold a shared lock on the directory while mapped
     :ptype lock: bool
-    :param reuse: another mapping's files by (device, inode) (:attr:`by_inode`), taken as they are where they are
-        the same files
-    :ptype reuse: Mapping[tuple[int, int], pa.Table] | None
+    :param reuse: another mapping's files by identity (:attr:`by_inode`), taken as they are where they are the same
+        files
+    :ptype reuse: Mapping[Any, pa.Table] | None
     :param pin: hold the directory's shared lock (when it has a lock file) until :meth:`close` AND the last buffer
         over its files is freed, not only until :meth:`close`; its files are mapped through a Python ``mmap``
         (:func:`_map_pinned`), zero-copy as ever
@@ -770,7 +1165,7 @@ class MappedTables:
         path: Path,
         *,
         lock: bool,
-        reuse: Mapping[tuple[int, int], Any] | None = None,
+        reuse: Mapping[Any, Any] | None = None,
         pin: bool = False,
     ) -> None:
         self.name = name
@@ -785,28 +1180,24 @@ class MappedTables:
         if pin:
             descriptor = _locked(path, fcntl.LOCK_SH)
             pinned = None if descriptor is None else _Pin(descriptor)
-        #: each file's table, by the file's device and inode, for a later version's mapping to take (``reuse``)
-        self._by_inode: dict[tuple[int, int], Any] = {}
+        #: each file's table, by the file's identity (:func:`_mapped_files`), for a later version's mapping to take
+        #: (``reuse``)
+        self._by_inode: dict[Any, Any] = {}
         held = reuse or {}
         pieces: dict[str, list[Any]] = {}
         try:
-            # every file of a directory is on its device; a directory entry carries its inode (no stat a file)
-            device = path.stat().st_dev
-            with os.scandir(path) as listing:
-                entries = sorted(listing, key=lambda each: each.name)
             # sorted, so a table's schema file (``{table}@.arrow``) comes before its parts, and parts in name order
-            for entry in entries:
-                table = _table_of(entry.name)
+            for name, file, identity in _mapped_files(path):
+                table = _table_of(name)
                 if table is not None:
-                    inode = (device, entry.inode())
-                    piece = held.get(inode)
+                    piece = held.get(identity)
                     if piece is None and pin:
-                        piece = _map_pinned(entry.path, pinned)
+                        piece = _map_pinned(file, pinned)
                     elif piece is None:
-                        mapped = pa.memory_map(entry.path, "r")
+                        mapped = pa.memory_map(file, "r")
                         self._maps.append(mapped)
                         piece = ipc.open_file(mapped).read_all()
-                    self._by_inode[inode] = piece
+                    self._by_inode[identity] = piece
                     pieces.setdefault(table, []).append(piece)
         except BaseException:
             self._unmap()
@@ -816,11 +1207,13 @@ class MappedTables:
         self.tables: Mapping[str, Any] = MappingProxyType(tables)
 
     @property
-    def by_inode(self) -> Mapping[tuple[int, int], Any]:
-        """each mapped file's table by the file's device and inode: what a later version's mapping takes (``reuse``).
+    def by_inode(self) -> Mapping[Any, Any]:
+        """each mapped file's table by the file's identity -- a version's file by its manifest line (a line names one
+        file, never reused), a file its directory holds itself by (device, inode) -- what a later version's mapping
+        takes (``reuse``).
 
         :return: (device, inode) -> the file's table; empty once closed
-        :rtype: Mapping[tuple[int, int], pa.Table]
+        :rtype: Mapping[Any, pa.Table]
         """
         return MappingProxyType(self._by_inode)
 
@@ -885,12 +1278,13 @@ class MappedVersion(MappedTables):
     :ptype root: Path | str
     :param version: the version
     :ptype version: str
-    :param reuse: another version's mapped files by (device, inode), taken where they are the same files
-    :ptype reuse: Mapping[tuple[int, int], pa.Table] | None
+    :param reuse: another version's mapped files by identity (:attr:`MappedTables.by_inode`), taken where they are the
+        same files
+    :ptype reuse: Mapping[Any, pa.Table] | None
     :raises LookupError: when the version is gone
     """
 
-    def __init__(self, root: Path | str, version: str, *, reuse: Mapping[tuple[int, int], Any] | None = None) -> None:
+    def __init__(self, root: Path | str, version: str, *, reuse: Mapping[Any, Any] | None = None) -> None:
         name = _valid_name(version, "version")
         super().__init__(name, Path(root) / _VERSIONS_DIR / name, lock=True, reuse=reuse)
 
@@ -974,24 +1368,27 @@ def read_version(root: Path | str, version: str) -> Iterator[MappedVersion]:
         _KEPT_VERSIONS.give_back(str(root), mapped)
 
 
-def _part_files(directory: Path, table: str) -> dict[str, Path]:
-    """each part of ``table`` a version (or a result) directory holds, by part name; the schema file is not a part.
+def _table_files(directory: Path, table: str) -> tuple[dict[str, Path], Path | None]:
+    """each part of ``table`` a version (or a result) directory holds, by part name, and its schema file, which is not
+    a part.
 
     :param directory: the directory
     :ptype directory: Path
     :param table: the table
     :ptype table: str
-    :return: part name -> its file
-    :rtype: dict[str, Path]
+    :return: part name -> its file, and the schema file (None when the directory holds the table in no parts)
+    :rtype: tuple[dict[str, Path], Path | None]
     """
     prefix = f"{table}{_PART_SEPARATOR}"
-    return {
-        entry.name[len(prefix) : -len(_TABLE_SUFFIX)]: entry
-        for entry in directory.iterdir()
-        if entry.name.startswith(prefix)
-        and entry.name.endswith(_TABLE_SUFFIX)
-        and entry.name != f"{prefix}{_TABLE_SUFFIX}"
+    schema_name = f"{prefix}{_TABLE_SUFFIX}"
+    files = _files_of(directory)
+    parts = {
+        name[len(prefix) : -len(_TABLE_SUFFIX)]: held.path
+        for name, held in files.items()
+        if name.startswith(prefix) and name.endswith(_TABLE_SUFFIX) and name != schema_name
     }
+    schema = files.get(schema_name)
+    return parts, None if schema is None else schema.path
 
 
 def merged_rows(root: Path | str, version: str, table: str, names: Sequence[str]) -> Callable[[], Any]:
@@ -1026,11 +1423,11 @@ def merged_rows(root: Path | str, version: str, table: str, names: Sequence[str]
     def opened() -> Any:
         descriptor = held()
         try:
-            files = _part_files(path, table)
+            files, schema_file = _table_files(path, table)
             missing = [name for name in ordered if name not in files]
-            if missing:
+            if missing or schema_file is None:
                 raise LookupError(f"shared Arrow version {version!r} holds no part {missing} of table {table!r}")
-            schema = _file_schema(path / f"{table}{_PART_SEPARATOR}{_TABLE_SUFFIX}")
+            schema = _file_schema(schema_file)
         finally:
             os.close(descriptor)
 
@@ -1055,7 +1452,7 @@ def merge_parts(store: SharedArrowStore, version: str, table: str, names: Sequen
     """the :class:`Parts` that merge ``names`` (parts of ``table`` in ``version``) into one part, ``into``.
 
     Publish them on the version (``store.publish(new, {table: merge_parts(...)}, base=version)``): every part of the
-    base outside the group is hard-linked, each part of the group is dropped, and ``into`` is written from the group's
+    base outside the group is kept as the base's own file, each part of the group is dropped, and ``into`` is written from the group's
     mapped files (:func:`merged_rows`), so the merge writes the group's bytes once and nothing else. A reader sees the
     same rows in the same order before and after: the group must be a run of neighbours in part-name order, and
     ``into`` must sort into the run's place (``f"{first}.1"`` after the first part's name ``first``, say), so no other
@@ -1086,8 +1483,8 @@ def merge_parts(store: SharedArrowStore, version: str, table: str, names: Sequen
     if len(group) < 2:
         raise ValueError(f"a merge takes at least two parts of {table!r}, not {group}")
     with store.lease(version) as held:
-        files = _part_files(held.path, _valid_name(table, "table"))
-        schema = _file_schema(held.path / f"{table}{_PART_SEPARATOR}{_TABLE_SUFFIX}") if files else None
+        files, schema_file = _table_files(held.path, _valid_name(table, "table"))
+        schema = _file_schema(schema_file) if files and schema_file is not None else None
     missing = [name for name in group if name not in files]
     if schema is None or missing:
         raise LookupError(f"shared Arrow version {version!r} holds no part {missing or group} of table {table!r}")
@@ -1383,7 +1780,8 @@ class SharedArrowStore:
     """the serving process's shared-memory Arrow: the versions it publishes for workers to read, and the results
     workers hand back. One store per directory, in one process.
 
-    Blocking: call :meth:`publish`, :meth:`claim` and :meth:`sweep` from a worker thread, never the event loop.
+    Blocking: call :meth:`publish`, :meth:`claim`, :meth:`sweep` and :meth:`settle` from a worker thread, never the
+    event loop.
 
     :param root: the directory, on a memory-backed filesystem
     :ptype root: Path | str
@@ -1397,9 +1795,11 @@ class SharedArrowStore:
             raise ValueError("max_bytes must be positive")
         self._root = Path(root)
         self._versions = self._root / _VERSIONS_DIR
+        self._parts = self._root / _PARTS_DIR
         self._segments = self._root / _SEGMENTS_DIR
         self._handoffs = self._root / _HANDOFFS_DIR
         self._versions.mkdir(parents=True, exist_ok=True)
+        self._parts.mkdir(parents=True, exist_ok=True)
         self._segments.mkdir(parents=True, exist_ok=True)
         self._handoffs.mkdir(parents=True, exist_ok=True)
         self._max_bytes = max_bytes
@@ -1431,9 +1831,23 @@ class SharedArrowStore:
         self._refused = 0
         #: what the directories' files hold, kept by every write and removal so :meth:`status` never walks them
         self._held = _HeldFiles(self._versions, self._handoffs)
+        #: the manifest of every version the directory holds under its name, by name: what a publish on it starts
+        #: from, and what a sweep compares a retired version's with to find the part files no version names any more
+        self._manifests: dict[str, _Manifest] = {}
+        #: each part file's (device, inode), by its path under the parts directory (``{part dir}/{file}``): what the
+        #: tally drops as the file is removed
+        self._part_keys: dict[str, tuple[int, int]] = {}
+        #: part files a sweep could not remove (under the parts directory), retried by the next
+        self._unremoved: list[str] = []
+        #: the sweep a publish leaves, on a thread of its own: due once more, and the thread running it (one at most)
+        self._settling = threading.Condition()
+        self._settle_due = False
+        self._settler: threading.Thread | None = None
         with contextlib.suppress(FileNotFoundError):  # NOSILENT: nothing current is the start's state either way
             (self._versions / _CURRENT_FILE).unlink()
+        self._load_manifests()
         self.sweep()
+        self._sweep_parts_on_disk()
         self._adopt()
 
     @property
@@ -1529,7 +1943,7 @@ class SharedArrowStore:
         seen: set[tuple[int, int]] = set()
         return sum(
             _directory_bytes(entry, seen)
-            for half in (self._versions, self._segments, self._handoffs)
+            for half in (self._versions, self._parts, self._segments, self._handoffs)
             for entry in half.iterdir()
             if entry.is_dir()
         )
@@ -1571,8 +1985,12 @@ class SharedArrowStore:
 
         With ``base``, the new version starts as that version: every table of it not named in ``tables`` is kept, and
         a table given as :class:`Parts` keeps every part of the base's it does not name. What is kept is the base's
-        own files, hard-linked: its pages are not copied and not counted twice, so a change to one part costs one
-        part's bytes and one part's write.
+        own files, named in the new version's manifest: no file is touched for it and its pages are counted once, so
+        a change to one part costs one part's write and one manifest's, however many parts the version holds.
+
+        It returns once the version is current. What it leaves -- its readers told (:meth:`reader`), every version
+        superseded and unheld retired and the files only those named removed -- runs after, on the store's own thread
+        (:meth:`settle` waits for it). A write that would pass ``max_bytes`` sweeps at once before it is refused.
 
         :param version: the version's name (:func:`epochs_version`)
         :ptype version: str
@@ -1604,20 +2022,19 @@ class SharedArrowStore:
                 self._pending = name
             try:
                 if not (target / _LOCK_FILE).is_file():
-                    self.sweep()
-                    # the base is held until the version is current, so no sweep retires it while it is linked
-                    base_path = None if base is None else held.enter_context(self.lease(base)).path
+                    # the base is held until the version is current, so no sweep retires it while it is named; let
+                    # go, it leaves its sweep to the store's thread with the rest of the publish's
+                    base_path = None if base is None else held.enter_context(self._lease(base, self._settle_soon)).path
                     self._write_version(name, tables, base_path)
                 with self._state:
-                    published = _described(target)
-                    atomic_write_sync(self._versions / _CURRENT_FILE, name, mode=0o644)
+                    published = self._described(target)
+                    self._write_current(name)
                     self._current = published
                     self._published += 1
             finally:
                 with self._state:
                     self._pending = None
-        self.sweep()
-        self._tell_readers()
+        self._settle_soon()
         log.info(
             "shared Arrow version published",
             extra={"extra_data": {"version": name, "bytes": published.nbytes, "held_bytes": self._held.view[0]}},
@@ -1657,6 +2074,19 @@ class SharedArrowStore:
         :rtype: SharedLease
         :raises LookupError: when nothing is current, or the version named is gone
         """
+        return self._lease(version, self.sweep)
+
+    def _lease(self, version: str | None, on_release: Callable[[], object]) -> SharedLease:
+        """:meth:`lease`, calling ``on_release`` as the lease is released.
+
+        :param version: the version; None for the current one
+        :ptype version: str | None
+        :param on_release: what the release calls (a sweep now, or one left to the store's thread)
+        :ptype on_release: Callable[[], object]
+        :return: the lease
+        :rtype: SharedLease
+        :raises LookupError: when nothing is current, or the version named is gone
+        """
         with self._state:
             if version is None:
                 if self._current is None:
@@ -1667,14 +2097,14 @@ class SharedArrowStore:
                 if self._current is not None and self._current.name == version:
                     held = self._current
                 elif (path / _LOCK_FILE).is_file():
-                    held = _described(path)
+                    held = self._described(path)
                 else:
                     raise LookupError(f"shared Arrow version {version!r} is not held")
             # under the state lock, which every retirement takes: the version cannot go between the check and this
             descriptor = _locked(held.path, fcntl.LOCK_SH)
         if descriptor is None:
             raise LookupError(f"shared Arrow version {held.name!r} is being retired")
-        return SharedLease(held, descriptor, self.sweep)
+        return SharedLease(held, descriptor, on_release)
 
     def reader(
         self,
@@ -1876,8 +2306,9 @@ class SharedArrowStore:
             self.release(handed)
 
     def sweep(self) -> list[str]:
-        """remove every version neither current nor held, every result no open slot or claim owns, every hand-off
-        released that no worker maps, and every staging directory whose writer is gone.
+        """remove every version neither current nor held, the part files only those named, every result no open slot
+        or claim owns, every hand-off released that no worker maps, and every staging directory whose writer is gone.
+        Now, on the caller's thread, beside any sweep a publish left to the store's thread (:meth:`settle`).
 
         :return: the versions retired
         :rtype: list[str]
@@ -1885,6 +2316,10 @@ class SharedArrowStore:
         gone: list[tuple[Path, Path]] = []
         with self._state:
             retired = self._sweep_versions(gone)
+            # a version's manifest leaves with the version: the files it alone named go with it
+            dying = self._freed([self._manifests.pop(name) for name in retired if name in self._manifests])
+            dying.extend(self._unremoved)
+            self._unremoved = []
             self._sweep_segments(gone)
             self._sweep_handoffs(gone)
             self._retired += len(retired)
@@ -1902,6 +2337,7 @@ class SharedArrowStore:
                     self._held.add(path, left)
                 else:
                     self._held.forget(path)
+        self._remove_parts(dying)
         with self._state:
             # a closed result's bytes count in a publish's room until its files are gone (a sweep after the last
             # table taken from it is freed, for one kept past its close)
@@ -1911,6 +2347,225 @@ class SharedArrowStore:
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
+
+    def settle(self) -> None:
+        """wait until the sweep a publish left to the store's thread has run: its readers told, superseded versions
+        retired and their files removed (:meth:`publish`). What the directory holds is then what the store's state
+        says it may: a caller that asks right after a publish (a test, a measure) reads that, not the step before.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._settling:
+            while self._settler is not None:
+                self._settling.wait()
+
+    def _settle_soon(self) -> None:
+        """have the store's thread tell the readers and sweep, after the caller returns: one thread at a time, a
+        request while it runs making it run once more, never a pile of them.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._settling:
+            self._settle_due = True
+            if self._settler is not None:
+                return
+            self._settler = threading.Thread(target=self._settle_all, name="shared-arrow-settle", daemon=True)
+            settler = self._settler
+        try:
+            settler.start()
+        except RuntimeError as exc:
+            # NOSILENT: no thread to be had (the interpreter shutting down): the caller sweeps, said
+            contain(
+                exc, log=log, what="the shared Arrow store's sweeping thread could not start; swept on the caller's"
+            )
+            self._settle_all()
+
+    def _settle_all(self) -> None:
+        """tell the readers and sweep while a publish asked for it since the last time: the store's sweeping thread.
+
+        :return: nothing
+        :rtype: None
+        """
+        while True:
+            with self._settling:
+                if not self._settle_due:
+                    self._settler = None
+                    self._settling.notify_all()
+                    return
+                self._settle_due = False
+            try:
+                self._tell_readers()
+                self.sweep()
+            except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
+                contain(exc, log=log, what="a shared Arrow sweep after a publish failed; the next sweep retries it")
+
+    def _write_current(self, name: str) -> None:
+        """name ``name`` the current version in the directory, for workers (:func:`read_version`): written under a
+        staging name and renamed over the last, so a reader reads one whole name. The directory is memory-backed and
+        a new store removes the file at its start, so nothing is synced. Called under ``_state``.
+
+        :param name: the version
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        staged = self._versions / f"{_STAGING_PREFIX}{_CURRENT_FILE}-{uuid.uuid7().hex[-8:]}"
+        try:
+            staged.write_text(name)
+            os.replace(staged, self._versions / _CURRENT_FILE)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):  # NOSILENT: never written, or renamed already
+                staged.unlink()
+            raise
+
+    def _described(self, path: Path) -> SharedVersion:
+        """a version's directory as a :class:`SharedVersion`: from its manifest the store holds, no file read.
+
+        :param path: the directory
+        :ptype path: Path
+        :return: the version
+        :rtype: SharedVersion
+        """
+        manifest = self._manifests.get(path.name) if path.parent == self._versions else None
+        if manifest is None:
+            return _described(path)
+        return SharedVersion(
+            name=path.name,
+            path=path,
+            tables=tuple(sorted(manifest.lines)),
+            nbytes=sum(manifest.nbytes.values()) + manifest.file_bytes,
+        )
+
+    def _freed(self, retired: Sequence[_Manifest]) -> list[str]:
+        """the part files the manifests of versions just retired name and no version the store holds does: each as
+        a path under the parts directory. A table a version holds as the retired one did (the same mapping, left alone
+        by every publish between) costs nothing; a table it changed costs a comparison of its lines, in C. Called under
+        ``_state``.
+
+        :param retired: the retired versions' manifests, out of :attr:`_manifests`
+        :ptype retired: Sequence[_Manifest]
+        :return: the files to remove
+        :rtype: list[str]
+        """
+        live = list(self._manifests.values())
+        lines: set[str] = set()
+        for manifest in retired:
+            for table, held in manifest.lines.items():
+                others = [each.lines[table] for each in live if table in each.lines]
+                if any(other is held for other in others):
+                    continue
+                candidates = set(held.values())
+                for other in others:
+                    candidates.difference_update(other.values())
+                lines |= candidates
+        return [_line_rel(line) for line in lines]
+
+    def _remove_parts(self, files: Sequence[str]) -> None:
+        """remove part files no version names (:meth:`_freed`), outside the store's lock, and drop each from the tally;
+        a part directory whose last file went goes too. A file that would not go is retried by the next sweep.
+
+        :param files: the files, as paths under the parts directory
+        :ptype files: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        if not files:
+            return
+        removed: list[str] = []
+        failed: list[str] = []
+        for rel in files:
+            try:
+                os.unlink(self._parts / rel)
+            except FileNotFoundError:
+                # NOSILENT: gone already, which is what was wanted
+                pass
+            except OSError as exc:
+                contain(exc, log=log, what="a shared Arrow part file could not be removed (the next sweep retries it)")
+                failed.append(rel)
+                continue
+            removed.append(rel)
+        emptied: list[Path] = []
+        with self._state:
+            self._unremoved.extend(failed)
+            for rel in removed:
+                directory = self._parts / rel.split("/", 1)[0]
+                key = self._part_keys.pop(rel, None)
+                if key is not None and self._held.drop(directory, [key]) == 0:
+                    emptied.append(directory)
+        for directory in emptied:
+            try:
+                os.rmdir(directory)
+            except FileNotFoundError:
+                # NOSILENT: gone already
+                pass
+            except OSError as exc:
+                contain(exc, log=log, what="an emptied shared Arrow part directory could not be removed")
+                continue
+            with self._state:
+                self._held.forget(directory)
+
+    def _recorded_parts(self, part_dir: Path, made: Mapping[str, os.stat_result]) -> None:
+        """record the files a publish wrote or linked into its part directory in the tally. Called under ``_state``.
+
+        :param part_dir: the directory
+        :ptype part_dir: Path
+        :param made: each file by name, as ``os.stat`` read it
+        :ptype made: Mapping[str, os.stat_result]
+        :return: nothing
+        :rtype: None
+        """
+        if not made:
+            return
+        files: dict[tuple[int, int], int] = {}
+        for name, stat in made.items():
+            key = (stat.st_dev, stat.st_ino)
+            files[key] = stat.st_size
+            self._part_keys[f"{part_dir.name}/{name}"] = key
+        self._held.add(part_dir, files)
+
+    def _load_manifests(self) -> None:
+        """read the manifest of every version the directory holds at the start: a version a reader of an earlier
+        process still holds is kept, and names the part files that are kept with it.
+
+        :return: nothing
+        :rtype: None
+        """
+        for entry in self._versions.iterdir():
+            if not entry.is_dir() or entry.name.startswith(".") or not (entry / _LOCK_FILE).is_file():
+                continue
+            text = _manifest_text(entry)
+            if text is not None:
+                self._manifests[entry.name] = _parsed_manifest(text)
+
+    def _sweep_parts_on_disk(self) -> None:
+        """at the start, after the first sweep: remove every part file no version kept names (a publish that died
+        mid-write, or a version removed whose files a crash left), and every part directory left empty.
+
+        :return: nothing
+        :rtype: None
+        """
+        named = {
+            _line_rel(line)
+            for manifest in self._manifests.values()
+            for held in manifest.lines.values()
+            for line in held.values()
+        }
+        for directory in list(self._parts.iterdir()):
+            if not directory.is_dir():
+                directory.unlink()
+                continue
+            left = False
+            for entry in list(directory.iterdir()):
+                if f"{directory.name}/{entry.name}" in named:
+                    left = True
+                elif entry.is_dir():
+                    remove_tree(entry, log=log, what="a stray directory among shared Arrow part files")
+                else:
+                    entry.unlink()
+            if not left:
+                os.rmdir(directory)
 
     def _adopt(self) -> None:
         """record what the directory holds at the start that no sweep could remove (a version or a hand-off a live
@@ -1930,6 +2585,11 @@ class SharedArrowStore:
                 with self._state:
                     if entry not in self._held:
                         self._held.add(entry, files)
+        for directory in self._parts.iterdir():
+            with os.scandir(directory) as listing:
+                made = {entry.name: entry.stat() for entry in listing}
+            with self._state:
+                self._recorded_parts(directory, made)
 
     def _released(self, slot_id: str) -> None:
         """a claimed result was closed: its files go.
@@ -1948,21 +2608,19 @@ class SharedArrowStore:
         """the bytes the directory may be holding: what its files hold, except an open slot's and a hand-off's being
         written, each counted at its bound however much it has written. Called under ``_state``.
 
+        What the tally records (every version, part file, claimed result and written hand-off, a file once) is read
+        from it, never walked: a version's parts are as many as it holds, and counting them took a stat each, every
+        publish. The few directories it does not record are walked: a result written and not claimed, a staging
+        directory, one a sweep is removing.
+
         :return: bytes
         :rtype: int
         """
-        seen: set[tuple[int, int]] = set()
-        held = sum(_directory_bytes(entry, seen) for entry in self._versions.iterdir() if entry.is_dir())
-        held += sum(
-            _directory_bytes(entry, seen)
-            for entry in self._segments.iterdir()
-            if entry.is_dir() and _slot_of(entry.name) not in self._slots
-        )
-        held += sum(
-            _directory_bytes(entry, seen)
-            for entry in self._handoffs.iterdir()
-            if entry.is_dir() and _slot_of(entry.name) not in self._handing
-        )
+        held = self._held.bytes
+        for half, owned in ((self._versions, ()), (self._segments, self._slots), (self._handoffs, self._handing)):
+            for entry in half.iterdir():
+                if entry.is_dir() and entry not in self._held and _slot_of(entry.name) not in owned:
+                    held += _directory_bytes(entry)
         return held + self._reserved_bytes()
 
     def _reserved_bytes(self) -> int:
@@ -1986,6 +2644,12 @@ class SharedArrowStore:
         current = None if self._current is None else self._current.name
         for entry in list(self._versions.iterdir()):
             name = entry.name
+            if not entry.is_dir() and name.startswith(_STAGING_PREFIX):
+                # the current version's name being written (:meth:`_write_current`, under ``_state``): one left is a
+                # write that died
+                with contextlib.suppress(FileNotFoundError):  # NOSILENT: gone already
+                    entry.unlink()
+                continue
             if not entry.is_dir() or name in (current, self._staging, self._pending):
                 continue
             if name.startswith(_RETIRING_PREFIX):
@@ -2057,7 +2721,8 @@ class SharedArrowStore:
                 del self._handed_bytes[name]
 
     def _write_version(self, name: str, tables: Mapping[str, Any], base: Path | None = None) -> None:
-        """write a version under a staging name and rename it into place whole; on any failure keep nothing.
+        """write a version: its new files into a part directory of its own, its manifest under a staging name, renamed
+        into place whole; on any failure keep nothing.
 
         :param name: the version
         :ptype name: str
@@ -2071,34 +2736,68 @@ class SharedArrowStore:
         """
         staging_name = f"{_STAGING_PREFIX}{name}-{uuid.uuid7().hex[-8:]}"
         staging = self._versions / staging_name
+        part_dir = self._parts / uuid.uuid7().hex
+        imported: Path | None = None
         with self._state:
             self._staging = staging_name
-            # what the directory holds but for open slots and hand-offs being written, as this write starts (its
-            # staging directory not yet made)
-            files = self._committed_bytes() - self._reserved_bytes()
-            # the results claimed and hand-offs written before this write are in ``files``; one claimed or written
-            # during it counts from then
-            claimed_before = set(self._claimed_bytes)
-            handed_before = set(self._handed_bytes)
+        #: what the directory holds but for open slots and hand-offs being written, as this write starts (its own
+        #: files not yet made), and the results claimed and hand-offs written by then
+        start: list[Any] = []
+
+        def counted() -> None:
+            with self._state:
+                start[:] = [
+                    self._committed_bytes() - self._reserved_bytes(),
+                    set(self._claimed_bytes),
+                    set(self._handed_bytes),
+                ]
 
         def room() -> int:
             # asked before every batch: a slot or hand-off reserved while this writes takes its room from this write,
             # never from the bound (each counts what this write has staged so far); a slot claimed or a hand-off
             # written while this writes stops counting at its bound, so its files count from then on instead
             with self._state:
+                files, claimed_before, handed_before = start
                 claimed = sum(size for slot, size in self._claimed_bytes.items() if slot not in claimed_before)
                 handed = sum(size for each, size in self._handed_bytes.items() if each not in handed_before)
-                return self._max_bytes - files - claimed - handed - self._reserved_bytes()
+                return int(self._max_bytes - files - claimed - handed - self._reserved_bytes())
 
+        def reclaim() -> None:
+            # what a publish left to the store's thread may not have gone yet: swept now, then counted again
+            self._tell_readers()
+            self.sweep()
+            counted()
+
+        counted()
+        done = False
         try:
             staging.mkdir()
-            _write_tables(staging, tables, room, base)
+            from_base: _Manifest | None = None
+            if base is not None:
+                from_base = self._manifests.get(base.name)
+                if from_base is None:
+                    # a version written before manifests: its files named once, from a part directory of their own
+                    imported = self._parts / uuid.uuid7().hex
+                    from_base = _imported(base, imported)
+            manifest, made, written = _write_parts(part_dir, tables, from_base, room, reclaim)
+            text = manifest.joined()
+            if len(text) > room() - written:
+                reclaim()
+                if len(text) > room() - written:
+                    raise SharedArrowFullError(f"version {name!r}'s manifest would pass the bytes it may take")
+            (staging / _MANIFEST_FILE).write_text(text)
             (staging / _LOCK_FILE).touch()
             staged = _directory_files(staging)
+            kept = {} if imported is None else self._kept_imported(manifest, imported)
             os.rename(staging, self._versions / name)
             with self._state:
                 # the publish's _pending until it is current, so no sweep retires it before it is recorded
+                self._manifests[name] = replace(manifest, file_bytes=len(text))
+                self._recorded_parts(part_dir, made)
+                if imported is not None:
+                    self._recorded_parts(imported, kept)
                 self._held.add(self._versions / name, staged)
+            done = True
         except SharedArrowFullError:
             with self._state:
                 self._refused += 1
@@ -2110,8 +2809,40 @@ class SharedArrowStore:
         finally:
             # renamed into place on success, so only a failed write's staging is still here to remove
             remove_tree(staging, log=log, what="a failed version's staging directory")
+            if not done:
+                remove_tree(part_dir, log=log, what="a failed version's part files")
+                if imported is not None:
+                    remove_tree(imported, log=log, what="a failed version's part files named from its base")
             with self._state:
                 self._staging = None
+
+    @staticmethod
+    def _kept_imported(manifest: _Manifest, imported: Path) -> dict[str, os.stat_result]:
+        """of the files a version written before manifests was named by (:func:`_imported`), keep those the new
+        version names, remove the rest.
+
+        :param manifest: the new version's manifest
+        :ptype manifest: _Manifest
+        :param imported: the directory its base's files were named from
+        :ptype imported: Path
+        :return: each file kept, by name, as ``os.stat`` reads it
+        :rtype: dict[str, os.stat_result]
+        """
+        named = {
+            name
+            for held in manifest.lines.values()
+            for name, line in held.items()
+            if _line_fields(line)[1] == imported.name
+        }
+        kept: dict[str, os.stat_result] = {}
+        for entry in list(imported.iterdir()):
+            if entry.name in named:
+                kept[entry.name] = entry.stat()
+            else:
+                entry.unlink()
+        if not kept:
+            os.rmdir(imported)
+        return kept
 
 
 @dataclass(frozen=True)
@@ -2139,7 +2870,7 @@ class _HeldVersion:
         schema: str | None,
         config: Mapping[str, Any] | None,
         prepare: Callable[[Any], Any] | None,
-        reuse: Mapping[tuple[int, int], Any] | None = None,
+        reuse: Mapping[Any, Any] | None = None,
     ) -> None:
         self.lease = lease
         self.name = lease.version.name
@@ -2226,9 +2957,9 @@ class SharedArrowReader:
         self._prepare = prepare
         self._lock = threading.Lock()
         self._held: _HeldVersion | None = None
-        #: the files of the version let go that the current one shares, by (device, inode), for its first read to take
+        #: the files of the version let go that the current one shares, by identity, for its first read to take
         #: (:class:`MappedTables`): mapped already, so keeping them keeps no page the current version does not hold
-        self._lend: Mapping[tuple[int, int], Any] = {}
+        self._lend: Mapping[Any, Any] = {}
         self._closed = False
         self._reads = 0
         self._mapped = 0

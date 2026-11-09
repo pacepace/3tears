@@ -177,6 +177,26 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_manifests",
+        rationale=(
+            "the manifest of each version directory in this process's own memory-backed store, so a publish starts "
+            "from its base's without reading it and a sweep finds the part files a retired version alone named; "
+            "another pod has nothing to do with them, and a restart reads afresh the manifests the directory holds"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_part_keys",
+        rationale=(
+            "each part file of this process's own memory-backed store by its (device, inode), so the byte tally "
+            "drops it as a sweep removes it; derived from the files the store wrote, as local, and recorded afresh "
+            "at a restart"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="_HeldFiles",
         attr_name="_dirs",
         rationale=(
