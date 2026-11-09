@@ -106,10 +106,6 @@
   "apparatus": {
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunRig"}}, {"type": "null"}],
    "description": "The rig each run was measured with, for each run that recorded one past a serial run pinning and declaring nothing; none where no run did, or the bundle carried none."
-  },
-  "stated_widths": {
-   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/StatedWidth"}}, {"type": "null"}],
-   "description": "Every interval's half-width the campaign's code page and aspect pages state, by the page that states it, so the written page reads each measure at the one precision its campaign does; none for an input built without them (a bare input), whose own intervals alone set its precision."
   }
  },
  "additionalProperties": false,
@@ -1152,18 +1148,6 @@
    },
    "additionalProperties": false,
    "description": "One arm's figure on one measure: a mean with its spread, a latency's percentiles, or a distribution."
-  },
-  "StatedWidth": {
-   "type": "object",
-   "required": ["page", "name", "reading", "half_width"],
-   "properties": {
-    "page": {"type": "string", "description": "The page that states it: `code`, or `aspect <label>` for an aspect's own page."},
-    "name": {"type": "string", "description": "The measure's or judged dimension's name, `passed` for the pass rate."},
-    "reading": {"type": "string", "description": "Which reading of it: `measure`, `judged` or `trial`."},
-    "half_width": {"type": "number", "exclusiveMinimum": 0, "description": "The interval's half-width, as stored: a rate's as a share."}
-   },
-   "additionalProperties": false,
-   "description": "One interval's half-width as a page of the campaign states it: what the number policy reads a measure's decimals from, on every page of the campaign alike."
   },
   "Stratum": {
    "type": "object",

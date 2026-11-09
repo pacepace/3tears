@@ -147,10 +147,9 @@ def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     assert isinstance(passes.data, ForestChart) and isinstance(cost.data, ForestChart)
     assert passes.data.zero_label == "no change vs P · September"
     heads = list(dict.fromkeys(row.group for row in passes.data.rows))
-    # Each measure's level at its one precision across its campaign (number policy, rules 1 and 2): the tenth each
-    # campaign's narrowest interval sets, the pass rate's ±2.86 points and holds character's ±2.54.
-    assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91.5%"], heads
-    assert rate == "85.3%"
+    # Each measure's level at its one precision on the page (number policy, rule 1).
+    assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91%"], heads
+    assert rate == "85%"
     assert cost.data.zero_label == "no change vs P · September ($1.89, mean of 294 cases)"
     assert "Production cost, per 1,000 replies, in dollars." in cost_notes
 

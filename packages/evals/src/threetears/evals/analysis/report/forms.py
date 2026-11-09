@@ -117,7 +117,6 @@ from threetears.evals.analysis.report_input import (
     Reading,
     ReportInput,
     Stat,
-    StatedWidth,
 )
 from threetears.evals.analysis.stats import mean_interval
 from threetears.evals.analysis.report_margins import aspect_board
@@ -456,28 +455,11 @@ class PageForms:
         if _counts_passes(report_input):
             kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
         stated, set_figures = _written_stated(report_input, kinds)
-        # The campaign's one table: the page's own half-widths and every one its campaign's code page and aspect pages
-        # state, as the input froze them, so a measure reads alike on every page of its campaign.
-        sets = _measure_sets([*stated, *(report_input.stated_widths or ())])
+        # The campaign's one table (:func:`_measure_sets`) over what the input holds of it: every compared interval the
+        # campaign's code page and aspect pages state is an arm's level or a comparison's change the input carries too.
+        sets = _measure_sets(stated)
         measures = {(key, kind): _written_form(report_input, key, kind, sets, set_figures) for key, kind in kinds}
         return cls("written", measures, report_input)
-
-    @staticmethod
-    def stated_widths(
-        bundles: Iterable[AnalysisContextBundle], readings: CampaignReadings | None = None
-    ) -> list[StatedWidth]:
-        """Every half-width a campaign's aspect pages and its code page state, as stored, each by the page that states
-        it: what each measure's set reads its decimals from (:func:`campaign_set`), on those pages and, frozen into the
-        campaign's report input (``ReportInput.stated_widths``), on its written page (:meth:`of`).
-
-        :param bundles: The campaign's aspects' bundles.
-        :ptype bundles: Iterable[AnalysisContextBundle]
-        :param readings: What code read off the campaign; None where no code page is read.
-        :ptype readings: CampaignReadings | None
-        :return: The half-widths, aspect by aspect, then the code page's.
-        :rtype: list[StatedWidth]
-        """
-        return _campaign_stated(bundles, readings)
 
     @classmethod
     def off_page(cls) -> PageForms:
@@ -3493,9 +3475,9 @@ def _change_quantity(
 
 def _written_stated(
     report_input: ReportInput, kinds: Iterable[tuple[str, _MeasureKind]]
-) -> tuple[list[StatedWidth], dict[MeasureSet, list[float]]]:
-    """What a written page's own figures add to its campaign's sets (:func:`campaign_set`): the half-width of each
-    headline interval of a measure, as stored (each arm's level, on the page and on each aspect; each comparison's
+) -> tuple[list[_Width], dict[MeasureSet, list[float]]]:
+    """A written page's own half-widths, each compared (:data:`_Provenance`), and its sets' figures
+    (:func:`campaign_set`): the half-width of each headline interval of a measure, as stored (each arm's level, on the page and on each aspect; each comparison's
     change, the pass rate's readings and pairs among them, held in points, so restated as shares), and each set's
     figures as printed, which a set with no interval reads its decimals from.
 
@@ -3504,7 +3486,7 @@ def _written_stated(
     :param kinds: Each measure the page states, by its key and kind.
     :ptype kinds: Iterable[tuple[str, _MeasureKind]]
     :return: The half-widths, stated on the written page, and each set's figures.
-    :rtype: tuple[list[StatedWidth], dict[MeasureSet, list[float]]]
+    :rtype: tuple[list[_Width], dict[MeasureSet, list[float]]]
     """
     found: list[tuple[tuple[str, str], float | None]] = []
     figures: dict[MeasureSet, list[float]] = {}
@@ -3535,7 +3517,7 @@ def _written_stated(
             stats = [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())]
             found += [(set_key, _stat_width(stat)) for stat in stats]
         held_figures += [mean * levels.factor for mean in held_means(report_input, key)]
-    return _stated("written", found), figures
+    return _stated("written", [(key, width, "compared") for key, width in found]), figures
 
 
 def _set_kind(report_input: ReportInput, key: str, kind: _MeasureKind) -> _MeasureKind:
@@ -3737,79 +3719,111 @@ def _aspect_page(label: str) -> str:
     return f"aspect {label}"
 
 
-def _stated(page: str, widths: Iterable[tuple[tuple[str, str], float | None]]) -> list[StatedWidth]:
+#: Where a half-width comes from, as it is gathered: ``compared``, an interval on a figure a reader compares (an arm's
+#: level, a comparison's change); ``pooled``, one on a figure pooled over the arms' or the comparisons' own (the code
+#: page's campaign-wide pass rate and its change); ``derived``, one no page prints, the engine draws from a level's
+#: standard error (an aspect page states a judged score's level as its mean and its spread). Only a ``compared`` one
+#: sets a measure's digits (owner ruling, set digits): the rest print at the form it sets (:func:`_measure_sets`).
+_Provenance = Literal["compared", "pooled", "derived"]
+
+#: One half-width as it is gathered: its reading's key, its width as stored, and where it comes from.
+_Gathered = tuple[tuple[str, str], float | None, _Provenance]
+
+
+@dataclass(frozen=True)
+class _Width:
+    """One half-width a page of the campaign states: the page, its reading's name and kind, its width as stored, and
+    where it comes from (:data:`_Provenance`)."""
+
+    page: str
+    name: str
+    reading: str
+    half_width: float
+    provenance: _Provenance
+
+
+def _stated(page: str, widths: Iterable[_Gathered]) -> list[_Width]:
     """Half-widths one page states, by their reading's key; an absent one, and one that is no number, left out."""
     return [
-        StatedWidth(page=page, name=name, reading=reading, half_width=width)
-        for (name, reading), width in widths
+        _Width(page, name, reading, float(width), provenance)
+        for (name, reading), width, provenance in widths
         if width is not None and math.isfinite(width) and width > 0
     ]
 
 
-def _readings_stated(readings: CampaignReadings) -> list[StatedWidth]:
+def _readings_stated(readings: CampaignReadings) -> list[_Width]:
     """The half-widths a campaign's code page states, as stored, by reading: each change's and each pair's interval
-    on the pass rate (held in points, so restated as shares), each arm's interval on a measure, and each arm's pooled
-    interval across the aspects."""
-    found: list[tuple[tuple[str, str], float | None]] = []
+    on the pass rate (held in points, so restated as shares) and each arm's interval on a measure, all compared; and
+    each arm's interval pooled across the aspects, its level's and its change's."""
+    found: list[_Gathered] = []
     for row in readings.readings:
         found += [
-            (_PASS_RATE, _half_width(interval, 100.0))
+            (_PASS_RATE, _half_width(interval, 100.0), "compared")
             for interval in (row.gain_interval, row.drop_interval, row.within_interval)
         ]
-    found += [(_PASS_RATE, _half_width(pair.interval, 100.0)) for pair in readings.pairs]
-    found += [(_set_key(reading.measure, "measure"), _half_width(reading.interval)) for reading in readings.measures]
+    found += [(_PASS_RATE, _half_width(pair.interval, 100.0), "compared") for pair in readings.pairs]
+    found += [
+        (_set_key(reading.measure, "measure"), _half_width(reading.interval), "compared")
+        for reading in readings.measures
+    ]
     if readings.aggregate is not None:
         for arm in readings.aggregate.arms:
-            found.append((_PASS_RATE, _half_width(arm.pass_rate.interval, 100.0)))
+            found.append((_PASS_RATE, _half_width(arm.pass_rate.interval, 100.0), "pooled"))
             if arm.change is not None:
-                found.append((_PASS_RATE, _half_width(arm.change.interval, 100.0)))
+                found.append((_PASS_RATE, _half_width(arm.change.interval, 100.0), "pooled"))
     return _stated("code", found)
 
 
-def _bundle_stated(bundle: AnalysisContextBundle) -> list[StatedWidth]:
+def _bundle_stated(bundle: AnalysisContextBundle) -> list[_Width]:
     """The half-widths an aspect's page states, as stored, by reading: each contrast's interval on its change, each
-    guardrail's, and each arm's own interval on its level, a measure's as its cell holds it and a judged score's as its
-    cell's mean and spread draw it, inside the dimension's scale."""
+    guardrail's and each arm's own interval on a measure's level as its cell holds it, all compared; and a judged
+    score's level's, derived from its cell's mean and spread inside the dimension's scale, which the page states as
+    the mean and its spread, never as an interval."""
     surface = bundle_decision_surface(bundle)
-    found: list[tuple[tuple[str, str], float | None]] = [
-        (_set_key(comparison.name, comparison.reading), _half_width(comparison.interval))
+    found: list[_Gathered] = [
+        (_set_key(comparison.name, comparison.reading), _half_width(comparison.interval), "compared")
         for family in bundle.multiple_comparisons.families
         for comparison in family.comparisons
     ]
     for cell in surface.cells:
         for summary in cell.measures.measures:
             if summary.ci_low is not None and summary.ci_high is not None:
-                found.append((_set_key(summary.name, "measure"), _half_width((summary.ci_low, summary.ci_high))))
+                found.append(
+                    (_set_key(summary.name, "measure"), _half_width((summary.ci_low, summary.ci_high)), "compared")
+                )
         for judged in cell.judged:
             facts = surface.dimensions.get(judged.dimension)
             if judged.mean is None or judged.sem is None or facts is None:
                 continue
             interval = mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
-            found.append(((judged.dimension, "judged"), _half_width(interval)))
+            found.append(((judged.dimension, "judged"), _half_width(interval), "derived"))
     if bundle.guardrails is not None:
         found += [
-            (_set_key(check.name, check.reading), _half_width(check.interval)) for check in bundle.guardrails.checks
+            (_set_key(check.name, check.reading), _half_width(check.interval), "compared")
+            for check in bundle.guardrails.checks
         ]
     return _stated(_aspect_page(bundle.aspect), found)
 
 
 def _campaign_stated(
     bundles: Iterable[AnalysisContextBundle], readings: CampaignReadings | None = None
-) -> list[StatedWidth]:
+) -> list[_Width]:
     """Every half-width a campaign's aspect pages and its code page state, as stored, each by the page that states it
-    (:meth:`PageForms.stated_widths`)."""
+    and where it comes from."""
     stated = [width for bundle in bundles for width in _bundle_stated(bundle)]
     return stated if readings is None else [*stated, *_readings_stated(readings)]
 
 
-def _measure_sets(stated: Iterable[StatedWidth]) -> dict[MeasureSet, tuple[float, ...]]:
-    """The campaign's one table: every half-width its pages state, by the set each joins (:func:`campaign_set`), which
-    the written page, the code page and every aspect page read their decimals from alike."""
+def _measure_sets(stated: Iterable[_Width]) -> dict[MeasureSet, tuple[float, ...]]:
+    """The campaign's one table: every compared half-width its pages state, by the set each joins
+    (:func:`campaign_set`), which the written page, the code page and every aspect page read their decimals from
+    alike. The one place the owner's set-digits ruling is decided: a pooled or derived half-width joins no set, so it
+    never sets a measure's digits, and its figure prints at the form the compared ones set."""
     held: dict[MeasureSet, list[float]] = {}
     for width in stated:
-        held.setdefault(campaign_set(width.page, *_set_key(width.name, width.reading)), []).append(
-            float(width.half_width)
-        )
+        if width.provenance != "compared":
+            continue
+        held.setdefault(campaign_set(width.page, *_set_key(width.name, width.reading)), []).append(width.half_width)
     return {key: tuple(found) for key, found in held.items()}
 
 

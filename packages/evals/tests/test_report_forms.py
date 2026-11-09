@@ -38,7 +38,7 @@ from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import CampaignReadings
+from threetears.evals.analysis.campaign_readings import AggregateFigure, CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ChartReference
@@ -547,19 +547,50 @@ def test_the_code_page_s_readings_set_the_precision_of_every_aspect_page_the_eng
     assert all(tenth.fullmatch(text) for text in on_code), on_code
 
 
-def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
-    """One table per campaign: a campaign's report input freezes the half-widths its code page and aspect pages state
-    (``stated_widths``), so Kairo's written page reads the pass rate at the tenth its narrowest interval sets (the code
-    page's pooled change, ±2.86 points), as its aspect's page does. Built without them, as a bare input is, the written
-    page reads the whole points its own intervals set (the control)."""
+def _pooled_narrowed(readings: CampaignReadings) -> CampaignReadings:
+    """``readings`` with the campaign-wide pooled figures' every interval cut to ±0.1 points about its figure: narrower
+    than any interval a reader compares."""
+    assert readings.aggregate is not None
+
+    def cut(figure: AggregateFigure | None) -> AggregateFigure | None:
+        if figure is None or figure.value is None or figure.interval is None:
+            return figure
+        return figure.model_copy(update={"interval": (figure.value - 0.1, figure.value + 0.1)})
+
+    arms = [
+        arm.model_copy(update={"pass_rate": cut(arm.pass_rate), "change": cut(arm.change)})
+        for arm in readings.aggregate.arms
+    ]
+    return readings.model_copy(update={"aggregate": readings.aggregate.model_copy(update={"arms": arms})})
+
+
+def _kairo_pass_rate_places(readings: CampaignReadings) -> int | None:
+    """The decimals Kairo's aspect page reads the pass rate's changes at, its forms built over the campaign."""
     bundle = kairo_bundle()
-    held = report_input(bundle)
-    (aspect,) = PageForms.of_aspects(bundle.aspects, bundle.readings).values()
-    on_aspect = aspect.contrast_places(TRIAL_PASS_NAME, "trial")
-    assert on_aspect is not None and on_aspect.change == 1
-    assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 1
-    bare = held.model_copy(update={"stated_widths": None})
-    assert PageForms.of(bare).measure(TRIAL_PASS_NAME, kind="trial").places == 0
+    (aspect,) = PageForms.of_aspects(bundle.aspects, readings).values()
+    places = aspect.contrast_places(TRIAL_PASS_NAME, "trial")
+    assert places is not None
+    return places.change
+
+
+def test_a_pooled_figure_never_sets_a_measure_s_digits() -> None:
+    """Owner ruling, set digits: a measure's digits come from the narrowest interval on a figure a reader compares (an
+    arm's level, a comparison's change). The code page's campaign-wide pooled pass rate and its change, cut narrower
+    than every compared interval, still leave Kairo's pass rate in whole points; a compared reading cut as narrow sets
+    a tenth (the control)."""
+    readings = kairo_bundle().readings
+    assert _kairo_pass_rate_places(readings) == 0
+    assert _kairo_pass_rate_places(_pooled_narrowed(readings)) == 0
+    assert _kairo_pass_rate_places(_narrowed_readings(readings)) == 1
+
+
+def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
+    """One form per measure across the campaign: Kairo's written page reads the pass rate at the places its aspect's
+    page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points: whole
+    points (§2.5), never the tenth the code page's pooled change (±2.86 points) would set."""
+    held = report_input(kairo_bundle())
+    assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 0
+    assert _kairo_pass_rate_places(kairo_bundle().readings) == 0
 
 
 def test_a_judged_bar_reads_alike_on_the_code_page_and_its_aspect_page() -> None:
@@ -1422,7 +1453,7 @@ def _kairo_rate() -> str:
 
 #: Kairo's rate, money and pass-rate keys, each with the measure and kind its figures are held under, the role, and
 #: the texts the key prints of it: a rate's level and interval in percent, money per 1,000 replies, the pass rate's
-#: change in points, at the tenth its campaign's narrowest interval sets (the code page's pooled change, ±2.86 points).
+#: change in points.
 _MEASURED_KEYS = [
     ("measure.{rate}.September.mean", ("{rate}", "measure"), "level", "99.7%", ["99.7"]),
     ("measure.{rate}.September.ci", ("{rate}", "measure"), "interval", "98.6–99.9%", ["98.6", "99.9"]),
@@ -1440,7 +1471,7 @@ _MEASURED_KEYS = [
         "$1.76 to $2.03 per 1,000 replies",
         ["$1.76", "$2.03"],
     ),
-    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-8", ["-8"]),
 ]
 
 

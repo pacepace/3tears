@@ -37,9 +37,6 @@ nothing carries no entry, and an input none of whose runs recorded one carries n
 ``unanswered`` copies the arm's unanswered calls by usage role (``ArmScoreboard.unanswered``), beside its cost and
 never inside it; a row no role counted them for carries none, which reads as not counted, never as none. Both are
 left out of the document when unset, so an input built before they existed digests as it did. So is a row's
-``stated_widths`` (:class:`StatedWidth`): the half-width of every interval the campaign's code page and aspect pages
-state, each a difference of two of the pipeline's ends, so the written page reads a measure at the precision every
-other page of its campaign does.
 ``pricing`` (:class:`Pricing`): the price sources, serving providers and priced share of the calls its cost counts,
 which the options table prints beside the cost.
 
@@ -138,16 +135,6 @@ class Precision(_Part):
         default=None, description="The share of the variance that lies between cases."
     )
     means: str | None = Field(default=None, description="What the decomposition means, in one sentence.")
-
-
-class StatedWidth(_Part):
-    """One interval's half-width as a page of the campaign states it: what the number policy reads a measure's
-    decimals from, on every page of the campaign alike."""
-
-    page: str = Field(description="The page that states it: `code`, or `aspect <label>` for an aspect's own page.")
-    name: str = Field(description="The measure's or judged dimension's name, `passed` for the pass rate.")
-    reading: str = Field(description="Which reading of it: `measure`, `judged` or `trial`.")
-    half_width: Number = Field(gt=0, description="The interval's half-width, as stored: a rate's as a share.")
 
 
 class Reading(_Part):
@@ -861,14 +848,6 @@ class ReportInput(_Part):
         exclude_if=lambda value: value is None,
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
         "declaring nothing; none where no run did, or the bundle carried none.",
-    )
-    # Left out of the document when unset, as a bare input leaves it, so its digest is as it was.
-    stated_widths: list[StatedWidth] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Every interval's half-width the campaign's code page and aspect pages state, by the page that "
-        "states it, so the written page reads each measure at the one precision its campaign does; none for an input "
-        "built without them (a bare input), whose own intervals alone set its precision.",
     )
 
 

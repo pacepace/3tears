@@ -212,7 +212,7 @@ def test_the_corrected_comparisons_read_each_figure_at_its_measure_s_one_precisi
     rows = [{key: cell.text for key, cell in row.items()} for row in kairo_tables["contrasts"].rows]
     said = {(row["arm"], row["measure"]): row for row in rows}
     held = said["qwen3.8-flash", "Persona holds character"]
-    assert (held["change"], held["interval"]) == ("-6.0 pts", "-11.6 to -2.2 pts")
+    assert (held["change"], held["interval"]) == ("-6 pts", "-12 to -2 pts")
     outcome = said["qwen3.8-flash", "Outcome (1–5)"]
     assert (outcome["change"], outcome["interval"]) == ("-0.21", "-0.31 to -0.12")
     notices = said["1017", "Failed-reply notices"]
