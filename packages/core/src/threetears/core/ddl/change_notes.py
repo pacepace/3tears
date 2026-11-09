@@ -208,6 +208,21 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "INCLUDE (key_text, keys, columns, tenant)"
         for index in range(NOTE_RING_SIZE)
     )
+    # the few notes the keeper's passes look for among the many, each kept in an index of its own so a look reads
+    # those and no other: a table's whole-table notes (the scrub's "is this table noted whole", the restore's
+    # whole tables and the rows they cover), and the notes written without a cached slot (counted at each switch).
+    # Partial, so they hold only those notes and cost the many nothing.
+    sparse = tuple(
+        statement
+        for index in range(NOTE_RING_SIZE)
+        for statement in (
+            f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_whole')} "
+            f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) INCLUDE (tenant) "
+            "WHERE key_text IS NULL",
+            f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_ring_read')} "
+            f"ON {owner}.{quote_identifier(note_table(index))} (table_name) WHERE ring_read",
+        )
+    )
     marks = (
         f"CREATE TABLE IF NOT EXISTS {owner}.{quote_identifier(MARKS_TABLE)} ("
         "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
@@ -217,6 +232,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         *tables,
         *indexes,
         *by_table,
+        *sparse,
         marks,
         f"CREATE TABLE IF NOT EXISTS {ring} ("
         "id SMALLINT PRIMARY KEY CHECK (id = 1), "
