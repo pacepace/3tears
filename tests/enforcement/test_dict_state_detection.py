@@ -53,6 +53,16 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/change_notes.py",
+        class_name="ChangeNoteKeeper",
+        attr_name="_emptied_to",
+        rationale=(
+            "the keeper's own cursor into each ring note table it is emptying (a hash band's start or the last id "
+            "deleted), at most NOTE_RING_SIZE entries: not data and not a cache; a restart starts the emptying from "
+            "the table's start, which deletes what is left"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
         attr_name="_partitions_staged",
