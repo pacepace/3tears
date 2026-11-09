@@ -151,7 +151,8 @@ class Marked:
     texts: tuple[str, ...] = ()
 
 
-#: One marked chart per kind the static page draws (and the kit draws), every value's text a marker no format spells.
+#: One marked chart per kind the static page draws (and the kit draws), every value's text a marker no format spells:
+#: ``test_report_kit_contract`` holds every kind a page's chart is drawn in by the static page to one here.
 MARKED_CHARTS: dict[str, Marked] = {
     "bars": Marked(
         "bars",
@@ -179,6 +180,20 @@ MARKED_CHARTS: dict[str, Marked] = {
             "dots": True,
         },
         (("a", "DV (DL to DH)"),),
+    ),
+    "diverging_bars": Marked(
+        "diverging_bars",
+        {
+            "rows": [
+                {"label": "a", "value": -1, "lo": -2, "hi": 0.5, "value_text": "NV", "lo_text": "NL", "hi_text": "NH"},
+                {"label": "b", "value": 1, "lo": 0.5, "hi": 2, "value_text": "PV", "lo_text": "PL", "hi_text": "PH"},
+            ],
+            "domain": [-3, 3],
+            "fmt": "num",
+            "level": "95%",
+        },
+        (("a", "NV (NL to NH)"), ("b", "PV (PL to PH)")),
+        ("NV", "PV"),
     ),
     "forest": Marked(
         "forest",

@@ -184,16 +184,20 @@ def _pass_k_depth_blocks(
                 continue
             for point in subject.points:
                 rows.append(
-                    table_row(
-                        {
-                            "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
-                            "arm": name(point.variant_key),
-                            "planned": subject.k,
-                            "short": point.n_cases_short_of_k,
-                            "common": subject.common_depth,
-                            "reading": forms.pass_k(TRIAL_PASS_NAME, point.common_pass_hat_k, kind="trial").held,
-                            "left_out": point.n_cases_left_out,
-                        }
+                    _of_the_pass_rate(
+                        table_row(
+                            {
+                                "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
+                                "arm": name(point.variant_key),
+                                "planned": subject.k,
+                                "short": point.n_cases_short_of_k,
+                                "common": subject.common_depth,
+                                "reading": forms.pass_k(TRIAL_PASS_NAME, point.common_pass_hat_k, kind="trial").held,
+                                "left_out": point.n_cases_left_out,
+                            }
+                        ),
+                        ("reading",),
+                        forms,
                     )
                 )
     if not rows:
@@ -241,13 +245,17 @@ def _model_blocks(
     """The opt-in model-based pass^k of each point at a depth it never reached, in a table of its own, labelled a
     model with what it assumes: never beside a measured figure as one."""
     rows = [
-        table_row(
-            {
-                "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
-                "arm": _label_of(bundle, labels)(point.variant_key),
-                "depth": point.model_pass_hat_k.k,
-                "model": forms.pass_k(TRIAL_PASS_NAME, point.model_pass_hat_k.pass_hat_k, kind="trial").held,
-            }
+        _of_the_pass_rate(
+            table_row(
+                {
+                    "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
+                    "arm": _label_of(bundle, labels)(point.variant_key),
+                    "depth": point.model_pass_hat_k.k,
+                    "model": forms.pass_k(TRIAL_PASS_NAME, point.model_pass_hat_k.pass_hat_k, kind="trial").held,
+                }
+            ),
+            ("model",),
+            forms,
         )
         for bundle, depth in depths
         for subject, said in zip([sub for sub in bundle.frontier.subjects if sub.points], depth.subjects, strict=True)
@@ -296,16 +304,22 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, forms: Pag
         # The sides in the order the comparison read them: the control, or the arm first in key order, first.
         (first, first_width), (second, second_width) = precision.half_widths.items()
         rows.append(
-            table_row(
-                {
-                    "aspect": names.cell(aspect),
-                    "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
-                    "half_width": forms.half_width(TRIAL_PASS_NAME, precision.half_width, kind="trial").held,
-                    "first": forms.half_width(TRIAL_PASS_NAME, first_width, kind="trial").held,
-                    "second": forms.half_width(TRIAL_PASS_NAME, second_width, kind="trial").held,
-                    "limited_by": named(precision.limited_by) if precision.limited_by else None,
-                    "between": None if precision.between_share is None else forms.share(precision.between_share).held,
-                }
+            _of_the_pass_rate(
+                table_row(
+                    {
+                        "aspect": names.cell(aspect),
+                        "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
+                        "half_width": forms.half_width(TRIAL_PASS_NAME, precision.half_width, kind="trial").held,
+                        "first": forms.half_width(TRIAL_PASS_NAME, first_width, kind="trial").held,
+                        "second": forms.half_width(TRIAL_PASS_NAME, second_width, kind="trial").held,
+                        "limited_by": named(precision.limited_by) if precision.limited_by else None,
+                        "between": None
+                        if precision.between_share is None
+                        else forms.share(precision.between_share).held,
+                    }
+                ),
+                ("half_width", "first", "second"),
+                forms,
             )
         )
     columns = [
@@ -346,3 +360,12 @@ def depth_provenance_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     if not any(precision is not None and precision.between_share is not None for precision in read):
         return []
     return [DisclosureBlock(section="provenance", source="comparisons", text=REPEATS_FLOOR)]
+
+
+def _of_the_pass_rate(row: dict[str, TableCell], keys: Sequence[str], forms: PageForms) -> dict[str, TableCell]:
+    """A depth row whose cells under ``keys`` are figures of the pass rate (a pass^k, an interval's half-width), which
+    the page's column rules record them under."""
+    return {
+        key: forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial") if key in keys else cell
+        for key, cell in row.items()
+    }

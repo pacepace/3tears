@@ -63,7 +63,7 @@ from itertools import product
 from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.quantities import PERCENT, with_unit
+from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.charts import (
     ChartColumn,
     ChartReference,
@@ -239,7 +239,9 @@ def _task_detail(context: ChartContext, task: Task) -> str | None:
     if task.n_cases is not None:
         parts.append(TASK_DETAIL_TEMPLATE.format(cases=context.forms.chart_count(task.n_cases).text))
     if task.share:
-        parts.append(TASK_SHARE_TEMPLATE.format(share=with_unit(float(task.share) * 100, PERCENT)))
+        parts.append(
+            TASK_SHARE_TEMPLATE.format(share=context.forms.in_unit(float(task.share) * 100, PERCENT, role="share").text)
+        )
     return " · ".join(parts) or None
 
 

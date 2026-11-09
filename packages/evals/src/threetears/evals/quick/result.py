@@ -86,7 +86,7 @@ from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
-from threetears.evals.analysis.quantities import PERCENT, with_unit
+from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.forms import PageForms
@@ -449,7 +449,7 @@ class Result:
             lines += [f"  {one_line(line)}" for line in self._measure_texts(forms, summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
-                lines += [f"    {one_line(_label_text(statistics))}" for statistics in summary.labels]
+                lines += [f"    {one_line(_label_text(forms, statistics))}" for statistics in summary.labels]
             lines += [f"  {one_line(_dimension_text(forms, dimension))}" for dimension in summary.judged]
             lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
@@ -559,7 +559,9 @@ class Result:
         dimension as the quiet print says it; every amount of spend in the form of its set, a total as the page's test
         cost. Every other line is the summary's own."""
         said: dict[str, str] = {}
-        said.update(zip(summary.label_lines, (_label_text(statistics) for statistics in summary.labels), strict=True))
+        said.update(
+            zip(summary.label_lines, (_label_text(forms, statistics) for statistics in summary.labels), strict=True)
+        )
         said.update(
             zip(
                 summary.dimension_lines,
@@ -981,34 +983,44 @@ def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None
     rest, tail = read["rest"].removeprefix(", "), read["tail"]
     if rate:
         counted = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
-        return f": {with_unit(100 * mean, PERCENT)}, {counted}{f' ({rest})' if rest else ''}{tail}"
+        level = forms.in_unit(100 * mean, PERCENT, role="level", measure=measure).text
+        return f": {level}, {counted}{f' ({rest})' if rest else ''}{tail}"
     left = f", {rest}" if rest else ""
     return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
 
 
-def _percent_interval(interval: tuple[float, float] | None) -> str:
+def _percent_interval(forms: PageForms, interval: tuple[float, float] | None) -> str:
     """A rate's interval as the page writes one, in percent: ``[43.8%, 100%]``."""
     if interval is None:
         return ""
-    return f", [{with_unit(100 * interval[0], PERCENT)}, {with_unit(100 * interval[1], PERCENT)}]"
+    low, high = (forms.in_unit(100 * end, PERCENT, role="interval").text for end in interval)
+    return f", [{low}, {high}]"
 
 
 def _proportion_text(
-    name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
+    forms: PageForms,
+    name: str,
+    rate: float | None,
+    hits: int,
+    n: int,
+    cases: int,
+    interval: tuple[float, float] | None,
 ) -> str:
     """A rate with its count of trials, its cases where they repeat, and its interval, in percent."""
     if rate is None:
         return f"{name} none (no trial)"
     over = f" over {cases} case{'' if cases == 1 else 's'}" if cases < n else ""
-    return f"{name} {with_unit(100 * rate, PERCENT)} ({hits} of {n} trials{over}{_percent_interval(interval)})"
+    level = forms.in_unit(100 * rate, PERCENT, role="level").text
+    return f"{name} {level} ({hits} of {n} trials{over}{_percent_interval(forms, interval)})"
 
 
-def _label_text(statistics: LabelStatistics) -> str:
+def _label_text(forms: PageForms, statistics: LabelStatistics) -> str:
     """One label's line as the quiet print says it: precision and recall in percent with their counts and intervals
     (``precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])``), then F1 in percent."""
     label = statistics.label
     shown = repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
     precision = _proportion_text(
+        forms,
         "precision",
         statistics.precision,
         statistics.correct,
@@ -1017,6 +1029,7 @@ def _label_text(statistics: LabelStatistics) -> str:
         statistics.precision_interval,
     )
     recall = _proportion_text(
+        forms,
         "recall",
         statistics.recall,
         statistics.correct,
@@ -1024,7 +1037,7 @@ def _label_text(statistics: LabelStatistics) -> str:
         statistics.expected_cases,
         statistics.recall_interval,
     )
-    f1 = "F1 none" if statistics.f1 is None else f"F1 {with_unit(100 * statistics.f1, PERCENT)}"
+    f1 = "F1 none" if statistics.f1 is None else f"F1 {forms.in_unit(100 * statistics.f1, PERCENT, role='level').text}"
     return f"{shown}: {precision}, {recall}, {f1}"
 
 
@@ -1038,7 +1051,8 @@ def _dimension_text(forms: PageForms, dimension: DimensionSummary) -> str:
         line += "no result carries a score"
     elif dimension.scale == "pass_fail":
         line += (
-            f"{with_unit(100 * dimension.mean, PERCENT)}, {forms.hits(dimension.mean, dimension.n, measure=dimension.name, kind='judged').text} of "
+            f"{forms.in_unit(100 * dimension.mean, PERCENT, role='level', measure=dimension.name, kind='judged').text}, "
+            f"{forms.hits(dimension.mean, dimension.n, measure=dimension.name, kind='judged').text} of "
             f"{dimension.n} trials"
         )
     else:

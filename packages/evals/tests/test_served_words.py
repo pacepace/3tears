@@ -3,8 +3,10 @@
 A browser, a terminal and this package's serializers must print the same words, so no client re-implements the
 number rule. Held here, field by field:
 
-- **A report cell is its value and its text.** The value is what a program sorts by; the text is the number rule's
-  (``render_cell``), derived on every read and never stored, and the Markdown and HTML print exactly it.
+- **A report cell is its value and its text.** The value is what a program sorts by; the text is the one its page's
+  forms decided and printed (``value_text``) where they decided one, stored beside the value and dropped whenever what
+  the number is spelled from changes, else the number rule's (``render_cell``), derived on every read; the Markdown
+  and HTML print exactly it.
 - **A run summary's JSON carries every line ``render()`` prints** — measure states, the spend cap and why it
   stopped included — and ``render()`` is those lines.
 - **An unpriced amount reads ``unpriced``**, from the one public spelling of a spend.
@@ -32,6 +34,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.confusion import ConfusionCount
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
 from threetears.evals.analysis.report.model import table_row
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.quantities import render_cell
 from threetears.evals.kernel import CONFUSION_CELL_MEASURE
 from packages.evals.tests.g2_support import g2_report
@@ -65,10 +68,11 @@ def test_a_cells_number_is_joined_to_its_unit() -> None:
     assert TableCell(value=0.42, unit="%").text == "0.4%"
 
 
-def test_a_cell_stores_its_value_never_its_text() -> None:
-    """The text is derived on every read, so a stored word can never drift from the value it states."""
+def test_a_cell_stores_its_value_and_only_the_text_its_page_s_forms_printed() -> None:
+    """A cell holds its value; the only text it stores is the one its page's forms decided and printed, so a stored word
+    is never one the page did not print, and a cell no forms decided stores none and derives its text on every read."""
     # The value, its unit, the interval and margin a glyph draws beside it where the cell has them, and the ids a
-    # finding's trace links by (#629), and the marker code writes beside it: never the words the cell prints.
+    # finding's trace links by (#629), and the marker code writes beside it: no words, where no forms decided them.
     assert TableCell(value=0.5).model_dump(mode="json") == {
         "value": 0.5,
         "unit": "",
@@ -85,6 +89,40 @@ def test_a_cell_stores_its_value_never_its_text() -> None:
     }
     with pytest.raises(ValueError, match="extra"):
         TableCell.model_validate({"value": 0.5, "text": "a lie"})
+    # A column rule decides the cell's text, records it in the page's ledger and stores exactly that text.
+    forms = PageForms.off_page()
+    (row,) = forms.rate_columns([{"rate": TableCell(value=62.94, unit="%")}])
+    (printed,) = forms.ledger
+    assert row["rate"].model_dump(mode="json")["value_text"] == printed.text == row["rate"].text == "63%"
+    # A new value drops it, and the cell derives its text from the value it now holds.
+    moved = row["rate"].model_copy(update={"value": 70.44})
+    assert moved.value_text is None and "value_text" not in moved.model_dump(mode="json")
+    assert moved.text == TableCell(value=70.44, unit="%", decimals=0).text == "70%"
+
+
+def test_a_cells_decided_text_is_what_it_prints_and_never_outlives_what_it_was_decided_from() -> None:
+    """A cell whose page decided its number's text prints that text and serves it (``value_text``); a copy that
+    changes what the number is spelled from drops it, so a stored text never states a value the cell no longer holds,
+    and a copy that changes anything else keeps it. Words carry no decided text: they print as written."""
+    decided = TableCell(value=62.9, unit="%", value_text="63%")
+    assert decided.text == decided.figure == "63%"
+    assert decided.model_dump(mode="json")["value_text"] == "63%"
+    assert decided.model_copy(update={"flag": "held"}).text == "63% (held)"
+    for update in (
+        {"value": 70.4},
+        {"unit": "pts"},
+        {"decimals": 1},
+        {"signed": True},
+        {"level": 20.0},
+        {"per_thousand": True},
+    ):
+        copied = decided.model_copy(update=update)
+        assert (
+            copied.value_text is None
+            and copied.figure == TableCell(**(decided.model_dump(exclude={"value_text"}) | update)).figure
+        )
+    with pytest.raises(ValueError, match="decided text states a number"):
+        TableCell(value="words", value_text="63%")
 
 
 def _table(**update: Any) -> TableBlock:

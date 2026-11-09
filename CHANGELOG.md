@@ -69,8 +69,16 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
   `cost_text` is in the contract, but the package leaves it unset: a gate matrix's and a lattice's costs still draw by
   `cost_fmt` until the policy flip, as do a heatmap cell's count (`n_fmt`) and rung 5's preference strip, whose shares
   the kit rounds as before.
+- A table cell carries the text its page decided for its number, `TableCell.value_text`: set on every rate and money
+  cell a table's column rule spells, and on an aspect page's level and change cells, and printed by every serializer
+  in place of spelling `value`. A copy that changes what the number is spelled from (`value`, `unit`, `decimals`,
+  `signed`, `level`, `per_thousand`) drops it. The page's ledger holds each such cell under the measure it states a
+  figure of, on the written and the aspect pages. The texts are what each cell prints today, so no page's text moves.
 
-**Hosts:** a stored report that cites one of those criterion, weakest or settle keys on a non-rate measure renders
+**Hosts:** a report's table cells, dumped as JSON, gain `value_text` where the page decided the number's text, and
+leave it out elsewhere, as before; a host that prints a cell itself may print `value_text` where it is set. A report block
+stored with it is refused by an earlier 3tears-evals, which knows no such field. A stored report that cites one of
+those criterion, weakest or settle keys on a non-rate measure renders
 it at the new decimals; no other text changes. A written page's `data-chart` JSON, and a JSON report's chart blocks,
 gain the additive text fields above: a host that re-renders the package's chart JSON with the shipped kit prints the
 package's text for every value, and a host-authored chart without them draws as before, each value formatted by its

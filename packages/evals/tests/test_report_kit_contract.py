@@ -199,6 +199,17 @@ def _drawn(svg: str) -> tuple[list[tuple[str, ...]], list[str]]:
     return tips, [html.unescape(text) for text in re.findall(r">([^<>]+)</(?:tspan|text)>", svg)]
 
 
+def test_every_kind_the_static_page_draws_on_a_page_has_a_marked_chart() -> None:
+    """Each kind a page's chart is drawn in by the static page has a marked chart of its own (:data:`MARKED_CHARTS`),
+    so a kind a page draws is never left out of the per-kind check below: a new kind a resolver draws fails here until
+    its markers are written."""
+    drawn = {block.chart for _, block in _page_charts() if chart_drawing(block) is not None}
+    marked = {one.kind for one in MARKED_CHARTS.values()}
+
+    assert drawn, "the fixtures' pages draw charts, so this must check some"
+    assert drawn <= marked, f"drawn by the static page with no marked chart: {sorted(drawn - marked)}"
+
+
 @pytest.mark.parametrize("name", list(MARKED_CHARTS))
 def test_the_static_page_draws_each_value_s_own_text_in_its_own_place(name: str) -> None:
     """Every value of a chart of each kind the static page draws carries a marker of its own: each tooltip reads its

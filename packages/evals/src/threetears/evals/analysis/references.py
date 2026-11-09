@@ -47,8 +47,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import ReadingKind
@@ -425,11 +425,16 @@ def _dispersion(
     # reported as unestimable because the sem it does not have is absent.
     # The unit on each end where it sits on the number (``[88.1%, 100%]``); a spaced unit is the value's, and the
     # interval beside it stays bare (``[0.8, 1.1]`` under ``0.95 s``), as it always read.
+    # An evidence row is read off any page, so it takes the fixed forms of no page's measure.
+    forms = PageForms.off_page()
     on_the_number = unit == PERCENT or is_money(unit)
-    low, high = ((with_unit(bound, unit) if on_the_number else format_number(bound)) for bound in (ci_low, ci_high))
-    text = f"{stats.INTERVAL_LEVEL:.0%} CI [{low}, {high}]"
+    low, high = (
+        (forms.in_unit(bound, unit, role="interval") if on_the_number else forms.lone(bound)).text
+        for bound in (ci_low, ci_high)
+    )
+    text = f"{forms.share(stats.INTERVAL_LEVEL).text} CI [{low}, {high}]"
     if sem is not None:
-        text = f"sem {number_in(sem, unit)}; {text}"
+        text = f"sem {forms.in_unit(sem, unit, role='half_width').digits}; {text}"
     return text
 
 

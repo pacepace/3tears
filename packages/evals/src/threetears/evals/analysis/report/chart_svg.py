@@ -1818,9 +1818,10 @@ def _panel_heading(panel: Any) -> str:
 
 
 def _holds_no_row(chart: Any) -> bool:
-    """Whether a chart or a panel lays its marks out by row and was given none (``rows: []``): there is nothing to
-    draw, so it is shown as its table, never laid out at a width read off its widest label."""
-    return getattr(chart, "rows", None) == []
+    """Whether a chart or a panel lays its marks out by row and was given none (``rows: []``), or lays its series out
+    over categories and was given none (``categories: []``, every series empty): there is nothing to draw, so it is
+    shown as its table, never laid out at a width read off its widest label."""
+    return getattr(chart, "rows", None) == [] or getattr(chart, "categories", None) == []
 
 
 def _panels(chart: Any, draw: _Drawer, title: str) -> str:

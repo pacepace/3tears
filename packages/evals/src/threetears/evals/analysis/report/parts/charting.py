@@ -267,8 +267,11 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    # Every value the chart draws carries its text, decided by the page's forms, which the kit prints as it is.
-    drawn = context.forms.chart_texts(data, read_at=read_at)
+    # Every value the chart draws carries its text, decided by the page's forms, which the kit prints as it is; a chart
+    # of one measure's figures records each under it.
+    (measure,) = context.query.measures if len(context.query.measures) == 1 else ("",)
+    reading = figure_kind(context, measure) if measure else None
+    drawn = context.forms.chart_texts(data, read_at=read_at, measure=measure, kind=reading)
     return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=drawn, unit=read_at)
 
 

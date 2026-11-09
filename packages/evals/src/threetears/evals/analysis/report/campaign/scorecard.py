@@ -44,7 +44,6 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
 from threetears.evals.analysis.quantities import PERCENT, POINTS
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.campaign.measure_kinds import (
@@ -404,6 +403,8 @@ def _with_equal_weight_row(
             row[column] = cell.model_copy(update=update)
         else:
             row[column] = cell
+        # A figure of the pass rate across the aspects, which the page's column rules record the cell under.
+        row[column] = forms.of_measure(row[column], measure=TRIAL_PASS_NAME, kind="trial")
     return [row]
 
 
@@ -709,7 +710,9 @@ def _control_cell(
         if cases is not None and shown != _rate_held(forms, pooled):
             count = f"mean of {cases} cases"
     printed = _rate_level(forms, level)
-    return TableCell(value=printed.held, unit=printed.unit, decimals=printed.decimals, flag=_marks(count, *marks))
+    cell = TableCell(value=printed.held, unit=printed.unit, decimals=printed.decimals, flag=_marks(count, *marks))
+    # A figure of the pass rate, which the page's column rules record the cell under.
+    return forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial")
 
 
 def _change_cell(
@@ -741,9 +744,12 @@ def _change_cell(
         flag="; ".join(marks),
     )
     interval, _ = _shown_interval(row)
-    if interval is None or min(row.control_cases, row.arm_cases) < 2:
-        return change
-    return change.model_copy(update={"low": interval[0], "high": interval[1], "margin": row.margin, "zero_line": True})
+    if interval is not None and min(row.control_cases, row.arm_cases) >= 2:
+        change = change.model_copy(
+            update={"low": interval[0], "high": interval[1], "margin": row.margin, "zero_line": True}
+        )
+    # A figure of the pass rate, which the page's column rules record the cell under.
+    return forms.of_measure(change, measure=TRIAL_PASS_NAME, kind="trial")
 
 
 def _floor_state(row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings) -> str | None:
@@ -793,10 +799,22 @@ def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForm
                     "control": _counted(row.control_passed, row.control_trials, row.control_cases),
                     "passed": _counted(row.arm_passed, row.arm_trials, row.arm_cases),
                     # Signed and in points at one decimal, as the matrix cell reads it.
-                    "change": TableCell(value=change.held, unit=change.unit, decimals=change.decimals, signed=True),
+                    "change": forms.of_measure(
+                        TableCell(value=change.held, unit=change.unit, decimals=change.decimals, signed=True),
+                        measure=TRIAL_PASS_NAME,
+                        kind="trial",
+                    ),
                     "interval": None
                     if interval is None
-                    else forms.interval(TRIAL_PASS_NAME, interval[0], interval[1], kind="trial", change=True).text,
+                    else forms.of_measure(
+                        TableCell(
+                            value=forms.interval(
+                                TRIAL_PASS_NAME, interval[0], interval[1], kind="trial", change=True
+                            ).text
+                        ),
+                        measure=TRIAL_PASS_NAME,
+                        kind="trial",
+                    ),
                     "margin": row.margin,
                     "reading": _reading_words(row),
                 }
@@ -1085,10 +1103,10 @@ def settle_blocks(
                 "why": sizing.why or None,
                 "none": None
                 if sizing.projection is None
-                else projected_cell(sizing.projection, sizing.projection.if_none),
+                else projected_cell(sizing.projection, sizing.projection.if_none, forms=forms),
                 "observed": None
                 if sizing.projection is None
-                else projected_cell(sizing.projection, sizing.projection.if_observed),
+                else projected_cell(sizing.projection, sizing.projection.if_observed, forms=forms),
             }
         )
         for sizing in sizings
@@ -1650,7 +1668,11 @@ def measure_blocks(
         }
         if by_rig:
             values["setup"] = "every setup" if reading.rig is None else short_digest(reading.rig)
-        rows.append(table_row(values))
+        row = table_row(values)
+        # The value and its interval are figures of the row's measure, which the page's column rules record them under.
+        for key in ("value", "interval"):
+            row[key] = forms.of_measure(row[key], measure=reading.measure, kind="measure")
+        rows.append(row)
     _no_equal_weight_row(campaign, readings, reports, "a measurement's matrix holds its one arm's measures")
     blocks: list[ReportBlock] = []
     if readings.measures:
@@ -1813,8 +1835,11 @@ def _turned_matrix(
                 {
                     "aspect": row["aspect"],
                     "measure": TableCell(value=named),
-                    "value": cell.model_copy(update={"low": None, "high": None}),
-                    "interval": TableCell(value=interval),
+                    # Both are figures of the row's measure, which the page's column rules record them under.
+                    "value": forms.of_measure(
+                        cell.model_copy(update={"low": None, "high": None}), measure=key, kind="measure"
+                    ),
+                    "interval": forms.of_measure(TableCell(value=interval), measure=key, kind="measure"),
                     "cases": TableCell(value=reading.cases if setups[aspect.label, key] == 1 else None),
                 }
             )
@@ -1862,15 +1887,18 @@ def _measure_cell(
         else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
     if reading.interval is None:
-        return TableCell(value=figure.held, decimals=figure.decimals, flag=count)
-    factor = forms.measure(reading.measure).factor
-    return TableCell(
-        value=figure.held,
-        decimals=figure.decimals,
-        low=factor * reading.interval[0],
-        high=factor * reading.interval[1],
-        flag=count,
-    )
+        cell = TableCell(value=figure.held, decimals=figure.decimals, flag=count)
+    else:
+        factor = forms.measure(reading.measure).factor
+        cell = TableCell(
+            value=figure.held,
+            decimals=figure.decimals,
+            low=factor * reading.interval[0],
+            high=factor * reading.interval[1],
+            flag=count,
+        )
+    # A figure of its measure, which the page's column rules record the cell under.
+    return forms.of_measure(cell, measure=reading.measure, kind="measure")
 
 
 def measured_figure(reading: MeasureReading) -> str | None:
@@ -1927,16 +1955,19 @@ def _money_cell(forms: PageForms, key: str, value: float | None, interval: tuple
         return TableCell(value=None)
     if interval is None:
         figure = forms.level(key, value)
-        return TableCell(value=figure.held, unit=figure.unit, decimals=figure.decimals)
-    figure, _ = forms.bracketed(key, value, *interval)
-    factor = forms.measure(key).factor
-    return TableCell(
-        value=figure.held,
-        unit=figure.unit,
-        decimals=figure.decimals,
-        low=factor * interval[0],
-        high=factor * interval[1],
-    )
+        cell = TableCell(value=figure.held, unit=figure.unit, decimals=figure.decimals)
+    else:
+        figure, _ = forms.bracketed(key, value, *interval)
+        factor = forms.measure(key).factor
+        cell = TableCell(
+            value=figure.held,
+            unit=figure.unit,
+            decimals=figure.decimals,
+            low=factor * interval[0],
+            high=factor * interval[1],
+        )
+    # A figure of its measure, which the page's column rules record the cell under.
+    return forms.of_measure(cell, measure=key, kind="measure")
 
 
 def _money_interval(forms: PageForms, key: str, interval: tuple[float, float] | None) -> str | None:
@@ -2035,7 +2066,7 @@ def bar_blocks(
                 "value": status.value,
                 "interval": None
                 if status.interval is None
-                else f"[{format_number(status.interval[0])}, {format_number(status.interval[1])}]",
+                else "[{}, {}]".format(*(forms.lone(end, measure=status.measure).text for end in status.interval)),
                 "status": BAR_WORDS[status.status],
             }
         )
