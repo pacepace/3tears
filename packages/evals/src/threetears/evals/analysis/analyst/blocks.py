@@ -331,15 +331,15 @@ def block_render(
         raise RefusedInput(
             f"the block is not one a page draws: {invalid}", remedy=_BLOCK_REMEDY, valid_values_from="block_catalog"
         ) from invalid
-    spec, faults = complete_chart(planned, report_input, _BLOCK)
+    # A block is drawn off any page, so it is printed in forms of its own, built once from its input as its page builds
+    # them: its level, its title's keys, its chart and its reference line alike.
+    forms = PageForms.of(report_input)
+    spec, faults = complete_chart(planned, report_input, _BLOCK, forms=forms)
     faults += chart_faults(_BLOCK, spec, report_input)
     faults += small_multiple_faults(_BLOCK, spec)
     drawn = None
     written = title
     arms = fact_arms(report_input)
-    # A block is drawn off any page, so it is printed in forms of its own, built once from its input as its page builds
-    # them: its title's keys, its chart and its reference line alike.
-    forms = PageForms.of(report_input)
     try:
         written = render(title, {arm.id: arm.name for arm in arms}, forms=forms)
     except UnresolvableReference as refused:

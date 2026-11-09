@@ -81,7 +81,7 @@ def _stated(level: float) -> str:
 def _drawn(held: ReportInput, kind: str, query: ChartQuery) -> Any:
     """The chart a page draws of a block, as the kit's data."""
     planned = PlannedChart.model_validate({"kind": kind, "title": "", "query": query, "reference": [], "emphasis": ""})
-    spec, faults = complete_chart(planned, held, "block")
+    spec, faults = complete_chart(planned, held, "block", forms=PageForms.of(held))
     assert not faults, faults
     return resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart
 
@@ -275,7 +275,7 @@ def test_a_chart_refused_for_mixing_levels_names_each_level_as_its_key_prints_it
     planned = PlannedChart.model_validate(
         {"kind": "forest", "title": "", "query": query, "reference": [], "emphasis": ""}
     )
-    _, faults = complete_chart(planned, mixed, "block")
+    _, faults = complete_chart(planned, mixed, "block", forms=PageForms.of(mixed))
     refusals = [why for where, why in faults if where == "block.query" and "one interval level" in why]
     assert refusals, (name, faults)
     for contrast in (first, second):

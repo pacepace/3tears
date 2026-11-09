@@ -82,7 +82,6 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
@@ -279,7 +278,9 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
 # --- completing a chart ----------------------------------------------------------------------------------------
 
 
-def complete_chart(chart: PlannedChart, report_input: ReportInput, path: str) -> tuple[ChartSpec, list[_Fault]]:
+def complete_chart(
+    chart: PlannedChart, report_input: ReportInput, path: str, *, forms: PageForms
+) -> tuple[ChartSpec, list[_Fault]]:
     """A chart as chosen, completed with its reference key, interval level, unit and value axis (this module's
     account), and every part code could not complete.
 
@@ -289,15 +290,20 @@ def complete_chart(chart: PlannedChart, report_input: ReportInput, path: str) ->
     :ptype report_input: ReportInput
     :param path: The field path the chart sits at; each fault's path is under it.
     :ptype path: str
+    :param forms: The forms of the page the chart is drawn on (a reader's own, off any page), built from
+        ``report_input``: they state its interval level.
+    :ptype forms: PageForms
     :return: The chart as stored (a reference line code could not key is left out), and each fault as
         ``(field path, why)``: its reference lines', then its level's, then its unit's.
     :rtype: tuple[ChartSpec, list[tuple[str, str]]]
     """
     faults: list[_Fault] = []
+    forms = forms.checked(report_input)
     if chart.query.source == "configs":
         report_input = config_grid(report_input)
+        forms = forms.over(report_input)
     references = list(_references(chart, report_input, path, faults))
-    level = _level(chart, report_input, path, faults)
+    level = _level(chart, report_input, path, faults, forms)
     unit = _unit(chart, report_input, path, faults)
     spec = ChartSpec(
         kind=chart.kind,
@@ -443,9 +449,9 @@ def _criterion_key(
     return None
 
 
-def _percent(level: float) -> str:
-    """A confidence level as the chart prints it: a share (0.95) or a percent (95) as "95%"."""
-    return format_number(level * 100 if level <= 1 else level) + "%"
+def _percent(level: float, forms: PageForms) -> str:
+    """A confidence level as the chart prints it: a share (0.95) or a percent (95) as "95%", in the page's forms."""
+    return forms.drawn_confidence(level).text
 
 
 def _one(path: str, what: str, values: Iterable[str], faults: list[_Fault]) -> str:
@@ -475,14 +481,14 @@ def _figure_levels(chart: PlannedChart, report_input: ReportInput) -> list[str]:
     return [level for level in levels if level]
 
 
-def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
+def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault], forms: PageForms) -> str:
     """The interval level printed on the chart, from the rows it reads; empty where they carry none."""
     source = chart.query.source
     if source == "readings":
         # A chart of readings draws each one's within_interval, at the nominal level with no correction: never
         # its gain interval's level (gain_confidence, a Holm step's), so readings at different steps share one.
         drawn = any(r.within_interval is not None for r in _selected_readings(chart, report_input))
-        return _percent(INTERVAL_LEVEL) if drawn else ""
+        return _percent(INTERVAL_LEVEL, forms) if drawn else ""
     if source == "contrasts":
         return _one(path, "interval level", (level for _, level in _selected_contrasts(chart, report_input)), faults)
     if source in ("measures", "judged"):
@@ -490,10 +496,14 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         measures = set(chart.query.measures)
         levels = [figures.level or "" for key, figures in table.items() if not measures or key in measures]
         level = _one(path, "interval level", levels, faults)
-        return level or _descriptive_level(chart, report_input) or _computed_level(chart, report_input, path, faults)
+        return (
+            level
+            or _descriptive_level(chart, report_input, forms)
+            or _computed_level(chart, report_input, path, faults, forms)
+        )
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
-        return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
+        return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input, forms)
     if source in ("tasks", "cells", "configs"):
         # A task's or cell's figure carries its own interval, at its measure's declared level, uncorrected over the
         # slices as a stratum's is; a config's figure is an arm's, at the level a measure's is. Printed only where a
@@ -503,19 +513,19 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         declared |= {key: j.level or "" for key, j in report_input.judged.items()}
         level = _one(path, "interval level", (declared.get(key, "") for key in held), faults)
         if source == "configs":
-            return level or _computed_level(chart, report_input, path, faults)
+            return level or _computed_level(chart, report_input, path, faults, forms)
         return f"{level} {_UNCORRECTED}" if level else ""
     if source == "prices":
         return _price_level(chart, report_input, path, faults)
     if source in ("compare", "levers"):
-        return _one(path, "interval level", _analysed_levels(chart, report_input), faults)
+        return _one(path, "interval level", _analysed_levels(chart, report_input, forms), faults)
     if source == "bar_reads":
         read = any(row.interval is not None for row in query_rows(chart.query, report_input))
-        return _percent(INTERVAL_LEVEL) if read else ""
+        return _percent(INTERVAL_LEVEL, forms) if read else ""
     return ""
 
 
-def _analysed_levels(chart: PlannedChart, report_input: ReportInput) -> Iterator[str]:
+def _analysed_levels(chart: PlannedChart, report_input: ReportInput, forms: PageForms) -> Iterator[str]:
     """Each compare or lever row's interval level, marked unpaired where the two arms' own spreads were combined as
     independent (as a chart of price steps marks its unpaired ends): an interaction's always is."""
     for row in query_rows(chart.query, report_input):
@@ -533,7 +543,7 @@ def _analysed_levels(chart: PlannedChart, report_input: ReportInput) -> Iterator
             continue
         if level is None or not isinstance(level.value, float):
             continue
-        yield _percent(level.value) if paired else f"{_percent(level.value)} {_UNPAIRED_LEVEL}"
+        yield _percent(level.value, forms) if paired else f"{_percent(level.value, forms)} {_UNPAIRED_LEVEL}"
 
 
 #: How a compare or lever row's basis opens where it is the paired estimate a contrast states.
@@ -592,7 +602,9 @@ def _interval_keys(chart: PlannedChart, report_input: ReportInput) -> list[str]:
 _COMPUTED_KINDS = frozenset({"dot_interval", "bars", "table"})
 
 
-def _computed_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
+def _computed_level(
+    chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault], forms: PageForms
+) -> str:
     """The level a dot strip, bars or a table of arms' figures prints where no figure it reads states an interval and
     some carries one computed here (:func:`~threetears.evals.analysis.report.parts.charting.computed_interval`):
     the computed intervals' level, marked computed (``95% computed``); empty otherwise."""
@@ -604,14 +616,14 @@ def _computed_level(chart: PlannedChart, report_input: ReportInput, path: str, f
     if any(stat.ci is not None or stat.half_width is not None for _, _, stat in figures):
         return ""
     levels = [
-        f"{_percent(found[1])} {COMPUTED}"
+        f"{_percent(found[1], forms)} {COMPUTED}"
         for key, arm, stat in figures
         if (found := computed_interval(report_input, key, arm, stat)) is not None
     ]
     return _one(path, "interval level", levels, faults)
 
 
-def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
+def _descriptive_level(chart: PlannedChart, report_input: ReportInput, forms: PageForms) -> str:
     """The descriptive level a diverging chart over judged figures or strata is drawn at where its figures carry a
     standard error and no interval: a bar is separated from zero when its change exceeds the interval level's normal
     multiple of the two arms' standard errors combined (GENERATOR §5.2: descriptive, uncorrected); empty otherwise."""
@@ -619,7 +631,7 @@ def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
         return ""
     stats = _selected_stats(chart, report_input)
     if stats and all(stat.sem is not None and stat.ci is None and stat.half_width is None for stat in stats):
-        return f"{_percent(INTERVAL_LEVEL)} {_UNCORRECTED}"
+        return f"{_percent(INTERVAL_LEVEL, forms)} {_UNCORRECTED}"
     return ""
 
 

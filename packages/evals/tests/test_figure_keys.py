@@ -352,8 +352,13 @@ class TestFilters:
 
     def test_usd_whole_refuses_an_amount_it_would_round_away_and_a_figure_that_is_no_money(self):
         held = _input("r4")
-        with pytest.raises(UnresolvableReference, match="whole dollars would round away"):
-            format_figure(resolve(f"cost_per_1k.{held.arms[0].id}", held), ("usd_whole",), forms=PageForms.of(held))
+        with pytest.raises(UnresolvableReference) as refused:
+            format_figure(resolve("cost_per_1k.prod", held), ("usd_whole",), forms=PageForms.of(held))
+        # The whole refusal: the amount in its family's form, and the floor as declared.
+        assert str(refused.value) == (
+            "figure key {cost_per_1k.prod} is $2.10, under $10, which whole dollars would round away: write it with "
+            "`usd`"
+        )
         with pytest.raises(UnresolvableReference, match="cannot read as dollars"):
             format_figure(resolve("meta.volume_per_month", held), ("usd_whole",), forms=PageForms.of(held))
 

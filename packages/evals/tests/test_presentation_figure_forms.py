@@ -605,7 +605,10 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
             }
         )
         spec, faults = complete_chart(
-            PlannedChart(kind=kind, title="", query=query, reference=[], emphasis=""), held, "block"
+            PlannedChart(kind=kind, title="", query=query, reference=[], emphasis=""),
+            held,
+            "block",
+            forms=PageForms.of(held),
         )
         assert not faults, faults
         drawn = resolve_chart(spec, look, title="", fallback_title="", forms=PageForms.of(held))
@@ -627,7 +630,10 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
         }
     )
     spec, faults = complete_chart(
-        PlannedChart(kind="diverging_bars", title="", query=query, reference=[], emphasis=""), held, "block"
+        PlannedChart(kind="diverging_bars", title="", query=query, reference=[], emphasis=""),
+        held,
+        "block",
+        forms=PageForms.of(held),
     )
     assert not faults, faults
     compared = resolve_chart(spec, look, title="", fallback_title="", forms=PageForms.of(held))
@@ -674,6 +680,7 @@ def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision()
         ),
         held,
         "block",
+        forms=PageForms.of(held),
     )
     assert not faults, faults
     drawn = resolve_chart(spec, look, title="", fallback_title="t", forms=PageForms.of(held))

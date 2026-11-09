@@ -78,7 +78,7 @@ def _inputs() -> dict[str, ReportInput]:
 
 def _data(held: ReportInput, kind: str, query: ChartQuery) -> Any:
     planned = PlannedChart.model_validate({"kind": kind, "title": "", "query": query, "reference": [], "emphasis": ""})
-    spec, faults = complete_chart(planned, held, "block")
+    spec, faults = complete_chart(planned, held, "block", forms=PageForms.of(held))
     assert not faults, faults
     return resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart.data
 

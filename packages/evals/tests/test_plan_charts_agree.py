@@ -252,7 +252,9 @@ def _probe_on(report_input: ReportInput, look: PageLook, chart: dict[str, Any]) 
     """The chart as code completes it on ``report_input``, and why the checks refuse it: completion's, the chart
     checks' and the panels' faults (the ones ``block_render`` holds a block to), then, where none, the page's own
     refusal to draw it under ``look``."""
-    spec, faults = complete_chart(PlannedChart.model_validate(chart), report_input, "chart")
+    spec, faults = complete_chart(
+        PlannedChart.model_validate(chart), report_input, "chart", forms=PageForms.of(report_input)
+    )
     faults = [*faults, *chart_faults("chart", spec, report_input), *small_multiple_faults("chart", spec)]
     if not faults:
         try:

@@ -413,7 +413,9 @@ def _engine_tables(held: ReportInput) -> list[TableBlock]:
     tables = list(every_table(held, look, forms=PageForms.of(held)))
     for key, measure in held.measures.items():
         if measure.unit in ("usd", "usd_per_1k", "usd_per_1m") and measure.per_arm:
-            spec, faults = complete_chart(_planned("table", _query("measures", [key])), held, "block")
+            spec, faults = complete_chart(
+                _planned("table", _query("measures", [key])), held, "block", forms=PageForms.of(held)
+            )
             assert not faults, faults
             drawn = resolve_chart(spec, look, title="", fallback_title="t", forms=PageForms.of(held))
             assert isinstance(drawn.chart, TableBlock)
@@ -528,6 +530,7 @@ def test_a_cost_scatter_labels_its_money_in_its_axis_form() -> None:
         _planned("scatter_frontier", _query("measures", ["production_replicating_cost", "delivered_items"])),
         held,
         "block",
+        forms=PageForms.of(held),
     )
     assert not faults, faults
     drawn = resolve_chart(
@@ -810,7 +813,9 @@ def test_a_partly_priced_arms_cost_keys_say_so_beside_the_amount() -> None:
 
 def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:
     moved, control, _ = _part_priced_control()
-    spec, faults = complete_chart(_planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block")
+    spec, faults = complete_chart(
+        _planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block", forms=PageForms.of(moved)
+    )
     assert not faults, faults
     drawn = resolve_chart(
         spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
@@ -993,7 +998,7 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
     seen: set[str] = set()
     for kind in get_args(PlanChartKind):
         for query in _queries(held, key):
-            spec, faults = complete_chart(_planned(kind, query), held, "block")
+            spec, faults = complete_chart(_planned(kind, query), held, "block", forms=PageForms.of(held))
             if faults:
                 continue
             try:
@@ -1506,7 +1511,9 @@ def test_a_chart_of_totals_under_a_cent_reads_plain_dollars() -> None:
     do (Q3, Q4): its ticks in the kit's ``usd`` to the form's decimals, its bars' notes and its values table in the
     same spelling, and no count named, since the set states none."""
     held, *_ = UNDER_A_CENT["r5 under a cent per 1,000 replies"]
-    spec, faults = complete_chart(_planned("bars", _query("scoreboard", ["test_cost_usd"])), held, "block")
+    spec, faults = complete_chart(
+        _planned("bars", _query("scoreboard", ["test_cost_usd"])), held, "block", forms=PageForms.of(held)
+    )
     assert not faults, faults
     page = resolve_chart(
         spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
@@ -1562,7 +1569,10 @@ def test_a_change_chart_scales_by_its_amounts_never_by_an_interval_end_near_zero
     ]
     planted = held.model_copy(update={"contrasts": contrasts})
     spec, faults = complete_chart(
-        _planned("diverging_bars", _query("contrasts", ["production_replicating_cost"])), planted, "block"
+        _planned("diverging_bars", _query("contrasts", ["production_replicating_cost"])),
+        planted,
+        "block",
+        forms=PageForms.of(planted),
     )
     assert not faults, faults
     page = resolve_chart(
@@ -1594,7 +1604,7 @@ def _part_priced(held: ReportInput) -> tuple[ReportInput, str]:
 
 def test_a_lattice_tile_says_a_partly_priced_cost_beside_it() -> None:
     moved, arm = _part_priced(INPUTS["r3"])
-    spec, faults = complete_chart(_planned("lattice", _query("configs", [])), moved, "block")
+    spec, faults = complete_chart(_planned("lattice", _query("configs", [])), moved, "block", forms=PageForms.of(moved))
     assert not faults, faults
     page = resolve_chart(
         spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
@@ -1607,7 +1617,9 @@ def test_a_lattice_tile_says_a_partly_priced_cost_beside_it() -> None:
 
 def test_a_task_matrix_cell_says_a_partly_priced_cost_beside_it() -> None:
     moved, arm = _part_priced(INPUTS["r1"])
-    spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", [])), moved, "block")
+    spec, faults = complete_chart(
+        _planned("gate_matrix", _query("tasks", [])), moved, "block", forms=PageForms.of(moved)
+    )
     assert not faults, faults
     page = resolve_chart(
         spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
@@ -1625,7 +1637,9 @@ def test_r2s_cost_gate_under_a_cent_reads_its_reason_and_line_on_the_criterions_
     count named once."""
     held, *_ = UNDER_A_CENT["r2 under a cent per 1,000 calls"]
     assert "Cost budget, per 1,000,000 calls $1.00 > $0.30" in gate_check(held, "atlas-m.off.r0").fails
-    spec, faults = complete_chart(_planned("gate_matrix", _query("measures", [])), held, "block")
+    spec, faults = complete_chart(
+        _planned("gate_matrix", _query("measures", [])), held, "block", forms=PageForms.of(held)
+    )
     assert not faults, faults
     page = resolve_chart(
         spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
@@ -1653,7 +1667,9 @@ def test_a_partly_priced_arms_cost_in_the_full_results_says_so_beside_it() -> No
 
 def test_a_task_matrix_cell_without_a_gate_never_repeats_its_cost_among_its_reasons() -> None:
     held = fixture_inputs()["r1 without its gates"]
-    spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", ["cost_per_1k", "latency_s"])), held, "block")
+    spec, faults = complete_chart(
+        _planned("gate_matrix", _query("tasks", ["cost_per_1k", "latency_s"])), held, "block", forms=PageForms.of(held)
+    )
     assert not faults, faults
     page = resolve_chart(
         spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)

@@ -162,7 +162,7 @@ def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
             "emphasis": spec.emphasis,
         }
     )
-    completed, faults = complete_chart(chosen, held, "chart")
+    completed, faults = complete_chart(chosen, held, "chart", forms=PageForms.of(held))
     assert not faults, faults
     # Only a code-filled field may move: what the plan chose, its line's key, its unit and its axis stay as stored.
     assert completed.model_dump(exclude={"level"}) == spec.model_dump(exclude={"level"})

@@ -261,7 +261,7 @@ def _block_verdicts(doc: ReportDoc, forms: PageForms) -> Iterator[DocVerdict]:
                     "emphasis": evidence.emphasis,
                 }
             )
-            spec, faults = complete_chart(planned, report_input, path)
+            spec, faults = complete_chart(planned, report_input, path, forms=forms)
             faults += chart_faults(path, spec, report_input)
             faults += small_multiple_faults(path, spec)
             if not faults:
