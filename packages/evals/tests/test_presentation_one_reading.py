@@ -122,7 +122,7 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 #: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
     "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better."
 )
 
 #: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
@@ -185,14 +185,14 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
     lead = rung.lead
     # The figure is the measure's, in its own verb: the scoreboard's "passed" (73 and 88) is the pass rate's alone.
     assert f"Of 90 trials each, Accuracy {reading_verb('Accuracy')} on 90 for v1 and 89 for v2." in lead
-    assert "as much as 19.7 points worse or 17.8 better" in lead
+    assert "as much as 20 points worse or 18 better" in lead
     # No level the first screen leaves unexplained, no subject but an arm, no count of cases to settle without a margin.
     assert "%" not in lead and " It " not in lead and "settle" not in lead
     (contrasts,) = [
         block for block in rung.result.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
     ]
     (row,) = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
-    assert (row["interval"].text, row["cases"].text) == ("[-19.7, 17.8] pts", "30 paired")
+    assert (row["interval"].text, row["cases"].text) == ("-20 to +18 pts", "30 paired")
     assert lint_prose(lead) == []
     # The lead links the phrase's one definition at its first use, in the header, before any table says it.
     html = campaign_report_html(rung.result.page)

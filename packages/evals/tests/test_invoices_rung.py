@@ -53,7 +53,7 @@ CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encodi
 #: prints them.
 _LEAD = (
     "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better."
 )
 
 
@@ -127,7 +127,7 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     # The guardrail's Decision cell is on its row's ruler, points for a rate, beside the interval and margin columns
     # that state it so; the interval is its own column's, the level in that column's header.
     (guarded,) = result.guardrails()
-    assert (guarded["interval"], guarded["margin"]) == ("[-13.4, 13.4] pts", "2 pts")
+    assert (guarded["interval"], guarded["margin"]) == ("-13 to +13 pts", "2 pts")
     assert guarded["decision"] == (
         "undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the "
         "declared margin, so the arm is shown neither within it nor beyond it)"
@@ -187,7 +187,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     assert not [line for line in lines if line.startswith("On classify, the evidence cannot tell a drop")]
     assert module.invoices.margin is None and result.margin is None
     assert (
-        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +16.7 pts | [-1.5, 25.9] | — | cannot tell apart |"
+        "| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |"
     ) in lines
     assert "no worse than the margin" not in "\n".join(lines)
 

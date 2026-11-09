@@ -27,7 +27,7 @@ Every arm is named by its label, never by its role; every line code writes is he
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
@@ -56,6 +56,7 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     measured_figure,
     pair_blocks,
     pairs_words,
+    reads_undecided,
     row_figures,
     row_sentence,
     settle_blocks,
@@ -69,6 +70,7 @@ from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
     ReportBlock,
+    Verdict,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
@@ -267,12 +269,10 @@ def build_campaign_report_in_aspect_forms(
     ]
     if readings.readings or readings.pairs:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
-    # Each table's percentages at one precision per column (the page's forms' rate columns), as the aspects' pages
-    # read theirs; its money keeps the form its cells were built in, which the money columns record.
+    # Each table's cells were decided by their measures' sets as their builders made them, so no column rule respells
+    # them: each rate and money cell is recorded as it prints.
     blocks = [
-        block.model_copy(
-            update={"rows": forms.rate_columns(forms.money_columns(block.rows), bare=bare_columns(block.columns))}
-        )
+        block.model_copy(update={"rows": forms.recorded(block.rows, bare=bare_columns(block.columns))})
         if isinstance(block, TableBlock)
         else block
         for block in blocks
@@ -323,6 +323,8 @@ def _lead_blocks(
     sentences: list[str] = []
     # Each decision the lead says, word for word, which the page sets in bold; the figures after it stay regular.
     decisions: list[str] = []
+    # Whether a decision the lead says leaves arms undecided, read off each decision's own reading.
+    undecided = False
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
@@ -330,13 +332,22 @@ def _lead_blocks(
         # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py), in the forms
         # its page was built in.
         figures = contrast_evidence(report.bundle, forms=aspect_forms.get(aspect.label))
-        if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=figures):
+        led_undecided: list[bool] = []
+
+        def evidence(verdict: Verdict, figures: Callable[[Verdict], str | None] = figures) -> str | None:
+            # Each led contrast's own reading says whether its sentence leaves the arms undecided.
+            led_undecided.append(verdict.outcome == "not_separated")
+            return figures(verdict)
+
+        if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=evidence):
+            undecided = undecided or any(led_undecided)
             sentences += led
             decisions += [
                 decision.removesuffix(".")
                 for decision in led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on)
             ]
         elif rows := readings.on_aspect(aspect.label):
+            undecided = undecided or reads_undecided(readings, aspect.label)
             for row in rows:
                 decision = (
                     f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
@@ -345,6 +356,7 @@ def _lead_blocks(
                 sentences.append(f"{decision}. {row_figures(row, readings.control_label, forms=forms)}")
                 decisions.append(decision)
         elif paired := pairs_words(readings, aspect.label, marked=asked):
+            undecided = undecided or reads_undecided(readings, aspect.label)
             # An arm's label is a name, printed as given, even where it opens the sentence; the undecided reading's
             # own words open with a capital, as a sentence does.
             opened = paired[:1].upper() + paired[1:] if paired.startswith("the evidence ") else paired
@@ -356,12 +368,14 @@ def _lead_blocks(
             prefix = f"On {names(aspect.label)}, " if several else ""
             sentences += [f"{prefix}{said}." for said in measured]
         else:
+            undecided = undecided or reads_undecided(readings, aspect.label)
             decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}"
             sentences.append(f"{decision}.")
             decisions.append(decision)
     text = " ".join(sentences)
-    # Where the lead says the evidence cannot tell arms apart, it links that phrase's one definition at its first use.
-    term = CANNOT_TELL_APART if "cannot tell" in text else None
+    # Where a decision the lead says leaves arms undecided, its words say the evidence cannot tell them apart, and the
+    # lead links that phrase's one definition at its first use.
+    term = CANNOT_TELL_APART if undecided else None
     # Code's own decisions: bold falls away where a host's name would cut a code span, never refusing the page.
     emphasis = DisclosureBlock.code_emphasis(text, decisions)
     return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=emphasis)]

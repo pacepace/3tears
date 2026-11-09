@@ -318,8 +318,8 @@ def test_the_cost_chart_s_tips_and_values_table_print_a_cost_alike_and_its_axes_
     for point, row in zip(points, rows, strict=True):
         # P17: every cost carries its dollar sign, as the scoreboard writes it, its count in the head.
         tip_cost = point["tip"][1]
-        assert tip_cost.startswith(f"{row[1]} {row[2]} "), (tip_cost, row)
-        assert row[1].startswith("$") and re.fullmatch(r"\[\$[\d.,]+, \$[\d.,]+\]", row[2]), row
+        assert tip_cost.startswith(f"{row[1]} ({row[2]}) "), (tip_cost, row)
+        assert row[1].startswith("$") and re.fullmatch(r"\$[\d.,]+ to \$[\d.,]+", row[2]), row
     assert headers[1:3] == ["Cost per 1,000 replies", "Interval"]
     assert data["x_title"] == "Cost per 1,000 replies"
 
@@ -477,9 +477,9 @@ def test_a_scale_of_levels_never_runs_below_zero_where_its_measure_cannot() -> N
 
 def test_a_scorecard_column_of_measured_figures_reads_at_one_precision() -> None:
     """Discodon's re-shoot of host pass 5: a one-arm scorecard printed a mean of ``2.737`` items beside counts read
-    whole. A column of measured figures (neither a rate nor money) reads at one precision, the one its scale's line
-    reads at: two significant figures of its smallest figure but zero, whole from ten up, so a mean turn time of
-    99.2345 ms beside one of 100 ms reads ``99`` and ``100``, in its cell and its glyph's title alike."""
+    whole. A column of measured figures (neither a rate nor money) reads at its measure's one precision, the one its
+    intervals set, so a mean turn time of 99.2345 ms beside one of 100 ms, each about ±27 ms, reads ``99`` and
+    ``100``, its interval in its one form."""
     shape = shape_of(
         "measured",
         [
@@ -494,10 +494,11 @@ def test_a_scorecard_column_of_measured_figures_reads_at_one_precision() -> None
     # One arm's matrix is turned, a row per measure (visual pass V2): the measure's rows are its column of figures, and
     # its interval's ends read in its value's form, as its glyph's title did.
     rows = [row for row in scorecard.rows if row["measure"].text == "Turn time"]
-    assert [row["value"].value for row in rows] == [99.2345, 100.0], "the control: a figure past two places"
+    # The control: 99.2345 is held at the measure's whole places, as its cell prints it.
+    assert [row["value"].value for row in rows] == [99.0, 100.0]
     assert [row["value"].text for row in rows] == ["99", "100"]
-    assert rows[0]["interval"].text == "[72, 127]", rows[0]["interval"].text
-    assert all(re.fullmatch(r"\[\d+, \d+\]", row["interval"].text) for row in rows), [
+    assert rows[0]["interval"].text == "72 to 127", rows[0]["interval"].text
+    assert all(re.fullmatch(r"\d+ to \d+", row["interval"].text) for row in rows), [
         row["interval"].text for row in rows
     ]
 
@@ -773,7 +774,7 @@ def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:
         total_rows=1,
     )
     drawn = grid_html(block)
-    assert "<title>16.7 pts, interval [-7.8, 35.4] pts, margin ±5.0 pts</title>" in drawn
+    assert "<title>16.7 pts, interval -7.8 to +35.4 pts, margin ±5.0 pts</title>" in drawn
     assert '<p class="axis">Each column drawn from -7.8 to 35.4 pts</p>' in drawn
     assert drawn.count('class="viz-margin"') == 2
 
@@ -872,15 +873,21 @@ def test_a_column_s_percentages_read_whole_unless_whole_percents_would_print_two
 
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))
-def test_no_column_of_a_rung_s_tables_mixes_whole_and_decimal_percents(rungs: dict[str, _Rung], name: str) -> None:
-    percent = re.compile(r"(?<![\w.])\d+(?:\.(\d))?%(?!\d)")
+def test_no_rate_on_a_rung_s_tables_reads_past_a_tenth_but_to_keep_off_a_boundary(
+    rungs: dict[str, _Rung], name: str
+) -> None:
+    """A rate reads at its measure's places, at most a tenth of a point; it takes more only to keep off its floor or its
+    ceiling (``99.97%``, never ``100.0%``), as an interval's level does (``99.69%``). A column may hold two measures'
+    rates at their own places (owner ruling Q2, 2026-11-08), so the per-column rule of 2026-11-07 is retired."""
+    percent = re.compile(r"(?<![\w.])(\d+)(?:\.(\d+))?%(?!\d)")
     for table in _tables(rungs[name].page):
         for column in table.columns:
-            found = [
-                match for row in table.rows if column.key in row for match in percent.finditer(row[column.key].text)
-            ]
-            stated = {bool(match[1]) for match in found if match[0] != "0%"}
-            assert len(stated) <= 1, (table.name, column.key, [match[0] for match in found])
+            for row in table.rows:
+                if column.key not in row:
+                    continue
+                for match in percent.finditer(row[column.key].text):
+                    if match[2] is not None and len(match[2]) > 1:
+                        assert not 1 <= float(f"{match[1]}.{match[2]}") <= 99, (table.name, column.key, match[0])
     # A zero written two ways: "0.0%" standing alone (never the tail of "100.0%" or "20.0%") beside a bare "0%".
     for text in _page_texts(rungs[name]):
         assert not (re.search(r"(?<![\d.])0\.0%", text) and re.search(r"(?<![\d.])0%", text)), "0.0% beside 0%"

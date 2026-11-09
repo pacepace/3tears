@@ -42,8 +42,15 @@ from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
-from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarStatus,
+    CampaignReadings,
+    MeasureReading,
+    PairReading,
+)
+from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.campaign.measure_kinds import (
@@ -52,6 +59,7 @@ from threetears.evals.analysis.report.campaign.measure_kinds import (
     rate_measures,
     shown_measures,
 )
+from threetears.evals.analysis.report.figures import MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.analysis.report.campaign.common import floor_of
@@ -135,9 +143,10 @@ _CONTRAST_WORDS: dict[str, str] = {
 _CONTRAST_OF: dict[str, str] = {"better": "improved", "worse": "regressed"}
 
 
-def _rate_level(forms: PageForms, level: float, *, alone: bool = False) -> Printed:
-    """The pass rate's level as a change's or a choice's matrix draws it, in percent, in the page's one form for it."""
-    return forms.drawn_level(TRIAL_PASS_NAME, level, kind="trial", alone=alone)
+def _rate_level(forms: PageForms, level: float) -> Printed:
+    """The pass rate's level as a change's or a choice's matrix draws it, in percent, in the page's one form for it,
+    in a cell or in words alike."""
+    return forms.drawn_level(TRIAL_PASS_NAME, level, kind="trial")
 
 
 def _rate_held(forms: PageForms, level: float) -> float:
@@ -262,6 +271,23 @@ def _undecided(row: AspectReading) -> bool:
     return row.reading == "unclear" and _against_zero(row) and read
 
 
+def reads_undecided(readings: CampaignReadings, aspect: str) -> bool:
+    """Whether what the page says of an aspect's rows or pairs leaves any arms undecided, so its words say the evidence
+    cannot tell them apart (:func:`row_sentence`, :func:`pairs_words`): a row read against zero whose interval reaches
+    either side of it, or a pair neither of whose arms is ahead. Decided from the readings, never from the words.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param aspect: The aspect's label.
+    :ptype aspect: str
+    :return: Whether some arms on it are undecided.
+    :rtype: bool
+    """
+    return any(_undecided(row) for row in readings.on_aspect(aspect)) or any(
+        pair.ahead is None for pair in readings.pairs if pair.aspect == aspect
+    )
+
+
 def row_sentence(row: AspectReading, control: str, *, against: bool = True) -> str:
     """What a row shows as a sentence says it, unmarked as a lead: ``v2 against v1 shown better``, or for a row the
     evidence leaves undecided ``the evidence cannot tell v2 and v1 apart``
@@ -381,7 +407,8 @@ def _with_equal_weight_row(
         if column in bare:
             placed: dict[str, object] = {"unit": ""}
             if cell.value is not None:
-                placed["value"] = _across(forms, float(cell.value), unit).held
+                across_figure = _across(forms, float(cell.value), unit)
+                placed |= {"value": across_figure.held, "decimals": across_figure.decimals}
             row[column] = cell.model_copy(update=placed)
         elif cell.value is not None:
             # A head that names no unit leaves it on each figure, at the unit's one decimal as the column's cells are:
@@ -394,8 +421,9 @@ def _with_equal_weight_row(
                 update |= {"value": figure.held, "decimals": figure.decimals}
             if level is not None:
                 shown = _rate_level(forms, level)
-                if unit == POINTS:
-                    update["level"] = shown.held
+                if unit == POINTS and figure is not None:
+                    # Where the change lands, then the change, each in the pass rate's one form.
+                    update |= {"level": shown.held, "value_text": f"{shown.text} · {figure.text}"}
                 else:
                     update |= {"value": shown.held, "decimals": shown.decimals, "low": None, "high": None}
                 if said is not None:
@@ -620,11 +648,7 @@ def _across_levels(
     for key, baselines in stated.items():
         if key == control or (level := mean(key, lambda cell: cell.level)) is None:
             continue
-        own = (
-            f"from {named}'s {_rate_level(forms, math.fsum(baselines) / len(baselines), alone=True).text}"
-            if split
-            else None
-        )
+        own = f"from {named}'s {_rate_level(forms, math.fsum(baselines) / len(baselines)).text}" if split else None
         levels[key] = (level, own)
     return levels
 
@@ -733,14 +757,17 @@ def _change_cell(
     if (status := _floor_state(row, campaign, readings)) is not None and status != _IMPLIED_FLOOR[row.reading]:
         marks.append(f"floor {status}")
     if stated:
-        marks.append(f"from {readings.control_label}'s {_rate_level(forms, baseline, alone=True).text}")
+        marks.append(f"from {readings.control_label}'s {_rate_level(forms, baseline).text}")
     figure = _rate_change(forms, row.change)
+    level = _rate_level(forms, baseline + row.change)
     change = TableCell(
         value=figure.held,
         unit=figure.unit,
         decimals=figure.decimals,
         signed=True,
-        level=_rate_level(forms, baseline + row.change).held,
+        level=level.held,
+        # Where the change lands, then the change, each in the pass rate's one form.
+        value_text=f"{level.text} · {figure.text}",
         flag="; ".join(marks),
     )
     interval, _ = _shown_interval(row)
@@ -808,9 +835,10 @@ def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForm
                     if interval is None
                     else forms.of_measure(
                         TableCell(
+                            # Bare, under the column's ``(pts)``.
                             value=forms.interval(
                                 TRIAL_PASS_NAME, interval[0], interval[1], kind="trial", change=True
-                            ).text
+                            ).digits
                         ),
                         measure=TRIAL_PASS_NAME,
                         kind="trial",
@@ -1426,7 +1454,7 @@ def pair_blocks(
                 "change": change.held,
                 "interval": None
                 if pair.interval is None
-                else forms.interval(TRIAL_PASS_NAME, *pair.interval, kind="trial", change=True).text,
+                else forms.interval(TRIAL_PASS_NAME, *pair.interval, kind="trial", change=True).digits,
                 "ahead": ahead if pair.confirmatory else f"{ahead}, a lead",
             }
         )
@@ -2023,6 +2051,32 @@ def _unread_until_candidate_lines(campaign: EvalCampaign, names: AspectNames) ->
 BAR_WORDS: dict[str, str] = {"met": "met", "missed": "missed", "unclear": "unclear"}
 
 
+def bar_threshold(
+    forms: PageForms, ruler: MeasureRuler, threshold: float, *, measure: str, kind: str = "measure"
+) -> TableCell:
+    """A bar's threshold as a cell, on its measure's ruler: as it was declared, never at the measure's places (rule
+    4: ``92%``, never ``92.0%``), money in its ruler's form; held as a figure of its measure.
+
+    :param forms: The page's forms.
+    :ptype forms: PageForms
+    :param ruler: The measure's ruler on its aspect's page.
+    :ptype ruler: MeasureRuler
+    :param threshold: The threshold, as stored.
+    :ptype threshold: float
+    :param measure: The measure's key.
+    :ptype measure: str
+    :param kind: Its reading (``measure``, ``judged``).
+    :ptype kind: str
+    :return: The cell.
+    :rtype: TableCell
+    """
+    if is_money(ruler.unit):
+        return forms.ruled_level_cell(ruler, threshold, measure=measure, kind=kind)
+    scaled = threshold * ruler.factor
+    cell = TableCell(value=scaled, unit=ruler.unit, value_text=forms.declared(scaled, ruler.unit).text)
+    return forms.of_measure(cell, measure=measure, kind=kind)
+
+
 def bar_blocks(
     readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames, forms: PageForms
 ) -> list[ReportBlock]:
@@ -2055,18 +2109,52 @@ def bar_blocks(
         TableColumn(key="interval", header="Interval", term="interval"),
         TableColumn(key="status", header="Status"),
     ]
+    rulers: dict[str, Rulers] = {}
+
+    def kind(status: BarStatus) -> str:
+        # The reading its aspect's page reads the bar on: a judged dimension's bar is ``judged``, its scale its own.
+        readings = {
+            verdict.name: verdict.reading
+            for verdict in reports[status.aspect].verdicts
+            if verdict.kind == "bar" and verdict.variant_key == status.arm
+        }
+        return readings.get(status.measure, "measure")
+
+    def ruler(status: BarStatus) -> MeasureRuler:
+        # On the ruler its aspect's page states the measure on, under the measure's own reading, at the places its set
+        # reads at there (rules 1 and 2): a rate in percent, money in its form, never a raw share.
+        if status.aspect not in rulers:
+            bundle = reports[status.aspect].bundle
+            rulers[status.aspect] = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog)
+        return rulers[status.aspect].of(status.measure, kind(status))
+
     rows = [
         table_row(
             {
                 "aspect": names.cell(status.aspect),
                 "arm": status.arm_label,
                 "measure": named(status.aspect, status.measure),
-                "bar": f"{'at most' if status.direction == 'lower_is_better' else 'at least'} "
-                f"{forms.declared(status.bar).text}",
-                "value": status.value,
+                # Each figure of the bar's measure, which the page records the cell under.
+                "bar": forms.of_measure(
+                    TableCell(
+                        value=f"{'at most' if status.direction == 'lower_is_better' else 'at least'} "
+                        f"{bar_threshold(forms, ruler(status), status.bar, measure=status.measure, kind=kind(status)).figure}"
+                    ),
+                    measure=status.measure,
+                    kind=kind(status),
+                ),
+                "value": forms.ruled_level_cell(ruler(status), status.value, measure=status.measure, kind=kind(status)),
                 "interval": None
                 if status.interval is None
-                else "[{}, {}]".format(*(forms.lone(end, measure=status.measure).text for end in status.interval)),
+                else forms.of_measure(
+                    TableCell(
+                        value=forms.ruled_interval(
+                            ruler(status), *status.interval, measure=status.measure, kind=kind(status)
+                        ).text
+                    ),
+                    measure=status.measure,
+                    kind=kind(status),
+                ),
                 "status": BAR_WORDS[status.status],
             }
         )

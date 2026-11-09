@@ -144,8 +144,9 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
     assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
     # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
-    assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "[$3.60, $4.40]", "$0.80"), rows
-    assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "$3.60 to $4.40", "$0.80"), rows
+    # Each interval in its one form, ``low to high``.
+    assert rows[0][3] == "85" and rows[0][4] == "80 to 90"
 
 
 def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() -> None:
@@ -189,8 +190,8 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
         "alpha",
         # One form over the chart (#993), its interval on the chart's ruler: never $4 beside $0.8, nor a cost under a
         # cent spelled per reply.
-        "$4.00 [$3.60, $4.40] per 1,000 replies",
-        "pass rate 85% [80%, 90%]",
+        "$4.00 ($3.60 to $4.40) per 1,000 replies",
+        "pass rate 85% (80 to 90)",
     ]
     # Each axis is set to the data (the review's P46): it holds every interval end, within 0 to 100 for the pass rate.
     x_low, x_high = data["x_domain"]  # type: ignore[misc]

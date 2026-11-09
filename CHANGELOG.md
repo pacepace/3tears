@@ -117,6 +117,12 @@ as the input states it (`99.69%`).
 The key grammar gains a `signed` filter, which prints a criterion's `gap` or `weakest.margin` with its `+` in any unit;
 without it they print no `+`, as before, so a stored report renders as it did.
 
+**Hosts (number policy, code and aspect pages):** a cost and quality chart's point (`CostQualityPoint`) gains
+`pass_rate_text` and `pass_rate_interval_text`, the pass rate and its interval as the page decided them, bare (their
+`%` is the column's); each is left out where no page decided it, and the values table spells `pass_rate` as before.
+`interval_text` now joins an interval in the one form every page prints, `low to high` (`0.05 to 0.45`), where it
+wrote `[low, high]`; a host matching that text, or any code or aspect page's `[a, b]` interval, updates its match.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

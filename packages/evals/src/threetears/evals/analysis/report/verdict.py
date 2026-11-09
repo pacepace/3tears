@@ -296,12 +296,16 @@ class VerdictLine:
     :ivar decisions: Each decision ``text`` says, word for word and in its order, which a page sets in bold while the
         figures it rests on and the guardrails stay regular; none where nothing is decided (one arm's count, a failed
         setup, too few cases).
+    :ivar undecided: Whether a decision ``text`` says leaves arms undecided, so its words say the evidence cannot tell
+        them apart: a led contrast not separated, or no reading telling any arm apart from the control. Read off the
+        verdicts, never off the words, so a page links that phrase's definition where the line says it.
     """
 
     rule: VerdictRule
     text: str
     lead: str = ""
     decisions: tuple[str, ...] = ()
+    undecided: bool = False
 
     def __post_init__(self) -> None:
         if not self.lead:
@@ -522,7 +526,11 @@ def verdict_line(
                 said.removesuffix(".") for said in led_sentences(bundle, verdicts, order, asked=declared_question)
             )
             return VerdictLine(
-                rule=rule, text=prefix + text + _guardrail_sentences(verdicts), lead=result, decisions=decisions
+                rule=rule,
+                text=prefix + text + _guardrail_sentences(verdicts),
+                lead=result,
+                decisions=decisions,
+                undecided=any(verdict.outcome == "not_separated" for verdict in led),
             )
     said = (
         _told_apart(bundle, verdicts, asked=declared_question)
@@ -538,13 +546,15 @@ def verdict_line(
             if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
         )
     )
+    # Whether the line says no reading tells any arm apart from the control (:func:`_undecided`).
+    undecided = True
     if said and costs_only:
         # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost.
         result = f"{_undecided(bundle, arm)} on every reading but cost; " + "; ".join(said)
     elif said:
-        result = "; ".join(said)
+        result, undecided = "; ".join(said), False
     elif declared_question and not any(family.aspect is not None for family in bundle.multiple_comparisons.families):
-        result = "The declared question is untested"
+        result, undecided = "The declared question is untested", False
     else:
         result = _undecided(bundle, arm) + (
             " on any reading the question asks" if declared_question else " on any reading"
@@ -554,7 +564,9 @@ def verdict_line(
     guardrails = (
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
     )
-    return VerdictLine(rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,))
+    return VerdictLine(
+        rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,), undecided=undecided
+    )
 
 
 def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:

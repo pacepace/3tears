@@ -128,7 +128,7 @@ class TestAScorerGuardrail:
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
         # The level sits once in the table's header; a pass/fail reads in points.
-        assert same["interval"] == "[-8.1, 8.1] pts", "a pass/fail is on 0 to 1: the bounded test's"
+        assert same["interval"] == "-8 to +8 pts", "a pass/fail is on 0 to 1: the bounded test's"
         assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:

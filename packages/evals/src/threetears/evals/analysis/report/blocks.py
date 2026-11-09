@@ -898,6 +898,25 @@ class CostQualityPoint(EvalDocumentModel):
     pass_rate: float = Field(ge=0, le=100, description="The arm's pass rate, in percent.")
     pass_rate_low: float = Field(ge=0, le=100, description="The low end of the pass rate's interval, in percent.")
     pass_rate_high: float = Field(ge=0, le=100, description="The high end of the pass rate's interval, in percent.")
+    pass_rate_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The pass rate as its page decided it, bare (its unit is the column's): what the chart's values table "
+            "prints, at the precision every figure of the pass rate reads at on the page. None where no page decided "
+            "it, and the number rule spells `pass_rate`."
+        ),
+    )
+    pass_rate_interval_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The pass rate's interval as its page decided it, bare, in the one form (`16 to 24`). None where no page "
+            "decided it, and the number rule spells its ends."
+        ),
+    )
 
     @model_validator(mode="after")
     def _each_interval_holds_its_value(self) -> Self:
@@ -1117,11 +1136,18 @@ class ChartBlock(_Block):
                 narrow_label=point.tag or point.short_name or point.arm,
                 color=arm_token(point.tag),
                 shape=arm_shape(point.tag),
+                # Each figure, its unit on it, then its interval in its one form in parentheses; the pass rate as its
+                # page decided it where it did.
                 tip=[
                     point.arm,
-                    f"{cost(point.cost)} [{cost(point.cost_low)}, {cost(point.cost_high)}] {per}",
-                    f"pass rate {with_unit(point.pass_rate, PERCENT)} "
-                    f"[{with_unit(point.pass_rate_low, PERCENT)}, {with_unit(point.pass_rate_high, PERCENT)}]",
+                    f"{cost(point.cost)} ({cost(point.cost_low)} to {cost(point.cost_high)}) {per}",
+                    f"pass rate {point.pass_rate_text or with_unit(point.pass_rate, PERCENT).removesuffix(PERCENT)}% ("
+                    + (
+                        point.pass_rate_interval_text
+                        or f"{with_unit(point.pass_rate_low, PERCENT).removesuffix(PERCENT)} to "
+                        f"{with_unit(point.pass_rate_high, PERCENT).removesuffix(PERCENT)}"
+                    )
+                    + ")",
                 ],
             )
             for point in self.points
@@ -1196,9 +1222,9 @@ class ChartBlock(_Block):
                 [
                     point.arm,
                     said(point.cost),
-                    f"[{said(point.cost_low)}, {said(point.cost_high)}]",
-                    interval_value_text(point.pass_rate, PERCENT),
-                    interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
+                    f"{said(point.cost_low)} to {said(point.cost_high)}",
+                    point.pass_rate_text or interval_value_text(point.pass_rate, PERCENT),
+                    point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
                 for point in self.points
             ]
@@ -1248,8 +1274,19 @@ def interval_value_text(value: float, unit: str = "") -> str:
 
 
 def interval_text(low: float, high: float, unit: str = "") -> str:
-    """A charted interval as text: ``[low, high]``, each end at the precision its unit is read to."""
-    return f"[{number_in(low, unit)}, {number_in(high, unit)}]"
+    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, each end at the
+    precision its unit is read to; the unit itself is the header's.
+
+    :param low: The low end.
+    :ptype low: float
+    :param high: The high end.
+    :ptype high: float
+    :param unit: The unit the ends are read in, which sets their precision.
+    :ptype unit: str
+    :return: The text.
+    :rtype: str
+    """
+    return f"{number_in(low, unit)} to {number_in(high, unit)}"
 
 
 class TrialBlock(_Block):
