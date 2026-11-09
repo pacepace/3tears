@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import operator
 import struct
 from collections.abc import Sequence
 from typing import Any, Final
@@ -168,12 +169,16 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     """
     if not _PYARROW:
         raise ImportError("a copy's rows as Arrow need pyarrow: install 3tears[snapshot]")
-    by_column: list[Sequence[Any]] = list(zip(*records, strict=True)) if records else [() for _ in columns]
-    if len(by_column) != len(columns):
-        raise ValueError(f"a row has {len(by_column)} values for {len(columns)} columns")
+    width = len(columns)
+    for record in records:
+        if len(record) != width:
+            raise ValueError(f"a row has {len(record)} values for {width} columns")
     arrays = []
     json_columns = []
-    for position, values in enumerate(by_column):
+    for position in range(width):
+        # one column at a time, never the whole transposition in one call: each call holds the interpreter lock
+        # for its length, and the caller's event loop runs between them
+        values = list(map(operator.itemgetter(position), records))
         array, as_json = _arrow_column(values)
         arrays.append(array)
         if as_json:
