@@ -123,7 +123,7 @@ _READ_KINDS: Final[frozenset[str]] = frozenset(
 #: the kinds an operator's reset (``@operator_reset``) may hold: whole writes it orders, never a read
 _OPERATOR_RESET_KINDS: Final[frozenset[str]] = frozenset({"truncate", "truncate-call"})
 
-#: the kinds an operator's command over a scratch restore (``@operator_command``) may hold: its reads of that copy
+#: the kinds an operator's explicit one-off command (``@operator_command``) may hold: the reads its completeness needs
 _OPERATOR_COMMAND_KINDS: Final[frozenset[str]] = _READ_KINDS | frozenset({"calls-whole-read"})
 
 #: the operator marks, by decorator name, onto the kinds each lets through

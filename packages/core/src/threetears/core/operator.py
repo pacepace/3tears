@@ -5,13 +5,12 @@ an operator asking for exactly that, never a load path doing it on its own:
 
 - :func:`operator_reset`: an explicit reset or truncate an operator orders. It may ``TRUNCATE`` (or call a
   backend's ``truncate``); every read inside it is still judged as anywhere else.
-- :func:`operator_command`: a command an operator runs against a scratch database restored from a backup, never
-  live L3, that reads it whole (a restore's coverage check counts what was restored).
+- :func:`operator_command`: an operator's explicit one-off command that must read whole to be complete (a backup's
+  restore check over its scratch copy, a person's erasure across every agent). Never a load or cache path.
 
 Each mark is checked, not trusted. The gate refuses a marked function that anything in the repo calls, so it is
 reachable only from its own entry (a route, a CLI command), and it refuses one whose ``proof`` does not name a test
-that names the function: that test proves the entry needs the operator (and, for :func:`operator_command`, that
-the connection it reads is the scratch restore).
+that names the function: that test proves the entry needs the operator, and what else the command's reason claims.
 
 Both return the function unchanged, so a framework's own decorator above them sees the function it wrote.
 """
@@ -72,12 +71,11 @@ def operator_reset(reason: str, *, proof: str) -> Callable[[_F], _F]:
 
 
 def operator_command(reason: str, *, proof: str) -> Callable[[_F], _F]:
-    """mark a function as an operator's command over a scratch restore: it may read that copy whole.
+    """mark a function as an operator's explicit one-off command: it may read whole, as its completeness needs.
 
-    :param reason: which command, over which scratch copy
+    :param reason: which command, and why it reads whole
     :ptype reason: str
     :param proof: ``<test file>::<test function>``: a test naming the function, proving its entry needs the operator
-        and that what it reads is the scratch restore, never live L3
     :ptype proof: str
     :return: the decorator
     :rtype: Callable[[_F], _F]

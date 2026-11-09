@@ -26,8 +26,9 @@ the code writes, judged by :func:`~threetears.enforcement.no_whole_reads.sql.jud
 
 - ``@operator_reset(reason, proof=...)``: an explicit reset or truncate an operator orders. Its ``truncate`` and
   ``truncate-call`` hits pass; every read in it is judged as anywhere else;
-- ``@operator_command(reason, proof=...)``: a command an operator runs over a scratch database restored from a
-  backup, never live L3. Its reads of that copy pass.
+- ``@operator_command(reason, proof=...)``: an operator's explicit one-off command that must read whole to be
+  complete (a restore check over its scratch copy, a person's erasure across every agent), never a load or cache
+  path. Its reads pass.
 
 A mark is checked: every caller of a marked function in the repo must carry the same mark, so the chain ends at an
 entry nothing in the repo calls (a route, a CLI command); ``proof`` names ``<test file>::<test function>``, a test
