@@ -192,8 +192,11 @@ def check_report_doc(doc: ReportDoc, report_input: ReportInput, *, above_appendi
         )
     ]
     prose = list(report_doc_prose(doc))
-    verdicts += _number_verdicts(doc, prose, report_input)
-    verdicts += _block_verdicts(doc, report_input)
+    # A check reads the document off its page (the page it is checked beside keeps its own ledger of what it prints),
+    # so its keys and blocks are read in forms of its own, built once from its snapshot as its page builds them.
+    forms = PageForms.of(report_input)
+    verdicts += _number_verdicts(doc, prose, forms)
+    verdicts += _block_verdicts(doc, forms)
     verdicts += _coverage_verdicts(doc, report_input, caveats)
     verdicts += _form_verdicts(doc)
     verdicts += _id_verdicts(doc, prose, report_input, caveats, above_appendix_text)
@@ -218,10 +221,9 @@ def _allowed_phrases(doc: ReportDoc) -> re.Pattern[str]:
     return re.compile("|".join([_COST_UNIT.pattern, *claims]), re.IGNORECASE)
 
 
-def _number_verdicts(doc: ReportDoc, prose: list[tuple[str, str]], report_input: ReportInput) -> Iterator[DocVerdict]:
+def _number_verdicts(doc: ReportDoc, prose: list[tuple[str, str]], forms: PageForms) -> Iterator[DocVerdict]:
+    report_input = forms.report_input
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
-    # A check reads the document off its page, so it reads each key in the forms its input's page would print it in.
-    forms = PageForms.of(report_input)
     for path, text in prose:
         try:
             keys = keys_in(text)
@@ -232,19 +234,20 @@ def _number_verdicts(doc: ReportDoc, prose: list[tuple[str, str]], report_input:
             assert key.span is not None
             start, end = key.span
             try:
-                render(text[start:end], report_input, names, forms=forms)
+                render(text[start:end], names, forms=forms)
             except UnresolvableReference as refused:
                 yield DocVerdict(invariant=1, path=path, fault=str(refused), remedy=_KEY_REMEDY)
     for path, fault in literal_faults(prose, report_input, allowed=_allowed_phrases(doc)):
         yield DocVerdict(invariant=1, path=path, fault=fault, remedy=_DIGIT_REMEDY)
-    for path, fault in unit_faults(prose, report_input):
+    for path, fault in unit_faults(prose, report_input, forms=forms):
         yield DocVerdict(invariant=1, path=path, fault=fault, remedy=_UNIT_REMEDY)
 
 
 # --- 2. every evidence block resolves and renders ------------------------------------------------------------------
 
 
-def _block_verdicts(doc: ReportDoc, report_input: ReportInput) -> Iterator[DocVerdict]:
+def _block_verdicts(doc: ReportDoc, forms: PageForms) -> Iterator[DocVerdict]:
+    report_input = forms.report_input
     look: PageLook | None = None
     for index, claim in enumerate(doc.claims):
         for number, evidence in enumerate(claim.evidence):
@@ -264,7 +267,7 @@ def _block_verdicts(doc: ReportDoc, report_input: ReportInput) -> Iterator[DocVe
             if not faults:
                 look = look or block_look(report_input, fact_arms(report_input))
                 try:
-                    resolve_chart(spec, report_input, look, title="")
+                    resolve_chart(spec, look, title="", forms=forms)
                 except UnresolvableReference as refused:
                     faults.append((path, f"is refused by the page, which draws it from this snapshot: {refused}"))
             for at, fault in faults:

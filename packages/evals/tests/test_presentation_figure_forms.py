@@ -45,6 +45,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, percent_columns
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.analysis.report.doc_page.build import build
@@ -607,7 +608,7 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
             PlannedChart(kind=kind, title="", query=query, reference=[], emphasis=""), held, "block"
         )
         assert not faults, faults
-        drawn = resolve_chart(spec, held, look, title="", fallback_title="")
+        drawn = resolve_chart(spec, look, title="", fallback_title="", forms=PageForms.of(held))
         said += re.findall(r"'([^']*holds character[^']*)'", str(drawn.chart.model_dump()))
     assert said, "the control: the charts name the dimension"
     assert not [text for text in said if "persona holds character" in text], said
@@ -629,7 +630,7 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
         PlannedChart(kind="diverging_bars", title="", query=query, reference=[], emphasis=""), held, "block"
     )
     assert not faults, faults
-    compared = resolve_chart(spec, held, look, title="", fallback_title="")
+    compared = resolve_chart(spec, look, title="", fallback_title="", forms=PageForms.of(held))
     notes = [note for note in compared.notes if "holds character" in note]
     assert notes, "the control: the compare chart's note names the dimension"
     assert all(" on persona holds character" in note for note in notes), notes
@@ -675,7 +676,7 @@ def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision()
         "block",
     )
     assert not faults, faults
-    drawn = resolve_chart(spec, held, look, title="", fallback_title="t")
+    drawn = resolve_chart(spec, look, title="", fallback_title="t", forms=PageForms.of(held))
     assert isinstance(drawn.chart, ChartBlock)
     _, rows = values_table(drawn.chart)
     figures = [number for row in rows for cell in row[1:3] for number in re.findall(r"[+-]?\d+\.\d+|[+-]?\d+", cell)]

@@ -12,6 +12,9 @@ Held here, on the pages the plan names:
   money exactly.
 - **The ledger**: every text handed out is recorded by measure, kind and role, a figure that is no measurement by its
   fixed form, so a page-level test can hold one figure to one text across surfaces.
+- **The forms carry what they were built from**: a written page's its report input, which prose and charts read
+  from them, so no figure reads one input in another's forms; an aspect page's its bundle; a reader handed both
+  refuses a pair that does not match.
 
 The two column rules the tables apply after a cell is built (whole percents per column, a money column's own form)
 stay the tables' until they are relocated; a rate's or money's form here is what the cell is built from.
@@ -33,6 +36,9 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns, percent_columns
+from threetears.evals.analysis.analyst.cited import cite
+from threetears.evals.analysis.report.build import contrast_evidence
+from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
@@ -747,3 +753,48 @@ def test_an_off_page_figure_of_a_measure_is_held_under_that_measure_and_kind() -
 def test_the_lone_figure_rule_spells_no_signed_money() -> None:
     with pytest.raises(ValueError, match="no signed money"):
         PageForms.off_page().lone(-1.2, signed=True, money=True)
+
+
+def test_a_written_page_s_forms_carry_the_input_they_were_built_from() -> None:
+    held = _written_inputs()[KAIRO]
+    other = held.model_copy()
+    forms = PageForms.of(held)
+    assert forms.report_input is held
+    assert forms.checked(held) is forms
+    with pytest.raises(ValueError, match="not built from"):
+        forms.checked(other)
+    with pytest.raises(ValueError, match="hold no report input"):
+        _ = PageForms.off_page().report_input
+
+
+def test_prose_reads_the_input_its_forms_carry() -> None:
+    held = _written_inputs()[KAIRO]
+    fewer = held.model_copy(update={"arms": held.arms[:-1]})
+    assert render("{count.arms}", {}, forms=PageForms.of(held)) == str(len(held.arms))
+    assert render("{count.arms}", {}, forms=PageForms.of(fewer)) == str(len(held.arms) - 1)
+
+
+def test_a_reader_handed_an_input_and_another_input_s_forms_refuses_them() -> None:
+    held = _written_inputs()[KAIRO]
+    with pytest.raises(ValueError, match="not built from"):
+        cite("count.arms", held, forms=PageForms.of(held.model_copy()))
+
+
+def test_a_view_of_the_page_s_input_prints_into_the_page_s_ledger() -> None:
+    held = _written_inputs()[KAIRO]
+    forms = PageForms.of(held)
+    view = forms.over(held.model_copy())
+    assert view.report_input is not held
+    view.count(3)
+    assert [entry.role for entry in forms.ledger] == ["count"]
+
+
+def test_an_aspect_page_s_forms_carry_their_bundle() -> None:
+    shape = s3_measurement()
+    first, second = list(shape.bundles.values())[:2]
+    forms = PageForms.of_bundle(first)
+    assert forms.bundle is first
+    with pytest.raises(ValueError, match="not built from"):
+        contrast_evidence(second, forms=forms)
+    with pytest.raises(ValueError, match="hold no aspect's bundle"):
+        _ = PageForms.of(_written_inputs()[KAIRO]).bundle

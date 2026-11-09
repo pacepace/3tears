@@ -6,7 +6,10 @@ this module's. A set is the measure across the whole page (owner ruling, 2026-11
 measure is decided by one :class:`MeasureForm`, never by the surface that prints it.
 
 - :class:`PageForms` is built once per page, before any part is assembled: :meth:`PageForms.of` for a written page
-  (a report input), :meth:`PageForms.of_campaign` for a campaign's code page (its readings and its aspects' pages).
+  (a report input), :meth:`PageForms.of_campaign` for a campaign's code page (its readings and its aspects' pages),
+  :meth:`PageForms.of_bundle` for an aspect's own page (its bundle, which holds no report input: its contrasts' and
+  guardrails' sets, each surface's as today). A written page's forms carry their input
+  (:attr:`PageForms.report_input`), so a figure key reads the input its forms were built from.
   It holds one :class:`MeasureForm` per measure the page can state, and keeps a ledger (:class:`_Issued`) of every text
   it hands out, by measure and role, which is what a test reads to hold one figure to one text across surfaces.
 - A figure knows its set by its measure key plus its role: :meth:`PageForms.level`, :meth:`PageForms.change`,
@@ -52,11 +55,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
-from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings, MeasureReading
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS, is_money
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
+from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.figure_keys import (
     RUBRIC_SCALE,
     Figure,
@@ -76,6 +81,9 @@ from threetears.evals.analysis.report.parts.look import Quantity, figure_text, i
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report_input import Contrast, ContrastFamily, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
+from threetears.evals.analysis.report.verdict import MIN_CASES
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
+from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
     SCORE_PLACES,
@@ -139,9 +147,16 @@ Role = Literal[
     "half_width",
 ]
 
-#: Which page a set of forms is for: a written page (a report input), a campaign's code page, or an off-page surface
-#: (a command line's lines, a lens's text, the rung-5 page's side-by-side figures), which states no page's measure.
-_PageKind = Literal["written", "code", "off"]
+#: Which page a set of forms is for: a written page (a report input), a campaign's code page, an aspect's own page
+#: (code's page over one aspect's bundle), or an off-page surface (a command line's lines, a lens's text, the rung-5
+#: page's side-by-side figures), which states no page's measure.
+_PageKind = Literal["written", "code", "aspect", "off"]
+
+#: Which of an aspect page's surfaces states a reading's changes or levels: the contrasts table (and the statistics
+#: beside it), the verdict line's sentences, a program's contrast rows, or the guardrails table. Each reads its own set
+#: today (the sentences' money over every contrast tested, one under the case floor too, where the table's is over the
+#: contrasts it shows); the policy makes them one set per measure.
+_ContrastSurface = Literal["contrasts", "sentences", "rows", "guardrails"]
 
 #: The most decimals a measured figure on the scorecard is stated to, before its column's precision is applied.
 _MEASURED_PLACES = 4
@@ -342,6 +357,10 @@ class PageForms:
         self._measures = dict(measures)
         self._issued: list[_Issued] = []
         self._input = report_input
+        # An aspect page's contrasts' and guardrails' decisions, by the surface that states them (:meth:`of_bundle`).
+        self._bundle: AnalysisContextBundle | None = None
+        self._contrast_places: dict[_ContrastSurface, dict[tuple[str, str], ContrastPlaces]] = {}
+        self._change_money: dict[_ContrastSurface, dict[tuple[str, str], MoneyForm]] = {}
 
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
@@ -423,6 +442,88 @@ class PageForms:
             measures[key, "measure"] = _scorecard_form(key, shown, rates, rulers)
         return cls("code", measures)
 
+    @classmethod
+    def of_bundle(cls, bundle: AnalysisContextBundle) -> PageForms:
+        """An aspect's own page's forms (code's page over the aspect's bundle, which holds no report input): each
+        reading's places and each money measure's form for its changes, as every surface that states the aspect's
+        contrasts and guardrails decides them today, each over its own set (:data:`_ContrastSurface`).
+
+        :param bundle: The aspect's evidence.
+        :ptype bundle: AnalysisContextBundle
+        :return: The page's forms.
+        :rtype: PageForms
+        """
+        forms = cls("aspect", {})
+        forms._bundle = bundle
+        surface = bundle_decision_surface(bundle)
+        rulers = report_rulers(surface, bundle.measure_catalog)
+        compared = [comparison for family in bundle.multiple_comparisons.families for comparison in family.comparisons]
+        # The sentences read each contrast once, by its arm, measure, reading and aspect, the last tested winning.
+        tested = list(
+            {
+                (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): comparison
+                for family in bundle.multiple_comparisons.families
+                for comparison in family.comparisons
+            }.values()
+        )
+        shown = [comparison for comparison in compared if _resolvable(comparison)]
+        guardrails = bundle.guardrails.checks if bundle.guardrails is not None else []
+        forms._contrast_places = {
+            "contrasts": _contrast_places(bundle, surface, rulers, shown),
+            "sentences": _contrast_places(bundle, surface, rulers, [c for c in tested if _resolvable(c)]),
+            "rows": _contrast_places(bundle, surface, rulers, shown),
+        }
+        forms._change_money = {
+            "contrasts": _change_money(rulers, ((c.name, c.reading, c.delta, c.interval) for c in shown)),
+            "sentences": _change_money(rulers, ((c.name, c.reading, c.delta, c.interval) for c in tested)),
+            "rows": _change_money(
+                rulers, ((c.name, c.reading, c.delta, c.interval) for c in compared if not _under_floor(c))
+            ),
+            "guardrails": _change_money(
+                rulers, ((check.name, check.reading, check.delta, check.interval) for check in guardrails)
+            ),
+        }
+        return forms
+
+    @property
+    def bundle(self) -> AnalysisContextBundle:
+        """The bundle an aspect page's forms were built from.
+
+        :raises ValueError: The forms are another page's, which hold no bundle.
+        """
+        if self._bundle is None:
+            raise ValueError(f"a {self.page} page's forms hold no aspect's bundle")
+        return self._bundle
+
+    def contrast_places(self, name: str, reading: str, *, stated_in: _ContrastSurface) -> ContrastPlaces | None:
+        """How one reading's contrast figures read on one surface of an aspect's page: its set's places.
+
+        :param name: The reading's measure or dimension.
+        :ptype name: str
+        :param reading: Which reading of it (``measure``, ``judged``, ``trial``).
+        :ptype reading: str
+        :param stated_in: The surface that states the figures.
+        :ptype stated_in: _ContrastSurface
+        :return: The places; None where the surface states no contrast of the reading that its set holds.
+        :rtype: ContrastPlaces | None
+        """
+        return self._contrast_places.get(stated_in, {}).get((name, reading))
+
+    def change_money(self, name: str, reading: str, *, stated_in: _ContrastSurface) -> MoneyForm | None:
+        """The one form a money measure's changes read in on one surface of an aspect's page, a change and its
+        interval's ends alike (#993); None for a measure of another unit.
+
+        :param name: The measure's name.
+        :ptype name: str
+        :param reading: Which reading of it.
+        :ptype reading: str
+        :param stated_in: The surface that states the changes.
+        :ptype stated_in: _ContrastSurface
+        :return: The form, or None.
+        :rtype: MoneyForm | None
+        """
+        return self._change_money.get(stated_in, {}).get((name, reading))
+
     # --- measures ----------------------------------------------------------------------------------------------------
 
     def measure(self, key: str, *, kind: _MeasureKind = "measure") -> MeasureForm:
@@ -442,6 +543,50 @@ class PageForms:
     def measures(self) -> tuple[MeasureForm, ...]:
         """Every measure's form, in the order the page's input holds them."""
         return tuple(self._measures.values())
+
+    # --- the input a written page's forms are of ---------------------------------------------------------------------
+    #
+    # A figure key resolves on an input and prints in a page's forms. A caller that took the two apart could hand in
+    # forms built from another input, and nothing would say so; so a written page's forms carry their input, a key's
+    # reader reads it from them (:func:`~threetears.evals.analysis.report.figure_keys.render`), and a reader that is
+    # handed both checks them (:meth:`checked`).
+
+    @property
+    def report_input(self) -> ReportInput:
+        """The report input a written page's forms were built from, which its figure keys resolve on.
+
+        :raises ValueError: The forms are a code page's or an off-page surface's, which hold no report input.
+        """
+        if self._input is None:
+            raise ValueError(f"a {self.page} page's forms hold no report input, which a figure key resolves on")
+        return self._input
+
+    def checked(self, report_input: ReportInput) -> PageForms:
+        """These forms, where they are ``report_input``'s: for a reader handed an input and its page's forms apart.
+
+        :param report_input: The input the reader resolves its figures on.
+        :ptype report_input: ReportInput
+        :return: These forms.
+        :rtype: PageForms
+        :raises ValueError: The forms were built from another input, or hold none.
+        """
+        if self.report_input is not report_input:
+            raise ValueError("a page's forms were handed in beside a report input they were not built from")
+        return self
+
+    def over(self, view: ReportInput) -> PageForms:
+        """The same page's forms over a view of its input that adds no figure (a configs chart's grid,
+        :func:`~threetears.evals.analysis.report_rows.config_grid`): its measures and its ledger are this page's, and
+        a figure key resolved on the view reads its set there.
+
+        :param view: The view: the page's input with its factors and configs the grid's.
+        :ptype view: ReportInput
+        :return: The forms over the view.
+        :rtype: PageForms
+        """
+        viewed = PageForms(self.page, self._measures, view)
+        viewed._issued = self._issued
+        return viewed
 
     def level(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
         """A level of a measure (an arm's mean, a slice's), in its measure's form.
@@ -2154,3 +2299,100 @@ def _code_interval(form: MeasureForm, low: float, high: float, *, change: bool) 
     cell = TableCell(value=0.0, unit=form.unit, decimals=form.level_decimals)
     ends = (cell.amount(low * form.factor), cell.amount(high * form.factor))
     return ends[0], ends[1], f"[{ends[0]}, {ends[1]}]"
+
+
+# --- an aspect page's contrasts: today's sets, relocated --------------------------------------------------------------
+
+
+def _under_floor(comparison: FamilyComparison) -> bool:
+    """Whether a contrast's fewer side is under the case floor (:data:`~threetears.evals.analysis.report.verdict.
+    MIN_CASES`), where it states no change."""
+    return min(comparison.control.n_cases, comparison.contrast.n_cases) < MIN_CASES
+
+
+def _resolvable(comparison: FamilyComparison) -> bool:
+    """Whether a contrast can resolve, and so is a row of the contrasts table: both sides hold cases, at the floor."""
+    return min(comparison.control.n_cases, comparison.contrast.n_cases) > 0 and not _under_floor(comparison)
+
+
+def _reading_places(
+    bundle: AnalysisContextBundle,
+    surface: DecisionSurface,
+    ruler: MeasureRuler,
+    name: str,
+    reading: str,
+    levels: Iterable[float],
+    changes: Iterable[float],
+) -> ContrastPlaces:
+    """One reading's :class:`ContrastPlaces`, from every level and change of it a surface states, drawn on its ruler.
+
+    A rate reads its changes in points at one decimal; a judged score (a dimension on a scale other than 0 to 1) at
+    two decimals, its levels and changes alike; money by its own form; every other measured figure (a count per
+    trial, a time) at two significant figures of its set's least figure but zero (:func:`set_places`), its levels and
+    its changes each a set of their own.
+    """
+    if is_money(ruler.unit):
+        return ContrastPlaces(None, None, floor=0.0)
+    if ruler.unit == PERCENT:
+        return ContrastPlaces(None, POINT_PLACES, floor=0.0, ceiling=100.0)
+    if reading == "judged":
+        facts = surface.dimensions.get(name)
+        bounds = facts.value_range if facts is not None else None
+        if bounds is not None:
+            low, high = (bound * ruler.factor for bound in bounds)
+            scale = f"{format_number(low)}–{format_number(high)}"
+            return ContrastPlaces(SCORE_PLACES, SCORE_PLACES, floor=low, ceiling=high, scale=scale)
+    described = bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name) if reading == "measure" else None
+    floor = described.interval_floor if described is not None else None
+    ceiling = described.value_range[1] if described is not None and described.value_range is not None else None
+    return ContrastPlaces(
+        set_places(levels),
+        set_places(changes),
+        floor=floor * ruler.factor if floor is not None else None,
+        ceiling=ceiling * ruler.factor if ceiling is not None else None,
+    )
+
+
+def _contrast_places(
+    bundle: AnalysisContextBundle, surface: DecisionSurface, rulers: Rulers, comparisons: Iterable[FamilyComparison]
+) -> dict[tuple[str, str], ContrastPlaces]:
+    """Each reading's :class:`ContrastPlaces` over ``comparisons``: its set is every arm's figure and every change on
+    it, by name and reading."""
+    held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+    for comparison in comparisons:
+        ruler = rulers.of(comparison.name, comparison.reading)
+        levels, changes = held.setdefault((comparison.name, comparison.reading), ([], []))
+        levels += [
+            side.mean * ruler.factor for side in (comparison.control, comparison.contrast) if side.mean is not None
+        ]
+        if comparison.delta is not None:
+            changes.append(comparison.delta * ruler.factor)
+    return {
+        (name, reading): _reading_places(bundle, surface, rulers.of(name, reading), name, reading, levels, changes)
+        for (name, reading), (levels, changes) in held.items()
+    }
+
+
+def _change_money(
+    rulers: Rulers, changes: Iterable[tuple[str, str, float | None, tuple[float, float] | None]]
+) -> dict[tuple[str, str], MoneyForm]:
+    """The one form each money measure's changes read in, a change and its interval's ends alike (#993): from every
+    change a surface states of the measure and the widths of their intervals, on the measure's ruler
+    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`), by name and reading. A measure of another unit
+    has none."""
+    held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+    for name, reading, delta, interval in changes:
+        ruler = rulers.of(name, reading)
+        if ruler.money is None or not is_money(ruler.unit):
+            continue
+        deltas, widths = held.setdefault((name, reading), ([], []))
+        if delta is not None:
+            deltas.append(delta * ruler.factor)
+        if interval is not None:
+            widths.append(abs(interval[1] - interval[0]) * ruler.factor)
+    forms: dict[tuple[str, str], MoneyForm] = {}
+    for (name, reading), (deltas, widths) in held.items():
+        money = rulers.of(name, reading).money
+        assert money is not None
+        forms[name, reading] = money.for_changes(deltas, widths)
+    return forms

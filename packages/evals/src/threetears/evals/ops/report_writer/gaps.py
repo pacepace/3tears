@@ -243,7 +243,8 @@ def _unresolved_keys(
 ) -> Iterator[EvalAnalystGap]:
     """Each figure key a checked draft wrote that does not resolve, at a field its check found a verdict at."""
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
-    # A key is read as the check read it, in the forms its input's page would print it in.
+    # A key is read as the check read it: off the page, which is not built here, so in forms of its own, built once
+    # from its input as its page builds them.
     forms = PageForms.of(report_input)
     for submission, (doc, verdicts) in enumerate(drafts.checked, start=1):
         if not verdicts:
@@ -261,7 +262,7 @@ def _unresolved_keys(
                 assert key.span is not None
                 written = text[key.span[0] : key.span[1]]
                 try:
-                    render(written, report_input, names, forms=forms)
+                    render(written, names, forms=forms)
                 except UnresolvableReference as refused:
                     yield _unresolved(submission, path, written, str(refused), at, provenance)
 

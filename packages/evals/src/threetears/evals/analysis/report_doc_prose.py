@@ -148,7 +148,9 @@ def _sub_cent(figure: Figure, key: FigureKey) -> bool:
     return bool(sizes) and 0 < max(sizes) < _CENT
 
 
-def unit_faults(texts: Iterable[tuple[str, str]], report_input: ReportInput) -> Iterator[_Fault]:
+def unit_faults(
+    texts: Iterable[tuple[str, str]], report_input: ReportInput, *, forms: PageForms | None = None
+) -> Iterator[_Fault]:
     """No prose writes a unit right after a key that prints it, and money per reply under one cent is keyed per
     1,000 where the page states its costs so.
 
@@ -158,13 +160,17 @@ def unit_faults(texts: Iterable[tuple[str, str]], report_input: ReportInput) -> 
     :ptype texts: Iterable[tuple[str, str]]
     :param report_input: The report input the prose was written against.
     :ptype report_input: ReportInput
+    :param forms: The forms the caller reads the prose's keys in, built from ``report_input`` once for every check it
+        makes; None for forms of the prose's own, built from its input as its page builds them.
+    :ptype forms: PageForms | None
     :return: Each fault, in text and then key order.
     :rtype: Iterator[tuple[str, str]]
+    :raises ValueError: ``forms`` were built from another input.
     """
     per_thousand = _states_cost_per_thousand(report_input)
     basis = per_count(cost_basis(report_input).noun)
-    # Each key is read as the page prints it, in the forms its input's page would print it in.
-    forms = PageForms.of(report_input)
+    # Each key is read as the page prints it: a prose check reads off any page, so in forms built as its page's are.
+    forms = forms.checked(report_input) if forms is not None else PageForms.of(report_input)
     for path, text in texts:
         try:
             keys = keys_in(text)

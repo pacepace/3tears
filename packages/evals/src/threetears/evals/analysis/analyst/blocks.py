@@ -44,7 +44,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.block_spec import (
     BLOCK_SOURCES,
     INTERVAL_KINDS,
@@ -338,14 +337,16 @@ def block_render(
     drawn = None
     written = title
     arms = fact_arms(report_input)
+    # A block is drawn off any page, so it is printed in forms of its own, built once from its input as its page builds
+    # them: its title's keys, its chart and its reference line alike.
+    forms = PageForms.of(report_input)
     try:
-        # A block is drawn off any page, so its title's keys read in the forms its input's page would print them in.
-        written = render(title, report_input, {arm.id: arm.name for arm in arms}, forms=PageForms.of(report_input))
+        written = render(title, {arm.id: arm.name for arm in arms}, forms=forms)
     except UnresolvableReference as refused:
         faults.append((f"{_BLOCK}.title", str(refused)))
     if not faults:
         try:
-            drawn = resolve_chart(spec, report_input, block_look(report_input, arms), title=written)
+            drawn = resolve_chart(spec, block_look(report_input, arms), title=written, forms=forms)
         except UnresolvableReference as refused:
             faults.append((_BLOCK, f"is refused by the page, which draws it from this input: {refused}"))
     if drawn is None:
@@ -390,8 +391,8 @@ def block_render(
             title=written,
             level=spec.level,
             unit=spec.unit,
-            domain=" to ".join(format_number(end) for end in spec.domain),
-            reference=cite(spec.reference[0].key, report_input) if spec.reference else None,
+            domain=" to ".join(forms.declared(end).text for end in spec.domain),
+            reference=cite(spec.reference[0].key, report_input, forms=forms) if spec.reference else None,
             columns=columns,
             rows=[BlockRow(cells=cells) for cells in page],
             total=len(rows),

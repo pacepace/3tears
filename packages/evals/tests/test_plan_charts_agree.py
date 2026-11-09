@@ -65,6 +65,7 @@ from threetears.evals.analysis.report.charts import (
 from threetears.evals.analysis.report.figure_keys import resolve, figure_unit
 from threetears.evals.analysis.report.parts.charting import contrast_unit
 from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
@@ -255,7 +256,7 @@ def _probe_on(report_input: ReportInput, look: PageLook, chart: dict[str, Any]) 
     faults = [*faults, *chart_faults("chart", spec, report_input), *small_multiple_faults("chart", spec)]
     if not faults:
         try:
-            resolve_chart(spec, report_input, look, title="chart")
+            resolve_chart(spec, look, title="chart", forms=PageForms.of(report_input))
         except UnresolvableReference as refused:
             faults.append(("chart", f"is refused by the page, which draws it from this input: {refused}"))
     return spec, [why for _, why in faults]
@@ -273,7 +274,7 @@ def _completed(key: str, charts: Sequence[dict[str, Any]]) -> list[ChartSpec]:
 
 
 def _draw(key: str, spec: ChartSpec) -> Any:
-    return resolve_chart(spec, _input(key), _look(key), title="chart").chart
+    return resolve_chart(spec, _look(key), title="chart", forms=PageForms.of(_input(key))).chart
 
 
 # --- what a chart draws, and what its figures are -------------------------------------------------------------------
@@ -571,7 +572,9 @@ def _refused_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> 
 
 
 def _drawn_on(name: str, report_input: ReportInput, spec: ChartSpec) -> Any:
-    return resolve_chart(spec, report_input, _anchor_look_on(name, report_input), title="chart").chart
+    return resolve_chart(
+        spec, _anchor_look_on(name, report_input), title="chart", forms=PageForms.of(report_input)
+    ).chart
 
 
 def _stored(chart: dict[str, Any], **code: Any) -> ChartSpec:

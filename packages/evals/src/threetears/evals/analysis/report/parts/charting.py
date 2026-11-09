@@ -166,17 +166,21 @@ class ChartContext:
     """One chart being resolved: what the plan stores of it, the input it reads, and the page's look.
 
     :ivar spec: The stored chart.
-    :ivar report_input: The report input the plan was written against.
     :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
-    :ivar forms: The page's number forms, which every figure the chart draws is spelled by.
+    :ivar forms: The page's number forms, which every figure the chart draws is spelled by, over the input it reads.
     """
 
     spec: ChartSpec
-    report_input: ReportInput
     look: PageLook
     title: str
     forms: PageForms
+
+    @property
+    def report_input(self) -> ReportInput:
+        """The report input the plan was written against (a configs chart's, its grid): the forms', so the chart never
+        reads one input in another's forms."""
+        return self.forms.report_input
 
     @property
     def query(self) -> ChartQuery:

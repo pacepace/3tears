@@ -39,6 +39,7 @@ from threetears.evals.analysis.report.block_spec import block_look, complete_cha
 from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart
 from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
@@ -79,7 +80,7 @@ def _data(held: ReportInput, kind: str, query: ChartQuery) -> Any:
     planned = PlannedChart.model_validate({"kind": kind, "title": "", "query": query, "reference": [], "emphasis": ""})
     spec, faults = complete_chart(planned, held, "block")
     assert not faults, faults
-    return resolve_chart(spec, held, block_look(held, fact_arms(held)), title="").chart.data
+    return resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart.data
 
 
 # =============================================================================

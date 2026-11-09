@@ -189,9 +189,9 @@ def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
 
 
 def _read(
-    report_input: ReportInput, criterion: Criterion, figure: CriterionFigure, line: Figure
+    report_input: ReportInput, criterion: Criterion, figure: CriterionFigure, line: Figure, forms: PageForms | None
 ) -> tuple[GateStatus, str]:
-    """One figure against its criterion's line: its status, and the reason it would give."""
+    """One figure against its criterion's line: its status, and the reason it would give, in the page's ``forms``."""
     name = (
         criterion.statistic if criterion.statistic != "mean" else reader_name("criterion", criterion.id, report_input)
     )
@@ -217,9 +217,10 @@ def _read(
         return "pass", ""
     if meets and not borderline:
         return "pass", ""
-    # A reason is a gate check's sentence, read off any page, so it states each figure in the forms its input's page
-    # would print it in.
-    forms = PageForms.of(report_input)
+    if forms is None:
+        # A reason read off any page (an analyst's gate check) states each figure in forms of its own, built from its
+        # input as its page builds them, and only where a reason is given.
+        forms = PageForms.of(report_input)
     stated = format_figure(replace(line, value=figure.value), forms=forms)
     if not meets:
         return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line, forms=forms)}"
@@ -234,6 +235,7 @@ def gate_findings(
     task: str | None = None,
     cell: str | None = None,
     criterion: str | None = None,
+    forms: PageForms | None = None,
 ) -> tuple[GateFinding, ...]:
     """Every figure one arm fails, holds borderline or has none at, overall or in one task or cell, or on one criterion,
     as data:
@@ -250,10 +252,14 @@ def gate_findings(
     :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
     :ptype criterion: str | None
+    :param forms: The forms of the page the reasons are printed on, built from ``report_input``; None for a check read
+        off any page, whose reasons take forms of their own.
+    :ptype forms: PageForms | None
     :return: Each failing, borderline and unknown figure, in the criteria's order and each criterion's places'
         order.
     :rtype: tuple[GateFinding, ...]
-    :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
+    :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
+        or forms built from another input.
     """
     if task is not None and cell is not None:
         raise ValueError(f"a gate check reads one place at most; it was given task {task!r} and cell {cell!r}")
@@ -263,6 +269,8 @@ def gate_findings(
         raise ValueError(f"the input holds no cell {cell!r}")
     if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
         raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
+    if forms is not None:
+        forms.checked(report_input)
     narrowed = task is not None or cell is not None
     found: list[GateFinding] = []
     for held in report_input.criteria:
@@ -287,7 +295,7 @@ def gate_findings(
                 reason = _placed(report_input, no_figure, at_task, at_cell, narrowed)
                 found.append(GateFinding(held.id, "unknown", at_task, at_cell, None, reason))
                 continue
-            read, reason = _read(report_input, held, figure, line)
+            read, reason = _read(report_input, held, figure, line, forms)
             if read != "pass":
                 placed = _placed(report_input, reason, at_task, at_cell, narrowed)
                 found.append(GateFinding(held.id, read, at_task, at_cell, figure, placed))
@@ -301,6 +309,7 @@ def gate_check(
     task: str | None = None,
     cell: str | None = None,
     criterion: str | None = None,
+    forms: PageForms | None = None,
 ) -> GateCheck:
     """Check one arm against every gate and guardrail, overall or in one task or cell, or against one of them (this
     module's account).
@@ -315,11 +324,15 @@ def gate_check(
     :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
     :ptype criterion: str | None
+    :param forms: The forms of the page the reasons are printed on, built from ``report_input``; None for a check read
+        off any page, whose reasons take forms of their own.
+    :ptype forms: PageForms | None
     :return: The arm's status, with a reason per failing (an unknown figure among them) and per borderline figure.
     :rtype: GateCheck
-    :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
+    :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
+        or forms built from another input.
     """
-    found = gate_findings(report_input, arm, task=task, cell=cell, criterion=criterion)
+    found = gate_findings(report_input, arm, task=task, cell=cell, criterion=criterion, forms=forms)
     fails = tuple(finding.reason for finding in found if finding.status in ("fail", "unknown"))
     borders = tuple(finding.reason for finding in found if finding.status == "borderline")
     status: GateStatus = "fail" if fails else "borderline" if borders else "pass"

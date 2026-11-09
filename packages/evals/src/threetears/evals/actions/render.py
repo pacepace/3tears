@@ -39,6 +39,7 @@ from pydantic import BaseModel, ValidationError
 from threetears.evals.schema import GoalStateOutcome
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
+from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import (
     CampaignExport,
@@ -51,11 +52,10 @@ from threetears.evals.ops import (
     ResultListing,
     ScoreExport,
     SecondJudgeRead,
-    dollars_text,
     export_text,
-    format_number,
 )
 from threetears.evals.ops.analyst import CitedFigure
+from threetears.evals.ops.results import PageForms
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, HelpTopic, MountedTool
@@ -364,36 +364,40 @@ def render_model(result: BaseModel) -> str:
     The one renderer for every result without a bespoke one below, so a field added to a result model is read
     back with no second edit here. A nested model's fields are indented under its name; a list of models is one
     bullet per model, each field ``name=value``; an unset field reads ``none``. Nothing is summarised, rounded
-    past :func:`~threetears.evals.ops.format_number` or left out.
+    past the lone figure rule or left out.
     """
-    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_field_lines(result, "")])
+    # A tool's text is printed off any page, so its figures take forms of its own, built for this text alone.
+    forms = PageForms.off_page()
+    lines = _field_lines(result, "", forms)
+    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *lines])
 
 
 #: A capital letter that starts a word in a model's name (``RunListing`` -> ``run listing``).
 _RESULT_WORDS = re.compile(r"(?<=[a-z0-9])([A-Z])")
 
 
-def _field_lines(model: BaseModel, indent: str) -> list[str]:
+def _field_lines(model: BaseModel, indent: str, forms: PageForms) -> list[str]:
     lines: list[str] = []
     for name in type(model).model_fields:
         value = getattr(model, name)
         if isinstance(value, BaseModel):
-            lines += [f"{indent}{name}:", *_field_lines(value, indent + "  ")]
+            lines += [f"{indent}{name}:", *_field_lines(value, indent + "  ", forms)]
         elif isinstance(value, list | tuple) and value and all(isinstance(item, BaseModel) for item in value):
             lines.append(f"{indent}{name} ({len(value)}):")
-            lines += [f"{indent}- " + _item_line(item) for item in value]
+            lines += [f"{indent}- " + _item_line(item, forms) for item in value]
         else:
-            lines.append(f"{indent}{name}: {_value(value)}")
+            lines.append(f"{indent}{name}: {_value(value, forms)}")
     return lines
 
 
-def _item_line(item: BaseModel) -> str:
+def _item_line(item: BaseModel, forms: PageForms) -> str:
     """One model of a list on one line: each field ``name=value``."""
-    return "; ".join(f"{field}={_value(getattr(item, field))}" for field in type(item).model_fields)
+    return "; ".join(f"{field}={_value(getattr(item, field), forms)}" for field in type(item).model_fields)
 
 
-def _value(value: Any) -> str:
-    """One field's value on one line: a number as :func:`format_number` writes it, a list joined, JSON otherwise."""
+def _value(value: Any, forms: PageForms) -> str:
+    """One field's value on one line: a number by the lone figure rule, in the text's ``forms``, a list joined, JSON
+    otherwise."""
     if value is None:
         return "none"
     if isinstance(value, Enum):
@@ -401,11 +405,11 @@ def _value(value: Any) -> str:
     if isinstance(value, bool | str):
         return str(value)
     if isinstance(value, int | float):
-        return format_number(value)
+        return forms.lone(value).text
     if isinstance(value, BaseModel):
         return _compact(value.model_dump(mode="json"))
     if isinstance(value, list | tuple):
-        return f"[{', '.join(_value(item) for item in value)}]"
+        return f"[{', '.join(_value(item, forms) for item in value)}]"
     return _compact(value)
 
 
@@ -423,10 +427,14 @@ def render_cited(result: BaseModel) -> str:
     bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out,
     but a page's ``next_offset``: the tool writes the next page's whole call in its place (:func:`render_page`).
     """
-    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_cited_body(result, "")])
+    # A tool's text is printed off any page, so its plain figures take forms of its own, built for this text alone; a
+    # cited figure carries the text its key reads, written already.
+    forms = PageForms.off_page()
+    lines = _cited_body(result, "", forms)
+    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *lines])
 
 
-def _cited_body(model: BaseModel, indent: str) -> list[str]:
+def _cited_body(model: BaseModel, indent: str, forms: PageForms) -> list[str]:
     """Every field of one model, each as :func:`_cited_field` writes it; a page's ``next_offset`` at the top is the
     tool's to write, as the next page's call."""
     lines: list[str] = []
@@ -435,7 +443,7 @@ def _cited_body(model: BaseModel, indent: str) -> list[str]:
             continue
         if _excluded(model, name):
             continue
-        lines += _cited_field(name, getattr(model, name), indent)
+        lines += _cited_field(name, getattr(model, name), indent, forms)
     return lines
 
 
@@ -613,26 +621,26 @@ def page_fits(action: str, params: BaseModel) -> Callable[[BaseModel], bool]:
     return fits
 
 
-def _cited_field(name: str, value: Any, indent: str) -> list[str]:
+def _cited_field(name: str, value: Any, indent: str, forms: PageForms) -> list[str]:
     """One field: a figure as ``key = reads``, a model or a map of them under its name, a list of rows as bullets."""
     if isinstance(value, CitedFigure):
         return [f"{indent}{value.cited_as()} = {value.reads}"]
     if isinstance(value, BaseModel):
-        return [f"{indent}{name}:", *_cited_body(value, indent + "  ")]
+        return [f"{indent}{name}:", *_cited_body(value, indent + "  ", forms)]
     if isinstance(value, Mapping) and value and all(isinstance(item, BaseModel) for item in value.values()):
         lines = [f"{indent}{name}:"]
         for key, item in value.items():
-            lines += _cited_field(str(key), item, indent + "  ")
+            lines += _cited_field(str(key), item, indent + "  ", forms)
         return lines
     if isinstance(value, list | tuple) and value and all(isinstance(item, BaseModel) for item in value):
         lines = [f"{indent}{name} ({len(value)}):"]
         for item in value:
-            lines += _cited_row(item, indent + "  ")
+            lines += _cited_row(item, indent + "  ", forms)
         return lines
-    return [f"{indent}{name}: {_value(value)}"]
+    return [f"{indent}{name}: {_value(value, forms)}"]
 
 
-def _cited_row(item: BaseModel, indent: str) -> list[str]:
+def _cited_row(item: BaseModel, indent: str, forms: PageForms) -> list[str]:
     """One row of a list: a bullet of its plain fields, then its figures and nested rows beneath it."""
     if isinstance(item, CitedFigure):
         return [f"{indent}{item.cited_as()} = {item.reads}"]
@@ -642,7 +650,7 @@ def _cited_row(item: BaseModel, indent: str) -> list[str]:
         if _excluded(item, name):
             continue
         value = getattr(item, name)
-        written = _cited_field(name, value, indent + "  ")
+        written = _cited_field(name, value, indent + "  ", forms)
         if len(written) == 1 and not isinstance(value, CitedFigure):
             plain.append(written[0].strip())
         else:
@@ -655,12 +663,12 @@ def render_report(document: ReportDocument) -> str:
     return document.body
 
 
-def _result_line(line: ResultLine) -> str:
+def _result_line(line: ResultLine, forms: PageForms) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
     parts = [
         f"{line.condition.value} ({line.termination})",
-        f"cost {dollars_text(line.cost_usd)}",
-        f"total_ms {_ms(line.total_ms)}",
+        f"cost {_dollars(line.cost_usd, forms)}",
+        f"total_ms {_ms(line.total_ms, forms)}",
     ]
     if line.goal_checks:
         passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
@@ -687,11 +695,13 @@ def render_results(listing: ResultListing, *, default_limit: int | None = None) 
     """
     narrowed = "" if listing.condition_filter is None else f" {listing.condition_filter.value}"
     end = listing.offset + len(listing.results)
+    # A tool's text is printed off any page, so its figures take forms of its own, built for this text alone.
+    forms = PageForms.off_page()
     lines = [
         f"results of run {listing.run_id}: {listing.total}{narrowed}, rows {listing.offset + 1}-{end} shown"
         if listing.results
         else f"results of run {listing.run_id}: {listing.total}{narrowed}, none from row {listing.offset + 1}",
-        *(_result_line(line) for line in listing.results),
+        *(_result_line(line, forms) for line in listing.results),
     ]
     if listing.next_offset is not None:
         hint = f"More: action='results_list', run_id='{listing.run_id}', offset={listing.next_offset}"
@@ -792,27 +802,34 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     return f"goal check {outcome.expression}: {verdict}" + (f" — {outcome.detail}" if outcome.detail else "")
 
 
-def _ms(value: float | None) -> str:
-    return "absent" if value is None else f"{format_number(value)}ms"
+def _ms(value: float | None, forms: PageForms) -> str:
+    """A stored time in milliseconds by the lone figure rule, its unit on the number; ``absent`` for none."""
+    return "absent" if value is None else f"{forms.lone(value).text}ms"
 
 
-def _latency_lines(detail: ResultDetail) -> list[str]:
+def _dollars(amount: float | None, forms: PageForms) -> str:
+    """Spend as a total, in its money form; :data:`~threetears.evals.kernel.numbers.UNPRICED` where no client could
+    price it, never ``$0``, which would say it was measured and was nothing."""
+    return UNPRICED if amount is None else forms.money_total(amount).text
+
+
+def _latency_lines(detail: ResultDetail, forms: PageForms) -> list[str]:
     """The stored latency block, an absent component shown as absent, then the remainder as the partition read it."""
     latency = detail.result.latency
     if latency is None:
         stored = "latency: none recorded"
     else:
         stored = "latency: " + ", ".join(
-            f"{name} {_ms(getattr(latency, name))}"
+            f"{name} {_ms(getattr(latency, name), forms)}"
             for name in ("total_ms", "llm_ms", "tool_ms", "async_wait_ms", "judge_ms")
         )
     partition = detail.latency_partition
     if partition.withheld is not None:
         return [stored, f"orchestration_ms withheld: {partition.withheld}"]
-    return [stored, f"orchestration_ms {_ms(partition.orchestration_ms)} (total_ms less llm_ms and tool_ms)"]
+    return [stored, f"orchestration_ms {_ms(partition.orchestration_ms, forms)} (total_ms less llm_ms and tool_ms)"]
 
 
-def _record_lines(detail: ResultDetail) -> list[str]:
+def _record_lines(detail: ResultDetail, forms: PageForms) -> list[str]:
     """The record part: errors, spend, latency and usage rows, checks and scores, then what the kind stored."""
     result, condition = detail.result, detail.condition
     lines = [
@@ -824,8 +841,8 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         )
         if error
     ]
-    lines.append(f"cost {dollars_text(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
-    lines += _latency_lines(detail)
+    lines.append(f"cost {_dollars(result.cost_usd, forms)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines += _latency_lines(detail, forms)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
     counted = counted_goal_verdicts(result)
@@ -889,7 +906,8 @@ def render_result(detail: ResultDetail) -> str:
     if condition.disclosure:
         lines.append(f"  {condition.disclosure}")
     if detail.part == "record":
-        lines += _record_lines(detail)
+        # A tool's text is printed off any page, so its figures take forms of its own, built for this text alone.
+        lines += _record_lines(detail, PageForms.off_page())
     if detail.trace_state == "none":
         lines.append("trace: none stored")
     elif detail.trace_state == "missing":

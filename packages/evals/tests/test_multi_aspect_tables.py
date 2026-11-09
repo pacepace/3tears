@@ -138,7 +138,7 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
     assert aspect_costs_per_thousand(held, "arrival")["qwen3.8-flash"] == pytest.approx(2.6)
     assert _row(table, held, "qwen3.8-flash")["cost_per_1k@arrival"].value == "$2.60"
     # The cells' figures are ones prose can cite: their keys render.
-    assert render("{aspects.arrival.scoreboard.September.passed}", held, {}, forms=PageForms.of(held)) == "127"
+    assert render("{aspects.arrival.scoreboard.September.passed}", {}, forms=PageForms.of(held)) == "127"
 
 
 def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_figures() -> None:

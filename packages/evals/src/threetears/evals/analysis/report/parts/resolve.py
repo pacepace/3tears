@@ -30,7 +30,6 @@ from threetears.evals.analysis.report.parts import (
 from threetears.evals.analysis.report.parts.charting import ChartContext, KindResolver
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.model import PageChart
-from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import config_grid
 from threetears.evals.kernel.chart_query import ChartSpec
 
@@ -71,42 +70,40 @@ _RESOLVERS: dict[str, KindResolver] = _merged(
 
 def resolve_chart(
     spec: ChartSpec,
-    report_input: ReportInput,
     look: PageLook,
     *,
     title: str,
     fallback_title: str = "",
-    forms: PageForms | None = None,
+    forms: PageForms,
 ) -> PageChart:
-    """Draw one stored chart: its kind's resolver reads its query off the input.
+    """Draw one stored chart: its kind's resolver reads its query off the input the page's forms were built from.
 
     :param spec: The stored chart.
     :ptype spec: ChartSpec
-    :param report_input: The report input the plan was written against.
-    :ptype report_input: ReportInput
     :param look: The page's look.
     :ptype look: PageLook
     :param title: The plan's title for the chart, its keys written out; empty where a headline says it.
     :ptype title: str
     :param fallback_title: What the chart's block is titled where the plan's title is empty: the section's headline.
     :ptype fallback_title: str
-    :param forms: The page's number forms; None for the forms of ``report_input`` alone.
-    :ptype forms: PageForms | None
+    :param forms: The page's number forms (an off-page reader's own), built once for the page: they carry the report
+        input the plan was written against, which the chart reads, so a chart never reads one input in another's
+        forms.
+    :ptype forms: PageForms
     :return: The chart as the page draws it.
     :rtype: PageChart
     :raises UnresolvableReference: No resolver draws the chart's kind, or its resolver cannot draw it from the input.
+    :raises ValueError: The forms are a code page's or an off-page surface's, which carry no report input.
     """
     resolver = _RESOLVERS.get(spec.kind)
     if resolver is None:
         raise UnresolvableReference(
             f"no resolver draws a {spec.kind!r} chart over {spec.query.source!r} yet ({title or fallback_title!r})"
         )
-    page_forms = forms if forms is not None else PageForms.of(report_input)
     if spec.query.source == "configs":
-        # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings.
-        report_input = config_grid(report_input)
-    context = ChartContext(
-        spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind, forms=page_forms
-    )
+        # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings: a view
+        # of the page's input that adds no figure, so it reads in the page's own forms.
+        forms = forms.over(config_grid(forms.report_input))
+    context = ChartContext(spec=spec, look=look, title=title or fallback_title or spec.kind, forms=forms)
     drawn = resolver(context)
     return PageChart(title=title, chart=drawn.block, notes=list(drawn.notes))

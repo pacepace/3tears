@@ -85,7 +85,7 @@ def _expected(key: str, held: ReportInput) -> tuple[str, Any] | None:
     except UnresolvableReference:
         return None
     value = list(figure.value) if isinstance(figure.value, tuple) else figure.value
-    return render("{" + key + "}", held, {}, forms=PageForms.of(held)), value
+    return render("{" + key + "}", {}, forms=PageForms.of(held)), value
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
@@ -132,7 +132,7 @@ def test_a_key_written_through_a_filter_reads_as_that_filter_spells_it_and_names
             assert (
                 row.figure.reads
                 == format_figure(figure, (one,), forms=PageForms.of(held))
-                == render(row.asked, held, {}, forms=PageForms.of(held))
+                == render(row.asked, {}, forms=PageForms.of(held))
             )
             assert row.figure.filters == [one] and row.filters_taken == list(taken)
 
@@ -176,7 +176,7 @@ def test_the_keys_kairos_editor_could_not_verify_read_on_the_snapshot() -> None:
     assert [row.status for row in checked.keys] == ["reads"] * len(keys)
     for row in checked.keys:
         assert row.figure is not None and row.figure.reads == render(
-            "{" + row.asked + "}", held, {}, forms=PageForms.of(held)
+            "{" + row.asked + "}", {}, forms=PageForms.of(held)
         )
 
 

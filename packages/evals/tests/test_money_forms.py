@@ -413,7 +413,7 @@ def _engine_tables(held: ReportInput) -> list[TableBlock]:
         if measure.unit in ("usd", "usd_per_1k", "usd_per_1m") and measure.per_arm:
             spec, faults = complete_chart(_planned("table", _query("measures", [key])), held, "block")
             assert not faults, faults
-            drawn = resolve_chart(spec, held, look, title="", fallback_title="t")
+            drawn = resolve_chart(spec, look, title="", fallback_title="t", forms=PageForms.of(held))
             assert isinstance(drawn.chart, TableBlock)
             tables.append(drawn.chart)
     return tables
@@ -528,7 +528,9 @@ def test_a_cost_scatter_labels_its_money_in_its_axis_form() -> None:
         "block",
     )
     assert not faults, faults
-    drawn = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    drawn = resolve_chart(
+        spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
+    )
     assert isinstance(drawn.chart, ChartBlock)
     _, rows = drawn.chart.values_table()
     costs = {
@@ -613,8 +615,8 @@ def test_a_cost_per_1000_times_the_volume_reaches_the_monthly_figure_within_the_
     volume = float(held.meta.volume_per_month or 0)
     checked = 0
     for arm in _arms(held, "cost_per_1k.{arm}"):
-        price_text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}, forms=PageForms.of(held))
-        month_text = render(f"{{cost_per_month.{arm}|usd}}", held, {}, forms=PageForms.of(held))
+        price_text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", {}, forms=PageForms.of(held))
+        month_text = render(f"{{cost_per_month.{arm}|usd}}", {}, forms=PageForms.of(held))
         price, month = _amount(price_text) / (1000 if "per 1,000,000" in price_text else 1), _amount(month_text)
         (per_thousand, decimals), *_ = _places([price_text])
         rounding = 10.0**-decimals / 2 / (1000 if per_thousand or "per 1,000,000" in price_text else 1)
@@ -808,7 +810,9 @@ def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:
     moved, control, _ = _part_priced_control()
     spec, faults = complete_chart(_planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block")
     assert not faults, faults
-    drawn = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    drawn = resolve_chart(
+        spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
+    )
     assert isinstance(drawn.chart, ChartBlock)
     data = drawn.chart.data
     assert isinstance(data, BarsChart) and data.rows is not None
@@ -991,7 +995,7 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
             if faults:
                 continue
             try:
-                page = resolve_chart(spec, held, look, title="", fallback_title="t")
+                page = resolve_chart(spec, look, title="", fallback_title="t", forms=PageForms.of(held))
             except UnresolvableReference:
                 # NOSILENT: a kind the input cannot draw over this query is no chart of money; the sweep reads on.
                 continue
@@ -1459,7 +1463,9 @@ def test_a_chart_of_totals_under_a_cent_reads_plain_dollars() -> None:
     held, *_ = UNDER_A_CENT["r5 under a cent per 1,000 replies"]
     spec, faults = complete_chart(_planned("bars", _query("scoreboard", ["test_cost_usd"])), held, "block")
     assert not faults, faults
-    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
+    )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, BarsChart)
     rows = page.chart.data.rows or []
     stored = {arm: row.test_cost_usd for arm, row in held.scoreboard.items()}
@@ -1514,7 +1520,9 @@ def test_a_change_chart_scales_by_its_amounts_never_by_an_interval_end_near_zero
         _planned("diverging_bars", _query("contrasts", ["production_replicating_cost"])), planted, "block"
     )
     assert not faults, faults
-    page = resolve_chart(spec, planted, block_look(planted, fact_arms(planted)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(planted, fact_arms(planted)), title="", fallback_title="t", forms=PageForms.of(planted)
+    )
     joined = " | ".join(_page_texts(page))
     assert "per 1,000,000" not in joined
     assert "per 1,000 replies" in joined
@@ -1543,7 +1551,9 @@ def test_a_lattice_tile_says_a_partly_priced_cost_beside_it() -> None:
     moved, arm = _part_priced(INPUTS["r3"])
     spec, faults = complete_chart(_planned("lattice", _query("configs", [])), moved, "block")
     assert not faults, faults
-    page = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
+    )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, LatticeChart)
     tips = {cell.id: " ".join(cell.tip or []) for row in page.chart.data.rows for cell in row.cells}
     assert "850 of 897 calls priced" in tips[arm], tips[arm]
@@ -1554,7 +1564,9 @@ def test_a_task_matrix_cell_says_a_partly_priced_cost_beside_it() -> None:
     moved, arm = _part_priced(INPUTS["r1"])
     spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", [])), moved, "block")
     assert not faults, faults
-    page = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(moved, fact_arms(moved)), title="", fallback_title="t", forms=PageForms.of(moved)
+    )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
     column = [one.label for one in page.chart.data.columns].index(block_look(moved, fact_arms(moved)).arm(arm).name)
     costed = [row.cells[column] for row in page.chart.data.rows if row.cells[column].cost is not None]
@@ -1570,7 +1582,9 @@ def test_r2s_cost_gate_under_a_cent_reads_its_reason_and_line_on_the_criterions_
     assert "Cost budget, per 1,000,000 calls $1.00 > $0.30" in gate_check(held, "atlas-m.off.r0").fails
     spec, faults = complete_chart(_planned("gate_matrix", _query("measures", [])), held, "block")
     assert not faults, faults
-    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
+    )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
     details = [row.detail or "" for row in page.chart.data.rows]
     assert any(detail.endswith("$0.30 per 1,000,000 calls") for detail in details), details
@@ -1596,7 +1610,9 @@ def test_a_task_matrix_cell_without_a_gate_never_repeats_its_cost_among_its_reas
     held = fixture_inputs()["r1 without its gates"]
     spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", ["cost_per_1k", "latency_s"])), held, "block")
     assert not faults, faults
-    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    page = resolve_chart(
+        spec, block_look(held, fact_arms(held)), title="", fallback_title="t", forms=PageForms.of(held)
+    )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
     ungated = [cell for row in page.chart.data.rows for cell in row.cells if cell.status == "neutral" and cell.cost]
     assert ungated, "the control: r1's matrix has ungated cells with a cost"

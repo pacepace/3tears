@@ -116,7 +116,6 @@ from threetears.evals.analysis.report_decision import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
@@ -150,13 +149,17 @@ _EXPLORE_ORDER = "as the report lists them"
 @dataclass
 class _Reader:
     """One page's reading of its document: strict, refusing what does not resolve, or not, noting each path that
-    degraded; each key written in the page's forms."""
+    degraded; each key written in the page's forms, on the input they were built from."""
 
-    report_input: ReportInput
     arm_names: Mapping[str, str]
     strict: bool
     forms: PageForms
     degraded: list[str] = field(default_factory=list)
+
+    @property
+    def report_input(self) -> ReportInput:
+        """The input the page's keys and blocks read: its forms', so no key reads one input in another's forms."""
+        return self.forms.report_input
 
     def refuse(self, path: str, why: str) -> None:
         """Refuse in strict mode; note the path otherwise.
@@ -170,14 +173,14 @@ class _Reader:
     def written(self, text: str, path: str) -> str:
         """Prose with its figure keys written out; reading, a key that no longer resolves prints ``—``."""
         try:
-            return render(text, self.report_input, self.arm_names, forms=self.forms)
+            return render(text, self.arm_names, forms=self.forms)
         except UnresolvableReference as refused:
             self.refuse(path, f"does not resolve on this input: {refused}")
         return _KEY.sub(lambda key: self._one_key(key.group(0)), text)
 
     def _one_key(self, key: str) -> str:
         try:
-            return render(key, self.report_input, self.arm_names, forms=self.forms)
+            return render(key, self.arm_names, forms=self.forms)
         except UnresolvableReference:
             # NOSILENT: reading a stored document only (strict refused above); the page prints the key as
             # unresolved and carries the one note to regenerate, which `written` recorded for this field.
@@ -196,9 +199,9 @@ def written_prose(text: str, report_input: ReportInput) -> str:
     :return: The prose with every key written out.
     :rtype: str
     """
-    # One piece of prose is read off its page, in the forms its input's page prints each figure in.
+    # One piece of prose is read off its page, which is never built here (a listing prints a headline alone), so it
+    # reads in forms of its own, built from its input as its page builds them.
     reader = _Reader(
-        report_input=report_input,
         arm_names={arm.id: arm.name for arm in fact_arms(report_input)},
         strict=False,
         forms=PageForms.of(report_input),
@@ -440,7 +443,7 @@ def _drawn(
     spec, faults = complete_chart(planned, reader.report_input, path)
     if faults:
         raise UnresolvableReference("; ".join(f"{at} {why}" for at, why in faults))
-    return spec, resolve_chart(spec, reader.report_input, look, title="", fallback_title=title)
+    return spec, resolve_chart(spec, look, title="", fallback_title=title, forms=reader.forms)
 
 
 def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) -> DocEvidence:
@@ -478,20 +481,20 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
         caption=caption,
         level=spec.level,
         unit=spec.unit,
-        domain=" to ".join(format_number(end) for end in spec.domain),
-        reference=_reference(spec, reader.report_input, reader.forms),
+        domain=" to ".join(reader.forms.declared(end).text for end in spec.domain),
+        reference=_reference(spec, reader.forms),
         degraded=degraded,
     )
 
 
-def _reference(spec: ChartSpec, report_input: ReportInput, forms: PageForms) -> str:
-    """A block's reference line and the figure it sits at, in the page's forms; empty for none."""
+def _reference(spec: ChartSpec, forms: PageForms) -> str:
+    """A block's reference line and the figure it sits at, read on the page's input in its forms; empty for none."""
     if not spec.reference:
         return ""
     line = spec.reference[0]
     return REFERENCE_TEMPLATE.format(
         kind=humanize("dimension", line.kind).capitalize(),
-        value=format_figure(resolve(line.key, report_input), forms=forms),
+        value=format_figure(resolve(line.key, forms.report_input), forms=forms),
     )
 
 
@@ -560,7 +563,7 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
         key = match.group("key").rstrip(".")
         tail = match.group(0)[len(match.group(0).rstrip(".")) :]
         try:
-            return render(f"{{{key}}}", reader.report_input, reader.arm_names, forms=reader.forms) + tail
+            return render(f"{{{key}}}", reader.arm_names, forms=reader.forms) + tail
         except UnresolvableReference:
             # NOSILENT: a figure key's form that names no figure here (an editor's placeholder) reads in words; any
             # other dotted word (a version, a model id) is the editor's and stands.
@@ -643,9 +646,7 @@ def build(
     # Every figure the page states, its tables' and its prose keys', is in one form per measure, decided once here for
     # the whole page.
     forms = PageForms.of(report_input)
-    reader = _Reader(
-        report_input=report_input, arm_names={arm.id: arm.name for arm in arms}, strict=strict, forms=forms
-    )
+    reader = _Reader(arm_names={arm.id: arm.name for arm in arms}, strict=strict, forms=forms)
     look = block_look(report_input, arms)
     held = {arm.id for arm in report_input.arms}
     for index, arm in enumerate(doc.recommends):

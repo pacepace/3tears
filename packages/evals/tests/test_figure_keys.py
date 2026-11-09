@@ -73,7 +73,7 @@ def _slot(key: str) -> str:
 
 
 def _rendered(text: str) -> str:
-    return render(text, _input("r5"), _r5_names(), forms=PageForms.of(_input("r5")))
+    return render(text, _r5_names(), forms=PageForms.of(_input("r5")))
 
 
 def _counted(name: str, key: str) -> str:
@@ -515,9 +515,7 @@ class TestDerivedValues:
 class TestRender:
     def test_an_arm_is_named_by_its_short_name_and_tag(self):
         report_input = _input("r4")
-        text = render(
-            "{arm:prod} against {arm:f64}", report_input, {"f64": "flash · 64k out"}, forms=PageForms.of(report_input)
-        )
+        text = render("{arm:prod} against {arm:f64}", {"f64": "flash · 64k out"}, forms=PageForms.of(report_input))
         assert text == "Production (P) against flash · 64k out (A)"
 
     def test_double_braces_are_the_memos_grammar_and_refused(self):

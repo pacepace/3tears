@@ -162,8 +162,9 @@ def _refused(asked: str, why: str, remedy: str, form: tuple[str, str] | None = N
     )
 
 
-def _check(asked: str, report_input: ReportInput) -> KeyCheck:
-    """One key, read or refused."""
+def _check(asked: str, forms: PageForms) -> KeyCheck:
+    """One key, read or refused, on the input ``forms`` were built from and in them."""
+    report_input = forms.report_input
     try:
         key = parse_key(_unbraced(asked))
     except UnresolvableReference as refused:
@@ -189,10 +190,9 @@ def _check(asked: str, report_input: ReportInput) -> KeyCheck:
         )
     except UnresolvableReference as refused:
         return _refused(asked, str(refused), _PATH_REMEDY, (form.form, form.what))
-    # The filters a figure takes, each spelled in the forms its input's page would print it in.
-    taken = list(figure_filters(figure, forms=PageForms.of(report_input)))
+    taken = list(figure_filters(figure, forms=forms))
     try:
-        written = cite_written(key.path, key.filters, report_input)
+        written = cite_written(key.path, key.filters, report_input, forms=forms)
     except UnresolvableReference as refused:
         remedy = _FILTER_REMEDY.format(taken=", ".join(taken)) if taken else _NO_FILTER_REMEDY.format(kind=figure.kind)
         return _refused(asked, str(refused), remedy, (form.form, form.what))
@@ -243,10 +243,13 @@ def figure_keys_check(
         )
     window = distinct[offset : offset + limit]
     end = offset + len(window)
+    # A key check reads the snapshot off any page, so its keys are spelled in forms of its own, built once from the
+    # snapshot as its page builds them.
+    forms = PageForms.of(report_input)
     return KeysChecked(
         reads_as=_READS_AS,
         progress=_progress(offset, end, len(distinct)),
-        keys=[_check(key, report_input) for key in window],
+        keys=[_check(key, forms) for key in window],
         total=len(distinct),
         offset=offset,
         unread_from=end if end < len(distinct) else None,

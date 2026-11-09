@@ -161,7 +161,7 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
     assert expected["monthly_cost_gap"] >= 1000, "the control: a saving a month of a thousand dollars or more"
     # The gap reads in the form of the monthly costs it compares (#993): every one is $10 or more, so whole dollars.
     months = [float(resolve(f"cost_per_month.{arm.id}", held).value) for arm in held.arms]
-    assert render(f"{{{key}.monthly_cost_gap}}", held, {}, forms=PageForms.of(held)) == money_form(months).spell(
+    assert render(f"{{{key}.monthly_cost_gap}}", {}, forms=PageForms.of(held)) == money_form(months).spell(
         expected["monthly_cost_gap"], signed=True
     )
     assert _value(f"{key}.monthly_per_point", held) == pytest.approx(expected["monthly_per_point"])
