@@ -12,16 +12,18 @@ and that work reads, or produces, more data than you want copied per process.
 
 | Fact | Value |
 |---|---|
-| Install | `3tears[snapshot]` (pyarrow and duckdb) |
-| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables` |
+| Install | `3tears[snapshot]` (pyarrow and duckdb). The store, its slots and hand-offs, and the pool need pyarrow alone; `MappedTables.connect`, `SharedArrowStore.reader` and `publish_query` also need duckdb. |
+| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables, merge_parts, merged_rows` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
 | File format | Arrow IPC file format, uncompressed, one file per table, or per part for a table given as `Parts`. A mapped column is the file's bytes. |
+| Layout | `versions/<name>/` holds a version's `MANIFEST` (the files it names) and its lock file; the files live in `parts/<one directory per publish>/`, never written again. Read a version's files with `version_files(root, version)`, never by listing its directory. |
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
-| Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
-| Shared files | A version published from a `base` hard-links the files it does not rewrite: they exist once, and the store counts them once. |
+| Cleanup | By state, never by time: a version goes when it is not current and nobody holds it, and a part file when the last version naming it goes; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds, part files no kept version names among it. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
+| Shared files | A version published from a `base` names the base's files it does not rewrite: they exist once, the store counts them once, and the publish touches none of them. |
+| What a publish costs | The files it writes and one manifest, whatever the version holds besides. The sweep it leaves (readers told, superseded versions retired, their files removed) runs after it returns, on the store's own thread, one at a time; `store.settle()` waits for it. A publish short of room sweeps first itself. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
 
 ## Give the volume to the pod
@@ -83,7 +85,7 @@ async def on_change(snapshot) -> None:
 
 A table given as `Parts` is one file per part (a state's rows, say). Publish the next version from the current one
 with `base=`, naming only the parts that changed: every other part, and every table not named, is the base's own file,
-hard-linked, so a change costs one part's write and one part's memory. Its first read maps only those parts too: the
+named in the new version's manifest, so a change costs one part's write and one part's memory, at 60 parts or 6,000. Its first read maps only those parts too: the
 serving process's reader and a worker's kept version take every file the two versions share from the mapping they
 had.
 
@@ -110,6 +112,57 @@ store.publish("v2", {"races": Parts(schema, {
 - Every part must have exactly the table's `schema`; a table whose columns changed from the base's is refused
   (`ValueError`): publish it without `base`.
 - `base` is held for the write; a base the store no longer holds raises `LookupError`.
+- A version's directory holds its manifest, not its files. To read a part's file yourself (to link it again, to size
+  it), hold the version and look it up:
+
+```python
+from threetears.core.shared_arrow import version_files
+
+with store.lease("v2"):
+    files = version_files(store.root, "v2")      # {"races@GA.arrow": VersionFile(path, nbytes), ...}
+    ga = files["races@GA.arrow"].path            # map or open it read-only; never write, rename or remove it
+    held = sum(each.nbytes for each in files.values())
+```
+
+## Merge a group of parts into one
+
+A table kept as many small parts (one per load run, say) merges neighbouring parts into one, so readers map fewer
+files and a publish names fewer parts. `merge_parts` returns the `Parts` to publish on the version: the group's parts
+are dropped, every other part is the base's own file, and the merged part is written from the group's
+mapped files as the publish reaches it. A merge writes the group's bytes once and nothing else.
+
+```python
+from threetears.core.shared_arrow import merge_parts
+
+# runs r0000 .. r0009 of v7 become one part, r0000.1; the rest of v7 is kept as it is
+store.publish("v8", {"lsf": merge_parts(store, "v7", "lsf", [f"r{i:04d}" for i in range(10)], "r0000.1")}, base="v7")
+
+# a level up: merged parts merge again the same way
+store.publish("v9", {"lsf": merge_parts(store, "v8", "lsf", ["r0000.1", "r0010.1"], "r0000.2")}, base="v8")
+```
+
+- Readers see the same rows in the same order before and after. That holds because a merge takes neighbours only:
+  the group must be a run in part-name order, and the merged name must sort into the run's place (`f"{first}.1"`
+  sorts after `first` and before the next part, since `.` sorts before every digit and letter). Anything else is
+  refused (`ValueError`), as is a group of fewer than two parts; a part the version does not hold raises `LookupError`.
+- Run it where the store is owned (the serving process, on a thread: the write is Arrow IPC and releases the
+  interpreter lock).
+- In a worker process, merge into a result instead. `merged_rows(root, version, table, names)` opens the group's
+  rows as one reader and holds the version's shared lock while it reads (the serving process holds a lease on the
+  version for the job, as for any read). Write it into the job's slot, then link the claimed file as the part:
+
+```python
+# worker process
+slot.write({"merged": merged_rows(root, "v7", "lsf", names)()})
+
+# serving process, on a thread
+segment = store.claim(slot)
+store.publish("v8", {"lsf": Parts(schema, {**dict.fromkeys(names), "r0000.1": segment.files["merged"]})}, base="v7")
+segment.close()  # the version holds its own link to the file
+```
+
+- The tiering policy (which groups merge, how many levels, rewriting only the merged part that holds a dropped run)
+  is the caller's. These two calls are the only primitive it needs.
 
 ## Publish a scoped snapshot's copy
 
@@ -337,7 +390,8 @@ Its `held_bytes`, `versions` and `handoffs_held` are what `store.held_bytes()`, 
 `store.handoffs()` find by walking the directory (a file linked into several versions counted once), except for
 what is still being written: a version or hand-off counts once it is renamed into place, and a worker's result
 once it is claimed (until then its open slot shows in `slots_open`). The three walking methods block: call them on a
-thread.
+thread. Right after a publish, the sweep it left may still be running on the store's thread: call `store.settle()`
+(on a thread) first to read the directory as that sweep leaves it.
 
 ## What it saves, measured
 

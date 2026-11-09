@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 
 import re
 from typing import Any
+
+import pytest
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.l2_first import L2_FIRST
@@ -83,6 +86,9 @@ class _Queue:
                 for schema, table in self.missing
                 if named is None or table in named
             ]
+        if "information_schema.tables" in query:
+            # no schema holds these tables: an undeclared table's rowless record stays on _all
+            return []
         if "current_ring" in query:
             # no change-note ring in this database: a reconciled table is advanced whole, said and counted
             return []
@@ -235,14 +241,50 @@ async def test_two_reconcilers_on_the_same_page_lose_nothing() -> None:
     assert sorted(first.advanced) == ["groups", "revocations"]
 
 
-async def test_only_the_tables_without_the_trigger_get_one() -> None:
+async def test_only_the_declaring_schemas_tables_without_the_trigger_get_one(caplog: pytest.LogCaptureFixture) -> None:
+    """the backstop installs in the schema whose declarations it holds; a same-named table elsewhere is reported,
+    never given the trigger by its name (0.95.0: it was given one in every schema)."""
+    caplog.set_level(logging.INFO)
     queue = _Queue([], missing=[("agent_a", "groups"), ("platform", "revocations")])
 
     created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups", "revocations"))  # type: ignore[arg-type]
 
-    assert created == ["agent_a.groups", "platform.revocations"]
+    assert created == ["platform.revocations"]
     assert all(WRITE_MARK_TRIGGER in statement for statement in queue.created)
-    assert queue.missing == []
+    assert queue.missing == [("agent_a", "groups")]
+    said = [record for record in caplog.records if "outside the declaring schema" in record.getMessage()]
+    assert [record.extra_data["tables"] for record in said] == [["agent_a.groups"]]  # type: ignore[attr-defined]
+
+
+async def test_a_pod_table_named_as_a_switched_on_table_is_never_switched_on_by_the_hub() -> None:
+    """two schemas share a table name: the hub's declaration switches on its own, never the pod's."""
+    queue = _Queue([], missing=[("platform", "coordination_redemptions"), ("ns_pod", "coordination_redemptions")])
+    reconciler = WriteMarkReconciler(
+        queue,  # type: ignore[arg-type]
+        generation_source=_Generations(),
+        marks_schema="platform",
+        tables=lambda: ["coordination_redemptions"],
+    )
+
+    assert await reconciler.install_triggers() == ["platform.coordination_redemptions"]
+    # again, as the periodic install runs: the pod's table still gets nothing
+    assert await reconciler.install_triggers() == []
+    assert queue.missing == [("ns_pod", "coordination_redemptions")]
+    assert not any('"ns_pod"' in statement for statement in queue.created + queue.replaced)
+
+
+async def test_the_install_serves_the_schema_it_is_named() -> None:
+    queue = _Queue([], missing=[("agent_a", "groups"), ("platform", "groups")])
+
+    created = await install_write_mark_triggers(
+        queue,  # type: ignore[arg-type]
+        marks_schema="platform",
+        tables=("groups",),
+        table_schema="agent_a",
+    )
+
+    assert created == ["agent_a.groups"]
+    assert queue.missing == [("platform", "groups")]
 
 
 def test_the_trigger_fires_per_row_and_marks_a_transaction_once_into_the_one_queue() -> None:
@@ -327,11 +369,11 @@ async def test_a_table_that_keeps_failing_does_not_stall_the_others() -> None:
 
 
 async def test_the_install_takes_the_ddl_lock_and_creates_only_under_it() -> None:
-    queue = _Queue([], missing=[("agent_a", "groups")])
+    queue = _Queue([], missing=[("platform", "groups")])
 
     created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))  # type: ignore[arg-type]
 
-    assert created == ["agent_a.groups"]
+    assert created == ["platform.groups"]
     assert queue.ddl_without_lock == []
 
 
@@ -343,7 +385,7 @@ async def test_nothing_missing_means_no_lock_and_no_ddl() -> None:
 
 
 async def test_a_busy_ddl_lock_defers_the_install_and_never_the_drain() -> None:
-    queue = _Queue(["groups"], missing=[("agent_a", "groups")])
+    queue = _Queue(["groups"], missing=[("platform", "groups")])
     queue.lock_free = False
     source = _Generations()
     reconciler = _reconciler(queue, source)

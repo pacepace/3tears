@@ -306,12 +306,16 @@ class DerivedCacheRegistration:
     :ivar on_first_sight: called when this registry first sights the table's generation and takes it as
         its mark: a cache that keeps its own marks starts them from it. Nothing is dropped: what the
         cache holds was derived after following began. ``None`` falls back to :attr:`on_caught_up`
+    :ivar on_partition: called, in place of :attr:`on_table_dropped`, when a whole-table change is a load from
+        files whose reach the record names (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`):
+        the columns its rows hold and their values. ``None`` drops the table as for any whole-table change
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
     on_caught_up: Callable[[], None] | None = None
     on_first_sight: Callable[[], None] | None = None
+    on_partition: Callable[[Mapping[str, str]], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1060,7 +1064,10 @@ class CollectionRegistry:
         :rtype: None
         """
         if change.whole_table:
-            self.drop_table(change.table, reason=f"epoch {change.token} changed the whole table")
+            if change.partition:
+                self.drop_partition(change.table, change.partition, reason=f"epoch {change.token} loaded a partition")
+            else:
+                self.drop_table(change.table, reason=f"epoch {change.token} changed the whole table")
             return
         for row in change.rows:
             # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
@@ -1210,6 +1217,46 @@ class CollectionRegistry:
             },
         )
 
+    def drop_partition(self, table_name: str, partition: Mapping[str, str], *, reason: str) -> None:
+        """what a load from files whose reach is known does here: the table's own caches drop it whole, and each
+        derived cache that takes a partition is told it in place of dropping everything.
+
+        A load's rows all hold its constants (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`),
+        so a cache that keeps the table whole (a copy follower) reads those rows again rather than the table. The
+        collection's own L1, its cached scans and every derived cache without ``on_partition`` drop as
+        :meth:`drop_table` drops them.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param partition: the columns the load's rows hold, and their values as text
+        :ptype partition: Mapping[str, str]
+        :param reason: why, for the log
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        self.drop_local_scans(table_name)
+        collection = self._collections.get(table_name)
+        rows = collection.drop_cached_table() if collection is not None else 0
+        derived = tuple(self._derived_caches.get(table_name, ()))
+        for registration in derived:
+            if registration.on_partition is not None:
+                registration.on_partition(dict(partition))
+            else:
+                registration.on_table_dropped()
+        log.info(
+            "a load's partition reached this process: derived copies read it again, every other cache dropped the table",
+            extra={
+                "extra_data": {
+                    "table": table_name,
+                    "reason": reason,
+                    "partition": dict(partition),
+                    "l1_rows": rows,
+                    "derived_caches": len(derived),
+                }
+            },
+        )
+
     def register_derived_cache(
         self,
         table_name: str,
@@ -1218,6 +1265,7 @@ class CollectionRegistry:
         on_table_dropped: Callable[[], None],
         on_caught_up: Callable[[], None] | None = None,
         on_first_sight: Callable[[], None] | None = None,
+        on_partition: Callable[[Mapping[str, str]], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1251,11 +1299,18 @@ class CollectionRegistry:
         :param on_first_sight: told when the registry first sights the table and takes its mark, so a cache
             keeping its own marks starts them there; ``None`` uses ``on_caught_up``. A first sight drops nothing
         :ptype on_first_sight: Callable[[], None] | None
+        :param on_partition: told, in place of ``on_table_dropped``, the reach of a load from files the record names
+            (the columns its rows hold and their values), so the cache drops only those rows; ``None`` drops it all
+        :ptype on_partition: Callable[[Mapping[str, str]], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
         registration = DerivedCacheRegistration(
-            on_row=on_row, on_table_dropped=on_table_dropped, on_caught_up=on_caught_up, on_first_sight=on_first_sight
+            on_row=on_row,
+            on_table_dropped=on_table_dropped,
+            on_caught_up=on_caught_up,
+            on_first_sight=on_first_sight,
+            on_partition=on_partition,
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)

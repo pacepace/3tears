@@ -19,8 +19,10 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.shared_arrow import Parts, SharedArrowStore
+from threetears.core.testing.calibrate import bare_loop_lateness
 
-#: the most the event loop may run late while threads query the copy
+#: the most the event loop may run later, while threads query the copy, than it runs beside as many threads that never
+#: take the interpreter lock (:func:`bare_loop_lateness`, measured in the test: the runner's own scheduling delay)
 LOOP_MAY_BE_LATE = 0.020
 
 #: cobalt dev's long rows (2026-10-23) and the parts they are held in
@@ -85,6 +87,8 @@ class TestTheLoopRunsWhileThreadsQueryTheCopy:
         keys = pa.table({"k": pa.array(range(1000), pa.int64()), "n": pa.array(range(1000), pa.int64())})
         await asyncio.to_thread(store.publish, "v1", {"long": Parts(schema=schema, parts=parts), "keys": keys})
         reader = store.reader(prepare=_views)
+        # the readers and the publisher: as many busy threads, holding no lock, for as long
+        bare = await bare_loop_lateness(READERS + 1, 1.5)
         stop = threading.Event()
         reads = [0] * READERS
 
@@ -127,8 +131,11 @@ class TestTheLoopRunsWhileThreadsQueryTheCopy:
         await ticker
         reader.close()
         assert min(reads) > 0 and reader.mapped > 1, (reads, reader.mapped)
-        print(f"reads {reads}, versions mapped {reader.mapped}, late {late * 1000:.1f} ms")
-        assert late < LOOP_MAY_BE_LATE, f"the loop ran {late * 1000:.1f} ms late while threads queried the copy"
+        print(f"reads {reads}, versions mapped {reader.mapped}, late {late * 1000:.1f} ms, bare {bare * 1000:.1f} ms")
+        assert late < bare + LOOP_MAY_BE_LATE, (
+            f"the loop ran {late * 1000:.1f} ms late while threads queried the copy, "
+            f"{bare * 1000:.1f} ms beside threads holding no lock"
+        )
 
 
 class TestTheScanModuleIsImportedWithSharedArrow:

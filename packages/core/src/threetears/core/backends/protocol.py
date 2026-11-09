@@ -116,7 +116,9 @@ class L3Page:
 
     :ivar rows: the rows: dicts from ``fetch_page``, a ``pyarrow.Table`` from ``fetch_arrow_page``
     :ivar truncated: the transport answered fewer rows than the statement matched
-    :ivar reply_bytes: the reply's size, from which the next page's rows are sized
+    :ivar reply_bytes: the reply's size as the broker cuts it (an Arrow reply's: what its JSON would take), from
+        which the next page's rows are sized; 0 when unknown (an Arrow reply that does not say), and the next page
+        keeps this one's rows
     :ivar reply_cap: the bytes the broker announced it cuts a reply at; None from one that cuts at its row
         cap (an older hub), or a transport that cuts nothing, whose pages keep their row count
     """

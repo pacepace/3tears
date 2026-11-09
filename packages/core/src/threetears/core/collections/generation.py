@@ -29,6 +29,7 @@ from __future__ import annotations
 import inspect
 import weakref
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -37,7 +38,7 @@ from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenan
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from threetears.core.collections.epoch_change import ChangedRow
 
@@ -909,6 +910,9 @@ async def advance_for_write(
     *,
     schema: str | None,
     keys_unknown: bool = False,
+    tenancy: Tenancy | None = None,
+    partition: Mapping[str, str] | None = None,
+    noted_between: tuple[datetime, datetime] | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -927,6 +931,17 @@ async def advance_for_write(
     :ptype schema: str | None
     :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
     :ptype keys_unknown: bool
+    :param tenancy: the table's tenancy, for a writer that knows it otherwise than by a class it imported: a table
+        switched on by its trigger alone, which no class here declares, lives in the schema its write ran in
+        (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`), so it is
+        :data:`~threetears.core.tenancy.TENANT_BY_SCHEMA`. ``None`` reads the classes (:func:`tenancy_of_table`)
+    :ptype tenancy: Tenancy | None
+    :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values
+        as text (the load's constants): the record names it, so a follower reads those rows again, not the table
+    :ptype partition: Mapping[str, str] | None
+    :param noted_between: for a keys-unknown change (rows too many to name), the database clock's bracket of the
+        commit's change notes on its connection: the record names it, so a follower resolves the keys from the notes
+    :ptype noted_between: tuple[datetime, datetime] | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -934,7 +949,7 @@ async def advance_for_write(
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
     :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
-    tenancy = tenancy_of_table(table_name)
+    tenancy = tenancy if tenancy is not None else tenancy_of_table(table_name)
     owner = schema_tenant(schema) if tenancy.kind == "schema" and schema else None
     named = rows_with_tenants(tenancy, rows) if rows else rows
     if tenancy.kind == "schema" and owner is None and records_changes(source):
@@ -945,7 +960,15 @@ async def advance_for_write(
                 f"_all, where none of its pods read it. Name the writer's schema "
                 f"(CollectionRegistry.set_l3_schema, or the broker's schema=)"
             )
-    return await advance_recording(source, table_name, named, keys_unknown=keys_unknown, tenant=owner)
+    return await advance_recording(
+        source,
+        table_name,
+        named,
+        keys_unknown=keys_unknown,
+        tenant=owner,
+        partition=partition if rows is None else None,
+        noted_between=noted_between if keys_unknown else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)

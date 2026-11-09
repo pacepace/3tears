@@ -47,8 +47,10 @@ from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "STAGE_PREFIX",
     "DuckDBBackend",
     "PartitionReplacement",
+    "StagedChange",
     "arrow_rows",
     "fetch_arrow",
     "query_arrow",
@@ -107,6 +109,38 @@ class PartitionReplacement:
     arrow: Any = None
     primary_key: str | tuple[str, ...] = "id"
     append: bool = False
+
+
+#: what every staging table's name begins with (:meth:`DuckDBBackend.stage_rows`): never a table a caller declares
+STAGE_PREFIX: Final = "__stage__"
+
+#: the one-row table :meth:`DuckDBBackend.apply_staged` writes its ``mark`` to, in the change's own transaction: a
+#: reader reads it from its own snapshot (:meth:`DuckDBBackend.staged_mark`), so the mark it reads is exactly the
+#: change its snapshot holds
+_STAGE_MARK_TABLE: Final = "__staged_mark__"
+
+
+@dataclass(frozen=True, slots=True)
+class StagedChange:
+    """one table's part of a change applied in one transaction (:meth:`DuckDBBackend.apply_staged`).
+
+    The rows of the keys in ``keys`` (a staging table of the key's columns, :meth:`DuckDBBackend.stage_keys`) leave
+    the table, or every row when ``whole`` (``keys`` is then only dropped); then the rows in ``rows`` (a staging
+    table, :meth:`DuckDBBackend.stage_rows`) go in. A row that changed is a key named and a row staged; one deleted is
+    a key named and no row.
+
+    :ivar table: a table the backend created
+    :ivar key: the table's key columns, in order
+    :ivar keys: the staging table of the keys whose rows leave; None for none
+    :ivar rows: the staging table of the rows that go in; None for none
+    :ivar whole: every row of the table leaves first (a table read whole again)
+    """
+
+    table: str
+    key: tuple[str, ...]
+    keys: str | None = None
+    rows: str | None = None
+    whole: bool = False
 
 
 #: whether this process has said pyarrow is missing (once is enough)
@@ -1315,6 +1349,215 @@ class DuckDBBackend:
                     self._db.execute("ROLLBACK")
         self.request_checkpoint()
         return written
+
+    def _stage_name(self, stage: str) -> str:
+        """``stage`` checked to be a staging table's name, quoted.
+
+        :param stage: the name
+        :ptype stage: str
+        :return: the quoted name
+        :rtype: str
+        :raises ValueError: when it does not begin with :data:`STAGE_PREFIX`
+        """
+        if not stage.startswith(STAGE_PREFIX):
+            raise ValueError(f"a staging table's name begins with {STAGE_PREFIX!r}, not {stage!r}")
+        return quote_identifier(stage)
+
+    def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
+        """add rows to the staging table ``stage``, shaped as ``table`` and made on first use: rows no reader of
+        ``table`` sees until :meth:`apply_staged` moves them in.
+
+        For a copy built beside the one readers hold and swapped in whole: a page at a time is staged as it is read,
+        so what this process holds of a change is a page, and the change lands in one transaction. The rows are
+        stored as :meth:`storage_arrow` stores them, the last of each key kept.
+
+        :param stage: the staging table, named with :data:`STAGE_PREFIX`
+        :ptype stage: str
+        :param table: the table the rows are for
+        :ptype table: str
+        :param rows: the rows
+        :ptype rows: pyarrow.Table
+        :param key: the table's key columns
+        :ptype key: Sequence[str]
+        :return: the rows staged
+        :rtype: int
+        :raises ValueError: when ``table`` is unknown or ``stage`` is not a staging table's name
+        """
+        quoted = self._stage_name(stage)
+        if table not in self._schema_info:
+            raise ValueError(f"unknown table {table!r}")
+        if rows.num_rows == 0:
+            with self._db_lock:
+                self._db.execute(
+                    f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} LIMIT 0"
+                )  # noqa: S608
+            return 0
+        _, stored = self.storage_arrow(table, rows, tuple(key))
+        with self._db_lock:
+            self._db.execute(f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} LIMIT 0")  # noqa: S608
+            self._db.register("_staged_chunk", stored)
+            try:
+                self._db.execute(f"INSERT INTO {quoted} BY NAME SELECT * FROM _staged_chunk")  # noqa: S608
+            finally:
+                self._db.unregister("_staged_chunk")
+        return int(stored.num_rows)
+
+    def stage_keys(
+        self, stage: str, table: str, key: Sequence[str], keys: Any, *, rows_stage: str | None = None
+    ) -> int:
+        """add keys to the staging table ``stage``: ``table``'s key columns, typed as the table types them, made on
+        first use. The keys may be given as text (a change record names a key's values as strings); each is cast to
+        its column's type as it is stored. With ``rows_stage``, the rows that staging table holds of these keys leave
+        it in the same step: a key named again is read again, and a row staged for it earlier, or a row since deleted,
+        is not kept.
+
+        :param stage: the staging table, named with :data:`STAGE_PREFIX`
+        :ptype stage: str
+        :param table: the table the keys are of
+        :ptype table: str
+        :param key: the key columns, in order
+        :ptype key: Sequence[str]
+        :param keys: the keys, one column per key column, named as they are
+        :ptype keys: pyarrow.Table
+        :param rows_stage: a staging table of ``table``'s rows to take these keys' rows out of; None for none
+        :ptype rows_stage: str | None
+        :return: the keys staged
+        :rtype: int
+        :raises ValueError: when ``table`` is unknown or a stage is not a staging table's name
+        """
+        quoted = self._stage_name(stage)
+        rows_quoted = None if rows_stage is None else self._stage_name(rows_stage)
+        if table not in self._schema_info:
+            raise ValueError(f"unknown table {table!r}")
+        names = ", ".join(quote_identifier(column) for column in key)
+        source = quote_identifier(table)
+        chunk = self._stage_name(f"{stage}__chunk")
+        with self._db_lock:
+            self._db.execute(f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT {names} FROM {source} LIMIT 0")  # noqa: S608
+            if keys.num_rows == 0:
+                return 0
+            self._db.execute(f"CREATE OR REPLACE TABLE {chunk} AS SELECT {names} FROM {source} LIMIT 0")  # noqa: S608
+            self._db.register("_staged_keys", keys.select(list(key)))
+            try:
+                self._db.execute(f"INSERT INTO {chunk} BY NAME SELECT * FROM _staged_keys")  # noqa: S608
+            finally:
+                self._db.unregister("_staged_keys")
+            if rows_quoted is not None:
+                self._db.execute(f"CREATE TABLE IF NOT EXISTS {rows_quoted} AS SELECT * FROM {source} LIMIT 0")  # noqa: S608
+                joined = " AND ".join(
+                    f"{rows_quoted}.{quote_identifier(c)} = {chunk}.{quote_identifier(c)}" for c in key
+                )
+                self._db.execute(f"DELETE FROM {rows_quoted} USING {chunk} WHERE {joined}")  # noqa: S608
+            self._db.execute(f"INSERT INTO {quoted} SELECT * FROM {chunk}")  # noqa: S608
+            self._db.execute(f"DROP TABLE {chunk}")
+        return int(keys.num_rows)
+
+    def drop_stage(self, *stages: str) -> None:
+        """drop staging tables; one that does not exist is no error.
+
+        :param stages: the staging tables
+        :ptype stages: str
+        :return: nothing
+        :rtype: None
+        """
+        quoted = [self._stage_name(stage) for stage in stages]
+        with self._db_lock:
+            for name in quoted:
+                self._db.execute(f"DROP TABLE IF EXISTS {name}")
+
+    def staged_stages(self) -> list[str]:
+        """the staging tables this backend holds now: what a change left behind if it never reached
+        :meth:`apply_staged` (dropped by whoever stages next).
+
+        :return: their names
+        :rtype: list[str]
+        """
+        with self._db_lock:
+            found = self._db.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE starts_with(table_name, ?)", [STAGE_PREFIX]
+            ).fetchall()
+        return sorted(str(row[0]) for row in found)
+
+    def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        """apply every table's staged change in ONE transaction, then drop the staging tables.
+
+        With ``mark``, :data:`_STAGE_MARK_TABLE` holds it from the same commit: a reader's :meth:`staged_mark` names
+        the change its snapshot holds.
+
+        A reader on another cursor (:meth:`read_snapshot`) sees every table as it was until the commit and as it is
+        after, never part of the change. A failure rolls back, so every table keeps what it held, and the staging
+        tables are kept for the caller to try again or drop.
+
+        :param changes: each table's change
+        :ptype changes: Sequence[StagedChange]
+        :param mark: what :meth:`staged_mark` reads after the commit; None leaves it as it was
+        :ptype mark: int | None
+        :return: the rows that went in
+        :rtype: int
+        :raises ValueError: when a table is unknown; nothing changes
+        """
+        for change in changes:
+            if change.table not in self._schema_info:
+                raise ValueError(f"unknown table {change.table!r}")
+        statements: list[str] = []
+        stages: list[str] = []
+        for change in changes:
+            table = quote_identifier(change.table)
+            if change.whole:
+                statements.append(f"DELETE FROM {table}")  # noqa: S608
+                if change.keys is not None:
+                    stages.append(change.keys)
+            elif change.keys is not None:
+                keys = self._stage_name(change.keys)
+                joined = " AND ".join(
+                    f"{table}.{quote_identifier(c)} = {keys}.{quote_identifier(c)}" for c in change.key
+                )
+                statements.append(f"DELETE FROM {table} USING {keys} WHERE {joined}")  # noqa: S608
+                stages.append(change.keys)
+            if change.rows is not None:
+                statements.append(f"INSERT INTO {table} BY NAME SELECT * FROM {self._stage_name(change.rows)}")  # noqa: S608
+                stages.append(change.rows)
+        written = 0
+        marked = quote_identifier(_STAGE_MARK_TABLE)
+        with self._db_lock:
+            if mark is not None:
+                self._db.execute(f"CREATE TABLE IF NOT EXISTS {marked} (mark BIGINT)")
+            committed = False
+            self._db.execute("BEGIN TRANSACTION")
+            try:
+                for statement in statements:
+                    result = self._db.execute(statement)
+                    if statement.startswith("INSERT"):
+                        written += int(result.fetchone()[0])
+                if mark is not None:
+                    self._db.execute(f"DELETE FROM {marked}")  # noqa: S608
+                    self._db.execute(f"INSERT INTO {marked} VALUES (?)", [int(mark)])  # noqa: S608
+                self._db.execute("COMMIT")
+                committed = True
+            finally:
+                if not committed:
+                    self._db.execute("ROLLBACK")
+            for stage in stages:
+                self._db.execute(f"DROP TABLE IF EXISTS {self._stage_name(stage)}")
+        self.request_checkpoint()
+        return written
+
+    @staticmethod
+    def staged_mark(cursor: Any) -> int | None:
+        """the mark of the change a read holds (:meth:`apply_staged`'s ``mark``), read on its own cursor.
+
+        :param cursor: a cursor of :meth:`read_snapshot`
+        :ptype cursor: duckdb.DuckDBPyConnection
+        :return: the mark; None when no change with one was applied
+        :rtype: int | None
+        """
+        found = cursor.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [_STAGE_MARK_TABLE]
+        ).fetchone()
+        if not found or not found[0]:
+            return None
+        row = cursor.execute(f"SELECT mark FROM {quote_identifier(_STAGE_MARK_TABLE)}").fetchone()  # noqa: S608
+        return None if row is None else int(row[0])
 
     @contextmanager
     def read_snapshot(self) -> Iterator[Any]:

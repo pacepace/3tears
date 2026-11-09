@@ -20,6 +20,9 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -212,3 +215,47 @@ def budget_problem(what: str, took: float, baseline: float, *, factor: float = D
     if took <= factor * baseline:
         return None
     return f"{what} took {took * 1000:.1f} ms, {took / baseline:.1f}x its calibrated {baseline * 1000:.1f} ms (over {factor}x)"
+
+
+#: what each of :func:`bare_loop_lateness`'s threads hashes at a time: past 2 KiB ``hashlib`` lets the interpreter
+#: lock go while it hashes, so the threads load the cores and never the lock
+_GIL_FREE_CHUNK = b"\x5a" * (1 << 20)
+
+
+async def bare_loop_lateness(threads: int, seconds: float, *, every: float = 0.002) -> float:
+    """the most a ticker on the running loop wakes late while ``threads`` threads keep the cores busy without the
+    interpreter lock, for ``seconds``: this machine's own scheduling delay at that load, right now.
+
+    A loop-timing test bounds how long work on other threads holds the interpreter lock. What a ticker measures is
+    that hold plus the time the operating system kept the loop's thread off a core, which on a shared runner (other
+    test batches beside this one) is no property of the code. This is the second part, measured with the same
+    number of busy threads that hold the lock for no time (``hashlib`` over 1 MiB releases it), so the test's
+    bound is its allowance for the hold plus this.
+
+    :param threads: the busy threads, as many as the work under test runs
+    :ptype threads: int
+    :param seconds: how long to measure: as long as the work under test runs
+    :ptype seconds: float
+    :param every: the ticker's sleep, as the test's own ticker sleeps
+    :ptype every: float
+    :return: the most the ticker woke late, in seconds
+    :rtype: float
+    """
+    stop = threading.Event()
+
+    def busy() -> None:
+        while not stop.is_set():
+            hashlib.sha256(_GIL_FREE_CHUNK).digest()
+
+    late = 0.0
+    workers = [asyncio.create_task(asyncio.to_thread(busy)) for _ in range(threads)]
+    try:
+        ends = time.perf_counter() + seconds
+        while time.perf_counter() < ends:
+            asked = time.perf_counter()
+            await asyncio.sleep(every)
+            late = max(late, time.perf_counter() - asked - every)
+    finally:
+        stop.set()
+        await asyncio.gather(*workers)
+    return late

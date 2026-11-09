@@ -2552,7 +2552,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 contain(
                     exc, log=log, what="could not analyse a table after loading it", extra={"table": self.table_name}
                 )
-        await self._drop_and_advance("loaded from files", rows=written, requests=len(requests))
+        await self._drop_and_advance(
+            "loaded from files",
+            partition={column: str(value) for column, value in (constants or {}).items() if value is not None} or None,
+            rows=written,
+            requests=len(requests),
+        )
         return written
 
     async def _drop_and_advance_after_failure(self, reason: str, failure: BaseException) -> None:
@@ -2581,7 +2586,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 level="error",
             )
 
-    async def _drop_and_advance(self, reason: str, **detail: Any) -> None:
+    async def _drop_and_advance(
+        self, reason: str, *, partition: Mapping[str, str] | None = None, **detail: Any
+    ) -> None:
         """drop the table from this process's caches, then advance its write generation once.
 
         After a change to the table that left no row-level write mark (:meth:`truncate`,
@@ -2591,6 +2598,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         :param reason: what changed the table, for the drop and the log
         :ptype reason: str
+        :param partition: a load's constants, the columns every row it loaded holds and their values: a derived copy
+            here reads those rows again rather than the table (:meth:`CollectionRegistry.drop_partition`). The
+            broker that advances for a pod records the same, from the load's constants
+        :ptype partition: Mapping[str, str] | None
         :param detail: more to log
         :ptype detail: Any
         :return: nothing
@@ -2598,7 +2609,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the generation had to advance and could not
         """
         registry = self.registry
-        if registry is not None:
+        if registry is not None and partition:
+            registry.drop_partition(self.table_name, partition, reason=reason)
+        elif registry is not None:
             registry.drop_table(self.table_name, reason=reason)
         if registry is None or registry.get_collection(self.table_name) is not self:
             self.drop_cached_table()

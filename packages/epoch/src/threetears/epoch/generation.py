@@ -35,10 +35,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
@@ -830,6 +830,8 @@ class EpochGenerationSource(_ChangeLogReading):
         *,
         keys_unknown: bool = False,
         tenant: str | None = None,
+        partition: Mapping[str, str] | None = None,
+        noted_between: tuple[datetime, datetime] | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -849,6 +851,12 @@ class EpochGenerationSource(_ChangeLogReading):
             statement in): a whole-table or keys-unknown record's key, and that of any row naming none.
             ``None`` puts such a record on ``_all``, as a platform table's must be
         :ptype tenant: str | None
+        :param partition: a whole-table change's partition, the columns a load's rows hold and their values
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`); requires ``rows=None``
+        :ptype partition: Mapping[str, str] | None
+        :param noted_between: a keys-unknown change's notes bracket
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`); requires ``keys_unknown``
+        :ptype noted_between: tuple[datetime, datetime] | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -860,7 +868,14 @@ class EpochGenerationSource(_ChangeLogReading):
         # each tenant's rows under its own key; a rowless record under the write's tenant, else ``_all``
         bodies: list[tuple[str | None, bytes]]
         if rows is None or not rows:
-            bodies = [(tenant, epoch_change_body(table_name, rows, keys_unknown=keys_unknown))]
+            bodies = [
+                (
+                    tenant,
+                    epoch_change_body(
+                        table_name, rows, keys_unknown=keys_unknown, partition=partition, noted_between=noted_between
+                    ),
+                )
+            ]
         else:
             bodies = [
                 (tenant, epoch_change_body(table_name, run))

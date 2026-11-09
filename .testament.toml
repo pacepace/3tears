@@ -1,12 +1,10 @@
 # testament (https://github.com/brookstalley/testament) runs the unit suite on a pool of runners.
 # ./scripts/test.sh hands off to it when `testament` is on PATH; without it, nothing here is read.
-# The command and selection mirror test.sh's whole-suite run, minus `-n 4 --dist loadgroup`:
+# The commands and selection mirror test.sh's whole-suite run, minus `-n 4 --dist loadgroup`:
 # testament distributes the tests itself.
-manifest_version = 2
+manifest_version = 3
 name = "3tears"
 executor = "container"
-command = ["uv", "run", "--frozen", "pytest", "-m", "not integration"]
-default_selection = ["packages/", "tests/"]
 env_inputs = ["uv.lock", ".python-version"]
 batch_timeout_s = 1800
 collect_timeout_s = 900
@@ -26,3 +24,20 @@ steps = [["uv", "sync", "--frozen", "--extra", "vision", "--quiet"]]
 [git]
 # Release tags (and the trees they point at) go with the tree, so tests that read a release from git run on the pool.
 tags = ["v[0-9]*"]
+
+# Every unit test but the event loop's wall-clock ones. A path given to `testament run` comes here.
+[suites.default]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing"]
+default_selection = ["packages/", "tests/"]
+default_for_paths = true
+
+# The event loop's wall-clock tests (`loop_timing`), as scripts/ci-unit-tests.sh runs them apart and serially: a
+# runner takes one batch of them at a time, never two beside each other. Their bounds are still calibrated against
+# the load beside them, since a runner runs other suites' and projects' batches meanwhile. A path's loop_timing tests
+# run with `testament run --suite loop_timing -- <path>`.
+[suites.loop_timing]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "loop_timing and not integration"]
+default_selection = ["packages/", "tests/"]
+max_batches_per_runner = 1

@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the write-mark install backstop serves its declaring schema only
+
+**Changed (core), a requirement change:** `install_write_mark_triggers` and `WriteMarkReconciler.install_triggers`
+gave the write-mark trigger to every switched-on table name *in every schema*. The new contract is: they give it in
+the declaring schema only (`table_schema=`, `tables_schema=`; default the queue's own schema, the hub's platform
+schema). The reason is a cross-schema name collision. A tool pod's own table with the same name as a hub-declared
+switched-on table (the reports pod's `coordination_redemptions`) got the hub's trigger whatever the pod's own flag
+said, and got it back after the pod switched it off. Each schema's tables now get their trigger from that schema's
+own migration runs: `give_switched_tables_their_trigger` runs at the end of every run there, a table that predates
+the trigger included (tested live). A same-named table without the trigger in another schema is reported and never
+installed: a log line and the `collection_write_marks_missing_elsewhere` gauge. `tables_missing_the_trigger` takes
+`schema=` to read one schema.
+
+### core: `switch_off`, the inverse of the runner's two trigger hooks
+
+**Added (core):** `threetears.core.data.migrations.write_generation_switch.switch_off(store, table_name)` takes the
+write-mark trigger, the change-note triggers and the note function off one table of the session's schema, each
+`IF EXISTS`. It is safe to run twice and after the table is dropped. `write_generation_triggers_on` names the
+triggers a table carries. Moved from the hub's `write_generation_triggers.py`.
+
 ## v0.95.0 -- 2026-11-07
 
 ### core, epoch, nats: load paths that grew with the table now grow with the change

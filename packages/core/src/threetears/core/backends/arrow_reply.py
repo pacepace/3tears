@@ -23,8 +23,10 @@ Needs ``pyarrow`` (``3tears[snapshot]``).
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
-from collections.abc import Mapping, Sequence
+import json
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Final
 
@@ -33,16 +35,33 @@ from threetears.core.backends.protocol import ArrowL3Reader
 try:
     import pyarrow as pa
     import pyarrow.compute as pc
+    import pyarrow.ipc as pa_ipc
     import pyarrow.json as pa_json
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; reply_rows refuses without it, saying so
     _PYARROW = False
 
-__all__ = ["ReplyNotArrowError", "l3_fetch_arrow", "reply_rows"]
+__all__ = [
+    "ReplyNotArrowError",
+    "arrow_schema_text",
+    "l3_fetch_arrow",
+    "read_reply",
+    "reply_rows",
+]
 
 #: the prefix the broker writes a bytes value with (``"\\x"`` and its hex), which ``fetch`` answers as bytes
 _BYTES_MARK: Final = "\\x"
+
+#: what an ``l3.query`` reply in Arrow begins with: then its envelope's length (4 bytes, big-endian), the envelope (the
+#: JSON reply without its ``rows``), and the rows as one Arrow IPC stream. A JSON reply begins with ``{``.
+_ARROW_REPLY_MAGIC: Final = b"L3ARROW1"
+
+#: the bytes before an Arrow reply's envelope: the magic and the envelope's length
+_ARROW_HEAD: Final = len(_ARROW_REPLY_MAGIC) + 4
+
+#: what a JSON reply carries around its rows beyond the envelope's own bytes (``,"rows":``)
+_ROWS_KEY_BYTES: Final = len(b',"rows":')
 
 
 class ReplyNotArrowError(ValueError):
@@ -59,13 +78,27 @@ class _RailReply:
         cuts by bytes; None from a broker that cuts at its row cap
     """
 
-    __slots__ = ("reply_cap", "rows", "success", "truncated")
+    __slots__ = ("envelope", "json_bytes", "reply_cap", "rows", "success", "truncated")
 
-    def __init__(self, success: bool, rows: Any, truncated: bool = False, reply_cap: int | None = None) -> None:
+    def __init__(
+        self,
+        success: bool,
+        rows: Any,
+        truncated: bool = False,
+        reply_cap: int | None = None,
+        *,
+        envelope: dict[str, Any] | None = None,
+        json_bytes: int | None = None,
+    ) -> None:
         self.success = success
         self.rows = rows
         self.truncated = truncated
         self.reply_cap = reply_cap
+        #: an Arrow reply's envelope (its JSON without ``rows``); None for a JSON reply, which the caller decodes
+        self.envelope = envelope
+        #: the bytes the reply's JSON would take, the measure the broker cuts by; None for a JSON reply (its own
+        #: length), 0 for an Arrow reply that does not say its rows' JSON bytes
+        self.json_bytes = json_bytes
 
 
 def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
@@ -116,6 +149,95 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
     truncated = parsed.num_rows == 1 and bool(parsed.column("truncated")[0].as_py())
     cap = parsed.column("max_reply_bytes")[0].as_py() if parsed.num_rows == 1 else None
     return _RailReply(success, rows, truncated, reply_cap=cap if isinstance(cap, int) and cap > 0 else None)
+
+
+def arrow_schema_text(types: Mapping[str, Any]) -> str:
+    """the ``arrow_schema`` an ``l3.query`` asking for an Arrow reply carries: the IPC serialization of the schema of
+    ``types``, base64.
+
+    :param types: column name -> its Arrow type, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: the schema, as the request carries it
+    :rtype: str
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
+    schema = pa.schema([pa.field(name, kind) for name, kind in types.items()])
+    return base64.b64encode(schema.serialize().to_pybytes()).decode("ascii")
+
+
+def _arrow_reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
+    """an Arrow reply's rows (``L3ARROW1``): its envelope, then its rows' IPC stream, read in place.
+
+    The broker builds the table with :func:`reply_rows` over the rows it would have answered as JSON, so its columns
+    are ``types``; a table of any other schema is refused, never answered otherwise than the JSON would be.
+
+    :param reply: the reply's bytes, beginning with the magic
+    :ptype reply: bytes
+    :param types: column name -> its Arrow type, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: the reply's success, rows and envelope
+    :rtype: _RailReply
+    :raises ReplyNotArrowError: when the reply is malformed or its table is not of ``types``
+    """
+    size = int.from_bytes(reply[len(_ARROW_REPLY_MAGIC) : _ARROW_HEAD], "big")
+    try:
+        envelope = json.loads(reply[_ARROW_HEAD : _ARROW_HEAD + size])
+    except ValueError as exc:
+        raise ReplyNotArrowError(f"an Arrow rail reply whose envelope cannot be read: {exc}") from exc
+    if not isinstance(envelope, dict):
+        raise ReplyNotArrowError("an Arrow rail reply whose envelope is not an object")
+    expected = pa.schema([pa.field(name, kind) for name, kind in types.items()])
+    if not envelope.get("success"):
+        # a failure carries no rows: the caller raises what its envelope names
+        return _RailReply(False, expected.empty_table(), envelope=envelope, json_bytes=0)
+    try:
+        rows = pa_ipc.open_stream(pa.py_buffer(reply)[_ARROW_HEAD + size :]).read_all()
+    except pa.ArrowException as exc:
+        raise ReplyNotArrowError(f"an Arrow rail reply whose rows cannot be read: {exc}") from exc
+    if not rows.schema.equals(expected, check_metadata=False):
+        raise ReplyNotArrowError(f"an Arrow rail reply's rows are {rows.schema}, not the types asked for")
+    cap = envelope.get("max_reply_bytes")
+    rows_json = envelope.get("rows_json_bytes")
+    # the JSON reply's bytes are its envelope's, its rows' and the key between; a hub that does not say its rows'
+    # bytes gives 0, and the keyset pager keeps its page's rows rather than size them by the Arrow's smaller bytes
+    json_bytes = 0
+    if isinstance(rows_json, int) and not isinstance(rows_json, bool) and rows_json >= 0:
+        json_bytes = size + _ROWS_KEY_BYTES + rows_json
+    return _RailReply(
+        True,
+        rows,
+        bool(envelope.get("truncated")),
+        reply_cap=cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None,
+        envelope=envelope,
+        json_bytes=json_bytes,
+    )
+
+
+def read_reply(
+    reply: bytes, types: Mapping[str, Any], json_rows: Callable[[bytes, Mapping[str, Any]], _RailReply] = reply_rows
+) -> _RailReply:
+    """an ``l3.query`` reply's rows as one Arrow table, whichever form the broker answered in: an Arrow reply
+    (``L3ARROW1``) read in place, anything else as JSON (``json_rows``, :func:`reply_rows`). Blocking:
+    on a thread, as :func:`reply_rows`.
+
+    :param reply: the reply's bytes
+    :ptype reply: bytes
+    :param types: column name -> its Arrow type, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param json_rows: the JSON reply's parse
+    :ptype json_rows: Callable[[bytes, Mapping[str, Any]], _RailReply]
+    :return: the reply's success and rows; an Arrow reply's envelope beside them
+    :rtype: _RailReply
+    :raises ReplyNotArrowError: when the rows are not of ``types``
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
+    if reply[: len(_ARROW_REPLY_MAGIC)] == _ARROW_REPLY_MAGIC:
+        return _arrow_reply_rows(reply, types)
+    return json_rows(reply, types)
 
 
 def _rail_value(value: Any, kind: Any) -> Any:
