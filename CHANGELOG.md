@@ -6,6 +6,134 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.95.0 -- 2026-11-07
+
+### core, epoch, nats: load paths that grew with the table now grow with the change
+
+Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large
+sequential scans inside nested loops, from `EXPLAIN ANALYZE` in a rolled-back transaction; YugabyteDB's storage
+counts) and/or a real-size budget calibrated in the test (`threetears.core.testing.calibrate`: twice the
+database's own time for the bare operation on the same rows), shown failing on the old code. Numbers are
+YugabyteDB 2026.1 (b118) on a laptop.
+
+- **Keyset reads in an index's order (core).** `TableSchema.keyset_order` pages a filtered read in the order of
+  the index its filters lead (declare the key as that index's tail); the cursor adds a leading bound and the
+  row comparison's expansion, which YugabyteDB seeks by. An index can `include` columns. Pages size to the
+  reply cap a broker announces (`max_reply_bytes`, `L3Page`). Texas-size read: 4.3 s, 34x rows scanned ->
+  168 ms, 1.07x.
+- **Change notes (core).** Each ring table gains `(table_name, noted_at) INCLUDE (...)` and two partial indexes
+  (whole-table notes; notes written without a slot); `noted_rows_since` is one statement, reading the previous
+  table only until the last switch's fence has passed (1,278 ms -> 2.56 ms at 1M notes, 1.6x the same index read alone); the scrub's looks are distinct index scans (205 rows for 205); the emptying walks the key's
+  hash (or id), never re-reading its own tombstones. A copy of 10,000 rows or more is noted whole
+  (`WHOLE_COPY_ROWS`), as a file load is: the row trigger's `WHEN` skips every row of a whole-marked
+  transaction and a statement trigger (`threetears_change_note_whole_write`) writes its one note (a 50,000-row
+  copy on YugabyteDB: 47,464 ms -> 233 ms, 1.45x a plain `COPY`).
+- **Bulk writes (core).** `delete_rows` deletes and reads the rows its messages name in one `DELETE ...
+  RETURNING` a batch of keys (`ReturningDeletingStore.delete_many_returning`; 5,000 rows on YugabyteDB: 1,947 ms
+  -> 157 ms, 1.9x one keyed delete), its keys enrolled first and restated in one pass
+  (`CallerTransaction.restate_many`); a delete that fails first is settled by key alone and counted
+  (`threetears_collection_deletes_settled_by_key_total`). A direct load of a reload's rows is analysed after its last request (`AnalyzingStore`; a
+  state's geography read planned blind: 157 ms -> 0.4 ms). A collection's copy is cut by what its connection
+  carries (`copy_bounds`): one `COPY` on a direct connection; on the rail, requests sized to the cap the hub
+  announces (`max_request_bytes`, else `max_reply_bytes`; at most 12 MiB), or 1,000-row batches when it announces
+  none.
+- **Write marks (core).** Coordination migration v004 indexes `collection_write_marks (table_name, id)`.
+- **DuckDB (core), checked.** Adding rows to one scope of a key-less table was measured flat in the table's size
+  (1M and 6M rows alike); nothing changed, and a test holds it flat.
+- **Invalidations (core), expand step.** `CacheInvalidationMessage.more_rows` names further rows of one write;
+  every receiver of this release hears it as one message a row. Sending it (`CollectionRegistry.batch_invalidations`)
+  stays off until every process reads it (5,000 rows: 330 ms -> 22 ms, unlocked).
+- **L2-first saver (core, nats): a dormant path.** No consumer runs `run_l2_first_worker` today. The saver now
+  saves a window of epochs in the collection's many-row save (`save_many_to_store`), reading the window's
+  settled marks in one listing; 1,000 epochs, L3 on YugabyteDB, L2 in memory: 3,744 ms -> 46 ms, 3.5x a
+  one-statement upsert of 1,000 rows (12-13 ms). `NatsKvBucket.get_latest_many(batched=True)` reads keys in batched
+  direct gets (NATS 2.11+; about 16 ms per 1,000 keys against 103 ms single gets), only on a connection granted
+  the body-carried direct get, which pods never are: the worker turns it on (its runner is an infrastructure
+  identity), a library caller does not, and an unanswered batch is probed for a second and the bucket read a
+  key at a time after. Its receiver declares the new `request-reply` sender posture
+  (`threetears.enforcement.sender_posture`: a fresh `new_inbox()` subject, replying to the request sent beside it,
+  ended with it), which holds because no principal's grants reach another connection's inbox
+  (`tests/enforcement/test_inbox_prefixes_are_private.py`).
+
+### core, epoch: `CopyFollower`, a whole DuckDB copy kept current by the keys each epoch changed
+
+**Added (core):** `threetears.core.collections.copy_follower.CopyFollower` keeps a pod's DuckDB copy of whole
+collection tables current through the standard epoch path. It hears each changed key through the registry
+(`register_derived_cache`), reads exactly those keys' rows from L3, stages them beside the copy and applies them in
+one DuckDB transaction at one settled stamp of the writer's seqlock, so a change costs its keys, not the table. A
+stamp that moves keeps the stage for the next pass; an epoch the log cannot give leaves the copy as it was and the
+follower behind (`status().behind`); a whole-table record reads that table again beside the copy. It takes any
+`FollowerBackend` (the stage, apply and read-snapshot calls it makes); `DuckDBBackend` conforms through
+`stage_rows`, `stage_keys`, `apply_staged`, `drop_stage`, `staged_stages` and `staged_mark`, and readers' stamps
+commit with the change.
+
+**Added (core):** `CopyCheckpoints` writes the copy at a stamp to the pod's own Object Store (memory, R3) as
+immutable Arrow parts under a write claim, moves one pointer by CAS and then retires the old parts; a start loads
+it and walks the epoch log from its marks. A checkpoint is due by rows applied since the last, never a timer, and
+one is kept per schema digest, so two code versions never load each other's.
+
+**Added (core, epoch):** a load from files records its partition: its whole-table record names the constants its
+rows hold (`EpochChange.partition`; `EpochGenerationSource.advance_with_change(partition=)`). A reader built before
+it reads the record as the whole table, which it still says. `CollectionRegistry.drop_partition` tells a derived
+cache registered with `on_partition=` in place of dropping the table; the collection's L1 and every other cache
+drop the table as before. The follower reads a load's partition back from L3 by every partition column
+(`FollowedTable.partition_order`, `FollowedTable.l3_kinds`, a column the copy does not hold included) as keyed
+upserts, so a key also heard by a write is read once, newest last.
+
+### core: a table switched on by its write-mark trigger alone advances, and the hub says it does
+
+**Added (core):** a tool pod's own tables are declared by classes the hub never imports, so the broker advanced
+none of them. `tables_switched_by_trigger(pool, schema, tables)` reads the switch off the catalogue (only a
+migration under the DDL lock installs the trigger), and is the broker's predicate. `advance_for_write(...,
+tenancy=)` lets a writer that knows a table's tenancy otherwise than by an imported class key its records by it.
+`WriteMarkReconciler` puts an undeclared table's rowless record under each pod schema holding it; one in the
+platform schema stays on `_all`.
+
+**Added (core):** every `l3.query` reply names the broker's capabilities (`HUB_CAPABILITIES_FIELD`; none from an
+older hub) and `NatsProxyL3Backend.hub_capabilities` asks with a read that touches no table.
+`require_generation_by_trigger` raises `HubCapabilityMissingError` naming `GENERATION_BY_TRIGGER` before a copy
+follower serves through a hub without it: such a copy would never hear a change, so the pod stays not ready.
+
+### core: `l3.query` replies in Arrow, client side
+
+**Added (core):** `NatsProxyL3Backend.fetch_arrow` and `fetch_arrow_page` send `reply_format: "arrow"` and the
+schema of their types (`arrow_schema`); no other read or write sends them. A reply starting `L3ARROW1` (envelope
+length, the JSON envelope without rows, then the rows as an Arrow IPC stream) is read in place on a thread
+(`arrow_reply.read_reply`), and a table whose schema is not the types asked for is refused. Anything else is a JSON
+reply, read as before: an older hub, a refusal, rows the hub could not make Arrow. No announcement is needed. An
+Arrow page reports the bytes its JSON reply would take (`rows_json_bytes`), so the keyset pager sizes against the
+broker's JSON cap as before; without it (a hub mid-roll) the next page keeps this page's rows. `keyset_arrow_pages`
+and the copy follower's L3 reads go through these two methods.
+
+### core: shared Arrow: pyarrow alone for the store and pool, merged parts, and a publish that costs what it changes
+
+**Changed (core):** `SharedArrowStore` and `SharedArrowPool` need pyarrow alone (the hub offloads its broker's work
+through them and carries no duckdb); `MappedTables.connect`, `SharedArrowStore.reader` and `publish_query` raise
+"needs duckdb and pyarrow" without duckdb.
+
+**Added (core):** `merge_parts(store, version, table, names, into)` returns the parts to publish with a named run of
+neighbouring parts merged into one, writing the group's bytes once; `merged_rows` opens the group's rows as one
+reader under the version's shared lock. A group that is not a run of neighbours, or a merged name that would sort
+past another part, is refused, so readers see the same rows in the same order.
+
+**Changed (core), on-disk layout:** a version's directory holds a `MANIFEST` naming its files and its lock file; the
+files live in `parts/<one directory per publish>` and are never written again, so a publish writes only its changed
+parts and one manifest, not a hard link per unchanged part. A publish returns once the version is current; telling
+readers, retiring and removing run after it on one store thread, coalesced (`settle()` waits for it). A publish
+short of room sweeps first, so it is refused only after a sweep. A store started over the older layout removes its
+versions when nobody holds them, and otherwise reads, republishes and removes them in turn. `version_files(root,
+version)` reaches a version's files. Enforced: a publish's file calls count the same at 200 and 2000 parts, and
+2000 parts publish within 1.5x of 200 and within 2x a bare write of the changed parts.
+
+### tests: the event loop's wall-clock tests run in their own testament suite
+
+`.testament.toml` (manifest 3) has two suites: `default`, every unit test but `loop_timing`, and `loop_timing`, the
+event loop's wall-clock tests, one batch a runner (`max_batches_per_runner = 1`), as CI's `ci-unit-tests.sh` runs
+them apart. A bare `testament run` runs both; `scripts/test.sh <package>` runs the package's `loop_timing` tests as
+a second request. Bounds stay calibrated against the load beside them:
+`threetears.core.testing.calibrate.bare_loop_lateness` measures, in the test, how late the same ticker wakes beside
+as many GIL-free busy threads, and the versioned-answers tests take up to three paired (late, floor) runs.
+
 ### core: the write-mark install backstop serves its declaring schema only
 
 **Changed (core), a requirement change:** `install_write_mark_triggers` and `WriteMarkReconciler.install_triggers`
@@ -60,55 +188,6 @@ schema (the platform schema its process's classes declare). A table of a noted n
 table, keyed and tenanted by its own declaration) gets its triggers from its schema's migration run
 (`give_noted_tables_their_note_trigger`, at every run start, a table from before the hook included); one without
 them is logged once and counted (`threetears_change_notes_untriggered_tables`), never given the keeper's.
-
-## v0.95.0 -- 2026-11-07
-
-### core, epoch, nats: load paths that grew with the table now grow with the change
-
-Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large
-sequential scans inside nested loops, from `EXPLAIN ANALYZE` in a rolled-back transaction; YugabyteDB's storage
-counts) and/or a real-size budget calibrated in the test (`threetears.core.testing.calibrate`: twice the
-database's own time for the bare operation on the same rows), shown failing on the old code. Numbers are
-YugabyteDB 2026.1 (b118) on a laptop.
-
-- **Keyset reads in an index's order (core).** `TableSchema.keyset_order` pages a filtered read in the order of
-  the index its filters lead (declare the key as that index's tail); the cursor adds a leading bound and the
-  row comparison's expansion, which YugabyteDB seeks by. An index can `include` columns. Pages size to the
-  reply cap a broker announces (`max_reply_bytes`, `L3Page`). Texas-size read: 4.3 s, 34x rows scanned ->
-  168 ms, 1.07x.
-- **Change notes (core).** Each ring table gains `(table_name, noted_at) INCLUDE (...)` and two partial indexes
-  (whole-table notes; notes written without a slot); `noted_rows_since` is one statement, reading the previous
-  table only until the last switch's fence has passed (1,278 ms -> 2.56 ms at 1M notes, 1.6x the same index read alone); the scrub's looks are distinct index scans (205 rows for 205); the emptying walks the key's
-  hash (or id), never re-reading its own tombstones. A copy of 10,000 rows or more is noted whole
-  (`WHOLE_COPY_ROWS`), as a file load is: the row trigger's `WHEN` skips every row of a whole-marked
-  transaction and a statement trigger (`threetears_change_note_whole_write`) writes its one note (a 50,000-row
-  copy on YugabyteDB: 47,464 ms -> 233 ms, 1.45x a plain `COPY`).
-- **Bulk writes (core).** `delete_rows` deletes and reads the rows its messages name in one `DELETE ...
-  RETURNING` a batch of keys (`ReturningDeletingStore.delete_many_returning`; 5,000 rows on YugabyteDB: 1,947 ms
-  -> 157 ms, 1.9x one keyed delete), its keys enrolled first and restated in one pass
-  (`CallerTransaction.restate_many`); a delete that fails first is settled by key alone and counted
-  (`threetears_collection_deletes_settled_by_key_total`). A direct load of a reload's rows is analysed after its last request (`AnalyzingStore`; a
-  state's geography read planned blind: 157 ms -> 0.4 ms). A collection's copy is cut by what its connection
-  carries (`copy_bounds`): one `COPY` on a direct connection; on the rail, requests sized to the cap the hub
-  announces (`max_request_bytes`, else `max_reply_bytes`; at most 12 MiB), or 1,000-row batches when it announces
-  none.
-- **Write marks (core).** Coordination migration v004 indexes `collection_write_marks (table_name, id)`.
-- **DuckDB (core), checked.** Adding rows to one scope of a key-less table was measured flat in the table's size
-  (1M and 6M rows alike); nothing changed, and a test holds it flat.
-- **Invalidations (core), expand step.** `CacheInvalidationMessage.more_rows` names further rows of one write;
-  every receiver of this release hears it as one message a row. Sending it (`CollectionRegistry.batch_invalidations`)
-  stays off until every process reads it (5,000 rows: 330 ms -> 22 ms, unlocked).
-- **L2-first saver (core, nats): a dormant path.** No consumer runs `run_l2_first_worker` today. The saver now
-  saves a window of epochs in the collection's many-row save (`save_many_to_store`), reading the window's
-  settled marks in one listing; 1,000 epochs, L3 on YugabyteDB, L2 in memory: 3,744 ms -> 46 ms, 3.5x a
-  one-statement upsert of 1,000 rows (12-13 ms). `NatsKvBucket.get_latest_many(batched=True)` reads keys in batched
-  direct gets (NATS 2.11+; about 16 ms per 1,000 keys against 103 ms single gets), only on a connection granted
-  the body-carried direct get, which pods never are: the worker turns it on (its runner is an infrastructure
-  identity), a library caller does not, and an unanswered batch is probed for a second and the bucket read a
-  key at a time after. Its receiver declares the new `request-reply` sender posture
-  (`threetears.enforcement.sender_posture`: a fresh `new_inbox()` subject, replying to the request sent beside it,
-  ended with it), which holds because no principal's grants reach another connection's inbox
-  (`tests/enforcement/test_inbox_prefixes_are_private.py`).
 
 ### core, epoch, nats: the epoch change log keyed by tenant
 
