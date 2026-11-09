@@ -866,7 +866,13 @@ class DuckDBBackend:
         return columns, [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
 
     def _insert_rows(
-        self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+        self,
+        connection: Any,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        primary_key: str | tuple[str, ...],
+        *,
+        scope: tuple[str, list[Any]] | None = None,
     ) -> None:
         """insert or replace ``rows`` in one columnar statement on ``connection``; the caller holds the lock.
 
@@ -878,13 +884,17 @@ class DuckDBBackend:
         :ptype rows: Sequence[Mapping[str, Any]]
         :param primary_key: pk column name or tuple of pk column names
         :ptype primary_key: str | tuple[str, ...]
+        :param scope: the condition naming the one scope every row is of, and its parameters, when the table's
+            key includes the scope column: a key-less table's rows of other scopes then cannot hold the rows'
+            keys, and are not read
+        :ptype scope: tuple[str, list[Any]] | None
         :return: nothing
         :rtype: None
         :raises ValueError: when the rows do not all name the same columns
         """
         columns, lists = self._serialized(table, rows, primary_key)
         if lists and lists[0] and table in self._keyless:
-            self._replace_keyless_rows(connection, table, columns, lists)
+            self._replace_keyless_rows(connection, table, columns, lists, scope=scope)
         elif lists and lists[0]:
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
@@ -894,7 +904,13 @@ class DuckDBBackend:
                 connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {select}", lists)  # noqa: S608
 
     def _replace_keyless_rows(
-        self, connection: Any, table: str, columns: Sequence[str], lists: Sequence[list[Any]]
+        self,
+        connection: Any,
+        table: str,
+        columns: Sequence[str],
+        lists: Sequence[list[Any]],
+        *,
+        scope: tuple[str, list[Any]] | None = None,
     ) -> None:
         """write serialized rows to a key-less table: the rows of the keys they name deleted, then they inserted;
         the caller holds the lock and the transaction.
@@ -907,6 +923,9 @@ class DuckDBBackend:
         :ptype columns: Sequence[str]
         :param lists: each column's values, serialized to its storage form, one row per key
         :ptype lists: Sequence[list[Any]]
+        :param scope: the condition naming the rows' one scope and its parameters, when the key includes the
+            scope column: the delete then reads that scope's rows, not the table's
+        :ptype scope: tuple[str, list[Any]] | None
         :return: nothing
         :rtype: None
         """
@@ -925,13 +944,21 @@ class DuckDBBackend:
         if arrow is not None:
             connection.register(source, arrow)
         try:
-            connection.execute(f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {joined}", bound)  # noqa: S608
+            if scope is None:
+                connection.execute(f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {joined}", bound)  # noqa: S608
+            else:
+                condition, params = scope
+                held = f"held.{condition}"
+                connection.execute(
+                    f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {held} AND {joined}",  # noqa: S608
+                    [*params, *bound],
+                )
             connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM {source}", bound)  # noqa: S608
         finally:
             if arrow is not None:
                 connection.unregister(source)
 
-    def _refuse_held_keys(self, table: str, chunk: str) -> None:
+    def _refuse_held_keys(self, table: str, chunk: str, *, scope: tuple[str, list[Any]] | None = None) -> None:
         """refuse rows about to be added to a key-less table (registered as ``chunk``) that name a key the table
         holds, or one key twice, as the table's key would; the caller holds the lock.
 
@@ -939,6 +966,10 @@ class DuckDBBackend:
         :ptype table: str
         :param chunk: the registered name of the rows
         :ptype chunk: str
+        :param scope: the condition naming the rows' one scope and its parameters, when the key includes the
+            scope column: only that scope's rows can hold their keys, so only they are read (a key-less table
+            has no index; the whole table was read for every chunk added)
+        :ptype scope: tuple[str, list[Any]] | None
         :return: nothing
         :rtype: None
         :raises duckdb.ConstraintException: naming the table and how many rows repeat a key
@@ -946,8 +977,11 @@ class DuckDBBackend:
         key = self._keyless[table]
         keys = ", ".join(quote_identifier(k) for k in key)
         joined = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
+        condition, params = scope if scope is not None else ("TRUE", [])
         held = self._db.execute(
-            f"SELECT count(*) FROM {quote_identifier(table)} AS held JOIN {chunk} AS given ON {joined}"  # noqa: S608
+            f"SELECT count(*) FROM (SELECT {keys} FROM {quote_identifier(table)} WHERE {condition}) AS held "  # noqa: S608
+            f"JOIN {chunk} AS given ON {joined}",
+            params,
         ).fetchone()[0]
         repeated = self._db.execute(f"SELECT count(*) - count(DISTINCT ({keys})) FROM {chunk}").fetchone()[0]  # noqa: S608
         if held or repeated:
@@ -1051,6 +1085,21 @@ class DuckDBBackend:
             extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
         )
         return int(count)
+
+    def _keyed_scope(self, replacement: PartitionReplacement) -> tuple[str, list[Any]] | None:
+        """the condition naming a replacement's scope, when its key-less table's key includes the scope column.
+
+        Only then are the replacement's rows (every one of that scope) sure to collide with no other scope's: a
+        key without the column may be held by a row of any scope, and the whole table is read.
+
+        :param replacement: the replacement
+        :ptype replacement: PartitionReplacement
+        :return: the condition and its parameters, or None
+        :rtype: tuple[str, list[Any]] | None
+        """
+        if replacement.column not in self._keyless.get(replacement.table, ()):
+            return None
+        return self._partition_filter(replacement.table, replacement.column, replacement.value)
 
     def _partition_filter(self, table: str, column: str, value: Any) -> tuple[str, list[Any]]:
         """the condition naming one scope of a table, and its parameter.
@@ -1334,13 +1383,21 @@ class DuckDBBackend:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
                             if replacement.table in self._keyless:
-                                self._refuse_held_keys(replacement.table, "_partition_chunk")
+                                self._refuse_held_keys(
+                                    replacement.table, "_partition_chunk", scope=self._keyed_scope(replacement)
+                                )
                             self._db.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _partition_chunk")  # noqa: S608
                         finally:
                             self._db.unregister("_partition_chunk")
                         written += replacement.arrow.num_rows
                     elif replacement.rows:
-                        self._insert_rows(self._db, replacement.table, replacement.rows, replacement.primary_key)
+                        self._insert_rows(
+                            self._db,
+                            replacement.table,
+                            replacement.rows,
+                            replacement.primary_key,
+                            scope=self._keyed_scope(replacement),
+                        )
                         written += len(replacement.rows)
                 self._db.execute("COMMIT")
                 committed = True

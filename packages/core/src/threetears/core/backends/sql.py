@@ -43,9 +43,11 @@ from urllib.request import url2pathname
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
+from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
     L3AnswerCutError,
+    L3Page,
     FileLoad,
     LoadFile,
     LoadingStore,
@@ -961,6 +963,19 @@ class SqlL3Backend:
                 await conn.execute(statement)
         _logger.info("table truncated", extra={"extra_data": {"table": table}})
 
+    async def analyze(self, table: str) -> None:
+        """refresh ``table``'s planner statistics: ``ANALYZE`` on a direct connection; nothing on the L3 rail,
+        whose broker analyses a loaded table itself once its loads settle (and refuses the statement from a pod).
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        if getattr(type(self._pool), "accepts_scoped_reads", False):
+            return
+        await self.execute(f"ANALYZE {_quote_ident(table)}")
+
     async def load_files(
         self,
         table: str,
@@ -1087,6 +1102,51 @@ class SqlL3Backend:
         )
         return result
 
+    async def fetch_page(self, query: str, *params: Any) -> L3Page:
+        """a keyset page's SELECT through the transport that may cut it: its rows, whether it was cut, its bytes.
+
+        On the rail, its own :meth:`NatsProxyL3Backend.fetch_page`; on a bound or direct connection, which cuts
+        nothing, :meth:`fetch`'s rows, never cut, at no stated size.
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the page
+        :rtype: L3Page
+        """
+        target, _ = self._target()
+        # looked up on the class: a mock pool's instance answers any name it is asked
+        paged = getattr(target, "fetch_page") if target is self._pool and hasattr(type(target), "fetch_page") else None
+        if paged is None:
+            return L3Page(rows=await self.fetch(query, *params), truncated=False, reply_bytes=0)
+        page: L3Page = await paged(query, *params)
+        return page
+
+    async def fetch_arrow_page(self, query: str, *params: Any, types: Mapping[str, Any]) -> L3Page:
+        """:meth:`fetch_page`, its rows one Arrow table (:func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow`).
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the page, its rows a ``pyarrow.Table``
+        :rtype: L3Page
+        """
+        target, _ = self._target()
+        paged = (
+            getattr(target, "fetch_arrow_page")
+            if target is self._pool and hasattr(type(target), "fetch_arrow_page")
+            else None
+        )
+        if paged is None:
+            rows = await l3_fetch_arrow(self, query, *params, types=types)
+            return L3Page(rows=rows, truncated=False, reply_bytes=0)
+        page: L3Page = await paged(query, *params, types=types)
+        return page
+
     @property
     def rows_per_statement(self) -> int | None:
         """the most rows the wrapped transport answers one statement, or None when it never cuts.
@@ -1186,6 +1246,61 @@ class SqlL3Backend:
             extra={"extra_data": {"table": table, "keys": len(named), "statements": statements}},
         )
         return len(named)
+
+    async def fetch_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """the rows of a schema-registered table named by whole ``keys``, each read as :meth:`fetch_one` reads it.
+
+        ``max_rows`` keys a statement (:func:`~threetears.core.backends.schema_sql.build_whole_key_select_sql`),
+        led by the key: not a statement a key. A key no row holds is left out.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names; at least one
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the pool
+        :ptype conn: Any
+        :return: each held row, under its key as ``keys`` names it
+        :rtype: dict[tuple[Any, ...], dict[str, Any]]
+        :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one, a key is not
+            as wide as the table's key, or a key column has no array form
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"fetch_many needs the schema of {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        key_columns = [schema.column(name) for name in schema.pk_columns]
+        # each key as the statement binds it, and as the caller named it
+        named: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        for key in keys:
+            if len(key) != len(key_columns):
+                raise ValueError(
+                    f"{table}: a key to read has {len(key)} values where the table's key has {len(key_columns)}"
+                )
+            bound = tuple(
+                schema_sql.normalize_write_value(column, value) for column, value in zip(key_columns, key, strict=True)
+            )
+            named[bound] = tuple(key)
+        found: dict[tuple[Any, ...], dict[str, Any]] = {}
+        sql = schema_sql.build_whole_key_select_sql(schema)
+        bounds = list(named)
+        for start in range(0, len(bounds), max_rows):
+            batch = bounds[start : start + max_rows]
+            for row in await self._fetch(sql, *(list(column) for column in zip(*batch, strict=True)), conn=conn):
+                read = dict(row)
+                bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
+                if bound in named:
+                    found[named[bound]] = schema_sql.coerce_row(schema, read)
+        return found
 
     async def fetch_led_by(
         self,
@@ -1391,9 +1506,11 @@ class SqlL3Backend:
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty).
 
-        A table whose schema is registered is read in pages of its primary key under the transport's row cap
+        A table whose schema is registered is read in pages under the transport's row cap
         (:attr:`rows_per_statement`), so a scan of more rows than the L3 rail answers a statement reads every one;
-        any other is one statement, which the rail refuses rather than cut when it matches more.
+        any other is one statement, which the rail refuses rather than cut when it matches more. The pages are in
+        the order of the declared index the filters lead (:meth:`TableSchema.keyset_order
+        <threetears.core.collections.schema_backed.TableSchema.keyset_order>`), so each reads about its own rows.
         """
         schema = self._schemas.get(table)
         cap = self.rows_per_statement
@@ -1401,7 +1518,7 @@ class SqlL3Backend:
             read = await read_keyset_pages(
                 self,
                 f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
-                list(schema.pk_columns),
+                list(schema.keyset_order(filters or {})),
                 where=dict(filters or {}),
                 page_size=cap - 1,
             )
@@ -1418,6 +1535,12 @@ class SqlL3Backend:
             result = await conn.execute(query, *params)
             return result if isinstance(result, str) else ""
         return await self.execute(query, *params)
+
+    async def _fetch(self, query: str, *params: Any, conn: Any = None) -> list[dict[str, Any]]:
+        """Fetch rows on ``conn`` when supplied (transactional override), else the pool."""
+        if conn is not None:
+            return [dict(row) for row in await conn.fetch(query, *params)]
+        return await self.fetch(query, *params)
 
     async def _fetchrow(self, query: str, *params: Any, conn: Any = None) -> dict[str, Any] | None:
         """Fetch one row on ``conn`` when supplied (transactional override), else the pool."""

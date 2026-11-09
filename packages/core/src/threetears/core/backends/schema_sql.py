@@ -60,6 +60,7 @@ __all__ = [
     "build_select_column_list",
     "build_where_pk",
     "build_whole_key_delete_sql",
+    "build_whole_key_select_sql",
     "bulk_batches",
     "bulk_insert_batches",
     "bulk_insert_row_sql",
@@ -889,6 +890,31 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
         f"DELETE FROM {schema.name} WHERE {lead} = ANY({arrays[0]}) "
         f"AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
     )
+
+
+def build_whole_key_select_sql(schema: TableSchema) -> str:
+    """build one SELECT of the rows named by whole keys, as :func:`build_fetch_sql` reads one: one array a key column.
+
+    ``SELECT <columns> FROM t WHERE <k1> = ANY($1::<t1>[])``, and for a key of more columns
+    ``AND (<k1>, <k2>, ...) IN (SELECT * FROM unnest($1::<t1>[], $2::<t2>[], ...))``, as
+    :func:`build_whole_key_delete_sql` names its rows: led by the key, so a hash-sharded table is looked up
+    at each key and never read whole.
+
+    :param schema: table schema; each key column with an array form
+    :ptype schema: TableSchema
+    :return: parameterized SELECT SQL
+    :rtype: str
+    :raises ValueError: when a key column has no array form
+    """
+    arrays = [
+        f"${index}::{_required_array_type(schema, name)}" for index, name in enumerate(schema.pk_columns, start=1)
+    ]
+    lead = as_written(schema.pk_columns[0])
+    where = f"{lead} = ANY({arrays[0]})"
+    if len(arrays) > 1:
+        key = ", ".join(as_written(name) for name in schema.pk_columns)
+        where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
+    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {where}"
 
 
 def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:

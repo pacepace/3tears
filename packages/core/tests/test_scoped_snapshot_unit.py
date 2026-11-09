@@ -5144,7 +5144,10 @@ class _PartitionedL3(_L3):
             return await super().fetch(sql, *args)
         order = [part.strip().strip('"') for part in sql.split("ORDER BY", 1)[1].split("LIMIT")[0].split(",")]
         limit = int(sql.rsplit("LIMIT", 1)[1])
-        pinned = f'"{self.partition}" = ' in sql.split("ORDER BY", 1)[0]
+        # the filters come before the cursor, whose leading bound is its first ``>=`` (its expansion names
+        # each key column ``= $n`` too)
+        filters = sql.split("ORDER BY", 1)[0].split(" >= ", 1)[0]
+        pinned = f'"{self.partition}" = ' in filters
         state, value = args[0], (args[1] if pinned else None)
         cursor = tuple(args[2 if pinned else 1 :]) or None
         # a set of values (= ANY($2)): any of them

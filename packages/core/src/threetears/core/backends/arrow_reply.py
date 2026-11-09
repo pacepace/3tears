@@ -55,14 +55,17 @@ class _RailReply:
     :ivar success: the reply's ``success``
     :ivar rows: its rows, one column a type asked for, in that order (empty for a failed reply)
     :ivar truncated: the reply's ``truncated``: the broker answered fewer rows than the statement matched
+    :ivar reply_cap: the reply's ``max_reply_bytes``: the bytes the broker cuts a read's reply at, when it
+        cuts by bytes; None from a broker that cuts at its row cap
     """
 
-    __slots__ = ("rows", "success", "truncated")
+    __slots__ = ("reply_cap", "rows", "success", "truncated")
 
-    def __init__(self, success: bool, rows: Any, truncated: bool = False) -> None:
+    def __init__(self, success: bool, rows: Any, truncated: bool = False, reply_cap: int | None = None) -> None:
         self.success = success
         self.rows = rows
         self.truncated = truncated
+        self.reply_cap = reply_cap
 
 
 def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
@@ -84,7 +87,12 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
         raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
     row_type = pa.struct([pa.field(name, kind) for name, kind in types.items()])
     schema = pa.schema(
-        [pa.field("success", pa.bool_()), pa.field("rows", pa.list_(row_type)), pa.field("truncated", pa.bool_())]
+        [
+            pa.field("success", pa.bool_()),
+            pa.field("rows", pa.list_(row_type)),
+            pa.field("truncated", pa.bool_()),
+            pa.field("max_reply_bytes", pa.int64()),
+        ]
     )
     try:
         parsed = pa_json.read_json(
@@ -106,7 +114,8 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
                         f"text column {name!r} holds the rail's bytes mark, which fetch answers as bytes"
                     )
     truncated = parsed.num_rows == 1 and bool(parsed.column("truncated")[0].as_py())
-    return _RailReply(success, rows, truncated)
+    cap = parsed.column("max_reply_bytes")[0].as_py() if parsed.num_rows == 1 else None
+    return _RailReply(success, rows, truncated, reply_cap=cap if isinstance(cap, int) and cap > 0 else None)
 
 
 def _rail_value(value: Any, kind: Any) -> Any:

@@ -196,6 +196,33 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         f"ON {owner}.{quote_identifier(note_table(index))} (key_text, table_name)"
         for index in range(NOTE_RING_SIZE)
     )
+    # a table's notes since a time (the write-mark reconciler's read, every few seconds a marked table): led by the
+    # table, then in time, so the read touches that table's recent notes and no other's (without it each read
+    # scanned the whole note table). It carries the columns the read answers, so the read never visits the table:
+    # on YugabyteDB a visit is a second lookup a note, several times the read's cost. On YugabyteDB the first
+    # column is hashed and noted_at a range under it. Created IF NOT EXISTS with the rest, so a ring installed
+    # before it gains it at the next install.
+    by_table = tuple(
+        f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_table')} "
+        f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) "
+        "INCLUDE (key_text, keys, columns, tenant)"
+        for index in range(NOTE_RING_SIZE)
+    )
+    # the few notes the keeper's passes look for among the many, each kept in an index of its own so a look reads
+    # those and no other: a table's whole-table notes (the scrub's "is this table noted whole", the restore's
+    # whole tables and the rows they cover), and the notes written without a cached slot (counted at each switch).
+    # Partial, so they hold only those notes and cost the many nothing.
+    sparse = tuple(
+        statement
+        for index in range(NOTE_RING_SIZE)
+        for statement in (
+            f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_whole')} "
+            f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) INCLUDE (tenant) "
+            "WHERE key_text IS NULL",
+            f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_ring_read')} "
+            f"ON {owner}.{quote_identifier(note_table(index))} (table_name) WHERE ring_read",
+        )
+    )
     marks = (
         f"CREATE TABLE IF NOT EXISTS {owner}.{quote_identifier(MARKS_TABLE)} ("
         "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
@@ -204,6 +231,8 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
     return (
         *tables,
         *indexes,
+        *by_table,
+        *sparse,
         marks,
         f"CREATE TABLE IF NOT EXISTS {ring} ("
         "id SMALLINT PRIMARY KEY CHECK (id = 1), "

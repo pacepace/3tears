@@ -255,8 +255,10 @@ def test_the_trigger_fires_per_row_and_marks_a_transaction_once_into_the_one_que
     assert "AFTER INSERT OR UPDATE OR DELETE" in sql
     assert "FOR EACH ROW" in sql
     assert '"platform"."threetears_mark_collection_write"()' in sql
-    table, function = write_marks_ddl("platform")
+    table, function, index = write_marks_ddl("platform")
     assert '"platform"."collection_write_marks"' in table
+    # the broker reads a commit's tables' marks by table, not the whole queue
+    assert index.endswith('ON "platform"."collection_write_marks" (table_name, id)')
     assert 'INSERT INTO "platform"."collection_write_marks"' in function
     assert "current_setting('threetears.write_mark.t' || TG_RELID::text, true) = '1'" in function
     assert "set_config('threetears.write_mark.t' || TG_RELID::text, '1', true)" in function
