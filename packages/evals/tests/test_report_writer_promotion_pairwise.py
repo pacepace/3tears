@@ -7,6 +7,12 @@ by a policy over which slot holds the candidate's page. The pairwise pass runs a
 job's status, as the action hands it what ``job_poll`` answers. Every primary verdict a branch rests on is checked
 against the bounded test and interval on the shares the test computes from the policy, so the branch is the
 computation's, not the pass's word. No model is called.
+
+With two editors (a candidate whose ``editor.md`` differs), the decision's sentence never names a reading each arm's
+own editor decides: a keep only must-fix findings open regressed on says why the control is kept by what the primary
+came to (run 5's shape) or, beside a preferred candidate, that only the editors' readings stand in its way; a compared
+reading regressed is still named, and under one editor the sentence is as it was. A caller that does not say is
+answered for the arms' recorded skills: the toy host's arms record none, so one editor.
 """
 
 from __future__ import annotations
@@ -54,7 +60,11 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops import JobsStarted, JobStatus, OpsHost, await_job
-from threetears.evals.ops.report_writer.writer_contract import FINISHED_MEASURE, MUST_FIX_OPEN_MEASURE
+from threetears.evals.ops.report_writer.writer_contract import (
+    FINISHED_MEASURE,
+    MUST_FIX_OPEN_MEASURE,
+    uncompared_readings,
+)
 from threetears.evals.ops.report_writer.writer_pairwise import (
     PREFERRED_HEADING,
     WriterPairwiseReport,
@@ -488,6 +498,114 @@ async def test_a_primary_not_separated_states_the_held_out_cases_that_would_sett
     assert read.cases_to_settle == expected
     assert f"| Held-out cases like these that would settle the primary | {expected} |" in read.readout
     assert read.decision == "undecided", read.why
+
+
+# --- two editors ---------------------------------------------------------------------------------------------------
+
+#: Must-fix findings open, far more on the candidate on every document: the reading a stricter editor moves.
+_MORE_MUST_FIX: tuple[WriterMeasures, WriterMeasures] = (
+    {document: {MUST_FIX_OPEN_MEASURE: 0.5 * (index % 2)} for index, document in enumerate(TOYHOST_DOCUMENTS)},
+    {document: {MUST_FIX_OPEN_MEASURE: 3.0 + 2.0 * (index % 2)} for index, document in enumerate(TOYHOST_DOCUMENTS)},
+)
+
+
+def _read_editors(host: EvalHost, campaign_id: str, status: JobStatus, *, one_editor: bool) -> WriterPromotion:
+    """The read, told whether the candidate and the control ran one ``editor.md``."""
+    return off_loop(
+        writer_promotion,
+        host,
+        campaign_id,
+        TOYHOST_SCOPE,
+        candidate=CANDIDATE,
+        pairwise_job=status,
+        one_editor=one_editor,
+    )
+
+
+async def test_with_two_editors_a_keep_only_an_editors_own_reading_decides_names_the_primary_instead() -> None:
+    """Run 5's shape: the primary cannot tell the arms apart, and only must-fix findings open, which each arm's own
+    editor decides, regressed. The rule keeps the control; its sentence says what the primary came to and never names
+    the reading the criterion's table reports not compared."""
+    assert _computed(ties) == ("not_separated", "no_margin")
+    host, campaign_id = _campaign(ties, writer=_MORE_MUST_FIX)
+    read = _read_editors(host, campaign_id, await _pass(host, campaign_id), one_editor=False)
+
+    assert _outcomes(read, "contrast")[MUST_FIX_OPEN_MEASURE] == "regressed"
+    assert read.primary is not None and read.primary.outcome == "not_separated"
+    assert read.decision == "keep" and not read.one_editor
+    assert read.why == (
+        f"Keep the control: {CANDIDATE} was not shown better than {read.control}; on the primary reading the evidence "
+        "cannot tell them apart."
+    )
+    uncompared = uncompared_readings(one_editor=False)
+    assert MUST_FIX_OPEN_MEASURE in uncompared
+    assert all(verdict.heading not in read.why for verdict in read.verdicts if verdict.name in uncompared)
+
+
+async def test_with_one_editor_an_editors_own_reading_regressed_keeps_the_control_by_name_as_before() -> None:
+    host, campaign_id = _campaign(ties, writer=_MORE_MUST_FIX)
+    read = _read_editors(host, campaign_id, await _pass(host, campaign_id), one_editor=True)
+
+    (must_fix,) = [verdict for verdict in read.verdicts if verdict.name == MUST_FIX_OPEN_MEASURE]
+    assert must_fix.outcome == "regressed"
+    assert read.decision == "keep" and read.one_editor
+    assert read.why == f"Keep the control: {CANDIDATE} is shown worse than {read.control} on {must_fix.heading}."
+    assert uncompared_readings(one_editor=True) == ()
+    # Unsaid, the toy host's arms record no skill level, so they read as one editor and the sentence is the same.
+    unsaid = _read(host, campaign_id, await _pass(host, campaign_id))
+    assert unsaid.one_editor and unsaid.why == read.why
+
+
+def _with_more_must_fix(writer: tuple[WriterMeasures, WriterMeasures]) -> tuple[WriterMeasures, WriterMeasures]:
+    """Each arm's measures with :data:`_MORE_MUST_FIX` landed beside them, control first."""
+    (control, candidate), (more_control, more_candidate) = writer, _MORE_MUST_FIX
+    return (
+        {document: {**control[document], **more_control[document]} for document in TOYHOST_DOCUMENTS},
+        {document: {**candidate[document], **more_candidate[document]} for document in TOYHOST_DOCUMENTS},
+    )
+
+
+async def test_with_two_editors_a_preferred_candidate_kept_only_by_an_editors_own_reading_says_so() -> None:
+    """The likeliest real case: the judge prefers the candidate, every guardrail holds, and only must-fix findings
+    open regressed. The rule keeps the control; the sentence names no uncompared reading as the candidate's fault."""
+    host, campaign_id = _campaign(
+        prefers_the_candidate, writer=_with_more_must_fix(_leaks(0.0, 0.0)), measures=[_LEAKS]
+    )
+    read = _read_editors(host, campaign_id, await _pass(host, campaign_id), one_editor=False)
+
+    assert read.primary is not None and read.primary.outcome == "improved"
+    assert _outcomes(read, "guardrail") == {_LEAKS.name: "held"}
+    assert _outcomes(read, "contrast")[MUST_FIX_OPEN_MEASURE] == "regressed"
+    assert read.decision == "keep"
+    assert read.why == (
+        f"Keep the control: the judge prefers {CANDIDATE}'s pages to {read.control}'s on the primary reading, and only "
+        "readings each arm's own editor decides, which are not compared, stand in its way."
+    )
+
+
+async def test_with_two_editors_a_preferred_candidate_with_a_guardrail_unheld_is_kept_on_the_guardrail() -> None:
+    host, campaign_id = _campaign(
+        prefers_the_candidate, writer=_with_more_must_fix(_leaks(0.0, 0.5)), measures=[_LEAKS]
+    )
+    read = _read_editors(host, campaign_id, await _pass(host, campaign_id), one_editor=False)
+
+    assert _outcomes(read, "guardrail") == {_LEAKS.name: "undecided"}
+    assert read.decision == "keep"
+    assert read.why == (
+        f"Keep the control: the judge prefers {CANDIDATE}'s pages on the primary reading, but 1 of 1 guardrails are "
+        "not shown held."
+    )
+
+
+async def test_with_two_editors_a_compared_reading_regressed_is_named_and_the_editors_own_is_not() -> None:
+    host, campaign_id = _campaign(prefers_the_candidate, _TRADE, writer=_MORE_MUST_FIX)
+    read = _read_editors(host, campaign_id, await _pass(host, campaign_id), one_editor=False)
+
+    regressed = [verdict for verdict in read.verdicts if verdict.kind == "contrast" and verdict.outcome == "regressed"]
+    compared = [verdict.heading for verdict in regressed if verdict.name != MUST_FIX_OPEN_MEASURE]
+    assert compared and MUST_FIX_OPEN_MEASURE in {verdict.name for verdict in regressed}
+    assert read.decision == "keep"
+    assert read.why == f"Keep the control: {CANDIDATE} is shown worse than {read.control} on {', '.join(compared)}."
 
 
 # --- the readout ---------------------------------------------------------------------------------------------------

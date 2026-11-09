@@ -117,10 +117,8 @@ from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.ops.report_writer.writer_contract import (
     ANALYST_ROUNDS_MEASURE,
     BOUNCES_MEASURE,
-    FINISHED_MEASURE,
-    MUST_FIX_OPEN_MEASURE,
-    SHOULD_FIX_OPEN_MEASURE,
     EffortWord,
+    uncompared_readings,
 )
 from threetears.evals.ops.report_writer.writer_pairwise import (
     StopWhen,
@@ -551,9 +549,6 @@ class Requirement:
     holds: bool | None
 
 
-#: The readings each arm's own editor decides: with two editors they measure two instruments, so none is compared.
-EDITOR_READINGS: Final = (MUST_FIX_OPEN_MEASURE, FINISHED_MEASURE, SHOULD_FIX_OPEN_MEASURE)
-
 #: What the criterion's table says of an editor's reading when the arms' editors differ.
 NOT_COMPARED: Final = "not compared: each arm's own editor decides it"
 
@@ -630,10 +625,13 @@ def pass_criterion(
     separate, since a variant that changes bounces broke the format rather than the writing. A candidate expected
     better asks the mirror: ``promote``, ``improved``, its interval above 0.
 
-    With two editors (a candidate skill whose ``editor.md`` differs), the readings in :data:`EDITOR_READINGS` measure
-    two instruments: each is reported, not compared. The read's decision folds them in, so in its place the criterion
-    asks that no other gated reading regressed and every guardrail held; and since a stricter editor leaves draft
-    banners the judge sees, the preference over the pairs both stored finished must point the primary's way.
+    With two editors (a candidate skill whose ``editor.md`` differs), each arm's own editor's readings measure two
+    instruments: each is reported, not compared. Which they are is
+    :func:`~threetears.evals.ops.report_writer.writer_contract.uncompared_readings`, the one answer the read's sentence
+    reads too, so the sentence never names a reading this table reports not compared. The read's decision folds them
+    in, so in its place the criterion asks that no other gated reading regressed and every guardrail held; and since a
+    stricter editor leaves draft banners the judge sees, the preference over the pairs both stored finished must point
+    the primary's way.
 
     :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
     :param runs: Each arm's run summary, by arm, the control first.
@@ -647,6 +645,7 @@ def pass_criterion(
     if not one_editor and not better:
         raise ValueError(f"the {variant.name} variant is expected worse, and such a variant runs the control's editor")
     decision, outcome = ("promote", "improved") if better else ("keep", "regressed")
+    uncompared = uncompared_readings(one_editor=one_editor)
     primary = read.primary
     bounces = next((verdict for verdict in read.verdicts if verdict.name == BOUNCES_MEASURE), None)
     reliability = read.reliability
@@ -673,7 +672,7 @@ def pass_criterion(
         *(
             (Requirement(f"the read answers {decision}", read.decision, read.decision == decision),)
             if one_editor
-            else _two_editor_rows(read)
+            else _two_editor_rows(read, uncompared)
         ),
         Requirement(
             f"the primary reading reads {outcome}",
@@ -700,18 +699,18 @@ def pass_criterion(
             "not read" if bounces is None else _outcome_words(bounces.outcome),
             bounces is None or bounces.outcome not in ("improved", "regressed"),
         ),
-        *(() if one_editor else _editor_rows(read)),
+        *(() if one_editor else _editor_rows(read, uncompared)),
     )
     return Criterion(requirements, read.cases_to_settle, variant.noun, variant.expects)
 
 
-def _two_editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
-    """With two editors, what stands in for the read's decision: no gated reading but the editors' own regressed and
-    every guardrail held; and the preference over the pairs both stored finished pointing the primary's way."""
+def _two_editor_rows(read: WriterPromotion, uncompared: Sequence[str]) -> tuple[Requirement, ...]:
+    """With two editors, what stands in for the read's decision: no gated reading but the uncompared ones regressed
+    and every guardrail held; and the preference over the pairs both stored finished pointing the primary's way."""
     regressed = [
         verdict.heading
         for verdict in read.verdicts
-        if verdict.kind == "contrast" and verdict.outcome == "regressed" and verdict.name not in EDITOR_READINGS
+        if verdict.kind == "contrast" and verdict.outcome == "regressed" and verdict.name not in uncompared
     ]
     guardrails = [verdict for verdict in read.verdicts if verdict.kind == "guardrail"]
     unheld = [verdict.heading for verdict in guardrails if verdict.outcome != "held"]
@@ -741,11 +740,11 @@ def _two_editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
     )
 
 
-def _editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
-    """Each reading an arm's own editor decides, reported and not compared."""
+def _editor_rows(read: WriterPromotion, uncompared: Sequence[str]) -> tuple[Requirement, ...]:
+    """Each uncompared reading (each arm's own editor's), reported and not compared."""
     return tuple(
         Requirement(verdict.heading, _outcome_words(verdict.outcome), None)
-        for name in EDITOR_READINGS
+        for name in uncompared
         for verdict in read.verdicts
         if verdict.name == name
     )
@@ -1103,6 +1102,8 @@ async def _measured(
         result.scope_id,
         candidate=variant.name,
         pairwise_job=status,
+        # The eval said whether the candidate runs the control's editor; the read is told the same.
+        one_editor=result.one_editor[variant.name],
     )
     return result, WriterPairwiseReport.model_validate(status.result), read
 
@@ -1194,9 +1195,8 @@ async def acceptance(
         with_documents=with_documents,
         report=report,
         read=read,
-        criterion=pass_criterion(
-            read, result.arms, report, variant=chosen, one_editor=candidate.editor().digest == shipped.editor().digest
-        ),
+        # The read was told whether the arms ran one editor, so the criterion's table and its sentence read one answer.
+        criterion=pass_criterion(read, result.arms, report, variant=chosen, one_editor=read.one_editor),
         cap_usd=cap_usd,
         editor_model=editor_model,
         variant=chosen,
