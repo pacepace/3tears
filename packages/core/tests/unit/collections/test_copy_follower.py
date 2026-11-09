@@ -320,9 +320,10 @@ async def test_the_keyed_read_joins_the_keys_to_the_table_on_its_key(world: Any)
 
     async def recording(sql: str, *params: Any) -> list[dict[str, Any]]:
         asked.append(sql)
-        return await fetch(sql, *params)
+        rows: list[dict[str, Any]] = await fetch(sql, *params)
+        return rows
 
-    l3.fetch = recording  # type: ignore[method-assign]
+    l3.fetch = recording
     l3.put([("VA", 1, 5)])
     log.commit([("VA", 1)])
     lock.version += 1
