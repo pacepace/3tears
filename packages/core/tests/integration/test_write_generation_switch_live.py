@@ -21,14 +21,14 @@ from threetears.core.data.migrations.change_notes import give_noted_tables_their
 from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.data.migrations.write_generation_switch import switch_off, write_generation_triggers_on
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
-from threetears.core.ddl.change_notes import NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER, change_notes_ddl, note_function_name
+from threetears.core.ddl.change_notes import NOTE_TRIGGERS, change_notes_ddl, note_function_name
 from threetears.core.ddl.write_marks import WRITE_MARK_TRIGGER
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 pytestmark = pytest.mark.integration
 
 _TABLE = "switched_widgets"
-_ON = {WRITE_MARK_TRIGGER, NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER}
+_ON = {WRITE_MARK_TRIGGER, *NOTE_TRIGGERS}
 
 
 async def _schema(conn: asyncpg.Connection, schema: str) -> ConnectionSession:

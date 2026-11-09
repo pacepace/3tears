@@ -26,7 +26,7 @@ so a bulk raw-SQL write with one small epoch cannot pile notes behind the log's 
 the notes a page at a time, sized in the database, so the keeper's memory follows one page, not the
 coverage. When a switch is held up (its wait, an emptying) and the coverage outgrows the budget, the
 restore puts back its newest part instead (below). It
-empties the oldest with batched deletes (:meth:`ChangeNoteKeeper._empty_slot`), never ``TRUNCATE``. The ring
+empties the oldest with batched deletes (:meth:`ChangeNoteKeeper.empty_slot`), never ``TRUNCATE``. The ring
 row in L3 names the current table; only the keeper writes it, once per switch.
 
 **No save reads the ring row.** Each writing process keeps a cached copy of the current slot
@@ -117,6 +117,7 @@ from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
     MARKS_TABLE,
     NOTE_RING_SIZE,
+    NOTE_TRIGGER,
     NOTE_TRIGGERS,
     NOTE_TRUNCATE_TRIGGER,
     legacy_truncate_trigger_drop_sql,
