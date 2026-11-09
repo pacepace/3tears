@@ -54,8 +54,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, reader_name, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, criterion_ruler, format_figure, reader_name, resolve
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
@@ -66,7 +66,6 @@ from threetears.evals.analysis.report_margins import (
 )
 
 __all__ = [
-    "criterion_ruler",
     "GateCheck",
     "GateFinding",
     "GateStatus",
@@ -170,32 +169,6 @@ def _placed(report_input: ReportInput, reason: str, task: str | None, cell: str 
 _MONEY_SCALES = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
 
 
-def criterion_ruler(report_input: ReportInput, criterion: Criterion, line: Figure) -> tuple[MoneyRuler, int]:
-    """The ruler a money criterion's figures are stated on, where its count is named once beside them (a gate's
-    reason, a gate row's line): the one owner of money's scale over the measure's every arm's figure and the line, per
-    1,000 of what it counts at least, never a per-1,000 mark.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param criterion: The criterion, on a money measure.
-    :ptype criterion: Criterion
-    :param line: Its threshold's figure (``criteria.<id>.threshold``).
-    :ptype line: Figure
-    :return: The ruler, and the count its measure's own unit is per.
-    :rtype: tuple[MoneyRuler, int]
-    """
-    own = _SCALE_COUNTS[line.scale]
-    measure = report_input.measures.get(criterion.measure)
-    amounts = [
-        float(stat.mean) for stat in (measure.per_arm.values() if measure is not None else ()) if stat.mean is not None
-    ]
-    return money_ruler([*amounts, float(criterion.threshold)], per=own, start=max(own, 1000)), own
-
-
-#: How many of what it counts a figure on each dollar scale is per.
-_SCALE_COUNTS = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}
-
-
 def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
     if figure.ci is not None:
         return figure.ci
@@ -204,15 +177,15 @@ def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
     return None
 
 
-def _spread(line: Figure, figure: CriterionFigure) -> str:
+def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
     """The figure's interval as a reason states it after the figure: ``±4.4``, ``interval 85.6–94.4%``, or ``derived
     interval 89.8–90.4%`` where code derived it from the cells (the figure's ``derived``)."""
     if figure.ci is not None:
         words = "derived interval " if figure.derived else "interval "
-        return words + format_figure(replace(line, kind="interval", value=figure.ci))
+        return words + format_figure(replace(line, kind="interval", value=figure.ci), forms=forms)
     assert figure.half_width is not None
     width = replace(line, value=figure.half_width)
-    return "±" + format_figure(width, ("pts", "abs") if line.scale in _RATE_SCALES else ())
+    return "±" + format_figure(width, ("pts", "abs") if line.scale in _RATE_SCALES else (), forms=forms)
 
 
 def _read(
@@ -242,13 +215,16 @@ def _read(
                 spread = f" ±{ruler.spell(float(figure.half_width or 0))}"
             return "borderline", f"{name} {ruler.spell(figure.value)}{spread}"
         return "pass", ""
-    stated = format_figure(replace(line, value=figure.value))
+    if meets and not borderline:
+        return "pass", ""
+    # A reason is a gate check's sentence, read off any page, so it states each figure in the forms its input's page
+    # would print it in.
+    forms = PageForms.of(report_input)
+    stated = format_figure(replace(line, value=figure.value), forms=forms)
     if not meets:
-        return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line)}"
-    if borderline:
-        separator = ", " if figure.ci is not None else " "
-        return "borderline", f"{name} {stated}{separator}{_spread(line, figure)}"
-    return "pass", ""
+        return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line, forms=forms)}"
+    separator = ", " if figure.ci is not None else " "
+    return "borderline", f"{name} {stated}{separator}{_spread(line, figure, forms)}"
 
 
 def gate_findings(

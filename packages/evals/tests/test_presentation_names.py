@@ -64,6 +64,7 @@ from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import masthead_parts
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.doc_page.model import DocFinding
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import is_figure_key, render
 from threetears.evals.analysis.report.model import (
     CampaignReport,
@@ -476,7 +477,7 @@ def test_no_review_finding_prints_an_engine_key_or_a_claim_s_id() -> None:
     key = next(
         key for key in ("control.name", "aspect.name", "meta.campaign", "meta.run_date") if _resolves(key, report_input)
     )
-    value = render(f"{{{key}}}", report_input, {})
+    value = render(f"{{{key}}}", report_input, {}, forms=PageForms.of(report_input))
     planted = ReportFinding.model_validate(
         {
             "claim": doc.claims[0].id,
@@ -526,7 +527,7 @@ def _recorded_findings() -> list[DocFinding]:
 
 def _resolves(key: str, report_input: ReportInput) -> bool:
     try:
-        render(f"{{{key}}}", report_input, {})
+        render(f"{{{key}}}", report_input, {}, forms=PageForms.of(report_input))
     except UnresolvableReference:
         return False
     return True

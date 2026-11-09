@@ -128,7 +128,7 @@ def test_the_weakest_margins_worst_case_is_read_on_the_corrected_interval_and_sa
     plain_worst, corrected_worst = float(reading.within_interval[0]), float(contrast.interval[0]) * 100
     assert corrected_worst < plain_worst  # the corrected interval reaches further (10.8 against 12.6 on Kairo)
     assert margin.corrected and margin.value == pytest.approx(corrected_worst)
-    said = render("{weakest.interval}", held, {})
+    said = render("{weakest.interval}", held, {}, forms=PageForms.of(held))
     assert said.startswith("the multiplicity-corrected 99.69% interval")
 
 

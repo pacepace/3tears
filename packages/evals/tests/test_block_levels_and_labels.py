@@ -38,6 +38,7 @@ from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigu
 from threetears.evals.kernel.numbers import format_number, group_thousands, money_form
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import format_figure, price_frontier, resolve
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
@@ -150,7 +151,7 @@ def test_a_readings_level_key_prints_the_nominal_level_of_its_interval_never_its
     assert found, "no input holds a reading whose gain interval sits past the nominal level"
     for name, aspect, reading in found:
         figure = resolve(f"aspects.{aspect}.reading.{reading.arm}.level", _inputs()[name])
-        assert format_figure(figure) == _NOMINAL, (name, aspect, reading.arm)
+        assert format_figure(figure, forms=PageForms.of(_inputs()[name])) == _NOMINAL, (name, aspect, reading.arm)
         assert _NOMINAL != _stated(float(reading.gain_confidence or 0)), (name, aspect, reading.arm)
 
 
@@ -162,7 +163,9 @@ def test_two_pair_levels_that_differ_never_print_alike() -> None:
                 if pair.confidence is None:
                     continue
                 first, second = pair.arms
-                text = format_figure(resolve(f"aspects.{aspect.id}.pair.{first}.{second}.confidence", held))
+                text = format_figure(
+                    resolve(f"aspects.{aspect.id}.pair.{first}.{second}.confidence", held), forms=PageForms.of(held)
+                )
                 printed.setdefault(text, set()).add(round(float(pair.confidence), 12))
     assert len(printed) > 1, "every input's pairs sit at one level: the test reads no difference"
     assert all(len(levels) == 1 for levels in printed.values()), printed
@@ -180,7 +183,7 @@ def test_a_pairs_level_key_prints_the_level_as_the_input_states_it() -> None:
     for held, aspect, pair in found:
         first, second = pair.arms
         figure = resolve(f"aspects.{aspect}.pair.{first}.{second}.confidence", held)
-        assert format_figure(figure) == _stated(float(pair.confidence))
+        assert format_figure(figure, forms=PageForms.of(held)) == _stated(float(pair.confidence))
 
 
 def test_a_one_candidate_forest_prints_the_nominal_level_of_the_interval_it_draws() -> None:
@@ -190,7 +193,9 @@ def test_a_one_candidate_forest_prints_the_nominal_level_of_the_interval_it_draw
         held = _inputs()[name]
         block, chart = _forest(held, aspect, [reading.arm])
         assert block.level == chart.level == _NOMINAL, (name, aspect, reading.arm)
-        assert block.level == format_figure(resolve(f"aspects.{aspect}.reading.{reading.arm}.level", held))
+        assert block.level == format_figure(
+            resolve(f"aspects.{aspect}.reading.{reading.arm}.level", held), forms=PageForms.of(held)
+        )
         _drew_within(chart, held, aspect)
 
 
@@ -221,7 +226,12 @@ def test_a_reading_with_a_within_interval_and_no_gain_fields_draws_at_the_nomina
     block, chart = _forest(stripped, aspect_id, [reading.arm])
     assert block.level == chart.level == _NOMINAL
     _drew_within(chart, stripped, aspect_id)
-    assert format_figure(resolve(f"aspects.{aspect_id}.reading.{reading.arm}.level", stripped)) == _NOMINAL
+    assert (
+        format_figure(
+            resolve(f"aspects.{aspect_id}.reading.{reading.arm}.level", stripped), forms=PageForms.of(stripped)
+        )
+        == _NOMINAL
+    )
 
 
 def test_a_reading_with_gain_fields_and_no_within_interval_states_no_level() -> None:
@@ -269,7 +279,9 @@ def test_a_chart_refused_for_mixing_levels_names_each_level_as_its_key_prints_it
     refusals = [why for where, why in faults if where == "block.query" and "one interval level" in why]
     assert refusals, (name, faults)
     for contrast in (first, second):
-        printed = format_figure(resolve(f"contrast.{contrast.arm}.{contrast.measure}.level", mixed))
+        printed = format_figure(
+            resolve(f"contrast.{contrast.arm}.{contrast.measure}.level", mixed), forms=PageForms.of(mixed)
+        )
         assert printed == levels[contrast.arm]
         assert printed in refusals[0], (printed, refusals[0])
     with pytest.raises(RefusedInput):

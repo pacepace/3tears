@@ -59,7 +59,6 @@ from threetears.evals.analysis.report.parts.charting import (
     figure_interval,
     figure_kind,
     figure_stat,
-    figure_unit,
     money_words,
     missing_note,
     reference_line,
@@ -72,7 +71,7 @@ from threetears.evals.analysis.report.parts.charting import (
 )
 from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.figure_keys import cost_basis
+from threetears.evals.analysis.report.figure_keys import cost_basis, figure_unit
 from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,

@@ -45,6 +45,7 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.analysis.analyst.levers import LeverEffects, lever_effects
 from threetears.evals.analysis.errors import UnstatedFigure
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report_input import Measure, ReportInput, Stat
 from threetears.evals.kernel.errors import RefusedInput
@@ -575,7 +576,7 @@ def test_a_read_the_snapshot_cannot_answer_is_refused_naming_what_to_read_instea
 
 
 def test_the_grammar_teaches_the_lever_keys_on_a_page_of_their_own() -> None:
-    grammar = figure_key_grammar()
+    grammar = figure_key_grammar(forms_of=PageForms.of)
     for form in (
         "lever.<setting>.<from>.<to>.<measure>.<field>",
         "lever.<setting>.<from>.<to>.<measure>.<place>.<field>",

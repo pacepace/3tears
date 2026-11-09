@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.analysis.report.blocks import ChartBlock
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import reader_names, render
 from threetears.evals.analysis.report.html_parts import chart_html, escape, page_head, table_html
 from threetears.evals.analysis.report.md_parts import chart_lines, inert, one_line, table_lines
@@ -124,7 +125,7 @@ def drawn_charts(stored: StoredCharts, report_input: ReportInput) -> list[tuple[
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
 
     def written(text: str) -> str:
-        return render(text, report_input, names)
+        return render(text, report_input, names, forms=PageForms.of(report_input))
 
     drawn = [(spec, resolve_chart(spec, report_input, look, title=written(spec.title))) for spec in stored.summary]
     drawn += [

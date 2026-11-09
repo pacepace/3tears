@@ -23,6 +23,7 @@ from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import cost_basis, cost_ruler, literal_numbers, render, resolve
 from threetears.evals.analysis.report_gates import task_costs
 from threetears.evals.analysis.report_input import ReportInput
@@ -74,7 +75,7 @@ def test_a_pages_cost_reads_per_what_its_source_counts(name: str) -> None:
         assert basis.noun == REPLIES, "money per one thing, and the scoreboard's reply cost, is per reply"
     arm = next(arm.id for arm in held.arms if _resolves(f"cost_per_1k.{arm.id}", held))
     # Per 1,000, or per 1,000,000 where a cost is under a cent per 1,000 (#993: the ruler moves); per its own noun.
-    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
+    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}, forms=PageForms.of(held))
     # The count the one owner of money's scale moves the page's cost to (#993): per 1,000, or per 1,000,000 where a
     # cost is under a cent per 1,000; per its own noun.
     assert said.endswith(f" {per_count(basis.noun, cost_ruler(held).counted)}"), said
@@ -89,7 +90,7 @@ def test_a_counted_measures_own_figure_reads_per_what_its_label_counts(name: str
         arm = next((arm for arm, stat in measure.per_arm.items() if stat.mean is not None), None)
         if arm is None:
             continue  # its figures sit in slices alone, which the gate matrix and lattice tests read
-        said = render(f"{{measure.{key}.{arm}.mean|usd_per_1k}}", held, {})
+        said = render(f"{{measure.{key}.{arm}.mean|usd_per_1k}}", held, {}, forms=PageForms.of(held))
         noun = _label_noun(held, key)
         # The count the family's ruler moves to (#993): its every arm's mean, per 1,000 at least.
         own = 1000 if measure.unit == "usd_per_1k" else 1_000_000
@@ -165,7 +166,7 @@ def test_an_unstated_count_reads_neutral_and_the_basis_says_so() -> None:
     basis = cost_basis(bare)
     assert basis.source == cost_basis(held).source and not basis.stated and basis.noun == ""
     arm = next(arm.id for arm in bare.arms if _resolves(f"cost_per_1k.{arm.id}", bare))
-    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", bare, {})
+    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", bare, {}, forms=PageForms.of(bare))
     assert said.endswith("per 1,000 (unit not stated)") and "replies" not in said
 
 

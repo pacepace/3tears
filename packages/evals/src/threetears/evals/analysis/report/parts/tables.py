@@ -82,25 +82,25 @@ from threetears.evals.kernel.numbers import UNPRICED
 __all__ = ["arms_key", "arms_table", "pass_rate_cell"]
 
 
-def _said(figure: Figure | None, filters: tuple[str, ...] = ()) -> str | None:
-    """A figure as its cell says it, by the package's number rule; None (a dash) for none."""
-    return format_figure(figure, filters) if figure is not None else None
+def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()) -> str | None:
+    """A figure as its cell says it, by the package's number rule in the page's forms; None (a dash) for none."""
+    return format_figure(figure, filters, forms=forms) if figure is not None else None
 
 
-def _unanswered_marks(arm: str, report_input: ReportInput, where: str = "") -> list[str]:
+def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
     """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
     counted alone (the two together are not counted there). ``where`` is the keys' aspect prefix
     (``aspects.<aspect>.``), empty for the lead aspect's."""
     together = held_figure(f"{where}calls.unanswered.{arm}", report_input)
     if together is not None:
-        return [_calls(together, "unanswered")] if together.value else []
+        return [_calls(together, "unanswered", forms)] if together.value else []
     kinds = ((kind, held_figure(f"{where}calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
-    return [_calls(held, f"{kind} unanswered") for kind, held in kinds if held is not None and held.value]
+    return [_calls(held, f"{kind} unanswered", forms) for kind, held in kinds if held is not None and held.value]
 
 
-def _calls(figure: Figure, what: str) -> str:
+def _calls(figure: Figure, what: str, forms: PageForms) -> str:
     """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``."""
-    return f"{format_figure(figure)} {'call' if figure.value == 1 else 'calls'} {what}"
+    return f"{format_figure(figure, forms=forms)} {'call' if figure.value == 1 else 'calls'} {what}"
 
 
 def _chip(arm: ArmLook) -> TableCell:
@@ -152,7 +152,7 @@ def arms_table(
     aspects = _laid_out_aspects(report_input)
     quality = {arm: pass_rate_cell(report_input, arm, forms=forms) for arm in arms}
     rated = not aspects and any(cell.value is not None for cell in quality.values())
-    header, cells = _arm_costs(report_input, look)
+    header, cells = _arm_costs(report_input, look, forms)
     costed = not aspects and any(cell.value is not None for cell in cells.values())
     cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
     grouped, by_aspect = _aspect_groups(
@@ -212,10 +212,10 @@ def _pricing(report_input: ReportInput, arm: str, aspect: str | None = None) -> 
     return row.pricing if row is not None else None
 
 
-def _arm_costs(report_input: ReportInput, look: PageLook) -> tuple[str, dict[str, TableCell]]:
+def _arm_costs(report_input: ReportInput, look: PageLook, forms: PageForms) -> tuple[str, dict[str, TableCell]]:
     """The arms table's cost column: its header and each arm's cell, every cost in one form (:func:`_costs`)."""
     header, costs, ruler = _costs(report_input, [None], per=1)
-    return header, {arm.id: _cost_cell(arm.id, report_input, look, costs, ruler) for arm in report_input.arms}
+    return header, {arm.id: _cost_cell(arm.id, report_input, look, costs, ruler, forms) for arm in report_input.arms}
 
 
 def _costs(
@@ -266,6 +266,7 @@ def _cost_cell(
     look: PageLook,
     costs: Mapping[tuple[str | None, str], float],
     ruler: MoneyRuler,
+    forms: PageForms,
     aspect: str | None = None,
 ) -> TableCell:
     """One arm's cost cell on one aspect (the lead's where None) in the column's form: its cost, then the uplift (on
@@ -274,7 +275,7 @@ def _cost_cell(
     ``unpriced``."""
     pricing = _pricing(report_input, arm, aspect)
     share = _priced_share(pricing)
-    unanswered = _unanswered_marks(arm, report_input, "" if aspect is None else f"aspects.{aspect}.")
+    unanswered = _unanswered_marks(arm, report_input, forms, "" if aspect is None else f"aspects.{aspect}.")
     if pricing is not None and pricing.priced_calls == 0 and pricing.calls:
         return TableCell(value=UNPRICED, flag="; ".join([share or "", *unanswered]).strip("; ") or None)
     if priced_in_part(report_input, arm, aspect) is not None:
@@ -290,7 +291,7 @@ def _cost_cell(
         if partial is not None:
             marks.append(UPLIFT_NOT_COMPARABLE.format(share=partial))
         elif uplift is not None and isinstance(uplift.value, float):
-            marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
+            marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift, forms=forms))
     if share is not None:
         marks.append(share)
     marks += unanswered
@@ -372,7 +373,7 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     """
     row = aspect_board(report_input, aspect).get(arm)
     if row is None or row.passed is None or not row.usable:
-        return TableCell(value=_said(held_figure(f"pass_rate.{arm}", report_input)) if aspect is None else None)
+        return TableCell(value=_said(held_figure(f"pass_rate.{arm}", report_input), forms) if aspect is None else None)
     return TableCell(
         value=forms.level(TRIAL_PASS_NAME, row.passed / row.usable, kind="trial").text,
         flag=PASSES_TEMPLATE.format(passed=row.passed, usable=row.usable),
@@ -394,24 +395,19 @@ def _aspect_groups(
     families: Collection[str],
     *,
     per: int,
-    forms: PageForms | None,
+    forms: PageForms,
 ) -> tuple[list[TableColumn], dict[str, dict[str, TableCell]]]:
     """Each laid-out aspect's column group, in the input's aspect order, of the families asked (``pass_rate``,
     ``cost_per_1k``, ``usable``, in that order within a group), and each arm's cells, by arm; a column no arm fills is
-    left out, and a cost column that some arm fills says ``unpriced`` for an arm it states no cost for. A pass rate
-    is stated in the page's ``forms``, so a group that asks for one is handed them; one that asks for none (the arms
-    key's) needs none.
-
-    :raises ValueError: A pass rate is asked for, and no forms are handed in.
+    left out, and a cost column that some arm fills says ``unpriced`` for an arm it states no cost for. A pass rate and
+    a cost's marks are stated in the page's ``forms``.
     """
-    if _PASS_RATE in families and forms is None:
-        raise ValueError("a column group of pass rates is stated in the page's forms, and none were handed in")
     if not aspects:
         return [], {arm.id: {} for arm in report_input.arms}
     cost_header, costs, ruler = _costs(report_input, [aspect.id for aspect in aspects], per=per)
     readers: dict[str, tuple[str, Callable[[Aspect, str], TableCell]]] = {
         _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms)),
-        _COST: (cost_header, lambda aspect, arm: _cost_cell(arm, report_input, look, costs, ruler, aspect.id)),
+        _COST: (cost_header, lambda aspect, arm: _cost_cell(arm, report_input, look, costs, ruler, forms, aspect.id)),
         "usable": (ARM_HEADERS["usable"], lambda aspect, arm: _trials(report_input, arm, aspect.id)),
     }
     columns: list[TableColumn] = []
@@ -432,9 +428,8 @@ def _aspect_groups(
     return columns, cells
 
 
-def _aspect_pass_rate(report_input: ReportInput, arm: str, aspect: Aspect, forms: PageForms | None) -> TableCell:
-    """One aspect's pass-rate cell (:func:`pass_rate_cell`), in the forms :func:`_aspect_groups` checked it holds."""
-    assert forms is not None
+def _aspect_pass_rate(report_input: ReportInput, arm: str, aspect: Aspect, forms: PageForms) -> TableCell:
+    """One aspect's pass-rate cell (:func:`pass_rate_cell`), in the page's forms."""
     return pass_rate_cell(report_input, arm, aspect.id, forms=forms)
 
 
@@ -456,13 +451,15 @@ def _settings(report_input: ReportInput, arm_id: str) -> str:
     )
 
 
-def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
+def arms_key(report_input: ReportInput, look: PageLook, *, forms: PageForms) -> PageArmsKey:
     """The arms key (this module's account).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param look: The page's look.
     :ptype look: PageLook
+    :param forms: The page's forms, which state each arm's reasoning share.
+    :ptype forms: PageForms
     :return: The key, under code's eyebrow and takeaway.
     :rtype: PageArmsKey
     """
@@ -476,7 +473,7 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
     }
     keys = ["arm", "role", *(key for key, shown in present.items() if shown)]
     # With more than one aspect, each aspect's usable trials, a column per aspect.
-    grouped, by_aspect = _aspect_groups(report_input, look, aspects, ("usable",), per=1, forms=None)
+    grouped, by_aspect = _aspect_groups(report_input, look, aspects, ("usable",), per=1, forms=forms)
     columns = [*(TableColumn(key=key, header=ARM_HEADERS[key]) for key in keys), *grouped]
     rows = []
     for arm in arms:
@@ -486,7 +483,7 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
             "role": TableCell(value=ARM_ROLE_WORDS[arm.role]),
             "settings": TableCell(value=_settings(report_input, arm.id) or None),
             "served_model": TableCell(value=arm.served_model),
-            "reasoning": TableCell(value=_said(reasoning)),
+            "reasoning": TableCell(value=_said(reasoning, forms)),
             "usable": _trials(report_input, arm.id),
         }
         rows.append({**{key: cells[key] for key in keys}, **by_aspect[arm.id]})

@@ -31,6 +31,7 @@ from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LeverCoverageInput, RunSummary
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.figure_keys import KeySubjects, key_subjects, keys_in, render
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.authored import Confidence
 from threetears.evals.kernel.campaign import (
@@ -188,10 +189,12 @@ def _durable_insights(
     checked = {caveat.id for caveat in doc.confidence.caveats if caveat.checked is not None}
     insights: list[EvalInsight] = []
     stated: set[str] = set()
+    # An insight states its claim as the page prints it, in the forms its input's page would print each figure in.
+    forms = PageForms.of(report_input)
     for claim in doc.claims:
         if not claim.durable:
             continue
-        statement = render(claim.text, report_input, {})
+        statement = render(claim.text, report_input, {}, forms=forms)
         key = insight_restatement_key(statement)
         if not statement.strip() or key in stated:
             continue

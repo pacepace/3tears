@@ -40,6 +40,7 @@ from threetears.evals.analysis.analyst.compare import arms_compare, mean_key
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnstatedFigure
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     figure_key_pages,
@@ -296,8 +297,12 @@ def test_a_contrast_on_another_aspect_is_never_read_as_the_overall_paired_differ
 
 
 def test_the_grammar_teaches_each_separation_family_on_its_own_page_with_a_rendered_example() -> None:
-    lines = {line.split("`:", 1)[0]: line for line in figure_key_grammar().splitlines() if line.startswith("- `")}
-    page = figure_key_pages()["separation"]
+    lines = {
+        line.split("`:", 1)[0]: line
+        for line in figure_key_grammar(forms_of=PageForms.of).splitlines()
+        if line.startswith("- `")
+    }
+    page = figure_key_pages(forms_of=PageForms.of)["separation"]
     for form in (
         "spread.<arm>.<measure>.<where>.<field>",
         "compare.<arm>.<arm>.<measure>.<where>.<field>",

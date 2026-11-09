@@ -31,6 +31,7 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.kernel.numbers import spell_multiple
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     MULTIPLE_UNIT,
     cost_basis,
@@ -116,13 +117,14 @@ def test_a_multiple_keeps_its_unit_under_every_filter_and_rounds_to_what_a_ratio
         key = f"cost.gap.{first}.{second}.multiple"
         figure = resolve(key, held)
         ratio = costs[first] / costs[second]
-        taken = figure_filters(figure)
+        forms = PageForms.of(held)
+        taken = figure_filters(figure, forms=forms)
         assert "int" in taken, key
-        assert format_figure(figure) == f"{spell_multiple(ratio)} {MULTIPLE_UNIT}"
-        assert format_figure(figure, ("int",)) == f"{round(ratio):,} {MULTIPLE_UNIT}"
+        assert format_figure(figure, forms=forms) == f"{spell_multiple(ratio)} {MULTIPLE_UNIT}"
+        assert format_figure(figure, ("int",), forms=forms) == f"{round(ratio):,} {MULTIPLE_UNIT}"
         for one in taken:
-            assert format_figure(figure, (one,)).endswith(f" {MULTIPLE_UNIT}"), (key, one)
-        digits = format_figure(figure).removesuffix(f" {MULTIPLE_UNIT}")
+            assert format_figure(figure, (one,), forms=forms).endswith(f" {MULTIPLE_UNIT}"), (key, one)
+        digits = format_figure(figure, forms=forms).removesuffix(f" {MULTIPLE_UNIT}")
         assert "." not in digits if ratio >= 10 else len(digits.split(".")[1]) <= 2, (key, digits)
     assert pairs or len(costs) < 2, "the control: two arms with a cost"
 
@@ -165,7 +167,7 @@ def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(
     costs = _costs(held)
     checked = 0
     for arm in costs:
-        price = _price(render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}))
+        price = _price(render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}, forms=PageForms.of(held)))
         month = resolve(f"cost_per_month.{arm}", held).value
         assert isinstance(month, float)
         assert price * float(volume) / 1000 == pytest.approx(month, rel=0.005), arm
@@ -178,11 +180,20 @@ def test_the_third_figure_is_the_price_s_own_and_only_where_a_month_is_printed_b
     leave its month 0.7% off, so it reads "$0.302", while brisk-s.high.r1's $0.633 (0.5% off at $0.63) keeps two. With
     no monthly volume declared, no month is printed beside it, and it reads two figures."""
     held = INPUTS["r2"]
-    assert render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", held, {}) == "$0.302 per 1,000 calls"
-    assert render("{cost_per_1k.brisk-s.high.r1|usd_per_1k}", held, {}) == "$0.63 per 1,000 calls"
-    assert render("{cost_per_month.brisk-s.low.r1}", held, {}) == "$1,208.00"
+    assert (
+        render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", held, {}, forms=PageForms.of(held))
+        == "$0.302 per 1,000 calls"
+    )
+    assert (
+        render("{cost_per_1k.brisk-s.high.r1|usd_per_1k}", held, {}, forms=PageForms.of(held))
+        == "$0.63 per 1,000 calls"
+    )
+    assert render("{cost_per_month.brisk-s.low.r1}", held, {}, forms=PageForms.of(held)) == "$1,208.00"
     unvolumed = held.model_copy(update={"meta": held.meta.model_copy(update={"volume_per_month": None})})
-    assert render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", unvolumed, {}) == "$0.30 per 1,000 calls"
+    assert (
+        render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", unvolumed, {}, forms=PageForms.of(unvolumed))
+        == "$0.30 per 1,000 calls"
+    )
 
 
 #: Every input a cost some trials did not report is read on: the fixtures and Kairo round 2, whose arms each leave
@@ -223,7 +234,9 @@ def test_a_cost_some_trials_did_not_report_reads_free_and_at_its_p95_or_says_why
         else:
             filled = resolve(f"{key}.at_p95", held).value
             assert filled == pytest.approx((stat.mean * stat.n + stat.p95 * (ran - stat.n)) / ran * factor)
-        assert render(f"{{{key}.free|usd_per_1k}}", held, {}).endswith(per_count(cost_basis(held).noun, 1_000))
+        assert render(f"{{{key}.free|usd_per_1k}}", held, {}, forms=PageForms.of(held)).endswith(
+            per_count(cost_basis(held).noun, 1_000)
+        )
 
 
 def test_some_arm_leaves_trials_without_a_cost() -> None:
@@ -241,7 +254,7 @@ def test_the_pairs_of_arms_are_counted(name: str) -> None:
 
 
 def test_the_grammar_teaches_each_family() -> None:
-    grammar = figure_key_grammar()
+    grammar = figure_key_grammar(forms_of=PageForms.of)
     for form in (
         "confusion.<axis>.<arm>.<expected>.<predicted>",
         "cost.gap.<arm>.<arm>.<field>",
@@ -265,4 +278,4 @@ def test_a_sentence_citing_the_new_keys_types_no_digit(name: str) -> None:
         keys.append(f"{{confusion.{axis}.{arm}.{table.labels[0]}.{table.labels[1]}|pct}}")
     text = "The run read " + ", then ".join(keys) + "."
     assert literal_numbers(text, held) == []
-    assert "{" not in render(text, held, {})
+    assert "{" not in render(text, held, {}, forms=PageForms.of(held))

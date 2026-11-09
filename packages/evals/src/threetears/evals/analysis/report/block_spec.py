@@ -92,6 +92,7 @@ from threetears.evals.analysis.report.figure_keys import (
     price_frontier,
     reader_names,
     resolve,
+    figure_unit,
 )
 from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
@@ -102,9 +103,9 @@ from threetears.evals.analysis.report.parts.charting import (
     contrast_unit,
     contrast_unit_of,
     drawn_keys,
-    figure_unit,
     unit_refusal,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
@@ -837,7 +838,8 @@ def bare_key_faults(path: str, key: str, report_input: ReportInput) -> Iterator[
         parsed = parse_key(key)
         figure = resolve(parsed.path, report_input)
         if figure.kind != "arm":
-            format_figure(figure, parsed.filters)
+            # A key is checked off its page, in the forms its input's page would print it in.
+            format_figure(figure, parsed.filters, forms=PageForms.of(report_input))
     except UnresolvableReference as refused:
         yield path, str(refused)
 

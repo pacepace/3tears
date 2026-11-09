@@ -54,6 +54,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     OMITTED_TITLE,
     SEVERITY_WORDS,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import format_figure, render, resolve
 from threetears.evals.analysis.report_decision import every_caveat, late_subject
 from threetears.evals.analysis.report_input import ReportInput
@@ -155,8 +156,8 @@ def test_the_masthead_is_the_one_a_stored_plan_on_the_same_input_carries(name: s
     assert _masthead(name) == (
         stored["kind"],
         stored["system"],
-        render(stored["counts"], report_input, names),
-        render(stored["run_date"], report_input, names),
+        render(stored["counts"], report_input, names, forms=PageForms.of(report_input)),
+        render(stored["run_date"], report_input, names, forms=PageForms.of(report_input)),
         stored["synthetic"],
     )
 
@@ -236,7 +237,10 @@ def test_a_reference_line_is_codes_at_the_figure_its_key_reads() -> None:
 
     (shown,) = [one for one in _page(name).claims[at].evidence if one.block == evidence.block]
 
-    assert shown.reference == f"Margin {format_figure(resolve(seen.reference.key, _input(name)))}"
+    assert (
+        shown.reference
+        == f"Margin {format_figure(resolve(seen.reference.key, _input(name)), forms=PageForms.of(_input(name)))}"
+    )
 
 
 def test_emphasis_is_drawn() -> None:

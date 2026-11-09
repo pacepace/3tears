@@ -464,6 +464,7 @@ def test_the_fields_only_a_counted_input_states_are_declared_once_and_the_gramma
     """The input contract's one list: an uncounted input leaves each unset, a counted one states them, and the grammar
     teaches every one."""
     from threetears.evals.analysis.report.figure_keys import figure_key_grammar
+    from threetears.evals.analysis.report.forms import PageForms
 
     bundle = kairo_bundle()
     planner, analyst = report_input(bundle), report_input(bundle, counted=True)
@@ -472,7 +473,7 @@ def test_the_fields_only_a_counted_input_states_are_declared_once_and_the_gramma
     assert all(getattr(c, field) is None for c in planner.contrasts for field in ANALYST_CONTRAST_FIELDS)
     assert all(getattr(aspect, field) is not None for aspect in analyst.aspects for field in ANALYST_ASPECT_FIELDS)
     assert any(contrast.n_cases is not None for contrast in analyst.contrasts)
-    whole = figure_key_grammar()
+    whole = figure_key_grammar(forms_of=PageForms.of)
     assert ANALYST_ASPECT_FIELDS <= _listed(whole, "aspects.<aspect>.<field>")
     assert ANALYST_CONTRAST_FIELDS <= _listed(whole, "contrast.<arm>.<measure>.<statistic>")
 
@@ -481,8 +482,9 @@ def test_a_family_s_aspect_and_contrast_forms_list_the_same_fields_as_its_qualif
     """The grammar lists the same fields for an aspect's unqualified and qualified forms, and the same statistics for a
     contrast read alone and under its aspect."""
     from threetears.evals.analysis.report.figure_keys import figure_key_grammar
+    from threetears.evals.analysis.report.forms import PageForms
 
-    taught = figure_key_grammar()
+    taught = figure_key_grammar(forms_of=PageForms.of)
     assert _listed(taught, "aspect.<field>") == _listed(taught, "aspects.<aspect>.<field>")
     assert _listed(taught, "aspects.<aspect>.contrast.<arm>.<measure>.<statistic>") == _listed(
         taught, "contrast.<arm>.<measure>.<statistic>"

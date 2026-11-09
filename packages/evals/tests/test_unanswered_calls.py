@@ -351,7 +351,7 @@ def test_a_role_one_of_whose_rows_counted_one_kind_states_no_share_and_no_bare_c
     for key in (f"calls.unanswered.{FAST}", f"calls.unanswered.{FAST}.share"):
         with pytest.raises(UnstatedFigure, match="not counted"):
             resolve(key, held)
-    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held)) == str(CASES - 1)
+    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held), forms=PageForms.of(held)) == str(CASES - 1)
 
 
 # --- the report input and its keys ----------------------------------------------------------------------------------
@@ -391,7 +391,7 @@ def test_the_input_copies_each_roles_counts_and_leaves_the_key_out_where_none_co
 )
 def test_the_keys_read_the_counts_beside_the_cost(key: str, reads: str) -> None:
     held = _counted_input()
-    assert format_figure(resolve(key, held)) == reads
+    assert format_figure(resolve(key, held), forms=PageForms.of(held)) == reads
     assert not resolve(key, held).derived
 
 
@@ -415,7 +415,7 @@ def test_a_share_over_two_roles_is_computed_from_their_counts_and_marked_derived
     share = resolve(f"calls.unanswered.{FAST}.share", widened)
     assert share.derived
     assert share.value == pytest.approx((CASES + 2 + 2) / (3 * CASES + 10 + CASES + 2 + 2))
-    assert format_figure(resolve(f"calls.unanswered.{FAST}", widened)) == "10"
+    assert format_figure(resolve(f"calls.unanswered.{FAST}", widened), forms=PageForms.of(widened)) == "10"
 
 
 # --- beside the cost ------------------------------------------------------------------------------------------------
@@ -479,7 +479,7 @@ def test_the_bare_count_and_the_share_are_not_counted_where_a_role_counted_one_k
     for key in (f"calls.unanswered.{FAST}", f"calls.unanswered.{FAST}.share"):
         with pytest.raises(UnstatedFigure, match="not counted"):
             resolve(key, held)
-    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held)) == str(CASES)
+    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held), forms=PageForms.of(held)) == str(CASES)
     with pytest.raises(UnstatedFigure, match="no role of the arm counted"):
         resolve(f"calls.unanswered.{FAST}.retried", held)
     _, bundle, _ = aspect_bundle(_trials(usage))

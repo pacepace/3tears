@@ -15,7 +15,11 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
   a sentence) and :meth:`PageForms.half_width`. A figure that is no measurement takes a fixed form: :meth:`PageForms.count`,
   :meth:`PageForms.p`, :meth:`PageForms.effect`, :meth:`PageForms.confidence`, :meth:`PageForms.declared`,
   :meth:`PageForms.share`, :meth:`PageForms.multiple`, :meth:`PageForms.money_total`; on a code page also
-  :meth:`PageForms.confidence_share`. A pass^k (:meth:`PageForms.pass_k`) is its measure's, by key and kind.
+  :meth:`PageForms.confidence_share`. A pass^k (:meth:`PageForms.pass_k`) is its measure's, by key and kind. A
+  figure key's figure (:mod:`~threetears.evals.analysis.report.figure_keys`) reads its measure's set by key and kind
+  (:meth:`PageForms.key_places`, :meth:`PageForms.key_number`) and an interval's ends at one precision
+  (:meth:`PageForms.key_plain_ends`, :meth:`PageForms.key_points_ends`): every caller of the keys hands its page's
+  forms in, since this module reads the keys' module and so it can read none of this one.
 - Each returns a :class:`Printed` (or a :class:`_PrintedInterval`): the value and its decided text, with the parts a
   renderer may lay out apart.
 
@@ -27,8 +31,9 @@ decimals. A surface that calls one of these free functions still decides there, 
 as a site (``tests/test_one_owner_of_number_forms.py``); only :class:`PageForms`, asked by measure and role, is the
 migrated route. What a measure is (a rate, money on a ruler, shown at all) is
 :mod:`~threetears.evals.analysis.report.campaign.measure_kinds`'s, and where a decision is a public function of
-another module (a measure's unit, its set's places by
-:func:`~threetears.evals.analysis.report.figure_keys.figure_places`), the form calls it. The
+another module (a measure's unit, :func:`~threetears.evals.analysis.report.figure_keys.figure_unit`), the form calls
+it; a measure's set's places, which the keys and the Full results both read (:func:`figure_places`), are decided here.
+The
 differences between surfaces that reproduce today's page (a chart's note spelling a figure alone, ``alone``) are named
 where they are taken, so the flip removes them in one place.
 A chart's forms (``PageForms.chart_*``) still decide over a chart's own drawn values, as today; each takes the measure
@@ -42,6 +47,7 @@ both page kinds already pass one object through every part, so a page's forms ri
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
@@ -51,23 +57,29 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings, Measur
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, UNSPACED_UNITS
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
-from threetears.evals.analysis.report.figure_keys import RUBRIC_SCALE, figure_places, format_figure, held_means, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    RUBRIC_SCALE,
+    Figure,
+    criterion_ruler,
+    figure_unit,
+    format_figure,
+    held_kind,
+    held_means,
+    is_rubric_score,
+    plus_signed,
+    resolve,
+    rubric_score,
+)
 from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
 from threetears.evals.analysis.report.charts import percent_at
-from threetears.evals.analysis.report.parts.charting import (
-    count_text,
-    figure_unit,
-    held_kind,
-    interval_level,
-    interval_words,
-    is_rubric_score,
-)
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
-from threetears.evals.analysis.report_gates import criterion_ruler
+from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report_input import Contrast, ContrastFamily, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
+    SCORE_PLACES,
+    WHOLE_FROM,
     MoneyForm,
     ends_places,
     format_number,
@@ -285,7 +297,7 @@ class MeasureForm:
     :ivar ruler: The code page's money ruler; None elsewhere.
     :ivar scale: The scale a score's name carries on a written page (``1–5``); empty for any other measure.
     :ivar unnamed_span: How far a change can reach for a comparison that names no kind, which the written page reads
-        by its measure's figures alone (:func:`~threetears.evals.analysis.report.parts.charting.is_rubric_score` with
+        by its measure's figures alone (:func:`~threetears.evals.analysis.report.figure_keys.is_rubric_score` with
         no kind), where one that names ``measure`` is never read as a score; the same as ``span`` for any other kind.
     """
 
@@ -315,12 +327,21 @@ class PageForms:
     :ptype page: _PageKind
     :param measures: Each measure's form, by its key and kind.
     :ptype measures: Mapping[tuple[str, _MeasureKind], MeasureForm]
+    :param report_input: A written page's report input, which a figure key's set is read from
+        (:meth:`key_places`); None for any other page.
+    :ptype report_input: ReportInput | None
     """
 
-    def __init__(self, page: _PageKind, measures: Mapping[tuple[str, _MeasureKind], MeasureForm]) -> None:
+    def __init__(
+        self,
+        page: _PageKind,
+        measures: Mapping[tuple[str, _MeasureKind], MeasureForm],
+        report_input: ReportInput | None = None,
+    ) -> None:
         self.page = page
         self._measures = dict(measures)
         self._issued: list[_Issued] = []
+        self._input = report_input
 
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
@@ -354,7 +375,7 @@ class PageForms:
         if _counts_passes(report_input):
             kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
         measures = {(key, kind): _written_form(report_input, key, kind) for key, kind in kinds}
-        return cls("written", measures)
+        return cls("written", measures, report_input)
 
     @classmethod
     def off_page(cls) -> PageForms:
@@ -778,9 +799,9 @@ class PageForms:
         return self._issue("", "", "effect", value, text, text, "")
 
     def confidence(self, level: str, family: ContrastFamily | None = None) -> Printed:
-        """An interval's level, as every surface prints it (:func:`~threetears.evals.analysis.report.parts.charting.
-        interval_level`): one decimal, more only where one would read a level under 100 as ``100%``, and what the
-        family holds at once beside it where it corrects its comparisons together.
+        """An interval's level, as every surface prints it (:func:`interval_level`): one decimal, more only where one
+        would read a level under 100 as ``100%``, and what the family holds at once beside it where it corrects its
+        comparisons together.
 
         :param level: The level as the input states it (``99.69%``).
         :ptype level: str
@@ -1274,7 +1295,7 @@ class PageForms:
         self, low: float, high: float, drawn: Quantity, *, measure: str = "", kind: _MeasureKind = None
     ) -> _PrintedInterval:
         """An interval as a chart's tooltip writes it, ``low to high``, each end by its quantity's rule
-        (:func:`~threetears.evals.analysis.report.parts.charting.interval_words`).
+        (:func:`_interval_words`).
 
         :param low: Its low end, as drawn.
         :ptype low: float
@@ -1291,7 +1312,7 @@ class PageForms:
         :rtype: _PrintedInterval
         """
         low_text, high_text = figure_text(low, drawn), figure_text(high, drawn)
-        text = interval_words(low, high, drawn)
+        text = _interval_words(low, high, drawn)
         self._issued.append(_Issued(*_keyed(measure, kind), "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, drawn.unit), _digits_of(high_text, drawn.unit)
         return _PrintedInterval(
@@ -1308,7 +1329,7 @@ class PageForms:
 
     def chart_count(self, count: float) -> Printed:
         """A count as a chart's words print it, whole and grouped
-        (:func:`~threetears.evals.analysis.report.parts.charting.count_text`). A count of cases is no measure's
+        (:func:`_count_text`). A count of cases is no measure's
         figure, so it takes none.
 
         :param count: The count.
@@ -1316,7 +1337,7 @@ class PageForms:
         :return: The count.
         :rtype: Printed
         """
-        text = count_text(count)
+        text = _count_text(count)
         return self._issue("", "", "count", count, text, text, "")
 
     def count_alone(self, value: float | None) -> Printed:
@@ -1335,7 +1356,7 @@ class PageForms:
         """A criterion's threshold as a gate row's line states it: as its figure key reads it, money on its
         criterion's ruler with its count named once. It is a figure of what the criterion reads
         (``criterion.measure``), which the ledger records it under by the one rule for a criterion's kind
-        (:func:`~threetears.evals.analysis.report.parts.charting.held_kind`).
+        (:func:`~threetears.evals.analysis.report.figure_keys.held_kind`).
 
         :param report_input: The report input.
         :ptype report_input: ReportInput
@@ -1348,7 +1369,7 @@ class PageForms:
         threshold = float(criterion.threshold)
         key = (criterion.measure, held_kind(report_input, criterion.measure))
         if line.scale not in ("usd", "usd_per_1k", "usd_per_1m"):
-            text = format_figure(line)
+            text = format_figure(line, forms=self)
             return self._issue(*key, "declared", threshold, text, text, "")
         ruler, _own = criterion_ruler(report_input, criterion, line)
         amount = ruler.spell(threshold)
@@ -1358,6 +1379,119 @@ class PageForms:
     def _chart_issue(self, measure: str, kind: _MeasureKind, role: Role, value: float, text: str, unit: str) -> Printed:
         """A chart's figure recorded under its measure and role, or under ``("", "")`` where it is of no measure."""
         return self._issue(*_keyed(measure, kind), role, value, text, _digits_of(text, unit), unit)
+
+    # --- a figure key's figures: today's, each key's set read as its table prints it --------------------------------
+    #
+    # A figure key (:mod:`~threetears.evals.analysis.report.figure_keys`) prints a plain figure of a measure at the
+    # precision the page's tables print that measure's set at, and an interval's two ends at one precision. These hold
+    # that decision, relocated. Each prints a part of a key's text, which ``format_figure`` finishes with the key's
+    # filters and unit, so nothing is issued; the flip decides a key's whole text here, by its measure and role.
+
+    def key_places(self, key: str, *, kind: _MeasureKind, change: bool) -> int | None:
+        """The decimals a figure key's plain figure of a measure reads at, as the page's tables print it: a judged
+        score's two, any other measure's at its set's (:func:`figure_places`), its levels' or its changes'; None where
+        the measure has no such set, and the number rule spells its figure. A decision that prints nothing, so nothing
+        is issued.
+
+        :param key: The measure's or judged dimension's key.
+        :ptype key: str
+        :param kind: The measure's kind: ``judged`` for a 1–5 score, which reads at a score's two decimals.
+        :ptype kind: _MeasureKind
+        :param change: Whether the figure is a change, read at its changes' set.
+        :ptype change: bool
+        :return: The decimals, or None.
+        :rtype: int | None
+        :raises ValueError: The forms hold no report input (a code page's, an off-page surface's), which a key's set
+            is read from.
+        """
+        if self._input is None:
+            raise ValueError(
+                f"a figure key's set of {key!r} is read from a written page's report input, and none is held"
+            )
+        return figure_places(self._input, key, change=change, judged=_measure_kind(kind) == "judged")
+
+    def key_number(self, figure: Figure, value: float) -> str:
+        """A plain figure's number as a figure key prints it, unsigned and without its unit: at its measure's set's
+        decimals (:meth:`key_places`) where the figure is one the page's tables print of that measure (a level, a
+        change, an interval or one of its ends, a criterion's figure or its gap), else by the lone figure rule, as an
+        adjusted p or a count of repeats keeps it.
+
+        :param figure: What the key resolved to: its measure's key and kind and its statistic say which set it is of.
+        :ptype figure: Figure
+        :param value: The number, as the key spells it (an interval's end, or the figure's own value).
+        :ptype value: float
+        :return: Its digits.
+        :rtype: str
+        """
+        places = self._key_figure_places(figure)
+        return format_number(value) if places is None else spell_at(value, places)
+
+    def key_plain_ends(
+        self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str], *, absolute: bool
+    ) -> tuple[str, str] | None:
+        """An interval's two plain ends at one precision, as every set reads: the decimals the page's tables print the
+        figure's set at (:meth:`key_number`), else two significant figures of the interval's width, which is what its
+        ends can tell apart (``2.84–3.00`` for 2.839 to 3), never padded to its finer end's digits; more only where an
+        end that is not zero would read as one. An end from :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up, or
+        one read as a bound, leaves both as they are.
+
+        :param figure: What the key resolved to.
+        :ptype figure: Figure
+        :param values: The two ends, as the key reads them (sorted by size where ``absolute``).
+        :ptype values: tuple[float, float]
+        :param numbers: The two ends as the key spelled each alone, with the figure's unit.
+        :ptype numbers: tuple[str, str]
+        :param absolute: Whether the key reads the ends' sizes (``abs``), unsigned.
+        :ptype absolute: bool
+        :return: The two ends' texts, each with the figure's unit; None where they stay as spelled.
+        :rtype: tuple[str, str] | None
+        """
+        unit = f" {figure.unit}" if figure.unit else ""
+        bare = [number.removesuffix(unit) if unit else number for number in numbers]
+        if any(abs(value) >= WHOLE_FROM for value in values) or any(not _PLAIN_END.fullmatch(n) for n in bare):
+            return None
+        shown = [abs(value) if absolute else value for value in values]
+        held = self._key_figure_places(figure)
+        places = ends_places(shown[0], shown[1], held if held is not None else set_places([shown[1] - shown[0]]))
+        signed = figure.change and not absolute
+        texts = [spell_at(value, places) for value in shown]
+        low, high = (
+            plus_signed(text, value) if signed and float(text) != 0 else text
+            for text, value in zip(texts, shown, strict=True)
+        )
+        return low + unit, high + unit
+
+    def key_points_ends(self, figure: Figure, values: tuple[float, float], *, absolute: bool) -> tuple[str, str]:
+        """An interval in points with both ends at one precision, as every set reads: a point's one decimal, a whole
+        end too (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never
+        ``-2.2 to 0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule,
+        which writes a whole one whole.
+
+        :param figure: What the key resolved to; a share's ends are read in points (x 100).
+        :ptype figure: Figure
+        :param values: The two ends, as the key reads them.
+        :ptype values: tuple[float, float]
+        :param absolute: Whether the key reads the ends' sizes (``abs``), unsigned.
+        :ptype absolute: bool
+        :return: The two ends' texts.
+        :rtype: tuple[str, str]
+        """
+        hundred = [value * 100 if figure.scale == "share" else value for value in values]
+        at = ends_places(hundred[0], hundred[1], POINT_PLACES)
+        low, high = (
+            spell_at(abs(value), at) if absolute else plus_signed(spell_at(value, at), value) for value in hundred
+        )
+        return low, high
+
+    def _key_figure_places(self, figure: Figure) -> int | None:
+        """A key's figure's set's decimals (:meth:`key_places`), where the figure is one the page's tables print of the
+        measure it is of (:func:`_tabled`); None otherwise. A criterion's gap is a difference on its measure, read at
+        its changes' set."""
+        if figure.set_of is None or not _tabled(figure):
+            return None
+        key, kind = figure.set_of
+        change = figure.change or (bool(figure.measure) and figure.statistic in _CRITERION_GAPS)
+        return self.key_places(key, kind=kind, change=change)
 
     # --- the ledger --------------------------------------------------------------------------------------------------
 
@@ -1512,6 +1646,142 @@ def _measure_kind(kind: _MeasureKind) -> str:
     return "measure" if kind is None else kind
 
 
+# --- an interval's level, an interval's words and a count, as every surface prints them -------------------------------
+
+
+def interval_level(level: str, family: ContrastFamily | None) -> str:
+    """An interval's level as every surface prints it, a chart's head and a table's cell alike: to one decimal
+    (``99.69%`` reads ``99.7%``), more only where one would round a level under 100 to ``100%``, which no interval holds
+    at (``99.95%`` stays ``99.95%``); a level stored in words, as stored. Where ``family`` corrects its comparisons
+    together at this level, what the family holds at once follows (``99.7% (95% across 16 comparisons)``), so a reader
+    never meets a bare ``99.69%``.
+
+    :param level: The level as the input states it (``99.69%``).
+    :ptype level: str
+    :param family: The contrast family the interval belongs to, or None.
+    :ptype family: ContrastFamily | None
+    :return: The level's words.
+    :rtype: str
+    """
+    shown = _readable_level(level)
+    if family is None or family.level != level or family.alpha is None:
+        return shown
+    corrected = (family.correction or "").strip().lower() not in ("", "none")
+    if not corrected or not family.family_size or family.family_size < 2:
+        return shown
+    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
+    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
+
+
+def _readable_level(level: str) -> str:
+    number = level.strip().removesuffix("%")
+    try:
+        value = float(number)
+    except ValueError:
+        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
+        return level
+    places = 1
+    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
+        places += 1
+    text = spell_at(value, places)
+    return f"{text.rstrip('0').rstrip('.')}%"
+
+
+def _interval_words(low: float, high: float, drawn: Quantity) -> str:
+    """An interval in a tooltip: its two ends by the package's number rule, joined as prose joins them.
+
+    :param low: Its low end, in display units.
+    :ptype low: float
+    :param high: Its high end, in display units.
+    :ptype high: float
+    :param drawn: The quantity drawn.
+    :ptype drawn: Quantity
+    :return: The words (``-10.8 to -3.4``).
+    :rtype: str
+    """
+    return f"{figure_text(low, drawn)} to {figure_text(high, drawn)}"
+
+
+def _count_text(count: float) -> str:
+    """A count as a chart's words print it: the figure keys' whole-number spelling, thousands separated
+    (``1,234``), so a count reads alike on a chart and in the prose beside it.
+
+    :param count: The count.
+    :ptype count: float
+    :return: The text.
+    :rtype: str
+    """
+    return spell_count(round(count))
+
+
+#: How every family spells a level the tables print and its interval's two ends.
+_LEVEL_FIGURES = frozenset({"mean", "low", "high"})
+
+#: How the criteria families spell the level of the measure a criterion reads, and how they and the weakest margin
+#: spell its gap from the threshold.
+_CRITERION_LEVEL = "value"
+_CRITERION_GAPS = frozenset({"gap", "margin"})
+
+#: A plain end's digits: a sign, the digits and a decimal part, never a bound or grouped thousands.
+_PLAIN_END = re.compile(r"[+\-]?\d+(?:\.\d+)?")
+
+
+def _tabled(figure: Figure) -> bool:
+    """Whether a key's figure is one the page's tables print of a measure or a judged score, so the key reads it at the
+    table's precision. Decided by what the figure is, not by how its family spells it: a change of any family, its
+    interval and that interval's ends (each resolver marks them :attr:`~threetears.evals.analysis.report.figure_keys.
+    Figure.change`, whether its family spells the change ``delta``, ``difference``, ``effect``, ``change`` or
+    ``vs_control``); any interval; and a level, which every family but a criterion's spells ``mean``, with its
+    interval's two ends, or a key naming no statistic, which reads its family's own figure; a criterion's figure is the
+    level of the measure it reads (``Figure.measure``), which its family spells ``value``, and its ``gap`` (the weakest
+    margin's ``margin``) a difference on that measure. No other statistic is the table's figure: an adjusted p of
+    0.0031 is never a score to two decimals, nor a half-width or a standard error a change."""
+    statistic = figure.statistic
+    if figure.change or figure.kind == "interval" or statistic is None:
+        return True
+    return statistic in _LEVEL_FIGURES or (bool(figure.measure) and statistic in (_CRITERION_LEVEL, *_CRITERION_GAPS))
+
+
+def figure_places(
+    report_input: ReportInput, key: str, *, change: bool = False, judged: bool = False, factor: float = 1.0
+) -> int | None:
+    """The decimals every plain figure of a measure or judged dimension reads at wherever the page prints it, its Full
+    results and the keys its prose cites alike: a judged score's two (:data:`~threetears.evals.kernel.numbers.
+    SCORE_PLACES`); any other figure at two significant figures of the least of its set as drawn
+    (:func:`~threetears.evals.kernel.numbers.set_places`), its levels (every mean the input holds of it) or its changes
+    (every corrected comparison's on it), each a set of its own. None for a figure with no such set: a judged level off
+    the rubric, a key that is neither, or a measure the input holds no figure of in that set, whose figure keeps the
+    number rule.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure's or judged dimension's key.
+    :ptype key: str
+    :param change: Whether the figures are changes.
+    :ptype change: bool
+    :param judged: Whether the figures are a judged dimension's (a comparison of kind ``judged``), not a measure's.
+    :ptype judged: bool
+    :param factor: What each figure is multiplied by where it is drawn: the set is placed as it prints.
+    :ptype factor: float
+    :return: The decimals, or None.
+    :rtype: int | None
+    """
+    if rubric_score(report_input, key) and (judged or key not in report_input.measures):
+        return SCORE_PLACES
+    if change:
+        held = [
+            float(contrast.delta)
+            for contrast in report_input.contrasts
+            if contrast.measure == key and (contrast.kind == "judged") == judged and contrast.delta is not None
+        ]
+    elif judged or key not in report_input.measures:
+        return None
+    else:
+        held = held_means(report_input, key)
+    # A measure the input holds no such figure of has no set: its figure keeps the number rule, never zero decimals.
+    return set_places(value * factor for value in held) if held else None
+
+
 # --- the written page: the Full results' decisions ---------------------------------------------------------------------
 
 
@@ -1567,7 +1837,7 @@ def _change_quantity(
 
 def _level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
     """The decimals every level of a measure reads at in every Full results table, by the one owner the keys citing it
-    read too (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`), as drawn: a judged score at two,
+    read too (:func:`figure_places`), as drawn: a judged score at two,
     any other measured figure (a count per trial, a time) at two significant figures of the least of every mean the
     input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate, whose column
     rule spells it, and for money, whose form does.
@@ -1592,7 +1862,7 @@ def _change_decimals(report_input: ReportInput, measure: str, kind: str | None, 
     """The decimals a comparison's change and its interval's ends read at: a rate's in points at one decimal (``-6.0
     pts`` beside ``-7.6 pts``); a score's at two and any other measured change at two significant figures of the least
     change the page states of its measure, as drawn, by the one owner the keys citing it read too
-    (:func:`~threetears.evals.analysis.report.figure_keys.figure_places`); None for money, whose form spells it.
+    (:func:`figure_places`); None for money, whose form spells it.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -1752,7 +2022,7 @@ def _written_interval(
     drawn = _drawn(form, change=change)
     if not change or form.change_decimals is None:
         scaled = (low * drawn.factor, high * drawn.factor)
-        text = interval_words(scaled[0], scaled[1], drawn)
+        text = _interval_words(scaled[0], scaled[1], drawn)
         return figure_text(scaled[0], drawn), figure_text(scaled[1], drawn), text
     low_text, high_text = _change_ends(
         low * drawn.factor, high * drawn.factor, form.change_decimals, drawn.unit, span=span

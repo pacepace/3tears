@@ -52,6 +52,7 @@ from threetears.evals.analysis.report.figure_keys import (
     parse_key,
     resolve,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -188,7 +189,8 @@ def _check(asked: str, report_input: ReportInput) -> KeyCheck:
         )
     except UnresolvableReference as refused:
         return _refused(asked, str(refused), _PATH_REMEDY, (form.form, form.what))
-    taken = list(figure_filters(figure))
+    # The filters a figure takes, each spelled in the forms its input's page would print it in.
+    taken = list(figure_filters(figure, forms=PageForms.of(report_input)))
     try:
         written = cite_written(key.path, key.filters, report_input)
     except UnresolvableReference as refused:

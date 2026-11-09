@@ -116,6 +116,7 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     reader_name,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
@@ -523,9 +524,12 @@ def _undecided_facts(
 
 # --- counts written as words ---------------------------------------------------------------------------------------
 
-#: The count words, as the ``words`` filter spells a count from zero to twenty: the one vocabulary, read off it.
+#: The count words, as the ``words`` filter spells a count from zero to twenty: the one vocabulary, read off it. A
+#: count is no measure's figure and reads off no page, so it is spelled in an off-page surface's forms.
 _COUNT_WORDS = tuple(
-    format_figure(Figure(path="count", kind="number", value=float(count), scale="count"), ("words",))
+    format_figure(
+        Figure(path="count", kind="number", value=float(count), scale="count"), ("words",), forms=PageForms.off_page()
+    )
     for count in range(21)
 )
 

@@ -49,6 +49,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render, written_arm
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
@@ -336,9 +337,9 @@ def test_an_arm_reads_one_name_on_every_page_and_one_tag_on_one_listing_line(
         assert code[key] in page and code[key] in aspect, code[key]
         assert (held.name, held.tag) == (listed[key], listed_tags[key]), "the listing names it as the document does"
         assert f"Adopting {listed[key]} overrides" in caveats, (listed[key], caveats)
-        assert render(f"{{arm:{held.id}}}", built, {arm.id: arm.name for arm in doc.values()}) == written_arm(
-            held.name, held.tag
-        )
+        assert render(
+            f"{{arm:{held.id}}}", built, {arm.id: arm.name for arm in doc.values()}, forms=PageForms.of(built)
+        ) == written_arm(held.name, held.tag)
         for name, tags in ((code[key], code_tags), (listed[key], listed_tags)):
             assert name == _bare(name) or name.endswith(f" ({tags[key]})"), name
     assert {_bare(name) for name in listed.values()} == {"Extractor instructions", "no extractor instructions"}
@@ -352,7 +353,12 @@ def test_a_name_told_apart_by_its_tag_is_written_with_its_tag_once() -> None:
     host, _ = _prompt_host()
     built = report_input(assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE))
     arms = fact_arms(built)
-    written = render(" vs ".join(f"{{arm:{arm.id}}}" for arm in built.arms), built, {arm.id: arm.name for arm in arms})
+    written = render(
+        " vs ".join(f"{{arm:{arm.id}}}" for arm in built.arms),
+        built,
+        {arm.id: arm.name for arm in arms},
+        forms=PageForms.of(built),
+    )
 
     assert [arm.id for arm in built.arms] == _FROZEN_LABELS, "the report input keeps the frozen names"
     assert written == "Extractor instructions (A) vs Extractor instructions (B) vs no extractor instructions (C)"

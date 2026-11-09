@@ -138,7 +138,7 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
     assert aspect_costs_per_thousand(held, "arrival")["qwen3.8-flash"] == pytest.approx(2.6)
     assert _row(table, held, "qwen3.8-flash")["cost_per_1k@arrival"].value == "$2.60"
     # The cells' figures are ones prose can cite: their keys render.
-    assert render("{aspects.arrival.scoreboard.September.passed}", held, {}) == "127"
+    assert render("{aspects.arrival.scoreboard.September.passed}", held, {}, forms=PageForms.of(held)) == "127"
 
 
 def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_figures() -> None:
@@ -215,7 +215,7 @@ def test_a_dash_where_an_arm_recorded_none_says_so_and_one_where_the_aspect_read
 
 def test_the_arms_key_counts_each_aspects_usable_trials() -> None:
     held = _three_aspects()
-    table = arms_key(held, block_look(held, fact_arms(held))).table
+    table = arms_key(held, block_look(held, fact_arms(held)), forms=PageForms.of(held)).table
     keys = [column.key for column in table.columns]
     assert "usable" not in keys
     assert [key for key in keys if "@" in key] == [f"usable@{aspect.id}" for aspect in held.aspects]
@@ -227,5 +227,5 @@ def test_an_input_whose_other_aspects_hold_no_figures_lays_its_tables_out_for_on
     bare = held.model_copy(update={"aspects": [*held.aspects, Aspect(id="arrival", name="arrival", readings=[])]})
     look = block_look(held, fact_arms(held))
     assert arms_table(bare, look, (), forms=PageForms.of(bare)) == arms_table(held, look, (), forms=PageForms.of(held))
-    assert arms_key(bare, look) == arms_key(held, look)
+    assert arms_key(bare, look, forms=PageForms.of(bare)) == arms_key(held, look, forms=PageForms.of(held))
     assert every_table(bare, look, forms=PageForms.of(bare)) == every_table(held, look, forms=PageForms.of(held))

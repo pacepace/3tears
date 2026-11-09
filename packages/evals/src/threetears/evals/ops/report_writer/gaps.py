@@ -36,6 +36,7 @@ from typing import Any, Final
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import keys_in, render
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_doc_checks import DocVerdict
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
@@ -242,6 +243,8 @@ def _unresolved_keys(
 ) -> Iterator[EvalAnalystGap]:
     """Each figure key a checked draft wrote that does not resolve, at a field its check found a verdict at."""
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
+    # A key is read as the check read it, in the forms its input's page would print it in.
+    forms = PageForms.of(report_input)
     for submission, (doc, verdicts) in enumerate(drafts.checked, start=1):
         if not verdicts:
             continue
@@ -258,7 +261,7 @@ def _unresolved_keys(
                 assert key.span is not None
                 written = text[key.span[0] : key.span[1]]
                 try:
-                    render(written, report_input, names)
+                    render(written, report_input, names, forms=forms)
                 except UnresolvableReference as refused:
                     yield _unresolved(submission, path, written, str(refused), at, provenance)
 

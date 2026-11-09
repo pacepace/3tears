@@ -52,8 +52,8 @@ from threetears.evals.analysis.report.charts import (
     RangeBarsChart,
     ScatterChart,
 )
-from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.parts.charting import COMPUTED, figure_unit, misses_line
+from threetears.evals.analysis.report.figure_keys import resolve, figure_unit
+from threetears.evals.analysis.report.parts.charting import COMPUTED, misses_line
 from threetears.evals.analysis.report.parts.look import PageLook, quantity
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart

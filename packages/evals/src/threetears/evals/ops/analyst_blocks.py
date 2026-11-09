@@ -8,7 +8,8 @@ a pure read: the same snapshot and parameters always return the same result.
 
 The result models are the computation's, and the figure-key grammar the catalog's key forms are read from
 (:func:`figure_key_grammar`), with its index and pages (:func:`figure_key_index`, :func:`figure_key_pages`), which the
-analyst tool's help serves, re-exported here for the actions layer, which reads no analysis module.
+analyst tool's help serves, served here for the actions layer, which reads no analysis module: each prints its
+examples in the forms a page of its made-up input prints them in.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from threetears.evals.analysis.analyst.blocks import (
     BlockCatalog,
     RenderedBlock,
 )
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, figure_key_index, figure_key_pages
+from threetears.evals.analysis.report import figure_keys
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
@@ -39,6 +41,38 @@ __all__ = [
     "figure_key_index",
     "figure_key_pages",
 ]
+
+
+def figure_key_grammar() -> str:
+    """The figure-key grammar, whole (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_grammar`), its
+    examples in their page's forms.
+
+    :return: The section, heading first.
+    :rtype: str
+    """
+    return figure_keys.figure_key_grammar(forms_of=PageForms.of)
+
+
+def figure_key_index(topic: str) -> str:
+    """The grammar's index (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_index`), its examples in
+    their page's forms.
+
+    :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
+    :ptype topic: str
+    :return: The index, heading first.
+    :rtype: str
+    """
+    return figure_keys.figure_key_index(topic, forms_of=PageForms.of)
+
+
+def figure_key_pages() -> dict[str, str]:
+    """The grammar's pages (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_pages`), their examples in
+    their page's forms.
+
+    :return: Each page, by its group's name.
+    :rtype: dict[str, str]
+    """
+    return figure_keys.figure_key_pages(forms_of=PageForms.of)
 
 
 def _refused[T](compute: Callable[[], T]) -> T:

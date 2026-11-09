@@ -6,9 +6,9 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
 :class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the page design's §3, first written for the
 retired planned page) are here, once:
 
-- **Units.** A figure's unit as the page reads it (:func:`figure_unit`): a measure's declared unit; a pass-fail
-  rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent
-  otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
+- **Units.** A figure's unit as the page reads it (:func:`~threetears.evals.analysis.report.figure_keys.figure_unit`):
+  a measure's declared unit; a pass-fail rate's scale read from every figure the input holds for it (a share where
+  each lies in 0 to 1, a percent otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
   the pass rate, a share; a scoreboard figure money (a reply's cost, or the trials' in all) or a count.
   :func:`~threetears.evals.analysis.report.parts.look.quantity` says how it is drawn. A contrast's change
   (:func:`contrast_unit`) is in points where it is a rate's, else in its figures' own unit: an ordinal dimension's is
@@ -47,8 +47,8 @@ retired planned page) are here, once:
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
-- **An interval's level** (:func:`interval_level`): one form wherever it prints, a chart's head and a table's cell
-  alike: to one decimal (``99.7%``), more only where one would round a level under 100 to ``100%``, and, where its
+- **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
+  prints, a chart's head and a table's cell alike: to one decimal (``99.7%``), more only where one would round a level under 100 to ``100%``, and, where its
   family corrects its comparisons together, what the family holds at once (``99.7% (95% across 16 comparisons)``).
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
@@ -79,13 +79,12 @@ from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
     NamedKind,
-    held_means,
+    figure_unit,
+    held_kind,
     input_check_name,
     resolve,
-    rubric_score,
 )
-from threetears.evals.kernel.numbers import format_number, spell_at, spell_count
-from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
+from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
@@ -93,7 +92,6 @@ from threetears.evals.analysis.report.parts.words import (
     COMPUTED_REPEATS_NOTE,
     CRITERION_LINE_TEMPLATE,
     CRITERION_LINE_WHERE,
-    FAMILY_LEVEL_TEMPLATE,
     LINE_TEMPLATES,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
@@ -102,7 +100,6 @@ from threetears.evals.analysis.report.parts.words import (
 from threetears.evals.analysis.report_input import (
     Cell,
     Contrast,
-    ContrastFamily,
     Criterion,
     ReportInput,
     Stat,
@@ -131,7 +128,6 @@ __all__ = [
     "contrast_unit",
     "contrast_unit_of",
     "contrast_words",
-    "count_text",
     "computed_interval",
     "computed_notes",
     "criterion_label",
@@ -142,11 +138,6 @@ __all__ = [
     "figure_interval",
     "figure_kind",
     "figure_stat",
-    "figure_unit",
-    "held_kind",
-    "is_rubric_score",
-    "interval_level",
-    "interval_words",
     "measure_words",
     "misses_line",
     "missing_note",
@@ -303,52 +294,10 @@ def money_drawn(
     return Drawn(chart_block(context, data, read_at=read_at), (*lines, *per))
 
 
-def _rate_unit(values: Sequence[float]) -> str:
-    return "share" if all(0 <= value <= 1 for value in values) else "percent"
-
-
-#: The scoreboard's figures that are money, each to how it is stated: a reply's cost, and what the arm's trials cost
-#: in all. Every other scoreboard figure is a count.
-_SCOREBOARD_UNITS = {"reply_cost_usd": "usd", "test_cost_usd": "dollars"}
-
-
-def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None, source: str | None = None) -> str:
-    """A measure's or judged dimension's unit as the page reads it (this module's Units), wherever its figures sit; a
-    scoreboard figure's, where the chart reads the scoreboard.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure or judged dimension, by key; a scoreboard figure's name over the scoreboard.
-    :ptype key: str
-    :param kind: A contrast's kind (``measure``, ``judged``, ``trial``), where the key is a contrast's; None otherwise.
-    :ptype kind: str | None
-    :param source: The chart's source, where ``scoreboard`` makes the key a scoreboard figure; None otherwise.
-    :ptype source: str | None
-    :return: ``share``, ``percent``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty (a
-        bare number, as every scoreboard count is).
-    :rtype: str
-    """
-    if source == "scoreboard":
-        return _SCOREBOARD_UNITS.get(key, "")
-    if kind == "trial":
-        return "share"
-    measure = report_input.measures.get(key)
-    if measure is not None and kind != "judged":
-        unit = measure.unit or ""
-        if unit == "pct":
-            return "percent"
-        if not unit and measure.grade in ("pass_fail", "class_label"):
-            return _rate_unit(held_means(report_input, key))
-        return unit
-    judged = report_input.judged.get(key)
-    if judged is not None:
-        return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
-    return ""
-
-
 def figure_kind(context: ChartContext, key: str) -> str:
     """The kind a chart's figures on ``key`` are keyed under in the page's forms: ``judged`` on a chart of judged
-    dimensions, else as the input holds the key (:func:`held_kind`).
+    dimensions, else as the input holds the key
+    (:func:`~threetears.evals.analysis.report.figure_keys.held_kind`).
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
@@ -358,44 +307,6 @@ def figure_kind(context: ChartContext, key: str) -> str:
     :rtype: str
     """
     return "judged" if context.query.source == "judged" else held_kind(context.report_input, key)
-
-
-def held_kind(report_input: ReportInput, key: str) -> str:
-    """The kind a figure on ``key`` is keyed under in the page's forms (one of the kinds
-    :meth:`~threetears.evals.analysis.report.forms.PageForms.of` keys), by what the input holds it as: ``judged`` where
-    it holds the key only as a judged dimension; ``trial`` for the pass rate (how each trial ended) where no measure
-    takes its key; ``measure`` otherwise. A scoreboard figure (a reply's cost, a count) and an aspect a criterion reads
-    are measured figures of an arm, neither judged nor a contrast's trial, so they key as a measure's. The one rule for
-    a criterion's kind, whether its threshold is a gate's line or a chart's.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure, judged dimension, scoreboard figure or aspect.
-    :ptype key: str
-    :return: ``judged``, ``trial`` or ``measure``.
-    :rtype: str
-    """
-    if key in report_input.judged and key not in report_input.measures:
-        return "judged"
-    return "trial" if key == TRIAL_PASS_NAME and key not in report_input.measures else "measure"
-
-
-def is_rubric_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
-    """Whether a figure is a judged score on the 1–5 rubric (:func:`~threetears.evals.analysis.report.figure_keys.
-    rubric_score`), not a share, nor a figure an input calls ordinal but holds off the scale.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure's or judged dimension's key.
-    :ptype key: str
-    :param kind: A contrast's kind where the key is one's; None for a measure's.
-    :ptype kind: str | None
-    :return: Whether it is a 1–5 score.
-    :rtype: bool
-    """
-    return (
-        kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
-    )
 
 
 def measure_words(report_input: ReportInput, key: str, *, kind: str | None = None, prose: bool = False) -> str:
@@ -793,59 +704,6 @@ def separated(change: float, spreads: Sequence[float | None]) -> bool | None:
     return abs(change) > math.hypot(*(one for one in spreads if one is not None))
 
 
-def interval_level(level: str, family: ContrastFamily | None) -> str:
-    """An interval's level as every surface prints it, a chart's head and a table's cell alike: to one decimal
-    (``99.69%`` reads ``99.7%``), more only where one would round a level under 100 to ``100%``, which no interval holds
-    at (``99.95%`` stays ``99.95%``); a level stored in words, as stored. Where ``family`` corrects its comparisons
-    together at this level, what the family holds at once follows (``99.7% (95% across 16 comparisons)``), so a reader
-    never meets a bare ``99.69%``.
-
-    :param level: The level as the input states it (``99.69%``).
-    :ptype level: str
-    :param family: The contrast family the interval belongs to, or None.
-    :ptype family: ContrastFamily | None
-    :return: The level's words.
-    :rtype: str
-    """
-    shown = _readable_level(level)
-    if family is None or family.level != level or family.alpha is None:
-        return shown
-    corrected = (family.correction or "").strip().lower() not in ("", "none")
-    if not corrected or not family.family_size or family.family_size < 2:
-        return shown
-    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
-    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
-
-
-def _readable_level(level: str) -> str:
-    number = level.strip().removesuffix("%")
-    try:
-        value = float(number)
-    except ValueError:
-        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
-        return level
-    places = 1
-    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
-        places += 1
-    text = spell_at(value, places)
-    return f"{text.rstrip('0').rstrip('.')}%"
-
-
-def interval_words(low: float, high: float, drawn: Quantity) -> str:
-    """An interval in a tooltip: its two ends by the package's number rule, joined as prose joins them.
-
-    :param low: Its low end, in display units.
-    :ptype low: float
-    :param high: Its high end, in display units.
-    :ptype high: float
-    :param drawn: The quantity drawn.
-    :ptype drawn: Quantity
-    :return: The words (``-10.8 to -3.4``).
-    :rtype: str
-    """
-    return f"{figure_text(low, drawn)} to {figure_text(high, drawn)}"
-
-
 def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | None:
     """The chart's stored reference line, read off the input in display units, labelled in code's words.
 
@@ -1151,8 +1009,8 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
 
 def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]) -> dict[str, Quantity]:
     """Each measure's quantity on a chart that draws it in its own unit (this module's one unit per axis): its unit's
-    (:func:`figure_unit`), at its own factor, so each figure is drawn at its own scale; and the measures drawn alike (a
-    share beside a percent) share one quantity but for the factor, its format following every figure the chart draws
+    (:func:`~threetears.evals.analysis.report.figure_keys.figure_unit`), at its own factor, so each figure is drawn at
+    its own scale; and the measures drawn alike (a share beside a percent) share one quantity but for the factor, its format following every figure the chart draws
     of them, so they read alike on one axis.
 
     :param context: The chart being resolved.
@@ -1205,7 +1063,8 @@ def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:
 def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str:
     """Why a chart cannot draw the measures it reads (the one-unit rule the plan checks and the resolvers share): a
     chart of strata or tasks that names no measure where its slices hold other than one (a heatmap and a difference
-    heatmap read every one), or measures in more than one unit (:func:`figure_unit`) on one axis. A kind that draws
+    heatmap read every one), or measures in more than one unit
+    (:func:`~threetears.evals.analysis.report.figure_keys.figure_unit`) on one axis. A kind that draws
     each measure in its own panel gives each panel its measure's unit and may read several.
 
     :param kind: The chart's kind.
@@ -1381,15 +1240,3 @@ def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tupl
         return None, None
     tag = context.look.arm(arm).tag if arm in context.look.arms else None
     return name, tag
-
-
-def count_text(count: float) -> str:
-    """A count as a chart's words print it: the figure keys' whole-number spelling, thousands separated
-    (``1,234``), so a count reads alike on a chart and in the prose beside it.
-
-    :param count: The count.
-    :ptype count: float
-    :return: The text.
-    :rtype: str
-    """
-    return spell_count(round(count))

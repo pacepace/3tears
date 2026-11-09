@@ -150,11 +150,12 @@ _EXPLORE_ORDER = "as the report lists them"
 @dataclass
 class _Reader:
     """One page's reading of its document: strict, refusing what does not resolve, or not, noting each path that
-    degraded."""
+    degraded; each key written in the page's forms."""
 
     report_input: ReportInput
     arm_names: Mapping[str, str]
     strict: bool
+    forms: PageForms
     degraded: list[str] = field(default_factory=list)
 
     def refuse(self, path: str, why: str) -> None:
@@ -169,14 +170,14 @@ class _Reader:
     def written(self, text: str, path: str) -> str:
         """Prose with its figure keys written out; reading, a key that no longer resolves prints ``—``."""
         try:
-            return render(text, self.report_input, self.arm_names)
+            return render(text, self.report_input, self.arm_names, forms=self.forms)
         except UnresolvableReference as refused:
             self.refuse(path, f"does not resolve on this input: {refused}")
         return _KEY.sub(lambda key: self._one_key(key.group(0)), text)
 
     def _one_key(self, key: str) -> str:
         try:
-            return render(key, self.report_input, self.arm_names)
+            return render(key, self.report_input, self.arm_names, forms=self.forms)
         except UnresolvableReference:
             # NOSILENT: reading a stored document only (strict refused above); the page prints the key as
             # unresolved and carries the one note to regenerate, which `written` recorded for this field.
@@ -195,8 +196,12 @@ def written_prose(text: str, report_input: ReportInput) -> str:
     :return: The prose with every key written out.
     :rtype: str
     """
+    # One piece of prose is read off its page, in the forms its input's page prints each figure in.
     reader = _Reader(
-        report_input=report_input, arm_names={arm.id: arm.name for arm in fact_arms(report_input)}, strict=False
+        report_input=report_input,
+        arm_names={arm.id: arm.name for arm in fact_arms(report_input)},
+        strict=False,
+        forms=PageForms.of(report_input),
     )
     return reader.written(text, "prose")
 
@@ -359,7 +364,9 @@ class _Labels:
         named = [arm for caveat_id in caveat_ids for arm in self._arms_named(caveat_id)]
         arms = [self.look.arm(arm) for arm in dict.fromkeys(named) if arm in self.look.arms]
         count = format_figure(
-            Figure(path="count", kind="number", value=float(len(caveat_ids)), scale="count"), ("words",)
+            Figure(path="count", kind="number", value=float(len(caveat_ids)), scale="count"),
+            ("words",),
+            forms=self.reader.forms,
         )
         if not arms:
             return CAVEAT_REPEATED.format(label=label, count=count)
@@ -472,18 +479,19 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
         level=spec.level,
         unit=spec.unit,
         domain=" to ".join(format_number(end) for end in spec.domain),
-        reference=_reference(spec, reader.report_input),
+        reference=_reference(spec, reader.report_input, reader.forms),
         degraded=degraded,
     )
 
 
-def _reference(spec: ChartSpec, report_input: ReportInput) -> str:
-    """A block's reference line and the figure it sits at; empty for none."""
+def _reference(spec: ChartSpec, report_input: ReportInput, forms: PageForms) -> str:
+    """A block's reference line and the figure it sits at, in the page's forms; empty for none."""
     if not spec.reference:
         return ""
     line = spec.reference[0]
     return REFERENCE_TEMPLATE.format(
-        kind=humanize("dimension", line.kind).capitalize(), value=format_figure(resolve(line.key, report_input))
+        kind=humanize("dimension", line.kind).capitalize(),
+        value=format_figure(resolve(line.key, report_input), forms=forms),
     )
 
 
@@ -552,7 +560,7 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
         key = match.group("key").rstrip(".")
         tail = match.group(0)[len(match.group(0).rstrip(".")) :]
         try:
-            return render(f"{{{key}}}", reader.report_input, reader.arm_names) + tail
+            return render(f"{{{key}}}", reader.report_input, reader.arm_names, forms=reader.forms) + tail
         except UnresolvableReference:
             # NOSILENT: a figure key's form that names no figure here (an editor's placeholder) reads in words; any
             # other dotted word (a version, a model id) is the editor's and stands.
@@ -632,10 +640,13 @@ def build(
         recommended is not the input's; each naming its field path.
     """
     arms = fact_arms(report_input)
-    reader = _Reader(report_input=report_input, arm_names={arm.id: arm.name for arm in arms}, strict=strict)
-    look = block_look(report_input, arms)
-    # Every figure the page's tables state is in one form per measure, decided once here for the whole page.
+    # Every figure the page states, its tables' and its prose keys', is in one form per measure, decided once here for
+    # the whole page.
     forms = PageForms.of(report_input)
+    reader = _Reader(
+        report_input=report_input, arm_names={arm.id: arm.name for arm in arms}, strict=strict, forms=forms
+    )
+    look = block_look(report_input, arms)
     held = {arm.id for arm in report_input.arms}
     for index, arm in enumerate(doc.recommends):
         if arm not in held:
@@ -683,7 +694,7 @@ def build(
             )
             for index, step in enumerate(doc.next)
         ],
-        arms_key=arms_key(report_input, look),
+        arms_key=arms_key(report_input, look, forms=forms),
         full_results=every_table(report_input, look, forms=forms),
         omitted=[
             DocOmitted(

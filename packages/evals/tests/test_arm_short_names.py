@@ -29,6 +29,7 @@ from threetears.evals.analysis import assemble_context_bundle, campaign_report
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.report.blocks import ChartBlock
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.model import CampaignReport
 from threetears.evals.analysis.report_input_build import report_input
@@ -303,7 +304,9 @@ class TestTheReportInputCarriesIt:
         )
         built = report_input(bundle)
 
-        written = render("{arm:v2} against {arm:v4}", built, {"v2": "computed v2", "v4": "computed v4"})
+        written = render(
+            "{arm:v2} against {arm:v4}", built, {"v2": "computed v2", "v4": "computed v4"}, forms=PageForms.of(built)
+        )
 
         assert written.startswith("Second try (A)") and "computed v2" not in written
         assert written.endswith("computed v4 (C)")

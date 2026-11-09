@@ -24,6 +24,7 @@ import pytest
 from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_inputs, fixture_snapshots
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     format_figure,
@@ -189,7 +190,7 @@ def test_some_fixture_has_an_arm_missing_a_gate_in_some_but_not_all_of_its_tasks
 def test_the_words_filter_spells_a_count_as_its_word_and_a_large_one_in_digits(count: int) -> None:
     held = INPUTS["r1"]
     figure = resolve("count.arms", held)
-    spelled = format_figure(replace(figure, value=float(count)), ("words",))
+    spelled = format_figure(replace(figure, value=float(count)), ("words",), forms=PageForms.of(held))
     if count < len(WORDS):
         assert spelled == WORDS[count]
     else:
@@ -200,14 +201,14 @@ def test_the_words_filter_is_refused_on_a_figure_that_is_no_count() -> None:
     held = INPUTS["r4"]
     arm = held.arms[0].id
     with pytest.raises(UnresolvableReference, match="cannot read as a word"):
-        render(f"{{cost_per_1k.{arm}|words}}", held, {})
+        render(f"{{cost_per_1k.{arm}|words}}", held, {}, forms=PageForms.of(held))
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_count_written_through_a_key_types_no_digit(name: str) -> None:
     held = INPUTS[name]
     sentence = "{count.surviving|words} of {count.arms|words} options survive; {count.gates} gates."
-    rendered = render(sentence, held, {})
+    rendered = render(sentence, held, {}, forms=PageForms.of(held))
     # The sentence opens on the spelled count, which takes its capital (``Two of three``).
     said = rendered.casefold()
     assert str(len(surviving_options(held))) in said or WORDS[len(surviving_options(held))] in said
@@ -220,13 +221,20 @@ def test_a_count_spelled_at_a_sentence_s_start_takes_its_capital_and_nowhere_els
     keeps its case inside one, and a key alone keeps its filter's spelling."""
     held = INPUTS["r4"]
     arms = WORDS[len(held.arms)]
-    rendered = render("{count.arms|words} arms ran. Of {count.arms|words}, the {count.arms|words} held.", held, {})
+    rendered = render(
+        "{count.arms|words} arms ran. Of {count.arms|words}, the {count.arms|words} held.",
+        held,
+        {},
+        forms=PageForms.of(held),
+    )
     assert rendered == f"{arms.capitalize()} arms ran. Of {arms}, the {arms} held.", rendered
-    assert render("{count.arms|words}", held, {}) == arms, "a key alone is a figure, read as its filter spells it"
+    assert render("{count.arms|words}", held, {}, forms=PageForms.of(held)) == arms, (
+        "a key alone is a figure, read as its filter spells it"
+    )
 
 
 def test_the_grammar_teaches_the_counts_with_their_examples_rendered() -> None:
-    grammar = figure_key_grammar()
+    grammar = figure_key_grammar(forms_of=PageForms.of)
     assert "- `count.<what>`" in grammar and "- `count.failing.<criterion>.<arm>`" in grammar
     assert '`{count.arms|words}` reads "two"' in grammar
     assert "- `words`:" in grammar
