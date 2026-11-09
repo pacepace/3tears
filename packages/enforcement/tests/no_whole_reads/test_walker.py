@@ -247,14 +247,25 @@ _PROOF = """
     async def test_warm_runs_only_on_an_empty_copy():
         follower = Follower()
         assert follower.warm
+
+    async def test_warm_is_within_its_calibrated_budget():
+        baseline = await plain_read_seconds(conn, "SELECT * FROM t")
+        took = await best_seconds(Follower().warm)
+        assert not budget_problem("warm", took, baseline)
 """
 
 
+_SPEED = "tests/test_cold.py::test_warm_is_within_its_calibrated_budget"
+
+
 def _ledger(
-    kind: str = "cold-start", count: int = 1, test: str = "tests/test_cold.py::test_warm_runs_only_on_an_empty_copy"
+    kind: str = "cold-start",
+    count: int = 1,
+    test: str = "tests/test_cold.py::test_warm_runs_only_on_an_empty_copy",
+    speed: str = _SPEED,
 ) -> str:
     reason = "the first start of an empty copy, with no checkpoint in L2 to load"
-    return f"src/follower.py :: Follower.warm :: {count} :: {kind} :: {test} :: {reason}\n"
+    return f"src/follower.py :: Follower.warm :: {count} :: {kind} :: {test} :: {speed} :: {reason}\n"
 
 
 def _proof(tmp_path: Path, body: str = _PROOF) -> None:
@@ -277,13 +288,19 @@ def test_a_cold_start_with_its_proving_test_is_exempt(tmp_path: Path) -> None:
 
 def test_an_exemption_needs_a_cold_start_or_schema_change_and_a_test_that_names_the_function(tmp_path: Path) -> None:
     """Flips if a ledger line is accepted for any other reason, without a test, with a test that never names the
-    function, or with a hit count the code does not have."""
-    _proof(tmp_path, "async def test_warm_runs_only_on_an_empty_copy():\n    assert True\n")
+    function, with a hit count the code does not have, or without a speed test held to a calibrated budget."""
+    _proof(
+        tmp_path,
+        "async def test_warm_runs_only_on_an_empty_copy():\n    assert True\n\n"
+        "async def test_warm_is_within_its_calibrated_budget():\n    assert Follower().warm\n",
+    )
     cases = {
         "small-table": "is not a reason to read whole",
         "cold-start-count": "pins 2 hits but the code has 1",
         "cold-start-missing": "names no test file",
         "cold-start-silent": "never names warm",
+        "cold-start-no-speed": "the speed test names no test file",
+        "cold-start-no-budget": "never calls budget_problem",
     }
     for case, message in cases.items():
         ledger = {
@@ -291,6 +308,8 @@ def test_an_exemption_needs_a_cold_start_or_schema_change_and_a_test_that_names_
             "cold-start-count": _ledger(count=2),
             "cold-start-missing": _ledger(test="tests/nowhere.py::test_x"),
             "cold-start-silent": _ledger(),
+            "cold-start-no-speed": _ledger(speed="tests/nowhere.py::test_x"),
+            "cold-start-no-budget": _ledger(),
         }[case]
         findings = no_whole_reads_findings(_config(tmp_path, {"follower.py": _COLD}, ledger=ledger))
         assert any(message in finding for finding in findings), (case, findings)
@@ -379,3 +398,12 @@ def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path)
     assert any(
         "drill @operator_command: the proof" in finding and "never names drill" in finding for finding in findings
     )
+
+
+def test_a_ledger_line_without_its_speed_test_field_is_malformed(tmp_path: Path) -> None:
+    """Flips if a line of the old six fields, a cold start with no speed test, is still read as an exemption."""
+    _proof(tmp_path)
+    reason = "the first start of an empty copy, with no checkpoint in L2 to load"
+    old = f"src/follower.py :: Follower.warm :: 1 :: cold-start :: tests/test_cold.py::test_warm_runs_only_on_an_empty_copy :: {reason}\n"
+    findings = no_whole_reads_findings(_config(tmp_path, {"follower.py": _COLD}, ledger=old))
+    assert any("expected 7 fields" in finding for finding in findings), findings

@@ -36,13 +36,18 @@ that names the function and proves its entry needs the operator; the reason is 3
 **The one way out for a cold start or schema change: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
 in the repo's ``_no_whole_reads_exemptions.txt``, one line each::
 
-    <repo-relative path> :: <qualified function> :: <hits> :: <cold-start|schema-change> :: <proving test> :: <reason>
+    <path> :: <qualified function> :: <hits> :: <cold-start|schema-change> :: <proving test> :: <speed test> :: <reason>
 
 - ``<hits>`` pins the function's hit count exactly: a new whole read added inside an exempt function fails, and so
   does a line whose hits went;
 - ``<proving test>`` is ``<repo-relative test file>::<test function>``: a test that proves the function is reached
   ONLY on a cold start (an empty copy, no checkpoint) or a schema change, never on a steady-state load, a retry or
   a recovery. The gate checks the file defines that test and that the test names the function;
+- ``<speed test>`` is ``<repo-relative test file>::<test function>`` too: a real-size speed test of the function,
+  held to a multiple of the bare operation timed on the same database
+  (:func:`threetears.core.testing.calibrate.budget_problem`), never a figure in seconds. "It only runs once" is no
+  reason for a cold start to be slow. The gate checks the file defines that test, that it names the function and
+  that it calls ``budget_problem``;
 - ``<reason>`` says which cold start or schema change, in 30 characters or more.
 
 A line is never "it's small", "it's an admin path", "it's being fixed" or "pre-existing": those are violations,
@@ -60,6 +65,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.walker import (
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
@@ -132,6 +138,7 @@ class _Exemption:
     :ivar kind: ``cold-start`` or ``schema-change``
     :ivar test: ``<test file>::<test function>``
     :ivar reason: why
+    :ivar speed_test: ``<test file>::<test function>`` of its calibrated speed test
     """
 
     file_line: int
@@ -141,6 +148,7 @@ class _Exemption:
     kind: str
     test: str
     reason: str
+    speed_test: str = ""
 
 
 def _parse(path: Path) -> tuple[list[_Exemption], list[str]]:
@@ -161,10 +169,13 @@ def _parse(path: Path) -> tuple[list[_Exemption], list[str]]:
             continue
         parts = [part.strip() for part in stripped.split(_SEPARATOR)]
         where = f"{path.name}:{number}"
-        if len(parts) != 6:
-            defects.append(f"{where}: expected 6 fields separated by '{_SEPARATOR.strip()}', got {len(parts)}")
+        if len(parts) != 7:
+            defects.append(
+                f"{where}: expected 7 fields separated by '{_SEPARATOR.strip()}' (path, function, hits, kind, proving "
+                f"test, speed test, reason), got {len(parts)}"
+            )
             continue
-        module, function, count, kind, test, reason = parts
+        module, function, count, kind, test, speed, reason = parts
         if kind not in _EXEMPTION_KINDS:
             defects.append(f"{where}: {kind!r} is not a reason to read whole; only {sorted(_EXEMPTION_KINDS)} are")
         elif not count.isdigit() or int(count) < 1:
@@ -175,21 +186,28 @@ def _parse(path: Path) -> tuple[list[_Exemption], list[str]]:
             defects.append(f"{where}: {module} :: {function} is listed twice")
         else:
             seen.add((module, function))
-            lines.append(_Exemption(number, module, function, int(count), kind, test, reason))
+            lines.append(_Exemption(number, module, function, int(count), kind, test, reason, speed))
     return lines, defects
 
 
-def _proving_test_defect(repo_root: Path, exemption: _Exemption) -> str | None:
-    """what is wrong with an exemption's proving test, if anything.
+def _proving_test_defect(
+    repo_root: Path, exemption: _Exemption, *, test: str | None = None, calls: str | None = None
+) -> str | None:
+    """what is wrong with an exemption's proving test (or its speed test), if anything.
 
     :param repo_root: the repo root
     :ptype repo_root: Path
     :param exemption: the line
     :ptype exemption: _Exemption
-    :return: the defect, or None when the file defines the test and the test names the function
+    :param test: the test to judge, ``<file>::<function>``; the line's proving test when None
+    :ptype test: str | None
+    :param calls: a name the test must call as well as naming the function (the speed test's ``budget_problem``)
+    :ptype calls: str | None
+    :return: the defect, or None when the file defines the test and the test names the function (and calls
+        ``calls``)
     :rtype: str | None
     """
-    module, _, name = exemption.test.partition("::")
+    module, _, name = (exemption.test if test is None else test).partition("::")
     test_path = repo_root / module
     defect: str | None = None
     if not name or not test_path.is_file():
@@ -206,6 +224,12 @@ def _proving_test_defect(repo_root: Path, exemption: _Exemption) -> str | None:
             defect = f"{module} defines no {name}"
         elif not any(target in "\n".join(ast.unparse(statement) for statement in test.body) for test in tests):
             defect = f"{module}::{name} never names {target}: it cannot prove where {target} is reached"
+        elif calls is not None and not any(
+            isinstance(node, ast.Call) and (dotted(node.func) or "").rsplit(".", 1)[-1] == calls
+            for test in tests
+            for node in ast.walk(test)
+        ):
+            defect = f"{module}::{name} never calls {calls}: a speed budget is a multiple of a calibrated baseline"
     return defect
 
 
@@ -315,6 +339,9 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         defect = _proving_test_defect(config.repo_root, exemption)
         if defect is not None:
             findings.append(f"{where}: the proving test {defect}")
+        speed = _proving_test_defect(config.repo_root, exemption, test=exemption.speed_test, calls="budget_problem")
+        if speed is not None:
+            findings.append(f"{where}: the speed test {speed}")
     findings.extend(_operator_mark_findings(config, scan))
     for hit in hits:
         if _marked(hit, scan.operators):
