@@ -29,6 +29,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evide
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, build_campaign_bundle
 from threetears.evals.analysis import TableBlock, build_code_only_report
 from threetears.evals.analysis.report.build import NO_STRATUM
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import StratumFacts
@@ -232,7 +233,9 @@ class TestADeclaredNameReachesThePage:
     def test_a_figure_key_and_rendered_prose_print_the_declared_name(self) -> None:
         built = _input({"off_lane": "Off-lane asks"})
         assert resolve("strata.off_lane.name", built).value == "Off-lane asks"
-        assert render("Worst in {strata.off_lane.name}", built, {}) == "Worst in Off-lane asks"
+        assert (
+            render("Worst in {strata.off_lane.name}", built, {}, forms=PageForms.of(built)) == "Worst in Off-lane asks"
+        )
 
     def test_a_name_no_stratum_holds_reaches_nothing(self) -> None:
         assert [stratum.name for stratum in _input({"elsewhere": "Elsewhere"}).strata] == [None]

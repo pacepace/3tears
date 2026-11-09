@@ -67,6 +67,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report.figure_keys import keys_in, page_arm_names, printed_arm_name, reader_names, render
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
@@ -219,6 +220,8 @@ def _allowed_phrases(doc: ReportDoc) -> re.Pattern[str]:
 
 def _number_verdicts(doc: ReportDoc, prose: list[tuple[str, str]], report_input: ReportInput) -> Iterator[DocVerdict]:
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
+    # A check reads the document off its page, so it reads each key in the forms its input's page would print it in.
+    forms = PageForms.of(report_input)
     for path, text in prose:
         try:
             keys = keys_in(text)
@@ -229,7 +232,7 @@ def _number_verdicts(doc: ReportDoc, prose: list[tuple[str, str]], report_input:
             assert key.span is not None
             start, end = key.span
             try:
-                render(text[start:end], report_input, names)
+                render(text[start:end], report_input, names, forms=forms)
             except UnresolvableReference as refused:
                 yield DocVerdict(invariant=1, path=path, fault=str(refused), remedy=_KEY_REMEDY)
     for path, fault in literal_faults(prose, report_input, allowed=_allowed_phrases(doc)):

@@ -27,6 +27,7 @@ import pytest
 
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     format_figure,
@@ -72,7 +73,7 @@ def _slot(key: str) -> str:
 
 
 def _rendered(text: str) -> str:
-    return render(text, _input("r5"), _r5_names())
+    return render(text, _input("r5"), _r5_names(), forms=PageForms.of(_input("r5")))
 
 
 def _counted(name: str, key: str) -> str:
@@ -83,7 +84,11 @@ def _counted(name: str, key: str) -> str:
 
 
 def _figure(path: str, filters: str = "", name: str = "r5") -> str:
-    return format_figure(resolve(path, _input(name)), tuple(part for part in filters.split("|") if part))
+    return format_figure(
+        resolve(path, _input(name)),
+        tuple(part for part in filters.split("|") if part),
+        forms=PageForms.of(_input(name)),
+    )
 
 
 def _small(**parts: Any) -> ReportInput:
@@ -225,8 +230,8 @@ class TestAPathIsMatchedNotSplit:
 
     def test_a_dotted_arm_beside_its_prefix_resolves_to_the_one_reading(self):
         report_input = _small(contrasts=[_contrast("a.b", "q", -0.05), _contrast("a", "b.r", -0.03)])
-        assert format_figure(resolve("contrast.a.b.q.delta", report_input)) == "-5"
-        assert format_figure(resolve("contrast.a.b.r.delta", report_input)) == "-3"
+        assert format_figure(resolve("contrast.a.b.q.delta", report_input), forms=PageForms.of(report_input)) == "-5"
+        assert format_figure(resolve("contrast.a.b.r.delta", report_input), forms=PageForms.of(report_input)) == "-3"
 
     def test_a_path_that_reads_two_ways_is_refused_naming_both(self):
         report_input = _small(contrasts=[_contrast("a.b", "x", -0.05), _contrast("a", "b.x", -0.03)])
@@ -343,14 +348,14 @@ class TestFilters:
         held = _input("r4")
         month = resolve(f"cost_per_month.{held.arms[0].id}", held)
         assert isinstance(month.value, float) and month.value >= 1000, "the control: a monthly amount in thousands"
-        assert format_figure(month, ("usd_whole",)) == f"${round(month.value):,}"
+        assert format_figure(month, ("usd_whole",), forms=PageForms.of(held)) == f"${round(month.value):,}"
 
     def test_usd_whole_refuses_an_amount_it_would_round_away_and_a_figure_that_is_no_money(self):
         held = _input("r4")
         with pytest.raises(UnresolvableReference, match="whole dollars would round away"):
-            format_figure(resolve(f"cost_per_1k.{held.arms[0].id}", held), ("usd_whole",))
+            format_figure(resolve(f"cost_per_1k.{held.arms[0].id}", held), ("usd_whole",), forms=PageForms.of(held))
         with pytest.raises(UnresolvableReference, match="cannot read as dollars"):
-            format_figure(resolve("meta.volume_per_month", held), ("usd_whole",))
+            format_figure(resolve("meta.volume_per_month", held), ("usd_whole",), forms=PageForms.of(held))
 
     def test_int_rounds_to_a_whole_number(self):
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"
@@ -510,7 +515,9 @@ class TestDerivedValues:
 class TestRender:
     def test_an_arm_is_named_by_its_short_name_and_tag(self):
         report_input = _input("r4")
-        text = render("{arm:prod} against {arm:f64}", report_input, {"f64": "flash · 64k out"})
+        text = render(
+            "{arm:prod} against {arm:f64}", report_input, {"f64": "flash · 64k out"}, forms=PageForms.of(report_input)
+        )
         assert text == "Production (P) against flash · 64k out (A)"
 
     def test_double_braces_are_the_memos_grammar_and_refused(self):
@@ -590,13 +597,13 @@ class TestLiteralNumbers:
 
 class TestTheGrammar:
     def test_it_teaches_every_filter_with_a_rendered_example(self):
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         for name in ("pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole"):
             assert f"- `{name}`:" in grammar, name
         assert '`{pass_rate.base|pct}` reads "85.3%"' in grammar
 
     def test_it_teaches_every_family_the_design_names(self):
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         for form in (
             "meta.<field>",
             "control.<field>",
@@ -628,16 +635,16 @@ class TestTheGrammar:
             assert f"- `{form}`:" in grammar, form
 
     def test_it_states_the_literal_number_rule(self):
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         assert "write `{arm:1017}`, not `1017`" in grammar
         assert "`p95`" in grammar and "`per 1,000 replies`" in grammar
         assert "never split at dots" in grammar
 
     def test_it_teaches_that_a_key_prints_its_own_unit_and_money_per_reply_reads_per_thousand(self):
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         assert "A key prints its own unit" in grammar and "never write a unit after it" in grammar
         assert "Money per reply reads per 1,000 replies: write `{scoreboard.base.reply_cost_usd|usd_per_1k}`" in grammar
         assert '"$1.89 per 1,000 replies"' in grammar
 
     def test_its_worked_example_is_rendered(self):
-        assert '"fast.v2 (A) is down 4.3 points (-7.1 to -1.4)."' in figure_key_grammar()
+        assert '"fast.v2 (A) is down 4.3 points (-7.1 to -1.4)."' in figure_key_grammar(forms_of=PageForms.of)

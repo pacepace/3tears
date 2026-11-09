@@ -49,7 +49,14 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, Tabl
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
-from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    cost_basis,
+    criterion_ruler,
+    format_figure,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text, quantity
@@ -58,7 +65,7 @@ from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
-from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
+from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report.forms import PageForms
@@ -233,7 +240,7 @@ def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_su
     drawn = quantity("dollars", values)
     for figure in months.values():
         assert isinstance(figure.value, float)
-        key = format_figure(figure, ("usd",))
+        key = format_figure(figure, ("usd",), forms=PageForms.of(held))
         assert key == figure_text(figure.value * drawn.factor, drawn) == money_form(values).spell(figure.value)
         assert re.fullmatch(r"\$[\d,]+\.\d\d", key), key
 
@@ -271,7 +278,7 @@ def test_a_planted_family_under_a_cent_reads_in_one_plain_form_in_every_key() ->
     moved = held.model_copy(
         update={"measures": {**held.measures, "cost_per_1k": measure.model_copy(update={"per_arm": per_arm})}}
     )
-    texts = [format_figure(resolve(f"cost_per_1k.{arm}", moved), ("usd",)) for arm in arms]
+    texts = [format_figure(resolve(f"cost_per_1k.{arm}", moved), ("usd",), forms=PageForms.of(moved)) for arm in arms]
     assert not any(text.endswith("/1000") for text in texts), texts
     # A rate: $8.00 to cents, $110 in whole dollars from $10 (Q3).
     assert _one_form(texts) and {text.split(" ")[0] for text in texts} == {"$8.00", "$110"}, texts
@@ -313,7 +320,8 @@ def test_every_key_of_a_money_family_reads_in_its_sets_one_form(
         # Per 1,000 a family under a cent moves its ruler to per 1,000,000, the mark never stacked on it.
         values = {arm: value * 1000 for arm, value in values.items()}
         form = money_form(values.values(), rate=rate, reconciles=reconciles)
-    texts = {arm: format_figure(figure, filters) for arm, figure in figures.items()}
+    forms = PageForms.of(held)
+    texts = {arm: format_figure(figure, filters, forms=forms) for arm, figure in figures.items()}
     for arm, text in texts.items():
         assert text.startswith(form.spell(values[arm])), (arm, text)
     assert _one_form(texts.values()), texts
@@ -469,7 +477,7 @@ def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
     monthly $1,208, so its key and every table keep the third figure its month needs (owner ruling Q3: one more figure
     only where needed)."""
     held = INPUTS["r2"]
-    said = format_figure(resolve("cost_per_1k.brisk-s.low.r1", held), ("usd",))
+    said = format_figure(resolve("cost_per_1k.brisk-s.low.r1", held), ("usd",), forms=PageForms.of(held))
     assert said == "$0.302"
     found = [
         text
@@ -550,7 +558,7 @@ def test_a_money_change_reads_in_its_amounts_form_to_its_intervals_precision(nam
         means = [float(stat.mean) for stat in measure.per_arm.values() if stat.mean is not None]
         low, high = (float(end) for end in contrast.interval)
         figure = resolve(f"contrast.{contrast.arm}.{contrast.measure}.delta", held)
-        text = format_figure(figure)
+        text = format_figure(figure, forms=PageForms.of(held))
         if figure.per and min(abs(mean) for mean in means if mean) < CENT:
             # Money per something under a cent reads per 1,000 of it with its count (Q4), on its amounts' ruler.
             own = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}[measure.unit]
@@ -570,7 +578,9 @@ def test_a_money_change_reads_in_its_amounts_form_to_its_intervals_precision(nam
 
 def test_the_kairo_cost_contrast_reads_two_figures_of_its_interval() -> None:
     held = INPUTS[KAIRO]
-    text = format_figure(resolve("contrast.1017.production_replicating_cost.delta", held), ("usd_per_1k",))
+    text = format_figure(
+        resolve("contrast.1017.production_replicating_cost.delta", held), ("usd_per_1k",), forms=PageForms.of(held)
+    )
     assert text.startswith("+$0.49 "), text
 
 
@@ -582,7 +592,7 @@ def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> Non
         pytest.skip(f"{name} states fewer than two costs")
     form = money_form(costs.values(), rate=True)
     first, second = list(costs)[:2]
-    text = format_figure(resolve(f"cost.gap.{first}.{second}.per_1k", held), ("usd",))
+    text = format_figure(resolve(f"cost.gap.{first}.{second}.per_1k", held), ("usd",), forms=PageForms.of(held))
     # A gap takes its precision from its own size, in the form (the scale) of the costs it compares (#993).
     gap = costs[first] - costs[second]
     figure = resolve(f"cost.gap.{first}.{second}.per_1k", held)
@@ -603,8 +613,8 @@ def test_a_cost_per_1000_times_the_volume_reaches_the_monthly_figure_within_the_
     volume = float(held.meta.volume_per_month or 0)
     checked = 0
     for arm in _arms(held, "cost_per_1k.{arm}"):
-        price_text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
-        month_text = render(f"{{cost_per_month.{arm}|usd}}", held, {})
+        price_text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}, forms=PageForms.of(held))
+        month_text = render(f"{{cost_per_month.{arm}|usd}}", held, {}, forms=PageForms.of(held))
         price, month = _amount(price_text) / (1000 if "per 1,000,000" in price_text else 1), _amount(month_text)
         (per_thousand, decimals), *_ = _places([price_text])
         rounding = 10.0**-decimals / 2 / (1000 if per_thousand or "per 1,000,000" in price_text else 1)
@@ -754,7 +764,9 @@ def test_r3s_price_per_1000_moves_its_ruler_and_stacks_no_mark() -> None:
     """r3's least cost is $0.0013 per 1,000 turns: its usd_per_1k keys read per 1,000,000 turns, never
     $180.00/1000 per 1,000; a rate of $10 or more reads in whole dollars (Q3)."""
     held = INPUTS["r3"]
-    text = format_figure(resolve("measure.cost_per_1m.atlas-m.zero.mean", held), ("usd_per_1k",))
+    text = format_figure(
+        resolve("measure.cost_per_1m.atlas-m.zero.mean", held), ("usd_per_1k",), forms=PageForms.of(held)
+    )
     assert text.startswith("$180 per 1,000,000 "), text
     assert "/1000" not in text
 
@@ -781,9 +793,15 @@ def test_no_uplift_is_read_against_a_partly_priced_control() -> None:
 
 def test_a_partly_priced_arms_cost_keys_say_so_beside_the_amount() -> None:
     moved, control, candidate = _part_priced_control()
-    assert format_figure(resolve(f"cost_per_1k.{control}", moved), ("usd",)).endswith(" (850 of 897 calls priced)")
-    assert "calls priced" not in format_figure(resolve(f"cost_per_1k.{candidate}", moved), ("usd",))
-    assert "850 of 897 calls priced" in format_figure(resolve(f"cost.uplift.{candidate}", moved))
+    assert format_figure(resolve(f"cost_per_1k.{control}", moved), ("usd",), forms=PageForms.of(moved)).endswith(
+        " (850 of 897 calls priced)"
+    )
+    assert "calls priced" not in format_figure(
+        resolve(f"cost_per_1k.{candidate}", moved), ("usd",), forms=PageForms.of(moved)
+    )
+    assert "850 of 897 calls priced" in format_figure(
+        resolve(f"cost.uplift.{candidate}", moved), forms=PageForms.of(moved)
+    )
 
 
 def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:

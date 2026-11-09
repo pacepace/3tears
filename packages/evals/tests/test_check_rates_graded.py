@@ -28,6 +28,7 @@ from threetears.evals.analysis.analyst.price import price_tradeoff
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import ACCURACY_MEASURE, MATCH_MEASURE, MetricDescriptor
@@ -155,7 +156,7 @@ def test_a_graded_measure_reads_as_a_percent(name: str, inputs: dict[str, Report
             assert figure.scale == "share", f"{name}: {path} reads on the {figure.scale} scale"
             assert figure.reads.endswith("%"), f"{name}: {path} prints {figure.reads}, not a percent"
             assert float(figure.reads.removesuffix("%")) == pytest.approx(stat.mean * 100, abs=0.05)
-            assert format_figure(resolve(path, held), ("pct",)) == figure.reads
+            assert format_figure(resolve(path, held), ("pct",), forms=PageForms.of(held)) == figure.reads
 
 
 def test_a_price_per_point_on_a_check_is_per_percentage_point(inputs: dict[str, ReportInput]) -> None:

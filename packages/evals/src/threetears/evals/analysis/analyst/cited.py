@@ -7,7 +7,9 @@ cites the same key, and the renderer prints the same number.
 
 A :class:`CitedFigure` carries the key, the value, what kind of value it is and its scale, and ``reads``: the figure as
 the page writes it (``{key}`` as :func:`~threetears.evals.analysis.report.figure_keys.render` writes it), so the text a
-tool returns reads as the page will. It is spelled from the figure the key resolved to, never by parsing ``{key}`` back
+tool returns reads as the page will: an analyst tool reads off any page, so it spells each figure in the forms its
+input's page would print it in (:meth:`~threetears.evals.analysis.report.forms.PageForms.of`). It is spelled from the
+figure the key resolved to, never by parsing ``{key}`` back
 out of text, so a key whose ids carry a brace (a floor's key, a cell's row) reads as surely as any other. What is not a figure is not cited: an arm is named ``arm:<id>``, a caveat by its
 id, an example by its trial id, and reasons, excerpts and notes are text.
 """
@@ -26,6 +28,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
     written_arm,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import Contrast, ReportInput
 
@@ -114,7 +117,11 @@ def cite(key: str, report_input: ReportInput) -> CitedFigure:
     figure = resolve(key, report_input)
     return CitedFigure(
         key=key,
-        reads=_arm_written(report_input, str(figure.value)) if figure.kind == "arm" else format_figure(figure),
+        reads=(
+            _arm_written(report_input, str(figure.value))
+            if figure.kind == "arm"
+            else format_figure(figure, forms=PageForms.of(report_input))
+        ),
         value=_whole(figure),
         kind=figure.kind,
         scale=figure.scale,
@@ -160,7 +167,11 @@ def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) 
     :raises UnresolvableReference: The key does not resolve, or a filter does not suit its figure.
     """
     figure = resolve(key, report_input)
-    reads = _arm_written(report_input, str(figure.value)) if figure.kind == "arm" else format_figure(figure, filters)
+    reads = (
+        _arm_written(report_input, str(figure.value))
+        if figure.kind == "arm"
+        else format_figure(figure, filters, forms=PageForms.of(report_input))
+    )
     return WrittenFigure(
         key=key,
         reads=reads,

@@ -69,14 +69,13 @@ from threetears.evals.analysis.report.parts.charting import (
     contrast_groups,
     contrast_words,
     figure_interval,
-    figure_unit,
     measure_words,
     money_words,
     slice_name,
     stat_interval,
     stat_value,
 )
-from threetears.evals.analysis.report.figure_keys import cost_basis, held_means
+from threetears.evals.analysis.report.figure_keys import cost_basis, held_means, figure_unit
 from threetears.evals.analysis.report.parts.look import Quantity, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.resolve_changes import compare_basis, lever_label, narrow_notes

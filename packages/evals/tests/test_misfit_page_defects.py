@@ -120,7 +120,7 @@ def test_the_r1_pages_print_no_note_restating_its_value(run: str) -> None:
 def test_a_count_key_groups_its_thousands() -> None:
     held = fixture_inputs()["r2"]
     assert held.meta.volume_per_month == 4_000_000
-    assert render("At {meta.volume_per_month} a month.", held, {}) == "At 4,000,000 a month."
+    assert render("At {meta.volume_per_month} a month.", held, {}, forms=PageForms.of(held)) == "At 4,000,000 a month."
     assert "the declared volume of 4,000,000 a month" in _page_markdown("r2-with-one-gate")
 
 

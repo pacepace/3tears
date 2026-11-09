@@ -35,7 +35,7 @@ from threetears.evals.analysis.report.build import (
     contrast_rows,
     contrast_verdicts,
 )
-from threetears.evals.analysis.report.figure_keys import Figure, figure_places, format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
@@ -44,7 +44,7 @@ from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.forms import PageForms, figure_places
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at
 
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
@@ -314,15 +314,19 @@ def test_an_interval_key_reads_both_ends_at_one_precision_and_a_lone_change_keep
     """The owner's own example of a set at one precision: a change from -29% to +57.6% read ``-29 to +57.6``. A lone figure, written
     whole, keeps the number rule (the analyst's served grammar reads ``-15``)."""
     interval = Figure(path="x", kind="interval", value=(-0.29, 0.576), scale="share", change=True)
-    assert format_figure(interval) == "-29.0 to +57.6"
-    assert format_figure(interval, ["abs"]) == "29.0 to 57.6"
+    off = PageForms.off_page()
+    assert format_figure(interval, forms=off) == "-29.0 to +57.6"
+    assert format_figure(interval, ["abs"], forms=off) == "29.0 to 57.6"
     near = Figure(path="x", kind="interval", value=(-0.0216, -0.00037), scale="share", change=True)
-    assert format_figure(near) == "-2.16 to -0.04", "an end that is not zero never reads as one"
-    assert format_figure(Figure(path="x", kind="number", value=-0.15, scale="share", change=True)) == "-15"
+    assert format_figure(near, forms=off) == "-2.16 to -0.04", "an end that is not zero never reads as one"
+    assert format_figure(Figure(path="x", kind="number", value=-0.15, scale="share", change=True), forms=off) == "-15"
     # A plain interval no table sets reads at two significant figures of its width, never padded to its finer end.
     plain = Figure(path="x", kind="interval", value=(2.839, 3.0), scale="plain")
-    assert format_figure(plain) == "2.84–3.00"
-    assert format_figure(Figure(path="x", kind="interval", value=(0.0009342, 0.2041), scale="plain")) == "0.0009–0.2041"
+    assert format_figure(plain, forms=off) == "2.84–3.00"
+    assert (
+        format_figure(Figure(path="x", kind="interval", value=(0.0009342, 0.2041), scale="plain"), forms=off)
+        == "0.0009–0.2041"
+    )
 
 
 def test_a_glyph_s_title_and_its_scale_line_read_a_whole_end_at_the_column_s_precision() -> None:
@@ -470,11 +474,17 @@ def test_a_key_reads_a_score_and_a_measure_s_interval_at_the_table_s_precision()
     """A lone judged-score key read ``-0.2129`` beside the Full results' ``-0.21``; a measure's interval key padded to
     its finer end. Each reads as the Full results print it."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
-    assert format_figure(resolve("contrast.qwen3.8-flash.__outcome__.delta", held)) == "-0.21"
-    assert format_figure(resolve("contrast.qwen3.8-flash.__outcome__.interval", held)) == "-0.31 to -0.12"
-    notices = format_figure(resolve("contrast.1017.failed_reply_notices.interval", held))
+    assert format_figure(resolve("contrast.qwen3.8-flash.__outcome__.delta", held), forms=PageForms.of(held)) == "-0.21"
+    assert (
+        format_figure(resolve("contrast.qwen3.8-flash.__outcome__.interval", held), forms=PageForms.of(held))
+        == "-0.31 to -0.12"
+    )
+    notices = format_figure(resolve("contrast.1017.failed_reply_notices.interval", held), forms=PageForms.of(held))
     assert notices == "-0.0069 notices to +0.0025 notices", notices
-    assert format_figure(resolve("contrast.1017.failed_reply_notices.delta", held)) == "-0.0022 notices"
+    assert (
+        format_figure(resolve("contrast.1017.failed_reply_notices.delta", held), forms=PageForms.of(held))
+        == "-0.0022 notices"
+    )
 
 
 def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_set() -> None:
@@ -494,7 +504,10 @@ def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_
     tabled = {
         row["arm"].text: row["change"].text for row in contrasts.rows if row["measure"].text == "Failed-reply notices"
     }
-    keyed = {arm: format_figure(resolve(f"contrast.{arm}.{_NOTICES}.delta", held)) for arm in tabled}
+    keyed = {
+        arm: format_figure(resolve(f"contrast.{arm}.{_NOTICES}.delta", held), forms=PageForms.of(held))
+        for arm in tabled
+    }
     assert tabled == keyed == {"1017": "-0.0022 notices", "qwen3.8-flash": "-0.5000 notices"}, (tabled, keyed)
 
 
@@ -537,7 +550,7 @@ def test_a_change_reads_at_its_table_s_precision_however_its_family_spells_it() 
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
 
     def said(key: str) -> str:
-        return format_figure(resolve(key, held))
+        return format_figure(resolve(key, held), forms=PageForms.of(held))
 
     compare = "compare.qwen3.8-flash.September.__outcome__.overall"
     assert [said(f"{compare}.{field}") for field in ("difference", "interval", "low", "high")] == [
@@ -587,7 +600,7 @@ def test_only_the_statistics_a_table_prints_take_its_precision() -> None:
     )
 
     def said(key: str) -> str:
-        return format_figure(resolve(key, held))
+        return format_figure(resolve(key, held), forms=PageForms.of(held))
 
     contrast = "contrast.qwen3.8-flash.__outcome__"
     assert [said(f"{contrast}.{stat}") for stat in ("delta", "interval", "low", "high")] == [

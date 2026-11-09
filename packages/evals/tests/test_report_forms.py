@@ -33,10 +33,9 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, bare_columns, percent_columns
-from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms, Printed, interval_level
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
-from threetears.evals.analysis.report.parts.charting import interval_level
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text
 from threetears.evals.analysis.report_arms import fact_arms

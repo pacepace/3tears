@@ -60,7 +60,6 @@ from threetears.evals.analysis.report.parts.charting import (
     criterion_line,
     drawn_keys,
     figure_kind,
-    figure_unit,
     measure_words,
     money_words,
     missing_note,
@@ -71,6 +70,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_quantities,
     unit_refusal,
 )
+from threetears.evals.analysis.report.figure_keys import figure_unit
 from threetears.evals.analysis.report.parts.look import Quantity, band_domain
 from threetears.evals.analysis.report.parts.words import (
     BELOW_TEMPLATE,

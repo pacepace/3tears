@@ -40,6 +40,7 @@ from threetears.evals.actions import MountedTool, analyst_actions, analyst_tools
 from threetears.evals.analysis.analyst.keys import KEYS_MOST, figure_keys_check
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     FILTER_SPELLINGS,
     figure_filters,
@@ -84,7 +85,7 @@ def _expected(key: str, held: ReportInput) -> tuple[str, Any] | None:
     except UnresolvableReference:
         return None
     value = list(figure.value) if isinstance(figure.value, tuple) else figure.value
-    return render("{" + key + "}", held, {}), value
+    return render("{" + key + "}", held, {}, forms=PageForms.of(held)), value
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
@@ -122,13 +123,17 @@ def test_a_key_written_through_a_filter_reads_as_that_filter_spells_it_and_names
     numbers = [key for key in _keys(held) if (found := _expected(key, held)) and not isinstance(found[1], str)]
     for key in numbers[:12]:
         figure = resolve(key, held)
-        taken = figure_filters(figure)
+        taken = figure_filters(figure, forms=PageForms.of(held))
         assert taken, key
         written = [f"{{{key}|{one}}}" for one in taken]
         checked = figure_keys_check(held, written, limit=len(written))
         for row, one in zip(checked.keys, taken, strict=True):
             assert row.status == "reads" and row.figure is not None, row
-            assert row.figure.reads == format_figure(figure, (one,)) == render(row.asked, held, {})
+            assert (
+                row.figure.reads
+                == format_figure(figure, (one,), forms=PageForms.of(held))
+                == render(row.asked, held, {}, forms=PageForms.of(held))
+            )
             assert row.figure.filters == [one] and row.filters_taken == list(taken)
 
 
@@ -152,7 +157,7 @@ def test_a_key_reads_nothing_with_why_and_what_to_write_instead() -> None:
         resolve(f"cost_per_month.{arm}", held)
     assert misspelt.status == "refused" and misspelt.form is None
     assert misspelt.refusal is not None and "names no figure" in misspelt.refusal
-    taken = figure_filters(resolve(f"cost_per_1k.{arm}", held))
+    taken = figure_filters(resolve(f"cost_per_1k.{arm}", held), forms=PageForms.of(held))
     assert unsuited.status == "refused" and unsuited.remedy is not None
     assert all(one in unsuited.remedy for one in taken) and "pct" not in taken
     assert unknown_filter.status == "refused" and unknown_filter.remedy is not None
@@ -170,7 +175,9 @@ def test_the_keys_kairos_editor_could_not_verify_read_on_the_snapshot() -> None:
     checked = figure_keys_check(held, keys)
     assert [row.status for row in checked.keys] == ["reads"] * len(keys)
     for row in checked.keys:
-        assert row.figure is not None and row.figure.reads == render("{" + row.asked + "}", held, {})
+        assert row.figure is not None and row.figure.reads == render(
+            "{" + row.asked + "}", held, {}, forms=PageForms.of(held)
+        )
 
 
 def test_a_repeated_key_is_read_once_and_the_keys_are_paged() -> None:

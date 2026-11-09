@@ -34,6 +34,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked, rendered, run_script
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import query_rows
@@ -112,7 +113,7 @@ def test_the_kairo_page_says_what_its_plan_says(tmp_path: Path) -> None:
     report_input = dataset.report_input_of("r5")
 
     def written(text: str) -> str:
-        return _said(re.sub(r" \([A-Z]\)", "", render(text, report_input, {})))
+        return _said(re.sub(r" \([A-Z]\)", "", render(text, report_input, {}, forms=PageForms.of(report_input))))
 
     slots = {slot["key"]: slot["text"] for slot in plan["decision"]["slots"]}
     wanted = {
@@ -186,12 +187,14 @@ def test_the_kairo_sources_section_headers_are_its_plans() -> None:
     report_input = dataset.report_input_of("r5")
     compared = 0
     for section in plan["sections"]:
-        eyebrow = _said(render(section["eyebrow"], report_input, {}))
+        eyebrow = _said(render(section["eyebrow"], report_input, {}, forms=PageForms.of(report_input)))
         assert eyebrow in by_eyebrow, f"the page has no section headed {eyebrow!r}"
         header = by_eyebrow[eyebrow]
         for field in ("headline", "takeaway"):
             written = header[field]
             if written is not None:
-                assert _said(written) == _said(render(section[field], report_input, {})), (eyebrow, field)
+                assert _said(written) == _said(
+                    render(section[field], report_input, {}, forms=PageForms.of(report_input))
+                ), (eyebrow, field)
                 compared += 1
     assert compared >= 3, "the source writes at least the examples' headline and two takeaways as text"

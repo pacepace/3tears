@@ -536,7 +536,7 @@ def _places(
 
 
 def _gate_cell(
-    report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
+    report_input: ReportInput, forms: PageForms, criterion: Criterion, arm: str, task: str | None, cell: str | None
 ) -> TableCell:
     """One arm against one criterion at one place: the gate check's status in words, the figure beside it; where the
     input holds no figure there, ``Unknown (no figure)``, never a fail: the gate check counts an unknown figure among
@@ -549,7 +549,7 @@ def _gate_cell(
         return TableCell(value=GATE_UNKNOWN, status="neutral", flag=NO_FIGURE)
     checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
     line = resolve(f"criteria.{criterion.id}.threshold", report_input)
-    said = format_figure(replace(line, value=figure.value))
+    said = format_figure(replace(line, value=figure.value), forms=forms)
     return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)
 
 
@@ -559,7 +559,7 @@ def _gate_matrix_full(report_input: ReportInput, look: PageLook, forms: PageForm
     columns = [_column("where"), _column("criterion"), _column("line"), *arm_columns]
     rows = []
     for criterion in gating:
-        line = format_figure(resolve(f"criteria.{criterion.id}.threshold", report_input))
+        line = format_figure(resolve(f"criteria.{criterion.id}.threshold", report_input), forms=forms)
         for task, cell, where in _places(report_input, criterion, look):
             cells = {
                 "where": TableCell(value=where),
@@ -568,7 +568,7 @@ def _gate_matrix_full(report_input: ReportInput, look: PageLook, forms: PageForm
             }
             for column in arm_columns:
                 arm = column.key.removeprefix("arm:")
-                cells[column.key] = _gate_cell(report_input, criterion, arm, task, cell)
+                cells[column.key] = _gate_cell(report_input, forms, criterion, arm, task, cell)
             rows.append(cells)
     return [_table("gate_matrix_full", columns, rows, "each criterion as declared, at each place it is read")]
 

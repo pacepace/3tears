@@ -52,6 +52,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
@@ -344,7 +345,7 @@ def test_a_task_no_gate_reads_states_no_status_and_shows_its_figures(name: str) 
             if measure not in task.per_arm.get(arm, {}):
                 continue
             figure = resolve(f"task.{task.id}.{arm}.{measure}.mean", report_input)
-            assert cell.reasons and format_figure(figure) in cell.reasons[0]
+            assert cell.reasons and format_figure(figure, forms=PageForms.of(report_input)) in cell.reasons[0]
 
 
 def _direction(reading: Reading) -> str:

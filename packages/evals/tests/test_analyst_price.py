@@ -53,6 +53,7 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.kernel.numbers import money_form
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
     figure_key_grammar,
@@ -160,7 +161,7 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
     assert expected["monthly_cost_gap"] >= 1000, "the control: a saving a month of a thousand dollars or more"
     # The gap reads in the form of the monthly costs it compares (#993): every one is $10 or more, so whole dollars.
     months = [float(resolve(f"cost_per_month.{arm.id}", held).value) for arm in held.arms]
-    assert render(f"{{{key}.monthly_cost_gap}}", held, {}) == money_form(months).spell(
+    assert render(f"{{{key}.monthly_cost_gap}}", held, {}, forms=PageForms.of(held)) == money_form(months).spell(
         expected["monthly_cost_gap"], signed=True
     )
     assert _value(f"{key}.monthly_per_point", held) == pytest.approx(expected["monthly_per_point"])
@@ -291,7 +292,11 @@ def test_a_gain_on_a_measure_of_no_direction_names_no_figure() -> None:
 
 
 def test_the_grammar_teaches_both_families_with_their_readings() -> None:
-    lines = {line.split("`:", 1)[0]: line for line in figure_key_grammar().splitlines() if line.startswith("- `")}
+    lines = {
+        line.split("`:", 1)[0]: line
+        for line in figure_key_grammar(forms_of=PageForms.of).splitlines()
+        if line.startswith("- `")
+    }
     price = lines["- `price.<from>.<to>.<measure>.<field>"]
     assert "unbounded" in price and "monthly_per_point_high" in price and 'reads "$' in price
     assert 'reads "$' in lines["- `cost_per_month.<arm>"]
@@ -1139,7 +1144,7 @@ def test_a_price_within_a_slice_is_per_what_the_slices_own_cost_measure_counts()
                 if figure is None:
                     continue
                 assert resolve(figure.key, held).per == noun, (key, figure.key)
-                spelled = format_figure(resolve(figure.key, held), ("usd_per_1k",))
+                spelled = format_figure(resolve(figure.key, held), ("usd_per_1k",), forms=PageForms.of(held))
                 assert per_count(noun) in spelled and REPLIES not in spelled, spelled
                 priced += 1
     assert priced, "the control: some move within the task is priced"

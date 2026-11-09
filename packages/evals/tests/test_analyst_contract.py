@@ -66,6 +66,7 @@ from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_inp
 from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
     figure_key_grammar,
@@ -651,7 +652,7 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     text = render_cited(listing)
 
     first = held.arms[0].id
-    reads = render(f"{{pass_rate.{first}}}", held, {})
+    reads = render(f"{{pass_rate.{first}}}", held, {}, forms=PageForms.of(held))
     assert f"  - arm: arm:{first}\n    pass_rate.{first} = {reads}\n" in text
     assert text.splitlines()[0] == "_listing" and "total: 3" in text
     assert "next_offset" not in text, "a page's next call is the tool's to write"
@@ -1128,7 +1129,7 @@ def _grammar_parts(grammar: str) -> tuple[list[str], list[str]]:
 
 async def test_help_topic_figure_keys_is_an_index_and_its_pages_hold_the_whole_grammar_each_within_budget() -> None:
     fixture, snapshots = off_loop(_seeded)
-    grammar = figure_key_grammar()
+    grammar = figure_key_grammar(forms_of=PageForms.of)
     paths, rest = _grammar_parts(grammar)
     assert len(grammar) > TEXT_BUDGET, "the control: the whole grammar is past one result's budget"
     for role in ("analyst", "editor"):

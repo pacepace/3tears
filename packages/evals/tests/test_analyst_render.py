@@ -46,8 +46,9 @@ from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve
-from threetears.evals.analysis.report.parts.charting import figure_stat, figure_unit, money_words
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve, figure_unit
+from threetears.evals.analysis.report.parts.charting import figure_stat, money_words
 from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE, GROUP_LEVEL_TEMPLATE
@@ -394,7 +395,7 @@ def test_a_source_said_to_carry_no_interval_never_does_and_one_said_to_carries_o
 
 def test_the_catalogs_figure_key_forms_are_the_grammars_path_forms() -> None:
     forms = block_catalog(_inputs()["r1"], "s").figure_key_forms
-    grammar = figure_key_grammar()
+    grammar = figure_key_grammar(forms_of=PageForms.of)
     assert len(forms) > 20 and "criteria.<criterion>.<field>" in forms and "aspect.<field>" in forms
     for form in forms:
         assert f"- `{form}`:" in grammar, form

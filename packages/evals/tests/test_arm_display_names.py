@@ -49,6 +49,7 @@ from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.build import contrast_rows
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import printed_arm_name, render
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import printed_arm_labels
@@ -374,9 +375,13 @@ def test_every_surface_of_the_documents_page_prints_the_one_name() -> None:
         assert "Run " + _PRINTED[1] in written
 
 
-def _capitalised_as_rendered(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:
+def _capitalised_as_rendered(
+    text: str, report_input: ReportInput, arm_names: Mapping[str, str], *, forms: PageForms
+) -> str:
     """The mutation's prose renderer: every arm's name capitalised as the prose is rendered, not where it is made."""
-    return render(text, report_input, {arm: name[:1].upper() + name[1:] for arm, name in arm_names.items()})
+    return render(
+        text, report_input, {arm: name[:1].upper() + name[1:] for arm, name in arm_names.items()}, forms=forms
+    )
 
 
 def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(
@@ -462,7 +467,8 @@ def test_on_r2_both_columns_read_the_declared_names() -> None:
     factors = {factor.id: factor.name for factor in held.factors}
     assert (factors["reasoning"], factors["retry"]) == ("Reasoning budget", "Retry on failure"), "the control"
     rows = {
-        row["arm"].value: row["settings"].value for row in arms_key(held, block_look(held, fact_arms(held))).table.rows
+        row["arm"].value: row["settings"].value
+        for row in arms_key(held, block_look(held, fact_arms(held)), forms=PageForms.of(held)).table.rows
     }
     for arm in held.arms:
         settings = arm.settings

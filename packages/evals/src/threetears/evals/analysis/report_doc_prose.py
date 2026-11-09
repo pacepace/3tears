@@ -37,6 +37,7 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_names,
     resolve,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 
 __all__ = [
@@ -162,6 +163,8 @@ def unit_faults(texts: Iterable[tuple[str, str]], report_input: ReportInput) -> 
     """
     per_thousand = _states_cost_per_thousand(report_input)
     basis = per_count(cost_basis(report_input).noun)
+    # Each key is read as the page prints it, in the forms its input's page would print it in.
+    forms = PageForms.of(report_input)
     for path, text in texts:
         try:
             keys = keys_in(text)
@@ -174,7 +177,7 @@ def unit_faults(texts: Iterable[tuple[str, str]], report_input: ReportInput) -> 
                 figure = resolve(key.path, report_input)
                 if figure.kind not in ("number", "interval"):
                     continue
-                spelled = format_figure(figure, key.filters)
+                spelled = format_figure(figure, key.filters, forms=forms)
             except UnresolvableReference:
                 continue  # NOSILENT: a key that does not resolve or suit its filters is refused by the key check
             written = text[start:end]

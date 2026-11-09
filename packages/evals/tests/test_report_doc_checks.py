@@ -25,6 +25,7 @@ from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import ExamplesChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
@@ -253,7 +254,7 @@ def _fake_above_appendix_text(doc: ReportDoc, report_input: ReportInput, extra: 
     texts += [entry.text for entry in doc.decision]
     texts += [part for claim in doc.claims for part in (claim.text, *(block.caption for block in claim.evidence))]
     texts += [step.text for step in doc.next]
-    return "\n".join([*(render(text, report_input, names) for text in texts), extra])
+    return "\n".join([*(render(text, report_input, names, forms=PageForms.of(report_input)) for text in texts), extra])
 
 
 def _page_with(extra: str) -> Callable[[ReportDoc, ReportInput], str]:

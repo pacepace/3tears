@@ -60,6 +60,7 @@ from threetears.evals.analysis.report.block_spec import (
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
@@ -338,7 +339,8 @@ def block_render(
     written = title
     arms = fact_arms(report_input)
     try:
-        written = render(title, report_input, {arm.id: arm.name for arm in arms})
+        # A block is drawn off any page, so its title's keys read in the forms its input's page would print them in.
+        written = render(title, report_input, {arm.id: arm.name for arm in arms}, forms=PageForms.of(report_input))
     except UnresolvableReference as refused:
         faults.append((f"{_BLOCK}.title", str(refused)))
     if not faults:
@@ -560,7 +562,7 @@ def _whole(source: str) -> ChartQuery:
 @functools.cache
 def _figure_key_forms() -> tuple[str, ...]:
     """Every path form the figure key grammar lists, in its order."""
-    lines = figure_key_grammar().splitlines()
+    lines = figure_key_grammar(forms_of=PageForms.of).splitlines()
     start = lines.index(_FORMS_HEADING) + 1
     forms: list[str] = []
     for line in lines[start:]:

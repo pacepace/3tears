@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.cost_unit import priced_in_part, per_count, per_noun
-from threetears.evals.analysis.report.figure_keys import cost_basis, resolve
+from threetears.evals.analysis.report.figure_keys import cost_basis, resolve, figure_unit
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
@@ -94,7 +94,6 @@ from threetears.evals.analysis.report.parts.charting import (
     factor_token,
     figure_stat,
     figure_kind,
-    figure_unit,
     measure_words,
     money_words,
     point_labels,

@@ -31,6 +31,7 @@ from packages.evals.tests.fixtures.report_inputs.misfits import only_bars, refer
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     format_figure,
@@ -197,8 +198,12 @@ class TestFiguresOnOneAspect:
                     if stated is not None:
                         assert _value(f"judged.{dimension}.{arm}.{statistic}", report_input) == stated
                 if stat.mean is not None:
-                    shown = format_figure(resolve(f"judged.{dimension}.{arm}.mean", report_input))
-                    assert shown == format_figure(resolve(f"judged.{dimension}.{arm}", report_input))
+                    shown = format_figure(
+                        resolve(f"judged.{dimension}.{arm}.mean", report_input), forms=PageForms.of(report_input)
+                    )
+                    assert shown == format_figure(
+                        resolve(f"judged.{dimension}.{arm}", report_input), forms=PageForms.of(report_input)
+                    )
 
     def test_a_judged_dimension_reads_by_aspect(self, shapes: dict[str, ReportInput]) -> None:
         report_input = shapes["s3"]
@@ -541,8 +546,8 @@ class TestCriterionFigures:
         assert found is not None and found.kind == "criterion"
         place = found.task if found.cell is None else _spelled(report_input, found.cell)
         key = f"criteria.{found.source}.{found.arm}" + (f".{place}" if place is not None else "")
-        assert format_figure(resolve(f"{key}.gap", report_input)) == format_figure(
-            resolve("weakest.margin", report_input)
+        assert format_figure(resolve(f"{key}.gap", report_input), forms=PageForms.of(report_input)) == format_figure(
+            resolve("weakest.margin", report_input), forms=PageForms.of(report_input)
         )
 
 
@@ -785,7 +790,7 @@ class TestAFigureSaysWhetherItIsDerived:
 
 class TestTheGrammarTeachesTheAnalystsFamilies:
     def test_it_lists_every_family(self) -> None:
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         for form in (
             "aspects.<aspect>.contrast.<arm>.<measure>.<statistic>",
             "aspects.<aspect>.measure.<measure>.<arm>.<statistic>",
@@ -822,7 +827,11 @@ class TestTheGrammarTeachesTheAnalystsFamilies:
             assert f"- `{form}`:" in grammar, form
 
     def test_it_marks_what_is_derived(self) -> None:
-        lines = {line.split("`:", 1)[0]: line for line in figure_key_grammar().splitlines() if line.startswith("- `")}
+        lines = {
+            line.split("`:", 1)[0]: line
+            for line in figure_key_grammar(forms_of=PageForms.of).splitlines()
+            if line.startswith("- `")
+        }
         for form, derived in (
             ("- `task.<task>.<arm>.<measure>.<statistic>", "`vs_control` derived"),
             ("- `strata.<stratum>.<arm>.<measure>.<statistic>", "`vs_control` derived"),
@@ -835,14 +844,18 @@ class TestTheGrammarTeachesTheAnalystsFamilies:
             assert derived in lines[form], form
 
     def test_it_teaches_the_aspect_qualification_and_the_cell_spelling(self) -> None:
-        grammar = figure_key_grammar()
+        grammar = figure_key_grammar(forms_of=PageForms.of)
         assert "names the `aspects.<aspect>.` keys to write instead" in grammar
         assert "(`<row>.<column>`)" in grammar
 
     def test_each_family_it_adds_shows_an_example_with_its_reading(self) -> None:
         """The grammar renders each example on its made-up input, and raises where one no longer resolves; so a line
         carrying ``reads "…"`` shows code's own reading of a key that resolves."""
-        lines = {line.split("`:", 1)[0]: line for line in figure_key_grammar().splitlines() if line.startswith("- `")}
+        lines = {
+            line.split("`:", 1)[0]: line
+            for line in figure_key_grammar(forms_of=PageForms.of).splitlines()
+            if line.startswith("- `")
+        }
         for form in (
             "aspects.<aspect>.contrast.<arm>.<measure>.<statistic>",
             "aspects.<aspect>.measure.<measure>.<arm>.<statistic>",

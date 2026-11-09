@@ -6,7 +6,9 @@ beside it, or the precision of that measure's set where no cell holds the figure
 :class:`~threetears.evals.analysis.report.forms.PageForms` decides for that measure and role. A criterion's figures,
 the weakest margin's and a settle distance name their measure only through the criterion, so they carry it
 (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.measure`) and read at its sets: a level at its levels'
-set, a gap, a margin and a distance at its changes' set.
+set, a gap, a margin and a distance at its changes' set. A family no fixture states on a measure's set (a pooled
+interval on a score or a measure, an interval derived from the cells on a measure) is read on a copy of a fixture
+that states one, each test saying how it was made.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from threetears.evals.analysis.report.figure_keys import Figure, format_figure, 
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Measure, ReportInput
 
 from packages.evals.tests.report_doc_support import snapshot_of
 
@@ -49,7 +51,7 @@ def _level(figure: Figure) -> float:
 
 
 def _said(key: str, held: ReportInput) -> str:
-    return format_figure(resolve(key, held))
+    return format_figure(resolve(key, held), forms=PageForms.of(held))
 
 
 @pytest.fixture(scope="module")
@@ -84,16 +86,18 @@ def test_a_contrast_key_reads_its_change_and_interval_as_the_comparisons_table(k
     interval = resolve("contrast.qwen3.8-flash.__outcome__.interval", kairo)
     assert isinstance(interval.value, tuple)
     tabled = {"arm": "qwen3.8-flash", "measure": "Outcome (1–5)"}
-    assert format_figure(delta) == _cell(table, "change", **tabled) == "-0.21"
-    assert format_figure(interval) == _cell(table, "interval", **tabled) == "-0.31 to -0.12"
-    assert forms.change("__outcome__", _level(delta), kind="judged").text == format_figure(delta)
-    assert forms.interval("__outcome__", *interval.value, kind="judged", change=True).text == format_figure(interval)
+    assert format_figure(delta, forms=forms) == _cell(table, "change", **tabled) == "-0.21"
+    assert format_figure(interval, forms=forms) == _cell(table, "interval", **tabled) == "-0.31 to -0.12"
+    assert forms.change("__outcome__", _level(delta), kind="judged").text == format_figure(delta, forms=forms)
+    assert forms.interval("__outcome__", *interval.value, kind="judged", change=True).text == format_figure(
+        interval, forms=forms
+    )
 
 
 def test_a_measure_key_reads_its_mean_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("measure.failed_reply_notices.September.mean", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "measure:failed_reply_notices", arm="September")
-    assert format_figure(figure) == tabled == "0.0022 notices"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.0022 notices"
     assert PageForms.of(kairo).level("failed_reply_notices", _level(figure)).text == tabled
 
 
@@ -108,21 +112,21 @@ def test_a_measure_s_interval_and_a_bar_s_read_their_ends_at_the_measure_s_level
 def test_a_judged_key_reads_its_score_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("judged.__outcome__.September", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "judged:__outcome__", arm="September")
-    assert format_figure(figure) == tabled == "4.69"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "4.69"
     assert PageForms.of(kairo).level("__outcome__", _level(figure), kind="judged").text == tabled
 
 
 def test_a_stratum_key_reads_its_mean_as_the_strata_table(kairo: ReportInput) -> None:
     figure = resolve("strata.off_lane.September.__outcome__.mean", kairo)
     tabled = _cell(_table(kairo, "strata"), "arm:September", strata="off lane", measure="Outcome (1–5)")
-    assert format_figure(figure) == tabled == "4.75"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "4.75"
     assert PageForms.of(kairo).level("__outcome__", _level(figure), kind="judged").text == tabled
 
 
 def test_a_pooled_key_reads_its_mean_at_its_measure_s_levels_set(kairo: ReportInput) -> None:
     """A score pooled over the strata reads at a score's two decimals, as the strata table prints each stratum's."""
     figure = resolve("pooled.__outcome__.September.mean", kairo)
-    assert format_figure(figure) == "4.67"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == "4.67"
     assert PageForms.of(kairo).level("__outcome__", _level(figure), kind="judged").text == "4.67"
 
 
@@ -130,7 +134,7 @@ def test_a_task_key_reads_its_mean_as_the_tasks_table() -> None:
     held = _held("prototype/r1")
     figure = resolve("task.billing.atlas-l.overall.mean", held)
     tabled = _cell(_table(held, "tasks"), "arm:atlas-l", tasks="Billing & account Q&A", measure="Overall quality")
-    assert format_figure(figure) == tabled == "94"
+    assert format_figure(figure, forms=PageForms.of(held)) == tabled == "94"
     assert PageForms.of(held).level("overall", _level(figure), kind="judged").text == tabled
 
 
@@ -148,6 +152,80 @@ def test_a_derived_interval_on_a_rate_reads_its_ends_as_the_cells_table_reads_a_
     assert _said("overall_interval.balanced_accuracy.atlas-m.zero.interval", held) == "89.5–90.1%"
 
 
+def test_a_pooled_interval_on_a_score_reads_its_ends_at_a_score_s_two_decimals(kairo: ReportInput) -> None:
+    """Kairo's strata with a narrow half-width (0.08) on the outcome score: the pooled interval's ends read at a
+    score's two decimals, as the strata table prints each stratum's (``4.66–4.69``), never at two significant figures
+    of the interval's width (``4.656–4.687``)."""
+    strata = [
+        stratum.model_copy(
+            update={
+                "per_arm": {
+                    arm: {
+                        key: stat.model_copy(update={"half_width": 0.08}) if key == "__outcome__" else stat
+                        for key, stat in figures.items()
+                    }
+                    for arm, figures in stratum.per_arm.items()
+                }
+            }
+        )
+        for stratum in kairo.strata
+    ]
+    held = kairo.model_copy(update={"strata": strata})
+    forms = PageForms.of(held)
+    figure = resolve("pooled.__outcome__.September.interval", held)
+    assert isinstance(figure.value, tuple)
+    low, high = (forms.level("__outcome__", end, kind="judged").text for end in figure.value)
+    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "4.66–4.69"
+
+
+def test_a_pooled_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_set() -> None:
+    """r1's overall quality held as a measure (its figures the judged dimension's): its tasks' means set the measure's
+    levels whole, as the tasks table prints them (``94``), and the pooled interval's ends read whole too (``92–93``),
+    never at two significant figures of its width (``92.1–93.5``)."""
+    r1 = _held("prototype/r1")
+    overall = r1.judged["overall"]
+    measure = Measure(label=overall.label, unit="", per_arm=overall.per_arm, by_aspect=overall.by_aspect)
+    held = r1.model_copy(
+        update={
+            "measures": {**r1.measures, "overall": measure},
+            "judged": {key: judged for key, judged in r1.judged.items() if key != "overall"},
+            "contrasts": [contrast for contrast in r1.contrasts if contrast.measure != "overall"],
+        }
+    )
+    forms = PageForms.of(held)
+    tabled = _cell(_table(held, "tasks"), "arm:atlas-l", tasks="Billing & account Q&A", measure="Overall quality")
+    assert tabled == forms.level("overall", _level(resolve("task.billing.atlas-l.overall.mean", held))).text == "94"
+    figure = resolve("pooled.overall.atlas-l.interval", held)
+    assert isinstance(figure.value, tuple)
+    low, high = (forms.level("overall", end).text for end in figure.value)
+    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "92–93"
+
+
+def test_a_derived_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_set() -> None:
+    """r3's accuracies in a measured unit (``ms``) in place of a percent: the interval derived from the cells reads its
+    ends at the overall measure's levels' set, whole as the arms-by-measure table prints each arm's (``90 ms``), never
+    at two significant figures of its width (``89.49 ms–90.11 ms``)."""
+    r3 = _held("prototype4/r3-without-its-configs")
+    measured = {
+        key: measure.model_copy(update={"unit": "ms", "grade": None})
+        if key in ("accuracy", "balanced_accuracy")
+        else measure
+        for key, measure in r3.measures.items()
+    }
+    held = r3.model_copy(update={"measures": measured})
+    forms = PageForms.of(held)
+    tabled = _cell(_table(held, "arms_by_measure"), "measure:balanced_accuracy", arm="Atlas-M · Zero-shot")
+    assert (
+        tabled
+        == forms.level("balanced_accuracy", _level(resolve("measure.balanced_accuracy.atlas-m.zero.mean", held))).text
+        == "90 ms"
+    )
+    figure = resolve("overall_interval.balanced_accuracy.atlas-m.zero.interval", held)
+    assert isinstance(figure.value, tuple)
+    low, high = (forms.level("balanced_accuracy", end).text for end in figure.value)
+    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "89 ms–90 ms"
+
+
 def test_a_criterion_s_figure_and_its_interval_s_ends_read_at_its_measure_s_levels_set(
     measured_s2: ReportInput,
 ) -> None:
@@ -156,10 +234,10 @@ def test_a_criterion_s_figure_and_its_interval_s_ends_read_at_its_measure_s_leve
     forms = PageForms.of(measured_s2)
     value, low, high = (resolve(f"{_CRITERION}.{field}", measured_s2) for field in ("value", "low", "high"))
     tabled = _cell(_table(measured_s2, "arms_by_measure"), "measure:total_ms", arm="beta")
-    assert format_figure(value) == tabled == "701 ms"
-    assert (format_figure(low), format_figure(high)) == ("673 ms", "729 ms")
+    assert format_figure(value, forms=forms) == tabled == "701 ms"
+    assert (format_figure(low, forms=forms), format_figure(high, forms=forms)) == ("673 ms", "729 ms")
     for figure in (value, low, high):
-        assert forms.level("total_ms", _level(figure)).text == format_figure(figure), figure.path
+        assert forms.level("total_ms", _level(figure)).text == format_figure(figure, forms=forms), figure.path
 
 
 def test_a_criterion_s_gap_reads_at_its_measure_s_changes_set_and_unsigned(measured_s2: ReportInput) -> None:

@@ -107,23 +107,12 @@ import re
 import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import (
-    CENT,
-    POINT_PLACES,
-    SCORE_PLACES,
-    WHOLE_FROM,
-    ends_places,
-    format_number,
-    group_thousands,
-    set_places,
-    spell_at,
-    spell_multiple,
-)
+from threetears.evals.kernel.numbers import CENT, format_number, group_thousands, spell_multiple
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
 from threetears.evals.analysis.report.cost_unit import (
     REPLIES,
@@ -191,6 +180,11 @@ from threetears.evals.analysis.separation import (
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import check_names, humanize, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
+
+if TYPE_CHECKING:
+    # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
+    # caller hands its page's forms in, and the type is named for the checker alone.
+    from threetears.evals.analysis.report.forms import PageForms
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
 FigureKind = Literal["number", "interval", "text", "arm"]
@@ -342,9 +336,11 @@ class Figure:
     (:class:`~threetears.evals.kernel.numbers.MoneyForm`). None of these takes part in a figure's equality: they say
     how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
     arm whose cost counts only part of its calls, the words its pricing gives (``850 of 897 calls priced``), which
-    :func:`format_figure` prints after the amount, so no key states a smaller total bare. Nor does ``places``: the
-    decimals the page's tables print a plain figure at, a judged score's two and a measure's
-    set's (:func:`figure_places`), so a key reads its figure as the table beside it does; None for the number rule.
+    :func:`format_figure` prints after the amount, so no key states a smaller total bare. Nor do ``statistic`` and
+    ``set_of``: the statistic a plain figure's path names last (None where it names none), and the measure whose set
+    the page's tables print the figure in, by key and kind (``judged`` for a 1–5 score), from which the page's forms
+    read the decimals a key prints the figure at (:meth:`~threetears.evals.analysis.report.forms.PageForms.key_number`),
+    so a key reads its figure as the table beside it does; None for a figure of neither, which keeps the number rule.
     Nor does ``measure``: the measure or judged dimension a figure is of where its path names it by another id (a
     criterion's figure, named by the criterion), so the figure reads at that measure's set as its table prints it; empty
     where the path names the measure itself, or names none.
@@ -365,7 +361,8 @@ class Figure:
     priced_in_part: str = field(default="", compare=False, repr=False)
     total: bool = field(default=False, compare=False, repr=False)
     reconciles: bool = field(default=False, compare=False, repr=False)
-    places: int | None = field(default=None, compare=False, repr=False)
+    statistic: str | None = field(default=None, compare=False, repr=False)
+    set_of: tuple[str, str] | None = field(default=None, compare=False, repr=False)
     measure: str = field(default="", compare=False, repr=False)
 
 
@@ -1029,6 +1026,28 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     )
 
 
+def criterion_ruler(report_input: ReportInput, criterion: Criterion, line: Figure) -> tuple[MoneyRuler, int]:
+    """The ruler a money criterion's figures are stated on, where its count is named once beside them (a gate's
+    reason, a gate row's line): the one owner of money's scale over the measure's every arm's figure and the line, per
+    1,000 of what it counts at least, never a per-1,000 mark.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The criterion, on a money measure.
+    :ptype criterion: Criterion
+    :param line: Its threshold's figure (``criteria.<id>.threshold``).
+    :ptype line: Figure
+    :return: The ruler, and the count its measure's own unit is per.
+    :rtype: tuple[MoneyRuler, int]
+    """
+    own = _SCALE_COUNTS[line.scale]
+    measure = report_input.measures.get(criterion.measure)
+    amounts = [
+        float(stat.mean) for stat in (measure.per_arm.values() if measure is not None else ()) if stat.mean is not None
+    ]
+    return money_ruler([*amounts, float(criterion.threshold)], per=own, start=max(own, 1000)), own
+
+
 def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) -> dict[str, float]:
     """Each arm's cost per 1,000 of what it counts on one aspect, by the one cost rule's source read on that aspect.
 
@@ -1399,8 +1418,8 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
 
 def held_means(report_input: ReportInput, key: str) -> list[float]:
     """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell.
-    The one walk of them: a set's precision (:func:`figure_places`), a money ruler over the amounts a chart's changes
-    compare, a rate's scale and a rubric's bounds all read this set.
+    The one walk of them: a set's precision (:func:`~threetears.evals.analysis.report.forms.figure_places`), a money
+    ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds all read this set.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -6447,93 +6466,31 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
     ):
         figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
     if figure.kind in ("number", "interval") and figure.scale == "plain" and figure.unit not in _KEPT_UNITS:
-        figure = replace(figure, places=_plain_places(reading, figure, report_input))
+        figure = replace(figure, statistic=_statistic_of(reading), set_of=_set_of(reading, figure, report_input))
     return replace(figure, derived=figure.derived or _is_derived(reading))
 
 
-def _plain_places(reading: _Reading, figure: Figure, report_input: ReportInput) -> int | None:
-    """The decimals the page's tables print a plain figure of the measure or judged dimension a key names (or its
-    figure carries, :attr:`Figure.measure`) at, where the figure is one the tables print (:func:`_tabled`): a judged
-    score's two, a measure's its set's
-    (:func:`figure_places`), as the Full results print them. Every other statistic (an adjusted p, a pairing r, a
-    count of repeats) keeps its own form, the number rule's; so does a key naming neither."""
+def _statistic_of(reading: _Reading) -> str | None:
+    """The statistic a path names last (``mean``, ``delta``, ``threshold``), the one a set's decision reads a figure's
+    role by; None for a path that names none, which reads its family's own figure."""
     statistics = [
         value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if isinstance(slot, _Statistic)
     ]
-    statistic = statistics[-1] if statistics else None
-    if not _tabled(figure, statistic):
-        return None
-    # A criterion's gap is a difference on its measure, read at the set of that measure's changes.
-    change = figure.change or (bool(figure.measure) and statistic in _CRITERION_GAPS)
+    return statistics[-1] if statistics else None
+
+
+def _set_of(reading: _Reading, figure: Figure, report_input: ReportInput) -> tuple[str, str] | None:
+    """The measure whose set a plain figure is printed in by the page's tables, with its kind: the measure or judged
+    dimension a key names (or its figure carries, :attr:`Figure.measure`), a judged score on the 1–5 rubric as
+    ``judged``, a measure as ``measure``; None for a key naming neither, whose figure keeps the number rule. Which of
+    its figures a table prints, and at what decimals, is the page's forms' to decide
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.key_number`)."""
     for value in (figure.measure,) if figure.measure else reading.values:
         if rubric_score(report_input, value):
-            return SCORE_PLACES
+            return (value, "judged")
         if value in report_input.measures:
-            return figure_places(report_input, value, change=change)
+            return (value, "measure")
     return None
-
-
-def _tabled(figure: Figure, statistic: str | None) -> bool:
-    """Whether a figure is one the page's tables print of a measure or a judged score, so a key reading it reads at the
-    table's precision. Decided by what the figure is, not by how its family spells it: a change of any family, its
-    interval and that interval's ends (each resolver marks them :attr:`Figure.change`, whether its family spells the
-    change ``delta``, ``difference``, ``effect``, ``change`` or ``vs_control``); any interval; and a level, which every
-    family but a criterion's spells ``mean``, with its interval's two ends, or a key naming no statistic, which reads
-    its family's own figure; a criterion's figure is the level of the measure it reads (:attr:`Figure.measure`), which
-    its family spells ``value``, and its ``gap`` (the weakest margin's ``margin``) a difference on that measure. No
-    other statistic is the table's figure: an adjusted p of 0.0031 is never a score to two decimals, nor a half-width
-    or a standard error a change."""
-    if figure.change or figure.kind == "interval" or statistic is None:
-        return True
-    return statistic in _LEVEL_FIGURES or (bool(figure.measure) and statistic in (_CRITERION_LEVEL, *_CRITERION_GAPS))
-
-
-#: How every family spells a level the tables print and its interval's two ends.
-_LEVEL_FIGURES = frozenset({"mean", "low", "high"})
-
-#: How the criteria families spell the level of the measure a criterion reads, and how they and the weakest margin
-#: spell its gap from the threshold.
-_CRITERION_LEVEL = "value"
-_CRITERION_GAPS = frozenset({"gap", "margin"})
-
-
-def figure_places(
-    report_input: ReportInput, key: str, *, change: bool = False, judged: bool = False, factor: float = 1.0
-) -> int | None:
-    """The decimals every plain figure of a measure or judged dimension reads at wherever the page prints it, its Full
-    results and the keys its prose cites alike: a judged score's two (:data:`SCORE_PLACES`); any other figure at two
-    significant figures of the least of its set as drawn (:func:`~threetears.evals.kernel.numbers.set_places`), its
-    levels (every mean the input holds of it) or its changes (every corrected comparison's on it), each a set of its
-    own. None for a figure with no such set: a judged level off the rubric, a key that is neither, or a measure the
-    input holds no figure of in that set, whose figure keeps the number rule.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure's or judged dimension's key.
-    :ptype key: str
-    :param change: Whether the figures are changes.
-    :ptype change: bool
-    :param judged: Whether the figures are a judged dimension's (a comparison of kind ``judged``), not a measure's.
-    :ptype judged: bool
-    :param factor: What each figure is multiplied by where it is drawn: the set is placed as it prints.
-    :ptype factor: float
-    :return: The decimals, or None.
-    :rtype: int | None
-    """
-    if rubric_score(report_input, key) and (judged or key not in report_input.measures):
-        return SCORE_PLACES
-    if change:
-        held = [
-            float(contrast.delta)
-            for contrast in report_input.contrasts
-            if contrast.measure == key and (contrast.kind == "judged") == judged and contrast.delta is not None
-        ]
-    elif judged or key not in report_input.measures:
-        return None
-    else:
-        held = held_means(report_input, key)
-    # A measure the input holds no such figure of has no set: its figure keeps the number rule, never zero decimals.
-    return set_places(value * factor for value in held) if held else None
 
 
 #: A judged score's rubric scale (``ordinal``): the two decimals and the ``(1–5)`` a page prints it with.
@@ -6557,6 +6514,88 @@ def rubric_score(report_input: ReportInput, key: str) -> bool:
         return False
     low, high = RUBRIC_SCALE
     return all(low <= mean <= high for mean in held_means(report_input, key))
+
+
+def _rate_unit(values: Sequence[float]) -> str:
+    return "share" if all(0 <= value <= 1 for value in values) else "percent"
+
+
+#: The scoreboard's figures that are money, each to how it is stated: a reply's cost, and what the arm's trials cost
+#: in all. Every other scoreboard figure is a count.
+_SCOREBOARD_UNITS = {"reply_cost_usd": "usd", "test_cost_usd": "dollars"}
+
+
+def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None, source: str | None = None) -> str:
+    """A measure's or judged dimension's unit as the page reads it (the chart rules' Units,
+    :mod:`~threetears.evals.analysis.report.parts.charting`), wherever its figures sit; a scoreboard figure's, where
+    the chart reads the scoreboard.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension, by key; a scoreboard figure's name over the scoreboard.
+    :ptype key: str
+    :param kind: A contrast's kind (``measure``, ``judged``, ``trial``), where the key is a contrast's; None otherwise.
+    :ptype kind: str | None
+    :param source: The chart's source, where ``scoreboard`` makes the key a scoreboard figure; None otherwise.
+    :ptype source: str | None
+    :return: ``share``, ``percent``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty (a
+        bare number, as every scoreboard count is).
+    :rtype: str
+    """
+    if source == "scoreboard":
+        return _SCOREBOARD_UNITS.get(key, "")
+    if kind == "trial":
+        return "share"
+    measure = report_input.measures.get(key)
+    if measure is not None and kind != "judged":
+        unit = measure.unit or ""
+        if unit == "pct":
+            return "percent"
+        if not unit and measure.grade in ("pass_fail", "class_label"):
+            return _rate_unit(held_means(report_input, key))
+        return unit
+    judged = report_input.judged.get(key)
+    if judged is not None:
+        return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
+    return ""
+
+
+def held_kind(report_input: ReportInput, key: str) -> str:
+    """The kind a figure on ``key`` is keyed under in the page's forms (one of the kinds
+    :meth:`~threetears.evals.analysis.report.forms.PageForms.of` keys), by what the input holds it as: ``judged`` where
+    it holds the key only as a judged dimension; ``trial`` for the pass rate (how each trial ended) where no measure
+    takes its key; ``measure`` otherwise. A scoreboard figure (a reply's cost, a count) and an aspect a criterion reads
+    are measured figures of an arm, neither judged nor a contrast's trial, so they key as a measure's. The one rule for
+    a criterion's kind, whether its threshold is a gate's line or a chart's.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure, judged dimension, scoreboard figure or aspect.
+    :ptype key: str
+    :return: ``judged``, ``trial`` or ``measure``.
+    :rtype: str
+    """
+    if key in report_input.judged and key not in report_input.measures:
+        return "judged"
+    return "trial" if key == TRIAL_PASS_NAME and key not in report_input.measures else "measure"
+
+
+def is_rubric_score(report_input: ReportInput, key: str, *, kind: str | None = None) -> bool:
+    """Whether a figure is a judged score on the 1–5 rubric (:func:`rubric_score`), not a share, nor a figure an input
+    calls ordinal but holds off the scale.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure's or judged dimension's key.
+    :ptype key: str
+    :param kind: A contrast's kind where the key is one's; None for a measure's.
+    :ptype kind: str | None
+    :return: Whether it is a 1–5 score.
+    :rtype: bool
+    """
+    return (
+        kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
+    )
 
 
 def _beside_its_month(reading: _Reading, figure: Figure, report_input: ReportInput) -> bool:
@@ -6873,11 +6912,13 @@ def key_form(key: str, report_input: ReportInput) -> KeyForm:
     return KeyForm(form=family.form(), what=family.what, group=group)
 
 
-def figure_filters(figure: Figure) -> tuple[str, ...]:
+def figure_filters(figure: Figure, *, forms: PageForms) -> tuple[str, ...]:
     """The filters a figure takes: each filter :func:`format_figure` spells it with, alone, in the grammar's order.
 
     :param figure: What a key resolved to.
     :ptype figure: Figure
+    :param forms: The forms of the page the figure would be printed on (:func:`format_figure`).
+    :ptype forms: PageForms
     :return: The filters; none for an arm or a piece of text.
     :rtype: tuple[str, ...]
     """
@@ -6886,7 +6927,7 @@ def figure_filters(figure: Figure) -> tuple[str, ...]:
     taken: list[str] = []
     for name in _FILTERS:
         try:
-            format_figure(figure, (name,))
+            format_figure(figure, (name,), forms=forms)
         except UnresolvableReference:
             # NOSILENT: a filter the figure does not suit is refused by format_figure; that refusal is the answer
             # sought here, and the filter is left off the list it returns.
@@ -6907,7 +6948,7 @@ class _Spelled:
     suffix: str = ""
 
 
-def _plus(text: str, value: float) -> str:
+def plus_signed(text: str, value: float) -> str:
     """``text`` with the ``+`` a positive change carries, as :func:`~threetears.evals.kernel.numbers.format_signed`
     places it: never on a bound, never on a zero."""
     shown = re.search(r"[1-9]", text) is not None
@@ -6973,7 +7014,9 @@ def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
     return defaults.get(figure.scale, "plain")
 
 
-def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer: bool = False) -> _Spelled:
+def _spell(
+    value: float, figure: Figure, spelling: str, absolute: bool, forms: PageForms, *, finer: bool = False
+) -> _Spelled:
     if absolute:
         value = abs(value)
     signed = figure.change and not absolute
@@ -6993,7 +7036,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer
         if figure.scale not in ("share", "percent", "points"):
             raise _refuse(figure.path, f"cannot read in points: it is on the {figure.scale} scale")
         text = number_in(hundred, POINTS)
-        return _Spelled(_plus(text, hundred) if spelling == "pts" and not absolute else text)
+        return _Spelled(plus_signed(text, hundred) if spelling == "pts" and not absolute else text)
     if spelling in ("usd", "usd_per_1k"):
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
@@ -7019,7 +7062,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer
                 "round away: write it with `usd`",
             )
         dollars = "$" + group_thousands(format_number(float(round(abs(value)))))
-        return _Spelled(f"-{dollars}" if value < 0 else _plus(dollars, value) if signed else dollars)
+        return _Spelled(f"-{dollars}" if value < 0 else plus_signed(dollars, value) if signed else dollars)
     if spelling == _PER_MILLION:
         # In its family's one form, as every other money key: a price per million of anything is whole dollars or near
         # it, so the form's cents are its precision.
@@ -7038,42 +7081,46 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = group_thousands(format_number(float(round(value))))
-        text = _plus(text, value) if signed else text
+        text = plus_signed(text, value) if signed else text
         return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
     if figure.unit in _KEPT_UNITS:
         return _Spelled(f"{spell_multiple(value)} {figure.unit}")
     # A plain figure the page's tables print at a set's decimals reads at them here too (a score's ``-0.21``).
-    text = format_number(value) if figure.places is None else spell_at(value, figure.places)
+    text = forms.key_number(figure, value)
     # A count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
     text = group_thousands(text) if figure.scale == "count" else text
-    text = _plus(text, value) if signed else text
+    text = plus_signed(text, value) if signed else text
     if not figure.unit:
         return _Spelled(text)
     return _Spelled(f"{text} {figure.unit}")
 
 
-def format_figure(figure: Figure, filters: Sequence[str] = ()) -> str:
+def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageForms) -> str:
     """Spell a figure for a sentence, by its filters or, without one, by its scale.
 
     A rate reads as a percent (one decimal; a descriptive ratio in whole percents), a change in points, money in
     dollars, a count whole. An interval reads ``low to high`` when an end carries a sign, and ``low–high`` with its
-    unit once otherwise (``27–28%``).
+    unit once otherwise (``27–28%``). A plain figure of a measure the page's tables print, and an interval's two ends,
+    read at the precision the page's forms decide for it.
 
     :param figure: What a key resolved to; not an arm, which :func:`render` names.
     :ptype figure: Figure
     :param filters: The key's filters, as :func:`parse_key` checked them.
     :ptype filters: Sequence[str]
+    :param forms: The forms of the page the figure is printed on (an off-page reader's own, built from the input it
+        reads), which decide a measure's figure's precision.
+    :ptype forms: PageForms
     :return: The figure's text.
     :rtype: str
     :raises UnresolvableReference: A filter does not suit the figure: a percent of money, points of a count, an
         ``interval`` on a single number, any filter on text.
     :raises ValueError: The figure is an arm.
     """
-    text = _formatted_figure(figure, tuple(filters))
+    text = _formatted_figure(figure, tuple(filters), forms)
     return f"{text} ({figure.priced_in_part})" if figure.priced_in_part else text
 
 
-def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
+def _formatted_figure(figure: Figure, filters: tuple[str, ...], forms: PageForms) -> str:
     """A figure's text by its filters (:func:`format_figure`), without what it says beside the amount."""
     chosen = tuple(filters)
     if figure.kind == "arm":
@@ -7089,21 +7136,25 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
             raise _refuse(figure.path, "is one number, and `interval` reads an interval")
         if not isinstance(figure.value, float):
             raise TypeError(f"{figure.path} is a number figure holding {figure.value!r}, not a float")
-        spelled = _spell(figure.value, figure, spelling, absolute)
+        spelled = _spell(figure.value, figure, spelling, absolute, forms)
         return spelled.number + spelled.suffix
     if not isinstance(figure.value, tuple):
         raise TypeError(f"{figure.path} is an interval figure holding {figure.value!r}, not a pair")
     low, high = figure.value
     if absolute:
         low, high = sorted((abs(low), abs(high)))
-    ends = [_spell(end, figure, spelling, absolute) for end in (low, high)]
+    ends = [_spell(end, figure, spelling, absolute, forms) for end in (low, high)]
     if ends[0] == ends[1] and low != high:
         # Two ends that differ never read alike: one significant figure more, for this interval alone (owner ruling Q3).
-        ends = [_spell(end, figure, spelling, absolute, finer=True) for end in (low, high)]
+        ends = [_spell(end, figure, spelling, absolute, forms, finer=True) for end in (low, high)]
     if spelling == "plain":
-        ends = _one_precision(ends, (low, high), figure, absolute)
+        # Both ends at one precision, the page's forms decide which (:meth:`PageForms.key_plain_ends`).
+        respelled = forms.key_plain_ends(figure, (low, high), (ends[0].number, ends[1].number), absolute=absolute)
+        if respelled is not None:
+            ends = [_Spelled(text, end.suffix) for text, end in zip(respelled, ends, strict=True)]
     if spelling == "pts":
-        ends = _points_ends(ends, (low, high), figure, absolute)
+        points = forms.key_points_ends(figure, (low, high), absolute=absolute)
+        ends = [_Spelled(text, end.suffix) for text, end in zip(points, ends, strict=True)]
     if ends[0] == ends[1]:
         return ends[0].number + ends[0].suffix
     if ends[0].suffix == ends[1].suffix and ends[0].suffix.startswith(" per "):
@@ -7115,47 +7166,7 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
     return RANGE_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[1].suffix
 
 
-def _one_precision(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
-    """An interval's two plain ends at one precision, as every set reads: the decimals the page's tables print the
-    figure's set at (``figure.places``), else two significant figures of the interval's width, which is what its ends
-    can tell apart (``2.84–3.00`` for 2.839 to 3), never padded to its finer end's digits; more only where
-    an end that is not zero would read as one. An end from
-    :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up, or one read as a bound, is left as it is."""
-    unit = f" {figure.unit}" if figure.unit else ""
-    numbers = [end.number.removesuffix(unit) if unit else end.number for end in ends]
-    if any(abs(value) >= WHOLE_FROM for value in values) or any(not _PLAIN_END.fullmatch(n) for n in numbers):
-        return ends
-    shown = [abs(value) if absolute else value for value in values]
-    places = figure.places if figure.places is not None else set_places([shown[1] - shown[0]])
-    places = ends_places(shown[0], shown[1], places)
-    respelled = []
-    for end, value in zip(ends, shown, strict=True):
-        text = spell_at(value, places)
-        signed = figure.change and not absolute
-        text = _plus(text, value) if signed and float(text) != 0 else text
-        respelled.append(_Spelled(text + unit, end.suffix))
-    return respelled
-
-
-def _points_ends(ends: list[_Spelled], values: tuple[float, float], figure: Figure, absolute: bool) -> list[_Spelled]:
-    """An interval in points with both ends at one precision, as every set reads: a point's one decimal, a whole end
-    too (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never
-    ``-2.2 to 0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule, which writes a
-    whole one whole."""
-    hundred = [value * 100 if figure.scale == "share" else value for value in values]
-    at = ends_places(hundred[0], hundred[1], POINT_PLACES)
-    respelled = []
-    for end, value in zip(ends, hundred, strict=True):
-        text = spell_at(abs(value) if absolute else value, at)
-        respelled.append(_Spelled(text if absolute else _plus(text, value), end.suffix))
-    return respelled
-
-
-#: A plain end's digits: a sign, the digits and a decimal part, never a bound or grouped thousands.
-_PLAIN_END = re.compile(r"[+\-]?\d+(?:\.\d+)?")
-
-
-def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:
+def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str], *, forms: PageForms) -> str:
     """Replace every figure key in report prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
 
     :param text: Report prose.
@@ -7165,6 +7176,9 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
     :param arm_names: Each arm's computed short name, by id (GENERATOR §6.1). An arm declaring a short name
         (``Arm.short_name``) prints that instead; one missing from both is named by its alias, else its id.
     :ptype arm_names: Mapping[str, str]
+    :param forms: The forms of the page the prose is printed on (an off-page reader's own, built from the same input),
+        which decide each figure's precision (:func:`format_figure`).
+    :ptype forms: PageForms
     :return: The prose with every key written out.
     :rtype: str
     :raises UnresolvableReference: A key does not parse, resolve or suit its filters.
@@ -7186,7 +7200,7 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
             name = arm.short_name or arm_names.get(arm.id) or page[arm.id]
             written = written_arm(name, tags[arm.id])
         else:
-            written = format_figure(figure, key.filters)
+            written = format_figure(figure, key.filters, forms=forms)
             if "words" in key.filters and _opens_sentence(text[:start]) and text[end:].strip():
                 # A count spelled as a word that opens a sentence reads as one does, with a capital: the writer
                 # cannot capitalise a word code spells for it ("Ten conversations", never "ten conversations"). A key
@@ -7490,9 +7504,9 @@ _FILTER_EXAMPLES: dict[str, str] = {
 }
 
 
-def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]) -> str:
+def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str], forms: PageForms) -> str:
     """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its example
-    rendered on the made-up input."""
+    rendered on the made-up input, in its forms."""
     statistic = family.statistic()
     listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
     tag = (
@@ -7504,7 +7518,7 @@ def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]
         derived = ", ".join(f"`{name}`" for name in family.derived_statistics)
         tag += f" {derived} derived: descriptive, no interval."
     if family.example:
-        shown = render(f"{{{family.example}}}", example, names)
+        shown = render(f"{{{family.example}}}", example, names, forms=forms)
         tag += f' `{{{family.example}}}` reads "{shown}".'
     return f"- `{family.form()}`: {family.what}{listed}.{tag}"  # one line: module constants
 
@@ -7525,23 +7539,25 @@ def _grammar_rules() -> list[str]:
     ]
 
 
-def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str]:
-    """The grammar's filters, each with its example rendered, and what a key prints: everything after its paths."""
+def _grammar_filters(example: ReportInput, names: Mapping[str, str], forms: PageForms) -> list[str]:
+    """The grammar's filters, each with its example rendered in the made-up input's forms, and what a key prints:
+    everything after its paths."""
     lines = ["Filters (one spelling at most, plus `abs` and `interval`):"]
     for name in _FILTERS:
         key = parse_key(_FILTER_EXAMPLES[name])
-        shown = format_figure(resolve(key.path, example), key.filters)
+        shown = format_figure(resolve(key.path, example), key.filters, forms=forms)
         means, example_key = _FILTER_MEANS[name], _FILTER_EXAMPLES[name]
         lines.append(f'- `{name}`: {means}. `{{{example_key}}}` reads "{shown}".')  # one line: module constants
     sentence = "{arm:fast.v2} is down {reading.fast.v2.change|abs|pts} points ({reading.fast.v2.interval|pts})."
-    lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names)}".')
+    lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names, forms=forms)}".')
     per_reply = "scoreboard.base.reply_cost_usd"
     lines.append(
         "A key prints its own unit (`%`, `$`, `ms`, `s`, or per 1,000 of what the input's cost counts, such as "
         "`per 1,000 conversations`); never write a unit after it. A figure "
         "in points alone prints its bare number, so the word `points` follows it, as above. Money per reply reads per "
         f"1,000 replies: write `{{{per_reply}|usd_per_1k}}`, which reads "
-        f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}" at any amount; a bare `{{{per_reply}}}` '
+        f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",), forms=forms)}" at any amount; a bare '
+        f"`{{{per_reply}}}` "
         "reads so only under a cent, never as a fraction of a cent, and in plain dollars from a cent up."
     )
     lines.append(
@@ -7562,7 +7578,7 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
 _EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
 
 
-def figure_key_grammar() -> str:
+def figure_key_grammar(*, forms_of: Callable[[ReportInput], PageForms]) -> str:
     """Write the section that teaches figure keys, from this module's own families and filters: the whole grammar, as
     the analyst's reference pages hold it.
 
@@ -7570,15 +7586,20 @@ def figure_key_grammar() -> str:
     them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
     analyst with the code.
 
+    :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
+        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
+        its own, since the forms read this module.
+    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The section, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
         plan would share the break, so it fails here.
     """
     example = _example_input()
+    forms = forms_of(example)
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in _FAMILIES]
-    lines += _grammar_filters(example, _EXAMPLE_NAMES)
+    lines += [_family_line(family, example, _EXAMPLE_NAMES, forms) for family in _FAMILIES]
+    lines += _grammar_filters(example, _EXAMPLE_NAMES, forms)
     return "\n".join(lines)
 
 
@@ -7693,7 +7714,7 @@ def _grouped() -> dict[str, list[_Family]]:
     return grouped
 
 
-def figure_key_index(topic: str) -> str:
+def figure_key_index(topic: str, *, forms_of: Callable[[ReportInput], PageForms]) -> str:
     """The grammar as a reference's index: its rules and filters whole, and one line per group of path families, naming
     the page each group is read on and its forms.
 
@@ -7702,6 +7723,10 @@ def figure_key_index(topic: str) -> str:
 
     :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
     :ptype topic: str
+    :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
+        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
+        its own, since the forms read this module.
+    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The index, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
@@ -7715,24 +7740,30 @@ def figure_key_index(topic: str) -> str:
     for group, families in _grouped().items():
         forms = ", ".join(f"`{family.form()}`" for family in families)
         lines.append(f"- {topic}.{group}: {summaries[group]}. {forms}.")
-    lines += _grammar_filters(_example_input(), _EXAMPLE_NAMES)
+    example = _example_input()
+    lines += _grammar_filters(example, _EXAMPLE_NAMES, forms_of(example))
     return "\n".join(lines)
 
 
-def figure_key_pages() -> dict[str, str]:
+def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[str, str]:
     """Each group of the grammar's path families as a page: its forms, what each reads, its statistics and an example,
     written as the grammar writes them (:func:`figure_key_grammar`).
 
+    :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
+        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
+        its own, since the forms read this module.
+    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: Each page, by its group's name, in the order the index lists them (:func:`figure_key_index`).
     :rtype: dict[str, str]
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
     :raises ValueError: A family is in no group.
     """
     example = _example_input()
+    forms = forms_of(example)
     pages: dict[str, str] = {}
     for (group, families), (_, what, _) in zip(_grouped().items(), _FAMILY_GROUPS, strict=True):
         lines = [f"## {GRAMMAR_HEADING}: {group}", f"Paths of {what}:"]
-        lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in families]
+        lines += [_family_line(family, example, _EXAMPLE_NAMES, forms) for family in families]
         pages[group] = "\n".join(lines)
     return pages
 
@@ -7759,13 +7790,17 @@ __all__ = [
     "figure_key_grammar",
     "figure_key_index",
     "figure_filters",
+    "figure_unit",
     "figure_key_pages",
     "cost_basis",
+    "criterion_ruler",
     "flip_margin",
     "format_figure",
+    "held_kind",
     "input_check_name",
     "gain_axis",
     "is_figure_key",
+    "is_rubric_score",
     "key_form",
     "key_subjects",
     "keys_in",
@@ -7775,6 +7810,7 @@ __all__ = [
     "pooled_figures",
     "price_frontier",
     "page_arm_names",
+    "plus_signed",
     "printed_arm_name",
     "written_arm",
     "reader_name",
