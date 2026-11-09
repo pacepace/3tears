@@ -22,7 +22,18 @@ the code writes, judged by :func:`~threetears.enforcement.no_whole_reads.sql.jud
 - no call into a function of the repo that does any of the reads above (``calls-whole-read``), so the caller is
   named, not only the helper.
 
-**The one way out: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
+**An operator's own command is marked where it is written** (:mod:`threetears.core.operator`), never listed:
+
+- ``@operator_reset(reason, proof=...)``: an explicit reset or truncate an operator orders. Its ``truncate`` and
+  ``truncate-call`` hits pass; every read in it is judged as anywhere else;
+- ``@operator_command(reason, proof=...)``: a command an operator runs over a scratch database restored from a
+  backup, never live L3. Its reads of that copy pass.
+
+A mark is checked: every caller of a marked function in the repo must carry the same mark, so the chain ends at an
+entry nothing in the repo calls (a route, a CLI command); ``proof`` names ``<test file>::<test function>``, a test
+that names the function and proves its entry needs the operator; the reason is 30 characters or more.
+
+**The one way out for a cold start or schema change: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
 in the repo's ``_no_whole_reads_exemptions.txt``, one line each::
 
     <repo-relative path> :: <qualified function> :: <hits> :: <cold-start|schema-change> :: <proving test> :: <reason>
@@ -52,6 +63,7 @@ from typing import Final
 from threetears.enforcement.no_whole_reads.walker import (
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
+    OperatorMark,
     WholeReadHit,
     WholeReadScan,
     scan_whole_reads,
@@ -232,6 +244,46 @@ def _inside(hit: WholeReadHit, exemption: _Exemption) -> bool:
     )
 
 
+def _operator_mark_findings(config: NoWholeReadsConfig, scan: WholeReadScan) -> list[str]:
+    """what is wrong with each operator mark: a short reason, a proof that names no test of the function, a caller.
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :param scan: the walk
+    :ptype scan: WholeReadScan
+    :return: findings
+    :rtype: list[str]
+    """
+    findings: list[str] = list(scan.operator_callers)
+    for mark in scan.operators:
+        where = f"{mark.path}:{mark.line} {mark.function} @{mark.mark}"
+        if len(mark.reason) < _MIN_REASON:
+            findings.append(f"{where}: the reason must say which operator command this is ({_MIN_REASON}+ characters)")
+        line = _Exemption(mark.line, mark.path, mark.function, 1, mark.mark, mark.proof, mark.reason)
+        defect = _proving_test_defect(config.repo_root, line)
+        if defect is not None:
+            findings.append(f"{where}: the proof {defect}")
+    return findings
+
+
+def _marked(hit: WholeReadHit, marks: list[OperatorMark]) -> bool:
+    """whether a hit sits in a function (or one nested in it) whose operator mark lets its kind through.
+
+    :param hit: the hit
+    :ptype hit: WholeReadHit
+    :param marks: the operator marks
+    :ptype marks: list[OperatorMark]
+    :return: whether it does
+    :rtype: bool
+    """
+    return any(
+        hit.path == mark.path
+        and (hit.function == mark.function or hit.function.startswith(f"{mark.function}."))
+        and hit.kind in mark.kinds
+        for mark in marks
+    )
+
+
 def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
     """every finding: each whole read outside an exempt function, and every ledger or walk defect.
 
@@ -263,7 +315,10 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         defect = _proving_test_defect(config.repo_root, exemption)
         if defect is not None:
             findings.append(f"{where}: the proving test {defect}")
+    findings.extend(_operator_mark_findings(config, scan))
     for hit in hits:
+        if _marked(hit, scan.operators):
+            continue
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")
     return findings

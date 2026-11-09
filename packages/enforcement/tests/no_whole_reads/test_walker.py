@@ -294,3 +294,88 @@ def test_an_exemption_needs_a_cold_start_or_schema_change_and_a_test_that_names_
         }[case]
         findings = no_whole_reads_findings(_config(tmp_path, {"follower.py": _COLD}, ledger=ledger))
         assert any(message in finding for finding in findings), (case, findings)
+
+
+def test_a_class_constructor_reaches_its_init_not_an_unfound_whole_call(tmp_path: Path) -> None:
+    """Flips if constructing a record type whose name says reload (a dataclass of task handles) is a whole call,
+    or if constructing a class whose ``__init__`` reads whole passes."""
+    modules = {
+        "jobs.py": """
+            from dataclasses import dataclass
+
+            @dataclass
+            class _Reload:
+                task: object
+
+            class _ReloadAll:
+                def __init__(self, pool):
+                    self._rows = pool.fetch("SELECT * FROM bands")
+
+            class Precompute:
+                def start(self, task):
+                    return _Reload(task=task)
+
+                def start_all(self, pool):
+                    return _ReloadAll(pool)
+            """,
+    }
+    found = _symbols(_config(tmp_path, modules))
+    assert not any(function == "Precompute.start" for function, _ in found), found
+    assert ("Precompute.start_all", "calls-whole-read _ReloadAll.__init__") in found
+
+
+_RESET = """
+    from threetears.core.operator import operator_reset, operator_command
+
+    @operator_reset("an operator empties the tables of one data space it names", proof="tests/test_ops.py::test_reset")
+    async def truncate_space(conn, names):
+        await conn.execute(f"TRUNCATE TABLE {names}")
+        await conn.fetch("SELECT * FROM data")
+
+    @operator_command("a restore drill counts every table of the scratch copy", proof="tests/test_ops.py::test_drill")
+    async def drill(conn, table):
+        return await conn.fetchval(f"SELECT count(*) FROM {table}")
+
+    @operator_command("a restore drill counts every table of the scratch copy", proof="tests/test_ops.py::test_drill")
+    async def drill_entry(conn):
+        return await drill(conn, "t")
+"""
+
+_OPS_PROOF = """
+    def test_reset():
+        assert truncate_space
+
+    def test_drill():
+        assert drill and drill_entry
+"""
+
+
+def _ops(tmp_path: Path, body: str = _OPS_PROOF) -> None:
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests" / "test_ops.py").write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+def test_an_operator_reset_may_truncate_and_an_operator_command_may_read_its_copy(tmp_path: Path) -> None:
+    """Flips if an operator's marked reset still fails on its TRUNCATE, if its mark lets a whole read through, or if
+    a marked command over a scratch restore (and its marked entry) fails on its counts."""
+    _ops(tmp_path)
+    findings = no_whole_reads_findings(_config(tmp_path, {"ops.py": _RESET}))
+    assert len(findings) == 1, findings
+    assert "in truncate_space: whole-select data" in findings[0]
+
+
+def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path) -> None:
+    """Flips if a marked function is accepted when something unmarked in the repo calls it, or when its proof
+    names no test, or a test that never names it."""
+    _ops(tmp_path, "def test_reset():\n    assert truncate_space\n\ndef test_drill():\n    assert True\n")
+    caller = """
+        from ops import truncate_space
+
+        async def nightly(conn):
+            await truncate_space(conn, "t")
+        """
+    findings = no_whole_reads_findings(_config(tmp_path, {"ops.py": _RESET, "nightly.py": caller}))
+    assert any("nightly.py:5 in nightly" in finding and "@operator_reset" in finding for finding in findings)
+    assert any(
+        "drill @operator_command: the proof" in finding and "never names drill" in finding for finding in findings
+    )

@@ -27,7 +27,8 @@ Then the call graph, once every module is walked:
   cannot find in the repo: ``whole-call``. A ``_rebuild`` that touches no table is not named.
 
 A call resolves to a ``self`` method of its own class, a module function (its own, or the repo module it was
-imported from), or the repo's methods of that name (narrowed to the classes named for the receiver:
+imported from), a class of the repo it constructs (its ``__init__``; a class with none, a dataclass, reaches
+nothing), or the repo's methods of that name (narrowed to the classes named for the receiver:
 ``self._store`` reaches ``*Store*``); Protocol and abstract stubs are no target. A name that may reach more than one
 function counts only when every one of them does. Migrations (a ``migrations`` directory) are schema changes and
 are not walked; DuckDB relations a module registers from in-memory rows are the rows being written, not a table.
@@ -50,6 +51,7 @@ from threetears.enforcement.no_whole_reads.sql import HEAD, KEYED_COUNT, is_sql,
 __all__ = [
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
+    "OperatorMark",
     "WholeReadHit",
     "WholeReadScan",
     "scan_whole_reads",
@@ -117,6 +119,18 @@ _READ_KINDS: Final[frozenset[str]] = frozenset(
         "verify-aggregate",
     }
 )
+
+#: the kinds an operator's reset (``@operator_reset``) may hold: whole writes it orders, never a read
+_OPERATOR_RESET_KINDS: Final[frozenset[str]] = frozenset({"truncate", "truncate-call"})
+
+#: the kinds an operator's command over a scratch restore (``@operator_command``) may hold: its reads of that copy
+_OPERATOR_COMMAND_KINDS: Final[frozenset[str]] = _READ_KINDS | frozenset({"calls-whole-read"})
+
+#: the operator marks, by decorator name, onto the kinds each lets through
+_OPERATOR_MARKS: Final[dict[str, frozenset[str]]] = {
+    "operator_reset": _OPERATOR_RESET_KINDS,
+    "operator_command": _OPERATOR_COMMAND_KINDS,
+}
 
 #: calls whose first argument is SQL text that is run as written
 _EXEC_CALLS: Final[frozenset[str]] = frozenset(
@@ -212,6 +226,35 @@ class WholeReadHit:
 
 
 @dataclass(frozen=True)
+class OperatorMark:
+    """a function marked as an operator's own command (``threetears.core.operator``).
+
+    :ivar path: repo-relative posix path of the module
+    :ivar function: qualified name of the marked function
+    :ivar line: line of the function
+    :ivar mark: ``operator_reset`` or ``operator_command``
+    :ivar reason: the mark's reason, empty when it is not a literal
+    :ivar proof: the mark's ``proof=``, ``<test file>::<test function>``, empty when it is not a literal
+    """
+
+    path: str
+    function: str
+    line: int
+    mark: str
+    reason: str
+    proof: str
+
+    @property
+    def kinds(self) -> frozenset[str]:
+        """the hit kinds the mark lets through inside the function.
+
+        :return: the kinds
+        :rtype: frozenset[str]
+        """
+        return _OPERATOR_MARKS[self.mark]
+
+
+@dataclass(frozen=True)
 class _CallSite:
     """a call that may reach a whole-read function of the repo, resolved after every module is walked.
 
@@ -248,12 +291,17 @@ class WholeReadScan:
     :ivar files_scanned: modules parsed
     :ivar definitions: ``<path>::<qualified name>`` of every function and class seen
     :ivar unmatched_exclusions: excluded prefixes that matched no module
+    :ivar operators: every function marked as an operator's own command
+    :ivar operator_callers: each call in the repo that reaches a marked function, one line each: a marked function
+        is reachable only from its own entry, so any caller is a finding
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
     files_scanned: int = 0
     definitions: set[str] = field(default_factory=set)
     unmatched_exclusions: list[str] = field(default_factory=list)
+    operators: list[OperatorMark] = field(default_factory=list)
+    operator_callers: list[str] = field(default_factory=list)
 
 
 #: callees that only quote the name they are given
@@ -412,6 +460,11 @@ class _ModuleWalk(ast.NodeVisitor):
         self.calls: list[_CallSite] = []
         self.definitions: set[str] = set()
         self.module_functions: set[str] = set()
+        #: the module's top-level classes: a call to one constructs it, reaching only its ``__init__``
+        self.module_classes: set[str] = {
+            statement.name for statement in tree.body if isinstance(statement, ast.ClassDef)
+        }
+        self.operators: list[OperatorMark] = []
         #: a name imported into the module, onto ``<module>.<name>`` it came from
         self.imports: dict[str, str] = {}
         self._pagers = pagers
@@ -538,6 +591,7 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         self._stack.append(node.name)
         self.definitions.add(f"{self.path}::{self._function}")
+        self._mark_operator(node)
         if _is_stub(node):
             self.stubs.add(f"{self.path}::{self._function}")
         env = dict(self._envs[-1])
@@ -549,6 +603,30 @@ class _ModuleWalk(ast.NodeVisitor):
         self._classes.pop()
         self._envs.pop()
         self._stack.pop()
+
+    def _mark_operator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """record the function's operator mark, if it carries one (``@operator_reset(...)``).
+
+        :param node: the function, already on the stack
+        :ptype node: ast.FunctionDef | ast.AsyncFunctionDef
+        :return: nothing
+        :rtype: None
+        """
+        for decorator in node.decorator_list:
+            mark = _final(decorator) if isinstance(decorator, ast.Call) else None
+            if isinstance(decorator, ast.Call) and mark in _OPERATOR_MARKS:
+                reason = decorator.args[0] if decorator.args else None
+                proof = next((k.value for k in decorator.keywords if k.arg == "proof"), None)
+                self.operators.append(
+                    OperatorMark(
+                        self.path,
+                        self._function,
+                        node.lineno,
+                        mark,
+                        reason.value if isinstance(reason, ast.Constant) and isinstance(reason.value, str) else "",
+                        proof.value if isinstance(proof, ast.Constant) and isinstance(proof.value, str) else "",
+                    )
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """walk a function.
@@ -897,17 +975,46 @@ def _own_nodes(body: list[ast.stmt]) -> Iterator[ast.AST]:
                 stack.append(child)
 
 
+def _class_module(
+    call: _CallSite, module_classes: dict[str, set[str]], imports: dict[str, dict[str, str]]
+) -> str | None:
+    """the module defining the class a bare call constructs, when the call names one of the repo's classes.
+
+    :param call: a bare call
+    :ptype call: _CallSite
+    :param module_classes: module path onto the names of its top-level classes
+    :ptype module_classes: dict[str, set[str]]
+    :param imports: module path onto its imported names, each onto ``<module>.<name>``
+    :ptype imports: dict[str, dict[str, str]]
+    :return: the module's path, or None when the call constructs none of the repo's classes
+    :rtype: str | None
+    """
+    found: str | None = None
+    if call.name in module_classes.get(call.path, set()):
+        found = call.path
+    else:
+        origin = imports.get(call.path, {}).get(call.name)
+        module = origin.rsplit(".", 1)[0].replace(".", "/") + ".py" if origin else None
+        found = next(
+            (path for path, names in module_classes.items() if module and path.endswith(module) and call.name in names),
+            None,
+        )
+    return found
+
+
 def _targets(
     call: _CallSite,
     module_functions: dict[str, set[str]],
     by_name: dict[str, list[tuple[str, str]]],
     imports: dict[str, dict[str, str]],
-) -> list[tuple[str, str]]:
+    module_classes: dict[str, set[str]] | None = None,
+) -> list[tuple[str, str]] | None:
     """the repo's functions a call may reach.
 
     A ``self`` call reaches its own class's method; a bare call its module's function, else the function of the
-    repo module it was imported from; a call on any other receiver the repo's methods of that name (those of the
-    classes named for the receiver, when there are some).
+    repo module it was imported from; a bare call constructing one of the repo's classes that class's
+    ``__init__`` (a class with none, a dataclass, reaches nothing and reads nothing); a call on any other receiver
+    the repo's methods of that name (those of the classes named for the receiver, when there are some).
 
     :param call: the call
     :ptype call: _CallSite
@@ -917,10 +1024,21 @@ def _targets(
     :ptype by_name: dict[str, list[tuple[str, str]]]
     :param imports: module path onto its imported names, each onto ``<module>.<name>``
     :ptype imports: dict[str, dict[str, str]]
-    :return: the targets, the caller itself left out
-    :rtype: list[tuple[str, str]]
+    :param module_classes: module path onto the names of its top-level classes
+    :ptype module_classes: dict[str, set[str]] | None
+    :return: the targets, the caller itself left out; None for a constructor of a class with no ``__init__``,
+        which the walk found and which reaches nothing
+    :rtype: list[tuple[str, str]] | None
     """
     targets: list[tuple[str, str]] = []
+    constructed = (
+        _class_module(call, module_classes or {}, imports)
+        if call.receiver == "bare" and call.name not in module_functions.get(call.path, set())
+        else None
+    )
+    if constructed is not None:
+        init = (constructed, f"{call.name}.__init__")
+        return [init] if init in by_name.get("__init__", []) else None
     if call.receiver == "self" and call.owner:
         targets = [(call.path, f"{call.owner}.{call.name}")]
     elif call.receiver == "bare" and call.name in module_functions.get(call.path, set()):
@@ -951,7 +1069,9 @@ def _resolve(
     definitions: set[str],
     stubs: set[str],
     imports: dict[str, dict[str, str]],
-) -> list[WholeReadHit]:
+    module_classes: dict[str, set[str]] | None = None,
+    operators: list[OperatorMark] | None = None,
+) -> tuple[list[WholeReadHit], list[str]]:
     """the call graph's hits: ``calls-whole-read`` and ``whole-call``.
 
     - ``calls-whole-read``: an unnarrowed call into a function that itself reads whole (one level, a read kind);
@@ -972,8 +1092,12 @@ def _resolve(
     :ptype stubs: set[str]
     :param imports: module path onto its imported names
     :ptype imports: dict[str, dict[str, str]]
-    :return: the hits
-    :rtype: list[WholeReadHit]
+    :param module_classes: module path onto the names of its top-level classes
+    :ptype module_classes: dict[str, set[str]] | None
+    :param operators: the functions marked as an operator's own command
+    :ptype operators: list[OperatorMark] | None
+    :return: the hits, and each call reaching a marked function from a function without the same mark
+    :rtype: tuple[list[WholeReadHit], list[str]]
     """
     by_name: dict[str, list[tuple[str, str]]] = {}
     for entry in definitions - stubs:
@@ -983,7 +1107,13 @@ def _resolve(
     for hit in hits:
         if hit.kind in _READ_KINDS:
             readers.setdefault((hit.path, hit.function), hit)
-    resolved = [(call, _targets(call, module_functions, by_name, imports)) for call in calls]
+    constructors_found: set[int] = set()
+    resolved: list[tuple[_CallSite, list[tuple[str, str]]]] = []
+    for index, call in enumerate(calls):
+        targets = _targets(call, module_functions, by_name, imports, module_classes)
+        if targets is None:
+            constructors_found.add(index)
+        resolved.append((call, targets or []))
     reaches = {(hit.path, hit.function) for hit in hits}
     grew = True
     while grew:
@@ -994,7 +1124,17 @@ def _resolve(
                 reaches.add(caller)
                 grew = True
     found: list[WholeReadHit] = []
-    for call, targets in resolved:
+    marks = {(mark.path, mark.function): mark.mark for mark in operators or []}
+    callers = [
+        f"{call.path}:{call.line} in {call.function}: {call.spelled} calls {target[1]}, marked @{marks[target]}: an "
+        "operator's command is reached only from its own entry, so every caller carries the same mark"
+        for call, targets in resolved
+        for target in targets
+        if target in marks and marks.get((call.path, call.function)) != marks[target]
+    ]
+    for index, (call, targets) in enumerate(resolved):
+        if index in constructors_found:
+            continue
         if not call.narrowed and targets and all(target in readers for target in targets):
             path, qualified = sorted(targets)[0]
             reached = readers[(path, qualified)]
@@ -1009,7 +1149,7 @@ def _resolve(
             )
         elif call.whole_named and (not targets or all(target in reaches for target in targets)):
             found.append(WholeReadHit(call.path, call.line, call.function, f"whole-call {call.name}", call.spelled))
-    return found
+    return found, callers
 
 
 def scan_whole_reads(
@@ -1054,6 +1194,7 @@ def scan_whole_reads(
     used: set[str] = set()
     calls: list[_CallSite] = []
     module_functions: dict[str, set[str]] = {}
+    module_classes: dict[str, set[str]] = {}
     stubs: set[str] = set()
     imports: dict[str, dict[str, str]] = {}
     pattern = re.compile(transient) if transient else None
@@ -1081,8 +1222,14 @@ def scan_whole_reads(
             scan.definitions.update(walk.definitions)
             calls.extend(walk.calls)
             module_functions[relative] = walk.module_functions
+            module_classes[relative] = walk.module_classes
+            scan.operators.extend(walk.operators)
             imports[relative] = walk.imports
             scan.files_scanned += 1
-    scan.hits.extend(_resolve(calls, scan.hits, module_functions, scan.definitions, stubs, imports))
+    resolved, callers = _resolve(
+        calls, scan.hits, module_functions, scan.definitions, stubs, imports, module_classes, scan.operators
+    )
+    scan.hits.extend(resolved)
+    scan.operator_callers = callers
     scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
     return scan
