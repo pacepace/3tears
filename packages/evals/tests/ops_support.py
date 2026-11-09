@@ -12,6 +12,7 @@ answers an empty object: no report is written in any role but the analyst's.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +37,7 @@ from threetears.evals.schema import (
     JudgeConfig,
     JudgedArtifact,
     RubricDim,
+    RunDisclosure,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
@@ -101,6 +103,7 @@ def ops_fixture(
     store: DocumentStore | None = None,
     job_lease_s: float = DEFAULT_JOB_LEASE_S,
     analyst_unpriced: str | None = None,
+    run_disclosure: Callable[[], RunDisclosure] | None = None,
 ) -> OpsFixture:
     """The toy host as an operations host: its template saved, its corpus campaign stored.
 
@@ -122,6 +125,9 @@ def ops_fixture(
     :param analyst_unpriced: Why the ``analyst`` client's turns cannot be priced, when set
         (``turn_pricing_refusal``); ``None`` for a client that prices every turn at ``ceiling_usd``.
     :ptype analyst_unpriced: str | None
+    :param run_disclosure: What the host discloses about each launch (``LaunchHost.run_disclosure``); ``None``
+        discloses nothing.
+    :ptype run_disclosure: Callable[[], RunDisclosure] | None
     :return: The fixture.
     :rtype: OpsFixture
     """
@@ -151,7 +157,12 @@ def ops_fixture(
         return analyst
 
     launch, _client = toyhost_launch_host(
-        profile=profile, storage=storage, clients=clients, settings=lambda: settings, job_lease_s=job_lease_s
+        profile=profile,
+        storage=storage,
+        clients=clients,
+        settings=lambda: settings,
+        job_lease_s=job_lease_s,
+        run_disclosure=run_disclosure,
     )
 
     generating = AnalysisGeneration(report_budget=lambda: ReportBudget(usd=REPORT_BUDGET_USD), budget_s=60.0)
