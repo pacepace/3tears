@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import socket
+import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any, Final
@@ -45,6 +46,27 @@ EFFORT: Final = "medium"
 
 #: The scoring judge's model.
 JUDGE: Final = "google/gemini-3.8-flash"
+
+#: How each of the 14 replayed reports ends, by arm and case, under the clearing rule of the owner's ruling of
+#: 2026-11-09 (R1: a round-1 should_fix no longer blocks), which moved five of them from stored_with_findings to stored:
+#: shipped's r1 reading only bars and r2 with its gates read in each task, lead-first's 1-triage, r2 with its gates read
+#: in each task and r2 with one gate. A rule change that moves any ending turns this red.
+ENDINGS: Final = {
+    ("shipped", "1-triage"): "stored_with_findings",
+    ("shipped", "kairo round 2"): "stored_with_findings",
+    ("shipped", "r1 reading only bars"): "stored",
+    ("shipped", "r1 without its gates"): "stored_with_findings",
+    ("shipped", "r2 with its gates read in each task"): "stored",
+    ("shipped", "r2 with one gate"): "stored",
+    ("shipped", "r2 without its gates"): "stored_with_findings",
+    ("lead-first", "1-triage"): "stored",
+    ("lead-first", "kairo round 2"): "stored_with_findings",
+    ("lead-first", "r1 reading only bars"): "stored",
+    ("lead-first", "r1 without its gates"): "stored",
+    ("lead-first", "r2 with its gates read in each task"): "stored",
+    ("lead-first", "r2 with one gate"): "stored",
+    ("lead-first", "r2 without its gates"): "stored",
+}
 
 #: How many analyst replies a silent report asks for before the loop gives up on it.
 SILENT_TURNS: Final = 4
@@ -167,6 +189,32 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # No surface of the page prints the retired words (owner ruling Q2).
     html = (writer_dir / ".evals" / "reports" / "writer" / "report.html").read_text(encoding="utf-8")
     assert "not separated" not in page and "not separated" not in html
+    assert _endings(writer_dir) == ENDINGS
+
+
+def _endings(directory: Path) -> dict[tuple[str, str], str]:
+    """Each replayed report's ending, by arm (named by its skill's digest) and case (named by its snapshot)."""
+    control = AnalystSkill.at(directory / "skills" / "control")
+    lead_first = control.with_file("SKILL.md", (directory / "skills" / "lead-first.md").read_text(encoding="utf-8"))
+    arms = {control.digest: "shipped", lead_first.digest: "lead-first"}
+    cases = {case.snapshot.id: case.name for case in read_writer_cases(directory / "cases")}
+    with sqlite3.connect(f"file:{directory / '.evals' / 'evals.sqlite'}?mode=ro", uri=True) as db:
+        bodies = [
+            json.loads(body)
+            for (body,) in db.execute(
+                "select body from documents where doc_type in (?, ?)", ("eval_result", "eval_test_case")
+            )
+        ]
+    snapshot_of = {
+        body["id"]: body["host_payload"]["writer_case"]["snapshot"]["id"]
+        for body in bodies
+        if body["doc_type"] == "eval_test_case"
+    }
+    return {
+        (arms[body["kind_payload"]["skill"]], cases[snapshot_of[body["test_case_id"]]]): body["kind_payload"]["ending"]
+        for body in bodies
+        if body["doc_type"] == "eval_result"
+    }
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(

@@ -10,8 +10,9 @@ Contracts held here:
 - **rounds**: a review that passes with no finding open ends ``stored`` in round 1, finished; a failed review, a
   ``must_fix`` or a ``should_fix`` sends the analyst back in its own conversation, at most twice, and three reviews
   that do not clear end ``stored_with_findings``, a draft whose page says so first (owner ruling 2026-10-29); a
-  ``should_fix`` first raised after round 1 is sent back while a revision remains and never makes a draft, and a
-  revision it sends that ends short stores the report it cleared, finished (owner ruling 2026-10-31);
+  ``should_fix`` is sent back while a revision remains and makes no draft, unless it was first raised in round 1 as a
+  ``must_fix`` (owner rulings 2026-10-31 and 2026-11-09), and a revision a cleared review sends that ends short stores
+  the report it cleared, finished;
 - **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
   when no review was read; ``refused`` and ``review_failed`` store nothing, and ``failed`` nothing ever; the tally
   keeps every turn. A revision a cleared review sent that ends ``over_budget``, ``refused`` or ``review_failed`` ends
@@ -180,9 +181,10 @@ async def test_a_should_fix_sends_a_review_that_passes_on_its_scores_back_and_a_
     assert result.ending == "stored", result.outcome.reason
     assert model.asked == ["analyst", "editor-1", "editor-2"]
     first = result.outcome.reviews[0]
-    assert first.passes and not first.must_fix and not first.clears, "a passing review with a should_fix is not clean"
+    assert first.passes and not first.must_fix and first.clears, "a round-1 should_fix blocks nothing (2026-11-09)"
+    assert not first.settles, "a passing review with a should_fix open is not clean: it is sent back"
     asked = _texts({"messages": [analyst_client.requests[-1]["messages"][-1]]})
-    assert "holds findings that block it" in asked and "f1.1 [should_fix, blocking]" in asked
+    assert "holds findings that do not block it" in asked and "- f1.1 [should_fix] c1:" in asked
     assert SHOULD_FIX["finding"] in asked
     assert "must_fix and should_fix alike" in asked
     assert result.stored is not None and result.stored.findings == [] and not result.stored.draft
@@ -248,9 +250,10 @@ async def test_three_failing_reviews_end_stored_with_findings_and_no_fourth_roun
     assert result.stored.draft and result.page.draft
 
 
-async def test_a_loop_out_of_revisions_with_should_fix_findings_open_stores_a_draft_that_says_so_first() -> None:
-    """The Discodon incident's shape: every review passes on its scores, and its should_fix findings, raised in round 1,
-    stay open through every revision."""
+async def test_a_loop_out_of_revisions_with_round_one_should_fix_findings_open_stores_them_open_and_finished() -> None:
+    """The Discodon incident's shape, and run 5's: every review passes on its scores, and its should_fix findings,
+    raised in round 1, stay open through every revision. Under the owner's ruling of 2026-11-09 they block nothing:
+    the report is stored finished, its findings listed open."""
     other = {
         "claim": "report",
         "severity": "should_fix",
@@ -266,16 +269,18 @@ async def test_a_loop_out_of_revisions_with_should_fix_findings_open_stores_a_dr
 
     result = await written(model, host=host)
 
-    assert result.ending == "stored_with_findings", result.outcome.reason
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"], "each open finding was given its revisions"
     assert all(item.passes and not item.must_fix for item in result.outcome.reviews)
     (stored,) = _stored(host)
-    assert stored.ending == "stored_with_findings" and stored.draft
+    assert stored.ending == "stored" and not stored.draft
     assert stored.findings == [kept(SHOULD_FIX, "f1.1", 1), kept(other, "f1.2", 1)], "carried, they keep their ids"
-    assert [len(review.blocking) for review in result.outcome.reviews] == [2, 2, 2]
+    assert [len(review.blocking) for review in result.outcome.reviews] == [0, 0, 0]
     page = result.page
-    assert page is not None and page.draft
-    lines = [line for line in doc_page_text(page).splitlines() if line]
-    assert lines[1] == "Draft: its editor's review left 2 findings open.", "first, right under the masthead"
+    assert page is not None and not page.draft
+    text = doc_page_text(page)
+    assert "Draft" not in text
+    assert [line for line in text.splitlines() if line][1].endswith("open, listed at the end.")
     assert [finding.finding for finding in page.findings] == [SHOULD_FIX["finding"], other["finding"]]
 
 
@@ -458,7 +463,7 @@ async def test_a_round_two_review_that_keeps_an_earlier_should_fix_open_revises(
     assert result.ending == "stored", result.outcome.reason
     assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"]
     second = result.outcome.reviews[1]
-    assert not second.clears and [finding.id for finding in second.blocking] == ["f1.1"]
+    assert second.clears and not second.settles and second.blocking == (), "sent back, and blocking nothing"
 
 
 async def test_a_new_must_fix_in_round_two_revises() -> None:
@@ -490,7 +495,7 @@ async def test_out_of_revisions_with_only_new_should_fix_findings_is_no_draft() 
     assert result.page is not None and not result.page.draft
 
 
-async def test_out_of_revisions_with_a_carried_finding_open_stores_a_draft() -> None:
+async def test_out_of_revisions_with_a_round_one_should_fix_carried_open_stores_it_finished() -> None:
     model = FakeTurnModel(
         analyst=analyst(reply(submitted()), reply(submitted(revised()))),
         editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
@@ -499,9 +504,33 @@ async def test_out_of_revisions_with_a_carried_finding_open_stores_a_draft() -> 
 
     result = await written(model, limits=WriterLimits(revisions=1))
 
-    assert result.ending == "stored_with_findings", result.outcome.reason
-    assert result.stored is not None and result.stored.draft
+    assert result.ending == "stored", result.outcome.reason
+    assert result.stored is not None and not result.stored.draft
     assert result.stored.findings == [kept(SHOULD_FIX, "f1.1", 1), kept(LATE, "f2.1", 2)]
+
+
+#: The round-1 must_fix, as a later review carries it at should_fix.
+DOWNGRADED: Final = {**MUST_FIX, "severity": "should_fix"}
+
+
+async def test_out_of_revisions_with_a_round_one_must_fix_carried_as_a_should_fix_stores_a_draft() -> None:
+    """Downgraded is not resolved: a finding first raised in round 1 as a must_fix blocks at either severity, and the
+    stored record says what it was raised as, through every review that carries it."""
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[MUST_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(DOWNGRADED, "f1.1"), marked(LATE, "new")]))),
+        editor_3=FakeToolTurnClient(reply(review(findings=[marked(DOWNGRADED, "f1.1"), marked(LATE, "f2.1")]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored_with_findings", result.outcome.reason
+    assert [[finding.id for finding in item.blocking] for item in result.outcome.reviews] == [["f1.1"]] * 3
+    assert [item.findings[0].raised_as for item in result.outcome.reviews] == [None, "must_fix", "must_fix"]
+    assert result.stored is not None and result.stored.draft
+    assert result.stored.findings == [{**kept(DOWNGRADED, "f1.1", 1), "raised_as": "must_fix"}, kept(LATE, "f2.1", 2)]
+    assert result.generation["reviews"][2]["blocking"] == ["f1.1"]
     assert result.page is not None and result.page.draft
     lines = [line for line in doc_page_text(result.page).splitlines() if line]
     assert lines[1] == "Draft: its editor's review left 2 findings open."

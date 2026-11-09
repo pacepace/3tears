@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer's editor clears more reports, its analyst turns are priced at an 8,192-token cap, and the acceptance gate discloses the finished pairs
+
+Owner rulings of 2026-11-09, after run 5 (32 cases, Sonnet 5.5, $1.50 a report) finished 9 of 64 reports. Read over
+its 177 recorded reviews, the clearing rule and the turn ceiling, not the writing, kept the rest from finishing.
+
+**Changed:**
+- **Clearing rule.** A `should_fix` first raised in round 1 no longer blocks a report from being stored finished: it
+  is still sent back while revisions remain, then listed open on a finished page. Every `must_fix` still blocks, and so
+  does a finding first raised in round 1 as a `must_fix` that a later review carries at `should_fix` (downgraded is
+  not resolved). The 11-of-14 bar with no item at 0 is unchanged. `Review.blocking` applies it; the new
+  `ReportFinding.raised_as` keeps the severity a finding was first raised with where a later review carries it at
+  another, and is stored only then. Over run 5's recordings the rule finishes 15 of 32 shipped reports (was 8) and 4
+  of 32 candidate reports (was 1); no stored page changes, only the ending. `editor.md` states the rule, so the
+  shipped skill's digest moves (unmeasured entry in `PROMOTIONS.toml`).
+- **The analyst's output cap is 8,192 tokens** (`AnalystLimits().session.max_tokens`, was 32,000; run 5's largest
+  reply in 748 turns was 5.8k). Each turn is admitted on its prompt's bound plus this cap, so on Sonnet 5.5 every
+  analyst turn's ceiling falls by about $0.24: run 5's refused revision turns, priced $0.97 to $1.03, price $0.73 to
+  $0.79, inside the $0.86 to $1.01 their reports had left. The budget is still a hard ceiling. A reply that reaches
+  the cap is a bounce, as before. The editor's cap stays 32,000: no refusal rested on it.
+- **Acceptance gate** (`writer_acceptance.py`, two editors): "the preference over pairs both finished" is disclosed
+  with its pair count and no longer decides PASS or FAIL. "Both arms stored a page on every case" is unchanged.
+
+**Hosts:** a stored report reads exactly as before: its `ending` and `draft` are stored, never re-derived. New reports
+finish more often, since a round-1 `should_fix` left open no longer makes a draft. A host that builds `WriterLimits()`
+gets the 8,192-token analyst cap (it was 32,000). Recorded replies at a stated effort stay under 6,000 tokens; a host
+whose writer sets no effort (the provider's default) or a thinking budget of 8,192 or more, and sees replies cut at the
+cap (a cut reply counts as a bounce), restores the old cap with `AnalystLimits(session=SessionLimits(max_tokens=32_000))`. A request ceiling derived from the
+output cap (`writer_ceiling_s`) falls with it.
+
 ### evals: a writer verdict never rests on a reading the two arms' editors decide
 
 **Fixed:** with a candidate whose `editor.md` differs from the control's, the writer eval's promotion sentence named

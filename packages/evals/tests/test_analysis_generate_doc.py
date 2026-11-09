@@ -973,9 +973,10 @@ async def test_a_doc_analysis_is_listed_read_as_the_campaign_page_and_its_insigh
 
 
 async def test_a_report_out_of_revisions_with_findings_open_is_a_draft_on_its_listing_line_and_every_page() -> None:
-    """Owner ruling 2026-10-29: a report its editor's review did not clear is never served as finished."""
+    """Owner ruling 2026-10-29: a report its editor's review did not clear is never served as finished. Its open finding
+    is a must_fix, since a round-1 should_fix left open no longer makes a draft (owner ruling 2026-11-09)."""
     fixture = off_loop(ops_fixture)
-    open_finding = {"claim": "report", "severity": "should_fix", "finding": "Give the cost column its dollars."}
+    open_finding = {"claim": "report", "severity": "must_fix", "finding": "Give the cost column its dollars."}
     _scripted(
         fixture,
         {

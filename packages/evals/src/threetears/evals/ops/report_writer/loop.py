@@ -14,9 +14,10 @@
    ones marked), and the editor reviews the revision. :attr:`WriterLimits.revisions` revisions at most (2, so at most
    3 reviews). After the last, a review that passes with no blocking finding open
    (:attr:`~threetears.evals.ops.report_writer.editor.Review.blocking`) ends the loop ``stored``, its findings listed
-   open, and any other ends it ``stored_with_findings``. Every ``must_fix`` blocks, and every finding first raised in
-   round 1; a ``should_fix`` first raised in a later review never does, new or carried (owner rulings 2026-10-29 and
-   2026-10-31): it is given a revision while one remains, and alone it never makes the report a draft.
+   open, and any other ends it ``stored_with_findings``. Every ``must_fix`` blocks, and so does a finding first raised
+   in round 1 as a ``must_fix`` that a review carries at ``should_fix``; any other ``should_fix`` never does, a
+   round-1 one included (owner rulings 2026-10-29, 2026-10-31 and 2026-11-09): it is given a revision while one
+   remains, and alone it never makes the report a draft.
 
 **Endings** (plan §4.4), each a value the caller stores or reports:
 

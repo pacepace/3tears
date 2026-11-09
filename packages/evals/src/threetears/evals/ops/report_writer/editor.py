@@ -35,9 +35,10 @@ lowers it.
 **Carried or new, by structure, never by text.** From the second round each finding says which earlier finding it
 continues (``continues``: that finding's id, or ``"new"``), and the review lists the earlier findings it finds
 resolved (``resolved``). Every earlier finding is accounted for exactly once, continued or resolved, or the answer is
-asked for again. A continued finding keeps its id and the round it was first raised (``ReportFinding.since``); a new
-one gets an id of this round. Code reads which findings block clearance from those marks
-(:attr:`Review.blocking`, owner ruling 2026-10-29), never by comparing what two findings say.
+asked for again. A continued finding keeps its id, the round it was first raised (``ReportFinding.since``) and, where
+this review gives it another severity, the one it was first raised with (``ReportFinding.raised_as``); a new one gets
+an id of this round. Code reads which findings block clearance from those marks (:attr:`Review.blocking`, owner rulings
+2026-10-29 and 2026-11-09), never by comparing what two findings say.
 
 **A session is kept.** Every round's session comes back on its outcome as a stored value
 (``ToolSession.to_json()``), whatever the ending, a client's failure included, so a later question can resume it.
@@ -205,11 +206,16 @@ class Review:
 
     @property
     def blocking(self) -> tuple[ReportFinding, ...]:
-        """The findings that keep the report from being stored finished (owner rulings 2026-10-29 and 2026-10-31):
-        every ``must_fix``, and every finding first raised in round 1, where every finding blocks, while a review
-        carries it. A ``should_fix`` first raised in a later review blocks nothing, new or carried: it sends the
-        report back while revisions remain (:attr:`settles`), and then it is stored listed open, never a draft."""
-        return tuple(finding for finding in self.findings if finding.severity == "must_fix" or finding.since <= 1)
+        """The findings that keep the report from being stored finished (owner rulings 2026-10-29, 2026-10-31 and
+        2026-11-09): every ``must_fix``, whenever it was raised, and every finding first raised in round 1 as a
+        ``must_fix`` that a review carries at ``should_fix``, since downgraded is not resolved. Any other
+        ``should_fix`` blocks nothing, a round-1 one included: it sends the report back while revisions remain
+        (:attr:`settles`), and then it is stored listed open, never a draft."""
+        return tuple(
+            finding
+            for finding in self.findings
+            if finding.severity == "must_fix" or (finding.since <= 1 and finding.raised_as == "must_fix")
+        )
 
     @property
     def clears(self) -> bool:
@@ -235,7 +241,8 @@ class Review:
         return {
             "round": self.round,
             "items": [item.to_json() for item in self.items],
-            "findings": [finding.model_dump(mode="json") for finding in self.findings],
+            # raised_as is kept only where a review moved a finding's severity: one that kept it is stored as before.
+            "findings": [finding.model_dump(mode="json", exclude_none=True) for finding in self.findings],
             "resolved": list(self.resolved),
             "total": self.total,
             "passes": self.passes,
@@ -579,11 +586,14 @@ def _findings(
         if len(faults) > fault_count:
             continue
         assert isinstance(claim, str) and isinstance(said, str)
+        raised_as: str | None = None
         if mark is None:
             fresh += 1
             identity, since = f"f{round}.{fresh}", round
         else:
             identity, since = mark, held[mark].since
+            first = held[mark].raised_as or held[mark].severity
+            raised_as = first if first != severity else None
         read.append(
             ReportFinding.model_validate(
                 {
@@ -592,6 +602,7 @@ def _findings(
                     "finding": said.strip(),
                     "id": identity,
                     "since": since,
+                    "raised_as": raised_as,
                 }
             )
         )

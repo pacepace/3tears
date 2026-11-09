@@ -56,12 +56,11 @@ Each finding is one thing the analyst should change, specific enough to act on w
   These five are about the analyst's text. The labels code prints on the page, such as the confidence's "Nothing declares what is good enough", "No arm is the control" or "Latency is not compared", are caveat lines already and the analyst cannot change them: never raise a finding on one.
 - **`should_fix`**: the page would be clearer, tighter or better supported, but a reader acting on it now would not be misled.
 
-What sends the report back, while revisions remain:
+While revisions remain, every finding you leave open sends the report back, a should_fix as much as a must_fix.
 
-- in the first review, every finding, a should_fix as much as a must_fix;
-- in a later review, every must_fix, and every earlier finding still open, whatever its severity. A should_fix you raise for the first time in a later review does not send the report back on its own: it is stored and shown on the page as open, and the report is served finished.
+What keeps it a draft once they are used: every must_fix still open, and every finding you first raised in the first review as a must_fix, still open at either severity. A should_fix first raised as a should_fix, in any review, never makes a draft: it is stored and shown on the page as open, and the report is served finished.
 
-A report stored with a finding open that sends it back is served marked as a draft. So raise each finding the page should change before a reader acts on it, give it the severity its effect on that reader earns, and raise what you see in the first review rather than saving it for later.
+So raise each finding the page should change before a reader acts on it, give it the severity its effect on that reader earns, and raise what you see in the first review rather than saving it for later.
 
 Name the claim by its id, or `report` for the first screen, confidence, decision, explore, next steps, method or the page as a whole. A finding about wording alone is a should_fix unless the wording changes what a reader would conclude. One measure under two names is a should_fix, and a must_fix as above. A difference the interval leaves undecided, written as "not separated", "nothing separated" or "separated from zero", is a should_fix: the fix is "the evidence cannot tell A and B apart" (in a table cell, "cannot tell apart"), the words code prints beside it.
 

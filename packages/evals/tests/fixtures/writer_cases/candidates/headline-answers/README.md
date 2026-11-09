@@ -41,8 +41,8 @@ their rule to the writer's page; the code pages need their own package change. C
 
 | Skill | Skill digest | Analyst text digest | Editor text digest |
 |---|---|---|---|
-| shipped | `fd74326c6f2e0fb5cd417f5ac7a1cff1855f4c8641d29dd622473ee87fc45662` | `acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db` | `5d29d6f5471dfc846167512fb11fb216601ed5b35362013dad0bea2926f2cc92` |
-| headline-answers | printed by the run | `0dd4aaf5eb73987d953962d7a09e0ff3ce86e88e959c656b95154378e375c312` | `9a6450d0dd2e95ac008caec7d60891a4a483263ee88f2ff518243ccbd83a9530` |
+| shipped | `5ae589a74388d9025ad57e4cc776c8a028b9f357e6264101c7b367bc71c17d78` | `acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db` | `5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70` |
+| headline-answers | printed by the run | `0dd4aaf5eb73987d953962d7a09e0ff3ce86e88e959c656b95154378e375c312` | `7531c1a9f9affc141730de506510b448273365bd1e3835ef4ed42ac7de15cb5f` |
 
 The candidate's skill digest covers this file, so this file cannot hold it: the acceptance readout prints it, and
 `acceptance.json` records it under `candidate_skill`. The analyst's text is read with no note withheld.
@@ -123,7 +123,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
 +  These five are about the analyst's text. The labels code prints on the page, such as the confidence's "Nothing declares what is good enough", "No arm is the control" or "Latency is not compared", are caveat lines already and the analyst cannot change them: never raise a finding on one.
  - **`should_fix`**: the page would be clearer, tighter or better supported, but a reader acting on it now would not be misled.
  
- What sends the report back, while revisions remain:
+ While revisions remain, every finding you leave open sends the report back, a should_fix as much as a must_fix.
 --- a/exemplars/kairo-round2.md
 +++ b/exemplars/kairo-round2.md
 @@ -7,14 +7,14 @@

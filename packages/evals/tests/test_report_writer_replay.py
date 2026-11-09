@@ -35,6 +35,13 @@ from threetears.evals.actions.report_writing import ReportNotStored, ReportWritt
 from threetears.evals.testing import RecordedTurns
 
 
+#: The runs whose recorded ending a later ruling moved, by directory: the page is unchanged, only the ending.
+_RULED_ENDINGS: dict[str, str] = {
+    "r1-without-its-gates": "stored",  # R1, owner ruling 2026-11-09: a round-1 should_fix no longer blocks
+    "r2-with-one-gate": "stored",  # R1, owner ruling 2026-11-09: a round-1 should_fix no longer blocks
+}
+
+
 @dataclass(frozen=True)
 class Replayed:
     """A replay: what ``replay.json`` recorded, what the replay came to, what it left unasked, and why its store
@@ -49,6 +56,8 @@ class Replayed:
 async def replay(case: Path) -> Replayed:
     """Replay one recorded run (its directory) as ``replay.json`` says it was made."""
     expected: dict[str, Any] = json.loads((case / REPLAY).read_text())
+    if case.name in _RULED_ENDINGS:
+        expected = {**expected, "ending": _RULED_ENDINGS[case.name]}
     recording = RecordedTurns.replay(case / RECORDING)
     refusal: str | None = None
     try:

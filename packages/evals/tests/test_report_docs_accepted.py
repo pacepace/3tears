@@ -87,6 +87,12 @@ def _inputs() -> dict[str, ReportInput]:
     }
 
 
+#: The runs whose live ending a later ruling moved: the replay stores the same page, under the ending the rule now gives.
+_RULED_ENDINGS: dict[str, str] = {
+    "r1-without-its-gates": "stored",  # R1, owner ruling 2026-11-09: a round-1 should_fix no longer blocks
+    "r2-with-one-gate": "stored",  # R1, owner ruling 2026-11-09: a round-1 should_fix no longer blocks
+}
+
 #: A snapshot the live run was written on -> the id the fixtures build for it now, re-pinned where a change moved the
 #: input's id and none of its evidence, so the document is still checked against what it was written on. Each with
 #: its reason; any other move of the input still fails, and is recorded again.
@@ -142,7 +148,7 @@ def test_kairo_and_every_misfit_were_written_and_stored() -> None:
     for name in _NAMES:
         record, live = _record(name), _live_record(name)
         assert live["ending"] == _replay(name)["ending"], f"{name}: the record and the replay disagree on the ending"
-        assert record.ending == live["ending"], (
+        assert record.ending == _RULED_ENDINGS.get(name, live["ending"]), (
             f"{name}: the replay ended {record.ending}, the live run {live['ending']}"
         )
         stored = ReportDoc.model_validate_json((_RUNS / name / "doc.json").read_text())

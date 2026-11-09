@@ -44,3 +44,12 @@ date = 2026-11-07
 basis = "unmeasured"
 monthly_envelope_usd = 50
 reason = "the owner's wording ruling: an undecided difference is one the evidence cannot tell apart, never 'not separated'; a wording change the code already prints, not measured"
+
+[[shipped]]
+skill = "5ae589a74388d9025ad57e4cc776c8a028b9f357e6264101c7b367bc71c17d78"
+analyst = "acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db"
+editor = "5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70"
+date = 2026-11-09
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the owner's clearing-rule ruling: a should_fix first raised as a should_fix, round 1 included, never makes a draft; editor.md states the rule code now applies, not measured"

@@ -7,7 +7,9 @@ the first turn's ceiling, and then the first turn's real cost plus the second's 
 too small only below the first turn's ceiling: that alone is refused, at $0, saying it cannot admit even one turn and
 naming the budget that admits it. The 2026-11-06 acceptance run is the incident: a $0.75 budget and a Sonnet turn whose
 ceiling is about $0.67. 36 of its 50 reports ended over budget with no page, and 16 stored one, so $0.75 is admitted.
-A writer eval warns once when its budget is under two of the analyst's first-turn ceiling, citing the recorded runs.
+A writer eval warns once when its budget is under two of the analyst's first-turn ceiling, citing the recorded runs;
+since the analyst's output cap fell to 8,192 tokens (owner ruling 2026-11-09) two of that ceiling come to about $0.56
+on Sonnet 5.5, so the incident's $0.75 is no longer warned and the warning is held at $0.50.
 A report that still runs out says how many turns it was admitted and how many its budget admits whole at that ceiling.
 For an arm whose reports ran out with no page, the writer eval says what the reports that stored one needed: what they
 spent, plus one turn's ceiling.
@@ -53,6 +55,7 @@ from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, read_wr
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.capped_completion import prompt_token_bound
+from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.tally import MIN_TURNS_FOR_A_REPORT, ReportBudget
 from threetears.evals.providers import AnthropicPublishedRates
 from threetears.evals.providers.wire import KEY_VARIABLES
@@ -63,6 +66,9 @@ from threetears.evals.testing import RecordedTurns
 #: The incident's numbers: the report's budget, and a Sonnet turn's ceiling at its 32,000-token output cap.
 INCIDENT_BUDGET: Final = 0.75
 SONNET_CEILING: Final = 0.67
+
+#: A budget under two of the analyst's first-turn ceiling at its 8,192-token output cap, which the writer eval warns.
+WARNED_BUDGET: Final = 0.5
 
 #: The second run's budget, under which every report finished.
 ADMITTED_BUDGET: Final = 1.5
@@ -85,6 +91,29 @@ REFUSED: Final = (
     "this first turn can cost up to $0.67, above the report's $0.50 budget, so it cannot admit even one turn of the 2 "
     "a report takes; a budget of $0.67 or more admits it"
 )
+
+
+#: Run 5's refused turns (2026-11-08, $1.50 budget): every one an analyst revision turn, priced $0.97 to $1.03 at the
+#: 32,000-token cap with $0.49 to $0.64 spent. This prompt bound prices the median one at $0.99.
+RUN_FIVE_PROMPT: Final = 268_000
+RUN_FIVE_SPENT: Final = 0.64
+RUN_FIVE_BUDGET: Final = 1.5
+
+
+def test_the_writer_s_output_cap_admits_the_turn_run_five_refused_and_the_editor_s_is_unchanged() -> None:
+    """Owner ruling 2026-11-09: the analyst's per-turn output cap is 8,192 tokens (run 5's largest reply in 748 turns
+    was 5.8k), so the ceiling of the turn that ended its reports over budget fits what was left; the budget stays a
+    hard ceiling, admitted on the turn's whole bound. No refusal rested on the editor's cap, so it stays 32,000."""
+    limits = WriterLimits()
+    assert limits.analyst.session.max_tokens == 8_192
+    assert limits.editor.session.max_tokens == 32_000
+    rated = AnthropicPublishedRates().rates_for(WRITER, provider="anthropic")
+    assert rated is not None
+    before = float(rated.rates.ceiling(prompt_tokens=RUN_FIVE_PROMPT, output_tokens=32_000))
+    now = float(rated.rates.ceiling(prompt_tokens=RUN_FIVE_PROMPT, output_tokens=limits.analyst.session.max_tokens))
+    assert before == pytest.approx(0.99, abs=0.005)
+    assert RUN_FIVE_SPENT + before > RUN_FIVE_BUDGET >= RUN_FIVE_SPENT + now
+    assert before - now == pytest.approx((32_000 - 8_192) * 10 / 1e6), "only the output share moves"
 
 
 def test_a_report_takes_at_least_the_submission_and_the_review() -> None:
@@ -249,22 +278,22 @@ async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed
     arms = {"two revisions": Writer(WRITER), "one revision": Writer(WRITER, revisions=1)}
     _laid(tmp_path, arms)
 
-    result = await _eval(tmp_path, arms, INCIDENT_BUDGET).run()
+    result = await _eval(tmp_path, arms, WARNED_BUDGET).run()
 
     assert offline == []
     # One warning for the launch, citing the records, at the figure two of its own first-turn ceiling come to.
     (warning,) = [line for line in result.disclosures if "recorded Sonnet 5.5" in line]
     twice = re.fullmatch(
-        r"the \$0\.75, 40-turn report budget is under 2 of a first turn's ceiling on claude-sonnet-5-5 \((\$[0-9.]+)\), "
+        r"the \$0\.50, 40-turn report budget is under 2 of a first turn's ceiling on claude-sonnet-5-5 \((\$[0-9.]+)\), "
         r"so the cap may stop a report before its review; in the recorded Sonnet 5\.5 acceptance runs, at \$0\.75 16 of "
         r"50 reports stored a page, at \$1\.00 17 to 22 of 22, and at \$1\.50 99 of 100",
         warning,
     )
-    assert twice is not None and _dollars(twice[1]) > INCIDENT_BUDGET
+    assert twice is not None and _dollars(twice[1]) > WARNED_BUDGET
     for arm, spent in (("two revisions", 0.3), ("one revision", 0.45)):
         (line,) = [line for line in result.disclosures if line.startswith(f"{arm}: 1 of 2 report(s)")]
         needed = re.fullmatch(
-            rf"{arm}: 1 of 2 report\(s\) ended over their \$0\.75, 40-turn budget with no page; the 1 that stored a "
+            rf"{arm}: 1 of 2 report\(s\) ended over their \$0\.50, 40-turn budget with no page; the 1 that stored a "
             rf"page under it spent \${spent:.2f}, so under the cap the costliest needed about (\$[0-9.]+), that plus "
             r"one turn's ceiling of at least (\$[0-9.]+)",
             line,
@@ -280,7 +309,7 @@ async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed
     ]
     assert reasons == [
         "the report's budget refused the next turn: the next turn can cost up to $0.67, and $0.11 of the report's "
-        "$0.75 budget is spent; it admitted 1 turn, and at that ceiling the whole budget admits 1, where a report "
+        "$0.50 budget is spent; it admitted 1 turn, and at that ceiling the whole budget admits 0, where a report "
         "takes at least 2"
     ]
 
@@ -305,7 +334,7 @@ async def test_a_writer_eval_whose_budget_cannot_admit_one_turn_is_refused_befor
 
     said = re.fullmatch(
         r"the writer eval was not launched, and nothing was sent or spent: the analyst's first turn of arm 'two "
-        r"revisions' on claude-sonnet-5-5, priced at its 32,000-token output cap and its text before any snapshot is "
+        r"revisions' on claude-sonnet-5-5, priced at its 8,192-token output cap and its text before any snapshot is "
         r"read, can cost up to (\$[0-9.]+), above the report's \$0\.25 budget, so it cannot admit even one turn of the "
         r"2 a report takes; a budget of (\$[0-9.]+) or more admits it: raise budget_usd",
         str(refused.value),
@@ -315,11 +344,13 @@ async def test_a_writer_eval_whose_budget_cannot_admit_one_turn_is_refused_befor
     assert not (tmp_path / "evals.sqlite").exists() and offline == []
 
 
-def _floor(model: str, text: str) -> float:
-    """A first turn's floor as the launch prices it: the text and the 32,000-token output cap at the published rates."""
+def _floor(model: str, text: str, role: str = "analyst") -> float:
+    """A first turn's floor as the launch prices it: the text and the role's output cap at the published rates."""
     rated = AnthropicPublishedRates().rates_for(model, provider="anthropic")
     assert rated is not None
-    return float(rated.rates.ceiling(prompt_tokens=prompt_token_bound(text, "", None), output_tokens=32_000))
+    limits = WriterLimits()
+    cap = (limits.analyst if role == "analyst" else limits.editor).session.max_tokens
+    return float(rated.rates.ceiling(prompt_tokens=prompt_token_bound(text, "", None), output_tokens=cap))
 
 
 async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_name_before_the_store_opens(
@@ -329,7 +360,7 @@ async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_
     kairo = kairo_case(tmp_path / "cases")
     skill = load_skill()
     analyst = _floor(WRITER, skill.analyst(withhold=kairo.withhold).text)
-    editor = _floor(OPUS, skill.editor().text)
+    editor = _floor(OPUS, skill.editor().text, role="editor")
     assert analyst < editor
     between = round((analyst + editor) / 2, 2)
     arms = {"own editor": Writer(WRITER), "opus editor": Writer(WRITER, editor_model=OPUS)}
