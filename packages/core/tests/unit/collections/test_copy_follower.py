@@ -11,13 +11,20 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 - an epoch the log cannot give leaves the copy as it was and the follower behind; never a drop;
 - a whole-table record reads that table again, beside the copy;
 - a pass that fails part way leaves the copy as it was, and the next pass applies the same keys again;
-- a reader's stamp is exactly the change its snapshot holds.
+- a reader's stamp is exactly the change its snapshot holds;
+- a commit too large to record (keys unknown, with its notes bracket) reaches the copy exactly from the keys its
+  change notes name; notes that cannot name them, or a hub with no door to ask, leave the copy as it was and the
+  follower behind with why, until the log is put back.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 from typing import Any
 
 import pytest
@@ -38,7 +45,11 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     HubCapabilityMissingError,
     require_generation_by_trigger,
 )
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
+from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
+from threetears.nats import Subject  # noqa: E402
+from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 
 _TABLE = "votes"
@@ -75,9 +86,19 @@ class _L3:
         self.fail_next = False
 
     def put(self, rows: Sequence[tuple[str, int, int]]) -> None:
-        self.db.executemany(
-            f"INSERT OR REPLACE INTO {_TABLE} (state, geo_id, votes) VALUES (?, ?, ?)", [list(r) for r in rows]
+        # one statement over the rows as a table: a large commit's tens of thousands, row by row, take minutes
+        put = pa.table(
+            {
+                "state": pa.array([r[0] for r in rows], pa.string()),
+                "geo_id": pa.array([r[1] for r in rows], pa.int64()),
+                "votes": pa.array([r[2] for r in rows], pa.int64()),
+            }
         )
+        self.db.register("_put", put)
+        try:
+            self.db.execute(f"INSERT OR REPLACE INTO {_TABLE} (state, geo_id, votes) SELECT * FROM _put")  # noqa: S608
+        finally:
+            self.db.unregister("_put")
 
     def delete(self, keys: Sequence[tuple[str, int]]) -> None:
         self.db.executemany(f"DELETE FROM {_TABLE} WHERE state = ? AND geo_id = ?", [list(k) for k in keys])
@@ -147,6 +168,15 @@ class _Seqlock:
 
 @pytest.fixture
 def world() -> tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower]:
+    return _world()[0]
+
+
+@pytest.fixture
+def noted_world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
+    return _world()
+
+
+def _world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
     backend = DuckDBBackend()
     backend.initialize(_metadata())
@@ -163,7 +193,7 @@ def world() -> tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower]:
         page_size=50,
     )
     follower.register()
-    return l3, log, lock, backend, follower
+    return (l3, log, lock, backend, follower), registry
 
 
 def _copy(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
@@ -648,3 +678,181 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert l3.rows_read == 12
+
+
+class _Notes:
+    """the table's change notes of the follower's tenant, paged as the broker's l3.noted_keys door pages them."""
+
+    def __init__(self, notes: Sequence[tuple[datetime, tuple[str, ...]]]) -> None:
+        self.notes = sorted(notes)
+        self.pages = 0
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        self.pages += 1
+        since, until = noted_between
+        after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
+        found = [note for note in self.notes if after < note[0] <= until]
+        taken, more = found[:limit], len(found) > limit
+        if more:
+            taken = [note for note in taken if note[0] < found[limit][0]]
+        return NotedKeysPage(
+            keys=tuple(keys for _, keys in taken),
+            whole_table=False,
+            next=NotedKeysCursor(slot=0, after=taken[-1][0]) if more else None,
+        )
+
+
+def _too_large(log: _Log, *, keep: bool = True) -> tuple[datetime, datetime]:
+    """a commit the broker recorded keys unknown, with its notes bracket."""
+    since = datetime.now(UTC)
+    until = since + timedelta(seconds=1)
+    log.count += 1
+    token = f"inc:{log.count}"
+    if keep:
+        log.records[token] = EpochChange(table=_TABLE, token=token, keys_unknown=True, noted_between=(since, until))
+    return since, until
+
+
+#: a commit naming more rows than sixteen change records of 256 KiB hold, at about sixty bytes a named row
+_PAST_SIXTEEN_RECORDS = 70_000
+
+
+async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_notes(noted_world: Any) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 120)
+    # updates of rows held, inserts past them, and deletes, all in one commit
+    changed = [("VA", i, 7) for i in range(60, _PAST_SIXTEEN_RECORDS)]
+    deleted = [("VA", i) for i in range(10, 20)]
+    l3.put(changed)
+    l3.delete(deleted)
+    since, _ = _too_large(log)
+    keys = [(s, str(g)) for s, g, _ in changed] + [(s, str(g)) for s, g in deleted]
+    notes = _Notes([(since + timedelta(microseconds=index // 4), key) for index, key in enumerate(keys)])
+    registry.set_noted_keys_reader(notes)
+    lock.version += 1
+    l3.rows_read = 0
+
+    assert await follower.catch_up()
+
+    assert _copy(backend) == l3.held(), "the copy equals L3, row for row"
+    assert l3.rows_read == len(changed), "the keys' rows that exist, never the table"
+    assert notes.pages > 1
+    assert follower.status().behind == {}
+    assert follower.stamp == lock.version
+
+
+async def test_notes_that_cannot_name_a_large_commit_leave_the_copy_behind_until_the_log_is_put_back(
+    noted_world: Any,
+) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before, stamp = _copy(backend), follower.stamp
+    l3.put([("VA", 1, 5)])
+    _too_large(log)
+
+    class _Emptied:
+        async def noted_keys(self, table: str, **_: Any) -> str:
+            return "not_covered"
+
+    registry.set_noted_keys_reader(_Emptied())
+    lock.version += 1
+    assert not await follower.catch_up()
+    assert (_copy(backend), follower.stamp) == (before, stamp), "never a drop, never a rebuild"
+    status = follower.status()
+    assert status.phase is FollowerPhase.BEHIND
+    assert status.behind == {_TABLE: "notes_not_covered"}
+    # the keeper's restore puts the log back from the notes: the catch-up applies it
+    log.records["inc:2"] = EpochChange(table=_TABLE, token="inc:2", rows=[ChangedRow(ids=["VA", "1"])])
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert follower.status().behind == {}
+
+
+def _silent_hub(error: Exception | None) -> NatsProxyL3Backend:
+    """the pod's broker transport on a bus where no hub answers l3.noted_keys: none listens, or none replies."""
+
+    async def request_raw(*, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
+        if error is not None:
+            raise error
+        assert timeout is not None
+        await asyncio.sleep(timeout.total_seconds())
+        raise RequestTimeoutError(f"no reply on {subject.path}")
+
+    nats = MagicMock()
+    nats.request_raw = AsyncMock(side_effect=request_raw)
+    nats.max_payload = 1024 * 1024
+    return NatsProxyL3Backend(
+        nats_client=nats,
+        namespace_prefix="test",
+        default_namespace="tools.reports",
+        identity_token=lambda: "token",
+        timeout_ms=50,
+    )
+
+
+@pytest.mark.parametrize("error", [NoRespondersError("no responders"), None], ids=["no-responders", "no-reply"])
+async def test_a_hub_with_no_noted_keys_door_leaves_the_follower_behind_never_hung(
+    noted_world: Any, error: Exception | None
+) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before = _copy(backend)
+    l3.put([("VA", 1, 5)])
+    _too_large(log)
+    registry.set_noted_keys_reader(_silent_hub(error))
+    lock.version += 1
+    began = time.monotonic()
+    async with asyncio.timeout(10):
+        assert not await follower.catch_up()
+    assert time.monotonic() - began < 5, "bounded by the backend's own timeout, attempts included"
+    assert _copy(backend) == before
+    assert follower.status().behind == {_TABLE: "notes_not_covered"}
+
+
+async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
+    at = datetime(2026, 11, 9, 1, 2, 3, 4, tzinfo=UTC)
+    reply = {
+        "success": True,
+        "answer": "page",
+        "keys": [["VA", "1"], ["VA", "2"]],
+        "columns": [None, {"state": "VA"}],
+        "whole_table": False,
+        "next": {"slot": 3, "after": at.isoformat()},
+    }
+    sent: list[dict[str, Any]] = []
+
+    async def request_raw(*, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
+        sent.append({"subject": subject.path, **json.loads(payload)})
+        return json.dumps(reply).encode()
+
+    nats = MagicMock()
+    nats.request_raw = AsyncMock(side_effect=request_raw)
+    nats.max_payload = 1000
+    proxy = NatsProxyL3Backend(
+        nats_client=nats, namespace_prefix="test", default_namespace="tools.reports", identity_token=lambda: "token"
+    )
+    page = await proxy.noted_keys(
+        "votes", noted_between=(at, at), cursor=NotedKeysCursor(slot=2, after=at), limit=10, max_bytes=1 << 20
+    )
+    assert page == NotedKeysPage(
+        keys=(("VA", "1"), ("VA", "2")),
+        columns=(None, {"state": "VA"}),
+        whole_table=False,
+        next=NotedKeysCursor(slot=3, after=at),
+    )
+    (asked,) = sent
+    assert asked["subject"] == "test.l3.noted_keys"
+    assert asked["max_bytes"] == 500, "held under half the payload the bus announces"
+    assert asked["cursor"] == {"slot": 2, "after": at.isoformat()}
+    assert "tenant" not in asked, "the broker names the tenant from the caller's verified schema, never the request"

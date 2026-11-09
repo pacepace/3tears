@@ -2098,6 +2098,22 @@ class Subjects:
         return Subject(path=f"{namespace or _ns()}.l3.truncate", kind="point")
 
     @classmethod
+    def l3_noted_keys(cls, *, namespace: str | None = None) -> Subject:
+        """request/reply subject for agent -> L3 broker read of a page of the keys a commit's change notes name.
+
+        For a copy follower holding a keys-unknown epoch record whose commit named too many rows to record: the
+        broker reads the notes of one of the caller's own tables in the record's bracket, of the caller's own
+        schema's tenant only, a page at a time.
+
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
+        :return: subject ``{ns}.l3.noted_keys``
+        :rtype: Subject
+        """
+        return Subject(path=f"{namespace or _ns()}.l3.noted_keys", kind="point")
+
+    @classmethod
     def l3_load_files(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for agent -> L3 broker bulk load of one of its own tables from files.
 

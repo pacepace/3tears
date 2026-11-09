@@ -423,6 +423,18 @@ class TestBootCompleteness:
         assert str(Subjects.l3_load_files()) in _build(Principal.HUB).subscribe
         assert str(Subjects.l3_load_files()) not in _build(Principal.REGISTRY).publish
 
+    def test_a_pod_asks_the_notes_for_a_large_commits_keys_and_only_the_hub_answers(self) -> None:
+        """a pod following its own tables reads a keys-unknown commit's keys through the broker; the registry
+        follows none, so it is not given the request.
+
+        :return: none
+        :rtype: None
+        """
+        assert str(Subjects.l3_noted_keys()) in build_permissions(Principal.TOOL_POD, pod_id=_POD_X).publish
+        assert str(Subjects.l3_noted_keys()) in _build(Principal.HUB).subscribe
+        assert str(Subjects.l3_noted_keys()) not in _build(Principal.REGISTRY).publish
+        assert str(Subjects.l3_noted_keys()) not in _build(Principal.TOOL_POD).subscribe
+
     def test_tool_pod_may_run_a_transaction(self) -> None:
         """a write of more than one statement needs the tx subjects too.
 

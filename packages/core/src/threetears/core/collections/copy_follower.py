@@ -297,7 +297,8 @@ class FollowerStatus:
 
     :ivar phase: what it is doing
     :ivar stamp: the writer's stamp the copy holds every table at; None until it holds one
-    :ivar behind: the tables whose log the registry is behind on, with why
+    :ivar behind: the tables whose log the registry is behind on, with why: its reason
+        (:data:`~threetears.core.collections.registry.BEHIND_REASONS`), as ``collection_epoch_behind_total`` labels it
     :ivar pending: keys heard and not yet applied, by table
     :ivar rows: each table's rows, as last counted
     :ivar applied: changes applied since start
@@ -573,8 +574,10 @@ class CopyFollower:
             for name in self._tables:
                 token = await self._generation(name)
                 await self._registry.catch_up_generation(name, token, changes=self._changes)
-                if self._registry.behind_on(name):
-                    behind[name] = "the epoch change log is missing an epoch of it"
+                reason = self._registry.behind_reason(name)
+                if reason is not None:
+                    # the registry's reason (BEHIND_REASONS): the status and collection_epoch_behind_total say the same
+                    behind[name] = reason
             self._status.behind = behind
             if behind:
                 self._say(FollowerPhase.BEHIND, f"behind on {sorted(behind)}; serving the copy at {self._status.stamp}")

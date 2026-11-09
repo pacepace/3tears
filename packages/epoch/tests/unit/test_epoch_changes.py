@@ -12,6 +12,8 @@ the real generation source, the real reader and the real pass. The contract this
 - a log put back from the change notes carries a follower whose mark the notes cover to its start, where
   it walks every restored record and catches up; an older follower is behind (``record_lost``); and a
   lost log waits for its restore rather than starting under a new incarnation;
+- an epoch whose writer named too many rows to record is named by its change notes, a page at a time, and
+  applied exactly; notes that cannot name it leave the follower behind with why, until a restore of the log;
 - a follower's first sight of a generation takes it as its mark and drops nothing;
 - the change log refuses a record past its cap, loudly, rather than evicting one;
 - a follower's quiet pass, reading only the change log, keeps a quiet table's mark inside retention and
@@ -26,8 +28,8 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -42,7 +44,7 @@ from threetears.core.collections import (
     CollectionRegistry,
     announce_unheard_writes,
 )
-from threetears.core.collections.change_notes import NotedChange
+from threetears.core.collections.change_notes import NotedChange, NotedKeysCursor, NotedKeysPage
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
@@ -802,3 +804,134 @@ class TestAWriterFollowsALogAnotherProcessPutBack:
         assert after.rpartition(":")[0] == restored, "the token names the log the append landed in"
         record = await EpochGenerationReader(bus).change(_TABLE, after)
         assert record is not None and [row.ids for row in record.rows] == [["b"]]
+
+
+@dataclass
+class _Notes:
+    """one tenant's change notes of the table as the broker's l3.noted_keys door pages them: in time order,
+    continued by the last time read, a page never splitting an instant."""
+
+    notes: list[tuple[datetime, tuple[str, ...]]]
+    answer: str | None = None
+    pages: list[NotedKeysCursor | None] = field(default_factory=list)
+    #: the most notes a page holds, below what the registry asks (a door's bytes end a page early too)
+    page_rows: int | None = None
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        self.pages.append(cursor)
+        if self.answer is not None:
+            return self.answer
+        since, until = noted_between
+        after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
+        found = [note for note in self.notes if after < note[0] <= until]
+        limit = min(limit, self.page_rows or limit)
+        taken, more = found[:limit], len(found) > limit
+        if more:
+            taken = [note for note in taken if note[0] < found[limit][0]]
+        return NotedKeysPage(
+            keys=tuple(keys for _, keys in taken),
+            whole_table=False,
+            next=NotedKeysCursor(slot=0, after=taken[-1][0]) if more else None,
+        )
+
+
+async def _too_large(bus: _Lossy, writing: _Members, ids: Sequence[str]) -> tuple[datetime, datetime]:
+    """a commit of ``ids`` too large to record, as the broker records it: L3 written, its notes in its bracket."""
+    since = datetime.now(UTC)
+    for each in ids:
+        writing.l3_rows[each] = {"id": each, "member_id": f"new-{each}"}
+    until = since + timedelta(seconds=1)
+    await EpochGenerationSource(bus).advance_with_change(_TABLE, None, keys_unknown=True, noted_between=(since, until))
+    return since, until
+
+
+def _behind_count(reason: str) -> float:
+    return REGISTRY.get_sample_value("collection_epoch_behind_total", {"table": _TABLE, "reason": reason}) or 0.0
+
+
+class TestAnEpochTooLargeToRecordIsNamedByItsNotes:
+    async def test_every_row_of_the_commit_is_applied_page_by_page_and_no_other(self, bus: _Lossy) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        ids = [f"r{index}" for index in range(40)] + ["m1"]
+        for each in ids:
+            await _save(writing, each, "old")
+        assert await _member_id(reading, "r7") == "old"
+        bus.deaf = True
+        since, _ = await _too_large(bus, writing, ids)
+        bus.deaf = False
+        # a note a row, three to an instant, and one note of the bracket's neighbour outside it
+        notes = _Notes(
+            [(since + timedelta(microseconds=index // 3), (each,)) for index, each in enumerate(ids)], page_rows=7
+        )
+        notes.notes.append((since - timedelta(seconds=1), ("m2",)))
+        follower.registry.set_noted_keys_reader(notes)
+
+        assert await follower.tick() == 1
+
+        assert not follower.registry.behind_on(_TABLE)
+        assert len(notes.pages) >= len(ids) // 7, "read a page at a time"
+        assert [await _member_id(reading, each) for each in ids] == [f"new-{each}" for each in ids]
+        assert reading.exists_in_cache_sync("m2"), "a row the bracket does not name stays cached"
+        assert await follower.tick() == 0, "applied once: the next pass reads no notes"
+
+    async def test_notes_that_no_longer_cover_it_leave_the_follower_behind_until_the_log_is_restored(
+        self, bus: _Lossy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        writing, follower, reading = await _two_pods(bus)
+        mark = follower.registry.generation_marks.recorded(_TABLE)
+        assert mark is not None
+        bus.deaf = True
+        await _too_large(bus, writing, ["m1"])
+        bus.deaf = False
+        notes = _Notes([], answer="not_covered")
+        follower.registry.set_noted_keys_reader(notes)
+        counted = _behind_count("notes_not_covered")
+
+        with caplog.at_level(logging.ERROR):
+            await follower.tick()
+            await follower.tick()
+
+        assert follower.registry.behind_reason(_TABLE) == "notes_not_covered"
+        assert _behind_count("notes_not_covered") == counted + 1, "counted once, however many passes ask"
+        assert len(notes.pages) == 2, "every pass asks again"
+        (said,) = [r.__dict__["extra_data"] for r in caplog.records if r.getMessage().startswith("behind on a table")]
+        assert said["reason"] == "notes_not_covered"
+        assert await _member_id(reading, "m1") == "ada", "behind serves what it holds: never a drop or a rebuild"
+        assert reading.exists_in_cache_sync("m2")
+
+        # the log is lost, and the change-note keeper puts it back from the notes that reach the follower's mark
+        _log(bus).vanish()
+        restored = await _restore(
+            EpochGenerationSource(bus), [_noted(_TABLE, "m1")], lost=mark.rpartition(":")[0], covered_from=_seq(mark)
+        )
+        assert restored is not None
+        await follower.tick()
+        assert follower.registry.behind_reason(_TABLE) is None
+        assert await _member_id(reading, "m1") == "new-m1"
+        assert reading.exists_in_cache_sync("m2"), "the restore named m1 alone: nothing else was dropped"
+
+    @pytest.mark.parametrize(
+        ("answer", "reason"), [("notes_unavailable", "notes_unavailable"), ("not_covered", "notes_not_covered")]
+    )
+    async def test_why_the_notes_cannot_say_is_the_reason_it_is_behind(
+        self, bus: _Lossy, answer: str, reason: str
+    ) -> None:
+        writing, follower, _ = await _two_pods(bus)
+        await _too_large(bus, writing, ["m1"])
+        follower.registry.set_noted_keys_reader(_Notes([], answer=answer))
+        await follower.tick()
+        assert follower.registry.behind_reason(_TABLE) == reason
+
+    async def test_a_registry_with_no_reader_is_behind_as_keys_unknown(self, bus: _Lossy) -> None:
+        writing, follower, _ = await _two_pods(bus)
+        await _too_large(bus, writing, ["m1"])
+        await follower.tick()
+        assert follower.registry.behind_reason(_TABLE) == "keys_unknown"

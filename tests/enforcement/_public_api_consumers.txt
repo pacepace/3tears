@@ -134,6 +134,4 @@ packages/core/src/threetears/core/collections/write_marks.py:tables_switched_by_
 packages/core/src/threetears/core/collections/copy_follower.py:HubCapabilityMissingError  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/serve.py holds readiness off, naming the missing hub capability
 packages/core/src/threetears/core/collections/copy_follower.py:require_generation_by_trigger  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/serve.py asks it before the copy serves
 packages/core/src/threetears/core/collections/change_notes.py:noted_keys_page  # bluelabsio/14-eng-ai-bot: src/aibots/hub/broker/proxy.py answers a pod's l3.noted_keys ask with it (a keys-unknown record's notes, a page at a time)
-packages/core/src/threetears/core/collections/change_notes.py:NotedKeysCursor  # bluelabsio/14-eng-ai-bot: src/aibots/hub/broker/proxy.py reads and answers it on l3.noted_keys
-packages/core/src/threetears/core/collections/change_notes.py:NotedKeysPage  # bluelabsio/14-eng-ai-bot: src/aibots/hub/broker/proxy.py answers l3.noted_keys from it
 packages/core/src/threetears/core/collections/copy_follower.py:FollowerBackend  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod's SharedArrowBackend is the follower's backend, typed against it

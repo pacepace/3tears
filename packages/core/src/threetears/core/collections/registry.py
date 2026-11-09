@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -12,11 +13,13 @@ from uuid import uuid7
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
+from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
     EpochChange,
     EpochChangeReader,
     EpochLogExtent,
     EpochWalk,
+    key_text,
     walk_by_count,
 )
 from threetears.core.collections.generation import (
@@ -70,7 +73,20 @@ BEHIND_REASONS: Final[dict[str, str]] = {
         "(after a NATS loss, when the change-note keeper's restore is labelled), otherwise at a restart"
     ),
     "record_unreadable": "a record could not be read; the next catch-up pass reads it again",
-    "keys_unknown": "an epoch's writer named no rows; ends at a restart (a first sight of the table)",
+    "keys_unknown": (
+        "an epoch's writer named no rows, and its record carries no notes bracket (a broker built before it) or "
+        "this registry has no noted-keys reader; ends at a restart (a first sight of the table)"
+    ),
+    "notes_not_covered": (
+        "an epoch's writer named too many rows to record, and the change notes no longer hold its bracket (or "
+        "the broker has no l3.noted_keys door, or did not answer); every catch-up pass asks again, and it ends "
+        "on its own when the change-note keeper's restore of a lost log is labelled and the mark is at or past "
+        "covered_from, otherwise at a restart"
+    ),
+    "notes_unavailable": (
+        "an epoch's writer named too many rows to record, and no change-note ring is installed to name them; "
+        "every catch-up pass asks again, otherwise it ends at a restart"
+    ),
     "replaced": (
         "the log is under another incarnation that does not continue the mark's; ends on its own when the "
         "change-note keeper labels its restore of the lost log and the mark is at or past covered_from, "
@@ -125,6 +141,19 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     if isinstance(l3_pool, DurableStore):
         return l3_pool
     return SqlL3Backend(l3_pool)
+
+
+#: the most notes one page of a keys-unknown epoch's keys reads (:meth:`CollectionRegistry.catch_up_generation`)
+_NOTED_KEYS_PAGE_ROWS: Final = 10_000
+
+#: the most bytes of keys one such page holds; a reader over the bus holds it under the bus's announced payload too
+_NOTED_KEYS_PAGE_BYTES: Final = 4 * 1024 * 1024
+
+#: the rows of a page applied between yields to the event loop
+_NOTED_ROWS_PER_YIELD: Final = 500
+
+#: why the notes could not name an epoch's keys, as a reader answers it -> the reason this registry is behind
+_NOTES_BEHIND: Final[dict[str, str]] = {"not_covered": "notes_not_covered", "notes_unavailable": "notes_unavailable"}
 
 
 #: the most rows one batched invalidation message names: a few hundred bytes each, far under a NATS payload
@@ -369,6 +398,9 @@ class CollectionRegistry:
         # table -> why this registry is behind on it: an epoch whose change it could not apply. It keeps
         # serving what it holds, its derived caches included, and says so (log, counter, gauge).
         self._behind: dict[str, str] = {}
+        # names the keys of an epoch whose writer named too many rows to record, from the change notes: the bus's
+        # l3.noted_keys door, taken from an L3 transport that has one (:meth:`configure`), or set
+        self._noted_keys: NotedKeysReader | None = None
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
@@ -458,6 +490,9 @@ class CollectionRegistry:
             self._l2_client = l2_client
         if l3_pool is not None:
             self._l3_pool = _as_l3_backend(l3_pool)
+            if isinstance(l3_pool, NotedKeysReader):
+                # the pod's broker transport names a keys-unknown epoch's keys from the notes, on its own tenant
+                self._noted_keys = l3_pool
         if self._l2_client is not None and self._kv_key_scope is None:
             raise L2ScopeNotConfiguredError(
                 "an L2 client is wired with no kv_key_scope: every collection on this registry "
@@ -652,6 +687,29 @@ class CollectionRegistry:
         :rtype: None
         """
         self._generation_source = source
+
+    def set_noted_keys_reader(self, reader: NotedKeysReader | None) -> None:
+        """name the reader that resolves a keys-unknown epoch's keys from the change notes; ``None`` for none.
+
+        :meth:`configure` takes an L3 transport that is one (the pod's broker transport); this sets another, or
+        none, in which case such an epoch leaves this registry behind on its table (``keys_unknown``).
+
+        :param reader: the reader, or ``None``
+        :ptype reader: NotedKeysReader | None
+        :return: nothing
+        :rtype: None
+        """
+        self._noted_keys = reader
+
+    def behind_reason(self, table_name: str) -> str | None:
+        """why this registry is behind on ``table_name`` (a :data:`BEHIND_REASONS` key), ``None`` when it is not.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the reason, or ``None``
+        :rtype: str | None
+        """
+        return self._behind.get(table_name)
 
     def set_write_marks_schema(self, schema: str | None) -> None:
         """name the schema holding the database's write-mark queue, so a writer clears the marks its advance covers.
@@ -1003,8 +1061,17 @@ class CollectionRegistry:
         reached: str | None = None
         applied_any = False
         for change in walk.changes:
-            if change.keys_unknown:
-                hole = hole or (change.token, "keys_unknown")
+            if change.keys_unknown and not marks.heard_in_full(table_name, change.token):
+                # a commit too large to record names its keys in the change notes: read them, a page at a time
+                why = await self._apply_noted_keys(change)
+                if why is not None:
+                    hole = hole or (change.token, why)
+                    continue
+                if hole is None:
+                    reached = change.token
+                marks.applied(table_name, change.token)
+                applied_any = True
+                _epochs_applied().labels(table=table_name).inc()
                 continue
             if hole is None:
                 reached = change.token
@@ -1064,6 +1131,49 @@ class CollectionRegistry:
                     columns=dict(row.columns) if row.columns is not None else None,
                 )
             )
+
+    async def _apply_noted_keys(self, change: EpochChange) -> str | None:
+        """apply a keys-unknown epoch's rows as the change notes name them, each as its row message would be.
+
+        The record's bracket (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`) holds
+        every note its commit wrote; the reader names them a page at a time, each page applied before the next is
+        read, so memory holds one page. Keys another commit wrote in the bracket are evicted too, which costs a
+        read again and is never wrong. A whole-table note in the bracket is another commit's truncate or load,
+        recorded as its own whole-table epoch.
+
+        :param change: a keys-unknown record
+        :ptype change: EpochChange
+        :return: ``None`` once every page is applied; else the :data:`BEHIND_REASONS` key of why the keys cannot
+            be named (no bracket or no reader: ``keys_unknown``)
+        :rtype: str | None
+        """
+        reader = self._noted_keys
+        if change.noted_between is None or reader is None:
+            return "keys_unknown"
+        cursor: NotedKeysCursor | None = None
+        while True:
+            page = await reader.noted_keys(
+                change.table,
+                noted_between=change.noted_between,
+                cursor=cursor,
+                limit=_NOTED_KEYS_PAGE_ROWS,
+                max_bytes=_NOTED_KEYS_PAGE_BYTES,
+            )
+            if not isinstance(page, NotedKeysPage):
+                return _NOTES_BEHIND.get(page, "notes_unavailable")
+            columns = page.columns or (None,) * len(page.keys)
+            for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
+                if index and not index % _NOTED_ROWS_PER_YIELD:
+                    # a page of many rows yields between runs of them, so the loop answers everything else between
+                    await asyncio.sleep(0)
+                await self._apply_row_message(
+                    CacheInvalidationMessage(
+                        table=change.table, ids=list(ids), columns=None if held is None else dict(held)
+                    )
+                )
+            if page.next is None:
+                return None
+            cursor = page.next
 
     def behind_on(self, table_name: str) -> bool:
         """whether this registry is behind on ``table_name``: an epoch it has not been able to apply.
@@ -1359,7 +1469,7 @@ class CollectionRegistry:
         values = entity_id if isinstance(entity_id, tuple) else (entity_id,)
         return CacheInvalidationMessage(
             table=table_name,
-            ids=[str(v) for v in values],  # convert at border: invalidation wire-envelope pk values
+            ids=[key_text(v) for v in values],  # convert at border: invalidation wire-envelope pk values
             origin=self._origin_id,
             l2_current_scope=self._kv_key_scope if l2_key_current else None,
             generation=generation,

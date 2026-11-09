@@ -27,7 +27,7 @@ import asyncpg
 import pytest
 
 from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, noted_keys_page
-from threetears.core.ddl.change_notes import change_notes_ddl, note_table
+from threetears.core.ddl.change_notes import NOTE_RING_SIZE, change_notes_ddl, note_table
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
 from threetears.core.testing.plans import PlanRecorder, plan_problems
 
@@ -101,7 +101,8 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
             _TABLE,
             since,
         )
-        await conn.execute(f"ANALYZE {notes}")
+        for slot in range(NOTE_RING_SIZE):
+            await conn.execute(f"ANALYZE {schema}.{note_table(slot)}")
         yield _Ring(conn=conn, schema=schema, bracket=(since, until))
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
@@ -147,6 +148,50 @@ class TestACommitsKeysAreReadBackFromItsNotes:
         assert keys == {(str(g), "TX") for g in range(1, _COMMIT + 1)}
         assert pages >= _COMMIT // limit
 
+    async def test_the_index_order_a_page_is_read_in_is_never_left_on_its_connection(self, ring: _Ring) -> None:
+        """Flips if the planner settings a page's transaction takes outlive it on the (pooled) connection."""
+        await _every_page(ring.conn, ring, limit=1000, max_bytes=1 << 20)
+        for setting in ("enable_bitmapscan", "enable_seqscan", "enable_sort"):
+            assert await ring.conn.fetchval(f"SHOW {setting}") == "on", setting
+
+    async def test_a_commit_noted_across_a_ring_switch_is_read_from_both_tables_within_each_pages_bound(
+        self, ring: _Ring
+    ) -> None:
+        """Flips if a page over the previous and the current table holds more than its limit, or skips the notes
+        at the switch."""
+        since, _ = ring.bracket
+        switched_at = since + timedelta(seconds=0.4)
+        moved = f"table_name = '{_TABLE}' AND noted_at < '{switched_at.isoformat()}'"
+        previous = f"{ring.schema}.{note_table(2)}"
+        current = f"{ring.schema}.{note_table(0)}"
+        await ring.conn.execute(f"INSERT INTO {previous} SELECT * FROM {current} WHERE {moved}")  # noqa: S608
+        await ring.conn.execute(f"DELETE FROM {current} WHERE {moved}")  # noqa: S608
+        limit = 1000
+        keys: set[tuple[str, ...]] = set()
+        cursor: NotedKeysCursor | None = None
+        slots: set[int] = set()
+        while True:
+            page = await noted_keys_page(
+                ring.conn,
+                notes_schema=ring.schema,
+                table=_TABLE,
+                tenant=_TENANT,
+                noted_between=ring.bracket,
+                cursor=cursor,
+                limit=limit,
+                max_bytes=1 << 20,
+            )
+            assert isinstance(page, NotedKeysPage), page
+            assert len(page.keys) <= limit, "one page's notes over both tables stay within its limit"
+            assert len(page.columns) == len(page.keys)
+            keys.update(page.keys)
+            if page.next is None:
+                break
+            slots.add(page.next.slot)
+            cursor = page.next
+        assert keys == {(str(g), "TX") for g in range(1, _COMMIT + 1)}
+        assert slots == {0, 2}, "the pages went on through the previous table, then the current one"
+
     async def test_every_page_is_a_range_scan_of_the_tables_notes_in_the_bracket(self, ring: _Ring) -> None:
         """Flips if a page sorts, scans other tables' notes, or offsets past the notes it read before."""
         checked = PlanRecorder(ring.conn)
@@ -160,9 +205,14 @@ class TestACommitsKeysAreReadBackFromItsNotes:
             nodes = _scans(statement.plan)
             assert not [node for node in nodes if node["Node Type"] in {"Sort", "Incremental Sort"}], statement.sql
             scans = [node for node in nodes if "Scan" in node["Node Type"]]
-            assert scans and all(node.get("Index Name") == f"{note_table(0)}_table" for node in scans), [
+            # each note table is read through its own (table_name, noted_at) index, the previous one too
+            assert scans and all(node.get("Index Name") == f"{node.get('Relation Name')}_table" for node in scans), [
                 (node["Node Type"], node.get("Index Name")) for node in scans
             ]
+            # both ends of the bracket bound the range the index reads, not a filter over what it read
+            for node in scans:
+                bounds = str(node.get("Index Cond", ""))
+                assert "noted_at >" in bounds and "noted_at <=" in bounds, (node["Node Type"], bounds)
 
     async def test_reading_every_page_keeps_within_twice_a_bare_read_of_the_same_notes(self, ring: _Ring) -> None:
         """Flips if the paged read costs over twice one plain read of the notes it must read."""

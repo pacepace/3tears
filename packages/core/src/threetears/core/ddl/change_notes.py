@@ -34,7 +34,7 @@ the margin.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Final
 
@@ -125,10 +125,23 @@ def slot_max_age(fence: timedelta) -> timedelta:
     return fence / 2
 
 
-#: the column types whose text form a note carries exactly as an epoch record names the value: a note's
-#: key and invalidation columns are written as ``column::text``, and anything else (bool, timestamp, numeric,
-#: float, json, char padding ...) can name the same value in another spelling than the record
-_EXACT_NOTE_TYPES: Final = frozenset({"uuid", "text", "character varying", "smallint", "integer", "bigint"})
+#: the ``information_schema`` name of ``timestamptz``, whose note text is written canonically (:data:`_UTC_MICROS`)
+_TIMESTAMPTZ: Final = "timestamp with time zone"
+
+#: a ``timestamptz`` as a note names it: UTC, to the microsecond, in ISO form (``2026-11-09T10:22:10.082658+00:00``),
+#: whatever the session's ``TimeZone`` and ``DateStyle``; what :func:`~threetears.core.collections.epoch_change.key_text`
+#: names an aware ``datetime`` as, so a note and a record name one instant in one spelling
+_UTC_MICROS: Final = '\'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"\''
+
+#: the column types whose text form a note carries exactly as an epoch record names the value: a note's key and
+#: invalidation columns are written as ``column::text``, a ``timestamptz`` in its canonical form; anything else can
+#: name the same value in another spelling than the record, and stays refused: ``boolean`` (``true`` against Python's
+#: ``True``), ``timestamp`` and ``date`` (``DateStyle``, and a naive time names no instant), ``numeric``, ``real`` and
+#: ``double precision`` (a value's scale and rounding), ``json``/``jsonb`` (key order, spacing), ``character``
+#: (padding), ``bytea``, ``interval``, ``time``, arrays and enums (``USER-DEFINED``)
+_EXACT_NOTE_TYPES: Final = frozenset(
+    {"uuid", "text", "character varying", "smallint", "integer", "bigint", _TIMESTAMPTZ}
+)
 
 
 def inexact_note_columns(types: dict[str, str], columns: Sequence[str]) -> list[tuple[str, str]]:
@@ -355,17 +368,26 @@ def note_function_name(table_schema: str, table: str) -> str:
     return f"{_TABLE_FUNCTION_PREFIX}{digest}"
 
 
-def _row_terms(prefix: str, columns: Sequence[str]) -> list[str]:
-    """each column of the trigger's ``NEW`` or ``OLD`` row as text.
+def _row_terms(prefix: str, columns: Sequence[str], kinds: Mapping[str, str] | None = None) -> list[str]:
+    """each column of the trigger's ``NEW`` or ``OLD`` row as text: a ``timestamptz`` in its canonical form.
 
     :param prefix: ``NEW`` or ``OLD``
     :ptype prefix: str
     :param columns: the columns
     :ptype columns: Sequence[str]
+    :param kinds: each column's ``information_schema`` ``data_type``; a column it does not name is cast to text
+    :ptype kinds: Mapping[str, str] | None
     :return: the terms
     :rtype: list[str]
     """
-    return [f"{prefix}.{quote_identifier(column)}::text" for column in columns]
+    terms: list[str] = []
+    for column in columns:
+        value = f"{prefix}.{quote_identifier(column)}"
+        if kinds is not None and kinds.get(column) == _TIMESTAMPTZ:
+            terms.append(f"to_char({value} AT TIME ZONE 'UTC', {_UTC_MICROS})")
+        else:
+            terms.append(f"{value}::text")
+    return terms
 
 
 def tenant_sql(tenancy: Tenancy | None, prefix: str) -> str:
@@ -397,7 +419,12 @@ def tenant_sql(tenancy: Tenancy | None, prefix: str) -> str:
 
 
 def _put_statement(
-    notes_schema: str, prefix: str, keys: Sequence[str], columns: Sequence[str], tenancy: Tenancy | None = None
+    notes_schema: str,
+    prefix: str,
+    keys: Sequence[str],
+    columns: Sequence[str],
+    tenancy: Tenancy | None = None,
+    kinds: Mapping[str, str] | None = None,
 ) -> str:
     """the statement that notes the ``NEW`` or ``OLD`` row.
 
@@ -411,19 +438,27 @@ def _put_statement(
     :ptype columns: Sequence[str]
     :param tenancy: the table's tenancy, whose token the note carries
     :ptype tenancy: Tenancy | None
+    :param kinds: each column's ``data_type`` (:func:`_row_terms`)
+    :ptype kinds: Mapping[str, str] | None
     :return: the ``PERFORM`` statement
     :rtype: str
     """
-    named = ", ".join(f"'{column}', {term}" for column, term in zip(columns, _row_terms(prefix, columns), strict=True))
+    terms = _row_terms(prefix, columns, kinds)
+    named = ", ".join(f"'{column}', {term}" for column, term in zip(columns, terms, strict=True))
     carried = f"jsonb_build_object({named})" if columns else "NULL"
     return (
         f"PERFORM {quote_identifier(notes_schema)}.{quote_identifier(_RING_FUNCTION)}"
-        f"(TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys))}], {carried}, {tenant_sql(tenancy, prefix)});"
+        f"(TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys, kinds))}], {carried}, {tenant_sql(tenancy, prefix)});"
     )
 
 
 def trigger_function_body(
-    *, notes_schema: str, keys: Sequence[str], columns: Sequence[str], tenancy: Tenancy | None = None
+    *,
+    notes_schema: str,
+    keys: Sequence[str],
+    columns: Sequence[str],
+    tenancy: Tenancy | None = None,
+    kinds: Mapping[str, str] | None = None,
 ) -> str:
     """the body of one table's trigger function, as the catalogue keeps it (``pg_proc.prosrc``).
 
@@ -441,6 +476,9 @@ def trigger_function_body(
     :ptype columns: Sequence[str]
     :param tenancy: the table's tenancy, whose token each note carries
     :ptype tenancy: Tenancy | None
+    :param kinds: each column's ``information_schema`` ``data_type``: a ``timestamptz`` is noted in its canonical
+        form (:data:`_UTC_MICROS`); ``None`` casts every column to text
+    :ptype kinds: Mapping[str, str] | None
     :return: the body
     :rtype: str
     :raises ValueError: when no key column is named, or a column name holds a quote
@@ -451,8 +489,8 @@ def trigger_function_body(
         raise ValueError("a noted column name holds a quote")
     owner = quote_identifier(notes_schema)
     watched = [*keys, *(column for column in columns if column not in keys)]
-    old_row = ", ".join(_row_terms("OLD", watched))
-    new_row = ", ".join(_row_terms("NEW", watched))
+    old_row = ", ".join(_row_terms("OLD", watched, kinds))
+    new_row = ", ".join(_row_terms("NEW", watched, kinds))
     # a whole-table note's tenant: the schema, for a schema table; ``_all`` (NULL) for a platform table, whose
     # truncate or load spans customers
     whole_tenant = tenant_sql(tenancy, "NEW") if tenancy is not None and tenancy.kind == "schema" else "NULL"
@@ -467,10 +505,10 @@ def trigger_function_body(
         "    RETURN NULL;\n"
         "  END IF;\n"
         "  IF TG_OP <> 'DELETE' THEN\n"
-        f"    {_put_statement(notes_schema, 'NEW', keys, columns, tenancy)}\n"
+        f"    {_put_statement(notes_schema, 'NEW', keys, columns, tenancy, kinds)}\n"
         "  END IF;\n"
         f"  IF TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND ROW({old_row}) IS DISTINCT FROM ROW({new_row})) THEN\n"
-        f"    {_put_statement(notes_schema, 'OLD', keys, columns, tenancy)}\n"
+        f"    {_put_statement(notes_schema, 'OLD', keys, columns, tenancy, kinds)}\n"
         "  END IF;\n"
         "  RETURN NULL;\n"
         "END\n"
@@ -485,6 +523,7 @@ def trigger_function_sql(
     keys: Sequence[str],
     columns: Sequence[str],
     tenancy: Tenancy | None = None,
+    kinds: Mapping[str, str] | None = None,
 ) -> str:
     """the statement that creates, or replaces, one table's trigger function (:func:`trigger_function_body`).
 
@@ -500,12 +539,14 @@ def trigger_function_sql(
     :ptype columns: Sequence[str]
     :param tenancy: the table's tenancy, whose token each note carries
     :ptype tenancy: Tenancy | None
+    :param kinds: each column's ``information_schema`` ``data_type`` (:func:`trigger_function_body`)
+    :ptype kinds: Mapping[str, str] | None
     :return: the ``CREATE OR REPLACE FUNCTION`` statement
     :rtype: str
     :raises ValueError: when no key column is named, or a column name holds a quote
     """
     owner = quote_identifier(notes_schema)
-    body = trigger_function_body(notes_schema=notes_schema, keys=keys, columns=columns, tenancy=tenancy)
+    body = trigger_function_body(notes_schema=notes_schema, keys=keys, columns=columns, tenancy=tenancy, kinds=kinds)
     return (
         f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(note_function_name(table_schema, table))}() "
         f"RETURNS trigger LANGUAGE plpgsql AS $note${body}$note$"

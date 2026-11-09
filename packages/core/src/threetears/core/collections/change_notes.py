@@ -101,7 +101,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
@@ -145,6 +145,7 @@ __all__ = [
     "noted_keys_page",
     "NotedKeysCursor",
     "NotedKeysPage",
+    "NotedKeysReader",
     "ChangeNoteKeeper",
     "KeeperPass",
     "NoteRingState",
@@ -270,6 +271,12 @@ _KEEPER_LAST_PASS = gauge(
     "threetears_change_notes_keeper_last_pass_timestamp_seconds",
     description="unix time of this process's last whole change-note keeper pass; alert when no process has moved it "
     "for several fences (no keeper holds the lease, or every pass fails)",
+)
+_UNTRIGGERED = gauge(
+    "threetears_change_notes_untriggered_tables",
+    description="tables of another schema than the keeper's that share a noted table's name and carry no change-note "
+    "trigger, at the keeper's last install check: the keeper gives none (its classes declare its own schema's "
+    "tables); their schema's migration run does. Alert on any that stays",
 )
 _SCRUB_BEHIND = gauge(
     "threetears_change_notes_scrub_behind",
@@ -588,6 +595,8 @@ class _Install:
     noted: NotedTable
     function: bool
     triggers: tuple[str, ...]
+    #: each column's ``data_type``: how the function names a column's value (a ``timestamptz`` canonically)
+    kinds: dict[str, str] = field(default_factory=dict)
 
 
 class ChangeNoteKeeper:
@@ -673,6 +682,8 @@ class ChangeNoteKeeper:
         self._scrub_batch = scrub_batch
         #: the noted tables refused a trigger for a column type, so each is said once
         self._refused: set[str] = set()
+        #: another schema's tables of a noted name found without a note trigger, so each is said once
+        self._untriggered: set[str] = set()
         self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
         self._scrubbed_at: float | None = None
         self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"
@@ -723,7 +734,13 @@ class ChangeNoteKeeper:
                 await conn.execute(statement)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
-        """give every noted table, in every schema, its note function and triggers; say which it gave.
+        """give every noted table of the keeper's own schema its note function and triggers; say which it gave.
+
+        Only the keeper's schema (the platform schema, where this process's classes declare their tables): a table
+        of the same name in another schema is another declaration's (a pod's table in its agent schema), whose key
+        and tenancy these classes do not know. Its triggers come from its own schema's migration run
+        (:func:`~threetears.core.data.migrations.change_notes.give_noted_tables_their_note_trigger`, every run); one
+        without them is said here, once, and counted (``threetears_change_notes_untriggered_tables``), never given.
 
         Reads the catalogue first and returns at once when every table has its function, as the table's
         declaration writes it, and both triggers. Otherwise takes the DDL lock with ``policy``'s bounded
@@ -767,7 +784,8 @@ class ChangeNoteKeeper:
         return given
 
     async def _installs(self, reader: Any, noted: dict[str, NotedTable]) -> list[_Install]:
-        """what each noted table, in every schema, still needs.
+        """what each noted table of the keeper's schema still needs; another schema's table of a noted name with no
+        note trigger is said and counted (:meth:`install_triggers`).
 
         :param reader: the pool, or one connection
         :ptype reader: Any
@@ -776,7 +794,7 @@ class ChangeNoteKeeper:
         :return: the work, in schema and table order
         :rtype: list[_Install]
         """
-        present = [
+        named = [
             (str(row["table_schema"]), str(row["table_name"]))
             for row in await reader.fetch(_NOTED_TABLES_SQL, sorted(noted))
         ]
@@ -784,6 +802,14 @@ class ChangeNoteKeeper:
             (str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"]))
             for row in await reader.fetch(_TRIGGERS_SQL, [NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER])
         }
+        present = [(schema, table) for schema, table in named if schema == self._schema]
+        self._say_untriggered(
+            [
+                (schema, table)
+                for schema, table in named
+                if schema != self._schema and (schema, table, NOTE_TRIGGER) not in triggers
+            ]
+        )
         types: dict[tuple[str, str], dict[str, str]] = {}
         for row in await reader.fetch(_COLUMN_TYPES_SQL, sorted(noted)):
             types.setdefault((str(row["table_schema"]), str(row["table_name"])), {})[str(row["column_name"])] = str(
@@ -795,20 +821,42 @@ class ChangeNoteKeeper:
         for schema, table in present:
             each = noted[table]
             tenant_columns = (each.tenancy.column,) if each.tenancy.column else ()
-            refused = inexact_note_columns(types.get((schema, table), {}), (*each.keys, *each.columns, *tenant_columns))
+            kinds = types.get((schema, table), {})
+            refused = inexact_note_columns(kinds, (*each.keys, *each.columns, *tenant_columns))
             if refused:
                 self._refuse(schema, table, refused)
                 continue
             wanted = trigger_function_body(
-                notes_schema=self._schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy
+                notes_schema=self._schema, keys=each.keys, columns=each.columns, tenancy=each.tenancy, kinds=kinds
             )
             stale = bodies.get(note_function_name(schema, table)) != wanted
             missing = tuple(
                 name for name in (NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER) if (schema, table, name) not in triggers
             )
             if stale or missing:
-                work.append(_Install(table_schema=schema, noted=each, function=stale, triggers=missing))
+                work.append(_Install(table_schema=schema, noted=each, function=stale, triggers=missing, kinds=kinds))
         return work
+
+    def _say_untriggered(self, tables: Sequence[tuple[str, str]]) -> None:
+        """count another schema's tables of a noted name that carry no note trigger, and say each once.
+
+        :param tables: each such table's schema and name
+        :ptype tables: Sequence[tuple[str, str]]
+        :return: nothing
+        :rtype: None
+        """
+        _UNTRIGGERED.set(len(tables))
+        for schema, table in tables:
+            name = f"{schema}.{table}"
+            if name in self._untriggered:
+                continue
+            self._untriggered.add(name)
+            log.warning(
+                "a table shares a noted table's name in another schema and carries no change-note trigger; the "
+                "keeper gives triggers only in its own schema. Its schema's migration run gives them, when that "
+                "schema's classes note it",
+                extra={"extra_data": {"table": name, "keeper_schema": self._schema}},
+            )
 
     def _refuse(self, schema: str, table: str, refused: Sequence[tuple[str, str]]) -> None:
         """say, once per table, that it gets no note trigger: a key or invalidation column is of a type whose
@@ -828,8 +876,8 @@ class ChangeNoteKeeper:
             return
         self._refused.add(name)
         log.error(
-            "a noted table gets no change-note trigger: a key or invalidation column is not uuid, text, varchar or "
-            "an integer, so its text form does not name the value exactly. Change the column or what the class "
+            "a noted table gets no change-note trigger: a key or invalidation column is not uuid, text, varchar, "
+            "an integer or timestamptz, so its text form does not name the value exactly. Change the column or what the class "
             "declares; the scrub reports its epochs as missing notes",
             extra={"extra_data": {"table": name, "columns": [f"{column} ({kind})" for column, kind in refused]}},
         )
@@ -854,6 +902,7 @@ class ChangeNoteKeeper:
                     keys=each.keys,
                     columns=each.columns,
                     tenancy=each.tenancy,
+                    kinds=install.kinds,
                 )
             )
         row, truncate = note_trigger_sql(notes_schema=self._schema, table_schema=install.table_schema, table=each.table)
@@ -1815,6 +1864,8 @@ class NotedKeysPage:
     """one page of the keys a table's notes name in a bracket.
 
     :ivar keys: each key's values as text, perhaps with repeats across pages (a set's worth of reads, not a count)
+    :ivar columns: each key's declared invalidation columns as its note holds them (``columns[i]`` is ``keys[i]``'s),
+        ``None`` for a note that holds none: a cache keyed by them is told the row as a row broadcast would tell it
     :ivar whole_table: a whole-table note of the tenant is in the bracket (a truncate, a load): the keys are not the reach
     :ivar next: where the next page reads from; ``None`` when this was the last
     """
@@ -1822,14 +1873,51 @@ class NotedKeysPage:
     keys: tuple[tuple[str, ...], ...]
     whole_table: bool
     next: NotedKeysCursor | None
+    columns: tuple[dict[str, str | None] | None, ...] = ()
+
+
+@runtime_checkable
+class NotedKeysReader(Protocol):
+    """reads a page of the keys a table's notes of this reader's own tenant name in a commit's bracket.
+
+    The pod's :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`: the broker's ``l3.noted_keys``
+    door, which names the tenant from the caller's verified schema (:func:`noted_keys_page`). A registry that has one resolves a keys-unknown epoch record carrying
+    :attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between` (:meth:`CollectionRegistry.catch_up_generation`).
+    """
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        """a page of the keys, or ``"notes_unavailable"`` / ``"not_covered"`` (as :func:`noted_keys_page`).
+
+        :param table: the table, as its notes name it
+        :ptype table: str
+        :param noted_between: the commit's bracket
+        :ptype noted_between: tuple[datetime, datetime]
+        :param cursor: where the last page ended; ``None`` for the first
+        :ptype cursor: NotedKeysCursor | None
+        :param limit: the most notes a page reads
+        :ptype limit: int
+        :param max_bytes: the most bytes of keys a page holds
+        :ptype max_bytes: int
+        :return: the page, or why the notes cannot say
+        :rtype: NotedKeysPage | str
+        """
+        ...
 
 
 def _noted_keys_sql(owner: str, slot: int) -> str:
     """one ring note table's notes of a table and tenant in a bracket, after a time, in ``noted_at`` order.
 
-    Answered from the ``(table_name, noted_at)`` index, which carries ``keys``, ``key_text`` and ``tenant``
-    (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`): an index range scan of the table's notes in the
-    bracket, in the index's order, stopped at the limit; no sort, no other table's notes.
+    Answered from the ``(table_name, noted_at)`` index, which carries ``keys``, ``key_text``, ``columns`` and
+    ``tenant`` (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`): an index range scan of the table's notes
+    in the bracket, in the index's order, stopped at the limit; no sort, no other table's notes.
 
     :param owner: the quoted schema holding the ring
     :ptype owner: str
@@ -1841,7 +1929,7 @@ def _noted_keys_sql(owner: str, slot: int) -> str:
     :rtype: str
     """
     return (  # each interpolated piece is a fixed name this module builds
-        f"SELECT noted_at, keys, key_text IS NULL AS whole FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
+        f"SELECT noted_at, keys, columns, key_text IS NULL AS whole FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
         "WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND tenant IS NOT DISTINCT FROM $2 "
         "ORDER BY noted_at LIMIT $5"
     )
@@ -1850,13 +1938,27 @@ def _noted_keys_sql(owner: str, slot: int) -> str:
 #: the database clock's grain: ``timestamptz`` holds microseconds
 _CLOCK_GRAIN: Final = timedelta(microseconds=1)
 
+#: a page's reads go through the ``(table_name, noted_at)`` index in its order, stopped at the limit. The planner
+#: judges a bracket's notes from the column statistics as if a table's notes were spread over the night, so it counts
+#: too few of a large commit's (a burst of one table's notes in a second or two) to stop early at the limit, and reads
+#: the whole rest of the bracket by bitmap and sorts it: every page reads every later page's notes again. Told to keep
+#: the index's order (``LOCAL``: the page's read-only transaction only, gone at its end, never left on a pooled
+#: connection), each page reads only its own notes. Measured on a ring of 322,000 notes and a 20,000-row commit,
+#: tables freshly written and analyzed: 212,062 rows scanned for 20,162 named (10.52x), told so 20,262 (1.005x), each
+#: page an Index Only Scan with both ``noted_at`` bounds in its Index Cond, on Postgres and YugabyteDB.
+_INDEX_ORDER: Final = "SET LOCAL enable_bitmapscan = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off"
 
-def _key_bytes(keys: Sequence[str]) -> int:
-    return sum(len(value) for value in keys) + 8 * len(keys)
+
+def _key_bytes(keys: Sequence[str], columns: Sequence[tuple[str, str | None]] = ()) -> int:
+    return (
+        sum(len(value) for value in keys)
+        + 8 * len(keys)
+        + sum(len(name) + len(value or "") + 8 for name, value in columns)
+    )
 
 
 async def noted_keys_page(
-    pool: Any,
+    conn: Any,
     *,
     notes_schema: str,
     table: str,
@@ -1874,12 +1976,13 @@ async def noted_keys_page(
     key it changed (and perhaps keys other commits changed then, which a follower reads again harmlessly). The notes
     are read from the ring's previous and current tables, one at a time, in ``noted_at`` order through the index, and
     continued by the last ``noted_at`` read: no offset, no sort. A page ends at ``limit`` notes or ``max_bytes`` of
-    keys, whichever first, at a whole ``noted_at`` (a page never splits the notes of one instant, so continuing past
-    it skips none); one instant's notes past the page's bound are read whole, which only a burst at one microsecond
-    could make large.
+    keys and columns, whichever first, over both tables together, at a whole ``noted_at`` (a page never splits the
+    notes of one instant, so continuing past it skips none); one instant's notes past the page's bound are read whole,
+    which only a burst at one microsecond could make large.
 
-    :param pool: the L3 pool (the broker's, on the platform schema)
-    :ptype pool: Any
+    :param conn: a connection to the L3 database (the broker's, on the platform schema), or a pool to take one
+        from; the page is read in one read-only transaction on it
+    :ptype conn: Any
     :param notes_schema: the schema holding the ring
     :ptype notes_schema: str
     :param table: the table, as its notes name it
@@ -1902,8 +2005,27 @@ async def noted_keys_page(
         raise ValueError("a page reads at least one note and one byte")
     owner = quote_identifier(notes_schema)
     since, until = noted_between
+    # one connection: a pool's own, or the one given
+    held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
+    async with held as one, one.transaction(readonly=True):
+        # the planner prices the bracket's notes too few to read in index order: it is told to (_INDEX_ORDER)
+        await one.execute(_INDEX_ORDER)
+        return await _noted_keys_page(one, owner, table, tenant, since, until, cursor, limit, max_bytes)
+
+
+async def _noted_keys_page(
+    conn: Any,
+    owner: str,
+    table: str,
+    tenant: str | None,
+    since: datetime,
+    until: datetime,
+    cursor: NotedKeysCursor | None,
+    limit: int,
+    max_bytes: int,
+) -> NotedKeysPage | str:
     try:
-        rings = await pool.fetch(
+        rings = await conn.fetch(
             f"SELECT current_ring, switch_no, previous_switched_at, wait_seconds FROM {owner}.{quote_identifier(RING_TABLE)} "  # noqa: S608
             "WHERE id = 1"
         )
@@ -1924,42 +2046,56 @@ async def noted_keys_page(
     if at.slot not in order:
         return "not_covered"
     keys: list[tuple[str, ...]] = []
+    columns: list[dict[str, str | None] | None] = []
     whole = False
+    used = 0
+    left = limit
+
+    def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
+        return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
+
     for slot in order[order.index(at.slot) :]:
+        # where this table's read starts: the cursor's time in its own table, else the bracket's start
+        start = at.after if slot == at.slot else None
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
-        after = at.after if slot == at.slot and at.after is not None else since - _CLOCK_GRAIN
-        found = await pool.fetch(_noted_keys_sql(owner, slot), table, tenant, after, until, limit + 1)
+        after = start if start is not None else since - _CLOCK_GRAIN
+        found = await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, after, until, left + 1)
         if not found:
             continue
-        full = len(found) > limit
-        taken = list(found[:limit])
+        full = len(found) > left
+        taken = list(found[:left])
         if full and all(note["noted_at"] == taken[-1]["noted_at"] for note in taken):
+            if left < limit:
+                # the page already holds the earlier table's notes: this table's first instant starts the next
+                return page(NotedKeysCursor(slot=slot, after=start))
             # one instant's notes fill the page: read that instant whole, so continuing past it skips none
             instant = taken[-1]["noted_at"]
             taken = list(
-                await pool.fetch(_noted_keys_sql(owner, slot), table, tenant, instant - _CLOCK_GRAIN, instant, None)
+                await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, instant - _CLOCK_GRAIN, instant, None)
             )
         elif full:
             # end at a whole instant: the last instant's notes go to the next page
             taken = [note for note in taken if note["noted_at"] < taken[-1]["noted_at"]]
-        used = 0
         for index, note in enumerate(taken):
+            starts_instant = index == 0 or taken[index - 1]["noted_at"] < note["noted_at"]
             if note["whole"]:
                 whole = True
                 continue
             values = tuple(str(value) for value in note["keys"])
-            used += _key_bytes(values)
-            if used > max_bytes and index > 0 and taken[index - 1]["noted_at"] < note["noted_at"]:
+            held = _columns_of(note["columns"])
+            used += _key_bytes(values, held)
+            if used > max_bytes and starts_instant and keys:
                 # past the page's bytes at an instant's first note: the page ends before it
-                taken = taken[:index]
-                full = True
-                break
+                return page(NotedKeysCursor(slot=slot, after=taken[index - 1]["noted_at"] if index else start))
             keys.append(values)
+            columns.append(dict(held) if held else None)
         if full:
-            return NotedKeysPage(
-                keys=tuple(keys), whole_table=whole, next=NotedKeysCursor(slot=slot, after=taken[-1]["noted_at"])
-            )
-    return NotedKeysPage(keys=tuple(keys), whole_table=whole, next=None)
+            return page(NotedKeysCursor(slot=slot, after=taken[-1]["noted_at"]))
+        left -= len(taken)
+        if left < 1:
+            # the page is full at this table's last note; the next page reads on from it
+            return page(NotedKeysCursor(slot=slot, after=taken[-1]["noted_at"]))
+    return page(None)
 
 
 @dataclass(frozen=True, slots=True)

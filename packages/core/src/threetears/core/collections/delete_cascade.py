@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.epoch_change import ChangedRow, key_text
 from threetears.core.collections.generation import (
     advance_for_write,
     primary_key_of_table,
@@ -186,7 +186,9 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
         if rows.table_name not in tables_with_write_generation() or source is None:
             continue
         named = [
-            ChangedRow(ids=[str(value) for value in (key if isinstance(key, tuple) else (key,))])  # convert at border
+            ChangedRow(
+                ids=[key_text(value) for value in (key if isinstance(key, tuple) else (key,))]
+            )  # convert at border
             for key in rows.keys
         ]
         try:
