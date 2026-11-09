@@ -41,14 +41,14 @@ import time
 from datetime import datetime
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.observe import contain, get_logger
 
-from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
+from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.registry import CacheInvalidationMessage
 from threetears.core.collections.schema_backed import (
@@ -67,6 +67,7 @@ from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
+    from threetears.core.cache.duckdb import DuckDBBackend
     from threetears.core.collections.copy_checkpoint import CopyCheckpoints
     from threetears.core.collections.epoch_change import EpochChangeReader
     from threetears.core.collections.registry import CollectionRegistry
@@ -80,6 +81,7 @@ __all__ = [
     "CopyFollower",
     "HubCapabilityMissingError",
     "FollowedTable",
+    "FollowerBackend",
     "FollowerPhase",
     "FollowerStatus",
     "require_generation_by_trigger",
@@ -313,6 +315,43 @@ class FollowerStatus:
     detail: str = ""
 
 
+class FollowerBackend(Protocol):
+    """what a :class:`CopyFollower` keeps its copy in: a backend that stages a change beside the copy and applies
+    everything staged in one transaction (:class:`~threetears.core.cache.duckdb.DuckDBBackend` is one; a pod's own
+    backend that publishes the copy to its worker processes is another). Each method is called on a thread.
+    """
+
+    def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
+        """stage some rows of ``table`` under ``stage``; the rows staged."""
+        ...
+
+    def stage_keys(
+        self, stage: str, table: str, key: Sequence[str], keys: Any, *, rows_stage: str | None = None
+    ) -> int:
+        """stage the keys read under ``stage`` (a key not among ``rows_stage``'s rows is deleted); the keys staged."""
+        ...
+
+    def drop_stage(self, *stages: str) -> None:
+        """drop these stages."""
+        ...
+
+    def staged_stages(self) -> list[str]:
+        """every stage held."""
+        ...
+
+    def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        """apply every change staged in one transaction, labelled with ``mark``; the rows applied."""
+        ...
+
+    def read_snapshot(self) -> AbstractContextManager[Any]:
+        """a cursor over one applied state of the copy, for as long as the block runs."""
+        ...
+
+    def staged_mark(self, cursor: Any) -> int | None:
+        """the mark of the change the state ``cursor`` reads was applied with; None before any."""
+        ...
+
+
 class CopyFollower:
     """keeps tables whole in a DuckDB backend, current to the writer's settled stamp, by the keys each epoch changed.
 
@@ -321,7 +360,7 @@ class CopyFollower:
     :param tables: the tables, each created on ``backend`` already
     :ptype tables: Sequence[FollowedTable]
     :param backend: the copy
-    :ptype backend: DuckDBBackend
+    :ptype backend: FollowerBackend
     :param l3: L3, the rail's proxy or anything with an asyncpg-shaped ``fetch``
     :ptype l3: Any
     :param settled: the writer's seqlock: a stamp, or :class:`Unsettled` while a write is in progress
@@ -341,7 +380,7 @@ class CopyFollower:
         self,
         registry: CollectionRegistry,
         tables: Sequence[FollowedTable],
-        backend: DuckDBBackend,
+        backend: FollowerBackend,
         l3: Any,
         *,
         settled: Callable[[], Awaitable[Any]],
@@ -846,7 +885,7 @@ class CopyFollower:
         :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any, Mapping[str, str | None]]]
         """
         with self._backend.read_snapshot() as cursor:
-            mark = DuckDBBackend.staged_mark(cursor)
+            mark = self._backend.staged_mark(cursor)
             stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
             yield cursor, stamp, marks
 
@@ -873,3 +912,10 @@ class CopyFollower:
             log.info("copy follower", extra={"extra_data": {"phase": phase.value, "detail": detail}})
         self._status.phase = phase
         self._status.detail = detail
+
+
+if TYPE_CHECKING:
+
+    def _duckdb_is_a_follower_backend(backend: DuckDBBackend) -> FollowerBackend:
+        """mypy's proof that the DuckDB L1 is a copy follower's backend: it fails here if they part."""
+        return backend
