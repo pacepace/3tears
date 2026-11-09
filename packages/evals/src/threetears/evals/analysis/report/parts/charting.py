@@ -249,7 +249,9 @@ KindResolver = Callable[[ChartContext], Drawn]
 
 
 def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> ChartBlock:
-    """The chart's block: its kind, its title and the kit's data, on the planned page's fixed section.
+    """The chart's block: its kind, its title and the kit's data, every value it draws carrying the text the page's
+    forms decide (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`), on the planned page's fixed
+    section.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
@@ -265,7 +267,9 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
+    # Every value the chart draws carries its text, decided by the page's forms, which the kit prints as it is.
+    drawn = context.forms.chart_texts(data, read_at=read_at)
+    return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=drawn, unit=read_at)
 
 
 def money_drawn(

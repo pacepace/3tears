@@ -29,7 +29,14 @@ import pytest
 
 from threetears.evals.analysis import KIT_CHARTS, ChartBlock, report_html
 from threetears.evals.schema.hashing import round_floats
-from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered, report_of, report_page
+from packages.evals.tests.report_kit_support import (
+    KIT,
+    MARKED_CHARTS,
+    chromium_unavailable,
+    rendered,
+    report_of,
+    report_page,
+)
 
 #: Each reference's built page, by name.
 REFERENCES = sorted(p.stem for p in (KIT / "references").glob("*.html") if not p.name.endswith(".src.html"))
@@ -585,3 +592,37 @@ def test_the_kit_tags_no_candidate_p_however_many_there_are(tmp_path: Path) -> N
     assert tags[0] == "P"
     assert "P" not in tags[1:] and len(set(tags)) == len(tags)
     assert tags[1:18] == [*"ABCDEFGHIJKLMNOQR"] and tags[26:] == ["AA", "AB", "AC", "AD", "AE"]
+
+
+#: Each drawn chart's tooltips (as the kit writes them, markup) and its texts, in drawn order, by chart.
+_MARKED = """() => [...document.querySelectorAll('div.chart[data-kind]')].map(e => ({
+  tips: [...e.querySelectorAll('[data-tip]')].map(t => t.getAttribute('data-tip')),
+  texts: [...e.querySelectorAll('tspan, text, b, span')].filter(t => !t.children.length).map(t => t.textContent)}))"""
+
+
+@pytest.mark.integration
+def test_the_kit_draws_each_value_s_own_text_in_its_own_place(tmp_path: Path) -> None:
+    """The kit's half of the kit contract (``test_report_kit_contract``, the static page's half): every value of a
+    chart of each kind carries a marker of its own, and the kit's tooltips read each value's, then its interval's
+    ends' markers, each in its place, and each value it draws as text reads its marker; a low end's text drawn as the
+    high end's, or a value drawn by its format, fails."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    marked = list(MARKED_CHARTS.values())
+    blocks = [
+        {"kind": "chart", "section": "memo", "chart": one.kind, "title": name, "data": one.data}
+        for name, one in MARKED_CHARTS.items()
+    ]
+    page = tmp_path / "marked.html"
+    page.write_text(report_page(blocks), encoding="utf-8")
+
+    drawn, errors = rendered(page, _MARKED)
+
+    assert errors == []
+    assert len(drawn) == len(marked)
+    for name, one, chart in zip(MARKED_CHARTS, marked, drawn, strict=True):
+        tips = [html.unescape(re.sub(r"<br>", "\n", re.sub(r"</?b>", "", tip))).split("\n") for tip in chart["tips"]]
+        assert [tuple(tip) for tip in tips] == list(one.tips), name
+        found = [chart["texts"].index(text) for text in one.texts if text in chart["texts"]]
+        assert len(found) == len(one.texts) and found == sorted(found), (name, chart["texts"])

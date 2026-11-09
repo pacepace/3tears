@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,17 @@ from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report import Report, ReportBlock
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 
-__all__ = ["KIT", "chromium_unavailable", "render_checked", "rendered", "report_of", "report_page", "run_script"]
+__all__ = [
+    "KIT",
+    "MARKED_CHARTS",
+    "Marked",
+    "chromium_unavailable",
+    "render_checked",
+    "rendered",
+    "report_of",
+    "report_page",
+    "run_script",
+]
 
 #: The kit's documentation copy: its stylesheet and script, the reference memos and the scripts that build and check.
 KIT = Path(__file__).resolve().parents[3] / "docs" / "eval-report-kit"
@@ -121,3 +132,169 @@ def report_of(blocks: Sequence[ReportBlock] | Sequence[dict[str, Any]]) -> Repor
 def report_page(blocks: Sequence[ReportBlock] | Sequence[dict[str, Any]]) -> str:
     """The page of a report holding ``blocks`` (:func:`report_of`)."""
     return report_html(report_of(blocks))
+
+
+@dataclass(frozen=True)
+class Marked:
+    """A chart whose every drawn value carries a marker text of its own, beside where each marker must be drawn.
+
+    :ivar kind: The chart's kind.
+    :ivar data: Its ``data-chart`` JSON.
+    :ivar tips: Each mark's tooltip, as its lines, in drawn order: a value's, then its interval's ends, each in its
+        place, so a low end's text drawn as the high end's reads as another tooltip.
+    :ivar texts: Each marker drawn as text of its own (a note, an end label, a tile), in drawn order.
+    """
+
+    kind: str
+    data: dict[str, Any]
+    tips: tuple[tuple[str, ...], ...]
+    texts: tuple[str, ...] = ()
+
+
+#: One marked chart per kind the static page draws (and the kit draws), every value's text a marker no format spells.
+MARKED_CHARTS: dict[str, Marked] = {
+    "bars": Marked(
+        "bars",
+        {
+            "rows": [
+                {"label": "a", "value": 2, "lo": 1, "hi": 3, "value_text": "BV", "lo_text": "BL", "hi_text": "BH"},
+                {"label": "b", "value": 1, "lo": 0.5, "value_text": "OV", "lo_text": "OL"},
+            ],
+            "domain": [0, 4],
+            "fmt": "num",
+            "level": "95%",
+        },
+        (("a", "BV (BL to BH)"), ("b", "OV (from OL up, no upper bound)")),
+        ("BV", "OV"),
+    ),
+    "bars as dots": Marked(
+        "bars",
+        {
+            "rows": [
+                {"label": "a", "value": 2, "lo": 1, "hi": 3, "value_text": "DV", "lo_text": "DL", "hi_text": "DH"}
+            ],
+            "domain": [0, 4],
+            "fmt": "num",
+            "level": "95%",
+            "dots": True,
+        },
+        (("a", "DV (DL to DH)"),),
+    ),
+    "forest": Marked(
+        "forest",
+        {
+            "rows": [
+                {"label": "a", "value": -1, "lo": -2, "hi": 0.5, "value_text": "FV", "lo_text": "FL", "hi_text": "FH"}
+            ],
+            "domain": [-3, 3],
+            "fmt": "num",
+            "level": "95%",
+        },
+        (("a", "FV [FL, FH]"),),
+        ("FV",),
+    ),
+    "lines": Marked(
+        "lines",
+        {
+            "categories": ["c1", "c2"],
+            "series": [
+                {
+                    "name": "s",
+                    "values": [1, 2],
+                    "lo": [0.5, 1.5],
+                    "hi": [1.5, 2.5],
+                    "values_text": ["LV1", "LV2"],
+                    "lo_text": ["LL1", "LL2"],
+                    "hi_text": ["LH1", "LH2"],
+                }
+            ],
+            "domain": [0, 3],
+            "fmt": "num",
+            "level": "95%",
+        },
+        (("s · c1", "LV1 (LL1–LH1)"), ("s · c2", "LV2 (LL2–LH2)")),
+    ),
+    "scatter_frontier": Marked(
+        "scatter_frontier",
+        {
+            "points": [
+                {"x": 1, "y": 2, "label": "p", "x_text": "SX1", "y_text": "SY1"},
+                {"x": 2, "y": 1, "label": "q", "x_text": "SX2", "y_text": "SY2"},
+            ],
+            "x_domain": [0, 3],
+            "y_domain": [0, 3],
+            "x_fmt": "num",
+            "y_fmt": "num",
+        },
+        (("p", "SX1 · SY1"), ("q", "SX2 · SY2")),
+    ),
+    "gate_scatter": Marked(
+        "gate_scatter",
+        {
+            "points": [{"x": 1, "y": 2, "label": "p", "x_text": "GX", "y_text": "GY"}],
+            "x_domain": [0, 3],
+            "y_domain": [0, 3],
+            "x_fmt": "num",
+            "y_fmt": "num",
+            "reference": {"value": 1, "kind": "floor"},
+            "x_reference": {"value": 2, "kind": "budget"},
+        },
+        (("p", "GX · GY"),),
+    ),
+    "dot_interval": Marked(
+        "dot_interval",
+        {
+            "rows": [
+                {"label": "a", "value": 50, "lo": 40, "hi": 60, "value_text": "IV", "lo_text": "IL", "hi_text": "IH"}
+            ],
+            "domain": [0, 100],
+            "fmt": "pct",
+            "level": "95%",
+        },
+        (("a", "IV (IL to IH)"),),
+    ),
+    "range_bars": Marked(
+        "range_bars",
+        {
+            "groups": [
+                {"label": "g", "rows": [{"label": "a", "from": 1, "to": 2, "from_text": "RF", "to_text": "RT"}]}
+            ],
+            "domain": [0, 3],
+            "fmt": "s",
+        },
+        (("a · g", "RF to RT"),),
+    ),
+    "heatmap": Marked(
+        "heatmap",
+        {
+            "columns": [{"label": "c"}],
+            "rows": [{"label": "r", "cells": [{"value": 50, "n": 3, "value_text": "HV"}]}],
+            "domain": [0, 100],
+            "fmt": "pct",
+        },
+        (("r · c", "HV · n = 3"),),
+        ("HV",),
+    ),
+    "diff_heatmap": Marked(
+        "diff_heatmap",
+        {
+            "columns": [{"label": "c"}],
+            "rows": [{"label": "r", "cells": [{"value": 1, "detail": 2, "value_text": "XV", "detail_text": "XD"}]}],
+            "fmt": "num",
+            "detail_fmt": "num",
+        },
+        (("r · c", "XV"),),
+        ("XV", "XD"),
+    ),
+    "confusion": Marked(
+        "confusion",
+        {"labels": ["x", "y"], "matrix": [[90, 10], [5, 95]], "matrix_text": [["CA", "CB"], ["CC", "CD"]]},
+        (
+            ("x → x", "CA of the row"),
+            ("x → y", "CB of the row"),
+            ("y → x", "CC of the row"),
+            ("y → y", "CD of the row"),
+        ),
+        ("CA", "CB", "CC", "CD"),
+    ),
+}
