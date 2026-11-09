@@ -21,8 +21,9 @@ the directory, the record names it by its skill digest, and the acceptance asks 
 better reports: the criterion asks ``promote`` and an improved primary. Its ``editor.md`` may differ. Where it does,
 the readings each arm's own editor decides (must-fix and should-fix findings open, report finished) measure two
 instruments, so the criterion reports them uncompared and asks, in place of ``promote``, that no other gated reading
-regressed and every guardrail held, and that the preference over the pairs both stored finished, free of draft
-banners, points the primary's way. Bounces are counted before any editor sees a page, so they are always compared.
+regressed and every guardrail held. The preference over the pairs both stored finished, free of draft banners, is
+disclosed beside them with its pair count and decides nothing (owner ruling 2026-11-09). Bounces are counted before
+any editor sees a page, so they are always compared.
 Then:
 
 1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
@@ -542,15 +543,19 @@ class FakeDryJudge:
 @dataclass(frozen=True)
 class Requirement:
     """One row of the pass criterion: what it asks, what the read shows, and whether it holds; ``None`` for a reading
-    reported and not compared, which decides nothing."""
+    reported and not compared, which decides nothing, its Holds cell saying why (``undecided``)."""
 
     asks: str
     reads: str
     holds: bool | None
+    undecided: str = "not compared: each arm's own editor decides it"
 
 
 #: What the criterion's table says of an editor's reading when the arms' editors differ.
-NOT_COMPARED: Final = "not compared: each arm's own editor decides it"
+NOT_COMPARED: Final = Requirement.undecided
+
+#: What the criterion's table says of a reading it discloses and never gates on.
+DISCLOSED: Final = "disclosed: decides nothing"
 
 
 @dataclass(frozen=True)
@@ -629,9 +634,9 @@ def pass_criterion(
     instruments: each is reported, not compared. Which they are is
     :func:`~threetears.evals.ops.report_writer.writer_contract.uncompared_readings`, the one answer the read's sentence
     reads too, so the sentence never names a reading this table reports not compared. The read's decision folds them
-    in, so in its place the criterion asks that no other gated reading regressed and every guardrail held; and since a
-    stricter editor leaves draft banners the judge sees, the preference over the pairs both stored finished must point
-    the primary's way.
+    in, so in its place the criterion asks that no other gated reading regressed and every guardrail held. Since a
+    stricter editor leaves draft banners the judge sees, the preference over the pairs both stored finished is
+    disclosed beside them with its pair count, and decides nothing (owner ruling 2026-11-09).
 
     :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
     :param runs: Each arm's run summary, by arm, the control first.
@@ -672,7 +677,7 @@ def pass_criterion(
         *(
             (Requirement(f"the read answers {decision}", read.decision, read.decision == decision),)
             if one_editor
-            else _two_editor_rows(read, uncompared)
+            else _two_editor_rows(read, uncompared, finished_pairs=report.finished_only.pairs)
         ),
         Requirement(
             f"the primary reading reads {outcome}",
@@ -704,9 +709,12 @@ def pass_criterion(
     return Criterion(requirements, read.cases_to_settle, variant.noun, variant.expects)
 
 
-def _two_editor_rows(read: WriterPromotion, uncompared: Sequence[str]) -> tuple[Requirement, ...]:
+def _two_editor_rows(
+    read: WriterPromotion, uncompared: Sequence[str], *, finished_pairs: int
+) -> tuple[Requirement, ...]:
     """With two editors, what stands in for the read's decision: no gated reading but the uncompared ones regressed
-    and every guardrail held; and the preference over the pairs both stored finished pointing the primary's way."""
+    and every guardrail held; and, disclosed with its pair count and deciding nothing, the preference over the pairs
+    both stored finished."""
     regressed = [
         verdict.heading
         for verdict in read.verdicts
@@ -731,11 +739,15 @@ def _two_editor_rows(read: WriterPromotion, uncompared: Sequence[str]) -> tuple[
             not regressed and not unheld,
         ),
         Requirement(
-            "the preference over pairs both finished points the same way",
-            "not read"
-            if finished is None or finished.delta is None
-            else f"{_outcome_words(finished.outcome)}, difference {finished.delta:+.3f}",
-            finished is not None and finished.delta is not None and finished.delta > 0,
+            "the preference over pairs both finished, disclosed",
+            (
+                "not read"
+                if finished is None or finished.delta is None
+                else f"{_outcome_words(finished.outcome)}, difference {finished.delta:+.3f}"
+            )
+            + f", over {spell_count(finished_pairs)} pair{'' if finished_pairs == 1 else 's'}",
+            None,
+            DISCLOSED,
         ),
     )
 
@@ -836,7 +848,7 @@ class Acceptance:
         yield "| Pass criterion | Reads | Holds |"
         yield "|---|---|---|"
         for requirement in self.criterion.requirements:
-            holds = NOT_COMPARED if requirement.holds is None else "yes" if requirement.holds else "no"
+            holds = requirement.undecided if requirement.holds is None else "yes" if requirement.holds else "no"
             yield f"| {requirement.asks} | {requirement.reads} | {holds} |"
         yield ""
         yield self.criterion.verdict()

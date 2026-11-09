@@ -552,7 +552,7 @@ def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two
         writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.25"])
     said = re.fullmatch(
         r"the writer eval was not launched, and nothing was sent or spent: the analyst's first turn of arm 'shipped' on "
-        r"claude-sonnet-5-5, priced at its 32,000-token output cap and its text before any snapshot is read, can cost "
+        r"claude-sonnet-5-5, priced at its 8,192-token output cap and its text before any snapshot is read, can cost "
         r"up to \$([0-9.]+), above the report's \$0\.25 budget, so it cannot admit even one turn of the 2 a report "
         r"takes; a budget of \$([0-9.]+) or more admits it: raise budget_usd",
         str(refused.value),
@@ -561,15 +561,16 @@ def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two
     ceiling, admits = float(said[1]), float(said[2])
     assert 0.25 < ceiling <= admits < ceiling + 0.011
     assert attempts == [] and capsys.readouterr().out == ""
-    # The 2026-11-06 run's $0.75 fits the first turn, so the run goes through, warned once with the records.
+    # $0.50 fits the first turn and not two of it at the analyst's 8,192-token cap, so the run goes through, warned
+    # once with the records.
     assert (
-        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.75", "--cap-usd", "30"])
+        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.5", "--cap-usd", "30"])
         == 0
     )
     printed = capsys.readouterr().out
     (warning,) = [line for line in printed.splitlines() if "recorded Sonnet 5.5 acceptance runs" in line]
     twice = re.search(r"under 2 of a first turn's ceiling on claude-sonnet-5-5 \(\$([0-9.]+)\)", warning)
-    assert twice is not None and float(twice[1]) > 0.75
+    assert twice is not None and float(twice[1]) > 0.5
     assert "at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and at $1.50 99 of 100" in warning
     # At two of the ceiling and above, no warning.
     assert (

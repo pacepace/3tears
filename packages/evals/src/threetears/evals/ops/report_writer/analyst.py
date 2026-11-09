@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
 
 from pydantic import ValidationError
@@ -72,6 +72,12 @@ _FENCE = re.compile(r"```[A-Za-z]*[ \t]*\n(?P<body>.*?)\n?```", re.DOTALL)
 #: The most faults of a shape a bounce lists one by one.
 _LISTED: Final = 30
 
+#: The analyst's per-turn output cap, thinking included (owner ruling 2026-11-09): 2**13, about 1.4 times the largest
+#: reply run 5 recorded (5.8k tokens in 748 turns). Every turn is admitted on its prompt's bound plus this cap, so the
+#: 32,000 the editor keeps priced each revision turn about $0.24 dearer on Sonnet 5.5, enough to end 9 of run 5's 64
+#: reports over a $1.50 budget with room left. A reply that reaches it is a bounce, never a failure.
+_ANALYST_MAX_TOKENS: Final = 8_192
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AnalystLimits:
@@ -80,13 +86,13 @@ class AnalystLimits:
     :ivar draft_calls: The tool calls the first draft may make.
     :ivar revision_calls: The tool calls each revision may make.
     :ivar bounces: The submissions a round may send back before a fault ends it ``refused``.
-    :ivar session: What every turn is held to.
+    :ivar session: What every turn is held to; its output cap 8,192 tokens unless set.
     """
 
     draft_calls: int = 100
     revision_calls: int = 30
     bounces: int = 3
-    session: SessionLimits = field(default_factory=SessionLimits)
+    session: SessionLimits = SessionLimits(max_tokens=_ANALYST_MAX_TOKENS)  # frozen, so one instance is shared safely
 
     def __post_init__(self) -> None:
         """Refuse a call budget below 1 or a negative bounce count.

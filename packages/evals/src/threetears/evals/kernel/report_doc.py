@@ -453,11 +453,13 @@ def report_doc_json_schema() -> dict[str, Any]:
 class ReportFinding(_Doc):
     """One review finding the editor left unresolved, which the page prints in Method.
 
-    ``severity`` ``must_fix`` always blocks a review from clearing. Whether a ``should_fix`` blocks depends on when it
-    was raised (owner rulings 2026-10-29 and 2026-10-31): one first raised in round 1 blocks while a review carries it,
-    and one first raised in a later review never does, though it is sent back for revision while revisions remain.
-    ``id`` and ``since`` say which: code gives each finding its id where it is first raised, and a later review that
-    marks a finding as continuing an earlier one keeps that finding's id and round. A finding stored before the ruling carries neither (``""`` and ``0``).
+    ``severity`` ``must_fix`` always blocks a review from clearing. A ``should_fix`` blocks only where it was first
+    raised in round 1 as a ``must_fix`` and is carried now at ``should_fix`` (owner rulings 2026-10-29, 2026-10-31 and
+    2026-11-09): downgraded is not resolved. Any other ``should_fix`` blocks nothing, whatever round raised it, though
+    it is sent back for revision while revisions remain. ``id``, ``since`` and ``raised_as`` say which: code gives each
+    finding its id where it is first raised, and a later review that marks a finding as continuing an earlier one keeps
+    that finding's id and round, and the severity it was first raised with where the review carries it at another. A
+    finding stored before ids carries none of them (``""``, ``0`` and ``None``).
     """
 
     claim: str = Field(description="The claim it is about, by id; empty for the page as a whole.")
@@ -470,6 +472,11 @@ class ReportFinding(_Doc):
     )
     since: int = Field(
         default=0, ge=0, description="The review round it was first raised in; 0 for one stored before it was kept."
+    )
+    raised_as: Literal["must_fix", "should_fix"] | None = Field(
+        default=None,
+        description="The severity it was first raised with, where a later review carries it at another; None where it "
+        "keeps the one it was raised with, or was stored before this was kept.",
     )
 
 
@@ -577,9 +584,9 @@ class EvalReportDoc(EvalDocumentModel):
         """Whether the document is a draft: its editor's review left a blocking finding open, so its page says so first.
 
         Code decides it from how the loop ended and the review's structured findings, never from prose (owner rulings
-        2026-10-29 and 2026-10-31): every ending but ``stored`` keeps a draft, since only a review with no blocking
-        finding open ends the loop ``stored``. A ``stored`` document may carry ``should_fix`` findings first raised
-        after round 1, which block nothing and leave it finished; one carrying a finding with no id was stored by a build
+        2026-10-29, 2026-10-31 and 2026-11-09): every ending but ``stored`` keeps a draft, since only a review with no
+        blocking finding open ends the loop ``stored``. A ``stored`` document may carry ``should_fix`` findings that
+        block nothing and leave it finished; one carrying a finding with no id was stored by a build
         before findings had ids, which stored its ``should_fix`` findings open, and is a draft.
 
         :return: True for a draft; False for a finished document.

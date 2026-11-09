@@ -7353,7 +7353,7 @@
     },
     "threetears.evals.ops.AnalystLimits": {
       "kind": "dataclass",
-      "signature": "AnalystLimits(draft_calls: int = 100, revision_calls: int = 30, bounces: int = 3, session: SessionLimits = SessionLimits())",
+      "signature": "AnalystLimits(draft_calls: int = 100, revision_calls: int = 30, bounces: int = 3, session: SessionLimits = SessionLimits(max_tokens=8192, result_chars=12000, clear_over_tokens=150000, keep_tool_uses=12, clear_at_least_tokens=36000, warn_before=10))",
       "tier": "stable"
     },
     "threetears.evals.ops.ArmEstimate": {

@@ -7,7 +7,8 @@ control, or the shipped skill byte for byte; ``headline-answers`` changing a fil
 README's diff or digests drifting from the files; a candidate's arm not named for its directory, or the record not
 naming it by its skill digest; the criterion asking a candidate skill to read worse; with two editors, bounces left
 uncompared, an editor's own reading (must-fix findings open, report finished) deciding, the read's keep standing in for
-the readings it folds in, or the finished pairs not asked to point the primary's way; a live run's refusal coming after
+the readings it folds in, or the preference over the pairs both finished deciding the gate, or printed without its
+pair count (a disclosure since the owner's ruling of 2026-11-09); a live run's refusal coming after
 its directory is made; the shipped skill as its own candidate reading anything but cannot tell apart.
 """
 
@@ -26,6 +27,7 @@ import pytest
 
 from packages.evals.tests.fixtures.writer_cases import writer_acceptance
 from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
+    DISCLOSED,
     DRY_CAP_USD,
     NOT_COMPARED,
     SHIPPED,
@@ -228,7 +230,14 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     assert f"| Report finished | cannot tell apart | {NOT_COMPARED} |" in printed
     assert "| the read answers promote |" not in printed
     assert "| no other gated reading regressed, and every guardrail held | none regressed | yes |" in printed
-    assert "| the preference over pairs both finished points the same way | " in printed
+    assert re.search(
+        r"^\| the preference over pairs both finished, disclosed \| .+, over 7 pairs \| "
+        + re.escape(DISCLOSED)
+        + r" \|$",
+        printed,
+        re.M,
+    ), "a disclosure with its pair count, deciding nothing"
+    assert "points the same way" not in printed
     # Beside the verdict, once: what a PASS means here, the pairs both finished, and bounces beside analyst rounds.
     after = printed[printed.index("\nFAIL: ") :]
     assert after.count("PASS means the fixed judge prefers") == 1
@@ -308,7 +317,7 @@ def _finished(read: WriterPromotion, delta: float) -> WriterPromotion:
     return read.model_copy(update={"finished_only": read.finished_only.model_copy(update={"delta": delta})})
 
 
-def test_with_two_editors_the_editors_own_readings_decide_nothing_and_the_finished_pairs_must_agree(
+def test_with_two_editors_the_editors_own_readings_and_the_finished_pairs_decide_nothing(
     like_against_like: tuple[Acceptance, list[object]],
 ) -> None:
     found, _ = like_against_like
@@ -324,10 +333,14 @@ def test_with_two_editors_the_editors_own_readings_decide_nothing_and_the_finish
     assert "the read answers promote" not in rows
     assert rows["Must-fix findings open"].holds is None and rows["Must-fix findings open"].reads == "regressed"
     assert rows["Report finished"].holds is None
-    # The finished pairs, free of draft banners, must point the primary's way.
+    # The finished pairs, free of draft banners, are disclosed with their count and decide nothing (2026-11-09).
     against = pass_criterion(_finished(kept, -0.1), runs, report, variant=variant, one_editor=False)
-    assert not against.passed
-    assert "the preference over pairs both finished points the same way" in against.verdict()
+    assert against.passed, against.verdict()
+    disclosed = {requirement.asks: requirement for requirement in against.requirements}[
+        "the preference over pairs both finished, disclosed"
+    ]
+    assert disclosed.holds is None and disclosed.undecided == DISCLOSED
+    assert disclosed.reads.endswith(f", difference -0.100, over {report.finished_only.pairs} pairs")
     # Any other gated reading regressed still fails it, by name.
     judged = next(verdict.name for verdict in kept.verdicts if verdict.reading == "judged")
     other = pass_criterion(

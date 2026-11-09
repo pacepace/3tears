@@ -555,7 +555,8 @@ def test_a_settle_table_never_prints_which_side_of_its_line_today_s_estimate_is_
 
 async def test_a_draft_is_listed_by_its_own_headline_marked_a_draft() -> None:
     fixture = off_loop(ops_fixture)
-    open_finding = {"claim": "report", "severity": "should_fix", "finding": "Give the cost column its dollars."}
+    # A must_fix: a round-1 should_fix left open no longer makes a draft (owner ruling 2026-11-09).
+    open_finding = {"claim": "report", "severity": "must_fix", "finding": "Give the cost column its dollars."}
     script = {
         "analyst": [scripted_reply(submission())],
         "editor-1": [scripted_reply(passing_review(findings=[open_finding]))],
