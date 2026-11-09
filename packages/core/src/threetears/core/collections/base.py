@@ -4224,6 +4224,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 id_of_row=self._id_of_row,
                 entry_lifetime=self._l2_entry_lifetime,
                 encode=lambda row: self.serialize(self._normalise_datetimes_for_write(row)),
+                save_many=getattr(self, "save_many_to_store") if getattr(self, "saves_many_to_store", False) else None,
             )
             self._l2_first_support_held = support
         return support

@@ -2874,6 +2874,37 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             conn=conn,
         )
 
+    @property
+    def saves_many_to_store(self) -> bool:
+        """whether :meth:`save_many_to_store` saves rows as :meth:`save_to_store` would: a table upserted on conflict,
+        on a store that saves many rows in a few statements.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self.schema.on_conflict == "update" and isinstance(self._durable_store(), BulkDurableStore)
+
+    async def save_many_to_store(self, rows: list[dict[str, Any]]) -> int:
+        """save many rows to L3 in a few statements, as :meth:`save_to_store` saves each with no fence.
+
+        A store hook of the write path, as :meth:`save_to_store` is: the L2-first saver writes a backlog of rows
+        already committed and announced at L2 through it (:mod:`threetears.core.collections.l2_first`), and only
+        where :attr:`saves_many_to_store`.
+
+        :param rows: the rows, each keyed by column
+        :ptype rows: list[dict[str, Any]]
+        :return: rows written
+        :rtype: int
+        :raises ValueError: when the collection does not save many rows at once (:attr:`saves_many_to_store`)
+        """
+        store = self._durable_store()
+        if self.schema.on_conflict != "update" or not isinstance(store, BulkDurableStore):
+            raise ValueError(f"{self.table_name}: save_many_to_store needs a bulk store and an upsert on conflict")
+        written: int = await store.upsert_many(
+            self.schema.name, rows, max_rows=self.BULK_MAX_ROWS, max_bytes=self.BULK_MAX_BYTES
+        )
+        return written
+
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete one row from L3 by primary key via the :class:`DurableStore` seam.
 

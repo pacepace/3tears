@@ -300,6 +300,14 @@ class SaverPass:
     change_log_fill: float | None = None
 
 
+#: how many of a table's epochs the saver saves at once: each a read of L2 and a write to L3, so a backlog of a
+#: thousand epochs is not two thousand round trips one after another
+_SAVE_CONCURRENCY: Final = 1000
+
+#: how many L2 reads a many-row carry makes at once
+_CARRY_CONCURRENCY: Final = 32
+
+
 @dataclass(slots=True)
 class _Deferred:
     """the epochs a pass left once because their L3 refusal may be their own writer's, still settling."""
@@ -310,19 +318,28 @@ class _Deferred:
 class L3Saver:
     """makes L3 match L2 for every epoch an L2-first collection committed."""
 
-    def __init__(self, registry: CollectionRegistry, *, epochs: L2FirstEpochs) -> None:
+    def __init__(
+        self, registry: CollectionRegistry, *, epochs: L2FirstEpochs, batched_reads: bool | None = None
+    ) -> None:
         """capture what the saver works between; no I/O.
 
         :param registry: holds the L2-first collections, wired to L2 and L3
         :ptype registry: CollectionRegistry
         :param epochs: the epoch log the collections commit through
         :ptype epochs: L2FirstEpochs
+        :param batched_reads: read a window's L2 rows in batched direct gets. **Needs the body-carried direct get
+            granted to this process's NATS connection**, which an infrastructure identity holds and a pod never
+            does (:meth:`~threetears.nats.kv.NatsKvBucket.get_latest_many`); a refused batch is probed briefly and
+            the bucket read a key at a time after. ``None`` (the default) is off, except under
+            :func:`run_l2_first_worker`, whose runner is the infrastructure identity, and which turns it on
+        :ptype batched_reads: bool | None
         :return: nothing
         :rtype: None
         """
         self._registry = registry
         self._epochs = epochs
         self._deferred = _Deferred()
+        self.batched_reads = batched_reads
 
     async def run_pass(self) -> SaverPass:
         """save every epoch after each table's saved position, then measure the change log.
@@ -382,12 +399,28 @@ class L3Saver:
                 "that did not wait for L3 may never reach it, until its source sends it again",
                 extra={"extra_data": {"table": table, "first_missing": walk.first_missing, "head": head}},
             )
-        for change in walk.changes:
-            if not await self._save_epoch(collection, change, result):
-                return
-            await collection.l2_first_support.write_state(
-                change.token.encode("utf-8"), "saved"
-            )  # convert at border: KV value
+        # each epoch's carry is its own (carry_to_l3 writes L2's value as it is now, safe repeated and out of
+        # order), so a few epochs are saved at once, not one read of L2 and one write to L3 after another; the
+        # position still moves past an epoch only once it and every epoch before it are done
+        changes = list(walk.changes)
+        for start in range(0, len(changes), _SAVE_CONCURRENCY):
+            window = changes[start : start + _SAVE_CONCURRENCY]
+            if await self._save_window_at_once(collection, window, result):
+                await collection.l2_first_support.write_state(
+                    window[-1].token.encode("utf-8"), "saved"
+                )  # convert at border: KV value
+                continue
+            outcomes = await asyncio.gather(
+                *(self._save_epoch(collection, change, result) for change in window), return_exceptions=True
+            )
+            for change, outcome in zip(window, outcomes, strict=True):
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                if not outcome:
+                    return
+                await collection.l2_first_support.write_state(
+                    change.token.encode("utf-8"), "saved"
+                )  # convert at border: KV value
         await collection.l2_first_support.write_state(head.encode("utf-8"), "saved")  # convert at border: KV value
 
     async def _start(self, collection: BaseCollection[Any], incarnation: str) -> int:
@@ -408,6 +441,58 @@ class L3Saver:
         held = await collection.l2_first_support.read_state("saved")
         parts = None if held is None else split_generation_token(held.decode("utf-8"))
         return parts[1] if parts is not None and parts[0] == incarnation else 0
+
+    async def _save_window_at_once(
+        self, collection: BaseCollection[Any], window: Sequence[EpochChange], result: SaverPass
+    ) -> bool:
+        """save a window of epochs in the collection's many-row save, when every row of them can go that way.
+
+        The epochs a writer settled are let go as :meth:`_save_epoch` lets them go; the rest's rows are carried
+        at once (:meth:`L2FirstSupport.carry_many_to_l3`). Anything that path does not take (a key L2 holds no
+        row for, a dead writer's row to repair, a collection with no many-row save) or that L3 refuses or fails
+        answers ``False`` with no epoch counted, and the caller saves the window an epoch at a time, as it
+        always did: a carry is safe repeated.
+
+        :param collection: the collection
+        :ptype collection: BaseCollection[Any]
+        :param window: the epochs, in order
+        :ptype window: Sequence[EpochChange]
+        :param result: the pass's tally
+        :ptype result: SaverPass
+        :return: whether every epoch of the window is done with
+        :rtype: bool
+        """
+        support = collection.l2_first_support
+        # the window's settled epochs from one listing of the marks, not a read an epoch
+        marks = await support.settled_marks()
+        settled: list[tuple[str, str]] = []
+        rows: list[ChangedRow] = []
+        for change in window:
+            incarnation, number = _parts(collection.table_name, change.token)
+            if (incarnation, str(number)) in marks:
+                settled.append((incarnation, str(number)))
+            else:
+                rows.extend(row for row in change.rows if row.l3_pending)
+        try:
+            carried = await support.carry_many_to_l3(rows, batched=bool(self.batched_reads)) if rows else True
+        # prawduct:allow prawduct/broad-except -- the window is saved again an epoch at a time, which meets each failure as it always did
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="an L2-first window could not be saved at once; saving it an epoch at a time",
+                extra={"table": collection.table_name, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            return False
+        if not carried:
+            return False
+        for incarnation, settled_number in settled:
+            result.settled += 1
+            await support.drop_state("settled", incarnation, settled_number)
+        result.saved += len(rows)
+        for _ in rows:
+            _count(_SAVED, collection.table_name)
+        return True
 
     async def _save_epoch(self, collection: BaseCollection[Any], change: EpochChange, result: SaverPass) -> bool:
         """save one epoch, or say the table's pass stops here.
@@ -614,6 +699,10 @@ async def run_l2_first_worker(
     The one claimed worker: take the lease (``KVLease.hold``) and hand it here. A pass that fails is
     logged and the next pass resumes where it stopped.
 
+    The worker is run by an infrastructure identity, never a pod, so its saver reads in batched direct gets
+    unless it was built saying not to (:class:`L3Saver` ``batched_reads``): a connection without the grant
+    is probed once and read a key at a time.
+
     :param held: the lease that makes this process the worker
     :ptype held: HeldLease
     :param saver: the L3 saver
@@ -625,6 +714,8 @@ async def run_l2_first_worker(
     :return: nothing, once the lease is lost
     :rtype: None
     """
+    if getattr(saver, "batched_reads", False) is None:
+        saver.batched_reads = True
     while held.lost_reason is None:
         try:
             await refiller.run_pass()
@@ -665,6 +756,7 @@ class L2FirstSupport:
         id_of_row: Callable[[dict[str, Any]], Any],
         entry_lifetime: Callable[[dict[str, Any]], timedelta | None],
         encode: Callable[[dict[str, Any]], bytes],
+        save_many: Callable[[list[dict[str, Any]]], Awaitable[int]] | None = None,
     ) -> None:
         """capture the collection's operations; no I/O.
 
@@ -696,6 +788,9 @@ class L2FirstSupport:
         :ptype entry_lifetime: Callable[[dict[str, Any]], timedelta | None]
         :param encode: a row as its L2 value
         :ptype encode: Callable[[dict[str, Any]], bytes]
+        :param save_many: the collection's L3 save of many rows in a few statements, as :paramref:`save` writes
+            each; ``None`` for a collection that saves a row at a time
+        :ptype save_many: Callable[[list[dict[str, Any]]], Awaitable[int]] | None
         """
         self._table = table_name
         self._scope = scope_of
@@ -711,6 +806,7 @@ class L2FirstSupport:
         self._id_of_row = id_of_row
         self._entry_lifetime = entry_lifetime
         self._encode = encode
+        self._save_many = save_many
 
     def state_key(self, *parts: str) -> str:
         """the L2 key of one piece of this table's L2-first bookkeeping, under the principal's scope.
@@ -743,6 +839,25 @@ class L2FirstSupport:
             return None
         value: bytes | None = await kv.get(key=self.state_key(*parts))
         return value
+
+    async def settled_marks(self) -> set[tuple[str, str]]:
+        """every epoch of this table its own writer marked settled, as ``(incarnation, count)``: one listing, not a
+        read an epoch.
+
+        :return: the marked epochs
+        :rtype: set[tuple[str, str]]
+        :raises KvError: when L2 cannot be read
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            return set()
+        prefix = self.state_key("settled") + "."
+        marks: set[tuple[str, str]] = set()
+        for key in await kv.list_keys(prefix=prefix):
+            incarnation, _, count = key[len(prefix) :].rpartition(".")
+            if incarnation:
+                marks.add((incarnation, count))
+        return marks
 
     async def write_state(self, value: bytes, *parts: str) -> None:
         """set one piece of this table's L2-first bookkeeping.
@@ -830,6 +945,57 @@ class L2FirstSupport:
         if not await self.complete():
             raise L2LostError(f"{self._table}: L2 holds no row for {entity_id!s} and is not complete")
         await self._delete(entity_id)
+
+    async def carry_many_to_l3(self, rows: Sequence[ChangedRow], *, batched: bool = False) -> bool:
+        """make L3 hold what L2 holds for many committed keys at once, where every one of them L2 holds a row for.
+
+        Each key's L2 value is read (a few at a time), and the rows go to L3 in the collection's many-row save:
+        a few statements, not one a key. Only when the collection has one, and every key's row is held and
+        current: a key L2 holds no row for, or one a dead writer left at its read (:meth:`carry_to_l3`'s
+        repair), is not this path's, and it answers ``False`` having written nothing, for the caller to carry
+        the keys one at a time.
+
+        :param rows: the changed rows epochs named
+        :ptype rows: Sequence[ChangedRow]
+        :param batched: read the rows' L2 values in batched direct gets (:meth:`L3Saver` ``batched_reads``)
+        :ptype batched: bool
+        :return: whether every row was carried
+        :rtype: bool
+        :raises KvError: when L2 cannot be read
+        :raises Exception: whatever L3 raised: a refusal, or a failure to reach it (nothing is known saved)
+        """
+        if self._save_many is None or not rows:
+            return False
+        kv = await self._ensure_kv()
+        if kv is None:
+            return False
+        keys = [self._l2_key(self._id_of_changed(row)) for row in rows]
+        # every key's latest message in a few batched reads, where the bucket answers them; else a few at a time
+        if callable(getattr(type(kv), "get_latest_many", None)):
+            latest_of: dict[str, tuple[bytes | None, int]] = await kv.get_latest_many(keys=keys, batched=batched)
+        else:
+            limit = asyncio.Semaphore(_CARRY_CONCURRENCY)
+
+            async def latest(key: str) -> tuple[str, tuple[bytes | None, int]]:
+                async with limit:
+                    return key, await kv.get_latest(key=key)
+
+            latest_of = dict(await asyncio.gather(*(latest(key) for key in dict.fromkeys(keys))))
+
+        def held(row: ChangedRow, key: str) -> dict[str, Any] | None:
+            raw, latest = latest_of[key]
+            if row.l2_revision is not None and latest == row.l2_revision and raw != row.value:
+                return None
+            decoded = self._decode(raw) if raw is not None else None
+            return decoded if isinstance(decoded, dict) and not self._is_expired(decoded) else None
+
+        found = [held(row, key) for row, key in zip(rows, keys, strict=True)]
+        if any(row is None for row in found):
+            return False
+        # a key named twice is written once, as it stands now
+        latest_by_key = {repr(self._id_of_row(row)): row for row in found if row is not None}
+        await self._save_many(list(latest_by_key.values()))
+        return True
 
     async def refill_from_l3(self, *, page_size: int) -> int:
         """put every row L3 holds into L2, where L2 holds nothing at all for its key.

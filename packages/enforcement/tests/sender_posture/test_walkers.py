@@ -417,3 +417,55 @@ def test_the_site_names_its_enclosing_function(tmp_path: Path) -> None:
     config = _config(tmp_path, {"src/pkg/door.py": source})
     (site,) = find_subscribe_sites(config)
     assert site.function == "Door.start"
+
+
+_REQUEST_REPLY = (
+    "async def ask(nc, request):\n"
+    "    inbox = nc.new_inbox()\n"
+    "    # sender-posture: request-reply\n"
+    "    subscription = await nc.subscribe(inbox, cb=print)\n"
+    "    try:\n"
+    "        await nc.publish('$JS.API.DIRECT.GET.KV_b', request, reply=inbox)\n"
+    "    finally:\n"
+    "        await subscription.unsubscribe()\n"
+)
+
+
+def test_request_reply_holds_on_a_fresh_inbox_for_the_request_it_sent(tmp_path: Path) -> None:
+    """a subscribe on a new_inbox() name, a publish replying to it, the subscription ended: the claim holds."""
+    config = _config(tmp_path, {"src/pkg/ask.py": _REQUEST_REPLY})
+    assert sender_posture_findings(config) == []
+
+
+def test_request_reply_is_refused_on_a_fixed_subject(tmp_path: Path) -> None:
+    """a fixed or shared subject cannot claim to be a request's own reply inbox."""
+    source = _REQUEST_REPLY.replace("nc.subscribe(inbox,", "nc.subscribe('svc.replies',")
+    findings = sender_posture_findings(_config(tmp_path, {"src/pkg/ask.py": source}))
+    assert len(findings) == 1
+    assert "fixed or shared subject" in findings[0]
+
+
+def test_request_reply_is_refused_on_an_inbox_not_made_here(tmp_path: Path) -> None:
+    """an inbox the function did not make itself may be shared; the claim needs new_inbox() beside it."""
+    source = _REQUEST_REPLY.replace("inbox = nc.new_inbox()", "inbox = nc.shared_inbox")
+    findings = sender_posture_findings(_config(tmp_path, {"src/pkg/ask.py": source}))
+    assert len(findings) == 1
+    assert "not bound from new_inbox()" in findings[0]
+
+
+def test_request_reply_is_refused_without_a_request_replying_to_it(tmp_path: Path) -> None:
+    """a fresh inbox that no request in the function names as its reply receives nothing it asked for."""
+    source = _REQUEST_REPLY.replace(", reply=inbox)", ")")
+    findings = sender_posture_findings(_config(tmp_path, {"src/pkg/ask.py": source}))
+    assert len(findings) == 1
+    assert "sends no request with reply=inbox" in findings[0]
+
+
+def test_request_reply_is_refused_when_the_subscription_outlives_the_request(tmp_path: Path) -> None:
+    """a reply inbox left subscribed keeps receiving after its request; it must be ended or bounded."""
+    source = _REQUEST_REPLY.replace("        await subscription.unsubscribe()\n", "        pass\n")
+    findings = sender_posture_findings(_config(tmp_path, {"src/pkg/ask.py": source}))
+    assert len(findings) == 1
+    assert "leaves its subscription open" in findings[0]
+    bounded = source.replace("cb=print)", "cb=print, max_msgs=1)")
+    assert sender_posture_findings(_config(tmp_path / "bounded", {"src/pkg/ask.py": bounded})) == []

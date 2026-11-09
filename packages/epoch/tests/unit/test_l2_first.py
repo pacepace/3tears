@@ -653,3 +653,63 @@ class TestEveryOwnWriteNamesItsTenant:
         with pytest.raises(SchemaTenantUnknownError):
             await _save(collection, "p1", "1")
         assert await _keys(bus, _OWNED_PLAIN) == [], "nothing went on _all"
+
+
+class _ManyAtOnce(_Feed):
+    """the feed, with a many-row L3 save as a schema-backed collection has: each call recorded."""
+
+    calls: ClassVar[list[list[str]]] = []
+
+    saves_many_to_store = True
+    #: when set, the many-row save fails as a unique violation would
+    refusing: ClassVar[bool] = False
+
+    async def save_many_to_store(self, rows: list[dict[str, Any]]) -> int:
+        if type(self).refusing:
+            raise _UniqueViolation("duplicate key value violates unique constraint")
+        type(self).calls.append(sorted(str(row["id"]) for row in rows))
+        for row in rows:
+            self._l3.rows[str(row["id"])] = dict(row)
+            self._l3.writes += 1
+        return len(rows)
+
+
+class TestABacklogIsSavedManyRowsAtOnce:
+    async def _fleet(self) -> _Fleet:
+        fleet = _Fleet(FakeNatsClient())
+        fleet.feeding = _ManyAtOnce(fleet.writer.registry, fleet.feed_l3)
+        fleet.feed_work = _ManyAtOnce(fleet.worker.registry, fleet.feed_l3)
+        _ManyAtOnce.calls = []
+        await fleet.start()
+        return fleet
+
+    async def test_a_backlog_of_epochs_goes_to_l3_in_one_save_holding_l2s_newest_rows(self) -> None:
+        """Flips if a backlog is saved a row a statement where the collection saves many at once, or saves other
+        than L2's newest value of each key."""
+        fleet = await self._fleet()
+        for n in range(40):
+            await _save(fleet.feeding, f"precinct-{n % 10}", str(n))
+
+        result = await fleet.saver.run_pass()
+
+        assert _ManyAtOnce.calls == [sorted(f"precinct-{n}" for n in range(10))]
+        assert result.saved == 40
+        assert {key: row["votes"] for key, row in fleet.feed_l3.rows.items()} == {
+            f"precinct-{n}": str(30 + n) for n in range(10)
+        }
+        assert (await fleet.saver.run_pass()).saved == 0, "the position moved past every epoch saved"
+
+    async def test_a_window_the_many_row_save_refuses_is_saved_an_epoch_at_a_time(self) -> None:
+        """Flips if a failure of the many-row save loses the window, rather than saving it as an epoch at a time."""
+        fleet = await self._fleet()
+        for n in range(5):
+            await _save(fleet.feeding, f"precinct-{n}", str(n))
+
+        _ManyAtOnce.refusing = True
+        try:
+            result = await fleet.saver.run_pass()
+        finally:
+            _ManyAtOnce.refusing = False
+
+        assert result.saved == 5
+        assert sorted(fleet.feed_l3.rows) == [f"precinct-{n}" for n in range(5)]

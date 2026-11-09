@@ -202,6 +202,97 @@ def _region(statement: ast.stmt, call: ast.Call, lines: list[str]) -> range:
     return range(start, end + 1)
 
 
+_FUNCTIONS: Final[tuple[type[ast.AST], ...]] = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _enclosing_function(tree: ast.Module, call: ast.Call) -> ast.AST | None:
+    """
+    answer the innermost function whose body holds ``call``.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :param call: the call
+    :ptype call: ast.Call
+    :return: the function, or none at module level
+    :rtype: ast.AST | None
+    """
+    found: ast.AST | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, _FUNCTIONS) and any(child is call for child in ast.walk(node)):
+            if found is None or node.lineno >= found.lineno:  # type: ignore[attr-defined]
+                found = node
+    return found
+
+
+def _request_reply_problems(call: ast.Call, scope: ast.AST | None) -> list[str]:
+    """
+    answer why a ``request-reply`` claim at ``call`` does not hold; none when it does.
+
+    the claim holds when the subscribed subject is a name bound from ``new_inbox()`` in the enclosing
+    function, a call there sends a request naming that name as ``reply=``, and the subscription ends with
+    the request: the name the subscribe is bound to has its ``unsubscribe()`` called in the function, or
+    the subscribe passes ``max_msgs=``.
+
+    :param call: the subscribe call
+    :ptype call: ast.Call
+    :param scope: the function enclosing it
+    :ptype scope: ast.AST | None
+    :return: each problem, as text
+    :rtype: list[str]
+    """
+    if scope is None:
+        return ["is claimed outside a function, so no request is sent beside it"]
+    subject: ast.expr | None = call.args[0] if call.args else None
+    for keyword in call.keywords:
+        if keyword.arg == "subject":
+            subject = keyword.value
+    if not isinstance(subject, ast.Name):
+        return ["subscribes a fixed or shared subject; only a fresh inbox named in the function can claim it"]
+    inbox = subject.id
+    nodes = list(ast.walk(scope))
+    fresh = any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == inbox for target in node.targets)
+        and isinstance(node.value, ast.Call)
+        and _callee_name(node.value) == "new_inbox"
+        for node in nodes
+    )
+    problems: list[str] = []
+    if not fresh:
+        problems.append(f"subscribes {inbox!r}, which is not bound from new_inbox() in the function")
+    sent = any(
+        isinstance(node, ast.Call)
+        and node is not call
+        and any(
+            keyword.arg == "reply" and isinstance(keyword.value, ast.Name) and keyword.value.id == inbox
+            for keyword in node.keywords
+        )
+        for node in nodes
+    )
+    if not sent:
+        problems.append(f"sends no request with reply={inbox} in the function")
+    bounded = any(keyword.arg == "max_msgs" for keyword in call.keywords)
+    if not bounded:
+        held = {
+            target.id
+            for node in nodes
+            if isinstance(node, ast.Assign) and any(child is call for child in ast.walk(node.value))
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        bounded = any(
+            isinstance(node, ast.Call)
+            and _callee_name(node) == "unsubscribe"
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in held
+            for node in nodes
+        )
+    if not bounded:
+        problems.append("leaves its subscription open past the request (no unsubscribe() of it, no max_msgs=)")
+    return problems
+
+
 def _site_from_markers(
     relative: str,
     call: ast.Call,
@@ -210,6 +301,7 @@ def _site_from_markers(
     markers: list[_Marker],
     config: SenderPostureConfig,
     findings: list[str],
+    scope: ast.AST | None = None,
 ) -> SubscribeSite:
     """
     judge one site against the markers in its region.
@@ -228,6 +320,8 @@ def _site_from_markers(
     :ptype config: SenderPostureConfig
     :param findings: accumulator, mutated in place
     :ptype findings: list[str]
+    :param scope: the function enclosing the call, which a ``request-reply`` claim is checked against
+    :ptype scope: ast.AST | None
     :return: the site, with its posture when one valid marker declares it
     :rtype: SubscribeSite
     """
@@ -251,6 +345,8 @@ def _site_from_markers(
                 f"{where}: unauthenticated must name the open audit row it is tracked under "
                 "('# sender-posture: unauthenticated open <ROW>')"
             )
+        if posture == "request-reply":
+            findings.extend(f"{where}: request-reply {problem}" for problem in _request_reply_problems(call, scope))
         if posture == "primitive" and f"{relative}::{function}" not in config.primitive_functions:
             findings.append(
                 f"{where}: primitive is allowed only in the configured primitive functions, and "
@@ -300,7 +396,11 @@ def _scan_module(path: Path, config: SenderPostureConfig, scan: _Scan) -> None:
         region = _region(statement, call, lines)
         in_region = [markers[line] for line in region if line in markers]
         claimed.update(marker.line for marker in in_region)
-        scan.sites.append(_site_from_markers(relative, call, callee, function, in_region, config, scan.findings))
+        scan.sites.append(
+            _site_from_markers(
+                relative, call, callee, function, in_region, config, scan.findings, _enclosing_function(tree, call)
+            )
+        )
     for line in sorted(set(markers) - claimed):
         scan.findings.append(f"{relative}:{line}: sender-posture marker sits on no subscribe site; remove it")
 
