@@ -1275,6 +1275,54 @@ class TestQueryRouting:
             await driver.execute("INSERT INTO t VALUES ($1)", 1)
             conn.commit.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_execute_answers_the_cursors_rowcount(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """Flips if a statement's reported rowcount is not what :meth:`execute` answers."""
+        conn = _build_mock_connection()
+        conn.recorded_cursor.rowcount = 42
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            assert await driver.execute("INSERT INTO t SELECT * FROM u") == 42
+
+    @pytest.mark.asyncio
+    async def test_a_ctas_with_no_rowcount_reads_stl_insert_for_the_sessions_last_query(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """Flips if a CREATE TABLE AS whose driver reports no rowcount (-1) is answered without Redshift's own
+        record of it, or that record is read other than as the session's last query, before the commit."""
+        conn = _build_mock_connection()
+        cursor = conn.recorded_cursor
+        cursor.rowcount = -1
+        cursor.fetchone.return_value = (1234,)
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            rows = await driver.execute("CREATE TABLE s.t AS SELECT * FROM s.u")
+        assert rows == 1234
+        statements = [c.args[0] for c in cursor.execute.call_args_list if not _is_open_setup_stmt(c.args[0])]
+        assert statements[-1] == "SELECT sum(rows) FROM stl_insert WHERE query = pg_last_query_id()"
+
+    @pytest.mark.asyncio
+    async def test_a_ddl_statement_answers_none_and_reads_no_log(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """Flips if a statement that writes no rows is answered a count, or makes a second round trip."""
+        conn = _build_mock_connection()
+        cursor = conn.recorded_cursor
+        cursor.rowcount = -1
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            assert await driver.execute("GRANT SELECT ON t TO g") is None
+        assert not any("stl_insert" in c.args[0] for c in cursor.execute.call_args_list)
+
 
 class _ScriptedFingerprintCursor:
     """the answers a fingerprint's cursor gives, by statement: the boolean columns, then the digest rows.
