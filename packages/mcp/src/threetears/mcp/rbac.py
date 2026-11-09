@@ -215,6 +215,32 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             return False
         return await self.delete(grant_id)
 
+    async def list_grants_page(self, *, after: UUID | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """one page of the grant rows by ``grant_id``, after ``after``: an operator's listing, never the whole table.
+
+        :param after: the ``grant_id`` the page before ended at; ``None`` for the first page
+        :ptype after: UUID | None
+        :param limit: the most rows the page holds
+        :ptype limit: int
+        :return: dict rows with keys ``(grant_id, principal_type, principal_id, tool_name, permission,
+            date_created)``, by ``grant_id``
+        :rtype: list[dict[str, Any]]
+        :raises RuntimeError: when the L3 pool is not configured on this collection's registry
+        """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "McpToolGrantCollection L3 pool is not configured; "
+                "wire CollectionRegistry.configure(l3_pool=...) before "
+                "calling list_grants_page",
+            )
+        rows = await self.l3_pool.fetch(
+            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
+            "WHERE grant_id > $1 ORDER BY grant_id LIMIT $2",
+            after or UUID(int=0),
+            limit,
+        )
+        return [dict(row) for row in rows]
+
     async def load_all_grants(self) -> list[dict[str, Any]]:
         """return every grant row as a dict suitable for cache rebuild.
 
