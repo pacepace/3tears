@@ -128,3 +128,4 @@ packages/nats/src/threetears/nats/subject_permissions.py:EpochChangeGrant  # blu
 packages/core/src/threetears/core/collections/copy_follower.py:CopyFollower  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/report_data.py keeps the report tables whole by it (chore/platform-0.95.0)
 packages/core/src/threetears/core/collections/copy_follower.py:FollowerPhase  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/refresh_service.py reports the copy's phase in its status
 packages/core/src/threetears/core/collections/copy_follower.py:FollowerStatus  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/refresh_service.py reads the copy's status
+packages/core/src/threetears/core/collections/write_marks.py:tables_switched_by_trigger  # bluelabsio/14-eng-ai-bot: src/aibots/hub/broker/proxy.py advances a tool pod's own tables switched on by their trigger (feat/generation-by-trigger)

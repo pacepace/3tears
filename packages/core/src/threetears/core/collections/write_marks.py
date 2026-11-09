@@ -67,7 +67,7 @@ from threetears.core.ddl.write_marks import (
     write_marks_ddl,
 )
 from threetears.core.sql_fragments import quote_identifier
-from threetears.core.tenancy import schema_tenant
+from threetears.core.tenancy import TENANCY_UNDECLARED, schema_tenant
 
 __all__ = [
     "INSTALL_LOCK_POLICY",
@@ -81,6 +81,7 @@ __all__ = [
     "install_write_mark_triggers",
     "observe_write_marks",
     "tables_missing_the_trigger",
+    "tables_switched_by_trigger",
     "write_mark_trigger_sql",
     "write_marks_ddl",
 ]
@@ -183,6 +184,40 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE g.tgname = $1
 ORDER BY n.nspname, c.relname
 """
+
+
+_SWITCHED_SQL: Final[str] = """
+SELECT c.relname AS table_name
+FROM pg_trigger g
+JOIN pg_class c ON c.oid = g.tgrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE g.tgname = $1 AND n.nspname::text = $2 AND c.relname::text = ANY($3::text[])
+"""
+
+
+async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
+    """the named tables of ``schema`` that carry the write-mark trigger: switched on by the database itself.
+
+    A table is switched on by its declaration (a collection class with ``write_generation``), and the migration that
+    creates it gives it the trigger (:meth:`~threetears.core.data.migrations.registry.MigrationRegistry.mark_write_generation`).
+    A writer that imports no class for the table -- the hub's broker, committing a tool pod's write to the pod's own
+    tables -- reads the switch here instead: the trigger is installed under the database's DDL lock, so a pod cannot
+    claim a table is switched on without it being so. A catalogue read: no DDL, no lock.
+
+    :param pool: the L3 pool, or one connection
+    :ptype pool: SqlConnection
+    :param schema: the schema the tables live in
+    :ptype schema: str
+    :param tables: the table names
+    :ptype tables: Iterable[str]
+    :return: those that carry the trigger
+    :rtype: frozenset[str]
+    """
+    names = sorted(set(tables))
+    if not names:
+        return frozenset()
+    rows = await pool.fetch(_SWITCHED_SQL, WRITE_MARK_TRIGGER, schema, names)
+    return frozenset(str(row["table_name"]) for row in rows)
 
 
 async def tables_missing_the_trigger(pool: SqlConnection, tables: Iterable[str]) -> list[tuple[str, str]]:
@@ -547,14 +582,21 @@ class WriteMarkReconciler:
         :return: the tenants, ``None`` for ``_all``
         :rtype: tuple[str | None, ...]
         """
-        if tenancy_of_table(table).kind != "schema":
+        kind = tenancy_of_table(table).kind
+        if kind not in ("schema", TENANCY_UNDECLARED.kind):
             return (None,)
         rows = await self._pool.fetch(
             "SELECT table_schema::text AS table_schema FROM information_schema.tables WHERE table_name = $1 "
             "ORDER BY table_schema",
             table,
         )
-        return tuple(schema_tenant(str(row["table_schema"])) for row in rows) or (None,)
+        schemas = [str(row["table_schema"]) for row in rows]
+        if kind != "schema":
+            # a table no class here declares, switched on by its trigger alone: a tool pod's own table, which lives
+            # in the pod's schema and whose pods read it there. One in the platform schema stays on _all
+            if not schemas or self._marks_schema in schemas:
+                return (None,)
+        return tuple(schema_tenant(schema) for schema in schemas) or (None,)
 
     async def _advance(self, page: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
         """advance, once each, every table the page marks.

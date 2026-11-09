@@ -83,6 +83,9 @@ class _Queue:
                 for schema, table in self.missing
                 if named is None or table in named
             ]
+        if "information_schema.tables" in query:
+            # no schema holds these tables: an undeclared table's rowless record stays on _all
+            return []
         if "current_ring" in query:
             # no change-note ring in this database: a reconciled table is advanced whole, said and counted
             return []

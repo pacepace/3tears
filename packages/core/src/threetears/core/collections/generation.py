@@ -909,6 +909,7 @@ async def advance_for_write(
     *,
     schema: str | None,
     keys_unknown: bool = False,
+    tenancy: Tenancy | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -927,6 +928,11 @@ async def advance_for_write(
     :ptype schema: str | None
     :param keys_unknown: the writer named no rows and did not change the whole table; requires ``rows=None``
     :ptype keys_unknown: bool
+    :param tenancy: the table's tenancy, for a writer that knows it otherwise than by a class it imported: a table
+        switched on by its trigger alone, which no class here declares, lives in the schema its write ran in
+        (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`), so it is
+        :data:`~threetears.core.tenancy.TENANT_BY_SCHEMA`. ``None`` reads the classes (:func:`tenancy_of_table`)
+    :ptype tenancy: Tenancy | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -934,7 +940,7 @@ async def advance_for_write(
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
     :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
-    tenancy = tenancy_of_table(table_name)
+    tenancy = tenancy if tenancy is not None else tenancy_of_table(table_name)
     owner = schema_tenant(schema) if tenancy.kind == "schema" and schema else None
     named = rows_with_tenants(tenancy, rows) if rows else rows
     if tenancy.kind == "schema" and owner is None and records_changes(source):
