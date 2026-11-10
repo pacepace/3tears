@@ -17,9 +17,6 @@
 # bound to a name, and a property read through self. Those are sites the tree held already, newly seen; it shrinks
 # from here as before.
 threetears/evals/actions/analyst.py | <module> | group_thousands() | 1
-threetears/evals/analysis/agreement.py | _criterion_words | format_number() | 4
-threetears/evals/analysis/agreement.py | tier_sentence | _criterion_words() | 8
-threetears/evals/analysis/agreement.py | tier_sentence | format_number() | 3
 threetears/evals/analysis/aspects.py | _unread_without_control | format_number() | 1
 threetears/evals/analysis/aspects.py | _view | _unread_without_control() | 1
 threetears/evals/analysis/bar_proposals.py | propose_bars | f-string spec | 1
@@ -93,8 +90,6 @@ threetears/evals/analysis/report/blocks.py | TableCell.figure | spell_at() | 1
 threetears/evals/analysis/report/blocks.py | TableCell.text | figure() | 1
 threetears/evals/analysis/report/blocks.py | interval_text | number_in() | 2
 threetears/evals/analysis/report/blocks.py | interval_value_text | number_in() | 1
-threetears/evals/analysis/report/build.py | _judge_sentences | tier_sentence() | 1
-threetears/evals/analysis/report/build.py | _method_blocks | _judge_sentences() | 1
 threetears/evals/analysis/report/campaign/answer_blocks.py | _floor_words | floor_statement() | 1
 threetears/evals/analysis/report/campaign/answer_blocks.py | call_blocks | _floor_words() | 2
 threetears/evals/analysis/report/campaign/provenance.py | _criteria_table | _criterion_words() | 1

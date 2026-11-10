@@ -17,7 +17,8 @@ mark (an interval's line) under 3:1 (WCAG 1.4.3 and 1.4.11), computed from the c
 chart's text against the mark under it where one is, else the nearest painted background. A font size off the
 page's five-step scale (12, 14, 16, 20 and 28 px). A table drawn in a box or under a filled header row, or with no
 rule under its header: a table is ruled with hairlines, never boxed or tinted. An interval in a table's cell ("0
-to 43%") broken across lines. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440
+to 43%", set in its .iv span) or a cell of figures (.fig) broken across lines, named with its table's caption,
+heading or name. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440
 and a 1024 px window). Writes a full-page PNG per run. Exit code 1 when any check fails.
 """
 
@@ -182,7 +183,9 @@ PROBE = r"""async () => {
     return ground(t.ownerSVGElement || t.parentElement);
   };
   const said = e => `${e.tagName.toLowerCase()}${e.classList.length ? '.' + [...e.classList].join('.') : ''} "${(e.textContent||'').trim().slice(0,24)}"`;
-  const SCALE = [12, 14, 16, 20, 28], faint = [], sizes = [], texts = new Set();
+  // faint text and faint marks are listed apart, each capped on its own, so a faint mark is named however much text
+  // is faint
+  const SCALE = [12, 14, 16, 20, 28], faint = [], marks = [], sizes = [], texts = new Set();
   const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node = walk.nextNode(); node; node = walk.nextNode()) {
     const e = node.parentElement;
@@ -206,26 +209,35 @@ PROBE = r"""async () => {
     const s = getComputedStyle(m), ink = rgba(s.stroke);
     if (!ink || parseFloat(s.strokeWidth) < 2) continue;
     const g = ground(m.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(m)], g), g);
-    if (r < 3) faint.push(`a mark in ${chartName(m.ownerSVGElement)} ${r.toFixed(2)}:1`);
+    if (r < 3) marks.push(`a mark in ${chartName(m.ownerSVGElement)} ${r.toFixed(2)}:1`);
   }
   for (const a of document.querySelectorAll('svg .axis')) {
     if (!drawn(a.ownerSVGElement)) continue;
     const s = getComputedStyle(a), ink = rgba(s.stroke);
     if (!ink) continue;
     const g = ground(a.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(a)], g), g);
-    if (r < 3) faint.push(`an axis in ${chartName(a.ownerSVGElement)} ${r.toFixed(2)}:1`);
+    if (r < 3) marks.push(`an axis in ${chartName(a.ownerSVGElement)} ${r.toFixed(2)}:1`);
   }
   window.scrollTo(0, 0);
   // an interval in a cell ("0 to 43%", "$25 to $34") holds its ends and the word between them on one line: the
-  // package's page sets them in a span (.iv), a unit word after it free to take the next line
+  // package's page sets them in a span (.iv), found from the table's columns rather than the cell's text, a unit word
+  // after it free to take the next line; a cell of a column of figures (.fig) holds its whole line. Each cell is
+  // measured once (a .fig cell whole, its .iv span with it) and named with its table (tableName).
+  // a table named by what the page heads it with: its caption, its block's heading or summary, its block's name
+  // (data-table), else its place among the page's tables
+  const frames = [...document.querySelectorAll('.tbl')];
+  const tableName = f => {
+    const block = f.closest('[data-table], figure, section'), said = e => (e?.textContent || '').trim().slice(0, 40);
+    const head = said(f.querySelector('caption')) || said(block?.querySelector(':scope > h3, :scope > h4, :scope > summary, :scope > figcaption'));
+    return head ? `table "${head}"` : block?.dataset?.table ? `table ${block.dataset.table}` : `table ${frames.indexOf(f) + 1}`;
+  };
   const wrapped = [];
-  for (const cell of document.querySelectorAll('.tbl td')) {
-    const held = cell.querySelector('.iv') || cell, text = (held.textContent || '').trim();
-    const end = '[+\\-\u2212]?\\$?\\d[\\d.,]*[%\u00d7k]?';
-    if (text.length > 32 || !new RegExp(`^${end} to ${end}( [a-z%]+)?$`).test(text) || !drawn(cell)) continue;
+  for (const held of document.querySelectorAll('.tbl td:not(.fig) .iv, .tbl td.fig')) {
+    const cell = held.closest('td');
+    if (!drawn(cell)) continue;
     const range = document.createRange(); range.selectNodeContents(held);
     const tops = new Set([...range.getClientRects()].filter(r => r.width).map(r => Math.round(r.top)));
-    if (tops.size > 1) wrapped.push(`"${text}" breaks across ${tops.size} lines`);
+    if (tops.size > 1) wrapped.push(`"${(held.textContent || '').trim().slice(0, 32)}" in ${tableName(held.closest('.tbl'))} breaks across ${tops.size} lines`);
   }
   // a table is ruled, never boxed: no border on its frame, no fill behind its header row, a rule under it
   const tables = [];
@@ -244,7 +256,7 @@ PROBE = r"""async () => {
           crossed: crossed.slice(0, 8), wrapped: wrapped.slice(0, 8),
           unpinned: unpinned.slice(0, 8), crushed: crushed.slice(0, 8), under: under.slice(0, 8),
           uncued: uncued.slice(0, 8), measures: widths.size > 1 ? measures : [],
-          contrast: faint.slice(0, 8), sizes: sizes.slice(0, 8), tables: tables.slice(0, 8)};
+          contrast: [...faint.slice(0, 8), ...marks.slice(0, 8)], sizes: sizes.slice(0, 8), tables: tables.slice(0, 8)};
 }"""
 
 

@@ -73,6 +73,7 @@ from threetears.evals.analysis.report.parts.charting import money_words, stat_va
 from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.tables import pass_rate_cell
+from threetears.evals.analysis.report.words import given_name
 from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
@@ -351,7 +352,7 @@ def _arms_by_aspect_and_measure(
 
     rows = []
     for aspect, arm in places:
-        cells = {"arm": _chip(look, arm), "aspect": TableCell(value=aspect.name or aspect.id)}
+        cells = {"arm": _chip(look, arm), "aspect": TableCell(value=given_name(aspect.id, aspect.name))}
         if "pass_rate" in keys:
             cells["pass_rate"] = passing[aspect.id, arm]
         for key in judged:
@@ -519,7 +520,8 @@ def _strata(report_input: ReportInput, look: PageLook, forms: PageForms) -> list
     tables = []
     if report_input.strata:
         strata = [
-            (look.reader("stratum", stratum.id), stratum.n_cases, stratum.per_arm) for stratum in report_input.strata
+            (look.reader("stratum", stratum.id, aspect=stratum.aspect), stratum.n_cases, stratum.per_arm)
+            for stratum in report_input.strata
         ]
         tables.append(_slices_table("strata", FULL_RESULTS_HEADERS["stratum"], strata, report_input, look, forms))
     if report_input.tasks:

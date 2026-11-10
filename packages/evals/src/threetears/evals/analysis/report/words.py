@@ -286,7 +286,23 @@ def judged_heading(name: str) -> str:
     :return: The name.
     :rtype: str
     """
-    return f"{measure_name(name)} (judged)"
+    return f"{judged_name(name)} (judged)"
+
+
+def judged_name(dimension: str, declared: str | None = None) -> str:
+    """A judged dimension's name, the one rule every surface names it by: the label its input declares for it
+    (``Judged.label``) wherever one is declared, on a chart, a table, a figure key and in prose alike; else its name as
+    :func:`~threetears.evals.analysis.style.measure_name` spells it (``reply stays on topic``). Unmarked: a heading adds
+    the judged mark (:func:`judged_heading`), and a label its capital (:func:`label_case`).
+
+    :param dimension: The dimension, as the rubric names it.
+    :ptype dimension: str
+    :param declared: The label its input declares, or None for none.
+    :ptype declared: str | None
+    :return: The name.
+    :rtype: str
+    """
+    return declared or measure_name(dimension)
 
 
 def _judged_label(heading: str) -> str:
@@ -323,23 +339,45 @@ def label_case(text: str) -> str:
 _JUDGED_HEADING = re.compile(r".+ \(judged(?:, [^()]+)?\)")
 
 
+#: The reading a table by stratum opens each arm with: how many cases and trials each column rests on. A program reads
+#: the row by it (``reading == "cases"``); a page prints it as the label it is (:func:`table_label`).
+CASES_READING = "cases"
+
+
 def table_label(text: str) -> str:
     """A table cell's words as a page prints them (the one rule every serializer's table applies, at render time): a
-    judged dimension's heading starting with a capital (:func:`_judged_label`), so it reads as the measure rows around
-    it do; any other words as written. The cell keeps the heading as its value, which a program reads and looks a row
-    up by.
+    judged dimension's heading (:func:`_judged_label`), and the cases reading a table by stratum opens each arm with
+    (:data:`CASES_READING`), starting with a capital, so each reads as the measure rows around it do; any other words
+    as written. The cell keeps its words as its value, which a program reads and looks a row up by.
 
     :param text: The cell's words.
     :ptype text: str
     :return: The words printed.
     :rtype: str
     """
+    if text == CASES_READING:
+        return label_case(text)
     return _judged_label(text) if _JUDGED_HEADING.fullmatch(text) else text
 
 
+def given_name(identifier: str, declared: str | None = None) -> str:
+    """What a host may name (an aspect, a stratum, a task) as every surface prints it, the one rule for each: its
+    declared display name, else its id with its underscores and dots as spaces (``edge case``). The printed name only:
+    a program reads each by its id.
+
+    :param identifier: The id.
+    :ptype identifier: str
+    :param declared: Its declared display name, or None for none.
+    :ptype declared: str | None
+    :return: The name.
+    :rtype: str
+    """
+    return declared or humanize("dimension", identifier)
+
+
 def stratum_name(stratum: str, declared: str | None = None) -> str:
-    """A stratum as every surface prints it: its declared display name, else its id with its underscores and dots as
-    spaces (``edge case``). The printed name only: a program reads a stratum by its id.
+    """A stratum as every surface prints it (:func:`given_name`). Where other strata sit beside it, two that would
+    print alike each print as their id (:func:`stratum_names`).
 
     :param stratum: The stratum's id.
     :ptype stratum: str
@@ -348,7 +386,21 @@ def stratum_name(stratum: str, declared: str | None = None) -> str:
     :return: The name.
     :rtype: str
     """
-    return declared or humanize("dimension", stratum)
+    return given_name(stratum, declared)
+
+
+def aspect_stratum_key(aspect: str, stratum: str) -> str:
+    """The key a stratum held on more than one aspect, named differently there, is named by on its aspect: the stem its
+    figure keys take there (``aspects.<aspect>.strata.<id>``). A stratum every aspect names alike is named by its id.
+
+    :param aspect: The aspect's id.
+    :ptype aspect: str
+    :param stratum: The stratum's id.
+    :ptype stratum: str
+    :return: The key.
+    :rtype: str
+    """
+    return f"aspects.{aspect}.strata.{stratum}"
 
 
 def stratum_names(strata: Iterable[str], declared: Mapping[str, str | None] | None = None) -> dict[str, str]:
@@ -740,6 +792,7 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "BAR_DECISION_WORDS",
+    "CASES_READING",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "ENGINE_WORDS",
@@ -762,7 +815,10 @@ __all__ = [
     "guardrail_words",
     "positions",
     "PASS_RATE",
+    "aspect_stratum_key",
+    "given_name",
     "judged_heading",
+    "judged_name",
     "label_case",
     "table_label",
     "stratum_name",

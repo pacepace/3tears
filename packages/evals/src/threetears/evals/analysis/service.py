@@ -42,6 +42,7 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import (
+    IN_THE_WRITTEN_REPORT,
     analysis_campaign_bundle,
     analysis_writer,
     build_code_only_report_in_forms,
@@ -1044,6 +1045,7 @@ def _campaign_page(
     unread_line: str = NO_LONGER_READS,
     folds_alone: bool = False,
     lead: Sequence[ReportBlock] | None = None,
+    writer: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign bundle out as code's page for the campaign: code's readings, where its report is, the call.
 
@@ -1077,6 +1079,9 @@ def _campaign_page(
     :param lead: The page's answer where its caller states its own, in place of code's lead
         (:func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report`, ``lead``); None for code's.
     :ptype lead: Sequence[ReportBlock] | None
+    :param writer: What the folds' methods name as the analysis where no stored analysis is given: a written
+        report's evidence record names the report it sits in (``IN_THE_WRITTEN_REPORT``); None says none was written.
+    :ptype writer: str | None
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1096,7 +1101,7 @@ def _campaign_page(
     readings = bundle.readings.relabelled(printed)
     labels = readings.arm_labels()
     declared = declared_arm_names(bundle.arms)
-    writer = analysis_writer(analysis) if analysis is not None else None
+    writer = analysis_writer(analysis) if analysis is not None else writer
     checked = fingerprints or {}
     # Each aspect's graders' order, which its verdict line leads on the first of, as the campaign's lead does.
     orders = {
@@ -1421,7 +1426,12 @@ def _doc_page(
         declared = _with_declaration(campaign, bundle.declaration)
         # The document's page drops the campaign's own blocks, so each fold keeps what only those would state.
         page = _campaign_page(
-            declared, bundle, assembled_at=snapshot.bundle_assembled_at, trials=trials, folds_alone=True
+            declared,
+            bundle,
+            assembled_at=snapshot.bundle_assembled_at,
+            trials=trials,
+            folds_alone=True,
+            writer=IN_THE_WRITTEN_REPORT,
         )
     except RefusedInput as unread:
         if analysis_id is None:

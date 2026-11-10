@@ -62,7 +62,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, computed_field, model_validator
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
@@ -466,6 +466,9 @@ class CaseResult(BaseModel):
     missed_because: list[str] = []
     cost_usd: float | None = None
     state: TrialState
+    #: The stratum's name among the strata of the summary that handed the result out (:meth:`EvalSummary.results`),
+    #: where two of its ids would print alike and so each prints as its id; None prints the stratum by its own name.
+    _stratum_printed: str | None = PrivateAttr(default=None)
 
     @property
     def missed(self) -> bool:
@@ -577,8 +580,9 @@ class CaseResult(BaseModel):
         :return: The text, without a trailing newline.
         :rtype: str
         """
-        # The stratum by the name every surface prints for it; :attr:`stratum` keeps its id.
-        kind = "" if self.stratum is None else f"{stratum_name(self.stratum)}, "
+        # The stratum by the name every surface prints for it, among its summary's strata where a summary handed it
+        # out; :attr:`stratum` keeps its id.
+        kind = "" if self.stratum is None else f"{self._stratum_printed or stratum_name(self.stratum)}, "
         head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
@@ -890,7 +894,15 @@ class EvalSummary(BaseModel):
                 f"this summary of run {self.run_id} carries no per-case results: it was summarised without its "
                 "cases, as the CLI and run_get summarise a run; read them with threetears.evals.run.list_results"
             )
-        return list(self.case_results)
+        # Each result names its stratum as the summary's stratum lines do (:func:`stratum_names`): two ids that would
+        # print alike each print as their id there, so a result's line never reads one stratum where there are two.
+        printed = stratum_names(stratum.stratum for stratum in self.strata if stratum.stratum is not None)
+        return [
+            result.model_copy(update={"_stratum_printed": printed.get(result.stratum)})
+            if result.stratum is not None
+            else result.model_copy()
+            for result in self.case_results
+        ]
 
     def misses(self) -> list[CaseResult]:
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).

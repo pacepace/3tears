@@ -152,7 +152,7 @@ def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> No
 
 def test_every_outcome_count_is_in_the_chart_s_table() -> None:
     headers, rows = _bar_chart().values_table()
-    assert headers == ["Arm", "ran", "passed", "failed: check", "lost: judge truncated", "lost: setup fault"]
+    assert headers == ["Arm", "Ran", "Passed", "Failed: check", "Lost: judge truncated", "Lost: setup fault"]
     assert rows == [["model=a (control)", "12", "6", "2", "3", "1"], ["model=b", "12", "12", "0", "0", "0"]]
 
 

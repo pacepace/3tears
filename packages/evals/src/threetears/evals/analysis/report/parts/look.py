@@ -66,6 +66,7 @@ from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.report.words import aspect_stratum_key
 
 if TYPE_CHECKING:
     # The page builder's facts sit above the report's blocks, which read this module: named for the checker alone.
@@ -249,18 +250,24 @@ class PageLook:
         """The control's look; None where the input has no control."""
         return next((look for look in self.arms.values() if look.control), None)
 
-    def reader(self, kind: NamedKind, identifier: str) -> str:
+    def reader(self, kind: NamedKind, identifier: str, *, aspect: str | None = None) -> str:
         """The one name a reader is shown for an id of a kind, else the id in words (its underscores and dots as
-        spaces), never the id itself.
+        spaces), never the id itself. A stratum is named on its own aspect: an id its aspects name differently is
+        named by that aspect's name of it (:func:`~threetears.evals.analysis.report.words.aspect_stratum_key`).
 
         :param kind: What the id names.
         :ptype kind: NamedKind
         :param identifier: The id.
         :ptype identifier: str
+        :param aspect: For a stratum, the aspect it is held on; None for one no aspect holds.
+        :ptype aspect: str | None
         :return: The reader name.
         :rtype: str
         """
-        return self.names.get(kind, {}).get(identifier) or humanize("dimension", identifier)
+        held = self.names.get(kind, {})
+        if kind == "stratum" and aspect is not None and (named := held.get(aspect_stratum_key(aspect, identifier))):
+            return named
+        return held.get(identifier) or humanize("dimension", identifier)
 
     def ordered(self, arm_ids: Iterable[str]) -> list[str]:
         """``arm_ids`` in the page's order (:attr:`order`), any the order does not hold after them as given.

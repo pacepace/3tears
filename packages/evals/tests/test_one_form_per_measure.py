@@ -9,6 +9,9 @@ listing's verdict off the aspect page's forms. Held here, so that no surface rea
 - **one set, every page.** On every fixture campaign with contrasts, and on one with guardrails, the written page
   reads each contrast's and each guardrail check's measure at the places its aspect page does: a judged level counts
   as derived wherever it is gathered, and a guardrail's interval joins its measure's set on the written page too.
+  One fixture's input states each judged level's interval (``Stat.half_width``, as a host's own input may), a pass/fail
+  dimension's narrower than its contrasts': a written page that counted that level as compared, as its aspect pages
+  do not, would read the dimension at one decimal where they read whole points.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from threetears.evals.analysis import TableBlock, assemble_campaign_bundle, camp
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 
 SCOPE = "one-form"
@@ -79,12 +83,41 @@ def _shape(make: Callable[[], object]) -> Callable[[], CampaignBundle]:
     return built
 
 
+#: How far either side of its mean a level's 95% interval reaches, in standard errors.
+_Z95 = 1.96
+
+
+def _levels_stated(held: ReportInput) -> ReportInput:
+    """The input with each judged level's interval stated beside its mean, as a host's own input may state it: on
+    Kairo a pass/fail dimension's level reads within about 2.5 points, its contrasts within about 4."""
+    judged = {
+        key: dimension.model_copy(
+            update={
+                "per_arm": {
+                    arm: stat if stat.sem is None else stat.model_copy(update={"half_width": _Z95 * float(stat.sem)})
+                    for arm, stat in dimension.per_arm.items()
+                }
+            }
+        )
+        for key, dimension in held.judged.items()
+    }
+    return held.model_copy(update={"judged": judged})
+
+
+def _as_built(held: ReportInput) -> ReportInput:
+    return held
+
+
 _CAMPAIGNS: dict[str, Callable[[], CampaignBundle]] = {
     "kairo": kairo_bundle,
+    "kairo, judged levels stated": kairo_bundle,
     "s1": _shape(s1_change),
     "s4": _shape(s4_change),
     "guarded": _guarded,
 }
+
+#: The written page's input over each campaign's bundle: as the package builds it, or as a host's may state it.
+_WRITTEN: dict[str, Callable[[ReportInput], ReportInput]] = {"kairo, judged levels stated": _levels_stated}
 
 
 def _stated(bundle: CampaignBundle) -> Iterator[tuple[str, str, str]]:
@@ -101,7 +134,7 @@ def _stated(bundle: CampaignBundle) -> Iterator[tuple[str, str, str]]:
 @pytest.mark.parametrize("name", sorted(_CAMPAIGNS))
 def test_the_written_page_reads_every_decided_measure_at_the_places_its_aspect_page_does(name: str) -> None:
     bundle = _CAMPAIGNS[name]()
-    written = PageForms.of(report_input(bundle))
+    written = PageForms.of(_WRITTEN.get(name, _as_built)(report_input(bundle)))
     aspects = PageForms.of_aspects(bundle.aspects, bundle.readings)
     checked, apart = 0, []
     for aspect, measure, reading in dict.fromkeys(_stated(bundle)):
