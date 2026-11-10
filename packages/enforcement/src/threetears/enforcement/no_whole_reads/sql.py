@@ -51,7 +51,7 @@ once (``where = "WHERE id = $1"``), so a predicate built that way is judged as w
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -61,6 +61,7 @@ from threetears.enforcement.no_whole_reads.schema import (
     _DeclaredTable,
     SchemaCatalog,
     bare_table,
+    collated,
     expression_key,
     purposes,
 )
@@ -139,6 +140,8 @@ _AGGREGATE: Final[re.Pattern[str]] = re.compile(
 )
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\d+|%s|%\(\w+\)s|\?|(?<![:\w]):[A-Za-z_]\w*")
 _INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"\{(?:pk)?\}")
+#: an operand compared in an explicit collation: ``<operand> COLLATE "C"``
+_COLLATE: Final[re.Pattern[str]] = re.compile(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w+)", re.IGNORECASE | re.DOTALL)
 #: a predicate no row passes: a part that only types a ``UNION``'s columns
 _NO_ROWS: Final[re.Pattern[str]] = re.compile(r"WHERE\s+(?:1\s*=\s*0|FALSE)", re.IGNORECASE)
 #: a shape probe: no row is read
@@ -412,14 +415,21 @@ def _strip_cast(text: str) -> str:
 
 
 def _column(text: str) -> tuple[str, str] | None:
-    """the column an operand is: ``(qualifier, column)``, the qualifier empty when there is none.
+    """the column an operand is: ``(qualifier, column)``, the qualifier empty when there is none. A column compared in
+    an explicit collation (``name COLLATE "C"``) is ``name collate "c"``: only an index on the column in that same
+    collation serves it (:func:`~threetears.enforcement.no_whole_reads.schema.collated`).
 
     :param text: an operand
     :ptype text: str
     :return: it, or None when it is a value or an expression
     :rtype: tuple[str, str] | None
     """
-    match = _COLUMN.match(_strip_cast(text))
+    stripped = _strip_cast(text)
+    collation = _COLLATE.fullmatch(stripped)
+    if collation is not None:
+        inner = _column(collation.group(1))
+        return None if inner is None else (inner[0], collated(inner[1], collation.group(2)))
+    match = _COLUMN.match(stripped)
     if match is None:
         return None
     column = match.group(2).strip('"')
@@ -473,6 +483,36 @@ def _bound_value(text: str) -> bool:
     return re.search(r"[A-Za-z_]", rest) is None
 
 
+def _side(operand: str, lower: bool) -> str:
+    """the side of a range a bound operand closes, when a placeholder or interpolation binds it: ``lo`` or ``hi``;
+    empty for a literal (``name >= ''`` closes nothing a caller chose).
+
+    :param operand: the bound operand
+    :ptype operand: str
+    :param lower: whether it is the range's lower bound
+    :ptype lower: bool
+    :return: the side, or empty
+    :rtype: str
+    """
+    placed = _PLACEHOLDER.search(operand) is not None or _INTERPOLATION.search(operand) is not None
+    return ("lo" if lower else "hi") if placed else ""
+
+
+def _bounded(atoms: Iterable[_Atom]) -> set[str]:
+    """the columns a set of range atoms closes on both sides by bound values.
+
+    :param atoms: the atoms
+    :ptype atoms: Iterable[_Atom]
+    :return: the columns
+    :rtype: set[str]
+    """
+    sides: dict[str, set[str]] = {}
+    for atom in atoms:
+        if atom.kind == "range" and atom.side:
+            sides.setdefault(atom.column[1], set()).update({"lo", "hi"} if atom.side == "both" else {atom.side})
+    return {column for column, closed in sides.items() if closed == {"lo", "hi"}}
+
+
 def _literal_list(parts: list[str]) -> bool:
     """whether an ``IN`` list is two or more literals and nothing bound: a fixed set of categories, not keys.
 
@@ -507,6 +547,7 @@ class _Atom:
     :ivar other: the other column of a join
     :ivar bound: whether the predicate holds a bound value at all
     :ivar branches: an ``either``'s branches, each the atoms it binds
+    :ivar side: a range's side bound by a placeholder or interpolation
     """
 
     kind: str
@@ -514,6 +555,9 @@ class _Atom:
     other: tuple[str, str] = ("", "")
     bound: bool = False
     branches: tuple[tuple[_Atom, ...], ...] = ()
+    #: a range's bound side by a placeholder or interpolation: ``lo``, ``hi``, ``both`` (``BETWEEN``); empty for a
+    #: literal bound or any other kind
+    side: str = ""
 
 
 def _atoms(predicate: str) -> list[_Atom]:
@@ -536,7 +580,7 @@ def _atoms(predicate: str) -> list[_Atom]:
     branches = _split(text, _OR)
     if len(branches) > 1:
         # ``k = $1 OR k = $2``: every branch binds the same column, so the read is by those keys
-        each = [_atoms(branch) for branch in branches]
+        each = [[atom for part in _conjuncts(branch) for atom in _atoms(part)] for branch in branches]
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
             return [_Atom("eq", columns.pop(), bound=True)]
@@ -591,16 +635,19 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("contains", lcol, bound=False))
     elif op in {">", ">=", "<", "<="}:
         lcol, rcol, lrow = _column(left), _column(right), _row(left)
+        lower = op.startswith(">")
         if lcol and _bound_value(right):
-            atoms.append(_Atom("range", lcol, bound=True))
+            atoms.append(_Atom("range", lcol, bound=True, side=_side(right, lower)))
         elif rcol and _bound_value(left):
-            atoms.append(_Atom("range", rcol, bound=True))
+            atoms.append(_Atom("range", rcol, bound=True, side=_side(left, not lower)))
         elif lrow and _bound_value(right):
             atoms.append(_Atom("range", lrow[0], bound=True))
     elif op == "BETWEEN":
         lcol = _column(left)
-        if lcol and all(_bound_value(part) for part in re.split(r"\bAND\b", right, flags=re.IGNORECASE)):
-            atoms.append(_Atom("range", lcol, bound=True))
+        ends = re.split(r"\bAND\b", right, flags=re.IGNORECASE)
+        if lcol and all(_bound_value(part) for part in ends):
+            placed = len(ends) == 2 and all(_side(part, True) for part in ends)
+            atoms.append(_Atom("range", lcol, bound=True, side="both" if placed else ""))
     return atoms or [_Atom("filter", bound=bound)]
 
 
@@ -815,6 +862,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     count = len(level.relations)
     eq: list[set[str]] = [set() for _ in range(count)]
     ranged: list[set[str]] = [set() for _ in range(count)]
+    ranges: list[list[_Atom]] = [[] for _ in range(count)]
     contained: list[set[str]] = [set() for _ in range(count)]
     other: list[int] = [0] * count
     joins: list[tuple[int, str, int, str]] = []
@@ -844,6 +892,8 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
         elif atom.kind in {"eq", "range"} and _known(level, qualifier):
             for i in _owner(level, qualifier):
                 (eq if atom.kind == "eq" else ranged)[i].add(name)
+                if atom.kind == "range":
+                    ranges[i].append(atom)
         elif atom.kind == "contains" and _known(level, qualifier):
             for i in _owner(level, qualifier):
                 contained[i].add(name)
@@ -885,7 +935,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
             hit = _key_hit(
                 primary,
                 purposed,
-                (eq[index], ranged[index], contained[index], tenants),
+                (eq[index], ranged[index], contained[index], tenants, _bounded(ranges[index])),
                 other[index],
                 level,
                 index,
@@ -898,7 +948,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
                         atom,
                         primary,
                         purposed,
-                        (eq[index], ranged[index], contained[index], tenants),
+                        (eq[index], ranged[index], contained[index], tenants, _bounded(ranges[index])),
                         other[index],
                         level,
                         index,
@@ -917,7 +967,7 @@ def _either_keys(
     atom: _Atom,
     primary: list[tuple[str, ...]],
     purposed: list[tuple[str, tuple[str, ...]]],
-    bound: tuple[set[str], set[str], set[str], frozenset[str]],
+    bound: tuple[set[str], set[str], set[str], frozenset[str], set[str]],
     filters: int,
     level: _Level,
     index: int,
@@ -934,7 +984,7 @@ def _either_keys(
     :param purposed: its indexes whose purpose names the reader
     :ptype purposed: list[tuple[str, tuple[str, ...]]]
     :param bound: its columns bound outside the ``OR`` (equality, range, containment) and its tenant columns
-    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str]]
+    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str], set[str]]
     :param filters: how many other predicates may filter it
     :ptype filters: int
     :param level: the level
@@ -948,16 +998,17 @@ def _either_keys(
     :return: whether every branch keys it
     :rtype: bool
     """
-    eq, ranged, contained, tenants = bound
+    eq, ranged, contained, tenants, bounded = bound
     hits = []
     for branch in atom.branches:
         branch_eq = eq | {part.column[1] for part in branch if part.kind == "eq"}
         branch_ranged = ranged | {part.column[1] for part in branch if part.kind == "range"}
+        branch_bounded = bounded | _bounded(branch)
         hits.append(
             _key_hit(
                 primary,
                 purposed,
-                (branch_eq, branch_ranged, contained, tenants),
+                (branch_eq, branch_ranged, contained, tenants, branch_bounded),
                 filters,
                 level,
                 index,
@@ -990,7 +1041,7 @@ def _covers(key: tuple[str, ...], bound: set[str], tenants: frozenset[str]) -> b
 def _key_hit(
     primary: list[tuple[str, ...]],
     purposed: list[tuple[str, tuple[str, ...]]],
-    bound: tuple[set[str], set[str], set[str], frozenset[str]],
+    bound: tuple[set[str], set[str], set[str], frozenset[str], set[str]],
     filters: int,
     level: _Level,
     index: int,
@@ -1005,7 +1056,7 @@ def _key_hit(
     :param purposed: its indexes whose purpose names the reader, ``(name, columns)``
     :ptype purposed: list[tuple[str, tuple[str, ...]]]
     :param bound: its columns bound by equality, by a range and by containment (``@>``), and its tenant columns
-    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str]]
+    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str], set[str]]
     :param filters: how many other predicates may filter it
     :ptype filters: int
     :param level: the level
@@ -1019,7 +1070,7 @@ def _key_hit(
     :return: whether it is keyed
     :rtype: bool
     """
-    eq, ranged, contained, tenants = bound
+    eq, ranged, contained, tenants, bounded = bound
     table = bare_table(relation.name)
     if table is not None and table.startswith(COPY_PREFIX):
         # on a local copy, a declared key column IS NULL is that key's NULL bucket: keyed
@@ -1057,7 +1108,10 @@ def _key_hit(
             and level.limited
             and (level.order is None or level.order[1] == columns[prefix])
         )
-        if _covers(columns, eq | contained, tenants) or ranged_next:
+        # a range closed on both sides by bound values on the index's next column reads only the rows between them:
+        # the index's key, as an equality on a column it leads with is
+        bounded_next = prefix < len(columns) and columns[prefix] in bounded
+        if _covers(columns, eq | contained, tenants) or ranged_next or bounded_next:
             if table is not None:
                 reader.schema.use(table, name, reader.names)
             serving = True
