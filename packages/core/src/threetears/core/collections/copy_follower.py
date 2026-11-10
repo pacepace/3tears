@@ -1222,6 +1222,31 @@ class CopyFollower:
                 list(params),
             ).fetch_arrow_table()
 
+    async def _copy_scopes(
+        self, table: FollowedTable, keys: Sequence[tuple[str, ...]]
+    ) -> dict[tuple[str, ...], set[str]]:
+        """the scope of each key's row the copy holds: a local read, never L3.
+
+        :param table: a table whose scope is in its rows only
+        :ptype table: FollowedTable
+        :param keys: the keys, each its values as text
+        :ptype keys: Sequence[tuple[str, ...]]
+        :return: each held key's scopes
+        :rtype: dict[tuple[str, ...], set[str]]
+        """
+        columns = [[key[i] for key in keys] for i in range(len(table.key))]
+        joined = " AND ".join(
+            f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(table.key)
+        )
+        unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(table.key)))
+        mine = await asyncio.to_thread(self._copy_rows, table, f"JOIN (SELECT {unnested}) AS k ON {joined}", columns)
+        of: dict[tuple[str, ...], set[str]] = {}
+        if mine.num_rows:
+            copy_keys = zip(*(mine.column(c).to_pylist() for c in table.key), strict=True)
+            for key, scope in zip(copy_keys, self._scopes_of_rows(table, mine), strict=True):
+                of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
+        return of
+
     async def _stage_keyed(
         self,
         table: FollowedTable,
@@ -1242,6 +1267,18 @@ class CopyFollower:
         scopes: set[str | None] = set()
         for start in range(0, len(keys), self._page_size):
             chunk = keys[start : start + self._page_size]
+            of: dict[tuple[str, ...], set[str]] = {}
+            if table.scope is not None and at is None:
+                # the scope is in the row only: first the copy's own rows (a local read), so a key whose row is of a
+                # scope a write holds waits for it without an L3 read, and is read once, after the write commits
+                of = await self._copy_scopes(table, chunk)
+                if held:
+                    late = {key for key in chunk if of.get(tuple(key), set()) & held}
+                    if late:
+                        self._pending[table.name] |= late
+                        chunk = [key for key in chunk if key not in late]
+                        if not chunk:
+                            continue
             columns = [[key[i] for key in chunk] for i in range(len(table.key))]
             rows = await l3_fetch_arrow(self._l3, read.sql, *columns, types=read.types)
             kept = list(chunk)
@@ -1250,24 +1287,13 @@ class CopyFollower:
             elif at is not None:
                 scopes.update(table.scope_of(key[at]) for key in chunk)
             else:
-                # the scope is in the row only: the row L3 holds now, and the one the copy holds (a delete's, a move's)
-                of: dict[tuple[str, ...], set[str]] = {}
+                # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of a
+                # held scope (a row new to the copy, or moved into it) waits too
                 l3_keys = (
                     list(zip(*(rows.column(c).to_pylist() for c in table.key), strict=True)) if rows.num_rows else []
                 )
                 for key, scope in zip(l3_keys, self._scopes_of_rows(table, rows), strict=True):
                     of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
-                joined = " AND ".join(
-                    f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(table.key)
-                )
-                unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(table.key)))
-                mine = await asyncio.to_thread(
-                    self._copy_rows, table, f"JOIN (SELECT {unnested}) AS k ON {joined}", columns
-                )
-                if mine.num_rows:
-                    copy_keys = zip(*(mine.column(c).to_pylist() for c in table.key), strict=True)
-                    for key, scope in zip(copy_keys, self._scopes_of_rows(table, mine), strict=True):
-                        of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
                 if held:
                     left = {key for key in chunk if of.get(tuple(key), set()) & held}
                     if left:

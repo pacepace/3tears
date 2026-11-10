@@ -1308,3 +1308,46 @@ async def test_a_derived_table_the_checkpoint_cannot_give_is_left_to_its_owner_n
     assert await follower.catch_up()
     assert _copy(second) == l3.held() and l3.rows_read == 0
     assert _totals(second) == []
+
+
+async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write() -> None:
+    """a table keyed without its scope (a candidate's key, its state in the row): a key the writer committed while
+    its scope's write is still held waits on the copy's own row, never read from L3 until the write commits."""
+    lock = _Scopes()
+    l3, log = _L3(), _Log()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=("geo_id",), columns=_COLUMNS, scope=("state", "state:"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+    )
+    follower.register()
+    l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
+    await follower.warm()
+    assert await follower.catch_up()
+
+    def commit(*geo_ids: int) -> None:
+        log.count += 1
+        token = f"inc:{log.count}"
+        log.records[token] = EpochChange(table=_TABLE, token=token, rows=[ChangedRow(ids=[str(g)]) for g in geo_ids])
+
+    # the writer's data commits first, its scope marked pending in that transaction; the scope commits after
+    lock.held = frozenset({"state:IL"})
+    l3.put([("IL", 11, 9)])
+    commit(11)
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert l3.rows_read == 0  # the copy's own row says IL, held: no L3 read while the write holds it
+    lock.commit("state:IL")
+    lock.held = None
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 1  # the changed key, read exactly once
