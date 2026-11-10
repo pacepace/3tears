@@ -105,6 +105,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from itertools import accumulate
+from operator import itemgetter
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -1984,6 +1985,12 @@ _INDEX_ORDER: Final = (
 )
 
 
+#: a page's note's keys, columns and bytes, by their place in :func:`_noted_keys_sql`'s select list
+_KEYS_AT: Final = itemgetter(1)
+_COLUMNS_AT: Final = itemgetter(2)
+_BYTES_AT: Final = itemgetter(3)
+
+
 def _key_bytes(keys: Sequence[str], columns: Sequence[tuple[str, str | None]] = ()) -> int:
     """the bytes a page counts for one note: its keys and its invalidation columns, each with 8 bytes of framing.
 
@@ -2100,15 +2107,20 @@ async def _noted_keys_page(
     def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
         return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
 
-    def take(notes: Sequence[Any]) -> None:
+    def take(notes: Sequence[Any], sizes: list[int | None], held: list[Any]) -> None:
         # each note by position (_noted_keys_sql's select list): noted_at, keys, columns, bytes (NULL: whole table).
-        # Whole-list comprehensions, never a loop of Python steps a note: at 20,000 notes those were the larger part
-        # of the read
+        # Passes of C (map, itemgetter), never a Python step a note: at 20,000 notes those were the larger part of
+        # the read. A whole-table note or one with columns (few) takes the slower way
         nonlocal whole
-        keyed = [note for note in notes if note[3] is not None]
-        whole = whole or len(keyed) < len(notes)
-        keys.extend([tuple(note[1]) for note in keyed])
-        columns.extend([None if note[2] is None else dict(_columns_of(note[2])) or None for note in keyed])
+        if None in sizes:
+            whole = True
+            notes = [note for note, size in zip(notes, sizes, strict=True) if size is not None]
+            held = [each for each, size in zip(held, sizes, strict=True) if size is not None]
+        keys.extend(map(tuple, map(_KEYS_AT, notes)))
+        if held.count(None) == len(held):
+            columns.extend(held)
+        else:
+            columns.extend([None if each is None else dict(_columns_of(each)) or None for each in held])
 
     for slot in order[order.index(at.slot) :]:
         # where this table's read starts: the cursor's time in its own table, else the bracket's start
@@ -2138,29 +2150,26 @@ async def _noted_keys_page(
                 taken = taken[:end]
         # past the page's bytes, the page ends before the first keyed note that starts an instant, once it holds a
         # key: the running count says where it passes the bound, and only the notes from there are looked at
-        counted = list(
-            accumulate(
-                [
-                    0
-                    if note[3] is None
-                    else note[3]
-                    if note[2] is None
-                    else note[3] + _key_bytes((), _columns_of(note[2]))
-                    for note in taken
-                ],
-                initial=used,
-            )
-        )
+        sizes: list[int | None] = list(map(_BYTES_AT, taken))
+        held: list[Any] = list(map(_COLUMNS_AT, taken))
+        if None in sizes or held.count(None) != len(held):
+            counts = [
+                0 if size is None else size if each is None else size + _key_bytes((), _columns_of(each))
+                for size, each in zip(sizes, held, strict=True)
+            ]
+        else:
+            counts = sizes  # type: ignore[assignment]  # no whole note: every size is an int
+        counted = list(accumulate(counts, initial=used))
         # counted[i + 1] is the count with note i: the first note past the bound (the first, if the page already is)
         index = max(bisect_right(counted, max_bytes) - 1, 0)
-        first_keyed = next((at_index for at_index, note in enumerate(taken) if note[3] is not None), len(taken))
+        first_keyed = next((at_index for at_index, size in enumerate(sizes) if size is not None), len(sizes))
         while index < len(taken):
             note = taken[index]
             if note[3] is not None and (index == 0 or taken[index - 1][0] < note[0]) and (keys or first_keyed < index):
-                take(taken[:index])
+                take(taken[:index], sizes[:index], held[:index])
                 return page(NotedKeysCursor(slot=slot, after=taken[index - 1][0] if index else start))
             index += 1
-        take(taken)
+        take(taken, sizes, held)
         used = counted[-1]
         if full:
             return page(NotedKeysCursor(slot=slot, after=taken[-1][0]))
