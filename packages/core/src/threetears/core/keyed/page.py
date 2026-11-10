@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
 
-from threetears.core.keyed._filters import Fragment, by_conditions, renumbered
+from threetears.core.keyed._filters import Fragment, Lock, by_conditions, renumbered
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
@@ -187,6 +187,8 @@ async def keyset_page(
     limit: int,
     cursor: str | None = None,
     visible: Sequence[Fragment] = (),
+    where: Sequence[Fragment] = (),
+    lock: Lock | None = None,
 ) -> KeyPage:
     """one page of ``table``'s rows ``by`` names, in ``order``, after ``cursor``.
 
@@ -207,6 +209,12 @@ async def keyset_page(
     :ptype cursor: str | None
     :param visible: visibility clauses each row must pass (:func:`exists_keyed`, an ACL's caller clause)
     :ptype visible: Sequence[Fragment]
+    :param where: filters beside the prefix, each a fragment written as ``t."col"`` from ``$1``: a range on the sort's
+        lead (``t."due_at" <= $1``), or a partial index's own predicate (``t."due_at" IS NOT NULL``), so the page
+        reads through that index
+    :ptype where: Sequence[Fragment]
+    :param lock: the row lock the page takes on its rows (the caller's transaction); none when None
+    :ptype lock: Lock | None
     :return: the page
     :rtype: KeyPage
     :raises ValueError: when the sort is empty, a sort column is not read, or ``limit`` is under one
@@ -220,6 +228,9 @@ async def keyset_page(
     if missing:
         raise ValueError(f"a page of {table} reads its sort columns, missing {missing}")
     conditions, params = by_conditions(by, alias="t")
+    for fragment in where:
+        conditions.append(renumbered(fragment, len(params)))
+        params += list(fragment.params)
     if cursor is not None:
         past, past_params = _past(order, _decode(order, cursor), len(params) + 1)
         conditions.append(past)
@@ -227,9 +238,11 @@ async def keyset_page(
     for fragment in visible:
         conditions.append(renumbered(fragment, len(params)))
         params += list(fragment.params)
-    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    sql = f"SELECT {selected} FROM {quote_identifier(table)} AS t{where} ORDER BY {_order_by(order)} LIMIT {limit + 1}"
+    sql = f"SELECT {selected} FROM {quote_identifier(table)} AS t{clause} ORDER BY {_order_by(order)} LIMIT {limit + 1}"
+    if lock is not None:
+        sql += lock.of("t")
     answered = [dict(row) for row in await conn.fetch(sql, *params)]
     rows = answered[:limit]
     more = len(answered) > limit

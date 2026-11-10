@@ -32,10 +32,10 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.keyed._filters import by_conditions
+from threetears.core.keyed._filters import Lock, by_conditions
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
-__all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_keyed", "read_keyed_arrow"]
+__all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
 
 #: keys a statement names when the caller does not say: well under a statement's parameter and reply bounds
 DEFAULT_KEY_BATCH: Final = 1000
@@ -107,6 +107,14 @@ class _Statement:
     selected: str
     keys: KeyBatch
     by: Mapping[str, Any]
+    lock: Lock | None = None
+
+    def _locked(self, sql: str) -> str:
+        if self.lock is None:
+            return sql
+        # locked in the key's order, so two lockers of the same keys wait on each other rather than deadlock
+        ordered = ", ".join(f"t.{quote_identifier(column)}" for column in self.keys.columns)
+        return f"{sql} ORDER BY {ordered}{self.lock.of('t')}"
 
     def render(self, chunk: Sequence[tuple[Any, ...]]) -> tuple[str, tuple[Any, ...]]:
         """the statement naming ``chunk``'s keys, and its parameters.
@@ -130,20 +138,22 @@ class _Statement:
                 named = f"({', '.join(columns)}) IN ({rows})"
             conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
             where = " AND ".join([named, *conditions])
-            return f"{head} WHERE {where}", (*(value for key in chunk for value in key), *pinned)
+            return self._locked(f"{head} WHERE {where}"), (*(value for key in chunk for value in key), *pinned)
         casts = [self.keys.cast(index) for index in range(width)]
         unnested, joined = unnest_key_join(self.keys.columns, casts, alias="t", null_safe=self.keys.null_safe)
         conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         arrays = tuple([_text(key[index]) for key in chunk] for index in range(width))
-        return f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}", (*arrays, *pinned)
+        return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
 
 
-def _statement(table: str, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any]) -> _Statement:
+def _statement(
+    table: str, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any], lock: Lock | None = None
+) -> _Statement:
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    return _Statement(table=table, selected=selected, keys=keys, by=by)
+    return _Statement(table=table, selected=selected, keys=keys, by=by, lock=lock)
 
 
 def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
@@ -185,11 +195,12 @@ async def read_keyed(
     by: Mapping[str, Any] | None = None,
     batch: int = DEFAULT_KEY_BATCH,
     row_cap: int | None = None,
+    lock: Lock | None = None,
 ) -> list[dict[str, Any]]:
     """the rows of ``table`` the keys name (within ``by``), ``batch`` keys a statement.
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``: an L3 backend, the rail's proxy, a
-        connection, or a DuckDB connection behind :func:`threetears.core.keyed.threaded_duckdb`
+        connection, or a DuckDB connection behind :class:`~threetears.core.keyed.ThreadedDuckDB`
     :ptype conn: Any
     :param table: the table, a TRUSTED identifier
     :ptype table: str
@@ -203,12 +214,14 @@ async def read_keyed(
     :ptype batch: int
     :param row_cap: the most rows the transport answers a statement without saying it cut; None when it never cuts
     :ptype row_cap: int | None
-    :return: the rows, in no promised order
+    :param lock: the row lock taken on the rows read (the caller's transaction), in the key's order; none when None
+    :ptype lock: Lock | None
+    :return: the rows, in no promised order (in the key's order when locked)
     :rtype: list[dict[str, Any]]
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = _statement(table, columns, keys, by or {})
+    statement = _statement(table, columns, keys, by or {}, lock)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
         sql, params = statement.render(chunk)
@@ -263,3 +276,59 @@ async def read_keyed_arrow(
     for chunk in _batches(keys, batch):
         tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table)
     return tables
+
+
+async def read_joined(
+    conn: Any,
+    rows: Sequence[Mapping[str, Any]],
+    table: str,
+    *,
+    on: Mapping[str, str],
+    columns: Sequence[str],
+    casts: Mapping[str, str] | None = None,
+    by: Mapping[str, Any] | None = None,
+    batch: int = DEFAULT_KEY_BATCH,
+) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
+    """the rows of ``table`` joined to ``rows`` (a page already read), by a keyed read of the values they name.
+
+    A listing with joins, as a page and keyed reads: the page is read by its own key (:func:`keyset_page`), then each
+    joined table by the values the page's rows hold (``on``: its column -> the page's), one keyed batch, never a join
+    the planner may drive from the joined side. The page's rows are matched to theirs in Python, by those values.
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param rows: the page's rows
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param table: the joined table, a TRUSTED identifier
+    :ptype table: str
+    :param on: its columns -> the page's columns they equal, a leading part of its key (or of an index declared for
+        the caller's read)
+    :ptype on: Mapping[str, str]
+    :param columns: the joined table's columns read; each of ``on``'s among them
+    :ptype columns: Sequence[str]
+    :param casts: each ``on`` column's SQL type; ``text`` when absent
+    :ptype casts: Mapping[str, str] | None
+    :param by: the joined table's columns pinned beside (a tenant)
+    :ptype by: Mapping[str, Any] | None
+    :param batch: the most values a statement names
+    :ptype batch: int
+    :return: the page's values (in ``on``'s order) -> the joined rows holding them; a value no row holds is absent
+    :rtype: dict[tuple[Any, ...], list[dict[str, Any]]]
+    :raises ValueError: when ``on`` is empty or a column of it is not read
+    """
+    if not on:
+        raise ValueError(f"a joined read of {table} names how it joins the page")
+    inner = tuple(on)
+    missing = [column for column in inner if column not in columns]
+    if missing:
+        raise ValueError(f"a joined read of {table} reads its join columns, missing {missing}")
+    cast_of = dict(casts or {})
+    values = [tuple(row[on[column]] for column in inner) for row in rows]
+    named = [value for value in values if all(part is not None for part in value)]
+    joined: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    if not named:
+        return joined
+    keys = KeyBatch(inner, named, tuple(cast_of.get(column, "text") for column in inner))
+    for row in await read_keyed(conn, table, keys=keys, columns=columns, by=by, batch=batch):
+        joined.setdefault(tuple(row[column] for column in inner), []).append(row)
+    return joined

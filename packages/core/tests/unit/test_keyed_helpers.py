@@ -24,6 +24,7 @@ from threetears.core.keyed import (
     Dialect,
     KeyBatch,
     KeyTooWide,
+    Lock,
     Sort,
     ThreadedDuckDB,
     ThreadedSQLite,
@@ -37,6 +38,7 @@ from threetears.core.keyed import (
     holds_any,
     keyset_page,
     read_after,
+    read_joined,
     read_keyed,
     read_past_marks,
     rows_affected,
@@ -403,3 +405,78 @@ class TestWithoutArrays:
         assert seen == list(range(3, 100, 10))
         swept = await delete_before(conn, "t", key=["a", "b"], column="b", before=20, page=6)
         assert (swept.deleted, swept.statements) == (20, 4)
+
+
+class _Answering:
+    """a reader that keeps each statement and answers no row: for the statement's text where DuckDB lacks the clause."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append(query)
+        return []
+
+
+class TestFiltersLocksAndJoins:
+    async def test_a_page_filters_on_a_range_and_a_partial_index_predicate(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a page's where= filters are dropped, or bound to the wrong placeholders."""
+        rows: list[int] = []
+        cursor = None
+        filters = [Fragment('t."b" <= $1', (45,)), Fragment('t."stamp" IS NOT NULL')]
+        while True:
+            page = await keyset_page(
+                ThreadedDuckDB(db),
+                "t",
+                columns=["a", "b"],
+                by={"a": "k5"},
+                order=[Sort("b", "bigint")],
+                limit=2,
+                cursor=cursor,
+                where=filters,
+            )
+            rows += [row["b"] for row in page.rows]
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        expected = _plain(db, "SELECT b FROM t WHERE a = 'k5' AND b <= 45 AND stamp IS NOT NULL ORDER BY b")
+        assert rows == [row[0] for row in expected] and rows
+
+    async def test_a_lock_is_taken_on_the_read_table_in_the_key_s_order(self) -> None:
+        """Flips if a locked read locks the joined key set, or locks in no order (two lockers then deadlock)."""
+        reader = _Answering()
+        await read_keyed(
+            reader, "links", keys=KeyBatch(("id",), [("a",), ("b",)], ("uuid",)), columns=["id"], lock=Lock.UPDATE
+        )
+        await keyset_page(
+            reader,
+            "links",
+            columns=["id"],
+            by={"ref": "r"},
+            order=[Sort("id", "uuid")],
+            limit=5,
+            lock=Lock.UPDATE_SKIP_LOCKED,
+        )
+        assert reader.statements[0].endswith('ORDER BY t."id" FOR UPDATE OF t')
+        assert reader.statements[1].endswith("LIMIT 6 FOR UPDATE OF t SKIP LOCKED")
+
+    async def test_joined_rows_are_read_by_the_values_the_page_holds(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a page's joined rows are read whole, or matched to the wrong page row."""
+        reader = _Recording(db)
+        page = [{"who": "x", "group": "k1"}, {"who": "y", "group": "k3"}, {"who": "z", "group": None}]
+        joined = await read_joined(reader, page, "grants", on={"a": "group"}, columns=["who", "a"])
+        assert joined == {("k1",): [{"who": "ann", "a": "k1"}], ("k3",): [{"who": "bob", "a": "k3"}]}
+        assert len(reader.statements) == 1 and reader.statements[0][1][0] == ["k1", "k3"]
+
+    async def test_a_drain_filters_on_its_conditions(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if keyset_pages drops its conditions, or numbers them over the where's placeholders."""
+        read = await read_keyset_pages(
+            ThreadedDuckDB(db),
+            'SELECT "a", "b" FROM "t"',
+            ["a", "b"],
+            where={"a": "k2"},
+            page_size=2,
+            conditions=[Fragment('"b" < $1', (40,)), Fragment('"stamp" IS NOT NULL')],
+        )
+        expected = _plain(db, "SELECT b FROM t WHERE a = 'k2' AND b < 40 AND stamp IS NOT NULL ORDER BY b")
+        assert [row["b"] for row in read.rows] == [row[0] for row in expected]

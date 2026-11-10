@@ -7,7 +7,9 @@ as keyed by construction, judged by the key it names):
 - **a keyed read** by a batch of keys or key prefixes, chunked: :func:`read_keyed`, :func:`read_keyed_arrow`
   (:class:`KeyBatch`, ``by`` pins a tenant or scope; :class:`AnyOf` is a set filter);
 - **a listing's page**: a bound prefix, a closed sort, an opaque cursor, a ``LIMIT``, visibility as a keyed
-  ``EXISTS``: :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`). An internal drain of
+  ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
+  :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
+  the values the page holds: :func:`read_joined`. An internal drain of
   every row a prefix names, a page a statement, from a saved place: :func:`threetears.core.keyset.keyset_pages`
   (``after=``);
 - **counts** from the statement's own rows (:func:`rows_affected`), the planner's estimate (:func:`estimated_rows`),
@@ -28,7 +30,7 @@ one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no arrays (R
 
 from __future__ import annotations
 
-from threetears.core.keyed._filters import AnyOf, Fragment
+from threetears.core.keyed._filters import AnyOf, Fragment, Lock
 from threetears.core.keyed.counts import (
     BoundedCount,
     Dialect,
@@ -43,7 +45,14 @@ from threetears.core.keyed.deletes import SweptRows, delete_before, update_befor
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_page
-from threetears.core.keyed.rows import DEFAULT_KEY_BATCH, KeyBatch, KeyTooWide, read_keyed, read_keyed_arrow
+from threetears.core.keyed.rows import (
+    DEFAULT_KEY_BATCH,
+    KeyBatch,
+    KeyTooWide,
+    read_joined,
+    read_keyed,
+    read_keyed_arrow,
+)
 from threetears.core.keyed.whole_reads import WholeReads
 
 __all__ = [
@@ -55,6 +64,7 @@ __all__ = [
     "KeyBatch",
     "KeyPage",
     "KeyTooWide",
+    "Lock",
     "MarkedRead",
     "PageAfter",
     "Sort",
@@ -71,6 +81,7 @@ __all__ = [
     "holds_any",
     "keyset_page",
     "read_after",
+    "read_joined",
     "read_keyed",
     "read_keyed_arrow",
     "read_past_marks",

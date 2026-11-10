@@ -11,11 +11,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final
 
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["AnyOf", "Fragment", "by_conditions", "renumbered"]
+__all__ = ["AnyOf", "Fragment", "Lock", "by_conditions", "renumbered"]
 
 #: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
@@ -47,6 +48,27 @@ class AnyOf:
     def __post_init__(self) -> None:
         if not _SQL_TYPE.match(self.cast):
             raise ValueError(f"AnyOf: {self.cast!r} is not a SQL type name")
+
+
+class Lock(StrEnum):
+    """the row lock a keyed read takes on the rows it answers, in the caller's transaction: a closed set, so no
+    caller text reaches the statement."""
+
+    UPDATE = "FOR UPDATE"
+    UPDATE_SKIP_LOCKED = "FOR UPDATE SKIP LOCKED"
+    NO_KEY_UPDATE = "FOR NO KEY UPDATE"
+    SHARE = "FOR SHARE"
+
+    def of(self, alias: str) -> str:
+        """the clause locking only the rows of ``alias``.
+
+        :param alias: the read table's alias
+        :ptype alias: str
+        :return: the clause, with its leading space
+        :rtype: str
+        """
+        skip = self.value.endswith(" SKIP LOCKED")
+        return f" {self.value.removesuffix(' SKIP LOCKED')} OF {alias}{' SKIP LOCKED' if skip else ''}"
 
 
 @dataclass(frozen=True)

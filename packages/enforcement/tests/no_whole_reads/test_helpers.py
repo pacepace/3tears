@@ -122,7 +122,7 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
 @pytest.mark.parametrize(
     ("code", "argument"),
     [
-        ('read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)', "table"),
+        ('read_keyed(c, f(), keys=KeyBatch(("state",), ks), columns=cols)', "table"),
         ('read_keyed(c, "results", keys=batch, columns=cols)', "keys"),
         ('read_keyed(c, "results", keys=KeyBatch(columns, ks), columns=cols)', "keys"),
         ('keyset_page(c, "results", columns=cols, by=pinned, order=[Sort("geo")], limit=5)', "by"),
@@ -183,3 +183,44 @@ def test_a_reap_is_judged_as_the_paged_update_it_sends(schema: SchemaCatalog) ->
     assert [s.unseen for s in helper_statements(_call('update_before(c, "leases", key=k, column="e", set_to=s)'))] == [
         "key"
     ]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        # a generic reader's keyed batch over the table it is handed, by that table's key: keyed, as its SQL would be
+        ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types)", []),
+        # the same over a column that does not say it is the key: a predicate the walk cannot see
+        ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.columns, chunk), types=types)", ["unknown-predicate"]),
+    ],
+)
+def test_a_generic_keyed_batch_is_judged_as_its_interpolated_sql(
+    code: str, expected: list[str], schema: SchemaCatalog
+) -> None:
+    """Flips if a generic reader's batch by its table's key is refused, or one by another column passes."""
+    assert [[kind for kind, _ in findings] for findings in _judged(code, schema)] == [expected]
+
+
+def test_a_named_column_of_a_table_the_walk_cannot_name_is_no_pass(schema: SchemaCatalog) -> None:
+    """Flips if a batch over an interpolated table passes on a literal column the walk cannot match to a key."""
+    judged = _judged('read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)', schema)
+    assert judged != [[]]
+
+
+def test_a_page_s_filters_are_judged_with_it(schema: SchemaCatalog) -> None:
+    """Flips if a page's where= fragments are dropped from the statement judged, or a non-literal one passes."""
+    code = (
+        'keyset_page(c, "results", columns=cols, by={"state": s}, where=[Fragment(\'t."geo" <= $1\', (g,))], '
+        'order=[Sort("geo"), Sort("id")], limit=5)'
+    )
+    (statement,) = [s.sql for s in helper_statements(_call(code)) if s.sql]
+    assert 't."geo" <= $2' in statement
+    assert _judged(code, schema) == [[]]
+    unseen = 'keyset_page(c, "results", columns=cols, by={"state": s}, where=[w], order=[Sort("geo")], limit=5)'
+    assert [s.unseen for s in helper_statements(_call(unseen))] == ["where"]
+
+
+def test_joined_rows_are_judged_as_the_keyed_read_they_send(schema: SchemaCatalog) -> None:
+    """Flips if a joined read by a non-key column passes, or one by the key fails."""
+    assert _judged('read_joined(c, rows, "results", on={"state": "s", "geo": "g"}, columns=cols)', schema) == [[]]
+    assert _judged('read_joined(c, rows, "results", on={"geo": "g"}, columns=cols)', schema) != [[]]

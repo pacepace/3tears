@@ -10,7 +10,10 @@ for SQL the caller wrote. A helper call is keyed when the read it makes is keyed
 declared keys.
 
 A call whose table, key, ``by``, sort or column is not a literal the walk can read (a name bound at run time, a
-comprehension) answers :data:`UNSEEN`: the walk reports it ``unknown-predicate``, never a pass. ``empty_tables`` and
+comprehension) answers :data:`UNSEEN`: the walk reports it ``unknown-predicate``, never a pass. One exception, as
+for SQL a caller writes: a keyed batch over a table a generic reader is handed (``read_keyed(l3, table.name,
+keys=KeyBatch(table.key, ...))``) is written with the names as interpolations (``{name}``, ``{key}``), and the rule
+reads a key named as one (``{key}``, ``{pk}``) as the key, and any other as a predicate it cannot see. ``empty_tables`` and
 ``estimated_rows`` read one row of each table, or the catalog, whatever they are passed: nothing of theirs is judged.
 
 Visibility: a listing's ``visible=`` clauses are judged each on its own, as the correlated probe it is
@@ -33,6 +36,7 @@ reads every row from that place on: :func:`narrows` counts them only beside a ``
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -53,6 +57,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
     {
         "read_keyed",
         "read_keyed_arrow",
+        "read_joined",
         "keyset_page",
         "counts_by",
         "count_at_most",
@@ -177,9 +182,27 @@ def _conditions(pinned: Sequence[tuple[str, str]], *, first: int = 1, alias: str
     return conditions, place
 
 
+def _named(node: ast.expr | None, argument: str) -> str:
+    """a relation or key the caller names: a literal, quoted; a name or attribute, as the interpolation it would be in
+    SQL the caller wrote (``{table}``, ``{key}``), so the rule reads it as it reads that SQL (a name that says it is
+    the key binds the key; any other is a predicate it cannot see)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _quoted(node.value)
+    if isinstance(node, ast.Attribute):
+        return "{" + node.attr + "}"
+    if isinstance(node, ast.Name):
+        return "{" + node.id + "}"
+    raise _Unseen(argument)
+
+
 def _key_batch_columns(node: ast.expr | None) -> list[str]:
+    """the key columns a ``KeyBatch`` names, each as the statement spells it."""
     if isinstance(node, ast.Call) and _name(node) == "KeyBatch":
-        return _texts(_argument(node, "columns", 0), "keys")
+        columns = _argument(node, "columns", 0)
+        if isinstance(columns, ast.Tuple | ast.List):
+            return [_quoted(column) for column in _texts(columns, "keys")]
+        if isinstance(columns, ast.Attribute | ast.Name):
+            return [_named(columns, "keys")]
     raise _Unseen("keys")
 
 
@@ -199,13 +222,13 @@ def _where(conditions: Sequence[str]) -> str:
 
 
 def _read_keyed(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
+    table = _named(_argument(call, "table", 1), "table")
     keys = _key_batch_columns(_argument(call, "keys", None))
     pinned, _ = _conditions(_by(_argument(call, "by", None)), first=len(keys) + 1, alias="t")
     unnested = ", ".join(f"${index + 1}" for index in range(len(keys)))
     named = ", ".join(f"k{index}" for index in range(len(keys)))
-    joined = " AND ".join(f"t.{_quoted(column)} = k.k{index}" for index, column in enumerate(keys))
-    return [f"SELECT * FROM {_quoted(table)} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
+    joined = " AND ".join(f"t.{column} = k.k{index}" for index, column in enumerate(keys))
+    return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
 
 
 def _visible(call: ast.Call) -> list[str]:
@@ -233,13 +256,45 @@ def _visible(call: ast.Call) -> list[str]:
     return probes
 
 
+def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
+    """a page's ``where=`` fragments as written (``Fragment("t.due_at <= $1", (now,))``), renumbered past ``first``."""
+    node = _argument(call, "where", None)
+    if node is None:
+        return [], first
+    if not isinstance(node, ast.Tuple | ast.List):
+        raise _Unseen("where")
+    written = []
+    place = first
+    for element in node.elts:
+        if not (isinstance(element, ast.Call) and _name(element) == "Fragment"):
+            raise _Unseen("where")
+        text = _text(_argument(element, "sql", 0), "where")
+        numbers = [int(found) for found in re.findall(r"\$(\d+)", text)]
+        written.append(re.sub(r"\$(\d+)", lambda match: f"${int(match.group(1)) + place - 1}", text))
+        place += max(numbers, default=0)
+    return written, place
+
+
 def _keyset_page(call: ast.Call) -> list[str]:
     table = _text(_argument(call, "table", 1), "table")
     order = _sort_columns(_argument(call, "order", None))
     pinned, place = _conditions(_by(_argument(call, "by", None)))
-    page = [*pinned, f"{_quoted(order[0])} > ${place}"]
+    filtered, place = _filters(call, place)
+    page = [*pinned, *filtered, f"{_quoted(order[0])} > ${place}"]
     ordered = ", ".join(_quoted(column) for column in order)
-    return [f"SELECT * FROM {_quoted(table)}{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call)]
+    return [f"SELECT * FROM {_quoted(table)} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call)]
+
+
+def _read_joined(call: ast.Call) -> list[str]:
+    table = _named(_argument(call, "table", 2), "table")
+    on = _by(_argument(call, "on", None), "on")
+    if not on:
+        raise _Unseen("on")
+    pinned, _ = _conditions(_by(_argument(call, "by", None)), first=len(on) + 1, alias="t")
+    unnested = ", ".join(f"${index + 1}" for index in range(len(on)))
+    named = ", ".join(f"k{index}" for index in range(len(on)))
+    joined = " AND ".join(f"t.{_quoted(column)} = k.k{index}" for index, (column, _) in enumerate(on))
+    return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
 
 
 def _counts_by(call: ast.Call) -> list[str]:
@@ -311,6 +366,7 @@ def _update_before(call: ast.Call) -> list[str]:
 _SYNTHESIZERS: Final = {
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
+    "read_joined": _read_joined,
     "keyset_page": _keyset_page,
     "counts_by": _counts_by,
     "count_at_most": _probe,
