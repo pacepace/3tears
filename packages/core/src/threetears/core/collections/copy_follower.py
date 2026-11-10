@@ -62,8 +62,8 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
+from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
@@ -80,6 +80,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a follower says
 
 __all__ = [
     "GATED_WHOLE_READ_WHYS",
+    "WHOLE_READS",
     "WHOLE_READ_WHYS",
     "CopyFollower",
     "HubCapabilityMissingError",
@@ -93,36 +94,34 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: why a follower reads a table whole from L3, as ``copy_follower_whole_reads_total`` labels it. Only ``cold_start``
-#: (a first start with no checkpoint) and ``reset`` (an operator's reset of that table) are expected; every other is
-#: a change some writer did not record by key or key prefix
-WHOLE_READ_WHYS: Final[Mapping[str, str]] = {
-    "cold_start": "a first start with no checkpoint: every table is read once",
-    "reset": "an operator's reset of the table (SchemaBackedCollection.reset): that table's cold start",
-    "schema_change": "a table dropped or recreated (CopyFollower.schema_changed): only that table is read again",
-    # TODO(3tears 0.96.0 contract step, dated 2026-11-09): remove once no 0.94-or-older writer is left to record one
-    "legacy_whole_record": "an epoch record naming the whole table, from a writer older than 0.95.0 mid-roll",
-}
+#: why a follower reads a table whole from L3, counted by table and why (``copy_follower_whole_reads_total``). Only
+#: ``cold_start`` (a first start with no checkpoint) and ``reset`` (an operator's reset of that table) are expected;
+#: every other is a change some writer did not record by key or key prefix
+WHOLE_READS: Final = WholeReads(
+    "copy_follower_whole_reads_total",
+    subject="tables a copy follower read whole from L3",
+    whys={
+        "cold_start": "a first start with no checkpoint: every table is read once",
+        "reset": "an operator's reset of the table (SchemaBackedCollection.reset): that table's cold start",
+        "schema_change": "a table dropped or recreated (CopyFollower.schema_changed): only that table is read again",
+        # TODO(3tears 0.96.0 contract step, dated 2026-11-09): remove once no 0.94-or-older writer is left to record one
+        "legacy_whole_record": "an epoch record naming the whole table, from a writer older than 0.95.0 mid-roll",
+    },
+    expected={"cold_start", "reset"},
+)
 
+# TODO(3tears 0.96.0 contract step, dated 2026-11-10): the two names below are WHOLE_READS.whys and .gated, kept one
+# release for their importers (reports' replay and prove scripts)
+WHOLE_READ_WHYS: Final[Mapping[str, str]] = WHOLE_READS.whys
 
 #: the whys a replay or a soak requires to stay at zero: every whole read but a true cold start and an operator's reset
-GATED_WHOLE_READ_WHYS: Final = frozenset(WHOLE_READ_WHYS) - {"cold_start", "reset"}
+GATED_WHOLE_READ_WHYS: Final = WHOLE_READS.gated
 
 #: behind reasons the change notes have already failed to answer this pass: asking them again would only wait again
 _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "notes_whole"})
 
 #: the most values of a key prefix's last column one partition read names
 _PREFIX_BATCH: Final = 1000
-
-
-def _whole_reads() -> Any:
-    return counter(
-        "copy_follower_whole_reads_total",
-        description="tables a copy follower read whole from L3, by table and why ("
-        + "; ".join(f"{why}: {what}" for why, what in WHOLE_READ_WHYS.items())
-        + "); zero but the true cold start",
-        label_names=("table", "why"),
-    )
 
 
 def _warms() -> Any:
@@ -372,17 +371,17 @@ class FollowedTable:
 
 @dataclass(frozen=True, slots=True)
 class _KeyedRead:
-    """the statement that reads some keys' rows of one table from L3: the keys bound as one text array per key
-    column, joined to the table on its key.
+    """how some keys' rows of one table are read from L3: :func:`~threetears.core.keyed.read_keyed_arrow` over the
+    table's key, each key column's values bound as one text array and joined to the table on its key.
 
     On PostgreSQL and YugabyteDB the join is answered by the primary key, a lookup a key (``EXPLAIN`` shows an
     index scan of the key, never a scan of the table): its cost is the keys', whatever the table holds.
 
-    :ivar sql: the statement
+    :ivar casts: each key column's SQL type, its text cast back to
     :ivar types: each column's Arrow type, as the rail answers it
     """
 
-    sql: str
+    casts: tuple[str, ...]
     types: Mapping[str, Any]
 
     @classmethod
@@ -394,11 +393,7 @@ class _KeyedRead:
         :return: the read
         :rtype: _KeyedRead
         """
-        types = rail_arrow_types(table.columns)
-        selected = ", ".join(f"t.{quote_identifier(name)}" for name in types)
-        keys, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
-        sql = f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {keys}) AS k ON {pk_join}"  # noqa: S608
-        return cls(sql=sql, types=types)
+        return cls(casts=tuple(table.key_cast(column) for column in table.key), types=rail_arrow_types(table.columns))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1337,8 +1332,13 @@ class CopyFollower:
                         chunk = [key for key in chunk if key not in late]
                         if not chunk:
                             continue
-            columns = [[key[i] for key in chunk] for i in range(len(table.key))]
-            rows = await l3_fetch_arrow(self._l3, read.sql, *columns, types=read.types)
+            (rows,) = await read_keyed_arrow(
+                self._l3,
+                table.name,
+                keys=KeyBatch(tuple(table.key), chunk, read.casts),
+                types=read.types,
+                batch=len(chunk),
+            )
             kept = list(chunk)
             if table.scope is None:
                 scopes.add(None)
@@ -1503,10 +1503,9 @@ class CopyFollower:
         :return: the scopes of the rows staged
         :rtype: set[str | None]
         """
-        _whole_reads().labels(table=table.name, why=why).inc()
+        WHOLE_READS.count(why, table=table.name)
         if why != "cold_start":
             _warms().labels(why=why).inc()
-        log.info("a followed table is read whole from L3", extra={"extra_data": {"table": table.name, "why": why}})
         types = rail_arrow_types(table.columns)
         selected = ", ".join(quote_identifier(name) for name in types)
         pages = keyset_arrow_pages(
