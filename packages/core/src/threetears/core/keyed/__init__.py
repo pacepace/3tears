@@ -20,7 +20,9 @@ as keyed by construction, judged by the key it names):
 - **a source's change record past a saved mark**: :func:`read_past_marks` (stamps), :func:`read_after` (a growing
   id), :func:`read_keyed` (the ids a runs record named);
 - **a write by key** (a status flip, a stamp, a fence-checked save, a delete of a key's rows): :func:`update_keyed`,
-  :func:`delete_keyed` (:class:`KeyedWrite`); a listing's every row, page after page: :func:`keyset_rows`;
+  :func:`delete_keyed` (:class:`KeyedWrite`, by ``by`` or a :class:`KeyBatch`; :class:`Increment`), a table's columns
+  from a keyed derived select (:func:`update_from`), a stage relation written by its key (:func:`apply_stage`:
+  replace, upsert or the difference); a listing's every row, page after page: :func:`keyset_rows`;
 - **an expiry sweep or a stale-row reap** a page at a time through its index: :func:`delete_before`,
   :func:`update_before`; a cache's trim to its cap by its key's order (SQLite's rowid): :func:`delete_oldest`;
 - **a cache derived from rows**, kept by key: :class:`threetears.epoch.RowFollower`;
@@ -59,7 +61,16 @@ from threetears.core.keyed.rows import (
     read_keyed_arrow,
 )
 from threetears.core.keyed.whole_reads import WholeReads
-from threetears.core.keyed.writes import KeyedWrite, delete_keyed, update_keyed
+from threetears.core.keyed.writes import (
+    Increment,
+    KeyedWrite,
+    StageMode,
+    StageWrite,
+    apply_stage,
+    delete_keyed,
+    update_from,
+    update_keyed,
+)
 
 __all__ = [
     "DEFAULT_KEY_BATCH",
@@ -68,6 +79,7 @@ __all__ = [
     "Derived",
     "Dialect",
     "Fragment",
+    "Increment",
     "KeyBatch",
     "KeyPage",
     "KeyTooWide",
@@ -76,10 +88,13 @@ __all__ = [
     "MarkedRead",
     "PageAfter",
     "Sort",
+    "StageMode",
+    "StageWrite",
     "SweptRows",
     "ThreadedDuckDB",
     "ThreadedSQLite",
     "WholeReads",
+    "apply_stage",
     "count_at_most",
     "counts_by",
     "counts_by_relations",
@@ -99,5 +114,6 @@ __all__ = [
     "read_past_marks",
     "rows_affected",
     "update_before",
+    "update_from",
     "update_keyed",
 ]

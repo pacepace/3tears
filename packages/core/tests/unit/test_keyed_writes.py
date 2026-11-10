@@ -7,6 +7,7 @@ conversion's equivalence on PostgreSQL and YugabyteDB is its package's ``assert_
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from typing import Any
 
@@ -15,13 +16,20 @@ import pytest
 
 from threetears.core.keyed import (
     AnyOf,
+    Derived,
     Fragment,
+    Increment,
     KeyBatch,
     Sort,
+    StageMode,
     ThreadedDuckDB,
+    ThreadedSQLite,
+    apply_stage,
+    counts_by,
     delete_keyed,
     keyset_rows,
     read_keyed,
+    update_from,
     update_keyed,
 )
 
@@ -153,3 +161,109 @@ class TestReadKeyedWhere:
                 ThreadedDuckDB(db), "t", keys=keys, columns=["a", "b"], by={"s": "on"}, where=[guard]
             )
             assert sorted((row["a"], row["b"]) for row in rows) == expected, keys
+
+
+_BATCHES = [
+    KeyBatch(("a",), [("k1",), ("k2",)]),
+    KeyBatch(("a",), [("k1",), ("k2",)], as_list=True),
+    KeyBatch(("a", "b"), [(f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)], ("text", "bigint")),
+    KeyBatch(("a", "b"), [(f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)], as_list=True),
+    KeyBatch(("a",), [("k1",), ("k2",)], null_safe=True),
+]
+
+
+class TestWritesByAKeyBatch:
+    @pytest.mark.parametrize("keys", _BATCHES, ids=["one", "one-list", "two", "two-list", "null-safe"])
+    async def test_an_update_and_a_delete_write_only_the_batch_s_rows(
+        self, db: duckdb.DuckDBPyConnection, keys: KeyBatch
+    ) -> None:
+        """Flips if a batch's write touches a row no key names, misses one, mis-numbers ``by`` or ``where`` past
+        the keys' placeholders, or a batch is not its own statement."""
+        reader = _Recording(db)
+        updated = await update_keyed(
+            reader,
+            "t",
+            values={"v": Increment(1000)},
+            keys=keys,
+            by={"s": "on"},
+            where=[Fragment('"b" > $1', (20,))],
+            batch=7,
+        )
+        named = sorted(b for b in range(100) if b % 10 in (1, 2) and b > 20 and b % 3 != 0)
+        assert updated.count == len(named)
+        assert [row[0] for row in _plain(db, "SELECT b FROM t WHERE v >= 1000 ORDER BY b")] == named
+        assert len(reader.statements) == -(-len(keys.values) // 7)
+        deleted = await delete_keyed(reader, "t", keys=keys, where=[Fragment('"v" >= $1', (1000,))], returning=["b"])
+        assert sorted(row["b"] for row in deleted.rows) == named
+        assert _plain(db, "SELECT count(*) FROM t") == [(100 - len(named),)]
+
+
+class TestUpdateFrom:
+    async def test_it_sets_the_columns_from_the_source_by_the_key(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a row the source does not name is written, a source value lands on another key, or ``by`` is
+        dropped."""
+        db.execute("CREATE TABLE src (a VARCHAR, b BIGINT, v INTEGER)")
+        db.execute("INSERT INTO src VALUES ('k1', 1, -1), ('k1', 11, -11), ('k2', 2, -2)")
+        written = await update_from(
+            ThreadedDuckDB(db),
+            "t",
+            key=["a", "b"],
+            source=Derived("SELECT a, b, v FROM src"),
+            columns=["v"],
+            by={"a": "k1"},
+        )
+        assert written.count == 2
+        assert _plain(db, "SELECT a, b, v FROM t WHERE v < 0 ORDER BY b") == [("k1", 1, -1), ("k1", 11, -11)]
+
+
+def _staged(conn: Any) -> None:
+    conn.execute("CREATE TABLE tgt (k INTEGER PRIMARY KEY, v VARCHAR)")
+    conn.execute("INSERT INTO tgt VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+    conn.execute("CREATE TABLE stg (k INTEGER, v VARCHAR)")
+    conn.execute("INSERT INTO stg VALUES (2, 'b'), (3, 'C'), (4, 'd')")
+
+
+_AFTER = [(1, "a"), (2, "b"), (3, "C"), (4, "d")]
+
+
+class TestApplyStage:
+    @pytest.mark.parametrize(
+        ("mode", "deleted", "written"),
+        [(StageMode.REPLACE, 2, 3), (StageMode.UPSERT, 0, 3), (StageMode.DIFFERENCE, 1, 2)],
+    )
+    @pytest.mark.parametrize("engine", ["duckdb", "sqlite"])
+    async def test_each_mode_leaves_the_stage_written_by_its_key(
+        self, engine: str, mode: StageMode, deleted: int, written: int
+    ) -> None:
+        """Flips if a mode leaves the table other than the stage written over it by key, touches a row the stage
+        does not name, or (difference) rewrites a row the stage holds as it is, on DuckDB or SQLite."""
+        conn: Any = duckdb.connect() if engine == "duckdb" else sqlite3.connect(":memory:", check_same_thread=False)
+        _staged(conn)
+        reader = ThreadedDuckDB(conn) if engine == "duckdb" else ThreadedSQLite(conn)
+        applied = await apply_stage(reader, "tgt", "stg", key=["k"], columns=["k", "v"], mode=mode)
+        assert (applied.deleted, applied.written) == (deleted, written)
+        assert sorted(tuple(row) for row in conn.execute("SELECT k, v FROM tgt").fetchall()) == _AFTER
+        conn.close()
+
+    async def test_a_key_outside_the_columns_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a stage is applied by a key it does not write."""
+        with pytest.raises(ValueError, match="names its key"):
+            await apply_stage(ThreadedDuckDB(db), "t", "t", key=["z"], columns=["a"])
+
+
+class TestCountsEveryValue:
+    async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a value is lost or double-counted across pages, a value outside the prefix is counted, or the
+        count is one statement rather than a page a statement; refused with no prefix (the whole table)."""
+        reader = _Recording(db)
+        counted = await counts_by(reader, "t", column="s", by={"a": "k3"}, batch=1)
+        assert counted == dict(_plain(db, "SELECT s, count(*) FROM t WHERE a = 'k3' GROUP BY s"))
+        # the 'on' page, the empty page past it, the NULL group's count
+        assert len(reader.statements) == 3
+        counted = await counts_by(reader, "t", column="b", by={"a": "k3"}, batch=4, cast="bigint")
+        assert counted == {b: 1 for b in range(3, 100, 10)}
+        paged = [sql for sql, _ in reader.statements[3:] if "GROUP BY" in sql]
+        assert len(paged) == 3
+        assert all("LIMIT 4" in sql for sql in paged)
+        with pytest.raises(ValueError, match="names the prefix"):
+            await counts_by(reader, "t", column="b")

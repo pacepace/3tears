@@ -34,6 +34,9 @@ from threetears.core.keyed import (
     ThreadedSQLite,
     counts_by_relations,
     delete_before,
+    Derived,
+    Increment,
+    apply_stage,
     delete_keyed,
     delete_oldest,
     holds_any,
@@ -43,6 +46,7 @@ from threetears.core.keyed import (
     read_keyed,
     read_past_marks,
     update_before,
+    update_from,
     update_keyed,
 )
 from threetears.core.testing.calibrate import best_seconds, budget_problem
@@ -516,6 +520,91 @@ class TestKeyedWrites:
         )
         problem = _budget("keyset_rows of a state's 6,000 rows, 1,000 a page", took, baseline)
         assert problem is None, problem
+
+
+class TestKeyedWritesByBatchAndStage:
+    async def test_a_key_batch_s_update_delete_and_source_update_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a write by 600 keys, an update from a keyed source, or a stage applied by its key plans other
+        than through the key's index, writes other than its rows, or is over 2x its bare.
+
+        Each bare is the same write hand-written on the same table, natively bound: ``UPDATE ... WHERE (state,
+        geo, id) IN (SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))`` (and the ``DELETE``); ``UPDATE
+        ... FROM (unnest ...) AS s WHERE <key> = s.<key>``; the stage's ``DELETE ... WHERE EXISTS`` plus
+        ``INSERT ... SELECT``."""
+        keys = list(dict.fromkeys(_keys(600)))
+        batch = KeyBatch(("state", "geo", "id"), keys, ("text", "text", "bigint"))
+        typed = ([k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys])
+        named = "(state, geo, id) IN (SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))"
+        recorder = _Executes(seeded.conn)
+        transaction = seeded.conn.transaction()
+        await transaction.start()
+        try:
+            updated = await update_keyed(recorder, _TABLE, values={"votes": Increment(1)}, keys=batch)
+            deleted = await delete_keyed(recorder, _TABLE, keys=batch)
+        finally:
+            await transaction.rollback()
+        assert (updated.count, deleted.count) == (len(keys), len(keys))
+        for sql, args in recorder.asked:
+            plan = await explain_write(seeded.conn, sql, *args)
+            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            assert plan.rows_scanned <= 1.1 * len(keys), plan
+        source = Derived(
+            f"SELECT state, geo, id, -votes AS votes FROM {_TABLE} WHERE state = 'S05' AND geo IN ('001', '002', '003')"
+        )
+        await seeded.conn.execute(
+            f"CREATE TEMP TABLE stage AS SELECT state, geo, id, votes + 1 AS votes, stamp, pad FROM {_TABLE} "
+            "WHERE state = 'S06' AND geo IN ('001', '002', '003')"
+        )
+        cols = ["state", "geo", "id", "votes", "stamp", "pad"]
+        timings = {
+            "update_keyed of 600 keys": (
+                lambda: seeded.conn.execute(f"UPDATE {_TABLE} SET votes = votes + 1 WHERE {named}", *typed),
+                lambda: update_keyed(seeded.conn, _TABLE, values={"votes": Increment(1)}, keys=batch),
+            ),
+            "delete_keyed of 600 keys": (
+                lambda: seeded.conn.execute(f"DELETE FROM {_TABLE} WHERE {named}", *typed),
+                lambda: delete_keyed(seeded.conn, _TABLE, keys=batch),
+            ),
+            "update_from a keyed source of 90 rows": (
+                lambda: seeded.conn.execute(
+                    f"UPDATE {_TABLE} SET votes = s.votes FROM ({source.sql}) AS s WHERE {_TABLE}.state = s.state "
+                    f"AND {_TABLE}.geo = s.geo AND {_TABLE}.id = s.id"
+                ),
+                lambda: update_from(seeded.conn, _TABLE, key=["state", "geo", "id"], source=source, columns=["votes"]),
+            ),
+            "apply_stage replace of 90 rows": (
+                lambda: _replace_bare(seeded.conn),
+                lambda: apply_stage(seeded.conn, _TABLE, "stage", key=["state", "geo", "id"], columns=cols),
+            ),
+        }
+        problems = []
+        for what, (bare, helper) in timings.items():
+            baseline = await _rolled_back(seeded.conn, bare)
+            took = await _rolled_back(seeded.conn, helper)
+            problems.append(_budget(what, took, baseline))
+        assert problems == [None] * len(timings), problems
+
+    async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if counts_by with no values counts other than every geo of a state, reads past its pages' rows,
+        or is over 2x the bare one-statement ``GROUP BY`` of the same state through the same index."""
+        recorder = PlanRecorder(seeded.conn)
+        counted = await counts_by(recorder, _TABLE, column="geo", by={"state": "S31"}, batch=100)
+        assert counted == {f"{g:03d}": _IDS for g in range(1, _GEOS + 1)}
+        # a count reads its groups' rows (30 a geo), so no rows-scanned ratio: no looped sequential scan
+        _plans_ok(recorder, seeded, scan_ratio=None)
+        bare = f"SELECT geo, count(*) FROM {_TABLE} WHERE state = $1 GROUP BY geo"
+        baseline = await best_seconds(lambda: seeded.conn.fetch(bare, "S31"))
+        took = await best_seconds(lambda: counts_by(seeded.conn, _TABLE, column="geo", by={"state": "S31"}, batch=100))
+        problem = _budget("counts_by every geo of a state, 100 a page", took, baseline)
+        assert problem is None, problem
+
+
+async def _replace_bare(conn: asyncpg.Connection) -> None:
+    await conn.execute(
+        f"DELETE FROM {_TABLE} WHERE EXISTS (SELECT 1 FROM stage s WHERE s.state = {_TABLE}.state "
+        f"AND s.geo = {_TABLE}.geo AND s.id = {_TABLE}.id)"
+    )
+    await conn.execute(f"INSERT INTO {_TABLE} SELECT * FROM stage")
 
 
 class TestReadJoined:

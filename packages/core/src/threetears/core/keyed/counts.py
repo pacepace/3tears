@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from threetears.core.keyed._filters import AnyOf, Derived, Fragment, by_conditions, relation, renumbered
+from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, renumbered
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -238,8 +238,14 @@ async def counts_by(
     where: Sequence[Fragment] = (),
     by: Mapping[str, Any] | None = None,
     batch: int = 999,
+    cast: str | None = "text",
 ) -> dict[Any, int]:
     """how many rows of ``table`` each value of ``column`` holds (within ``by``), ``batch`` values a statement.
+
+    With neither ``values`` nor ``where``, every value of ``column`` within the prefix ``by`` is counted, ``batch``
+    values a statement in the column's order (``... AND "column" > $last GROUP BY "column" ORDER BY "column" LIMIT
+    batch``): each statement reads the rows of its own groups through the ``(by, column)`` index, never the prefix's
+    rows at once. ``cast`` is the column's SQL type the page's last value binds as (None binds it as it is: SQLite).
 
     ``SELECT "column", count(*) FROM t WHERE <by> AND "column" = ANY($n::<cast>[]) GROUP BY "column"``: each statement
     counts the rows its own keys name, so ``by`` and ``column`` together must be a leading part of the key (or of an
@@ -258,17 +264,66 @@ async def counts_by(
     :ptype where: Sequence[Fragment]
     :param by: the prefix pinned ahead of it (a state, a tenant)
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most values a statement names
+    :param batch: the most values a statement names (or, paging every value, the most groups a statement answers)
     :ptype batch: int
+    :param cast: the column's SQL type, binding the last value of a page when every value is counted; None binds it
+        as it is (SQLite)
+    :ptype cast: str | None
     :return: value -> its rows; a value holding none is absent
     :rtype: dict[Any, int]
-    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values`` nor ``where``
-        names the rows
+    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values``, ``where``
+        nor a prefix ``by`` names the rows
     """
+    if values is None and not where:
+        return await _counts_paged(conn, table, column=column, by=dict(by or {}), batch=batch, cast=cast)
     counted = await counts_by_relations(
         conn, {"": table}, column=column, values=values, where=where, by=by, batch=batch
     )
     return counted[""]
+
+
+async def _counts_paged(
+    conn: Any, table: str | Derived, *, column: str, by: dict[str, Any], batch: int, cast: str | None
+) -> dict[Any, int]:
+    """every value of ``column`` within the prefix ``by`` counted, ``batch`` groups a statement in its order.
+
+    :raises ValueError: when ``by`` is empty (that is the whole table), names ``column``, or ``batch`` is under one
+    """
+    if not by:
+        raise ValueError(f"a keyed count of every {column} in {table} names the prefix it counts within (by=)")
+    if column in by:
+        raise ValueError(f"{column} is counted by, so it is not also pinned")
+    if batch < 1:
+        raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
+    if cast is not None and not _SQL_TYPE.match(cast):
+        raise ValueError(f"counts_by: {cast!r} is not a SQL type name")
+    quoted = quote_identifier(column)
+    counted: dict[Any, int] = {}
+    last: Any = None
+    while True:
+        conditions, params = by_conditions(by)
+        conditions.append(f"{quoted} IS NOT NULL")
+        if last is not None:
+            params.append(last)
+            conditions.append(f"{quoted} > ${len(params)}{'' if cast is None else f'::{cast}'}")
+        sql = (
+            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}"
+            f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
+        )
+        rows = await conn.fetch(sql, *params)
+        for row in rows:
+            counted[row["counted"]] = int(row["held"])
+        if len(rows) < batch:
+            break
+        last = rows[-1]["counted"]
+    # the NULL group, which no "> last" reaches: one keyed count of its own
+    conditions, params = by_conditions({**by, column: None})
+    rows = await conn.fetch(
+        f"SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
+    )
+    if rows and int(rows[0]["held"]):
+        counted[None] = int(rows[0]["held"])
+    return counted
 
 
 async def counts_by_relations(
