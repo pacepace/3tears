@@ -26,6 +26,7 @@ from threetears.datasources.query_client import (
     IncompleteReadError,
     RelationFingerprintResult,
     keyset_condition,
+    read_all,
 )
 
 _STATES = [f"S{index:02d}" for index in range(12)]
@@ -154,6 +155,7 @@ async def test_each_part_is_read_whole_and_returned_in_the_order_given() -> None
         parts=[{"state": state} for state in wanted],
         concurrency=3,
         page_size=2,
+        prove=True,
     )
 
     assert [{row["state"] for row in part} for part in parts] == [{state} for state in wanted]
@@ -205,6 +207,7 @@ async def test_an_incomplete_part_is_raised_as_itself() -> None:
             relation="s.results",
             key=["race"],
             parts=[{"state": _STATES[0]}],
+            prove=True,
         )
 
 
@@ -280,6 +283,7 @@ class TestOneKeysetBuilder:
                 key=["race", "n"],
                 partition_by="state",
                 page_size=2,
+                prove=True,
             )
         ]
 
@@ -303,9 +307,14 @@ class _SettlingRail:
         self.after_page: Any = None
         self.page_starts_asked = 0
         self.refuse_pages = False
+        self._fingerprints_asked = 0
 
     def forwarded_identity_token(self) -> str:
         return "fake-identity-token"
+
+    @property
+    def fingerprints_asked(self) -> int:
+        return self._fingerprints_asked
 
     def part_rows(self, state: str) -> list[dict[str, Any]]:
         return sorted((r for r in self.rows if r["state"] == state), key=lambda r: r["race"])
@@ -313,6 +322,7 @@ class _SettlingRail:
     async def relation_fingerprint_groups(
         self, datasource_name: str, *, relation: str, key: Any, group_by: str, where_in: Any = None, **_: Any
     ) -> dict[str | None, RelationFingerprintResult]:
+        self._fingerprints_asked += 1
         wanted = set(where_in[group_by]) if where_in else {r["state"] for r in self.rows}
         found: dict[str | None, RelationFingerprintResult] = {}
         for state in sorted(wanted):
@@ -358,6 +368,7 @@ async def _read_all_partitions(rail: _SettlingRail, read: list[tuple[str, list[d
         key=["race"],
         partition_by="state",
         page_size=2,
+        prove=True,
     ):
         read.append(part)
 
@@ -443,3 +454,85 @@ class TestAPartChangedWhileItWasRead:
             await _read_all_partitions(rail, [])
 
         assert rail.page_starts_asked == 1
+
+
+class TestTheRailReadsByKeyWithNoFingerprint:
+    """by default a read over the rail is keyset pages and nothing else: the source's change record says what
+    changed, so no read fingerprints the warehouse before and after itself (two asks per read, each a scan)."""
+
+    async def test_named_partitions_are_read_with_no_fingerprint(self) -> None:
+        """Flips if read_partitions over named parts asks the warehouse for a fingerprint by default."""
+        rail = _SettlingRail(_rows())
+        read = [
+            part
+            async for part in read_partitions(
+                rail,  # type: ignore[arg-type]
+                "w",
+                columns=["state", "race", "votes"],
+                relation="s.r",
+                key=["race"],
+                partition_by="state",
+                parts=["S01", "S00", "S99"],
+                page_size=2,
+            )
+        ]
+        assert rail.fingerprints_asked == 0
+        assert read == [(state, rail.part_rows(state)) for state in ("S00", "S01", "S99")]
+
+    async def test_a_named_part_short_of_its_count_is_raised(self) -> None:
+        """Flips if a part whose pages hold fewer rows than the caller's count is handed back."""
+        rail = _SettlingRail(_rows())
+        with pytest.raises(IncompleteReadError, match="counted 4 rows and the read returned 3"):
+            async for _ in read_partitions(
+                rail,  # type: ignore[arg-type]
+                "w",
+                columns=["state", "race", "votes"],
+                relation="s.r",
+                key=["race"],
+                partition_by="state",
+                parts=["S00"],
+                counts={"S00": 4},
+                page_size=2,
+            ):
+                pass
+        assert rail.fingerprints_asked == 0
+
+    async def test_the_old_proof_is_an_explicit_opt_in(self) -> None:
+        """Flips if prove=True stops fingerprinting the parts before and after their read."""
+        rail = _SettlingRail(_rows())
+        async for _ in read_partitions(
+            rail,  # type: ignore[arg-type]
+            "w",
+            columns=["state", "race", "votes"],
+            relation="s.r",
+            key=["race"],
+            partition_by="state",
+            parts=["S00"],
+            page_size=2,
+            prove=True,
+        ):
+            pass
+        assert rail.fingerprints_asked == 2
+
+    async def test_read_all_and_read_parts_take_no_fingerprint_by_default(self) -> None:
+        """Flips if read_all or read_parts asks the warehouse for a fingerprint unless told to prove."""
+        warehouse = _Warehouse(_rows())
+        rows = await read_all(
+            warehouse,  # type: ignore[arg-type]
+            "w",
+            columns=["state", "race", "votes"],
+            relation="s.r",
+            key=["race"],
+            where={"state": "S03"},
+        )
+        parts = await read_parts(
+            warehouse,  # type: ignore[arg-type]
+            "w",
+            columns=["state", "race", "votes"],
+            relation="s.r",
+            key=["race"],
+            parts=[{"state": "S04"}, {"state": "S05"}],
+        )
+        assert warehouse.asked == []
+        assert rows == [r for r in _rows() if r["state"] == "S03"]
+        assert parts == [[r for r in _rows() if r["state"] == state] for state in ("S04", "S05")]

@@ -92,6 +92,7 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
+from threetears.core.operator import operator_command
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -1938,6 +1939,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             raise CheckpointPurgeIncompleteError(f"purge of thread {thread_id!r}", failures)
         self._cache_bypassed_threads.discard(storage_thread_id)
 
+    @operator_command(
+        "tenant offboarding: erases every checkpoint thread of one customer, by its thread-key prefix",
+        proof="packages/langgraph/tests/test_checkpoint_tenancy.py::test_adelete_customer_threads_refuses_without_a_customer",
+    )
     async def adelete_customer_threads(self, *, customer: UUID | None = None) -> None:
         """delete every checkpoint and write belonging to this saver's customer.
 

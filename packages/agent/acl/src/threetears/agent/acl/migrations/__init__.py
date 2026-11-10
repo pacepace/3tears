@@ -11,6 +11,7 @@ version history:
 
 - v001 creates the five tables, their keys, and the uniqueness the
   evaluator and the idempotent writers rely on (3tears v0.59.0).
+- v002 creates the indexes the evaluator's keyed reads use (3tears v0.95.0).
 
 ``agent_tools_platform`` ALTERs ``namespaces``; a deployment that runs
 both registers it with ``depends_on=("agent_acl",)``.
@@ -26,6 +27,7 @@ from threetears.agent.acl.collections import (
     RoleCollection,
 )
 from threetears.agent.acl.migrations.v001_create_acl_tables import ACL_TABLES_DDL, create_acl_tables
+from threetears.agent.acl.migrations.v002_reader_indexes import ACL_READER_INDEXES_DDL, create_acl_reader_indexes
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_acl"
@@ -42,6 +44,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     """
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=MigrationScope.PLATFORM)
     pkg.version(1)(create_acl_tables)
+    pkg.version(2)(create_acl_reader_indexes)
     # the five access tables are switched on: each carries the write-mark trigger from this run
     pkg.mark_write_generation(
         GroupCollection.schema,
@@ -54,4 +57,11 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     return pkg
 
 
-__all__ = ["ACL_TABLES_DDL", "PACKAGE_NAME", "create_acl_tables", "register"]
+__all__ = [
+    "ACL_READER_INDEXES_DDL",
+    "ACL_TABLES_DDL",
+    "PACKAGE_NAME",
+    "create_acl_reader_indexes",
+    "create_acl_tables",
+    "register",
+]

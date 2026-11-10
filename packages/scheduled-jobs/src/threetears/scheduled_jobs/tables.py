@@ -141,6 +141,10 @@ def scheduled_jobs_table(metadata: MetaData) -> Table:
             "idx_scheduled_jobs_next_fire",
             "next_fire_at",
             postgresql_where=sa_text("status = 'active' AND next_fire_at IS NOT NULL"),
+            info={
+                "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_due_for_tick",
+                "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire",
+            },
         ),
         Index(
             "idx_scheduled_jobs_partition_status",
@@ -212,10 +216,25 @@ def job_fires_table(metadata: MetaData) -> Table:
             "idx_job_fires_job_time",
             "job_id",
             sa_text("actual_fired_at DESC"),
+            info={
+                "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs",
+                "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_job_time",
+            },
         ),
         Index(
             "idx_job_fires_partition_time",
             "partition_key",
             sa_text("actual_fired_at DESC"),
+        ),
+        # v002: the fires in flight, the reaper's sweep
+        Index(
+            "idx_job_fires_dispatching",
+            "status",
+            "actual_fired_at",
+            postgresql_where=sa_text("status = 'dispatching'"),
+            info={
+                "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.reap_stale_dispatching",
+                "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_dispatching",
+            },
         ),
     )

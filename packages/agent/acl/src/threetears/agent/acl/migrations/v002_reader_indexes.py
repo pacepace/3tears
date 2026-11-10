@@ -1,0 +1,50 @@
+"""
+agent-acl v002: the indexes the evaluator's keyed reads use.
+
+Each read by something other than a table's primary key goes through an index made for it, named as the
+platform's own schema names it, so a deployment that already has one creates nothing:
+
+- ``idx_group_members_reverse`` (member_type, member_id): the memberships naming a user, agent or group,
+  :meth:`GroupMemberCollection._load_naming`, on every access evaluation;
+- ``idx_role_assignments_group_scope`` (group_id, scope_type): every assignment a set of groups holds, the
+  evaluator's grant load and a group delete's cascade;
+- ``idx_namespaces_name`` (name): :meth:`NamespaceCollection.get_by_name`. Not unique here: a namespace's name
+  is not unique in this package (v001).
+
+Idempotent: every index checks first.
+"""
+
+from __future__ import annotations
+
+from threetears.core.data.store import DataStore
+from threetears.observe import get_logger
+
+__all__ = ["ACL_READER_INDEXES_DDL", "create_acl_reader_indexes"]
+
+log = get_logger(__name__)
+
+#: Every statement, in order. Each is safe to run twice.
+ACL_READER_INDEXES_DDL: tuple[str, ...] = (
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
+    "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ASSIGNMENTS_OF_GROUPS_SQL\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_group_scope\n"
+    "CREATE INDEX IF NOT EXISTS idx_role_assignments_group_scope ON role_assignments (group_id, scope_type)",
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_BY_NAME_SQL\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_name\n"
+    "CREATE INDEX IF NOT EXISTS idx_namespaces_name ON namespaces (name)",
+)
+
+
+async def create_acl_reader_indexes(store: DataStore) -> None:
+    """Create the indexes the evaluator's keyed reads use.
+
+    :param store: the migration's data store
+    :ptype store: DataStore
+    :return: nothing
+    :rtype: None
+    """
+    for statement in ACL_READER_INDEXES_DDL:
+        await store.execute(statement)
+    log.info("agent-acl v002: reader indexes created")

@@ -98,7 +98,11 @@ _CREATE_CONV_STATUS_INDEX_SQL = (
 )
 
 
-_CREATE_USER_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_webhook_subs_user ON webhook_subscriptions (user_id)"
+_CREATE_USER_INDEX_SQL = (
+    "-- purpose: packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_rate_limit\n"
+    "-- plan_test: packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_subs_user\n"
+    "CREATE INDEX IF NOT EXISTS idx_webhook_subs_user ON webhook_subscriptions (user_id)"
+)
 
 
 # Retro-add the FK on wake_fires.webhook_subscription_id. Postgres has

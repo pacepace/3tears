@@ -162,13 +162,15 @@ class FeatureCache(BaseCollection[FeatureEntity]):
     # R-Tree companion
     # ------------------------------------------------------------------
 
+    # each instance holds its own R-Tree and key map, so a collected instance's entries go by dropping
+    # its two tables, never by finding its rows among another instance's
     @property
     def _rtree_table(self) -> str:
-        return f"{self.table_name}_rtree"
+        return f"{self.table_name}_{self._instance_key}_rtree"
 
     @property
     def _map_table(self) -> str:
-        return f"{self.table_name}_rtree_map"
+        return f"{self.table_name}_{self._instance_key}_rtree_map"
 
     def ensure_index(self) -> None:
         """create the R-Tree and its key map if absent.
@@ -197,9 +199,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         )
         conn.commit()
         self._rtree_ready = True
-        weakref.finalize(
-            self, _drop_index_entries, backend, self._rtree_table, self._map_table, f"{self._instance_key}\x1f"
-        )
+        weakref.finalize(self, _drop_index_entries, backend, self._rtree_table, self._map_table)
 
     def _feature_key(self, layer: str, source_version: int, feature_id: Any) -> str:
         return f"{self._instance_key}\x1f{layer}\x1f{source_version}\x1f{feature_id}"
@@ -529,11 +529,13 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if backend is None or not self._rtree_ready:
             return
         keys = [(self._feature_key(layer, source_version, feature_id),) for feature_id, _bounds in features]
+        # the map's unique key, and the id the R-Tree and the map share as their key
+        key_column, pk = "feature_key", "id"
         conn = backend.get_connection()
-        conn.executemany(f"INSERT OR IGNORE INTO {self._map_table} (feature_key) VALUES (?)", keys)
+        conn.executemany(f"INSERT OR IGNORE INTO {self._map_table} ({key_column}) VALUES (?)", keys)
         conn.executemany(
-            f"INSERT OR REPLACE INTO {self._rtree_table} (id, min_x, max_x, min_y, max_y) "
-            f"SELECT id, ?, ?, ?, ? FROM {self._map_table} WHERE feature_key = ?",
+            f"INSERT OR REPLACE INTO {self._rtree_table} ({pk}, min_x, max_x, min_y, max_y) "
+            f"SELECT {pk}, ?, ?, ?, ? FROM {self._map_table} WHERE {key_column} = ?",
             [
                 (b.min_lon, b.max_lon, b.min_lat, b.max_lat, key)
                 for (_feature_id, b), (key,) in zip(features, keys, strict=True)
@@ -549,12 +551,14 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if backend is None or not self._rtree_ready:
             return
         params = [(key,) for key in keys]
+        # the map's unique key, and the id the R-Tree and the map share as their key
+        key_column, pk = "feature_key", "id"
         conn = backend.get_connection()
         conn.executemany(
-            f"DELETE FROM {self._rtree_table} WHERE id IN (SELECT id FROM {self._map_table} WHERE feature_key = ?)",
+            f"DELETE FROM {self._rtree_table} WHERE {pk} IN (SELECT {pk} FROM {self._map_table} WHERE {key_column} = ?)",
             params,
         )
-        conn.executemany(f"DELETE FROM {self._map_table} WHERE feature_key = ?", params)
+        conn.executemany(f"DELETE FROM {self._map_table} WHERE {key_column} = ?", params)
         conn.commit()
 
     def _row_bounds(self, row: dict[str, Any]) -> BoundingBox:
@@ -600,22 +604,18 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         return result
 
 
-def _drop_index_entries(backend: Any, rtree_table: str, map_table: str, prefix: str) -> None:
-    """delete a collected :class:`FeatureCache`'s R-Tree entries; best effort, never raises.
+def _drop_index_entries(backend: Any, rtree_table: str, map_table: str) -> None:
+    """drop a collected :class:`FeatureCache`'s own R-Tree and key map; best effort, never raises.
 
     run by :func:`weakref.finalize`, so it may run on any thread -- whichever one triggers the
     collection -- during interpreter shutdown, or after the L1 has closed, and SQLite may refuse
     the connection from there. the worst case is orphaned entries: rows in an in-memory table that
-    no live cache reads, since every key carries the collected instance's token.
+    no live cache reads, since the tables are the collected instance's own.
     """
     try:
         conn = backend.get_connection()
-        params = (len(prefix), prefix)
-        conn.execute(
-            f"DELETE FROM {rtree_table} WHERE id IN (SELECT id FROM {map_table} WHERE substr(feature_key, 1, ?) = ?)",
-            params,
-        )
-        conn.execute(f"DELETE FROM {map_table} WHERE substr(feature_key, 1, ?) = ?", params)
+        conn.execute(f"DROP TABLE IF EXISTS {rtree_table}")
+        conn.execute(f"DROP TABLE IF EXISTS {map_table}")
         conn.commit()
     # prawduct:allow prawduct/broad-except -- a finalizer must not raise; whatever the L1 says on
     # the way down, the entries are unread and the table is in memory

@@ -31,7 +31,8 @@ class _RoutingConn:
 
 @pytest.mark.asyncio
 async def test_deletes_alias_collisions_before_repoint() -> None:
-    """colliding source memories are deleted, then survivors repoint."""
+    """colliding source memories are deleted (_delete_alias_collisions, the merge's first step), then survivors
+    repoint: an operator's merge of two users, reached only through repoint_user."""
     agent = uuid4()
     from_id = uuid4()
     to_id = uuid4()

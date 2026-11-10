@@ -236,6 +236,7 @@ class TestReadAllTakesSetAndTypedFilters:
             where={"state_code": "TX"},
             where_in=_SETS,
             page_size=5,
+            prove=True,
         )
 
         assert read == _expected(rows, {101, 103}, {"state", "cd"}, {"dem_2way", "counted_dem_2way"}, "TX")
@@ -258,6 +259,7 @@ class TestReadAllTakesSetAndTypedFilters:
             key=_KEY,
             where={"run_id": 102, "state_code": "DE"},
             page_size=7,
+            prove=True,
         )
 
         assert {r["run_id"] for r in read} == {102}
@@ -287,6 +289,7 @@ class TestReadAllTakesSetAndTypedFilters:
                 where={"state_code": "TX"},
                 where_in=_SETS,
                 page_size=5,
+                prove=True,
             )
 
     async def test_an_empty_set_reads_nothing_and_asks_nothing(self) -> None:
@@ -299,6 +302,7 @@ class TestReadAllTakesSetAndTypedFilters:
             relation=_RELATION,
             key=_KEY,
             where_in={"run_id": []},
+            prove=True,
         )
 
         assert read == []
@@ -320,6 +324,7 @@ class TestReadAllTakesSetAndTypedFilters:
                 key=_KEY,
                 where=where,
                 where_in=where_in,
+                prove=True,
             )
         assert warehouse.pages == []
 
