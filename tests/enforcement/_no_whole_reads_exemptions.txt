@@ -1,7 +1,7 @@
 # The no-whole-reads gate's one way out (threetears.enforcement.no_whole_reads). One line per function that is a
 # TRUE cold start (an empty copy filled once, with nothing in L2 to load) or a SCHEMA CHANGE, never anything else:
 #
-#   <path> :: <function> :: <hits> :: <cold-start|schema-change> :: <tests/...py::proving_test> :: <tests/...py::speed_test> :: <reason>
+#   <path> :: <function> :: <hits> :: <cold-start|schema-change|source-gap> :: <tests/...py::proving_test> :: <tests/...py::speed_test> :: <reason>
 #
 # <hits> pins the function's hit count exactly. The proving test must show the function is reached ONLY on that
 # cold start or schema change -- never on a steady-state load, a retry, a recovery or a lost L2 -- and must name it.
