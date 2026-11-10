@@ -162,6 +162,10 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("purpose", "key")
+    #: the table's expiry sweep (:meth:`sweep_expired`): at most ``$2`` rows expired before ``$1`` deleted, found
+    #: through the table's expiry index, which names this statement its purpose. Written out per table so the
+    #: statement says which table and index it reads
+    sweep_expired_sql: ClassVar[str] = ""
     # save_to_store below only answers for a registry with no L3; every row it writes goes
     # through the generated statement, so a row is completed as that statement stores it.
     stores_through_generated_sql: ClassVar[bool | None] = True
@@ -428,11 +432,8 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             return 0
         cutoff = now or datetime.now(UTC)
         table = self.table_name
-        deleted = await store.execute(
-            f"DELETE FROM {table} WHERE (purpose, key) IN ("  # noqa: S608 - table name is a declared literal
-            f"SELECT purpose, key FROM {table} WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT {int(batch)})",
-            cutoff,
-        )
+        # each table's own statement, its expired rows found through its expiry index (the index names it)
+        deleted = await store.execute(type(self).sweep_expired_sql, cutoff, int(batch))
         rows = _rows_affected(deleted)
         # Logged even at zero: an operator looking at a growing table needs to tell "sweeping,
         # nothing expired" from "never sweeping" and from "sweeping and failing".
@@ -513,7 +514,19 @@ class CoordinationCountersCollection(CoordinationCollection):
             *l2_order_columns(),
         ],
         cas_column="date_updated",
-        indexes=(SchemaIndex("idx_coordination_counters_expiry", "expires_at"),),
+        indexes=(
+            SchemaIndex(
+                "idx_coordination_counters_expiry",
+                "expires_at",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCountersCollection.sweep_expired_sql",
+                plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
+                "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
+            ),
+        ),
+    )
+    sweep_expired_sql: ClassVar[str] = (
+        "DELETE FROM coordination_counters WHERE (purpose, key) IN ("
+        "SELECT purpose, key FROM coordination_counters WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -542,7 +555,19 @@ class CoordinationClaimsCollection(CoordinationCollection):
             *l2_order_columns(),
         ],
         cas_column="date_updated",
-        indexes=(SchemaIndex("idx_coordination_claims_expiry", "expires_at"),),
+        indexes=(
+            SchemaIndex(
+                "idx_coordination_claims_expiry",
+                "expires_at",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationClaimsCollection.sweep_expired_sql",
+                plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
+                "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
+            ),
+        ),
+    )
+    sweep_expired_sql: ClassVar[str] = (
+        "DELETE FROM coordination_claims WHERE (purpose, key) IN ("
+        "SELECT purpose, key FROM coordination_claims WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -567,7 +592,19 @@ class CoordinationRevocationsCollection(CoordinationCollection):
             Column("revoked_at", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
-        indexes=(SchemaIndex("idx_coordination_revocations_expiry", "expires_at"),),
+        indexes=(
+            SchemaIndex(
+                "idx_coordination_revocations_expiry",
+                "expires_at",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRevocationsCollection.sweep_expired_sql",
+                plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
+                "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
+            ),
+        ),
+    )
+    sweep_expired_sql: ClassVar[str] = (
+        "DELETE FROM coordination_revocations WHERE (purpose, key) IN ("
+        "SELECT purpose, key FROM coordination_revocations WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -593,7 +630,19 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
         # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
         columns=[*_common_columns(), *l2_order_columns()],
         cas_column="date_updated",
-        indexes=(SchemaIndex("idx_coordination_redemptions_expiry", "expires_at"),),
+        indexes=(
+            SchemaIndex(
+                "idx_coordination_redemptions_expiry",
+                "expires_at",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRedemptionsCollection.sweep_expired_sql",
+                plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
+                "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
+            ),
+        ),
+    )
+    sweep_expired_sql: ClassVar[str] = (
+        "DELETE FROM coordination_redemptions WHERE (purpose, key) IN ("
+        "SELECT purpose, key FROM coordination_redemptions WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
