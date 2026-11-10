@@ -265,5 +265,5 @@ class TestCountsEveryValue:
         paged = [sql for sql, _ in reader.statements[3:] if "GROUP BY" in sql]
         assert len(paged) == 3
         assert all("LIMIT 4" in sql for sql in paged)
-        with pytest.raises(ValueError, match="names the prefix"):
+        with pytest.raises(ValueError, match="the prefix of t it counts every value within"):
             await counts_by(reader, "t", column="b")

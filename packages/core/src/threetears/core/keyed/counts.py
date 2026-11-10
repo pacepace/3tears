@@ -290,7 +290,10 @@ async def _counts_paged(
     :raises ValueError: when ``by`` is empty (that is the whole table), names ``column``, or ``batch`` is under one
     """
     if not by:
-        raise ValueError(f"a keyed count of every {column} in {table} names the prefix it counts within (by=)")
+        raise ValueError(
+            f"a keyed count names its values of {column}, a filter naming them, or the prefix of {table} it counts "
+            "every value within (by=)"
+        )
     if column in by:
         raise ValueError(f"{column} is counted by, so it is not also pinned")
     if batch < 1:
