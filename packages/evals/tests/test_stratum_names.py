@@ -250,6 +250,8 @@ class TestADeclaredNameReachesThePage:
         headers = self._headers({"off_lane": "Off-lane asks"})
         assert "Off-lane asks" in headers and "off_lane" not in headers
 
-    def test_an_undeclared_stratum_column_is_headed_by_its_id(self) -> None:
+    def test_an_undeclared_stratum_column_is_headed_by_its_reader_name(self) -> None:
+        # The name a written page's charts print for it (Discodon's C5b re-shoot found "off lane" in a chart and
+        # "off_lane" in the table beside it): one display form, its id humanized, never the id itself.
         headers = self._headers({})
-        assert "off_lane" in headers and NO_STRATUM not in headers
+        assert "off lane" in headers and "off_lane" not in headers and NO_STRATUM not in headers

@@ -2961,9 +2961,12 @@ def _by_stratum_row(table: TableBlock) -> TableBlock:
 
 
 def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
-    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
-    :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else declared.get(name, name)
+    """A stratum as a column header, a case's row and a disclosure name it: its declared display name, else its id
+    humanized (``off lane``), the one name a written page's charts and tables print for it
+    (:func:`~threetears.evals.analysis.report.figure_keys.reader_name`), else :data:`NO_STRATUM`."""
+    if name is None:
+        return NO_STRATUM
+    return declared.get(name) or humanize("dimension", name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
