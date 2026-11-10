@@ -444,11 +444,12 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
             ["conversations.conversation_id"],
             ondelete="CASCADE",
         ),
-        # v0.57.0: the ledger's (conversation_id, date_created) index the
-        # migrations build; the primary key serves conversation_id alone.
+        # v034 (0.95.0): the ledger's read of the refs one agent surfaced,
+        # newest first; it replaced the (conversation_id, date_created) index.
         SAIndex(
-            "idx_conv_mem_refs_conversation_date_created",
+            "idx_conv_mem_refs_conversation_agent_date",
             "conversation_id",
+            "agent_id",
             "date_created",
         ),
     )

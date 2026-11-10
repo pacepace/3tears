@@ -265,6 +265,6 @@ async def test_the_upsert_keeps_one_row_per_agent_and_one_for_no_agent(
                 )
             )
         assert [r.agent_id for r in await refs.find_by_conversation(conversation_id, agent_a)] == [agent_a]
-        assert len(await refs.find_by_conversation(conversation_id)) == 2
+        assert [r.agent_id for r in await refs.find_by_conversation(conversation_id, agent_b)] == [agent_b]
     finally:
         await pool.close()

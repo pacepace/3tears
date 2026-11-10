@@ -134,10 +134,8 @@ _CREATE_DECLARED_INDEXES_SQL: tuple[str, ...] = (
         "CREATE INDEX IF NOT EXISTS idx_chunks_message_id_end "
         "ON memory_chunks (message_id_end) WHERE message_id_end IS NOT NULL"
     ),
-    (
-        "CREATE INDEX IF NOT EXISTS idx_conv_mem_refs_conversation_date_created "
-        "ON conversation_memory_refs (conversation_id, date_created)"
-    ),
+    # idx_conv_mem_refs_conversation_date_created is no longer declared: v034 replaced it with the agent's index, so
+    # a replay of this step does not build it again (v002 built it, v014 named it, v034 drops it)
 )
 
 

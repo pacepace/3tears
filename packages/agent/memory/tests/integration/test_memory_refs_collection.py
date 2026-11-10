@@ -69,6 +69,8 @@ def _l1_metadata() -> MetaData:
         # convention.
         Column("date_created", TIMESTAMP),
         Column("date_updated", TIMESTAMP),
+        # the agent whose ref it is (find_by_conversation reads by it): the mirror carries every column of the table
+        Column("agent_id", String(255)),
     )
     return md
 
@@ -430,7 +432,7 @@ class TestMemoryRefsCollectionThreeTier:
         self,
         applied_schema: tuple[str, str],
     ) -> None:
-        """multi-row scan returns every ref chronologically per conversation."""
+        """one agent's refs in a conversation come back chronologically; another conversation's never do."""
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
@@ -438,6 +440,7 @@ class TestMemoryRefsCollectionThreeTier:
             coll, _reg, _l1 = _build_pod(pool, nats)
 
             conv_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
             base = datetime.now(UTC)
             ids_in_order: list[uuid.UUID] = []
             for i in range(3):
@@ -447,6 +450,7 @@ class TestMemoryRefsCollectionThreeTier:
                 entity = coll.create(
                     {
                         "conversation_id": conv_id,
+                        "agent_id": agent_id,
                         "item_id": item_id,
                         "item_type": "memory",
                         "short_desc": f"item {i}",
@@ -461,6 +465,7 @@ class TestMemoryRefsCollectionThreeTier:
             other_entity = coll.create(
                 {
                     "conversation_id": other_conv,
+                    "agent_id": agent_id,
                     "item_id": uuid.uuid4(),
                     "item_type": "memory",
                     "short_desc": "other",
@@ -470,7 +475,7 @@ class TestMemoryRefsCollectionThreeTier:
             )
             await coll.save_entity(other_entity)
 
-            refs = await coll.find_by_conversation(conv_id)
+            refs = await coll.find_by_conversation(conv_id, agent_id)
             assert len(refs) == 3
             returned_ids = [ref.item_id for ref in refs]
             assert returned_ids == ids_in_order

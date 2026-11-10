@@ -80,6 +80,7 @@ from threetears.agent.memory.entities import (
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
+    "MEMORY_REFS_PAGE",
     "ConsolidationCycleError",
     "MediaCollection",
     "MediaContentCollection",
@@ -290,6 +291,10 @@ def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str
         return None
     return text[:max_len]
 
+
+#: the most refs :meth:`MemoryRefsCollection.find_by_conversation` reads by default: the surfaced-refs FIFO a
+#: conversation keeps per agent (``threetears.agent.tools.context``) holds this many and deletes the oldest past it
+MEMORY_REFS_PAGE: Final[int] = 50
 
 #: the owner triple every memory hybrid-search read is scoped to, written out so the read's key is in its text: the
 #: partition column ``agent_id`` and its sub-scopes ``customer_id`` and ``user_id``, bound at $2..$4 (each search's
@@ -607,6 +612,20 @@ _MEMORY_MARK_COLUMNS = (
 )
 _MEMORY_MARK_KEYS = ("alias", "evergreen", "tags", "superseded_by", "superseded_at", "corrected_by")
 
+#: the columns :meth:`MemoriesCollection.find_active_for_consolidation` loads for each candidate
+_CANDIDATE_COLUMNS = (
+    "m.memory_id, m.customer_id, m.user_id, m.conversation_id, m.type_memory, m.content, "
+    "m.embedding::text AS embedding, m.date_created, m.tags"
+)
+#: what every consolidation candidate also is, after its owner: not pinned, embedded, not superseded by a live gist,
+#: not retracted; oldest first
+_CANDIDATE_TAIL = (
+    "AND NOT m.evergreen AND m.embedding IS NOT NULL "
+    "AND (m.superseded_by IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+    f"AND {_NOT_RETRACTED_M} ORDER BY m.date_created"
+)
+
 #: A memory a live replacement stands in for. A replacement that is gone leaves
 #: its sources current again, as every other read here treats them.
 _REPLACED = (
@@ -843,11 +862,30 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_memories_user_date", "user_id", "date_created"),
+            SchemaIndex(
+                "ix_memories_user_date",
+                "user_id",
+                "date_created",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_date",
+                reason="memories carries seven indexes: one user's memories older than a date (hybrid_search's history)",
+            ),
             # v004: every memory a conversation produced, for the
             # conversation-scoped reads and the delete cascade from a
             # conversation. no other index leads with conversation_id.
-            SchemaIndex("idx_mem_conversation", "conversation_id"),
+            SchemaIndex(
+                "idx_mem_conversation",
+                "conversation_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_conversation_id"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_mem_conversation",
+                reason="memories carries seven indexes: the memories one conversation produced, for its chunks",
+            ),
             SchemaIndex(
                 "ix_memories_user_alias",
                 "agent_id",
@@ -855,16 +893,69 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 "alias",
                 unique=True,
                 where="alias IS NOT NULL",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
+                reason="memories carries seven indexes: a memory by its name, unique per agent and user",
             ),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composites used by the
             # cross-tenant access guards.
-            SchemaIndex("idx_memories_agent_user", "agent_id", "user_id"),
             SchemaIndex(
                 "idx_memories_agent_customer_user",
                 "agent_id",
                 "customer_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection._ids_by_tags; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_scope; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_active_for_consolidation; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_for_user_in_agents"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_customer_user"
+                ),
+                reason=(
+                    "memories carries seven indexes: one owner's memories by the whole owner triple, every ambient read"
+                ),
+            ),
+            SchemaIndex(
+                "idx_memories_agent_user",
+                "agent_id",
+                "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.count_by_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_similar_for_dedup; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_same_event; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_fts; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.list_for_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_scope; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_for_user_in_agents"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
+                reason=(
+                    "memories carries seven indexes: one user's memories under one agent, every per-user read and count"
+                ),
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -1085,21 +1176,28 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             )
         if self.l3_pool is None:
             return []
-        # each owner form is written out, so the read's key is in its own text
-        params: list[object] = [agent_id]
-        if customer_id is None:
-            where = "agent_id = $1 AND user_id = $2"
-            params.append(user_id)
-        else:
-            where = "agent_id = $1 AND customer_id = $2 AND user_id = $3"
-            params.extend((customer_id, user_id))
-        allowed = filter_clause(self.read_filter, "memories.tags", params)
-        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where}{allowed} ORDER BY date_created DESC"
-
         # cache-bypass: one owner's rows by the owner's index are not primary-
         # key addressable; L1 row cache would not help. method on
-        # Collection preserves single entry point + rbac gating.
-        rows = await self.l3_pool.fetch(query, *params)
+        # Collection preserves single entry point + rbac gating. each owner
+        # form's statement writes its owner out, so the read's key is in its
+        # own text.
+        params: list[object] = [agent_id]
+        if customer_id is None:
+            params.append(user_id)
+            allowed = filter_clause(self.read_filter, "memories.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = $1 AND user_id = $2{allowed}"
+                " ORDER BY date_created DESC",
+                *params,
+            )
+        else:
+            params.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "memories.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories"
+                f" WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
+                *params,
+            )
 
         entities: list[MemoryEntity] = []
         for row in rows:
@@ -2369,15 +2467,21 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # AST walker treats agent_id as deliberately fanned-out.
         args: list[Any] = [list(agent_ids)]
         if customer_id is not None:
-            args.append(customer_id)
-        args.append(user_id)
-        owner = "customer_id = $2 AND user_id = $3" if customer_id is not None else "user_id = $2"
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
-            f"WHERE agent_id = ANY($1::uuid[]) AND {owner}{allowed} ORDER BY date_created DESC",
-            *args,
-        )
+            args.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "memories.tags", args)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
+                f" AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
+                *args,
+            )
+        else:
+            args.append(user_id)
+            allowed = filter_clause(self.read_filter, "memories.tags", args)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
+                f" AND user_id = $2{allowed} ORDER BY date_created DESC",
+                *args,
+            )
         entities: list[MemoryEntity] = []
         for row in rows:
             data = dict(row)
@@ -2569,21 +2673,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         if self.l3_pool is None:
             return []
         # exact scope match, including the NULL grain (see docstring): a None argument narrows to IS NULL rather
-        # than dropping the filter. each grain's owner is written out, so the read's key is in its own text; the
-        # owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
-        params: list[object] = [agent_id]
-        if customer_id is None and user_id is None:
-            where = "m.agent_id = $1 AND m.customer_id IS NULL AND m.user_id IS NULL"
-        elif customer_id is None:
-            where = "m.agent_id = $1 AND m.customer_id IS NULL AND m.user_id = $2"
-            params.append(user_id)
-        elif user_id is None:
-            where = "m.agent_id = $1 AND m.customer_id = $2 AND m.user_id IS NULL"
-            params.append(customer_id)
-        else:
-            where = "m.agent_id = $1 AND m.customer_id = $2 AND m.user_id = $3"
-            params.extend((customer_id, user_id))
-        allowed = filter_clause(self.read_filter, "m.tags", params)
+        # than dropping the filter. each grain's statement writes its owner out, so the read's key is in its own
+        # text; the owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
         # cache-bypass: a scope-scanned candidate load is not primary-key
         # addressable, so the L1 row cache cannot serve it; keeping the SQL
         # on the Collection preserves the single-entry-point contract.
@@ -2591,21 +2682,38 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # (same cast as _MEMORIES_SELECT_COLUMNS); decode_vector parses the
         # bracketed text back to list[float] below. The self-healing
         # supersession filter is a NOT EXISTS against a live gist row.
-        query = (
-            "SELECT m.memory_id, m.customer_id, m.user_id, m.conversation_id, "
-            "m.type_memory, m.content, m.embedding::text AS embedding, "
-            "m.date_created, m.tags "
-            "FROM memories m "
-            f"WHERE {where}{allowed} "
-            "AND NOT m.evergreen "
-            "AND m.embedding IS NOT NULL "
-            "AND (m.superseded_by IS NULL OR NOT EXISTS ("
-            "SELECT 1 FROM memories g "
-            "WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
-            f"AND {_NOT_RETRACTED_M} "
-            "ORDER BY m.date_created"
-        )
-        rows = await self.l3_pool.fetch(query, *params)
+        params: list[object] = [agent_id]
+        if customer_id is None and user_id is None:
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1{allowed} AND m.customer_id IS NULL"
+                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
+                *params,
+            )
+        elif customer_id is None:
+            params.append(user_id)
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id IS NULL"
+                f" AND m.user_id = $2{allowed} {_CANDIDATE_TAIL}",
+                *params,
+            )
+        elif user_id is None:
+            params.append(customer_id)
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2{allowed}"
+                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
+                *params,
+            )
+        else:
+            params.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2"
+                f" AND m.user_id = $3{allowed} {_CANDIDATE_TAIL}",
+                *params,
+            )
         candidates: list[dict[str, Any]] = []
         for row in rows:
             data = dict(row)
@@ -2756,12 +2864,34 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
         indexes=(
             SchemaIndex("ix_media_user_date", "user_id", "date_created"),
             SchemaIndex("ix_media_mime_type", "mime_type"),
-            SchemaIndex("ix_media_memory_id", "memory_id"),
+            SchemaIndex(
+                "ix_media_memory_id",
+                "memory_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_ids; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_for_recall; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search_within_memory"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
+                reason="media carries seven indexes: the file a memory wraps, joined to that memory's chunks",
+            ),
             SchemaIndex(
                 "uq_media_cloud_connection_file",
                 "cloud_connection_id",
                 "cloud_file_id",
                 unique=True,
+                purpose="constraint",
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_media_cloud_connection_file"
+                ),
+                reason="media carries seven indexes: one media row per provider file of a cloud connection",
             ),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
@@ -2895,6 +3025,12 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 "ix_media_content_media_type",
                 "media_id",
                 "content_type",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_ids"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_media_type",
+                reason="media_content carries four indexes: the contents of the files a search names by file id",
             ),
             SchemaIndex("ix_media_content_user", "user_id"),
             # v0.8.1: parity-gate enrichments relocated from upstream
@@ -2903,6 +3039,16 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 "idx_media_content_agent_user",
                 "agent_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_fts"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
+                reason="media_content carries four indexes: one user's file contents, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3453,6 +3599,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 "ix_memory_chunks_memory",
                 "memory_id",
                 "chunk_index",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_chunk_indexes; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.count_by_memory_id; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_for_recall; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search_within_memory; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_conversation_id"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_memory",
+                reason="memory_chunks carries eight indexes: one memory's chunks by their index, and their count",
             ),
             # v015: cursor paging within one memory (``find_by_memory_id``
             # orders by chunk_id).
@@ -3461,6 +3621,14 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 "memory_id",
                 "chunk_id",
                 where="memory_id IS NOT NULL",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_memory_id"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_chunks_memory_id_chunk_id"
+                ),
+                reason="memory_chunks carries eight indexes: one memory's chunks paged in chunk order",
             ),
             # v015: transcript chunks by the last message they cover.
             SchemaIndex(
@@ -3484,6 +3652,14 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 "idx_memory_chunks_agent_user",
                 "agent_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_semantic"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
+                reason="memory_chunks carries eight indexes: one user's chunks, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -4414,12 +4590,21 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             ),
         ),
         indexes=(
-            # the ledger read: one conversation's refs in date order. the
-            # primary key already serves a conversation_id-only lookup.
+            # the ledger read: the refs one agent surfaced in a conversation, newest first (v034; it
+            # replaced the conversation-wide (conversation_id, date_created) index)
             SchemaIndex(
-                "idx_conv_mem_refs_conversation_date_created",
+                "idx_conv_mem_refs_conversation_agent_date",
                 "conversation_id",
+                "agent_id",
                 "date_created",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryRefsCollection.find_by_conversation"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py"
+                    "::test_conv_mem_refs_conversation_agent_date"
+                ),
             ),
         ),
     )
@@ -4479,12 +4664,19 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     async def find_by_conversation(
         self,
         conversation_id: UUID,
-        agent_id: UUID | None = None,
+        agent_id: UUID,
+        *,
+        limit: int = MEMORY_REFS_PAGE,
     ) -> list[MemoryRefEntity]:
-        """fetch a conversation's refs, ordered by ``date_created`` asc.
+        """fetch the newest ``limit`` refs one agent surfaced in a conversation, returned oldest first.
 
-        with ``agent_id``, only the refs that agent surfaced: in a
-        conversation several agents share, what one recalled is its own.
+        in a conversation several agents share, what one recalled is its
+        own: the read names the agent (0.95.0; a read of every agent's refs
+        was a manager built without its agent, which read the others' refs).
+        the surfaced-refs FIFO a caller keeps holds at most
+        :data:`MEMORY_REFS_PAGE` per agent and deletes the oldest past it,
+        so the default reads every ref it kept; each read is one page of
+        the conversation's (and agent's) date index, newest first.
 
         absorbs the former ``MemoryLedger.load(pool, conversation_id)``
         SQL into a Collection method. multi-row scan is not primary-
@@ -4496,32 +4688,30 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
 
         :param conversation_id: conversation UUID to scan for
         :ptype conversation_id: UUID
-        :param agent_id: only this agent's refs; ``None`` reads every ref
-        :ptype agent_id: UUID | None
+        :param agent_id: the agent whose refs these are
+        :ptype agent_id: UUID
+        :param limit: the most refs to read, newest first
+        :ptype limit: int
         :return: list of ref entities in chronological order
         :rtype: list[MemoryRefEntity]
         """
         if self.l3_pool is None:
             return []
-        # cache-bypass: multi-row scan by ``conversation_id`` (first
-        # column of the composite pk) is not primary-key-addressable.
-        # L1 row cache serves per-``(conversation_id, item_id)`` lookups
-        # only; a prefix scan would not hit. keeping the query on the
-        # Collection preserves the single entry point + lets callers
+        # cache-bypass: a page of one conversation's refs by its date index
+        # is not primary-key-addressable. L1 row cache serves per-
+        # ``(conversation_id, item_id)`` lookups only. keeping the query on
+        # the Collection preserves the single entry point + lets callers
         # share L2 invalidation channels.
         rows = await self.l3_pool.fetch(
-            """
-            SELECT conversation_id, item_id, item_type, short_desc,
-                   date_created, date_updated, agent_id
-            FROM conversation_memory_refs
-            WHERE conversation_id = $1 AND ($2::uuid IS NULL OR agent_id = $2)
-            ORDER BY date_created ASC
-            """,
+            "SELECT conversation_id, item_id, item_type, short_desc, date_created, date_updated, agent_id"
+            " FROM conversation_memory_refs WHERE conversation_id = $1 AND agent_id = $2"
+            " ORDER BY date_created DESC LIMIT $3",
             conversation_id,
             agent_id,
+            limit,
         )
         entities: list[MemoryRefEntity] = []
-        for row in rows:
+        for row in reversed(rows):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entities.append(entity)
@@ -4665,6 +4855,14 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                 "idx_memory_consolidations_source",
                 "agent_id",
                 "source_memory_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryConsolidationsCollection.find_consolidated_into; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_memory_consolidations_source"
+                ),
             ),
         ),
     )

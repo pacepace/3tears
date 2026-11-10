@@ -22,10 +22,7 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = [
-    "DROP_LEGACY_INDEXES_SQL",
-    "drop_legacy_index_names",
-]
+__all__ = ["drop_legacy_index_names"]
 
 log = get_logger(__name__)
 

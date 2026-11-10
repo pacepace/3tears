@@ -9,7 +9,7 @@ from typing import Any, Final
 from uuid import UUID, uuid7
 
 from threetears.observe.text_block import one_line, under
-from threetears.agent.memory.collections import MemoryRefsCollection
+from threetears.agent.memory.collections import MEMORY_REFS_PAGE, MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.text_window import window_text
 from threetears.core.utils.local_time import render_local_time
@@ -38,7 +38,7 @@ class VariableLimitError(ValueError):
     """
 
 
-_MEMORY_REF_FIFO_CAPACITY = 50
+_MEMORY_REF_FIFO_CAPACITY = MEMORY_REFS_PAGE
 
 
 #: What ONE ``context_recall`` returns of a stored result. A recalled result is a tool message,
@@ -230,6 +230,10 @@ class ToolContextManager:
         self._var_limit = var_limit
         self._var_max_chars = var_max_chars
         self._result_limit = result_limit
+        if memory_refs_collection is not None and agent_id is None:
+            # the surfaced refs are each agent's own (agent-memory v032/v034): a manager with no agent would read and
+            # write refs as no agent's, beside the ones its agent surfaced
+            raise ValueError("a ToolContextManager with a memory refs collection names its agent_id")
         self._memory_refs = memory_refs_collection
         self.agent_id = agent_id
 
@@ -266,7 +270,8 @@ class ToolContextManager:
         for entity in entities:
             self.items.append(entity.to_dict())
         self._memory_refs_projection = []
-        if self._memory_refs is not None:
+        # the constructor refuses a refs collection without an agent; the agent check only narrows the type
+        if self._memory_refs is not None and self.agent_id is not None:
             refs = await self._memory_refs.find_by_conversation(
                 self.conversation_id,
                 self.agent_id,
