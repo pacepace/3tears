@@ -1007,7 +1007,7 @@ class DuckDBBackend:
         quoted = quote_identifier(table)
         position = {name: index for index, name in enumerate(columns)}
         arrow = _as_arrow(quoted, lists)
-        joined = " AND ".join(f"held.{quote_identifier(k)} = given.c{position[k]}" for k in self._keyless[table])
+        pk_join = " AND ".join(f"held.{quote_identifier(k)} = given.c{position[k]}" for k in self._keyless[table])
         names = ", ".join(quote_identifier(c) for c in columns)
         given = ", ".join(f"c{index}" for index in range(len(columns)))
         if arrow is None:
@@ -1015,14 +1015,14 @@ class DuckDBBackend:
             unnested = ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists)))
             bound = list(lists)
             connection.execute(
-                f"DELETE FROM {quoted} AS held USING (SELECT {unnested}) AS given WHERE {joined}",  # noqa: S608
+                f"DELETE FROM {quoted} AS held USING (SELECT {unnested}) AS given WHERE {pk_join}",  # noqa: S608
                 bound,
             )
             connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM (SELECT {unnested})", bound)  # noqa: S608
             return
         connection.register("_bulk_rows", arrow)
         try:
-            connection.execute(f"DELETE FROM {quoted} AS held USING _bulk_rows AS given WHERE {joined}")  # noqa: S608
+            connection.execute(f"DELETE FROM {quoted} AS held USING _bulk_rows AS given WHERE {pk_join}")  # noqa: S608
             connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM _bulk_rows")  # noqa: S608
         finally:
             connection.unregister("_bulk_rows")
@@ -1041,9 +1041,9 @@ class DuckDBBackend:
         """
         key = self._keyless[table]
         keys = ", ".join(quote_identifier(k) for k in key)
-        joined = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
+        pk_join = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
         held = self._db.execute(
-            f"SELECT 1 FROM {quote_identifier(table)} AS held JOIN _partition_chunk AS given ON {joined} LIMIT 1"  # noqa: S608
+            f"SELECT 1 FROM {quote_identifier(table)} AS held JOIN _partition_chunk AS given ON {pk_join} LIMIT 1"  # noqa: S608
         ).fetchone()
         repeated = self._db.execute(
             f"SELECT 1 FROM _partition_chunk GROUP BY {keys} HAVING count(*) > 1 LIMIT 1"  # noqa: S608
@@ -1527,10 +1527,10 @@ class DuckDBBackend:
                 self._db.unregister("_staged_keys")
             if rows_quoted is not None:
                 self._db.execute(f"CREATE TABLE IF NOT EXISTS {rows_quoted} AS SELECT * FROM {source} WHERE FALSE")  # noqa: S608
-                joined = " AND ".join(
+                pk_join = " AND ".join(
                     f"{rows_quoted}.{quote_identifier(c)} = {chunk}.{quote_identifier(c)}" for c in key
                 )
-                self._db.execute(f"DELETE FROM {rows_quoted} USING {chunk} WHERE {joined}")  # noqa: S608
+                self._db.execute(f"DELETE FROM {rows_quoted} USING {chunk} WHERE {pk_join}")  # noqa: S608
             self._db.execute(f"DROP TABLE {chunk}")
         return int(keys.num_rows)
 
@@ -1591,10 +1591,10 @@ class DuckDBBackend:
                     stages.append(change.keys)
             elif change.keys is not None:
                 keys = self._stage_name(change.keys)
-                joined = " AND ".join(
+                pk_join = " AND ".join(
                     f"{table}.{quote_identifier(c)} = {keys}.{quote_identifier(c)}" for c in change.key
                 )
-                statements.append(f"DELETE FROM {table} USING {keys} WHERE {joined}")  # noqa: S608
+                statements.append(f"DELETE FROM {table} USING {keys} WHERE {pk_join}")  # noqa: S608
                 stages.append(change.keys)
             if change.rows is not None:
                 rest = self._stage_rest(change.rows)
@@ -1727,8 +1727,8 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._stored_pk_values(table, entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
-        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {pk_where}"
         with self._db_lock:
             result = self._db.execute(sql, list(pk_vals))
             result_columns = [desc[0] for desc in result.description]
@@ -1772,8 +1772,8 @@ class DuckDBBackend:
             params: list[Any] = [self._stored_pk_values(table, eid, pk_cols)[0] for eid in entity_ids]
         else:
             per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-            disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
+            pk_disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {pk_disjunct}"
             params = []
             for eid in entity_ids:
                 params.extend(self._stored_pk_values(table, eid, pk_cols))
@@ -1802,8 +1802,8 @@ class DuckDBBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._stored_pk_values(table, entity_id, pk_cols)
-        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
         self.request_checkpoint()

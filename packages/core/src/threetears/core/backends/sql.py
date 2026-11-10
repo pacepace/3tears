@@ -793,8 +793,8 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is None:
-            where, params = self._where(pk, start=1)
-            sql = f"SELECT * FROM {_quote_ident(table)} WHERE {where}"
+            pk_where, params = self._where(pk, start=1)
+            sql = f"SELECT * FROM {_quote_ident(table)} WHERE {pk_where}"
             return await self._fetchrow(sql, *params, conn=conn)
         coerced: list[Any] = [
             schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns
@@ -1534,13 +1534,13 @@ class SqlL3Backend:
         """
         params: list[Any] = [row[c] for c in mutable]
         set_sql = ", ".join(f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(mutable))
-        where_parts: list[str] = []
+        pk_where: list[str] = []
         for c in pk:
             params.append(row[c])
-            where_parts.append(f"{_quote_ident(c)} = ${len(params)}")
+            pk_where.append(f"{_quote_ident(c)} = ${len(params)}")
         params.append(cas)
-        where_parts.append(f"{_quote_ident('date_updated')} = ${len(params)}")
-        sql = f"UPDATE {_quote_ident(table)} SET {set_sql} WHERE {' AND '.join(where_parts)}"
+        pk_where.append(f"{_quote_ident('date_updated')} = ${len(params)}")
+        sql = f"UPDATE {_quote_ident(table)} SET {set_sql} WHERE {' AND '.join(pk_where)}"
         return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def _upsert_schema(
@@ -1626,8 +1626,8 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is None:
-            where, params = self._where(pk, start=1)
-            await self._execute(f"DELETE FROM {_quote_ident(table)} WHERE {where}", *params, conn=conn)
+            pk_where, params = self._where(pk, start=1)
+            await self._execute(f"DELETE FROM {_quote_ident(table)} WHERE {pk_where}", *params, conn=conn)
             return
         coerced: list[Any] = [
             schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns

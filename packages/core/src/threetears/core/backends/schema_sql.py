@@ -859,10 +859,10 @@ def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
     """
     if varying not in schema.pk_columns:
         raise ValueError(f"{schema.name}: {varying!r} is not a key column of {schema.pk_columns}")
-    conditions = [f"{as_written(varying)} = ANY($1::{_required_array_type(schema, varying)})"]
+    pk_where = [f"{as_written(varying)} = ANY($1::{_required_array_type(schema, varying)})"]
     fixed = [schema.column(name) for name in schema.pk_columns if name != varying]
-    conditions += [f"{as_written(col.name)} = {render_param(col, index)}" for index, col in enumerate(fixed, start=2)]
-    return f"DELETE FROM {schema.name} WHERE {' AND '.join(conditions)}"
+    pk_where += [f"{as_written(col.name)} = {render_param(col, index)}" for index, col in enumerate(fixed, start=2)]
+    return f"DELETE FROM {schema.name} WHERE {' AND '.join(pk_where)}"
 
 
 def build_whole_key_delete_sql(schema: TableSchema) -> str:
