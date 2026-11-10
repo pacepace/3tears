@@ -23,6 +23,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.session import ConnectionSession
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
@@ -158,44 +160,59 @@ async def _duplicate_keys(conn: Any, index: UnusableIndex) -> list[tuple[tuple[A
 
 
 async def rebuild_unusable_indexes(
-    conn: Any, schemas: Sequence[str], *, names: Sequence[str] | None = None
+    conn: Any,
+    schemas: Sequence[str],
+    *,
+    names: Sequence[str] | None = None,
+    policy: DdlLockPolicy | None = None,
 ) -> list[UnusableIndex]:
     """build every unusable index of ``schemas`` again from its own definition; say which were rebuilt.
 
     Every unique index is checked for duplicate keys before any index is dropped, so a refusal leaves every index as
-    it was. Each rebuild is said at WARNING.
+    it was. Each rebuild is said at WARNING. The drops and builds run under the database's DDL lock
+    (:func:`~threetears.core.ddl.ddl_lock.database_ddl_lock`), taken here on ``conn``: two index builds in one
+    YugabyteDB database leave both invalid. The lock is re-entrant on its session, so a caller already holding it (a
+    migration run) loses nothing; a repair that finds nothing to build takes no lock, and one that does looks again
+    once it holds it, so two starts racing build each index once.
 
-    :param conn: a connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
-        online only there); the caller holds the database's DDL lock where other DDL may run
+    :param conn: ONE connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
+        online only there), never a pool: the lock is held on its session
     :ptype conn: Any
     :param schemas: the schemas to repair
     :ptype schemas: Sequence[str]
     :param names: only the indexes of these names (an installer's own, as the change-note ring's); every unusable index
         of the schemas when None
     :ptype names: Sequence[str] | None
+    :param policy: how long to wait for the DDL lock; the default waits until it is free
+    :ptype policy: DdlLockPolicy | None
     :return: the indexes built again
     :rtype: list[UnusableIndex]
     :raises IndexDuplicateKeysError: when a unique index's table holds duplicate keys; nothing was dropped
     :raises IndexStillUnusableError: when an index is still unusable after it was built again
+    :raises SessionRequiredError: when ``conn`` is a pool
     """
-    found = await unusable_indexes(conn, schemas, names=names)
-    if not found:
+    if not await unusable_indexes(conn, schemas, names=names):
         return []
-    for index in found:
-        if index.unique:
-            duplicates = await _duplicate_keys(conn, index)
-            if duplicates:
-                raise IndexDuplicateKeysError(index, duplicates)
-    log.warning(
-        "indexes left unusable by a failed build; dropping and building each again from its definition",
-        extra={"extra_data": {"indexes": [f"{index.schema}.{index.name}" for index in found]}},
-    )
-    for index in found:
-        await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(index.schema)}.{quote_identifier(index.name)}")
-        await conn.execute(index.definition)
-    still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas, names=names)} & {
-        (i.schema, i.name) for i in found
-    }
-    if still:
-        raise IndexStillUnusableError(f"indexes still unusable after they were built again: {sorted(still)}")
-    return found
+    # looked at again under the lock: another start may have built them meanwhile
+    async with database_ddl_lock(ConnectionSession(conn), policy):
+        found = await unusable_indexes(conn, schemas, names=names)
+        if not found:
+            return []
+        for index in found:
+            if index.unique:
+                duplicates = await _duplicate_keys(conn, index)
+                if duplicates:
+                    raise IndexDuplicateKeysError(index, duplicates)
+        log.warning(
+            "indexes left unusable by a failed build; dropping and building each again from its definition",
+            extra={"extra_data": {"indexes": [f"{index.schema}.{index.name}" for index in found]}},
+        )
+        for index in found:
+            await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(index.schema)}.{quote_identifier(index.name)}")
+            await conn.execute(index.definition)
+        still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas, names=names)} & {
+            (i.schema, i.name) for i in found
+        }
+        if still:
+            raise IndexStillUnusableError(f"indexes still unusable after they were built again: {sorted(still)}")
+        return found
