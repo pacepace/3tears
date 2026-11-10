@@ -136,11 +136,14 @@ class CheckpointTable:
     :ivar mark: the table's epoch mark
     :ivar digest: :meth:`DuckDBBackend.schema_digest` of the table that wrote it
     :ivar parts: each part's object name, scope (None for a table with no scope) and rows, in order
+    :ivar derived: a table the copy derives from the followed ones (no epoch mark): it holds what they hold at the
+        checkpoint's stamp, so it loads only with every followed table from the same checkpoint
     """
 
     mark: str | None
     digest: str
     parts: tuple[tuple[str, str | None, int], ...]
+    derived: bool = False
 
     @property
     def rows(self) -> int:
@@ -157,7 +160,10 @@ class CheckpointTable:
         :return: the data
         :rtype: dict[str, Any]
         """
-        return {"mark": self.mark, "digest": self.digest, "parts": [list(part) for part in self.parts]}
+        body: dict[str, Any] = {"mark": self.mark, "digest": self.digest, "parts": [list(part) for part in self.parts]}
+        if self.derived:
+            body["derived"] = True
+        return body
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> CheckpointTable:
@@ -173,6 +179,7 @@ class CheckpointTable:
             mark=None if mark is None else str(mark),
             digest=str(body["digest"]),
             parts=tuple((str(n), None if s is None else str(s), int(r)) for n, s, r in body["parts"]),
+            derived=bool(body.get("derived", False)),
         )
 
 
@@ -411,6 +418,23 @@ class CopyCheckpoints:
         self._whole_due = False
         #: (seq, table) whose parts did not read back here: never kept as they are
         self._broken: set[tuple[int, str]] = set()
+        #: the tables a follower keeps by their epochs (:meth:`follow`); every other is derived. None: every table
+        self._followed: frozenset[str] | None = None
+
+    def follow(self, names: Iterable[str]) -> None:
+        """name the tables a follower keeps by their epochs; every other table this checkpoint holds is derived from
+        them (no epoch mark): written whole at every checkpoint, and loaded only with every followed table from the
+        same checkpoint, since it holds what they hold at its stamp.
+
+        :param names: the followed tables
+        :ptype names: Iterable[str]
+        :return: nothing
+        :rtype: None
+        """
+        self._followed = frozenset(names)
+
+    def _derived(self, name: str) -> bool:
+        return self._followed is not None and name not in self._followed
 
     # --- reading ---------------------------------------------------------------------------------
 
@@ -452,6 +476,8 @@ class CopyCheckpoints:
         changes: list[StagedChange] = []
         rows = 0
         for table in self._tables:
+            if self._derived(table.name):
+                continue
             held = [source for source in sources if table.name in source.tables]
             usable = [s for s in held if s.tables[table.name].digest == self._digests[table.name]]
             if not usable:
@@ -467,6 +493,26 @@ class CopyCheckpoints:
                 self._broken.add((source.seq, table.name))
             else:
                 missing[table.name] = COLD_START
+        # a derived table holds what the followed ones hold at a stamp: it loads only when every one of them loaded
+        # from the newest checkpoint, from that checkpoint; else the follower's owner derives it again
+        whole_newest = not missing and all(source is newest for source in loaded.values())
+        for table in self._tables:
+            if not self._derived(table.name):
+                continue
+            entry = newest.tables.get(table.name)
+            if entry is None or not whole_newest:
+                missing[table.name] = COLD_START
+                continue
+            if entry.digest != self._digests[table.name]:
+                missing[table.name] = SCHEMA_CHANGE
+                continue
+            stage = f"{STAGE_PREFIX}{table.name}__rows"
+            if await self._stage_table(table, newest, stage):
+                rows += entry.rows
+                changes.append(StagedChange(table=table.name, key=table.key, rows=stage, whole=True))
+            else:
+                self._broken.add((newest.seq, table.name))
+                missing[table.name] = COLD_START
         if missing:
             log.warning(
                 "a checkpoint did not hold every table; the follower reads those whole from L3",
@@ -479,6 +525,7 @@ class CopyCheckpoints:
         oldest = min(loaded.values(), key=lambda source: source.seq) if loaded else None
         return StagedCheckpoint(
             stamp=self._decode_stamp(oldest.stamp) if oldest is not None else None,
+            # the followed tables' marks alone: a derived table has none
             marks={name: source.tables[name].mark for name, source in loaded.items()},
             changes=changes,
             rows=rows,
@@ -632,6 +679,10 @@ class CopyCheckpoints:
                 tables: dict[str, CheckpointTable] = {}
                 plans: list[tuple[FollowedTable, CheckpointTable | None, set[str] | None]] = []
                 for table in self._tables:
+                    if self._derived(table.name):
+                        # no epoch mark, and no change the follower names: written whole at every checkpoint
+                        plans.append((table, None, None))
+                        continue
                     if table.name not in marks:
                         kept = self._kept(newest, table.name)
                         if kept is not None:
@@ -644,8 +695,12 @@ class CopyCheckpoints:
                 kind = "incremental" if any(rewrite is not None for _, _, rewrite in plans) else "full"
                 for table, prior, rewrite in plans:
                     parts = await self._write_table(cursor, table, seq, rewrite, prior, written, (lock, claim))
+                    derived = self._derived(table.name)
                     tables[table.name] = CheckpointTable(
-                        mark=marks[table.name], digest=self._digests[table.name], parts=parts
+                        mark=None if derived else marks[table.name],
+                        digest=self._digests[table.name],
+                        parts=parts,
+                        derived=derived,
                     )
                 followed = {t.name for t in self._tables}
                 for name, entry in (newest.tables if newest is not None else {}).items():
