@@ -71,6 +71,7 @@ from threetears.evals.analysis.stats import (
     difference_interval,
 )
 from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.report.words import judged_name
 from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
@@ -807,7 +808,7 @@ def floor_readings(
             rates.append(
                 _read_on(
                     RateReading(
-                        humanize("dimension", judged.name),
+                        judged_name(judged.name),
                         *counts[control],
                         *counts[candidate],
                         lost_control,

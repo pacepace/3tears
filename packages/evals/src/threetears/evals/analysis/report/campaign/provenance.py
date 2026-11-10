@@ -49,7 +49,8 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TableColumn,
 )
-from threetears.evals.analysis.style import ArmName, humanize
+from threetears.evals.analysis.report.words import judged_name
+from threetears.evals.analysis.style import ArmName
 from threetears.evals.kernel.campaign import EvalCampaign
 
 __all__ = [
@@ -365,7 +366,7 @@ def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
             criterion.results_needed or criterion.min_results,
         )
         dims = by_judge.setdefault(key, [])
-        if (dim := humanize("dimension", tier.rubric_dim)) not in dims:
+        if (dim := judged_name(tier.rubric_dim)) not in dims:
             dims.append(dim)
     said = []
     for (judge, none_yet, more), dims in by_judge.items():
@@ -609,7 +610,7 @@ def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion, forms: 
     if late.criterion == "bar" and late.name is not None:
         return measure_name_of(bundle, late.name)
     if late.criterion == "guardrail" and late.name is not None:
-        return humanize("dimension", late.name)
+        return judged_name(late.name)
     if late.criterion == "floor" and bundle.declared is not None:
         floor = next((floor for floor in bundle.declared.floors if floor.key == late.name), None)
         if floor is not None:

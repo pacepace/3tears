@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Final, Literal
 
-from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema import ClientRequestSettings
 
 __all__ = [
@@ -302,7 +301,7 @@ def _closest_reasoning(
         why = "the model takes no reasoning budget" if not takes_budget else f"the model's output cap is {cap}"
         notes.append(
             f"reasoning budget {budget} of max_tokens {asked.max_tokens} (share "
-            f"{round_half_even(float(Fraction(budget, asked.max_tokens)), 2)}) taken as effort {effort!r}: {why}"
+            f"{float(Fraction(budget, asked.max_tokens)):.2f}) taken as effort {effort!r}: {why}"
         )
     if effort is None:
         return None, None
@@ -315,7 +314,7 @@ def _closest_reasoning(
             return None, None
         sent_budget = _budget_for_word(effort, cap)
         notes.append(
-            f"effort {effort!r} sent as a thinking budget of {sent_budget} ({round_half_even(float(BUDGET_SHARES[effort]), 2)} of "
+            f"effort {effort!r} sent as a thinking budget of {sent_budget} ({float(BUDGET_SHARES[effort]):.2f} of "
             f"max_tokens {cap}): the model takes budgets, not effort words"
             if sent_budget is not None
             else f"effort {effort!r} sent as no reasoning: the model takes budgets only, and max_tokens {cap} leaves "

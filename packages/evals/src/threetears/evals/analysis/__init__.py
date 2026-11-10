@@ -61,7 +61,6 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     person_scores_by_result,
     tier_for_judges,
-    tier_sentence,
 )
 from threetears.evals.analysis.judge_temperature import (
     JudgeTemperatureComparison,
@@ -400,7 +399,7 @@ from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, Sc
 from threetears.evals.analysis.service import AnalysisStore
 
 
-from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.lens_text import frontier_text, tier_sentence
 from threetears.evals.analysis.out_of_run_spend import (
     OutOfRunSpendReport,
     OutOfRunSpendTotals,

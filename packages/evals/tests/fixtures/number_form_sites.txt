@@ -34,7 +34,6 @@ threetears/evals/analysis/depth.py | precision | round() | 1
 threetears/evals/analysis/latency_partition.py | decompose_total_ms | format_number() | 1
 threetears/evals/analysis/lenses/frontier.py | _decide_boundary_pillar | format_number() | 1
 threetears/evals/analysis/lenses/frontier.py | _frontier_point | round() | 1
-threetears/evals/analysis/lenses/frontier.py | pass_hat_k_cell_lines | format_number() | 1
 threetears/evals/analysis/measurement_windows.py | format_window_gap | round() | 1
 threetears/evals/analysis/quantities.py | _at_precision | round() | 1
 threetears/evals/analysis/quantities.py | number_in | _at_precision() | 1
@@ -206,11 +205,12 @@ threetears/evals/kernel/covariates.py | derive_covariates | _reasoning_ratio_of(
 threetears/evals/kernel/covariates.py | fold_phase_timings | round() | 1
 threetears/evals/negotiation/settings.py | _budget_for_word | round() | 1
 threetears/evals/negotiation/settings.py | _closest_reasoning | _budget_for_word() | 1
+threetears/evals/negotiation/settings.py | _closest_reasoning | f-string spec | 2
 threetears/evals/negotiation/settings.py | closest_settings | _closest_reasoning() | 1
 threetears/evals/ops/analysis.py | _write_doc_analysis | timed_out_detail() | 1
 threetears/evals/ops/report_writer/tally.py | ReportBudget.first_turn_refusal | round() | 1
 threetears/evals/ops/sweeps.py | _run_sweep | timed_out_detail() | 1
-threetears/evals/providers/catalogue.py | Catalogue.load | spell_declared() | 1
+threetears/evals/providers/catalogue.py | Catalogue.load | f-string spec | 1
 threetears/evals/quick/result.py | declare | round() | 1
 threetears/evals/run/judge.py | _normalize_criteria_scores | round() | 1
 threetears/evals/schema/hashing.py | round_figures | f-string spec | 1

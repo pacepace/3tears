@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -23,6 +24,7 @@ from threetears.evals.analysis.contention import (
     withhold_contended_latency,
 )
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     case_rate_interval,
@@ -406,7 +408,7 @@ _REASON_WORDS: dict[str, str] = {
 }
 
 
-def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
+def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[Said]:
     """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
 
     A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
@@ -415,31 +417,47 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     headline, the only cell of a point included, gets nothing.
 
     Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
-    surface may indent it or lead it with the arm and nothing of it reads as the next item's.
+    surface may indent it or lead it with the arm and nothing of it reads as the next item's. The cell's own pass^k is
+    held as a figure, which the surface printing the sentence spells in its forms
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`).
 
     :param reading: The cell.
     :ptype reading: PassHatKCellReading
     :return: The sentences, possibly none, each one line.
-    :rtype: list[str]
+    :rtype: list[Said]
     """
-    lines: list[str] = []
     runs = ", ".join(reading.run_ids)
     if reading.headline and reading.reason is not None:
-        lines.append(
-            f"this pass^k rests on run(s) {runs} alone, a cell of their own ({_REASON_WORDS[reading.reason]}): "
-            f"{reading.detail}"
+        return [
+            Said.of(
+                _one_line(
+                    f"this pass^k rests on run(s) {runs} alone, a cell of their own "
+                    f"({_REASON_WORDS[reading.reason]}): {reading.detail}"
+                )
+            )
+        ]
+    if reading.reason is None:
+        return []
+    kept = (
+        f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
+        f"{reading.detail}; "
+    )
+    if reading.pass_hat_k is None:
+        return [Said.of(_one_line(kept + "no pass^k of its own at this depth"))]
+    # Every run of whitespace reads as one space, as the all-words sentences above collapse theirs; the sentence
+    # starts with words and ends with its case count, so no end is left to strip.
+    return [
+        Said.of(
+            re.sub(r"\s+", " ", kept + "its own pass^k "),
+            SaidFigure(reading.pass_hat_k, "lone"),
+            f" over {reading.n_cases_at_k} case(s)",
         )
-    elif reading.reason is not None:
-        own = (
-            f"its own pass^k {format_number(reading.pass_hat_k)} over {reading.n_cases_at_k} case(s)"
-            if reading.pass_hat_k is not None
-            else "no pass^k of its own at this depth"
-        )
-        lines.append(
-            f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
-            f"{reading.detail}; {own}"
-        )
-    return [" ".join(line.split()) for line in lines]
+    ]
+
+
+def _one_line(text: str) -> str:
+    """A sentence of words on one line: every run of whitespace one space, none at either end."""
+    return " ".join(text.split())
 
 
 class FrontierPoint(EvalBaseModel):

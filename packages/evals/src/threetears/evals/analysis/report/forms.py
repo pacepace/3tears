@@ -1703,15 +1703,15 @@ class PageForms:
     def said(self, said: Said) -> str:
         """A sentence a floor or a campaign's row was read with (a floor's statement, a rate's or a floor's reason), as
         this page says it, each figure it holds in its form: a margin as declared (:meth:`declared`), a level as
-        :meth:`confidence_share` states one, a count as :meth:`count` states one (``1,200``), and how far a rate's
-        drop reaches, in points, unsigned, at the places this page reads that rate's changes at, kept off zero: its own
-        form of the rate (a code page's pass rate), else the rate's set on an aspect page. A rate the page states no
-        change of reads to a decimal, a whole number whole, as the campaign's readings freeze it
-        (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words state as a bound never reads
-        past itself: a lower bound (``at least``) rounds down at those places, an upper one (``at most``) up, and where
-        that would cross the margin the sentence compares it with, or zero, it takes a decimal more until it does not
-        (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point figure is recorded under its
-        rate's measure as a change.
+        :meth:`confidence_share` states one, a count as :meth:`count` states one (``1,200``), a lone figure as
+        :meth:`lone` states one, and how far a rate's drop reaches, in points, unsigned, at the places this page reads
+        that rate's changes at, kept off zero: its own form of the rate (a code page's pass rate), else the rate's set
+        on an aspect page. A rate the page states no change of reads to a decimal, a whole number whole, as the
+        campaign's readings freeze it (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words
+        state as a bound never reads past itself: a lower bound (``at least``) rounds down at those places, an upper one
+        (``at most``) up, and where that would cross the margin the sentence compares it with, or zero, it takes a
+        decimal more until it does not (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point
+        figure is recorded under its rate's measure as a change.
 
         :param said: The sentence, as read.
         :ptype said: Said
@@ -1728,6 +1728,8 @@ class PageForms:
             return self.confidence_share(figure.value).text
         if figure.role == "count":
             return self.count(int(figure.value)).text
+        if figure.role == "lone":
+            return self.lone(figure.value).text
         key, kinds = (
             (TRIAL_PASS_NAME, ("trial",)) if figure.measure is None else (figure.measure, ("measure", "judged"))
         )

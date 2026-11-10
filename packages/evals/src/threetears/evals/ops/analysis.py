@@ -2628,6 +2628,7 @@ def bar_proposals_text(proposals: BarProposals) -> str:
     for bar in proposals.proposals:
         side = ">=" if bar.higher_is_better else "<="
         flag = f" — VACUOUS, do not adopt as written: {bar.vacuous_reason}" if bar.vacuous else ""
+        # one line: a figure printed by the lone figure rule holds no line break
         lines.append(f"- {bar.measure} {side} {forms.lone(bar.threshold).text}{flag}")
         lines.append(f"  seeded from {bar.rationale}")
     if not proposals.proposals:

@@ -170,6 +170,7 @@ class JudgeTemperatureComparison(EvalBaseModel):
         )
         for row in self.dimensions:
             lines.append(f"- {row.rubric_dim} ({row.scale})")
+            # one line: a figure printed by the lone figure rule holds no line break
             lines.append(f"    temperature {forms.lone(pinned).text}:      {_side_text(row.pinned, forms)}")
             lines.append(f"    provider default:   {_side_text(row.provider_default, forms)}")
         return "\n".join(lines)

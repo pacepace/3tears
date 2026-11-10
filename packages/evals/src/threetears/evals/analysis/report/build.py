@@ -3856,7 +3856,7 @@ def _method_blocks(
         blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)
-    _run_disclosures(bundle, say, arm)
+    _run_disclosures(bundle, say, arm, forms)
     if (footing := _production_footing_sentence(bundle, arm)) is not None:
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
@@ -3992,11 +3992,14 @@ def _uncarried(bundle: AnalysisContextBundle) -> list[str]:
 
 
 def _run_disclosures(
-    bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None], arm: Callable[[str], str]
+    bundle: AnalysisContextBundle,
+    say: Callable[[DisclosureSource, str | None], None],
+    arm: Callable[[str], str],
+    forms: PageForms,
 ) -> None:
     """The member runs left out, unfinished, short, or of unknown completeness, and every run an arm's pass^k kept out
     of its headline cell (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`),
-    each line led by the arm, as the frontier's text leads it."""
+    each line led by the arm, as the frontier's text leads it, its figures in the page's ``forms``."""
     if not bundle.run_ids:
         say("runs", "The campaign resolved no runs in this scope, so no table or chart here holds anything.")
     if bundle.unresolved_run_ids:
@@ -4027,7 +4030,7 @@ def _run_disclosures(
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
     cell_lines = [
-        f"{arm(point.variant_key)}: {line}."
+        f"{arm(point.variant_key)}: {forms.said(line)}."
         for subject in bundle.frontier.subjects
         for point in subject.points
         for reading in point.pass_hat_k_cells

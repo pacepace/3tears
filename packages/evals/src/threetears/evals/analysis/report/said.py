@@ -30,9 +30,9 @@ class SaidFigure:
         rate's drop reaches, in points, unsigned (``at most 8``, ``at least 12.3``). ``change``: a rate's drop in
         points, positive for a drop and negative for a gain, said in words (``a drop of 92.7``, ``a gain of 35.5``,
         ``no change``). ``level``: an interval's level, as a share (``95%``). ``count``: a count of passes, trials or
-        cases, whole.
+        cases, whole. ``lone``: a figure stated by itself by the lone figure rule (a frontier cell's own pass^k).
     :ivar measure: For ``points`` and ``change``, the key of the measure the rate is compared on; None for the trials'
-        own pass rate. Unread for ``margin`` and ``level``, which are of no measure.
+        own pass rate. Unread for ``margin``, ``level`` and ``lone``, which are of no measure.
     :ivar bound: For ``points``, the bound the sentence's words state the figure as: ``lower`` (``at least``), which a
         page rounds down at its places, ``upper`` (``at most``, ``as much as``), which it rounds up, so a bound never
         reads past itself; None for a figure stated as itself, rounded to the nearest.
@@ -41,7 +41,7 @@ class SaidFigure:
     """
 
     value: float
-    role: Literal["margin", "points", "change", "level", "count"]
+    role: Literal["margin", "points", "change", "level", "count", "lone"]
     measure: str | None = None
     bound: Literal["lower", "upper"] | None = None
     margin: float | None = None
@@ -148,7 +148,7 @@ def _stored_figure(figure: SaidFigure) -> str:
     """One figure as a campaign's readings froze it, which the campaign's fingerprint reads, so it never moves."""
     if figure.role == "count":
         return str(int(figure.value))
-    if figure.role == "margin":
+    if figure.role in ("margin", "lone"):
         return format_number(figure.value)
     if figure.role == "level":
         return format_number(round(100 * figure.value, 2)) + "%"

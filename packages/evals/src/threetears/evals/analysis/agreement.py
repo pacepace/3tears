@@ -1402,23 +1402,6 @@ def tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKe
     return weakest_judged_tier(found) if found else "undetermined"
 
 
-def tier_sentence(tier: JudgeEvidenceTier) -> str:
-    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
-
-    Off any page, as a host prints it (a console, a lens): :func:`tier_sentence_in` in an off-page surface's own forms.
-    A page states it in its own forms, through :func:`tier_sentence_in`.
-
-    :param tier: The tier as decided.
-    :ptype tier: JudgeEvidenceTier
-    :return: The sentence (:func:`tier_sentence_in`).
-    :rtype: str
-    """
-    # The page's forms import this module, so an off-page caller's are built here, when asked for.
-    from threetears.evals.analysis.report.forms import PageForms
-
-    return tier_sentence_in(tier, PageForms.off_page())
-
-
 def tier_sentence_in(tier: JudgeEvidenceTier, forms: PageForms) -> str:
     """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it,
     every figure (a kappa, its bounds and bar, a temperature, a count of cases) printed by ``forms``, the forms of the
@@ -1542,5 +1525,4 @@ __all__ = [
     "sent_settings_key",
     "sent_settings_level",
     "tier_for_judges",
-    "tier_sentence",
 ]

@@ -1,13 +1,17 @@
-"""A frontier as an operator reads it, and the exclusion lines every lens's text shares.
+"""A frontier as an operator reads it, the exclusion lines every lens's text shares, and a judge's tier as a host
+prints it off any page.
 
 Here rather than with the other lens renderings in :mod:`threetears.evals.ops` because the command
 line prints a frontier too, and :mod:`threetears.evals.quick` sits beside ``ops`` rather than above it.
-One rendering, so both surfaces carry the same caveats: what was left out, and why.
+One rendering, so both surfaces carry the same caveats: what was left out, and why. The tier sentence sits here
+rather than with :mod:`~threetears.evals.analysis.agreement`, which a page's forms import: an off-page sentence is
+printed in the off-page forms, and this module may import them.
 """
 
 from __future__ import annotations
 
 
+from threetears.evals.analysis.agreement import tier_sentence_in
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
@@ -18,6 +22,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
+from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.lenses.frontier import (
     PASS_HAT_K_CELL_READING,
     FrontierPoint,
@@ -160,7 +165,7 @@ def frontier_text(result: FrontierResult) -> str:
             )
             if (depth := _point_depth(point, subject, forms)) is not None:
                 lines.append(f"  {depth}")
-            cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
+            cell_lines = [forms.said(line) for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
             if cell_lines and not said_reading:
                 lines.append(f"  {PASS_HAT_K_CELL_READING}")
                 said_reading = True
@@ -189,7 +194,22 @@ def frontier_text(result: FrontierResult) -> str:
     return "\n".join(lines)
 
 
+def tier_sentence(tier: JudgeEvidenceTier) -> str:
+    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
+
+    Off any page, as a host prints it (a console, a lens): :func:`~threetears.evals.analysis.agreement.tier_sentence_in`
+    in an off-page surface's own forms. A page states it in its own forms, through ``tier_sentence_in``.
+
+    :param tier: The tier as decided.
+    :ptype tier: JudgeEvidenceTier
+    :return: The sentence (``tier_sentence_in``).
+    :rtype: str
+    """
+    return tier_sentence_in(tier, PageForms.off_page())
+
+
 __all__ = [
     "exclusion_lines",
     "frontier_text",
+    "tier_sentence",
 ]
