@@ -65,7 +65,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.keyset import keyset_arrow_pages
-from threetears.core.sql_fragments import quote_identifier
+from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
     from threetears.core.cache.duckdb import DuckDBBackend
@@ -396,12 +396,8 @@ class _KeyedRead:
         """
         types = rail_arrow_types(table.columns)
         selected = ", ".join(f"t.{quote_identifier(name)}" for name in types)
-        keys = ", ".join(f"unnest(${i + 1}::text[]) AS k{i}" for i in range(len(table.key)))
-        joined = " AND ".join(
-            f"t.{quote_identifier(column)} = CAST(k.k{i} AS {table.key_cast(column)})"
-            for i, column in enumerate(table.key)
-        )
-        sql = f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {keys}) AS k ON {joined}"  # noqa: S608
+        keys, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
+        sql = f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {keys}) AS k ON {pk_join}"  # noqa: S608
         return cls(sql=sql, types=types)
 
 
@@ -1261,13 +1257,10 @@ class CopyFollower:
         :rtype: pyarrow.Table
         """
         selected = self._copy_columns(table)
-        unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(columns)))
-        joined = " AND ".join(
-            f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(columns)
-        )
+        keys, pk_join = unnest_key_join(columns, [table.key_cast(column) for column in columns])
         with self._backend.read_snapshot() as cursor:
             return cursor.execute(
-                f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {unnested}) AS k ON {joined}",  # noqa: S608 - trusted identifiers
+                f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {keys}) AS k ON {pk_join}",  # noqa: S608 - trusted identifiers
                 [list(column) for column in values],
             ).fetch_arrow_table()
 

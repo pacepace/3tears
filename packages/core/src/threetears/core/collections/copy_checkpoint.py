@@ -53,7 +53,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
-from threetears.core.sql_fragments import quote_identifier
+from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable
@@ -1135,8 +1135,10 @@ def _split_by_scope(reader: Any, table: FollowedTable) -> Iterator[tuple[str | N
 
 
 def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, rows: int) -> Any:
-    """the rows of one scope on a read's cursor: those whose scope column holds ``value``, as a reader of Arrow batches
-    of at most ``rows``.
+    """the rows of one scope on a read's cursor, as a reader of Arrow batches of at most ``rows``: those whose scope
+    column holds ``value``, and for ``prefix + "None"`` those holding none too (FollowedTable.scope_of names both
+    so). Read by the keyed batch join on the scope column, which keys the checkpoint's parts of the copy; its NULL
+    bucket matched null-safe.
 
     :param cursor: the read's cursor
     :ptype cursor: duckdb.DuckDBPyConnection
@@ -1144,7 +1146,7 @@ def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, 
     :ptype table: str
     :param column: its scope column, a trusted identifier
     :ptype column: str
-    :param cast: the column's SQL type, which the value's text is cast to (a text that is no value of it matches none)
+    :param cast: the column's SQL type, which the value's text is cast to
     :ptype cast: str
     :param value: the value, as text
     :ptype value: str
@@ -1153,47 +1155,26 @@ def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, 
     :return: the reader
     :rtype: pyarrow.RecordBatchReader
     """
+    values: list[str | None] = [None] if value == "None" else []
+    if value != "None" or cast == "text":
+        values.append(value)  # "None" is a value of a text column only
+    pk_unnest, pk_join = unnest_key_join([column], [cast], null_safe=True)
     return cursor.execute(
-        f"SELECT * FROM {quote_identifier(table)} WHERE {quote_identifier(column)} = TRY_CAST(? AS {cast})",  # noqa: S608
-        [value],
+        f"SELECT t.* FROM {quote_identifier(table)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
+        [values],
     ).fetch_record_batch(rows)
 
 
 def _scope_rows(
     cursor: Any, table: str, column: str, cast: str, scope: str, value: str, rows: int
 ) -> Iterator[tuple[str, Any]]:
-    """one scope's rows on a read's cursor, a batch at a time, each read run only once the one before is drained (a
-    cursor holds one result at a time): those holding ``value``, and for ``prefix + "None"`` those holding none.
+    """one scope's rows on a read's cursor, a batch at a time (:func:`_scope_batches`).
 
     :return: the scope and each batch
     :rtype: Iterator[tuple[str, pyarrow.RecordBatch]]
     """
     for batch in _reader_batches(_scope_batches(cursor, table, column, cast, value, rows)):
         yield scope, batch
-    if value == "None":
-        # a row whose scope column is NULL is of scope ``prefix + "None"`` too (FollowedTable.scope_of)
-        for batch in _reader_batches(_null_scope_batches(cursor, table, column, rows)):
-            yield scope, batch
-
-
-def _null_scope_batches(cursor: Any, table: str, column: str, rows: int) -> Any:
-    """the rows whose scope column holds no value on a read's cursor (scope ``prefix + "None"``), as a reader of Arrow
-    batches of at most ``rows``.
-
-    :param cursor: the read's cursor
-    :ptype cursor: duckdb.DuckDBPyConnection
-    :param table: the table, a trusted identifier
-    :ptype table: str
-    :param column: its scope column, a trusted identifier
-    :ptype column: str
-    :param rows: the most rows a batch holds
-    :ptype rows: int
-    :return: the reader
-    :rtype: pyarrow.RecordBatchReader
-    """
-    return cursor.execute(
-        f"SELECT * FROM {quote_identifier(table)} WHERE {quote_identifier(column)} IS NULL"  # noqa: S608
-    ).fetch_record_batch(rows)
 
 
 def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Sequence[str]]) -> Any:
@@ -1211,12 +1192,9 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Se
     :return: the rows
     :rtype: pyarrow.Table
     """
-    unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(table.key)))
-    joined = " AND ".join(
-        f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(table.key)
-    )
+    pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
     fresh = cursor.execute(
-        f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {unnested}) AS k ON {joined}",  # noqa: S608
+        f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
         list(keys),
     ).fetch_arrow_table()
     if old is None:
@@ -1224,7 +1202,7 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Se
     cursor.register(_PART_STAGE, old)
     try:
         kept = cursor.execute(
-            f"SELECT t.* FROM {_PART_STAGE} AS t ANTI JOIN (SELECT {unnested}) AS k ON {joined}",  # noqa: S608
+            f"SELECT t.* FROM {_PART_STAGE} AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
             list(keys),
         ).fetch_arrow_table()
     finally:
