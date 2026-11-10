@@ -247,6 +247,12 @@ class _PrintedInterval:
     high_digits: str
     digits: str
 
+    @property
+    def beside(self) -> str:
+        """The interval as written beside its figure, which carries the unit (number rule 3: ``85% (80 to 89)``,
+        ``+10 pts, -29 to +58``): its digits; money's ends each keep their ``$``, as money's form writes them."""
+        return self.text if self.unit == MONEY else self.digits
+
 
 @dataclass(frozen=True)
 class _Issued:
@@ -676,16 +682,28 @@ class PageForms:
         unit = _on_the_figure(ruler.unit)
         return self._issue(*_keyed(measure, kind), "level", value, text, _digits_of(text, unit), unit)
 
-    def ruled_spread(self, ruler: MeasureRuler, sem: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
-        """A mean's standard error on its ruler, stated beside the mean as ``± spread``: money to its own two
-        significant figures, as every money figure reads (``$0.0074`` beside ``$0.046``), never rounded to a zero it
-        is not; any other unit as a bare number at its reading's places where the page holds them, never rounded to
-        zero, else at the unit's precision.
+    def ruled_spread(
+        self,
+        ruler: MeasureRuler,
+        sem: float,
+        *,
+        mean: float | None = None,
+        measure: str = "",
+        kind: _MeasureKind = None,
+    ) -> Printed:
+        """A mean's standard error on its ruler, stated beside the mean as ``± spread``, at the mean's precision (rule
+        1: one measure, one precision): money to the decimals the mean beside it reads to (``$3.33 ± $0.09``, never
+        ``$0.088``), any other unit as a bare number at its reading's places where the page holds them, else at the
+        decimals the mean beside it reads to; never rounded to a zero it is not, where it takes the figures that keep
+        it off zero.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
         :param sem: The standard error, as stored.
         :ptype sem: float
+        :param mean: The mean it is stated beside, as stored; None where it stands alone, which reads it by its own
+            figures.
+        :ptype mean: float | None
         :param measure: The measure or dimension it is the spread of; empty for none.
         :ptype measure: str
         :param kind: Its reading.
@@ -695,12 +713,19 @@ class PageForms:
         """
         scaled = sem * ruler.factor
         if is_money(ruler.unit) and ruler.money is not None:
-            text = money_form([scaled], rate=ruler.money.rate).spell(scaled)
+            decimals = ruler.money.places_of([mean * ruler.factor]) if mean is not None else None
+            if decimals is not None and (scaled == 0 or float(round_half_even(scaled, decimals)) != 0):
+                text = TableCell(value=scaled, unit=MONEY, decimals=decimals).figure
+            else:
+                text = money_form([scaled], rate=ruler.money.rate).spell(scaled)
             return self._issue(*_keyed(measure, kind), "half_width", sem, text, _digits_of(text, MONEY), MONEY)
         # At its reading's places, as the mean beside it reads, kept off zero: a spread is never none.
         places = self._set_places(None, measure, kind)
         if places is not None and places.change is not None:
             text = policy_figure(scaled, places.change, bounds=_ZERO_BOUND)
+        elif mean is not None:
+            beside = _ruled_level_text(ruler, mean * ruler.factor, None)
+            text = policy_figure(scaled, _decimals_in(beside), bounds=_ZERO_BOUND)
         else:
             text = number_in(scaled, ruler.unit)
         return self._issue(*_keyed(measure, kind), "half_width", sem, text, text, "")
@@ -1853,9 +1878,9 @@ class PageForms:
 
     def glyph_title(self, value: float, low: float, high: float, *, unit: str, margin: float | None = None) -> Printed:
         """What an interval glyph drawn with no table's text beside it states in its title, as it prints one today:
-        the figure in its unit by the number rule, then its interval in its one form (``88.1 to 100%``,
-        ``-$0.01 to $0.06``, ``-4.2 to 2 pts``), then a declared margin, ``±5 pts``. A table's glyph states its cells' text
-        instead; this is the glyph's own, of no measure.
+        the figure in its unit by the number rule, then its interval in its one form, its unit on the figure alone
+        (``88.1 to 100``, ``-$0.01 to $0.06``, ``-4.2 to +2``), then a declared margin, ``±5 pts``. A table's glyph
+        states its cells' text instead; this is the glyph's own, of no measure.
 
         :param value: The figure, in ``unit``.
         :ptype value: float
@@ -1870,16 +1895,18 @@ class PageForms:
         :return: The title.
         :rtype: Printed
         """
-        if unit == PERCENT:
-            interval = f"{number_in(low, unit)} to {with_unit(high, unit)}"
-        elif is_money(unit):
+        # The unit is on the figure alone, the interval beside it bare (number rule 3), but money's ``$`` on each end.
+        if is_money(unit):
             interval = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
         elif unit == POINTS:
-            # A change in points: its ends carry their signs.
-            interval = f"{plus_signed(number_in(low, unit), low)} to {plus_signed(number_in(high, unit), high)} {unit}"
+            # A change in points: the figure and its interval's ends carry their signs.
+            interval = f"{plus_signed(number_in(low, unit), low)} to {plus_signed(number_in(high, unit), high)}"
+        elif unit == PERCENT:
+            interval = f"{number_in(low, unit)} to {number_in(high, unit)}"
         else:
-            interval = interval_text(low, high, unit) + (f" {unit}" if unit else "")
-        said = f"{with_unit(value, unit)}, interval {interval}"
+            interval = interval_text(low, high, unit)
+        figure = with_unit(value, unit)
+        said = f"{plus_signed(figure, value) if unit == POINTS else figure}, interval {interval}"
         if margin is not None:
             said += f", margin ±{with_unit(margin, unit)}"
         return self._issue("", "", "lone", value, said, said, "")
@@ -1895,10 +1922,11 @@ class PageForms:
         self, scale: TableCell, unit: str, value: float, low: float, high: float, *, margin: float | None = None
     ) -> Printed:
         """What a table glyph's title states: its figure, its interval and its declared margin, as the scale's cells
-        write them (``-5.0 pts, interval -6.9 to +11.0 pts, margin ±15 pts``): a figure in points at the cells'
-        decimals, a point's one where they name none, the margin as declared, as the chart's margin line reads it; any other
-        figure as the cells write it (their money form, a bare figure at its column's precision), and the interval in
-        its one form at the cells' one precision (``88.1 to 100%``, never ``11`` beside ``-6.9``).
+        write them (``-5.0 pts, interval -6.9 to +11.0, margin ±15 pts``): a change's figure signed (``+0.2``), in
+        points at the cells' decimals, a point's one where they name none, the margin as declared, as the chart's margin
+        line reads it; any other figure as the cells write it (their money form, a bare figure at its column's
+        precision); and the interval in its one form at the cells' one precision (``88.1 to 100``, never ``11`` beside
+        ``-6.9``), its unit on the figure alone (number rule 3), money's ``$`` on each end.
 
         :param scale: The scale's cell, which spells a number as the column's cells do.
         :ptype scale: TableCell
@@ -1915,7 +1943,11 @@ class PageForms:
         :return: The title.
         :rtype: Printed
         """
-        said = f"{_scale_figure(scale, unit, value)}, interval {_scale_interval(scale, unit, low, high)}"
+        figure = _scale_figure(scale, unit, value)
+        # A change's figure carries its sign, as its cell does (``+0.2``); its unit is on the figure alone, the
+        # interval beside it written bare (number rule 3: ``+10 pts, interval -45 to +60``).
+        signed = plus_signed(figure, value) if scale.signed or scale.zero_line else figure
+        said = f"{signed}, interval {_scale_interval(scale, unit, low, high)}"
         if margin is not None:
             # A margin is declared, not measured: it reads as declared (``±15 pts``), never at the cells' decimals.
             said += f", margin ±{with_unit(margin, unit)}"
@@ -3088,6 +3120,12 @@ def _places(values: Sequence[float]) -> int:
     return _MOST_SIDE_BY_SIDE_PLACES
 
 
+def _decimals_in(text: str) -> int:
+    """How many decimals a figure's text is written to: ``2`` for ``$3.33``, none for ``90%``."""
+    found = re.search(r"\.(\d+)", text)
+    return len(found[1]) if found is not None else 0
+
+
 def _joined(digits: str, unit: str) -> str:
     """Digits and their unit, spaced as the package writes the unit."""
     if not unit:
@@ -3191,9 +3229,10 @@ def _scale_places(cell: TableCell, unit: str) -> int | None:
 
 
 def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
-    """An interval on a glyph scale in the one form every page prints an interval in, ``low to high``: ``88.1 to
-    100%``, ``-7.8 to +35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
-    pts``, never ``11``), the unit once after the high end; money's ``$`` on each end."""
+    """An interval on a glyph scale beside its figure, in the one form every page prints an interval in, ``low to
+    high``: ``88.1 to 100``, ``-7.8 to +35.4`` (a change's ends signed), both ends at the cells' one precision (``-6.9
+    to +11.0``, never ``11``), its unit left to the figure it is written beside (number rule 3: the unit once);
+    money's ``$`` on each end, as money's form writes it."""
 
     def signed(text: str, value: float) -> str:
         # A change's ends carry their signs; a level's do not.
@@ -3201,14 +3240,13 @@ def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
 
     if (places := _scale_places(cell, unit)) is not None and unit != PERCENT:
         at = ends_places(low, high, places)
-        ends = f"{signed(spell_at(low, at), low)} to {signed(spell_at(high, at), high)}"
-        return f"{ends} {unit}" if unit and not is_money(unit) else ends
+        return f"{signed(spell_at(low, at), low)} to {signed(spell_at(high, at), high)}"
     if unit == PERCENT or is_money(unit) or not unit:
         low_text, high_text = _scale_spell(cell, unit, low), _scale_spell(cell, unit, high)
         if unit == PERCENT:
-            low_text = low_text.removesuffix(PERCENT)
+            low_text, high_text = low_text.removesuffix(PERCENT), high_text.removesuffix(PERCENT)
         return f"{signed(low_text, low)} to {signed(high_text, high)}"
-    return f"{signed(number_in(low, unit), low)} to {signed(number_in(high, unit), high)} {unit}"
+    return f"{signed(number_in(low, unit), low)} to {signed(number_in(high, unit), high)}"
 
 
 def _two_figures(low: float, high: float) -> tuple[str, str]:

@@ -78,6 +78,38 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
 **Hosts:** a `writer_promotion` action over arms whose skills differ now leaves each editor's own readings out of its
 `why`, and returns `one_editor: false`.
 
+### evals: a host's fraction reads as a rate on every table, and an interval writes its unit once beside its figure
+
+A production re-shoot of the number forms above found tables that read one measure apart.
+
+**Fixed:**
+- A host's fraction on 0 to 1 that declares no unit (`value_range=(0, 1)`) reads in percent on a measurement's
+  scorecard (`30%`, `0 to 70%`; it read `0.3`, `0 to 0.7`), as its aspect's page and the written page read it. One
+  test decides it for every page, `reads_as_share`.
+- A measure reads at one precision in the scorecard's matrix and the fold under it (`0.10` in both; the fold read
+  `0.1`).
+- A chart of two arms compared on a corrected contrast heads its interval with the family's joint guarantee (`95%
+  intervals (adjusted for 10 comparisons)`), where it read the per-interval `99.5%`.
+- A table glyph's title carries its change's sign, as its cell does (`+0.2, interval -1.2 to +1.6`; it read `0.2`).
+- A mean's spread reads at the mean's precision: `$3.33 ± $0.09`, where it read `$0.088`.
+
+**Changed:**
+- **An interval writes its unit once.** Beside its figure, on the figure alone: a tooltip reads `85% (80 to 89)` and
+  `+10 pts, -29 to +58`, a glyph's title `+10 pts, interval -45 to +60` (they read `85% (80 to 89%)` and `... to +58
+  pts`). Standing alone in a table's column, after its high end (`80 to 89%`). A chart's values table writes the unit
+  its values are read in where its format names none (`+10 pts`, `-29 to +58 pts`; it read `+10`, `-29 to +58`).
+  Money keeps `$` on each end.
+- **A cost per reply reads per 1,000 replies on an aspect's page** (per 1,000,000 where that is under a cent), the
+  ruler the scorecard and the written page state it on: `Cost per 1,000 replies $20`, never `$0.020` beside `$20`.
+  The scoreboard's head reads `Cost per 1,000 replies`, and a bar on the scorecard names its count (`Measuring spend,
+  all roles, per 1,000 replies`).
+
+**Hosts:** a chart's `lo_text` and `hi_text` carry no unit but money's `$` (kit/API.md), so the shipped `kit.js`
+joins a tooltip as `85% (80 to 89)`; a host that prints the ends alone adds the unit after the high end. A pinned
+aspect page or quick line that read a cost per reply reads it per 1,000 replies. A written page renders its stored
+snapshot's report input: one frozen before the `share` unit above (2026-11-09) still reads a host's fraction bare
+until its report is generated again. Nothing stored changes.
+
 ### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
 
 The number policy (`packages/evals/docs/design.md`, The number policy; owner rulings of 2026-11-08 and 2026-11-09)

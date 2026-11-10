@@ -2813,7 +2813,9 @@ def _figure_text(
     mean: float, sem: float | None, ruler: MeasureRuler, forms: PageForms, *, measure: str, kind: str
 ) -> str:
     """A mean on its ruler with its standard error beside it, where one was estimated."""
-    spread = f" ± {forms.ruled_spread(ruler, sem, measure=measure, kind=kind).text}" if sem is not None else ""
+    spread = (
+        f" ± {forms.ruled_spread(ruler, sem, mean=mean, measure=measure, kind=kind).text}" if sem is not None else ""
+    )
     return f"{forms.ruled_level(ruler, mean, measure=measure, kind=kind).text}{spread}"
 
 

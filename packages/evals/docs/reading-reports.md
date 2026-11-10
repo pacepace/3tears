@@ -268,7 +268,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **A report-wide caveat**, where one holds, once: criteria set after their readings were visible, results with no
   ordered time, latency read under concurrency, request settings not confirmed. Its detail is in the Methods, once:
   when each criterion was set (**Criteria set late**), and the test setup's own sentence.
-- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
+- **Scoreboard**: a bare table of counts and the cost per 1,000 replies (per 1,000,000 when that is under a cent), the ruler every table of the campaign states the cost on.
   A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
   every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
   page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
@@ -551,9 +551,9 @@ page and each aspect page alike, so one value reads the same in a table, a chart
   whole with its unit (`0 notices`).
 
 Two measures on one page can differ in decimals, since each reads to its own uncertainty, and a level and its change
-are rounded apart, so at whole points a change can miss its two levels' difference by one. A cost per reply under a cent on every arm
-is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000
-replies`). The policy and why: [the number policy](design.md#the-number-policy).
+are rounded apart, so at whole points a change can miss its two levels' difference by one. A cost per reply is
+stated per 1,000 replies on every page of a campaign (per 1,000,000 where that is under a cent), and the heading says
+so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`). The policy and why: [the number policy](design.md#the-number-policy).
 
 ## Reading the guardrails
 

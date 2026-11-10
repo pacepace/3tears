@@ -457,7 +457,7 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
     said = forms.chart_note(bar.value, drawn, measure=measure, kind=kind).text
     tip = [bar.label, said]
     if interval is not None:
-        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).text}"
+        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).beside}"
     elif open_from is not None:
         tip[1] += f", {OPEN_ABOVE.format(low=forms.chart_note(open_from, drawn, measure=measure, kind=kind).text)}"
     # A cost over part of the arm's calls is a smaller total, never stated bare.

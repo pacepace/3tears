@@ -1836,9 +1836,10 @@ def _preference_figure(
             hi=None if ends is None else ends[1],
             hollow=True if ends is None else None,
             value_text=shares.share_percent(shares.candidate),
-            # The interval's unit is written once, after its high end (``15 to 89%``), as a page writes an interval.
+            # The interval's unit is written once (number rule 3): on the share beside it in a tooltip (``70% (33 to
+            # 100)``), after its high end where the values table states it alone (``33 to 100%``).
             lo_text=None if ends is None else shares.share_text(ends[0]),
-            hi_text=None if ends is None else shares.share_percent(ends[1]),
+            hi_text=None if ends is None else shares.share_text(ends[1]),
         )
 
     formats = {shares.fmt for _, _, shares in drawn}

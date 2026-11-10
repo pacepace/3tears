@@ -225,13 +225,15 @@ def _first_ends(where: str) -> tuple[str | None, str | None, str | None]:
     return rows[0].value_text, rows[0].lo_text, rows[0].hi_text
 
 
-def test_an_interval_s_ends_carry_its_unit_once_so_a_drawer_only_joins_them() -> None:
-    """Number rule 3: an interval writes its unit once, after its high end, at its figure's precision, so the kit and
-    the static page join the ends' texts as they are (``98% (96 to 100%)``). Money keeps its own form, each end with its ``$``, as the page's
-    forms write a money interval (``$1.76 to $2.03``), so a chart's tooltip reads it as its page's table does."""
+def test_an_interval_s_ends_carry_no_unit_so_a_drawer_only_joins_them() -> None:
+    """Number rule 3: an interval writes its unit once, at its figure's precision. Its ends carry none, since the
+    value beside them carries it, so the kit and the static page join the texts as they are (``98% (96 to 100)``);
+    a values table stating the interval alone writes the unit after its high end. Money keeps its own form, each end
+    with its ``$``, as the page's forms write a money interval (``$1.76 to $2.03``), so a chart's tooltip reads it as
+    its page's table does."""
     # r1's pass rate reads whole (its intervals' half-widths are 2 to 6 points), so its ends do too: never "95.8"
     # beside "98%" (number rules 1 and 3).
-    assert _first_ends("r1/r1-anchor/dot_interval") == ("98%", "96", "100%")
+    assert _first_ends("r1/r1-anchor/dot_interval") == ("98%", "96", "100")
     assert _first_ends("r5/r5-run/bars") == ("$1.89", "$1.76", "$2.03")
 
 

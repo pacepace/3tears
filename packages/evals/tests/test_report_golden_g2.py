@@ -67,7 +67,11 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
 #: with the control marked, the date and the design.
 TITLE = "Kairo queue discipline"
 ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
-SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
+#: The scoreboard's head: its cost per 1,000 replies (re-pinned from ``Cost per reply``: one money measure reads on one
+#: ruler on every page of a campaign, per 1,000 replies as its scorecard and its written page state it).
+SCOREBOARD_HEADER = (
+    "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |"
+)
 
 #: The first screen's report-wide caveat on an unlabelled judge: what it makes the scores, and what changes it.
 JUDGE_CAVEAT = "Judged scores on Kairo queue discipline are directional until people's labels calibrate the judge."

@@ -309,7 +309,8 @@ def test_spelling_a_chart_keeps_every_text_it_carries_and_adds_the_rest_without_
 
 def test_a_panel_s_values_are_spelled_in_the_format_it_is_drawn_with() -> None:
     """Each small multiple's texts are spelled in its own format overlaid on the chart's, so a panel at three
-    decimals carries ``49.998%`` beside a panel at none carrying ``50%``."""
+    decimals carries ``49.998%`` beside a panel at none carrying ``50%``. An interval's ends carry no unit, which the
+    value beside them carries (number rule 3); its values table writes it once, after the high end."""
     strip = DotIntervalChart.model_validate(
         {
             "domain": [0, 100],
@@ -326,5 +327,5 @@ def test_a_panel_s_values_are_spelled_in_the_format_it_is_drawn_with() -> None:
         (row.value_text, row.lo_text, row.hi_text) for panel in strip.spelled().panels or [] for row in panel.rows or []
     ]
 
-    assert texts == [("50%", "40", "60%"), ("49.998%", "40.010", "60.200%")]
+    assert texts == [("50%", "40", "60"), ("49.998%", "40.010", "60.200")]
     assert strip.values_table()[1] == [["one", "a", "50%", "40 to 60%"], ["two", "b", "49.998%", "40.010 to 60.200%"]]

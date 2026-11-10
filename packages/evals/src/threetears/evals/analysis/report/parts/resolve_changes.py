@@ -499,7 +499,7 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
         ends = None
         if low is not None and high is not None:
             ends = forms.chart_interval(low, high, drawn, measure=rate, kind="trial")
-            tip[1] += f", {ends.text}"
+            tip[1] += f", {ends.beside}"
         changes.append(
             _Change(
                 id=arm,
@@ -561,7 +561,7 @@ def _contrast_changes(
             ends = None
             if interval is not None:
                 ends = context.forms.chart_interval(*interval, here, measure=group.key, kind=contrast.kind)
-                tip[2] += f", {ends.text}"
+                tip[2] += f", {ends.beside}"
             shown = contrast_words(report_input, contrast, None) if panelled else words
             if contrast.kind == "trial":
                 base, count = _passes(context, contrast.aspect)
@@ -954,7 +954,7 @@ def _analysed_change(
     ends = None
     if interval is not None:
         ends = forms.chart_interval(*interval, drawn, measure=measure, kind=kind)
-        tip[-1] += f", {ends.text}"
+        tip[-1] += f", {ends.beside}"
     return _Change(
         id=row_id,
         label=label,
@@ -1260,6 +1260,17 @@ def _family_level(context: ChartContext) -> str:
     where its contrasts are one family's, corrected together at the chart's level, the joint guarantee the family
     holds at, ``95% (adjusted for 16 comparisons)`` (the kit prints ``95% intervals (adjusted for 16 comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
+    if context.query.source == "compare":
+        # Two arms compared read a paired row on its contrast's own interval, corrected within its family: the head
+        # states that family's joint guarantee, as a forest of the contrast does, never its per-interval level.
+        first, second = context.query.arms
+        key = context.rows()[0].key if context.rows() else ""
+        paired = (
+            pairing_contrast(context.report_input, first, second, key, row.item.where)
+            for row in context.rows()
+            if isinstance(row.item, ComparisonRow) and row.item.paired_with is not None
+        )
+        aspects = {contrast.aspect for contrast in paired if contrast is not None}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
     return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
 
@@ -1394,7 +1405,7 @@ def _diverging(context: ChartContext) -> Drawn:
             by_aspect.setdefault(change.panel or "", []).append(change)
         panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_aspect.items()]
     # Contrasts corrected together print the family's level in the head, as a forest of them does.
-    level = _family_level(context) if source == "contrasts" else context.level
+    level = _family_level(context) if source in ("contrasts", "compare") else context.level
     if dots:
         if not any(change.interval is not None for change in changes):
             level = ""
