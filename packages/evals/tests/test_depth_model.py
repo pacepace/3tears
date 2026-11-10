@@ -106,7 +106,8 @@ def test_the_page_puts_the_model_in_a_table_of_its_own_labelled_with_what_it_ass
 
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [{key: cell.value for key, cell in row.items()} for row in table.rows] == [
-        {"aspect": "character", "arm": "A", "depth": 3, "model": round(100 * _A_PASS_3, 1)}
+        # At the pass rate's whole percent, which its interval sets (number policy, rule 2), rounded half to even.
+        {"aspect": "character", "arm": "A", "depth": 3, "model": float(round(100 * _A_PASS_3))}
     ]
     said = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that deep, so nothing ranks on it."
     assert said in [block.text for block in page.blocks if isinstance(block, DisclosureBlock)]

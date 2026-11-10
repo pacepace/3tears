@@ -75,10 +75,12 @@ def test_the_page_states_each_arm_s_depth_in_a_table_and_says_once_that_they_dif
 def test_each_frontier_point_s_depth_sits_beside_it_and_the_common_depth_is_named() -> None:
     page = _page(TwoArms(TWICE, ONCE, k_a=2, k_b=2))
 
-    # Planned 2: A's pass^1 at the common depth is 5/8 and B's 3/4, over all four cases each; B ran none twice.
+    # Planned 2: A's pass^1 at the common depth is 5/8 and B's 3/4, over all four cases each; B ran none twice. Each
+    # reads at the pass rate's whole percent, which its interval of about 90 points sets (number policy, rule 2): A's
+    # 62.5% to even, 62.
     assert _table(page, "pass_k_depth") == [
         {"aspect": "character", "arm": "B", "planned": 2, "short": 4, "common": 1, "reading": 75.0, "left_out": 0},
-        {"aspect": "character", "arm": "A", "planned": 2, "short": 0, "common": 1, "reading": 62.5, "left_out": 0},
+        {"aspect": "character", "arm": "A", "planned": 2, "short": 0, "common": 1, "reading": 62.0, "left_out": 0},
     ]
     assert common_depth_sentence("character", 1, left_out=0) in _lines(page, "scorecard")
 
@@ -108,10 +110,12 @@ def test_the_precision_table_names_the_limiting_side_and_the_between_case_share(
     [shown] = _table(page, "precision")
 
     assert shown["arms"] == "A and B"
-    assert shown["half_width"] == round(row.precision.half_width, 1)
+    # Each half-width at the pass rate's whole points, which its narrowest interval (about 93 points) sets (number
+    # policy, rule 2), rounded half to even.
+    assert shown["half_width"] == float(round(row.precision.half_width))
     assert (shown["first"], shown["second"]) == (
-        round(row.precision.half_widths[arms.key_a], 1),
-        round(row.precision.half_widths[arms.key_b], 1),
+        float(round(row.precision.half_widths[arms.key_a])),
+        float(round(row.precision.half_widths[arms.key_b])),
     )
     assert shown["limited_by"] == {arms.key_a: "A", arms.key_b: "B"}[row.precision.limited_by or ""]
     # 10/19 of the difference's variance lies between cases.
