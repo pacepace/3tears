@@ -109,10 +109,12 @@ from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
 )
-from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure, summary_population
+from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure, goal_check_of, summary_population
 from threetears.evals.kernel.host.bars import DEFAULT_PASS_THRESHOLD
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.style import check_held
+from threetears.evals.kernel.scoring import FailedCheck, capability_scores, failed_checks
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.words import judged_heading, stratum_name, stratum_names
@@ -403,12 +405,25 @@ class JudgeGrade(BaseModel):
     reasoning: str
 
 
-def _misses(value: float, higher_is_better: bool | None) -> bool:
-    """Whether a scorer's value is a miss for its direction: 0 or less where higher is better, above 0 where lower
-    is, and never where the measure declares no direction."""
-    if higher_is_better is None:
-        return False
-    return value <= 0 if higher_is_better else value > 0
+def _check_missed(
+    check: FailedCheck, catalog: Mapping[str, MetricDescriptor], *, answer: JsonValue, expected: str | None
+) -> str:
+    """One check a trial failed, as a miss reads it: a goal check by its expression, a label by the answer it got
+    against the one expected, and any other check as its pass rule words it at the value that failed it."""
+    if check.measure == MATCH_MEASURE:
+        return f"answered {_shown_value(answer)}, expected {_shown_value(expected)}"
+    if goal_check_of(check.measure) is not None:
+        return f"goal check {check.expression} failed"
+    return check_held(check.measure, catalog[check.measure], failed=True)
+
+
+def _judged_missed(grade: JudgeGrade, threshold: int) -> str:
+    """One judged dimension under the bar, as a miss reads it: a pass/fail one failed, a 1–5 one scored under the
+    level the pass rule asks, each with the judge's reason on one line."""
+    reason = " ".join(grade.reasoning.split())
+    if grade.scale == "pass_fail":
+        return f"the judge failed it on {grade.dimension}: {reason}"
+    return f"the judge scored {grade.dimension} {grade.score} of 5, under the bar of {threshold}: {reason}"
 
 
 class CaseResult(BaseModel):
@@ -436,11 +451,12 @@ class CaseResult(BaseModel):
     :ivar goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
     :ivar errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
     :ivar missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
-        result the candidate failed, a classifier answer that is not the expected label, a scorer on the
-        wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
-        than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
-        state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
-        nothing about the candidate.
+        trial its pass rule failed (``state`` is ``failed``), and the reasons are what failed it: the candidate's own
+        failure alone where it failed, else each check it failed as pass^k and the page read them
+        (:func:`~threetears.evals.kernel.scoring.failed_checks`: a goal check, a label that is not the expected one, a
+        check the host declares, worded by :func:`~threetears.evals.analysis.style.check_held` at the value that
+        failed it), and each judged dimension under the bar. A scorer that is no check is never a reason, whatever
+        its value, and a lost trial is never a miss: it says nothing about the candidate.
     :ivar cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
     :ivar state: How the trial ended as the report's page reads it
         (:func:`~threetears.evals.analysis.bundle.trials.read_trial`): ``passed`` when every check the template
@@ -484,7 +500,6 @@ class CaseResult(BaseModel):
         given: JsonValue,
         expected: str | None,
         answer: JsonValue,
-        higher_is_better: Mapping[str, bool | None] | None = None,
         stratum: str | None = None,
         catalog: Mapping[str, MetricDescriptor] | None = None,
         rubric_threshold: int = DEFAULT_PASS_THRESHOLD,
@@ -501,20 +516,15 @@ class CaseResult(BaseModel):
         :ptype expected: str | None
         :param answer: The candidate's answer, as its kind stored it.
         :ptype answer: JsonValue
-        :param higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
-            of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
-            misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
-            default.
-        :ptype higher_is_better: Mapping[str, bool | None] | None
         :param stratum: The stratum the case declares, or ``None``.
         :ptype stratum: str | None
         :param catalog: Each measure the result carries, described as the host declares it, which says which are checks;
-            the state is read through it exactly as the page reads its trials.
+            the state and the misses are read through it exactly as the page reads its trials.
         :ptype catalog: Mapping[str, MetricDescriptor] | None
         :param rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
         :ptype rubric_threshold: int
-        :return: The case result, its miss reasons decided by the rule :attr:`missed_because` states and its state by
-            the page's own reading of a trial.
+        :return: The case result, its state and its miss reasons by the page's own reading of a trial
+            (:attr:`missed_because`).
         :rtype: CaseResult
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
@@ -535,26 +545,19 @@ class CaseResult(BaseModel):
             for score in result.rubric_scores
         ]
         goal_checks = {check.expression: check.passed for check in result.goal_state_outcomes}
-        forms = PageForms.off_page()
+        described = catalog or {}
+        reading = read_trial(result, rubric_threshold=rubric_threshold, catalog=described)
         missed: list[str] = []
-        if outcome == "failed":
+        if reading.state == "failed" and reading.cause not in ("check", "judged"):
+            # The candidate's own failure: what its checks and its judge read off a failed turn says nothing more.
             missed.extend(f"failed: {error}" for error in errors or ["the candidate failed"])
-        elif outcome == "scored":
-            if result.host_measures.get(MATCH_MEASURE) is False:
-                missed.append(f"answered {_shown_value(answer)}, expected {_shown_value(expected)}")
+        elif reading.state == "failed":
             missed.extend(
-                f"{name} gave {forms.lone(value, measure=name).text}"
-                for name, value in result.host_measures.items()
-                if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
-                and not isinstance(value, str)
-                and _misses(float(value), (higher_is_better or {}).get(name, True))
+                _check_missed(check, described, answer=answer, expected=expected)
+                for check in failed_checks(result, described)
             )
-            missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
-            missed.extend(
-                f"the judge failed it on {grade.dimension}: {' '.join(grade.reasoning.split())}"
-                for grade in judged
-                if grade.scale == "pass_fail" and grade.score == 0
-            )
+            under = {score.dim for score in capability_scores(result) if not score.clears(rubric_threshold)}
+            missed.extend(_judged_missed(grade, rubric_threshold) for grade in judged if grade.dimension in under)
         return cls(
             case=case,
             case_id=result.test_case_id,
@@ -571,7 +574,7 @@ class CaseResult(BaseModel):
             errors=errors,
             missed_because=missed,
             cost_usd=result.cost_usd,
-            state=read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog or {}).state,
+            state=reading.state,
         )
 
     def render(self) -> str:
@@ -907,10 +910,10 @@ class EvalSummary(BaseModel):
     def misses(self) -> list[CaseResult]:
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
 
-        A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
-        on the wrong side of 0 for its direction (:attr:`CaseResult.missed_because`), a goal check
-        the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says
-        nothing about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
+        A miss is a trial its pass rule failed, as the report's page reads it (:attr:`CaseResult.missed_because`):
+        the candidate's own failure, a check it failed (a goal check, a label that is not the expected one, a check
+        the host declares) or a judged dimension under the bar. An excluded result is not a miss — it says nothing
+        about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
         :return: The missed results, in case order then repeat.
         :rtype: list[CaseResult]

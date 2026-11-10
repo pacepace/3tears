@@ -63,6 +63,7 @@ from threetears.evals.kernel.scoring import (
     pass_hat_k_cell,
     pass_hat_k_cell_alone,
     pass_hat_k_cell_reason,
+    measure_catalog_of,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
     result_composite,
@@ -98,6 +99,7 @@ from threetears.evals.analysis.lenses.contestants import (
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.metrics import MetricDescriptor
     from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import (
         EvalRun,
@@ -514,8 +516,8 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
-    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check and no judge — left
-    #: out of pass^k and its curve rather than read as failures (#688).
+    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check, no label, no declared
+    #: check and no judge — left out of pass^k and its curve rather than read as failures (#688).
     n_pass_no_criterion: int = 0
     #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
     #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.
@@ -950,17 +952,24 @@ def _frontier_point(
     cells = _pass_hat_k_cells(results, runs=runs_by_id, profile=profile)
     headline_ids = set(_headline_cell(cells.readings).run_ids)
     headline_results = [r for r in results if r.eval_run_id in headline_ids]
-    pooled = pool_pass_hat_k(headline_results, cell_of_run=cells.of_run, k=k, rubric_threshold=rubric_threshold)
+    # Each check a host declares (a directed boolean, a pass/fail scorer) fails an attempt here as it fails the trial
+    # on the report's census, read off the same descriptions.
+    catalog = measure_catalog_of(results, profile.measures if profile is not None else None)
+    pooled = pool_pass_hat_k(
+        headline_results, cell_of_run=cells.of_run, k=k, catalog=catalog, rubric_threshold=rubric_threshold
+    )
     pass_hat_k = pooled["pass_hat_k"]
     pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
     # The same cases the headline averages, one estimate each: the interval runs over them, and a
     # domination test pairs two contestants on the test cases both measured.
     attempts, _ = pool_pass_hat_k_attempts(
-        headline_results, cell_of_run=cells.of_run, rubric_threshold=rubric_threshold
+        headline_results, cell_of_run=cells.of_run, catalog=catalog, rubric_threshold=rubric_threshold
     )
     readings = [
         reading.model_copy(
-            update=_cell_pass_hat_k(results, reading.run_ids, cells.of_run, k=k, rubric_threshold=rubric_threshold)
+            update=_cell_pass_hat_k(
+                results, reading.run_ids, cells.of_run, k=k, catalog=catalog, rubric_threshold=rubric_threshold
+            )
         )
         for reading in cells.readings
     ]
@@ -1424,6 +1433,7 @@ def _cell_pass_hat_k(
     of_run: Mapping[str, PassHatKCell],
     *,
     k: int,
+    catalog: Mapping[str, MetricDescriptor],
     rubric_threshold: int,
 ) -> dict[str, float | int | None]:
     """One cell's own pass^k at the point's depth, over its own results.
@@ -1433,7 +1443,11 @@ def _cell_pass_hat_k(
     """
     own = set(run_ids)
     entry = pool_pass_hat_k(
-        [r for r in results if r.eval_run_id in own], cell_of_run=of_run, k=k, rubric_threshold=rubric_threshold
+        [r for r in results if r.eval_run_id in own],
+        cell_of_run=of_run,
+        k=k,
+        catalog=catalog,
+        rubric_threshold=rubric_threshold,
     )
     return {"pass_hat_k": entry["pass_hat_k"], "n_cases_at_k": entry["n_cases_at_k"]}
 

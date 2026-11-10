@@ -23,6 +23,56 @@ editor's `adoption` fact names a recommended candidate a broken floor caps, and 
 **Hosts:** a stored call can read differently on regeneration: a capped candidate that costs more than the control is
 now dominated by it, so a former tradeoff reads as a decision for the control.
 
+### evals: pass^k fails a trial on every check the census fails it on
+
+**Fixed:** pass^k read only goal checks, the judged capability dimensions and candidate failures, while the
+scoreboard also failed a trial on a host's check (a boolean measure with a better end, a pass/fail scorer, a label
+that did not match), so an arm that passed 2 of 180 trials on the scoreboard could read a high pass^k beside it, under
+a label naming the check. Both now read one list of what a trial failed, `kernel.scoring.failed_checks` (new): pass^k
+on the frontier, in a run's summary and in two runs compared fails the attempt the census fails. A label and a host's
+check are each a pass^k criterion (`has_pass_criterion`, which the census's `no_criterion` reads too), so a classifier
+graded on its label alone, or an arm held by such a check alone, has a measured pass^k where it read unmeasured: the
+share of its cases right on every repeat, its pass^1 its pass rate. An arm with nothing to check still reads
+unmeasured, never 0. A measure with no better end, or a numeric one that is no pass/fail scorer, still fails nothing.
+`compute_pass_hat_k`, `pool_pass_hat_k`, `pool_pass_hat_k_attempts` and `has_pass_criterion` take a required
+`catalog`, the descriptors of the measures the results carry, which `kernel.scoring.measure_catalog_of` (new) builds
+from a host's measure registry. `compare_two_runs` takes the host's `profile`, and its arm row names each such check
+(`pass_checks_{a,b}`, new), as the compared label now does. `analysis.style.check_held` (new) is the one wording of
+such a check: the pass rule names the value that passes (`Never topped up is false`), and a trial's Why cell now the
+value that failed it (`check: Never topped up is true`) where it printed the raw expression (`` `top_up_never is True`
+``). A judge's can't-tell disclosure says a failed check, not only a sub-bar dimension, can still fail the trial in
+pass^k. The `count.failures` key and the counts family now describe every trial the pass rule failed.
+`CaseResult.missed_because` (and `EvalSummary.misses`) reads the trial's state: a miss is a trial the pass rule failed,
+its reasons the candidate's failure, else each failed check in its pass rule's words and each judged dimension under
+the bar. It listed a passed trial whose directed scorer read 0 and left out a 1–5 judged score under the bar.
+
+**Hosts:** a pass^k figure on an arm held to such a check moves down to the scoreboard's pass rate; a stored report or
+verdict that cited the old figure misstates it. A host calling the pass^k functions passes `catalog=`
+(`measure_catalog_of(results, profile.measures)`). A classifier arm's pass^k, unmeasured before, is now a figure.
+`CaseResult.of` drops `higher_is_better`: the catalog says which measures are checks. A miss reason on a host check
+reads `Short score is 0` where it read `short gave 0`.
+
+### evals: the pass rule names every check that fails a trial, and count.failures counts failed trials
+
+**Fixed:** an aspect held to a host's check (a boolean measure with a better end, a pass/fail scorer or a label match)
+fails a trial on the check's other value, but its pass rule named only "every goal check" and the rubric level, so an
+arm failing nearly every trial on the check read as passing everything the analyst could see. The rule now names each
+check that is no goal check, by the name the page gives its measure and the value it must hold to pass (`Never topped
+up is false`): in the rule's label (`aspects.<aspect>.pass_rule`, and `pass_threshold_label`'s new `checks`), in its
+sentence (`.description`, which now says "every goal check passed" where it said "every check passed"), in
+`PassRule.named_checks` (new) and in the analyst overview's aspect row (`checks`, new). An aspect held to such checks
+alone no longer reads "no criterion".
+
+`count.failures.<aspect>.<arm>` (and `FailedTrials.failed`) counted trials scoring a nought on one campaign-wide judged
+dimension, and read 0 where 178 of 180 trials failed on a check. It now counts every trial the pass rule failed, for any
+cause, the scoreboard's `failed` on that aspect. The examples are still noughts on the primary judged dimension where
+the snapshot names one; `examples_list`'s `pool` and the keys' own text say they are no sample of every failure.
+
+**Hosts:** a stored report that cites `count.failures` re-reads the trials its run failed, which is the scoreboard's
+count and can be far above what it read before; a sentence that read it as noughts on one dimension now misstates
+it. A pass rule's label and sentence change wording wherever a check besides goal checks is in force. No key is
+renamed and nothing stored is migrated.
+
 ### evals: an MCP client reads a report from structured content alone
 
 **Fixed:** over MCP, `report_read` returned no page to a client that shows a result's structured content in place of

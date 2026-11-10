@@ -17,21 +17,22 @@ slice, every slice's first before any slice's second, a slice's other cases befo
 the judge's reason quotes that the text holds, else the text's end, where the reply ends.
 
 **Counted.** An analyst's input (``counted``) also carries tallies of the bundle's trials, never statistics: each
-slice's failed trials (aspect, arm and stratum, a failure as the examples count one), so a page of examples can say
-how many it was kept from; each example's case input and every judged dimension's reason (``Example.reasons``),
-where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
-one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
-capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
-counted, never as none. Each aspect also states how a trial on it passes (``Aspect.pass_rule``, with ``graded_by``
-and ``description`` read from it), and each contrast what its test counted, copied off its comparison: the cases each
-side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
-cases". An uncounted input (the retired report planner's) carries none of them, so a snapshot frozen without them
-digests as it did.
+slice's failed trials (aspect, arm and stratum: every trial its pass rule failed, for any cause, as the scoreboard's
+``failed`` counts them), so a page can say how many trials failed beside the examples it shows; each example's case
+input and every judged dimension's reason (``Example.reasons``), where an example's ``reason`` is the primary
+dimension's alone; and, for each two aspects, the cases both ran and those only one ran, by stored case id. A tally is
+left out where the bundle's trials cannot give it whole: an aspect the bundle capped before every failure was kept, a
+pair of aspects either of which left trials out. Left out reads as not counted, never as none. Each aspect also states
+how a trial on it passes (``Aspect.pass_rule``, with ``graded_by`` and ``description`` read from it), and each contrast
+what its test counted, copied off its comparison: the cases each side read, whether it paired them and the arms'
+correlation across them, so an analyst can say "paired over 60 cases". An uncounted input (the retired report planner's)
+carries none of them, so a snapshot frozen without them digests as it did.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
-everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
-the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
-read the lead aspect (the first asked, else the first) and every other aspect's figures sit beside them.
+everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair
+readings sit on their aspect, a measurement's readings on its measures, and a contrast the pipeline could not test is
+carried with its reason rather than dropped. On more than one aspect the by-arm maps read the lead aspect (the first
+asked, else the first) and every other aspect's figures sit beside them.
 
 **A measure's grade is what one observation of it is** (``Measure.grade``), read off what the measure is, never off
 what kind of eval the campaign is. ``pass_fail``: each observation passes or fails and the measure is the share that
@@ -111,7 +112,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import declared_check_name, measure_name
+from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -152,7 +153,8 @@ _QUOTE_TRIM = " \t\n,.;:!?—–-'"
 #: What marks an excerpt's cut end.
 _CUT = "…"
 
-#: The rubric scale a judged measure's frozen measure scale stands for: ``ratio`` a pass rate, ``interval`` a 1 to 5 score.
+#: The rubric scale a judged measure's frozen measure scale stands for: ``ratio`` a pass rate, ``interval`` a 1 to 5
+#: score.
 _RUBRIC_SCALE_OF: dict[str, Literal["ordinal", "pass_fail"]] = {"ratio": "pass_fail", "interval": "ordinal"}
 
 #: What a measure's definition is cut to, as the writer's view cuts it.
@@ -235,7 +237,7 @@ class _Builder:
         strata = self.strata()
         shown = self.examples(primary, strata, examples, per_slice=per_slice, excerpt=excerpt, inputs=counted)
         tallies: dict[str, object] = (
-            {"failed_trials": self.failed_trials(primary), "case_overlap": self.case_overlap()} if counted else {}
+            {"failed_trials": self.failed_trials(), "case_overlap": self.case_overlap()} if counted else {}
         )
         return ReportInput.model_validate(
             {
@@ -293,7 +295,8 @@ class _Builder:
         bundle = self.bundle
         entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
         described = writer_arms(list(entries.values()))
-        listed: list[dict[str, Any]] = described["arms"]  # type: ignore[assignment]  # writer_arms types its values as object
+        # writer_arms types its values as object
+        listed: list[dict[str, Any]] = described["arms"]  # type: ignore[assignment]
         differing = {arm["variant_key"]: dict(arm["levels"]) for arm in listed}
         served = self.served_models()
         ratios = self.reasoning_ratios()
@@ -427,6 +430,7 @@ class _Builder:
             for name, descriptor in aspect.measure_catalog.items()
             if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
         )
+        named = [check_held(name, aspect.measure_catalog[name]) for name in checks if goal_check_of(name) is None]
         criteria: list[PassCriterion] = []
         if any(goal_check_of(name) is not None for name in checks):
             criteria.append("goal_checks")
@@ -435,10 +439,11 @@ class _Builder:
         return PassRule(
             criteria=criteria,
             threshold=threshold,
-            label=pass_threshold_label(k, threshold, criteria=criteria),
+            label=pass_threshold_label(k, threshold, criteria=criteria, checks=named),
             dimensions=dimensions,
             boundary=sorted(measure.name for measure in judged if measure.axis == "boundary"),
             checks=checks,
+            named_checks=named,
             no_criterion=sum(row.no_criterion for row in aspect.scoreboard),
         )
 
@@ -898,7 +903,7 @@ class _Builder:
         trials = [(aspect, trial) for aspect in self.ordered for trial in aspect.trials]
 
         def failed(trial: TrialRow) -> bool:
-            return _failed(trial, primary)
+            return _in_example_pool(trial, primary)
 
         def order(item: tuple[AnalysisContextBundle, TrialRow]) -> tuple[bool, float, str]:
             aspect, trial = item
@@ -944,18 +949,18 @@ class _Builder:
 
     # ------------------------------------------------------------------ counted off the trials
 
-    def failed_trials(self, primary: str | None) -> list[FailedTrials]:
-        """Each slice's failed trials, as the examples count a failure, on every aspect whose trials the bundle holds
-        whole (:func:`_holds_every_failure`); a slice of an aspect it does not is left out, so it reads as not
-        counted."""
+    def failed_trials(self) -> list[FailedTrials]:
+        """Each slice's failed trials, every trial its pass rule failed for any cause, as the scoreboard's ``failed``
+        counts them, on every aspect whose trials the bundle holds every failure of (:func:`_holds_every_failure`); a
+        slice of an aspect it does not is left out, so it reads as not counted."""
         arms = {arm.id: index for index, arm in enumerate(self.arms())}
         counts: dict[tuple[str, str, str | None], int] = {}
         for aspect in self.ordered:
-            if not _holds_every_failure(aspect, primary):
+            if not _holds_every_failure(aspect):
                 continue
             for trial in aspect.trials:
                 key = (aspect.aspect, self.arm(trial.arm), trial.stratum)
-                counts[key] = counts.get(key, 0) + int(_failed(trial, primary))
+                counts[key] = counts.get(key, 0) + int(trial.state == "failed")
         place = {aspect.aspect: index for index, aspect in enumerate(self.ordered)}
         ordered = sorted(counts, key=lambda key: (place[key[0]], arms.get(key[1], len(arms)), key[1], key[2] or ""))
         return [
@@ -1096,11 +1101,13 @@ def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:
-    """How a trial on an aspect passes, in one plain sentence built from its pass rule."""
+    """How a trial on an aspect passes, in one plain sentence built from its pass rule: goal checks summed up, every
+    other check named as the rule names it (``PassRule.named_checks``)."""
     judged = "every judged dimension, guardrails aside," if rule.boundary else "every judged dimension"
     held = [
         "its candidate did not fail",
-        *(["every check passed"] if rule.checks else []),
+        *(["every goal check passed"] if "goal_checks" in rule.criteria else []),
+        *rule.named_checks,
         *([f"{judged} scored at least {rule.threshold} of 5"] if rule.dimensions else []),
     ]
     if len(held) == 1:
@@ -1190,31 +1197,19 @@ def _failure_excerpt(text: str, reason: str | None, chars: int) -> str:
     return (_CUT if start > 0 else "") + text[start:end] + (_CUT if end < len(text) else "")
 
 
-def _failed(trial: TrialRow, primary: str | None) -> bool:
-    """Whether a trial is a failure the examples show: a nought on the primary judged dimension where there is one,
-    else a failed trial."""
+def _in_example_pool(trial: TrialRow, primary: str | None) -> bool:
+    """Whether a trial is in the pool the examples are kept from: a nought on the primary judged dimension where there
+    is one, else a failed trial. A trial a check failed, or another dimension, is in it only with no primary."""
     if primary is not None:
         return trial.judged.get(primary) == 0
     return trial.state == "failed"
 
 
-def _holds_every_failure(aspect: AnalysisContextBundle, primary: str | None) -> bool:
-    """Whether an aspect's trials hold every failure its run had, as the examples count one. None was left out of the
-    bundle; or the cap, which keeps every failed and lost trial before any that passed, kept one that passed, so only
-    passed trials were left out, and a passed trial is no failure: with no primary judged dimension a failure is a
-    failed trial, and with one, a nought on it fails the trial only where it decides pass, a capability dimension
-    (``JudgedMeasure.axis``) *(inferred: under a composite pass rule a normalised ordinal capability dimension could
-    read nought on a trial that passed)*. A primary dimension that does not (a boundary dimension, or one the bundle does not
-    describe) can score nought on a trial that passed and was left out, so such an aspect is not held whole."""
-    if aspect.trials_omitted == 0:
-        return True
-    passed = [trial for trial in aspect.trials if trial.state == "passed"]
-    if not passed or any(_failed(trial, primary) for trial in passed):
-        return False
-    if primary is None:
-        return True
-    described = [measure for measure in aspect.judged_measures if measure.name == primary]
-    return bool(described) and all(measure.axis == "capability" for measure in described)
+def _holds_every_failure(aspect: AnalysisContextBundle) -> bool:
+    """Whether an aspect's trials hold every trial its run failed. None was left out of the bundle; or the cap, which
+    keeps every failed and lost trial before any that passed, kept one that passed, so only passed trials were left
+    out."""
+    return aspect.trials_omitted == 0 or any(trial.state == "passed" for trial in aspect.trials)
 
 
 def _started(text: str, chars: int) -> str:

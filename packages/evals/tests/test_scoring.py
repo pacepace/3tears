@@ -337,7 +337,7 @@ def _curve(entry: dict[str, Any]) -> list[tuple[int, float | None, int]]:
 
 def test_compute_pass_hat_k_all_pass_yields_one():
     results = [make_scored_result(test_case_id=f"tc{i}", k=1) for i in range(3)]
-    out = compute_pass_hat_k(results)
+    out = compute_pass_hat_k(results, catalog={})
     assert out[("m1", "r1")]["pass_hat_k"] == 1.0
     assert out[("m1", "r1")]["n_test_cases"] == 3
     assert out[("m1", "r1")]["n_cases_at_k"] == 3
@@ -348,7 +348,7 @@ def test_compute_pass_hat_k_partial_pass():
         make_scored_result(test_case_id="tc1", goal_passes=(True,)),
         make_scored_result(test_case_id="tc2", goal_passes=(False,)),
     ]
-    out = compute_pass_hat_k(results)
+    out = compute_pass_hat_k(results, catalog={})
     assert out[("m1", "r1")]["pass_hat_k"] == 0.5
     assert out[("m1", "r1")]["n_cases_at_k"] == 2
 
@@ -359,7 +359,7 @@ def test_compute_pass_hat_k_failure_in_any_k_iter_fails_the_case_at_that_depth()
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),
         make_scored_result(test_case_id="tc1", k=2, goal_passes=(False,)),
     ]
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
     assert entry["k"] == 2
     assert entry["pass_hat_k"] == 0.0
     # ...while one attempt of the two passing is what pass^1 says.
@@ -376,7 +376,7 @@ def test_compute_pass_hat_k_is_the_unbiased_per_case_estimate_not_the_all_pass_i
     passes = (True, True, True, False)
     results = [make_scored_result(k=i + 1, goal_passes=(p,)) for i, p in enumerate(passes)]
 
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
 
     assert _curve(entry) == [(1, 0.75, 1), (2, 0.5, 1), (3, 0.25, 1), (4, 0.0, 1)]
 
@@ -390,7 +390,7 @@ def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases
         make_scored_result(test_case_id="tc-b", k=1, goal_passes=(True,)),
     ]
 
-    point = pass_hat_k_at(compute_pass_hat_k(results)[("m1", "r1")]["pass_hat_k_curve"], 1)
+    point = pass_hat_k_at(compute_pass_hat_k(results, catalog={})[("m1", "r1")]["pass_hat_k_curve"], 1)
 
     assert point["pass_hat_k"] == pytest.approx((2 / 3 + 1) / 2)
     assert point["n_cases"] == 2
@@ -398,13 +398,13 @@ def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases
 
 def test_compute_pass_hat_k_reads_the_headline_at_the_depth_asked():
     results = [make_scored_result(test_case_id="tc1", k=i, goal_passes=(i != 3,)) for i in (1, 2, 3)]
-    entry = compute_pass_hat_k(results, k=2)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, k=2, catalog={})[("m1", "r1")]
     assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (2, pytest.approx(1 / 3), 1)
 
 
 def test_compute_pass_hat_k_refuses_a_depth_below_one():
     with pytest.raises(ValueError, match="k >= 1"):
-        compute_pass_hat_k([make_scored_result()], k=0)
+        compute_pass_hat_k([make_scored_result()], k=0, catalog={})
 
 
 def test_compute_pass_hat_k_respects_rubric_threshold():
@@ -412,7 +412,7 @@ def test_compute_pass_hat_k_respects_rubric_threshold():
         make_scored_result(test_case_id="tc1", rubric_scores=(("x.v", 3),)),
         make_scored_result(test_case_id="tc2", rubric_scores=(("x.v", 2),)),
     ]
-    out = compute_pass_hat_k(results, rubric_threshold=3)
+    out = compute_pass_hat_k(results, rubric_threshold=3, catalog={})
     assert out[("m1", "r1")]["pass_hat_k"] == 0.5
 
 
@@ -421,13 +421,13 @@ def test_compute_pass_hat_k_separates_models():
         make_scored_result(test_case_id="tc1", model="m1"),
         make_scored_result(test_case_id="tc1", model="m2", goal_passes=(False,)),
     ]
-    out = compute_pass_hat_k(results)
+    out = compute_pass_hat_k(results, catalog={})
     assert out[("m1", "r1")]["pass_hat_k"] == 1.0
     assert out[("m2", "r1")]["pass_hat_k"] == 0.0
 
 
 def test_compute_pass_hat_k_empty_results():
-    assert compute_pass_hat_k([]) == {}
+    assert compute_pass_hat_k([], catalog={}) == {}
 
 
 def test_compute_pass_hat_k_candidate_error_fails_not_passes():
@@ -435,7 +435,7 @@ def test_compute_pass_hat_k_candidate_error_fails_not_passes():
     vacuous-result guard as a pass, and it is NOT excluded (a broken candidate fails).
     """
     err_result = make_scored_result(test_case_id="tc1", candidate_error="candidate turn LLM error: 402")
-    out = compute_pass_hat_k([err_result])
+    out = compute_pass_hat_k([err_result], catalog={})
     assert out[("m1", "r1")]["n_test_cases"] == 1
     assert out[("m1", "r1")]["pass_hat_k"] == 0.0
     assert out[("m1", "r1")]["n_cases_at_k"] == 1
@@ -455,26 +455,33 @@ class TestTheOutputCapsSilenceFails:
 
     def test_a_cut_off_hold_trial_whose_checks_and_judge_all_passed_fails(self):
         held = make_scored_result(goal_passes=(True, True), rubric_scores=(("reply.restraint", 5),))
-        assert compute_pass_hat_k([held])[("m1", "r1")]["pass_hat_k"] == 1.0  # the control: uncut, it passes
-        out = compute_pass_hat_k([_cut_off(held)])
+        assert (
+            compute_pass_hat_k([held], catalog={})[("m1", "r1")]["pass_hat_k"] == 1.0
+        )  # the control: uncut, it passes
+        out = compute_pass_hat_k([_cut_off(held)], catalog={})
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_test_cases"] == 1  # counted as a fail, not excluded
 
     def test_a_cut_off_act_trial_whose_checks_passed_on_earlier_rounds_fails(self):
         acted = make_scored_result(goal_passes=(True,), rubric_scores=(("reply.thread_fit", 4),))
-        assert compute_pass_hat_k([acted])[("m1", "r1")]["pass_hat_k"] == 1.0  # the control: uncut, it passes
-        assert compute_pass_hat_k([_cut_off(acted)])[("m1", "r1")]["pass_hat_k"] == 0.0
+        assert (
+            compute_pass_hat_k([acted], catalog={})[("m1", "r1")]["pass_hat_k"] == 1.0
+        )  # the control: uncut, it passes
+        assert compute_pass_hat_k([_cut_off(acted)], catalog={})[("m1", "r1")]["pass_hat_k"] == 0.0
 
     def test_a_cut_off_trial_fails_even_where_the_judge_could_not_tell(self):
         silent = make_scored_result(goal_passes=(True,)).model_copy(
             update={"judge_cannot_tell": {"reply.thread_fit": "nothing was queued"}}
         )
-        out = compute_pass_hat_k([_cut_off(silent)])
+        out = compute_pass_hat_k([_cut_off(silent)], catalog={})
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_zero_count_is_an_observation_that_nothing_was_cut(self):
-        assert compute_pass_hat_k([_cut_off(make_scored_result(), rounds=0)])[("m1", "r1")]["pass_hat_k"] == 1.0
+        assert (
+            compute_pass_hat_k([_cut_off(make_scored_result(), rounds=0)], catalog={})[("m1", "r1")]["pass_hat_k"]
+            == 1.0
+        )
 
 
 class TestAFailedTrialIsNeverExcluded:
@@ -484,20 +491,20 @@ class TestAFailedTrialIsNeverExcluded:
 
     def test_a_failed_goal_check_fails_the_trial_the_judge_could_not_finish(self):
         failed = make_scored_result(goal_passes=(False, True)).model_copy(update=self._UNSCORED)
-        out = compute_pass_hat_k([failed])
+        out = compute_pass_hat_k([failed], catalog={})
         assert out[("m1", "r1")]["n_test_cases"] == 1
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_scored_dim_below_the_bar_fails_it_too(self):
         failed = make_scored_result(rubric_scores=(("reply.handoff_spoken", 1),)).model_copy(update=self._UNSCORED)
-        out = compute_pass_hat_k([failed], rubric_threshold=3)
+        out = compute_pass_hat_k([failed], rubric_threshold=3, catalog={})
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_trial_the_unscored_dim_would_decide_is_still_left_out(self):
         undecided = make_scored_result(rubric_scores=(("reply.handoff_spoken", 4),)).model_copy(update=self._UNSCORED)
-        out = compute_pass_hat_k([undecided], rubric_threshold=3)
+        out = compute_pass_hat_k([undecided], rubric_threshold=3, catalog={})
         assert out[("m1", "r1")]["n_test_cases"] == 0
         assert out[("m1", "r1")]["pass_hat_k"] is None
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 1
@@ -511,7 +518,7 @@ def test_compute_pass_hat_k_infra_iteration_excluded_case_scored_on_the_rest():
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),  # measured, passes
         _infra_result(test_case_id="tc1", k=2),  # excluded (judge/timeout/factory)
     ]
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
     assert entry["n_test_cases"] == 1
     # One scored attempt, and it passed: pass^1 is 1.0, not floored by the excluded one...
     assert _curve(entry) == [(1, 1.0, 1)]
@@ -526,7 +533,7 @@ def test_compute_pass_hat_k_all_iterations_excluded_case_drops_from_denominator(
         _infra_result(test_case_id="tc2", k=1),
         _infra_result(test_case_id="tc2", k=2),  # tc2 entirely unmeasured
     ]
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
     assert entry["n_test_cases"] == 1  # tc2 gone
     assert _curve(entry) == [(1, 1.0, 1)]
 
@@ -536,7 +543,7 @@ def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases():
     0 with no pass rate (nothing measured), not absent, not a floored fail, and not
     a pass rate of zero, which would read as every case failing.
     """
-    out = compute_pass_hat_k([_infra_result(test_case_id="tc1", k=1)])
+    out = compute_pass_hat_k([_infra_result(test_case_id="tc1", k=1)], catalog={})
     assert ("m1", "r1") in out
     assert out[("m1", "r1")]["n_test_cases"] == 0
     assert out[("m1", "r1")]["n_cases_at_k"] == 0
@@ -569,7 +576,7 @@ def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_mod
         identity_version=IDENTITY_VERSION,
         judge_model=judge_model,
     )
-    row = compute_pass_hat_k([empty])[("m1", "r1")]
+    row = compute_pass_hat_k([empty], catalog={})[("m1", "r1")]
     if judge_model is None:
         assert row["pass_hat_k"] is None and row["pass_hat_k_curve"] == []
         assert row["n_no_criterion_excluded"] == 1
@@ -607,7 +614,7 @@ def test_compute_pass_hat_k_leaves_a_shallow_case_out_of_the_depths_it_never_rea
         make_scored_result(test_case_id="tc-shallow", k=2, goal_passes=(True,)),
     ]
 
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
 
     assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (3, 0.0, 1)
     assert _curve(entry) == [(1, pytest.approx((2 / 3 + 1) / 2), 2), (2, pytest.approx(1 / 3), 1), (3, 0.0, 1)]
@@ -617,7 +624,7 @@ def test_compute_pass_hat_k_every_point_rests_on_every_case_when_the_run_measure
     """A complete run's cases all reached the planned depth, so no point loses a case."""
     results = [make_scored_result(test_case_id=f"tc{i}", k=k, goal_passes=(True,)) for i in range(3) for k in (1, 2)]
 
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
 
     assert _curve(entry) == [(1, 1.0, 3), (2, 1.0, 3)]
 
@@ -637,7 +644,7 @@ def test_compute_pass_hat_k_reports_the_depth_reached_by_the_model_it_is_keyed_o
         make_scored_result(test_case_id="tc1", model="m2", k=1, goal_passes=(True,)),
     ]
 
-    out = compute_pass_hat_k(results)
+    out = compute_pass_hat_k(results, catalog={})
 
     assert out[("m1", "r1")]["k"] == 3
     assert out[("m2", "r1")]["k"] == 1
@@ -655,7 +662,7 @@ def test_compute_pass_hat_k_depth_counts_attempts_and_the_curve_counts_scored_on
         _infra_result(test_case_id="tc1", k=2),
     ]
 
-    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, catalog={})[("m1", "r1")]
 
     assert entry["k"] == 2
     assert len(entry["pass_hat_k_curve"]) == 1
@@ -689,7 +696,7 @@ class TestPoolingAcrossRuns:
     def test_two_runs_of_one_cell_are_more_attempts_at_the_same_case(self):
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
 
-        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-a"}, k=2)
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-a"}, k=2, catalog={})
 
         assert entry["n_test_cases"] == 1
         assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (0.0, 1)
@@ -698,7 +705,7 @@ class TestPoolingAcrossRuns:
     def test_two_cells_keep_one_test_case_as_two_cases(self):
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
 
-        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-b"}, k=2)
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-b"}, k=2, catalog={})
 
         assert entry["n_test_cases"] == 2
         assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (None, 0)
@@ -707,14 +714,14 @@ class TestPoolingAcrossRuns:
     def test_a_run_the_map_does_not_name_is_its_own_cell(self):
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, True)]
 
-        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1, catalog={})
 
         assert entry["n_test_cases"] == 2
 
     def test_two_variants_never_pool_even_under_one_cell(self):
         results = [_pooled_result("r1", 1, True), _pooled_result("r1", 2, True, variant_key="vk-2")]
 
-        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1, catalog={})
 
         assert entry["n_test_cases"] == 2
 
@@ -724,13 +731,13 @@ class TestPoolingAcrossRuns:
         )
         results = [_pooled_result("r1", 1, True), _infra_result(run_id="r1", k=2), unscored]
 
-        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1, catalog={})
 
         assert (entry["n_test_cases"], entry["pass_hat_k"], entry["n_cannot_tell_excluded"]) == (1, 1.0, 1)
 
     def test_a_pool_needs_a_depth(self):
         with pytest.raises(ValueError, match="k >= 1"):
-            pool_pass_hat_k([], cell_of_run={}, k=0)
+            pool_pass_hat_k([], cell_of_run={}, k=0, catalog={})
 
 
 def _stamped(run, profile):
@@ -900,7 +907,7 @@ class TestTheCellARunsAttemptsPoolUnder:
         ]
         cells = {run.id: _cell_of(run, profile) for run in (a, b)}
 
-        entry = pool_pass_hat_k(results, cell_of_run=cells, k=2)
+        entry = pool_pass_hat_k(results, cell_of_run=cells, k=2, catalog={})
 
         assert entry["n_test_cases"] == 3
         # tc2 alone reached two attempts, one from each run: pass^2 over it is 0.
@@ -1632,7 +1639,7 @@ def test_compute_dimension_summary_excludes_the_same_cells_pass_k_does():
     ]
 
     dims = compute_dimension_summary(results)
-    passk = compute_pass_hat_k(results)
+    passk = compute_pass_hat_k(results, catalog={})
 
     assert dims[("m1", "r1", "reply.grounding")]["n"] == passk[("m1", "r1")]["n_test_cases"] == 1
 
@@ -1804,7 +1811,7 @@ class TestAJudgeThatCouldNotTell:
 
     def test_pass_k_counts_the_scored_trial_and_leaves_out_the_other(self):
         told, scored = self._pair()
-        entry = compute_pass_hat_k([told, scored])[("m1", "r1")]
+        entry = compute_pass_hat_k([told, scored], catalog={})[("m1", "r1")]
         assert entry["n_test_cases"] == 1
         assert entry["pass_hat_k"] == 1.0
         # Left out, and counted as left out for this reason — never a silent shrink.
@@ -1819,11 +1826,11 @@ class TestAJudgeThatCouldNotTell:
         """The transcript and outcome axes are in neither measure, so they cannot exclude from them."""
         result = make_eval_result(judge_cannot_tell={TRANSCRIPT_DIM_ID: "no turns"})
         assert result_composite(result) is not None
-        assert compute_pass_hat_k([result])[("sonnet", "run-1")]["n_test_cases"] == 1
+        assert compute_pass_hat_k([result], catalog={})[("sonnet", "run-1")]["n_test_cases"] == 1
 
     def test_a_candidate_failure_still_fails_whatever_the_judge_could_not_tell(self):
         failed = make_eval_result(candidate_error="402", judge_cannot_tell={"reply.refusal": "nothing to read"})
-        entry = compute_pass_hat_k([failed])[("sonnet", "run-1")]
+        entry = compute_pass_hat_k([failed], catalog={})[("sonnet", "run-1")]
         assert entry["n_test_cases"] == 1 and entry["pass_hat_k"] == 0.0
 
 

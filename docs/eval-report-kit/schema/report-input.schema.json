@@ -97,7 +97,7 @@
   },
   "failed_trials": {
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/FailedTrials"}}, {"type": "null"}],
-   "description": "The failed trials the run holds per aspect, arm and stratum, which the examples are kept from; none where the input does not count them."
+   "description": "The trials the run failed per aspect, arm and stratum, for any cause; none where the input does not count them."
   },
   "case_overlap": {
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/CaseOverlap"}}, {"type": "null"}],
@@ -573,11 +573,11 @@
     "failed": {
      "type": "integer",
      "minimum": 0,
-     "description": "The trials of the slice that failed, as the examples count a failure."
+     "description": "The trials of the slice its pass rule failed, for any cause."
     }
    },
    "additionalProperties": false,
-   "description": "How many trials of one slice of the run failed: the pool its examples are kept from."
+   "description": "How many trials of one slice of the run failed, for any cause, as the scoreboard's `failed` counts them."
   },
   "FloorRead": {
    "type": "object",
@@ -847,6 +847,11 @@
      "type": "array",
      "items": {"type": "string"},
      "description": "The checks that fail a trial on their own, by measure key: goal checks, a label match and pass/fail scorers."
+    },
+    "named_checks": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Each check in `checks` that is no goal check, as the rule names it: the measure's reader name and the value it must hold for the trial to pass (`Never topped up is false`); the other value fails the trial. Goal checks are named on the page's glossary, so the rule sums them up as every goal check."
     },
     "no_criterion": {"type": "integer", "description": "Trials that passed with nothing to fail them, across every arm."}
    },

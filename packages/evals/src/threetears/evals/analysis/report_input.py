@@ -23,11 +23,13 @@ own ``Aspect.scoreboard`` and each measure's ``by_aspect``; a contrast, contrast
 its aspect, and so does a criterion declared on one aspect, which reads that aspect's figures. A choice's pair
 readings sit on their aspect (``Aspect.pairs``).
 
-**Counted off the bundle, for an analyst.** ``failed_trials`` (each slice's failed trials, the pool its examples are
-kept from) and ``case_overlap`` (which cases each two aspects share, by stored case id) are tallies of the bundle's
-trials, not statistics: an analyst's snapshot counts them
+**Counted off the bundle, for an analyst.** ``failed_trials`` (each slice's trials its pass rule failed, for any
+cause, as the scoreboard's ``failed`` counts them) and ``case_overlap`` (which cases each two aspects share, by stored
+case id) are tallies of the bundle's trials, not statistics: an analyst's snapshot counts them
 (:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`). An uncounted input and a bare one leave them
-``None``, which reads as not known, never as none.
+``None``, which reads as not known, never as none. The examples are no sample of every failure where
+``primary_judged`` names a dimension: they are trials scoring a nought on it, and a trial a check failed is never
+among them.
 
 **The rig, and the calls nobody answered.** ``apparatus`` copies each run's apparatus off the bundle's run summary
 (``RunSummary.apparatus``): the judge each dimension was asked of and what it was asked for, the temperature, the
@@ -289,10 +291,10 @@ class PairRead(_Part):
 class PassRule(_Part):
     """How code decides whether one trial on an aspect passed, read off the bundle it was decided in.
 
-    A trial passes when its candidate did not fail, every check in ``checks`` passed, and every judged dimension in
-    ``dimensions`` scored at least ``threshold`` (a pass/fail dimension's bar is its pass). A boundary dimension is a
-    guardrail, decided apart, so it never fails a trial. A trial with nothing to fail passes, and ``no_criterion``
-    counts those.
+    A trial passes when its candidate did not fail, every check in ``checks`` passed (each that is no goal check named
+    in ``named_checks`` with the value it must hold), and every judged dimension in ``dimensions`` scored at least
+    ``threshold`` (a pass/fail dimension's bar is its pass). A boundary dimension is a guardrail, decided apart, so it
+    never fails a trial. A trial with nothing to fail passes, and ``no_criterion`` counts those.
     """
 
     criteria: list[PassCriterion] = Field(
@@ -311,6 +313,14 @@ class PassRule(_Part):
         default_factory=list,
         description="The checks that fail a trial on their own, by measure key: goal checks, a label match and "
         "pass/fail scorers.",
+    )
+    # Left out of the document when empty, so a rule held to goal checks alone digests as it did.
+    named_checks: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each check in `checks` that is no goal check, as the rule names it: the measure's reader name and "
+        "the value it must hold for the trial to pass (`Never topped up is false`); the other value fails the trial. "
+        "Goal checks are named on the page's glossary, so the rule sums them up as every goal check.",
     )
     no_criterion: int = Field(description="Trials that passed with nothing to fail them, across every arm.")
 
@@ -593,12 +603,12 @@ class Example(_Part):
 
 
 class FailedTrials(_Part):
-    """How many trials of one slice of the run failed: the pool its examples are kept from."""
+    """How many trials of one slice of the run failed, for any cause, as the scoreboard's ``failed`` counts them."""
 
     aspect: str = Field(description="The aspect the slice ran on.")
     arm: str = Field(description="The arm that ran it.")
     stratum: str | None = Field(default=None, description="The stratum or task it falls in; none for none.")
-    failed: int = Field(ge=0, description="The trials of the slice that failed, as the examples count a failure.")
+    failed: int = Field(ge=0, description="The trials of the slice its pass rule failed, for any cause.")
 
 
 class CaseOverlap(_Part):
@@ -839,8 +849,8 @@ class ReportInput(_Part):
     failed_trials: list[FailedTrials] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="The failed trials the run holds per aspect, arm and stratum, which the examples are kept from; "
-        "none where the input does not count them.",
+        description="The trials the run failed per aspect, arm and stratum, for any cause; none where the input does "
+        "not count them.",
     )
     case_overlap: list[CaseOverlap] | None = Field(
         default=None,

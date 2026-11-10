@@ -167,6 +167,7 @@ from threetears.evals.analysis.style import (
     ArmName,
     arm_display_name,
     arm_name,
+    check_held,
     code,
     declared_check_name,
     humanize,
@@ -3415,18 +3416,20 @@ def _marks(trials: Sequence[TrialRow]) -> str:
 _SAYS_CHECK = re.compile(r"\bcheck\b", re.IGNORECASE)
 
 
-def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
+def _trial_why(trial: TrialRow, check_names: Mapping[str, str], check_failures: Mapping[str, str]) -> str | None:
     """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
-    goal check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression."""
+    goal check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression; any
+    other check by the value that failed it, as its pass rule words it (``check_failures``, by the check's reader
+    name: ``Never topped up is true``)."""
     if trial.state == "passed":
         return None
     if trial.state == "lost":
         return f"lost: {cause_short(trial.cause or 'unknown')}"
     if trial.cause == "check" and trial.failed_checks:
         # A check is named by its name, never by its expression and never a "pass rate" on one trial.
-        # A goal check by its name; anything else a trial records as failed (a grader's ``total is False``) as code,
-        # as written, since its reading names it already.
-        named = [check_names.get(check.expression) for check in trial.failed_checks]
+        # A goal check by its name, a check the catalog describes by the value that failed it, and anything else a
+        # trial records as failed (a grader's ``total is False`` with no descriptor) as code, as written.
+        named = [check_names.get(check.expression) or check_failures.get(check.name) for check in trial.failed_checks]
         said = ", ".join(name or code(check.expression) for name, check in zip(named, trial.failed_checks, strict=True))
         # Where every name already says it is a check (``Ticket status check``), the cell never says so twice.
         return said if all(name and _SAYS_CHECK.search(name) for name in named) else f"check: {said}"
@@ -3526,11 +3529,18 @@ def _trial_blocks(
     statuses = arm_run_statuses(bundle)
     case_name = _case_namer(bundle)
     checks = bundle.named_checks()
+    # Each check that is no goal check, by the reader name a trial's failed check carries, worded at its failing value
+    # as the pass rule words its passing one.
+    failures = {
+        (descriptor.reader_name or name): check_held(name, descriptor, failed=True)
+        for name, descriptor in bundle.measure_catalog.items()
+        if goal_check_of(name) is None and (name == MATCH_MEASURE or descriptor.is_check)
+    }
     wrong = [trial for trial in _wrong_first(bundle.trials) if trial.state != "passed"]
     rows: list[dict[str, TableCell]] = []
     held: list[ReportBlock] = []
     for position, trial in enumerate(wrong):
-        why = _trial_why(trial, checks)
+        why = _trial_why(trial, checks, failures)
         row = table_row(
             {
                 "trial": trial.trial_id,

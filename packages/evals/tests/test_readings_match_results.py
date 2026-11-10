@@ -271,7 +271,7 @@ class TestEachRuleReadsReadingsAsResults:
         "judge_score": lambda r: [score_json(r.judge_score(score.dim)) for score in r.judge_scores()],
         "result_composite": result_composite,
         "composite_basis": composite_basis,
-        "has_pass_criterion": has_pass_criterion,
+        "has_pass_criterion": lambda r: has_pass_criterion(r, catalog={}),
         "spend_observed": lambda r: spend_observed(r.usage, r.cost_roles),
         "production_replicating_cost": lambda r: production_replicating_cost(
             r.usage, substituted_deliveries=count_substituted_deliveries(r), candidate_kind=r.candidate_kind
@@ -297,8 +297,8 @@ class TestEachRuleReadsReadingsAsResults:
 
         def folds(over: Sequence[Any]) -> dict[str, str]:
             return {
-                "compute_pass_hat_k": as_json(compute_pass_hat_k(over)),
-                "pool_pass_hat_k": as_json(pool_pass_hat_k(over, cell_of_run=cells, k=2)),
+                "compute_pass_hat_k": as_json(compute_pass_hat_k(over, catalog={})),
+                "pool_pass_hat_k": as_json(pool_pass_hat_k(over, cell_of_run=cells, k=2, catalog={})),
                 "compute_latency_summary": as_json(compute_latency_summary(over)),
                 "compute_async_delivery_summary": as_json(compute_async_delivery_summary(over)),
                 "compute_cost_summary": as_json(compute_cost_summary(over)),

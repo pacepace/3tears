@@ -63,6 +63,13 @@ from threetears.evals.kernel.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.kernel.result_reading import LatencyView, ResultView, ScoreView
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import (
+    MATCH_MEASURE,
+    MetricDescriptor,
+    describe_reported_measure,
+    goal_check_measure,
+)
 from threetears.evals.kernel.identity import StateCoordinateError, resolve_context_identity
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
@@ -340,8 +347,79 @@ def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasi
     )
 
 
-def _result_passes(result: ResultView, *, rubric_threshold: int) -> bool:
-    """A result passes iff every goal-state and every capability rubric dim cleared the bar.
+@dataclass(frozen=True, slots=True)
+class FailedCheck:
+    """One check a trial failed.
+
+    :ivar measure: The measure the check is read under: a goal check's minted measure
+        (:func:`~threetears.evals.kernel.metrics.goal_check_measure`), the label, or the check measure itself.
+    :ivar expression: What it evaluates, as written: the goal check's expression, ``match == expected label``, or the
+        side a check measure fell on, ``top_up_never is True``.
+    """
+
+    measure: str
+    expression: str
+
+
+def failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> list[FailedCheck]:
+    """Every check a trial failed: each goal check, then a wrong label, then each check measure on its wrong side.
+
+    The one list of what a trial must pass beside its judged dimensions. pass^k (:func:`compute_pass_hat_k`,
+    :func:`pool_pass_hat_k`) and a report's census of trials both read it, so a check that fails a trial in one fails
+    it in the other. A check measure is one its descriptor calls a check
+    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`): a boolean with a better end, or a scorer
+    graded 0 or 1. A measure with no better end, a numeric one that is no pass/fail scorer, and one the catalog does
+    not describe fail nothing. The label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) fails on False
+    whatever the catalog holds, since an answer that is not the expected one is wrong in every host.
+
+    :param result: The trial.
+    :ptype result: ResultView
+    :param catalog: Each measure the trial carries, described as its host declares it
+        (:func:`measure_catalog_of`, or a report's own catalog, which describes them the same way).
+    :ptype catalog: Mapping[str, MetricDescriptor]
+    :return: The checks it failed, in that order, the measures by name.
+    :rtype: list[FailedCheck]
+    """
+    failed = [
+        FailedCheck(measure=goal_check_measure(check.expression), expression=check.expression)
+        for check in result.goal_state_outcomes
+        if not check.passed
+    ]
+    for name, value in sorted(result.host_measures.items()):
+        if name == MATCH_MEASURE:
+            if value is False:
+                failed.append(FailedCheck(measure=name, expression=f"{name} == expected label"))
+            continue
+        descriptor = catalog.get(name)
+        if descriptor is not None and descriptor.check_failed(value):
+            # A pass/fail scorer lands 0 or 1: named by the side it fell on, as a boolean's is.
+            fell = value if isinstance(value, bool) else not descriptor.higher_is_better
+            failed.append(FailedCheck(measure=name, expression=f"{name} is {fell}"))
+    return failed
+
+
+def measure_catalog_of(results: Iterable[ResultView], measures: MeasureRegistry | None) -> dict[str, MetricDescriptor]:
+    """Each measure the results carry, described as the host declares it: the catalog :func:`failed_checks` reads.
+
+    Described by :func:`~threetears.evals.kernel.metrics.describe_reported_measure`, as a report's measure catalog
+    describes the same names, so pass^k read beside a report holds a trial to the checks the report's census does.
+
+    :param results: The results whose carried measures (``host_measures``) are described.
+    :ptype results: Iterable[ResultView]
+    :param measures: The host's measure registry; None where no host is in reach, so only the engine's own measures
+        (the label among them) are described, and a host's check is described as a measure the engine does not know,
+        which fails nothing.
+    :ptype measures: MeasureRegistry | None
+    :return: Descriptors keyed by measure name.
+    :rtype: dict[str, MetricDescriptor]
+    """
+    registry = measures if measures is not None else MeasureRegistry(())
+    names = sorted({name for result in results for name in result.host_measures})
+    return {name: describe_reported_measure(name, registry) for name in names}
+
+
+def _result_passes(result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> bool:
+    """A result passes iff it failed no check (:func:`failed_checks`) and every capability rubric dim cleared the bar.
 
     A boundary dim is a guardrail, decided on its own, and takes no part (:func:`capability_scores`).
 
@@ -363,24 +441,24 @@ def _result_passes(result: ResultView, *, rubric_threshold: int) -> bool:
     if candidate_failure_cause(result) is not None:
         return False
     scores = capability_scores(result)
-    if not result.goal_state_outcomes and not scores:
+    if not result.goal_state_outcomes and not scores and not _carries_a_check(result, catalog):
         return False
-    if any(not o.passed for o in result.goal_state_outcomes):
+    if failed_checks(result, catalog):
         return False
     if any(not s.clears(rubric_threshold) for s in scores):
         return False
     return True
 
 
-def _already_failed(result: ResultView, *, rubric_threshold: int) -> bool:
+def _already_failed(result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> bool:
     """Whether what the trial has already shown decides it as a fail, whatever its unscored dims say.
 
-    A failed goal-state check or a scored rubric dim under the bar fails the trial on its own, so
+    A failed check (:func:`failed_checks`) or a scored rubric dim under the bar fails the trial on its own, so
     a judge answering it could not tell on another dim leaves nothing undecided. Without this the
     exclusion meant for an undecidable trial also swallowed decided failures — a hold or act
     template lost exactly the trials it failed, and pass^k rose.
     """
-    if any(not o.passed for o in result.goal_state_outcomes):
+    if failed_checks(result, catalog):
         return True
     return any(not s.clears(rubric_threshold) for s in capability_scores(result))
 
@@ -454,34 +532,54 @@ def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
 
 #: Why a pass^k has no value when every attempt behind it had nothing to pass (#688).
 NO_PASS_CRITERION_REASON = (
-    "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to "
-    "conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead"
+    "no attempt carried a pass criterion — no goal-state check, no label, no declared check and no judge — so there is "
+    "nothing for pass^k to conjoin: it is unmeasured, not 0; read the arm's own measures instead"
 )
 
 
-def has_pass_criterion(result: ResultView) -> bool:
-    """Whether pass^k has anything to conjoin on this result: a goal-state check, a capability criterion, or a judge.
+def has_pass_criterion(result: ResultView, *, catalog: Mapping[str, MetricDescriptor]) -> bool:
+    """Whether pass^k has anything to conjoin on this result: a goal-state check, a label, a check a host declares, a
+    capability criterion, or a judge.
 
-    A result with none — a classifier scored only against its expected label, no goal check and no judge — is
-    not a failed attempt: pass^k cannot ask it anything, so it is left out of pass^k (#688) rather than read as
-    failing every criterion it never had. A result whose run pinned a judge (``judge_model``) is in, scored or
-    not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
+    The one answer pass^k and the census both read, so an attempt pass^k leaves out for having no criterion is a trial
+    the census counts apart (``no_criterion``). A label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) is a
+    criterion, so a classifier scored only against its expected label has a measured pass^k: the share of its cases it
+    labelled right on every repeat. So is a measure the result carries that its descriptor calls a check
+    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`), so an arm held by such a check alone has one
+    too. A result with no criterion is not a failed attempt: pass^k cannot ask it anything, so it is left out (#688)
+    rather than read as failing every criterion it never had, which read 0.0. A result whose run pinned a judge
+    (``judge_model``) is in, scored or not: its criteria were asked, so a judged arm whose candidate failed before
+    the judge ran still fails.
 
     :param result: The eval result.
     :ptype result: ResultView
+    :param catalog: Each measure the result carries, described as the host declares it (:func:`measure_catalog_of`).
+    :ptype catalog: Mapping[str, MetricDescriptor]
     :return: True when pass^k can decide the attempt.
     :rtype: bool
     """
     capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
     return bool(
         result.goal_state_outcomes
+        or _carries_a_check(result, catalog)
         or capability_scores(result)
         or capability_cannot_tell
         or result.judge_model is not None
     )
 
 
-def _trial_pass(result: ResultView, *, rubric_threshold: int) -> tuple[bool | None, bool]:
+def _carries_a_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
+    """Whether the result carries a label or a measure its host declares as a check: what :func:`failed_checks` reads
+    beside goal checks."""
+    return any(
+        name == MATCH_MEASURE or ((descriptor := catalog.get(name)) is not None and descriptor.is_check)
+        for name in result.host_measures
+    )
+
+
+def _trial_pass(
+    result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
+) -> tuple[bool | None, bool]:
     """Whether one attempt passed, ``None`` when it is left out — and whether it left as cannot-tell.
 
     Infra-excluded attempts (judge_error, a cell timeout charged to the rig —
@@ -492,27 +590,27 @@ def _trial_pass(result: ResultView, *, rubric_threshold: int) -> tuple[bool | No
     are attempts that failed.
     """
     exclusion = trial_exclusion(result)
-    if exclusion == "judge_cannot_tell" and _already_failed(result, rubric_threshold=rubric_threshold):
+    if exclusion == "judge_cannot_tell" and _already_failed(result, rubric_threshold=rubric_threshold, catalog=catalog):
         # The unscored dim cannot rescue a trial a failed check or a sub-bar dim has already
         # decided, so it counts as the fail it is rather than vanishing from the denominator.
         exclusion = None
     if exclusion is not None:
         return None, exclusion == "judge_cannot_tell"
-    if not has_pass_criterion(result):
+    if not has_pass_criterion(result, catalog=catalog):
         # Nothing to conjoin: unmeasured for pass^k, never a fail (#688). Counted by the callers.
         return None, False
     return classify_result(result) is ResultOutcome.OK and _result_passes(
-        result, rubric_threshold=rubric_threshold
+        result, rubric_threshold=rubric_threshold, catalog=catalog
     ), False
 
 
-def _no_criterion_count(results: Iterable[ResultView]) -> int:
+def _no_criterion_count(results: Iterable[ResultView], catalog: Mapping[str, MetricDescriptor]) -> int:
     """The attempts pass^k leaves out because they carry no pass criterion (:func:`has_pass_criterion`).
 
     Only those it would otherwise have read: an attempt left out for a fault or a judge's can't-tell is counted
     there, not here.
     """
-    return sum(1 for r in results if trial_exclusion(r) is None and not has_pass_criterion(r))
+    return sum(1 for r in results if trial_exclusion(r) is None and not has_pass_criterion(r, catalog=catalog))
 
 
 def _pass_hat_k_entry(
@@ -536,7 +634,7 @@ def _pass_hat_k_entry(
         # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
         # that is not a fault, so it is counted on its own rather than vanishing.
         "n_cannot_tell_excluded": n_cannot_tell,
-        # Attempts with nothing for pass^k to conjoin — no goal check, no judge (#688): left out, never failed.
+        # Attempts with nothing for pass^k to conjoin — no check, no label, no judge (#688): left out, never failed.
         "n_no_criterion_excluded": n_no_criterion,
         # Why pass^k has no value at all, where the reason is that nothing had a criterion; None otherwise.
         "pass_hat_k_unmeasured_reason": NO_PASS_CRITERION_REASON if n_no_criterion and not scored else None,
@@ -546,15 +644,16 @@ def _pass_hat_k_entry(
 def compute_pass_hat_k(
     results: Sequence[ResultView],
     *,
+    catalog: Mapping[str, MetricDescriptor],
     rubric_threshold: int = 3,
     k: int | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Estimate pass^k per ``(model, eval_run_id)`` — the chance that k attempts at a case ALL pass.
 
-    A result *passes* when every ``goal_state_outcomes`` entry passed AND every capability
-    ``rubric_scores`` entry clears the bar: at or above ``rubric_threshold`` on a 1–5 dimension, a pass
-    on a pass/fail one. A boundary dimension is a guardrail and is not part of pass^k
-    (:func:`capability_scores`).
+    A result *passes* when it failed no check (:func:`failed_checks`: a goal-state check, the label, or a check
+    measure the host declares, such as a directed boolean) AND every capability ``rubric_scores`` entry clears the
+    bar: at or above ``rubric_threshold`` on a 1–5 dimension, a pass on a pass/fail one. A boundary dimension is a
+    guardrail and is not part of pass^k (:func:`capability_scores`).
 
     **pass^k, not pass@k.** pass@k (Chen et al. 2021) is the chance that AT LEAST ONE of k attempts
     passes; pass^k (Yao et al. 2024, τ-bench) is the chance that ALL k do — the opposite end, and
@@ -574,6 +673,9 @@ def compute_pass_hat_k(
 
     :param results: The results to score.
     :ptype results: Sequence[ResultView]
+    :param catalog: Each measure the results carry, described as the host declares it (:func:`measure_catalog_of`):
+        which of them are checks an attempt must pass. Required, since a check left out of it passes every attempt.
+    :ptype catalog: Mapping[str, MetricDescriptor]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
     :ptype rubric_threshold: int
     :param k: The depth of the headline ``pass_hat_k``. ``None`` takes each group's deepest
@@ -584,17 +686,17 @@ def compute_pass_hat_k(
         "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
         "pass_hat_k_unmeasured_reason": str | None}}``.
 
-        An attempt with nothing to conjoin — no goal-state check and no judge (:func:`has_pass_criterion`)
-        — is left out and counted in ``n_no_criterion_excluded``, never read as a fail (#688); where no
-        attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
+        An attempt with nothing to conjoin — no goal-state check, no label, no declared check and no judge
+        (:func:`has_pass_criterion`) — is left out and counted in ``n_no_criterion_excluded``, never read as a fail
+        (#688); where no attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
 
         ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
         ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
         not a pass rate of zero. ``n_cases_short_of_k`` counts the scored cases left out for being
-        measured fewer than ``k`` times, so ``n_cases_at_k + n_cases_short_of_k == n_test_cases``. The curve runs from 1 to the deepest scored case and is empty
-        when nothing was scored. ``n_test_cases`` counts the cases with at least one scored
-        attempt. A ``(model, run)`` whose every result was excluded still appears, with zero
-        cases, rather than vanishing.
+        measured fewer than ``k`` times, so ``n_cases_at_k + n_cases_short_of_k == n_test_cases``. The curve runs
+        from 1 to the deepest scored case and is empty when nothing was scored. ``n_test_cases`` counts the cases
+        with at least one scored attempt. A ``(model, run)`` whose every result was excluded still appears, with
+        zero cases, rather than vanishing.
 
         The default ``k`` counts infra-excluded attempts, so it is the deepest iteration
         *attempted*, and it is per ``(model, run)``: pooling the run's models would let one
@@ -613,7 +715,7 @@ def compute_pass_hat_k(
         # reports — as nothing measured, not as absent.
         cases = attempts.setdefault(group, {})
         k_observed[group] = max(k_observed.get(group, 0), r.k_iteration)
-        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold, catalog=catalog)
         if was_cannot_tell:
             cannot_tell[group] = cannot_tell.get(group, 0) + 1
         if passed is None:
@@ -623,7 +725,7 @@ def compute_pass_hat_k(
     no_criterion: dict[tuple[str, str], int] = {}
     for r in results:
         group = (r.model, r.eval_run_id)
-        no_criterion[group] = no_criterion.get(group, 0) + _no_criterion_count([r])
+        no_criterion[group] = no_criterion.get(group, 0) + _no_criterion_count([r], catalog)
     return {
         group: _pass_hat_k_entry(
             cases,
@@ -845,6 +947,7 @@ def pool_pass_hat_k_attempts(
     results: Sequence[ResultView],
     *,
     cell_of_run: Mapping[str, Hashable],
+    catalog: Mapping[str, MetricDescriptor],
     rubric_threshold: int = 3,
 ) -> tuple[dict[tuple[Hashable, str, str, str], list[bool]], int]:
     """Each case's scored attempts in one pool, keyed as :func:`pool_pass_hat_k` keys them.
@@ -857,6 +960,8 @@ def pool_pass_hat_k_attempts(
     :ptype results: Sequence[ResultView]
     :param cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
     :ptype cell_of_run: Mapping[str, Hashable]
+    :param catalog: Each measure the pool carries, described as the host declares it (:func:`measure_catalog_of`).
+    :ptype catalog: Mapping[str, MetricDescriptor]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
     :ptype rubric_threshold: int
     :return: ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, model, test_case_id)`` unit's scored attempts
@@ -867,7 +972,7 @@ def pool_pass_hat_k_attempts(
     cases: dict[tuple[Hashable, str, str, str], list[bool]] = {}
     n_cannot_tell = 0
     for r in results:
-        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold, catalog=catalog)
         n_cannot_tell += was_cannot_tell
         if passed is None:
             continue
@@ -903,6 +1008,7 @@ def pool_pass_hat_k(
     *,
     cell_of_run: Mapping[str, Hashable],
     k: int,
+    catalog: Mapping[str, MetricDescriptor],
     rubric_threshold: int = 3,
 ) -> dict[str, Any]:
     """Estimate pass^k over one pool of results, pooling a case's attempts across runs of one cell.
@@ -925,6 +1031,8 @@ def pool_pass_hat_k(
     :param k: The depth of the headline ``pass_hat_k``. Required: a pool spans runs, whose
         ``k_iteration`` counters restart, so no depth can be read off the attempts.
     :ptype k: int
+    :param catalog: Each measure the pool carries, described as the host declares it (:func:`measure_catalog_of`).
+    :ptype catalog: Mapping[str, MetricDescriptor]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
     :ptype rubric_threshold: int
     :return: One entry in :func:`compute_pass_hat_k`'s row shape, ``n_test_cases`` counting
@@ -934,8 +1042,12 @@ def pool_pass_hat_k(
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
-    cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
-    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell, n_no_criterion=_no_criterion_count(results))
+    cases, n_cannot_tell = pool_pass_hat_k_attempts(
+        results, cell_of_run=cell_of_run, catalog=catalog, rubric_threshold=rubric_threshold
+    )
+    return _pass_hat_k_entry(
+        cases, k=k, n_cannot_tell=n_cannot_tell, n_no_criterion=_no_criterion_count(results, catalog)
+    )
 
 
 # =============================================================================
@@ -1580,7 +1692,9 @@ __all__ = [
     "compute_latency_summary",
     "compute_pass_hat_k",
     "compute_per_case_composites",
+    "failed_checks",
     "has_pass_criterion",
+    "measure_catalog_of",
     "case_pass_hat_k",
     "median_unbiased_quantile",
     "median_unbiased_quantile_min_n",

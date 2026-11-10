@@ -213,7 +213,9 @@ async def _assert_ends_as_the_control(holder: OpsHost, run_id: str, launched: Ev
     control_run, control_rows = off_loop(_run, control, control_id), _rows(control, control_id)
     assert _cells(rows) == _cells(control_rows), "the same cells"
     assert len(rows) == len(control_rows) == 3 * K, "each stored once"
-    assert list(compute_pass_hat_k(rows).values()) == list(compute_pass_hat_k(control_rows).values()), "pass^k"
+    assert list(compute_pass_hat_k(rows, catalog={}).values()) == list(
+        compute_pass_hat_k(control_rows, catalog={}).values()
+    ), "pass^k"
     assert "cancelled" not in {row.termination for row in rows}, "no abandoned attempt is a result"
     assert run.status == control_run.status == "completed"
     assert run.progress == control_run.progress, "its progress counts every cell, the earlier holding's too"

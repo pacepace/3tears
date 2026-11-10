@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_of
 from threetears.evals.schema.goal_grammar import (
     ACTION_BUILTINS,
     FIRE_PREDICATES,
@@ -113,6 +113,32 @@ def code(text: str) -> str:
 #: What a page calls a goal check its template names nothing and whose expression names no subject a reader can read
 #: (:func:`_check_subject`): numbered where an aspect reads several such (:func:`check_names`).
 GOAL_CHECK = "Goal check"
+
+
+def check_held(name: str, descriptor: MetricDescriptor, *, failed: bool = False) -> str:
+    """A check that is no goal check, in the one wording every page gives it: the measure by the name the page gives
+    it and a value it holds. A pass rule names the value a trial must hold to pass, ``Never topped up is false``; a
+    trial's failure names the other, ``Never topped up is true``, which fails it
+    (:func:`~threetears.evals.kernel.scoring.failed_checks`): a label match fails on false, a pass/fail scorer on its
+    worse end. A pass/fail scorer's value is its grade, 1 or 0, written as a pass rule writes its rubric level: a
+    digit of the rule, no figure.
+
+    :param name: The check measure's key: the label (``match``), or a measure its descriptor calls a check
+        (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`).
+    :ptype name: str
+    :param descriptor: Its descriptor.
+    :ptype descriptor: MetricDescriptor
+    :param failed: Word the value that fails the trial rather than the one that passes it.
+    :ptype failed: bool
+    :return: The check at that value.
+    :rtype: str
+    """
+    passes = (name == MATCH_MEASURE or descriptor.higher_is_better is not False) != failed
+    if name == MATCH_MEASURE or descriptor.data_type == "boolean":
+        held = "true" if passes else "false"
+    else:
+        held = "1" if passes else "0"
+    return f"{measure_name(name, descriptor.reader_name)} is {held}"
 
 
 def measure_name(name: str, reader_name: str | None = None, *, declared: str | None = None) -> str:
@@ -730,6 +756,7 @@ __all__ = [
     "arm_name",
     "cannot_tell_apart",
     "check_definition",
+    "check_held",
     "check_names",
     "code",
     "declared_check_name",

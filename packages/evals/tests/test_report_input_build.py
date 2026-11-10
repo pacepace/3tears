@@ -399,12 +399,13 @@ def test_each_aspect_states_the_pass_rule_its_census_decided_trials_by() -> None
     assert rule.dimensions == ["persona.booth_stays_offstage", "persona.holds_character"]
     assert rule.boundary == []
     assert rule.checks == [name for name in held.measure_catalog if name.startswith("goal_state:")]
+    assert rule.named_checks == [], "goal checks alone: the rule sums them up"
     assert rule.no_criterion == sum(row.no_criterion for row in held.scoreboard) == 0
     assert rule.label == "pass^k (k=1, every goal check and criterion >= 3 of 5)"
     assert aspect.graded_by == "judged"
     assert aspect.description == (
-        "A trial passes when its candidate did not fail, every check passed and every judged dimension scored at least "
-        "3 of 5."
+        "A trial passes when its candidate did not fail, every goal check passed and every judged dimension scored at "
+        "least 3 of 5."
     )
 
 

@@ -53,3 +53,12 @@ date = 2026-11-09
 basis = "unmeasured"
 monthly_envelope_usd = 50
 reason = "the owner's clearing-rule ruling: a should_fix first raised as a should_fix, round 1 included, never makes a draft; editor.md states the rule code now applies, not measured"
+
+[[shipped]]
+skill = "365899f8f20b93066db371d8879372a241076ea892b935a84ca7c392dc0e4de5"
+analyst = "813723e64e35f283aedc9bf85ce0a0e43d342d5d026362c358927134d5df3332"
+editor = "5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70"
+date = 2026-11-10
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the pass rule names every check that fails a trial and count.failures counts every failed trial; statistics.md and writing.md say what the keys now read, not measured"
