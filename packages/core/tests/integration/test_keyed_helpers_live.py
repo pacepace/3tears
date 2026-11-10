@@ -425,6 +425,9 @@ async def rates(db_container: str) -> AsyncIterator[_Seeded]:
             FROM generate_series(1, {_MODELS}) m, generate_series(1, {_RATES_A_MODEL}) r"""
         )
         await conn.execute(f"ANALYZE {_RATES}")
+        # the join the hub's statistics led Postgres to (a hash join of the keys, the table scanned): a keyed read must
+        # be an index condition whatever join is picked, never only while the planner happens to nest a loop
+        await conn.execute("SET enable_nestloop = off")
         yield _Seeded(conn=conn, yugabyte=await on_yugabyte(conn))
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
@@ -461,4 +464,8 @@ class TestAKeyedReadIsAnIndexCondition:
         assert len(rows) == len(named)
         (plan,) = recorder.plans
         assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
-        assert plan.rows_scanned <= 1.1 * len(named) + 1, plan
+        # at most the rows of the keys' lead values (the lead is always an index condition), never the table
+        led = await rates.conn.fetchval(
+            f"SELECT count(*) FROM {_RATES} WHERE model_id = ANY($1::uuid[])", [r["model_id"] for r in named]
+        )
+        assert plan.rows_scanned <= 1.1 * led + 1 < _MODELS * _RATES_A_MODEL, plan

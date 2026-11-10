@@ -128,7 +128,8 @@ class TestReadKeyed:
         assert len(rows) == 25
         assert [len(params[0]) for _, params in reader.statements] == [10, 10, 5]
         for sql, _ in reader.statements:
-            assert "JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k" in sql
+            assert 't."a" = ANY($1::text[]) AND t."b" = ANY($2::text[]::bigint[])' in sql
+            assert '(t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
             assert "CAST(" not in sql
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:

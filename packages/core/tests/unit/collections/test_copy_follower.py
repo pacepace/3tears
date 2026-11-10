@@ -377,8 +377,9 @@ async def test_the_keyed_read_joins_the_keys_to_the_table_on_its_key(world: Any)
     lock.version += 1
     assert await follower.catch_up()
     (sql,) = asked
-    assert "JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]) AS k1) AS k" in sql
-    assert 't."state" = CAST(k.k0 AS text) AND t."geo_id" = CAST(k.k1 AS bigint)' in sql
+    # each key column is an index condition (= ANY its values, the array cast whole), then exactly the keys named
+    assert 't."state" = ANY($1::text[]) AND t."geo_id" = ANY($2::text[]::bigint[])' in sql
+    assert '(t."state", t."geo_id") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
 
 
 # --- checkpoints ---------------------------------------------------------------------------------
