@@ -58,16 +58,22 @@ class KeyBatch:
     :param null_safe: a ``None`` in a key matches the rows holding none in that column (``IS NOT DISTINCT FROM``):
         a scope column's NULL bucket
     :ptype null_safe: bool
+    :param as_list: bind the keys as a list of placeholders (``(c1, c2) IN (($1, $2), ...)``), each value as it is,
+        for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size
+    :ptype as_list: bool
     """
 
     columns: tuple[str, ...]
     values: Sequence[Sequence[Any]]
     casts: tuple[str, ...] = field(default=())
     null_safe: bool = False
+    as_list: bool = False
 
     def __post_init__(self) -> None:
         if not self.columns:
             raise ValueError("a key batch names at least one key column")
+        if self.as_list and self.null_safe:
+            raise ValueError("a key batch bound as a list matches by equality; a null-safe batch binds arrays")
         if self.casts and len(self.casts) != len(self.columns):
             raise ValueError(f"a key batch casts each of its {len(self.columns)} columns, got {len(self.casts)}")
         for key in self.values:
@@ -95,27 +101,49 @@ def _text(value: Any) -> str | None:
 
 @dataclass(frozen=True)
 class _Statement:
-    """the statement one keyed read sends a batch: its text and the parameters ahead of the key arrays."""
+    """the statement one keyed read sends a batch: built once for arrays, once a batch for a list of keys."""
 
-    sql: str
-    pinned: tuple[Any, ...]
-    columns: int
+    table: str
+    selected: str
+    keys: KeyBatch
+    by: Mapping[str, Any]
 
-    def params(self, keys: Sequence[tuple[Any, ...]]) -> tuple[Any, ...]:
-        arrays = tuple([_text(key[index]) for key in keys] for index in range(self.columns))
-        return (*arrays, *self.pinned)
+    def render(self, chunk: Sequence[tuple[Any, ...]]) -> tuple[str, tuple[Any, ...]]:
+        """the statement naming ``chunk``'s keys, and its parameters.
+
+        :param chunk: the keys
+        :ptype chunk: Sequence[tuple[Any, ...]]
+        :return: the statement, and its parameters
+        :rtype: tuple[str, tuple[Any, ...]]
+        """
+        width = len(self.keys.columns)
+        head = f"SELECT {self.selected} FROM {quote_identifier(self.table)} AS t"
+        if self.keys.as_list:
+            columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
+            if width == 1:
+                named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
+            else:
+                rows = ", ".join(
+                    "(" + ", ".join(f"${row * width + index + 1}" for index in range(width)) + ")"
+                    for row in range(len(chunk))
+                )
+                named = f"({', '.join(columns)}) IN ({rows})"
+            conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
+            where = " AND ".join([named, *conditions])
+            return f"{head} WHERE {where}", (*(value for key in chunk for value in key), *pinned)
+        casts = [self.keys.cast(index) for index in range(width)]
+        unnested, joined = unnest_key_join(self.keys.columns, casts, alias="t", null_safe=self.keys.null_safe)
+        conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        arrays = tuple([_text(key[index]) for key in chunk] for index in range(width))
+        return f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}", (*arrays, *pinned)
 
 
 def _statement(table: str, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any]) -> _Statement:
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    casts = [keys.cast(index) for index in range(len(keys.columns))]
-    unnested, joined = unnest_key_join(keys.columns, casts, alias="t", null_safe=keys.null_safe)
-    conditions, pinned = by_conditions(by, first=len(keys.columns) + 1, alias="t")
-    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    sql = f"SELECT {selected} FROM {quote_identifier(table)} AS t JOIN (SELECT {unnested}) AS k ON {joined}{where}"
-    return _Statement(sql=sql, pinned=tuple(pinned), columns=len(keys.columns))
+    return _Statement(table=table, selected=selected, keys=keys, by=by)
 
 
 def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
@@ -183,7 +211,8 @@ async def read_keyed(
     statement = _statement(table, columns, keys, by or {})
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
-        return list(await conn.fetch(statement.sql, *statement.params(chunk)))
+        sql, params = statement.render(chunk)
+        return list(await conn.fetch(sql, *params))
 
     rows: list[dict[str, Any]] = []
     for chunk in _batches(keys, batch):
@@ -227,7 +256,8 @@ async def read_keyed_arrow(
     statement = _statement(table, list(types), keys, by or {})
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
-        return await l3_fetch_arrow(conn, statement.sql, *statement.params(chunk), types=types)
+        sql, params = statement.render(chunk)
+        return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []
     for chunk in _batches(keys, batch):

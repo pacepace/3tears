@@ -233,7 +233,7 @@ async def counts_by(
     counted: dict[Any, int] = {}
     quoted = quote_identifier(column)
     for start in range(0, len(unique), batch):
-        chunk = AnyOf(unique[start : start + batch], values.cast)
+        chunk = AnyOf(unique[start : start + batch], values.cast, as_list=values.as_list)
         conditions, params = by_conditions({**pinned, column: chunk})
         sql = (
             f"SELECT {quoted} AS counted, count(*) AS held FROM {quote_identifier(table)} "

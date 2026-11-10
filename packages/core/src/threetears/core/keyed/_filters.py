@@ -26,16 +26,23 @@ _SQL_TYPE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\(\d+(
 
 @dataclass(frozen=True)
 class AnyOf:
-    """a set filter: the column is one of ``values``, all of them bound as one array.
+    """a set filter: the column is one of ``values``.
+
+    Bound as one array (``"col" = ANY($n::<cast>[])``), a statement's text the same however many values; or, for a
+    database with no arrays (Redshift, SQLite), as a list of placeholders (``"col" IN ($n, $n+1, ...)``), each value
+    bound on its own.
 
     :param values: the values the column may hold; none keeps no row
     :ptype values: Sequence[Any]
-    :param cast: the column's SQL type, which the array is cast to (``text``, ``uuid``, ``bigint``)
+    :param cast: the column's SQL type, which the array is cast to (``text``, ``uuid``, ``bigint``); unused in a list
     :ptype cast: str
+    :param as_list: bind the values as a list of placeholders, for a database with no arrays
+    :ptype as_list: bool
     """
 
     values: Sequence[Any]
     cast: str = "text"
+    as_list: bool = False
 
     def __post_init__(self) -> None:
         if not _SQL_TYPE.match(self.cast):
@@ -115,7 +122,16 @@ def by_conditions(
     prefix = f"{alias}." if alias else ""
     for column, value in by.items():
         place = first + len(values)
-        if isinstance(value, AnyOf):
+        if isinstance(value, AnyOf) and value.as_list:
+            listed = list(value.values)
+            if not listed:
+                conditions.append("1 = 0")
+                continue
+            conditions.append(
+                f"{prefix}{quote(column)} IN ({', '.join(f'${place + index}' for index in range(len(listed)))})"
+            )
+            values.extend(listed)
+        elif isinstance(value, AnyOf):
             conditions.append(f"{prefix}{quote(column)} = ANY(${place}::{value.cast}[])")
             values.append(list(value.values))
         elif value is None:

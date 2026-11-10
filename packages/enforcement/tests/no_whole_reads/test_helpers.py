@@ -166,3 +166,20 @@ def test_the_acl_visibility_builders_are_keyed_fragments() -> None:
 def test_where_a_pager_starts_does_not_narrow_it(code: str, narrowed: bool) -> None:
     """Flips if a drain narrowed only by ``after=`` (every row from a place on) counts as keyed."""
     assert narrows(_call(code), DEFAULT_NARROWING_KEYWORDS) is narrowed
+
+
+def test_a_reap_is_judged_as_the_paged_update_it_sends(schema: SchemaCatalog) -> None:
+    """Flips if a paged update passes on a column no key or purposed index leads, or fails on a key prefix."""
+    keyed = (
+        'update_before(c, "leases", key=["purpose", "key"], column="expires_at", before=t, set_to={"purpose": x}, '
+        'page=5, by={"purpose": p})'
+    )
+    assert _judged(keyed, schema) == [[]]
+    unkeyed = (
+        'update_before(c, "tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, '
+        'set_to={"customer_id": x}, page=5, by={"customer_id": p})'
+    )
+    assert _judged(unkeyed, schema, "src/app.py::elsewhere") != [[]]
+    assert [s.unseen for s in helper_statements(_call('update_before(c, "leases", key=k, column="e", set_to=s)'))] == [
+        "key"
+    ]

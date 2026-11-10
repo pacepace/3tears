@@ -10,6 +10,7 @@ the batch bound, the placeholders, the cursor's step.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
@@ -25,6 +26,7 @@ from threetears.core.keyed import (
     KeyTooWide,
     Sort,
     ThreadedDuckDB,
+    ThreadedSQLite,
     WholeReads,
     count_at_most,
     counts_by,
@@ -38,6 +40,7 @@ from threetears.core.keyed import (
     read_keyed,
     read_past_marks,
     rows_affected,
+    update_before,
 )
 from threetears.core.keyed._filters import Fragment, renumbered
 from threetears.core.keyset import read_keyset_pages
@@ -327,3 +330,76 @@ class TestWholeReads:
     def test_an_expected_why_it_does_not_name_is_refused(self) -> None:
         with pytest.raises(ValueError, match="not among"):
             WholeReads("keyed_test_bad_total", subject="t", whys={"a": "b"}, expected={"c"})
+
+
+class TestUpdateBefore:
+    async def test_a_reap_updates_page_by_page_and_moves_its_rows_out(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a reap updates in one statement, or re-reads the rows it already moved."""
+        db.execute("ALTER TABLE t ADD COLUMN status VARCHAR DEFAULT 'dispatching'")
+        reader = _Recording(db)
+        reaped = await update_before(
+            reader,
+            "t",
+            key=["a", "b"],
+            column="b",
+            before=30,
+            set_to={"status": "failed"},
+            by={"status": "dispatching"},
+            page=7,
+        )
+        assert (reaped.deleted, reaped.statements) == (30, 5)
+        assert _plain(db, "SELECT count(*) FROM t WHERE status = 'failed'") == [(30,)]
+        assert all("LIMIT 7" in sql for sql, _ in reader.statements)
+
+    async def test_an_update_that_leaves_its_rows_in_its_pages_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a reap that would read the same page forever is sent."""
+        with pytest.raises(ValueError, match="move its rows out"):
+            await update_before(ThreadedDuckDB(db), "t", key=["a", "b"], column="b", before=30, set_to={"v": 0}, page=7)
+
+
+class TestWithoutArrays:
+    """Redshift and SQLite have no arrays: sets and keys bind as lists of placeholders."""
+
+    @pytest.fixture
+    def lite(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.execute("CREATE TABLE t (a TEXT, b INTEGER, PRIMARY KEY (a, b))")
+        conn.executemany("INSERT INTO t VALUES (?, ?)", [(f"k{i % 10}", i) for i in range(100)])
+        yield conn
+        conn.close()
+
+    async def test_a_key_batch_binds_as_a_list(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a list-bound batch reads rows no key names, or binds an array."""
+        reader = _Recording(db)
+        keys = KeyBatch(("a", "b"), [("k1", 1), ("k2", 12), ("k9", 1)], as_list=True)
+        rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"])
+        assert sorted((row["a"], row["b"]) for row in rows) == [("k1", 1), ("k2", 12)]
+        sql, params = reader.statements[0]
+        assert '(t."a", t."b") IN (($1, $2), ($3, $4), ($5, $6))' in sql
+        assert params == ("k1", 1, "k2", 12, "k9", 1)
+
+    async def test_the_helpers_run_on_sqlite(self, lite: sqlite3.Connection) -> None:
+        """Flips if a helper writes SQL SQLite cannot run (arrays, casts) where the caller asked for lists."""
+        conn = ThreadedSQLite(lite)
+        assert (
+            len(await read_keyed(conn, "t", keys=KeyBatch(("a",), [("k1",), ("k2",)], as_list=True), columns=["b"]))
+            == 20
+        )
+        assert await counts_by(conn, "t", column="b", values=AnyOf([1, 11, 2], as_list=True), by={"a": "k1"}) == {
+            1: 1,
+            11: 1,
+        }
+        assert await count_at_most(conn, "t", by={"a": "k1"}, at_most=3) == BoundedCount(count=3, more=True)
+        seen: list[int] = []
+        cursor = None
+        while True:
+            page = await keyset_page(
+                conn, "t", columns=["a", "b"], by={"a": "k3"}, order=[Sort("b", None)], limit=4, cursor=cursor
+            )
+            seen += [row["b"] for row in page.rows]
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert seen == list(range(3, 100, 10))
+        swept = await delete_before(conn, "t", key=["a", "b"], column="b", before=20, page=6)
+        assert (swept.deleted, swept.statements) == (20, 4)

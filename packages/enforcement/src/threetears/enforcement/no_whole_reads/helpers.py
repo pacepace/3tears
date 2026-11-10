@@ -60,6 +60,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_after",
         "read_past_marks",
         "delete_before",
+        "update_before",
     }
 )
 
@@ -290,6 +291,23 @@ def _delete_before(call: ast.Call) -> list[str]:
     ]
 
 
+def _update_before(call: ast.Call) -> list[str]:
+    table = _text(_argument(call, "table", 1), "table")
+    key = _texts(_argument(call, "key", None), "key")
+    column = _text(_argument(call, "column", None), "column")
+    assigned = _by(_argument(call, "set_to", None), "set_to")
+    if not assigned:
+        raise _Unseen("set_to")
+    sets = ", ".join(f"{_quoted(name)} = ${place}" for place, (name, _) in enumerate(assigned, start=1))
+    pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(assigned) + 1)
+    conditions = [*pinned, f"{_quoted(column)} < ${place}"]
+    named = ", ".join(_quoted(part) for part in key)
+    return [
+        f"UPDATE {_quoted(table)} SET {sets} WHERE ({named}) IN (SELECT {named} FROM {_quoted(table)}"
+        f"{_where(conditions)} ORDER BY {_quoted(column)} LIMIT {_LIMIT})"
+    ]
+
+
 _SYNTHESIZERS: Final = {
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
@@ -300,6 +318,7 @@ _SYNTHESIZERS: Final = {
     "read_after": _read_after,
     "read_past_marks": _read_past_marks,
     "delete_before": _delete_before,
+    "update_before": _update_before,
 }
 
 

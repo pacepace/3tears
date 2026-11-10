@@ -52,8 +52,9 @@ class Sort:
 
     :param column: the column, a TRUSTED identifier of the paged table
     :ptype column: str
-    :param cast: its SQL type, which the cursor's text is cast back to
-    :ptype cast: str
+    :param cast: its SQL type, which the cursor's text is cast back to; None binds the text as it is (SQLite, which
+        has no ``::`` casts and compares by the column's own affinity)
+    :ptype cast: str | None
     :param descending: whether it sorts descending
     :ptype descending: bool
     :param nullable: whether it can be ``NULL``
@@ -61,7 +62,7 @@ class Sort:
     """
 
     column: str
-    cast: str = "text"
+    cast: str | None = "text"
     descending: bool = False
     nullable: bool = False
 
@@ -115,8 +116,11 @@ def _past(order: Sequence[Sort], values: Sequence[str | None], first: int) -> tu
             marks.append(None)
         else:
             params.append(value)
-            cast = "text" if sort.cast == "text" else f"text::{sort.cast}"
-            marks.append(f"${first + len(params) - 1}::{cast}")
+            place = f"${first + len(params) - 1}"
+            if sort.cast is None:
+                marks.append(place)
+            else:
+                marks.append(f"{place}::{'text' if sort.cast == 'text' else f'text::{sort.cast}'}")
 
     def after(sort: Sort, mark: str | None) -> str:
         column = f"t.{quote_identifier(sort.column)}"
