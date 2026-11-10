@@ -34,6 +34,8 @@ datasources:date_created
 datasources:date_updated
 # rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
 datasource_tables:date_introspected
+# rationale: platform.datasource_customers is created by the hub (v016_datasource_visibility.py:202), declared there as timestamp with time zone; 3tears declares it only so schema priming's grant read is judged against its key
+datasource_customers:date_granted
 # rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
 datasource_tables:date_described
 # rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone

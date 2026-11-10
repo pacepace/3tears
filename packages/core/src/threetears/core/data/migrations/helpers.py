@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from threetears.core.backends.protocol import parse_rowcount
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "InboundFk",
@@ -1001,6 +1001,7 @@ async def _a_unique_build_met_duplicates(store: MigrationStore, error: Exception
         return False
     try:
         return parse_rowcount(await store.execute(invalid_probe_sql)) > 0
-    except Exception:  # noqa: BLE001 - the build's own error is the one raised
-        # NOSILENT: a probe that cannot answer leaves the build's error to be raised as it came
+    except Exception as exc:  # noqa: BLE001 - the build's own error is the one raised
+        # a probe that cannot answer leaves the build's error to be raised as it came
+        contain(exc, log=log, what="the invalid-index probe after a failed unique build could not answer")
         return False
