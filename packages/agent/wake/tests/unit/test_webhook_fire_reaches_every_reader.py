@@ -25,6 +25,7 @@ from threetears.agent.skills.tables import agent_skills_table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.keyed_statements import decode
 from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.wake import webhook_adapter
@@ -50,9 +51,13 @@ def _metadata() -> MetaData:
     return metadata
 
 
-# parity-with: asyncpg.Pool (fetchrow / fetchval / execute -- the seam the receive path drives)
+# parity-with: asyncpg.Pool (fetch / fetchrow / fetchval / execute -- the seam the receive path drives)
 class _Store:
-    """an L3 holding one subscription; the fire's ``last_fired_at`` UPDATE applies to it."""
+    """an L3 holding one subscription; the fire's ``last_fired_at`` UPDATE applies to it.
+
+    Every read is the keyed helper's statement (``fetch``, read back by the decoder): a read by key and the
+    receiver's lookup by the bare id both count in ``reads``.
+    """
 
     def __init__(self, row: dict[str, Any]) -> None:
         self.row = row
@@ -63,15 +68,27 @@ class _Store:
         self.reads += 1
         return dict(self.row) if self.row["subscription_id"] in args else None
 
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        statement = decode(sql, args)
+        if statement.kind == "count":
+            # the rate limit's window count: no fire in the window
+            assert statement.table == "wake_fires", sql
+            return statement.count([])
+        assert statement.kind == "select" and statement.table == "webhook_subscriptions", sql
+        self.reads += 1
+        return statement.select([self.row])
+
     async def fetchval(self, sql: str, *args: Any) -> Any:
         del args
         assert "COUNT" in sql.upper(), sql
         return 0
 
     async def execute(self, sql: str, *args: Any) -> str:
-        if sql.startswith("UPDATE webhook_subscriptions SET last_fired_at"):
-            self.row["last_fired_at"] = args[2]
-            self.row["date_updated"] = args[2]
+        if sql.startswith('UPDATE "webhook_subscriptions"'):
+            statement = decode(sql, args)
+            if "last_fired_at" in statement.values:
+                # the fire's stamp; its date_updated = now() is the fire's own instant here
+                statement.update([self.row], now=statement.values["last_fired_at"])
         return "UPDATE 1"
 
 

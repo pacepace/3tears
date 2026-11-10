@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.core.keyed._filters import Derived, by_conditions, relation
+from threetears.core.keyed._filters import Derived, Fragment, by_conditions, relation, renumbered
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["MarkedRead", "PageAfter", "read_after", "read_past_marks"]
@@ -53,6 +53,9 @@ async def read_past_marks(
     marks: Mapping[str, Any],
     casts: Mapping[str, str] | None = None,
     quote: Callable[[str], str] = quote_identifier,
+    by: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
+    floor: Mapping[str, Any] | None = None,
 ) -> MarkedRead:
     """the rows of ``relation`` whose stamps moved past ``marks``, and the marks to save next.
 
@@ -70,12 +73,24 @@ async def read_past_marks(
     :ptype casts: Mapping[str, str] | None
     :param quote: how the relation and its columns are spelled
     :ptype quote: Callable[[str], str]
+    :param by: leading key columns pinned (a state), each a value or an :class:`~threetears.core.keyed.AnyOf`; none
+        when None
+    :ptype by: Mapping[str, Any] | None
+    :param where: filters beside the marks, each a fragment written as the relation's columns from ``$1``
+        (``"geo" IS NULL``); none when empty
+    :ptype where: Sequence[Fragment]
+    :param floor: stamp -> the bound a stamp with no saved mark is read past, bound deliberately by a caller whose
+        relation's every row is past it (``0001-01-01``): never a cold start's whole read; none when None
+    :ptype floor: Mapping[str, Any] | None
     :return: the rows and the marks to save
     :rtype: MarkedRead
-    :raises ValueError: when no mark is named, a mark is None (a cold start, read on its own), or a stamp is not read
+    :raises ValueError: when no mark is named, a mark is None with no floor (a cold start, read on its own), or a
+        stamp is not read
     """
     if not marks:
         raise ValueError(f"a read of {relation}'s change record names the marks it reads past")
+    floors = dict(floor or {})
+    marks = {stamp: floors.get(stamp) if mark is None else mark for stamp, mark in marks.items()}
     unmarked = [stamp for stamp, mark in marks.items() if mark is None]
     if unmarked:
         raise ValueError(
@@ -85,15 +100,23 @@ async def read_past_marks(
     if missing:
         raise ValueError(f"{relation}: the stamps {missing} are not among the columns read")
     cast_of = dict(casts or {})
+    pinned, params = by_conditions(by or {}, quote=quote)
+    for fragment in where:
+        pinned.append(renumbered(fragment, len(params)))
+        params += list(fragment.params)
     conditions = []
-    for place, stamp in enumerate(marks, start=1):
-        column = quote(stamp)
+    for stamp, mark in marks.items():
+        params.append(mark)
+        column, bound = quote(stamp), f"${len(params)}"
         if stamp in cast_of:
-            column = f"CAST({column} AS {cast_of[stamp]})"
-        conditions.append(f"{column} > ${place}")
+            # the bind cast too: a warehouse reading its parameters as text compares a timestamp to a varchar else
+            column, bound = f"CAST({column} AS {cast_of[stamp]})", f"CAST({bound} AS {cast_of[stamp]})"
+        conditions.append(f"{column} > {bound}")
+    moved = " OR ".join(conditions)
+    clause = " AND ".join([*pinned, f"({moved})"]) if pinned else moved
     selected = ", ".join(quote(column) for column in columns)
-    sql = f"SELECT {selected} FROM {quote(relation)} WHERE {' OR '.join(conditions)}"
-    rows = [dict(row) for row in await conn.fetch(sql, *marks.values())]
+    sql = f"SELECT {selected} FROM {quote(relation)} WHERE {clause}"
+    rows = [dict(row) for row in await conn.fetch(sql, *params)]
     newest = dict(marks)
     for row in rows:
         for stamp in marks:

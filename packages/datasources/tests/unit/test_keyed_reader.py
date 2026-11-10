@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.core.keyed import AnyOf, counts_by
+from threetears.core.keyed import AnyOf, KeyBatch, Selected, counts_by, read_keyed, read_past_marks
 from threetears.datasources.keyed_reader import DatasourceAnswerCut, DatasourceReader
 from threetears.datasources.query_client import DatasourceQueryResult
 
@@ -19,9 +20,13 @@ class _Client:
         self._rows = rows
         self._truncated = truncated
         self.asked: list[tuple[str, str, list[Any]]] = []
+        self.tokens: list[str | None] = []
 
-    async def query(self, datasource: str, query: str, params: list[Any] | None = None) -> DatasourceQueryResult:
+    async def query(
+        self, datasource: str, query: str, params: list[Any] | None = None, *, user_identity_token: str | None = None
+    ) -> DatasourceQueryResult:
         self.asked.append((datasource, query, list(params or [])))
+        self.tokens.append(user_identity_token)
         return DatasourceQueryResult(
             rows=self._rows, row_count=len(self._rows), truncated=self._truncated, correlation_id=uuid4()
         )
@@ -43,3 +48,50 @@ async def test_a_cut_answer_is_refused() -> None:
     reader = DatasourceReader(_Client([{"x": 1}], truncated=True), "redshift")  # type: ignore[arg-type]
     with pytest.raises(DatasourceAnswerCut):
         await reader.fetch("SELECT 1")
+
+
+async def test_a_read_past_marks_runs_on_the_warehouse_its_stamps_decoded() -> None:
+    """Flips if a mark crosses the rail other than in its JSON form, a stamp comes back undecoded (so the next
+    mark is text, or the comparison fails), the user's assertion is dropped, or the marks do not advance."""
+    mark = datetime(2026, 11, 3, 20, tzinfo=UTC)
+    client = _Client(
+        [
+            {"race_id": "r1", "updated_at": "2026-11-03T21:00:00+00:00"},
+            {"race_id": "r2", "updated_at": None},
+        ]
+    )
+    reader = DatasourceReader(
+        client,  # type: ignore[arg-type]
+        "redshift",
+        user_identity_token="tok",
+        decode={"updated_at": datetime.fromisoformat},
+    )
+    moved = await read_past_marks(reader, "enr.results", columns=["race_id", "updated_at"], marks={"updated_at": mark})
+    assert moved.marks == {"updated_at": datetime(2026, 11, 3, 21, tzinfo=UTC)}
+    assert [row["race_id"] for row in moved.rows] == ["r1", "r2"]
+    ((_, query, params),) = client.asked
+    assert params == ["2026-11-03T20:00:00+00:00"] and '"updated_at" > $1' in query
+    assert client.tokens == ["tok"]
+
+
+async def test_a_uuid_key_crosses_the_rail_as_text() -> None:
+    """Flips if a UUID parameter is sent as an object the rail's JSON cannot carry."""
+    client = _Client([])
+    key = UUID(int=7)
+    await DatasourceReader(client, "redshift").fetch("SELECT 1 WHERE k = $1", key)  # type: ignore[arg-type]
+    assert client.asked[0][2] == [str(key)]
+
+
+async def test_a_selected_expression_reaches_the_warehouse_as_written() -> None:
+    """Flips if a Selected column is quoted as one identifier on its way to the warehouse, or loses its name."""
+    client = _Client([{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}])
+    reader = DatasourceReader(client, "redshift")  # type: ignore[arg-type]
+    rows = await read_keyed(
+        reader,
+        "enr.lsf_runs",
+        keys=KeyBatch(("run_id",), [(7,)], as_list=True),
+        columns=["run_id", Selected("CAST(t.copied_at AS VARCHAR)", "copied_at")],
+    )
+    assert rows == [{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}]
+    ((_, query, _),) = client.asked
+    assert 'SELECT t."run_id", CAST(t.copied_at AS VARCHAR) AS "copied_at" FROM' in query

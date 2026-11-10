@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from threetears.core.keyed._filters import AnyOf, Derived, Fragment, by_conditions, relation, renumbered
+from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, renumbered
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -238,8 +238,14 @@ async def counts_by(
     where: Sequence[Fragment] = (),
     by: Mapping[str, Any] | None = None,
     batch: int = 999,
+    cast: str | None = "text",
 ) -> dict[Any, int]:
     """how many rows of ``table`` each value of ``column`` holds (within ``by``), ``batch`` values a statement.
+
+    With neither ``values`` nor ``where``, every value of ``column`` within the prefix ``by`` is counted, ``batch``
+    values a statement in the column's order (``... AND "column" > $last GROUP BY "column" ORDER BY "column" LIMIT
+    batch``): each statement reads the rows of its own groups through the ``(by, column)`` index, never the prefix's
+    rows at once. ``cast`` is the column's SQL type the page's last value binds as (None binds it as it is: SQLite).
 
     ``SELECT "column", count(*) FROM t WHERE <by> AND "column" = ANY($n::<cast>[]) GROUP BY "column"``: each statement
     counts the rows its own keys name, so ``by`` and ``column`` together must be a leading part of the key (or of an
@@ -258,17 +264,69 @@ async def counts_by(
     :ptype where: Sequence[Fragment]
     :param by: the prefix pinned ahead of it (a state, a tenant)
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most values a statement names
+    :param batch: the most values a statement names (or, paging every value, the most groups a statement answers)
     :ptype batch: int
+    :param cast: the column's SQL type, binding the last value of a page when every value is counted; None binds it
+        as it is (SQLite)
+    :ptype cast: str | None
     :return: value -> its rows; a value holding none is absent
     :rtype: dict[Any, int]
-    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values`` nor ``where``
-        names the rows
+    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values``, ``where``
+        nor a prefix ``by`` names the rows
     """
+    if values is None and not where:
+        return await _counts_paged(conn, table, column=column, by=dict(by or {}), batch=batch, cast=cast)
     counted = await counts_by_relations(
         conn, {"": table}, column=column, values=values, where=where, by=by, batch=batch
     )
     return counted[""]
+
+
+async def _counts_paged(
+    conn: Any, table: str | Derived, *, column: str, by: dict[str, Any], batch: int, cast: str | None
+) -> dict[Any, int]:
+    """every value of ``column`` within the prefix ``by`` counted, ``batch`` groups a statement in its order.
+
+    :raises ValueError: when ``by`` is empty (that is the whole table), names ``column``, or ``batch`` is under one
+    """
+    if not by:
+        raise ValueError(
+            f"a keyed count names its values of {column}, a filter naming them, or the prefix of {table} it counts "
+            "every value within (by=)"
+        )
+    if column in by:
+        raise ValueError(f"{column} is counted by, so it is not also pinned")
+    if batch < 1:
+        raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
+    if cast is not None and not _SQL_TYPE.match(cast):
+        raise ValueError(f"counts_by: {cast!r} is not a SQL type name")
+    quoted = quote_identifier(column)
+    counted: dict[Any, int] = {}
+    last: Any = None
+    while True:
+        conditions, params = by_conditions(by)
+        conditions.append(f"{quoted} IS NOT NULL")
+        if last is not None:
+            params.append(last)
+            conditions.append(f"{quoted} > ${len(params)}{'' if cast is None else f'::{cast}'}")
+        sql = (
+            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}"
+            f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
+        )
+        rows = await conn.fetch(sql, *params)
+        for row in rows:
+            counted[row["counted"]] = int(row["held"])
+        if len(rows) < batch:
+            break
+        last = rows[-1]["counted"]
+    # the NULL group, which no "> last" reaches: one keyed count of its own
+    conditions, params = by_conditions({**by, column: None})
+    rows = await conn.fetch(
+        f"SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
+    )
+    if rows and int(rows[0]["held"]):
+        counted[None] = int(rows[0]["held"])
+    return counted
 
 
 async def counts_by_relations(
@@ -280,12 +338,21 @@ async def counts_by_relations(
     where: Sequence[Fragment] = (),
     by: Mapping[str, Any] | None = None,
     batch: int = 999,
+    packed_rows: int | None = None,
+    groups: int | None = None,
 ) -> dict[str, dict[Any, int]]:
     """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
     keyed count, so a warehouse answers every relation in the statements one relation took.
 
     A statement answers at most ``batch`` groups over every relation together: each names ``batch // len(tables)``
     values (at least one).
+
+    With ``packed_rows`` (a transport that cuts an answer at a row cap: the datasource rail's 1,000), every group of
+    every relation is counted in ONE statement, its answer packed: each group a text (``relation``, the value and its
+    count, joined by ``CHR(31)``), the texts numbered and set side by side, as many to a row as keep the answer at or
+    under ``packed_rows`` rows, by SQL every engine the platform admits spells alike (``ROW_NUMBER``, ``CASE``,
+    ``MAX``). A value comes back as the one ``values`` named whose text it is; counted by ``where`` alone, as its
+    text.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
@@ -300,11 +367,17 @@ async def counts_by_relations(
     :ptype where: Sequence[Fragment]
     :param by: the prefix pinned in every relation
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most groups a statement answers
+    :param batch: the most groups a statement answers (unpacked)
     :ptype batch: int
+    :param packed_rows: the most rows the one packed statement may answer; unpacked when None
+    :ptype packed_rows: int | None
+    :param groups: packed with no ``values``, the most groups ``where`` can name over every relation together (its
+        packing is taken from it)
+    :ptype groups: int | None
     :return: label -> value -> its rows; every label present
     :rtype: dict[str, dict[Any, int]]
-    :raises ValueError: as :func:`counts_by`, or when no relation is named
+    :raises ValueError: as :func:`counts_by`, when no relation is named, or packed with neither ``values`` nor
+        ``groups``, or ``packed_rows`` under one
     """
     if batch < 1:
         raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
@@ -318,6 +391,9 @@ async def counts_by_relations(
     labels = list(tables)
     counted: dict[str, dict[Any, int]] = {label: {} for label in labels}
     quoted = quote_identifier(column)
+    if packed_rows is not None:
+        await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups)
+        return counted
     if values is None:
         chunks: list[dict[str, Any]] = [{}]
     else:
@@ -341,3 +417,63 @@ async def counts_by_relations(
         for row in await conn.fetch(" UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted
+
+
+#: what joins a packed count's fields: the relation's place, the value's text, its count
+_PACKED_SEPARATOR: Final = chr(31)
+
+
+async def _counts_packed(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    counted: dict[str, dict[Any, int]],
+    column: str,
+    values: AnyOf | None,
+    where: Sequence[Fragment],
+    pinned: Mapping[str, Any],
+    packed_rows: int,
+    groups: int | None,
+) -> None:
+    """every group of every relation counted in one statement, its texts packed several to a row (into ``counted``).
+
+    :raises ValueError: when ``packed_rows`` is under one, or neither ``values`` nor ``groups`` bounds the groups
+    """
+    if packed_rows < 1:
+        raise ValueError(f"a packed count answers at least one row, got {packed_rows}")
+    labels = list(tables)
+    named: dict[str, Any] = {}
+    by = dict(pinned)
+    if values is not None:
+        unique = list(dict.fromkeys(values.values))
+        named = {str(value): value for value in unique}
+        by[column] = AnyOf(unique, values.cast, as_list=values.as_list)
+        items = len(unique) * len(labels)
+    elif groups is not None:
+        items = groups
+    else:
+        raise ValueError(f"a packed count of {column} names its values, or the most groups its filter names (groups=)")
+    if items == 0:
+        return
+    conditions, params = by_conditions(by)
+    for fragment in where:
+        conditions.append(renumbered(fragment, len(params)))
+        params += list(fragment.params)
+    clause = " AND ".join(conditions)
+    quoted = quote_identifier(column)
+    texts = " UNION ALL ".join(
+        f"SELECT '{index}' || CHR(31) || CAST({quoted} AS VARCHAR) || CHR(31) || CAST(count(*) AS VARCHAR) AS packed "
+        f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
+        for index, label in enumerate(labels)
+    )
+    width = max(1, -(-items // packed_rows))
+    cells = ", ".join(f"MAX(CASE WHEN n % {width} = {cell} THEN packed END) AS c{cell}" for cell in range(width))
+    sql = (
+        f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY packed) AS n, packed FROM ({texts}) AS texts) "
+        f"AS numbered GROUP BY n - n % {width}"
+    )
+    for row in await conn.fetch(sql, *params):
+        for text in dict(row).values():
+            if text is None:
+                continue
+            place, value, held = str(text).split(_PACKED_SEPARATOR)
+            counted[labels[int(place)]][named.get(value, value) if named else value] = int(held)

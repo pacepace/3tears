@@ -29,6 +29,16 @@ to the reply's last whole key group and reads on from there (a reply of one key 
 says the part holds no more of it, else the read raises `IncompleteReadError`); `read_partitions`' page starts and
 each of its pages read on the same way. `DatasourceQueryResult` carries `max_reply_bytes` from the reply.
 
+### core: one equivalence harness for every conversion to a helper
+
+**Added:** `threetears.core.testing.same_results.assert_same_results(conn, *, table, row, old_sql, params, helper,
+columns=None, order_by=None, ordered=None, page_size=5)`: seeds the table for each case (empty, one row, many rows,
+NULLs, ties in the sort order, a tenant boundary, a page boundary and one past it; each in a transaction rolled back),
+runs the hand-written statement and the helper call on the same rows, and fails naming each case whose rows differ:
+compared as multisets, and in order when the old statement has an `ORDER BY` (by `order_by`'s columns, so ties may
+come either way). The row factory gets a `Seeded` (index, tenant, null, tie). Any asyncpg-shaped connection:
+PostgreSQL and YugabyteDB alike.
+
 ### core, enforcement: an index that serves a range or an order from its first column is declared range-sharded
 
 **Added (core):** `IndexDef.asc` / `Index(..., asc="expires_at")`: the column rendered `ASC` in so many words.

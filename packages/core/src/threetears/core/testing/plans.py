@@ -81,8 +81,12 @@ class StatementPlan:
 
 
 def _read_a_loop(node: Mapping[str, Any]) -> int:
-    """the rows one relation scan read in one loop (both engines report a loop's average), 0 for any other node."""
-    if "Relation Name" not in node:
+    """the rows one relation scan read in one loop (both engines report a loop's average), 0 for any other node.
+
+    A write's ``ModifyTable`` node names the relation it writes, and answers its RETURNING rows, but reads nothing:
+    the scan under it found the rows.
+    """
+    if "Relation Name" not in node or node.get("Node Type") == "ModifyTable":
         return 0
     if any(name in node for name in _YB_SCANNED):
         return max(int(node.get(name, 0)) for name in _YB_SCANNED)

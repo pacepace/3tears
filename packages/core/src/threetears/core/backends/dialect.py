@@ -10,9 +10,13 @@ every statement in the form it had.
 
 from __future__ import annotations
 
+import weakref
 from typing import Any, Final
 
-__all__ = ["l3_on_yugabyte"]
+import asyncpg
+from asyncpg.pool import PoolConnectionProxy
+
+__all__ = ["known_on_yugabyte", "l3_on_yugabyte"]
 
 #: the capability a hub's broker names in its replies' ``hub_capabilities`` when its database is YugabyteDB (the hub's
 #: ``DIALECT_CAPABILITY_PREFIX`` and the database it reads from ``version()`` at start, 14-eng-ai-bot 99a3266d6)
@@ -36,3 +40,34 @@ async def l3_on_yugabyte(l3: Any) -> bool:
         return _YUGABYTE_DIALECT_CAPABILITY in await l3.hub_capabilities()
     rows = await l3.fetch("SELECT version() AS v")
     return bool(rows) and _YUGABYTE_VERSION_MARK in str(rows[0]["v"])
+
+
+#: readers whose database was asked once (a pool, the rail's proxy): a reader's database does not change under it
+_ASKED: Final[weakref.WeakKeyDictionary[Any, bool]] = weakref.WeakKeyDictionary()
+
+
+async def known_on_yugabyte(l3: Any) -> bool:
+    """whether ``l3`` answers from YugabyteDB, with no round trip where it can be known locally: an asyncpg
+    connection reads the ``server_version`` its server sent at startup (YugabyteDB's carries ``-YB-``); any other
+    reader (a pool, the rail's proxy) is asked once, by :func:`l3_on_yugabyte`, and its answer kept for it.
+
+    For a statement whose spelling differs by database on every call (a listing's page past its cursor), where
+    :func:`l3_on_yugabyte`'s question each time would be a round trip a page.
+
+    :param l3: the reader
+    :ptype l3: Any
+    :return: whether its database is YugabyteDB
+    :rtype: bool
+    """
+    if isinstance(l3, asyncpg.Connection | PoolConnectionProxy):
+        return _YUGABYTE_VERSION_MARK in str(l3.get_settings().server_version)
+    try:
+        return _ASKED[l3]
+    except KeyError:
+        pass
+    except TypeError:
+        # a reader that cannot be held weakly is asked each time
+        return await l3_on_yugabyte(l3)
+    answer = await l3_on_yugabyte(l3)
+    _ASKED[l3] = answer
+    return answer

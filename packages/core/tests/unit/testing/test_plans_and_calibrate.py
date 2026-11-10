@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 import pytest
 
-from threetears.core.testing.calibrate import budget_problem
+from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import StatementPlan, looped_seq_scans, plan_problems, rows_scanned
 
 
-def _scan(node: str, rows: int, *, removed: int = 0, loops: int = 1, parent: str = "Outer", **extra: object) -> dict:
+def _scan(
+    node: str, rows: int, *, removed: int = 0, loops: int = 1, parent: str = "Outer", **extra: object
+) -> dict[str, Any]:
     return {
         "Node Type": node,
         "Relation Name": "t",
@@ -28,12 +33,25 @@ class TestRowsScanned:
 
     def test_yugabytedb_counts_its_storage_rows_the_larger_of_table_and_index(self) -> None:
         """Flips if a YugabyteDB scan's storage counts are ignored for the rows its PG layer answered."""
-        node = _scan("Index Scan", 10, **{"Storage Table Rows Scanned": 10, "Storage Index Rows Scanned": 5000})
+        node = _scan("Index Scan", 10)
+        node.update({"Storage Table Rows Scanned": 10, "Storage Index Rows Scanned": 5000})
         assert rows_scanned(node) == 5000
 
     def test_a_node_reading_no_relation_counts_nothing(self) -> None:
         """Flips if a sort or a bitmap's index half is counted as a second read of the same rows."""
         assert rows_scanned({"Node Type": "Bitmap Index Scan", "Index Name": "i", "Actual Rows": 500}) == 0
+
+    def test_a_write_node_counts_nothing_beside_the_scan_under_it(self) -> None:
+        """Flips if a write's ModifyTable node (it names the relation it writes, and a RETURNING write answers its
+        rows) is counted as a second read of the rows its scan found: DELETE ... RETURNING of 30 rows read 30."""
+        plan = {
+            "Node Type": "ModifyTable",
+            "Operation": "Delete",
+            "Relation Name": "results",
+            "Actual Rows": 30,
+            "Plans": [_scan("Index Scan", 30)],
+        }
+        assert rows_scanned(plan) == 30
 
 
 class TestLoopedScans:
@@ -71,3 +89,20 @@ class TestProblems:
 def test_a_budget_is_twice_its_calibrated_baseline(took: float, baseline: float, fails: bool) -> None:
     """Flips if a path past twice its baseline passes, or one within it fails."""
     assert (budget_problem("path", took, baseline) is not None) is fails
+
+
+async def test_the_two_sides_of_a_budget_run_turn_about() -> None:
+    """Flips if the interleaved timing runs one side's runs all before the other's (the load then lands on one side
+    only), or answers the sides swapped."""
+    order: list[str] = []
+
+    async def bare() -> None:
+        order.append("bare")
+
+    async def path() -> None:
+        order.append("path")
+        await asyncio.sleep(0.002)
+
+    best_bare, best_path = await best_seconds_interleaved(bare, path, runs=3)
+    assert order == ["bare", "path"] * 3
+    assert best_path > best_bare
