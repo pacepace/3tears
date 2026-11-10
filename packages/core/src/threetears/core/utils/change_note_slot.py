@@ -47,6 +47,7 @@ from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
     NOTE_SLOT_SETTING,
     RING_TABLE,
+    ring_slot_sql,
     slot_max_age,
 )
 from threetears.core.sql_fragments import quote_identifier
@@ -87,6 +88,7 @@ class ChangeNoteSlot:
         :return: nothing
         :rtype: None
         """
+        self._schema = notes_schema
         self._ring = f"{quote_identifier(notes_schema)}.{quote_identifier(RING_TABLE)}"
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -167,10 +169,7 @@ class ChangeNoteSlot:
         began = self._clock()
         self.reads += 1
         try:
-            row = await read(
-                f"SELECT current_ring, fence_seconds, extract(epoch FROM now())::float8 AS now FROM {self._ring} "  # noqa: S608 - trusted identifiers
-                "WHERE id = 1"
-            )
+            row = await read(ring_slot_sql(self._schema))
         # prawduct:allow prawduct/broad-except -- a failed refresh leaves the database to read the ring; retried later
         except Exception as exc:
             contain(
