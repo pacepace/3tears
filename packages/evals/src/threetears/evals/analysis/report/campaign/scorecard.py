@@ -901,6 +901,7 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings, forms: Pag
                     else f"Each arm's gains on {gained} aspects, and its drops on {dropped}, are each corrected "
                     "together."
                 )
+            # The Methods paragraph, the one place the per-interval level is stated (owner ruling, level in headings).
             read_at = (
                 _level_text(forms, low)
                 if _told_apart(forms, low) == _told_apart(forms, high)
@@ -973,7 +974,7 @@ def _reconciled_lines(
         rate = aspect_pass_rate(bundle, control, row.arm)
         if level is None or rate is None or rate.samples is None:
             continue
-        for comparison, family_level in _contrasts(bundle, control, row.arm):
+        for comparison, _ in _contrasts(bundle, control, row.arm):
             if comparison.verdict not in _CONTRAST_WORDS or comparison.case_values is None:
                 continue
             if not _same_values(comparison.case_values, rate.samples) or (comparison.test == "paired") != rate.paired:
@@ -981,7 +982,7 @@ def _reconciled_lines(
             said = comparison.verdict if comparison.verdict in ("improved", "regressed") else None
             if said == _CONTRAST_OF.get(row.reading):
                 continue
-            lines.append(_reconciled(row, comparison, bundle, level, family_level, names(row.aspect), forms))
+            lines.append(_reconciled(row, comparison, bundle, level, names(row.aspect), forms))
     return lines
 
 
@@ -1014,7 +1015,6 @@ def _reconciled(
     comparison: FamilyComparison,
     bundle: AnalysisContextBundle,
     level: float,
-    family_level: float,
     aspect: str,
     forms: PageForms,
 ) -> str:
@@ -1025,8 +1025,10 @@ def _reconciled(
         reading = humanize("dimension", comparison.name)
     else:
         reading = measure_name_of(bundle, comparison.name)
+    # Each interval by what it guarantees, never its own adjusted level (owner ruling, level in headings): the row's at
+    # the nominal level on its own, or corrected across the arm's aspects; the contrast's corrected in its family.
     own = (
-        "on its own"
+        f"at {_level_text(forms, level)} on its own"
         if _told_apart(forms, level) <= _told_apart(forms, INTERVAL_LEVEL)
         else f"corrected across {row.arm_label}'s aspects"
     )
@@ -1034,10 +1036,8 @@ def _reconciled(
     basis = comparison.interval_basis or ("t" if comparison.basis == "t" else "bounded")
     said = (
         f"On {aspect}, {row.arm_label}'s row reads {_row_words(row)} and its contrast on {reading} reads "
-        f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "
-        f"{_level_text(forms, level)}, {own}; the contrast a {basis} interval at {_level_text(forms, family_level)}, "
-        "corrected within the "
-        "aspect's family."
+        f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval "
+        f"{own}; the contrast a {basis} interval corrected within the aspect's family."
     )
     if comparison.verdict == "regressed" and row.reading != "worse" and row.margin is not None:
         said += f" The row counts a drop only past the {forms.declared(row.margin).text}-point margin."

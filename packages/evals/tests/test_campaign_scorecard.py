@@ -28,6 +28,7 @@ from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
 from threetears.evals.analysis.report.campaign.scorecard import aspect_shows
 from threetears.evals.kernel.numbers import round_half_even
+from threetears.evals.analysis.report.words import disclosure_words, reason_words
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     ChartBlock,
@@ -765,10 +766,11 @@ def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_
     lines = _lines(page)
     (line,) = _on(lines, _TONE_PASS_RATE)
     assert line.startswith(
-        f"{_TONE_PASS_RATE}, over the same per-case values. The row reads a bounded interval at 98.33%, corrected "
-        "across v2's aspects; the contrast a bounded interval at "
+        f"{_TONE_PASS_RATE}, over the same per-case values. The row reads a bounded interval corrected across v2's "
+        "aspects; the contrast a bounded interval corrected within the aspect's family."
     )
-    assert line.endswith(", corrected within the aspect's family.")
+    # What each interval guarantees, never its own adjusted level (owner ruling, level in headings).
+    assert "98.33%" not in line and "99." not in line
     assert line in _scorecard(page)
     (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on Reply total check")
     assert len(lines) == 2, "no other row and contrast part"
@@ -993,3 +995,16 @@ def test_a_choice_s_pairs_state_their_joint_guarantee_never_each_pair_s_own_leve
     said = campaign_report_markdown(s2_choice().page())
     assert "The intervals hold together at 95% (adjusted for 3 comparisons)." in said.splitlines()
     assert "98.33%" not in said and "tested at, from" not in said
+
+
+def test_a_page_says_what_a_corrected_interval_guarantees_never_its_own_level() -> None:
+    """A stored reason and a family's stored disclosure name each interval's adjusted level; a page says what the
+    correction does instead, and leaves that level to the Method and the glossary (owner ruling, level in headings)."""
+    stored = "v2's drop clears zero at 95%, not at the 97.5% its drops are read at, corrected across v2's aspects"
+    assert reason_words(stored) == "v2's drop clears zero at 95% on its own, not once corrected across v2's aspects"
+    disclosure = (
+        "11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; "
+        "a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at "
+        "99.55%, so the family's intervals hold together at 95%."
+    )
+    assert disclosure_words(disclosure).endswith("excludes zero. The family's intervals hold together at 95%.")

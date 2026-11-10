@@ -136,6 +136,33 @@ _STORED_REASON_WORDS: dict[str, str] = {
 #: the arms it names, ``{arm} and {control}``, are kept and said in the glossary's sentence (:func:`cannot_tell_apart`).
 _STORED_UNSEPARATED = re.compile(r"its interval reaches zero, so (?P<arms>.+?) are not separated")
 
+#: A stored reason naming the level a corrected family read a row at (``clears zero at 95%, not at the 97.5% its gains
+#: are read at, corrected across v2's aspects``): a page says what the correction does, never the adjusted level,
+#: which is the Method's (owner ruling, level in headings).
+_STORED_CORRECTED_LEVEL = re.compile(
+    r"clears zero at (?P<nominal>\S+%), not at the \S+% its (?P<side>gain|drop)s are read at, corrected across "
+)
+
+
+#: A family's stored disclosure naming its per-interval level beside its joint one (``Each interval is at 99.55%, so
+#: the family's intervals hold together at 95%.``).
+_STORED_PER_INTERVAL = re.compile(
+    r"Each interval is at \S+%, so the family's intervals hold together at (?P<joint>\S+%)\."
+)
+
+
+def disclosure_words(disclosure: str) -> str:
+    """A family's disclosure, as the bundle stores it, as a page says it: what the family's intervals guarantee
+    together, never each interval's own adjusted level, which is the Method's and the glossary's (owner ruling, level
+    in headings). Any other disclosure reads unchanged.
+
+    :param disclosure: The disclosure as stored.
+    :ptype disclosure: str
+    :return: The disclosure in the page's words.
+    :rtype: str
+    """
+    return _STORED_PER_INTERVAL.sub(r"The family's intervals hold together at \g<joint>.", disclosure)
+
 
 def reason_words(reason: str | None) -> str | None:
     """A reason a bundle stores, as a page says it: each stored text :data:`_STORED_REASON_WORDS` rewords in the
@@ -151,6 +178,7 @@ def reason_words(reason: str | None) -> str | None:
         return None
     for stored, said in _STORED_REASON_WORDS.items():
         reason = reason.replace(stored, said)
+    reason = _STORED_CORRECTED_LEVEL.sub(r"clears zero at \g<nominal> on its own, not once corrected across ", reason)
     return _STORED_UNSEPARATED.sub(r"its interval reaches zero, so the evidence cannot tell \g<arms> apart", reason)
 
 

@@ -46,6 +46,7 @@ from threetears.evals.analysis.arms import (
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     ArmScoreboard,
+    ComparisonFamily,
     CellCoordinate,
     ComparedCell,
     FLOOR_COST_MEASURE,
@@ -62,6 +63,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import ABSENT, MoneyForm
 from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns
 from threetears.evals.analysis.report.forms import PageForms, Printed
@@ -134,6 +136,7 @@ from threetears.evals.analysis.report.verdict import (
     verdict_line,
 )
 from threetears.evals.analysis.report.words import (
+    disclosure_words,
     BAR_DECISION_WORDS,
     campaign_arm_tags,
     comparison_words,
@@ -1829,6 +1832,7 @@ def _interval_on_delta(
     *,
     form: MoneyForm | None = None,
     places: ContrastPlaces | None = None,
+    said_level: str | None = None,
     measure: str,
     kind: str,
 ) -> str | None:
@@ -1845,6 +1849,8 @@ def _interval_on_delta(
     text = forms.ruled_change_interval(
         ruler, interval[0], interval[1], form=form, places=places, measure=measure, kind=kind
     ).text
+    if said_level is not None:
+        return f"{text} at {said_level}"
     return text if level is None else f"{text} at {_level_text(level, forms)}"
 
 
@@ -1856,6 +1862,20 @@ def _level_text(level: float, forms: PageForms) -> str:
 def _interval_header(levels: set[float], forms: PageForms) -> str:
     """The interval column's header, carrying the one level every row holds at; bare where the rows differ."""
     return f"Interval ({_level_text(next(iter(levels)), forms)})" if len(levels) == 1 else "Interval"
+
+
+def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str = "") -> str:
+    """What a family's intervals guarantee, as a heading or a cell says it (owner ruling, level in headings): the
+    joint level its correction holds them at, over its size (``95% (adjusted for 11 comparisons)``), never its
+    per-interval level, which is the family's disclosure's and the glossary's; a family of one at its own level. A
+    ``noun`` follows the level, as a column's head names what it holds (``95% interval (adjusted for 11
+    comparisons)``)."""
+    after = f" {noun}" if noun else ""
+    if family.family_size < 2 or family.interval_level is None:
+        level = family.interval_level if family.interval_level is not None else INTERVAL_LEVEL
+        return f"{_level_text(level, forms)}{after}"
+    joint = f"{_level_text(1.0 - family.alpha, forms)}{after}"
+    return FAMILY_LEVEL_TEMPLATE.format(joint=joint, size=family.family_size)
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -2042,9 +2062,9 @@ def _comparison_blocks(
     shown: list[dict[str, TableCell]] = []
     statistics: list[dict[str, TableCell]] = []
     under: list[int] = []
-    # The level every shown interval holds at: one, and the header says it; more, and each cell says its own.
+    # What every shown interval guarantees: one guarantee, and the header says it; more, and each cell says its own.
     levels = {
-        family.interval_level
+        _family_guarantee(family, forms)
         for family in comparisons.families
         for comparison in family.comparisons
         if family.interval_level is not None and comparison.interval is not None and forms.small_n(comparison) is None
@@ -2067,9 +2087,9 @@ def _comparison_blocks(
                 comparison.interval,
                 ruler,
                 forms,
-                None if len(levels) == 1 else family.interval_level,
                 form=form,
                 places=places,
+                said_level=None if len(levels) == 1 else _family_guarantee(family, forms),
                 measure=comparison.name,
                 kind=comparison.reading,
             )
@@ -2152,6 +2172,14 @@ def _comparison_blocks(
         )
     if shown:
         control = _control_key(bundle)
+        guaranteed = [
+            family
+            for family in comparisons.families
+            if family.interval_level is not None and any(c.interval is not None for c in family.comparisons)
+        ]
+        interval_head = (
+            _family_guarantee(guaranteed[0], forms, noun="interval") if len(levels) == 1 and guaranteed else "Interval"
+        )
         candidates = list(dict.fromkeys(str(row["contrast"].value) for row in shown))
         controls = list(dict.fromkeys(str(row["control_label"].value) for row in shown))
         # Two arms: each arm's figure heads its own column, and an arm column would only repeat the header.
@@ -2162,7 +2190,7 @@ def _comparison_blocks(
             TableColumn(key="control", header=f"▸ {controls[0]}" if len(controls) == 1 else "Control", term="control"),
             TableColumn(key="arm", header=candidates[0] if two_arms else "Value", term="arm mean"),
             TableColumn(key="change", header="Change", term="change"),
-            TableColumn(key="interval", header=_interval_header(levels, forms), term="interval"),
+            TableColumn(key="interval", header=interval_head, term="interval"),
             TableColumn(key="verdict", header="Verdict", term="verdict"),
             TableColumn(key="cases", header="Cases", term="cases"),
         ]
@@ -2198,7 +2226,7 @@ def _comparison_blocks(
                 details=True,
             ),
         ]
-    blocks.extend(_note(family.disclosure) for family in comparisons.families)
+    blocks.extend(_note(disclosure_words(family.disclosure)) for family in comparisons.families)
     unranged = sorted(
         {
             reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
