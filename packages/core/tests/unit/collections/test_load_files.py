@@ -1,6 +1,10 @@
 """A table loaded from files: the store loads, every cache of it is dropped, other pods told by its generation.
 
-The contract this pins, the same as ``truncate()``'s after the store has run:
+The contract this pins, the same as ``reset()``'s after the store has run, but for its reach:
+
+- a load names the key prefixes its rows fall in (``prefixes=``, or the constants that lead the key), and its
+  epoch names them, so a follower reads each prefix as a key range; a load naming none is refused before anything
+  is sent, and a failed load's epoch still names them;
 
 - ``load_files()`` hands the files, columns, constants and bounds to its store's ``load_files``,
   outside any transaction, and answers the rows the store wrote;
@@ -53,6 +57,8 @@ SCHEMA = TableSchema(
 _Results = collection_for_schema(SCHEMA)
 
 _WHEN = datetime(2026, 10, 22, 12, tzinfo=UTC)
+#: the key prefixes a load's rows fall in: its epoch names them (a single-column key's prefix is a key)
+_PREFIXES = [{"id": "a"}, {"id": "b"}]
 _FILES = [LoadFile(url="https://bucket/0000.parquet", rows=2), LoadFile(url="https://bucket/0001.parquet", rows=1)]
 
 
@@ -75,6 +81,7 @@ class _TableStore(DurableStore):
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         self.loads: list[dict[str, Any]] = []
+        self.key_prefixes: list[list[dict[str, Any]] | None] = []
         self.fetches = 0
         #: the rows each file holds, by url, which the load writes
         self.contents: dict[str, list[dict[str, Any]]] = {}
@@ -109,7 +116,9 @@ class _TableStore(DurableStore):
         constants: Mapping[str, Any],
         rows_per_transaction: int,
         timeout_ms: int,
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> LoadResult:
+        self.key_prefixes.append(None if key_prefixes is None else [dict(prefix) for prefix in key_prefixes])
         self.loads.append(
             {
                 "table": table,
@@ -158,7 +167,13 @@ class _CountingSource:
         return f"inc:{self.counts[table_name]}"
 
     async def advance_with_change(
-        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        partition: Mapping[str, str] | None = None,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
     ) -> str:
         token = await self.advance(table_name)
         self.changes[(table_name, token)] = EpochChange(
@@ -167,6 +182,8 @@ class _CountingSource:
             whole_table=rows is None and not keys_unknown,
             keys_unknown=keys_unknown,
             rows=list(rows) if rows is not None else [],
+            partition=dict(partition) if partition else None,
+            prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
         )
         return token
 
@@ -231,7 +248,11 @@ async def _save(pod: _Pod, entity_id: str, votes: int) -> None:
 
 async def _load(pod: _Pod, **kwargs: Any) -> int:
     count: int = await pod.results.load_files(
-        _FILES, columns=["id", "votes"], constants={"date_created": _WHEN, "date_updated": _WHEN}, **kwargs
+        _FILES,
+        columns=["id", "votes"],
+        constants={"date_created": _WHEN, "date_updated": _WHEN},
+        **kwargs,
+        prefixes=_PREFIXES,
     )
     return count
 
@@ -255,7 +276,7 @@ async def test_a_load_hands_its_files_columns_constants_and_bounds_to_its_store(
 
 async def test_a_load_s_bounds_default_to_the_collection_s_own(bus: FakeNatsClient, store: _TableStore) -> None:
     pod = _Pod(bus, store)
-    await pod.results.load_files(_FILES, columns=["id", "votes"])
+    await pod.results.load_files(_FILES, columns=["id", "votes"], prefixes=_PREFIXES)
     [load] = store.loads
     assert load["constants"] == {}
     assert load["rows_per_transaction"] == pod.results.LOAD_ROWS_PER_TRANSACTION
@@ -351,7 +372,7 @@ async def test_no_files_load_nothing_and_drop_nothing(
 ) -> None:
     pod = _Pod(bus, store, source=source)
     await _save(pod, "a", 1)
-    assert await pod.results.load_files([], columns=["id"]) == 0
+    assert await pod.results.load_files([], columns=["id"], prefixes=_PREFIXES) == 0
     assert store.loads == []
     assert source.counts["lsf_results"] == 1
     assert pod.results.exists_in_cache_sync("a")
@@ -447,7 +468,9 @@ async def test_a_load_too_long_for_one_reply_is_sent_as_several_requests_of_whol
     # 1 000 000 ms a transaction (three transactions, 3002 s)
     pod = _Pod(bus, store, source=source)
     files = _files(2, 1, 2, 1)
-    written = await pod.results.load_files(files, columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000)
+    written = await pod.results.load_files(
+        files, columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000, prefixes=_PREFIXES
+    )
     assert written == 6
     assert [load["files"] for load in store.loads] == [files[:2], files[2:]]
     assert {(load["rows_per_transaction"], load["timeout_ms"]) for load in store.loads} == {(1, 1_000_000)}
@@ -461,7 +484,7 @@ async def test_a_state_s_many_files_load_in_one_call_with_the_defaults(
     # transactions each at the defaults, so 19 files fit one reply's wait (57 of 59 transactions)
     pod = _Pod(bus, store, source=source)
     files = _files(*([120_000] * 40))
-    assert await pod.results.load_files(files, columns=["id"]) == 40 * 120_000
+    assert await pod.results.load_files(files, columns=["id"], prefixes=_PREFIXES) == 40 * 120_000
     assert [len(load["files"]) for load in store.loads] == [19, 19, 2]
     assert [file for load in store.loads for file in load["files"]] == files
     assert source.counts["lsf_results"] == 1
@@ -474,7 +497,9 @@ async def test_a_failure_in_a_later_request_drops_and_advances_then_raises_it(
     await _save(pod, "a", 1)
     store.failing_call = 1
     with pytest.raises(DataLayerUnavailableError, match="load 1 failed"):
-        await pod.results.load_files(_files(2, 1, 2, 1), columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000)
+        await pod.results.load_files(
+            _files(2, 1, 2, 1), columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000, prefixes=_PREFIXES
+        )
     assert len(store.loads) == 2
     assert not pod.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the failed load's
@@ -486,7 +511,7 @@ async def test_one_file_too_long_for_one_reply_is_refused_before_anything_is_sen
     pod = _Pod(bus, store, source=source)
     await _save(pod, "a", 1)
     with pytest.raises(ValueError, match="file 1 of the load holds 3000000 rows"):
-        await pod.results.load_files(_files(10, 3_000_000), columns=["id"])
+        await pod.results.load_files(_files(10, 3_000_000), columns=["id"], prefixes=_PREFIXES)
     assert store.loads == []
     assert pod.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 1
@@ -518,7 +543,7 @@ async def test_a_load_over_several_connections_sends_its_requests_side_by_side(
     store = _InFlightStore()
     pod = _Pod(bus, store, source=source)
     files = _files(*([10_000] * 12))
-    assert await pod.results.load_files(files, columns=["id"], connections=3) == 120_000
+    assert await pod.results.load_files(files, columns=["id"], connections=3, prefixes=_PREFIXES) == 120_000
     assert store.most_in_flight == 3
     assert [len(load["files"]) for load in store.loads] == [4, 4, 4]
     assert sorted((file.url for load in store.loads for file in load["files"])) == [file.url for file in files]
@@ -531,7 +556,7 @@ async def test_a_load_over_several_connections_never_cuts_a_file_nor_makes_an_em
     store = _InFlightStore()
     pod = _Pod(bus, store, source=source)
     files = _files(50_000, 10, 10)
-    assert await pod.results.load_files(files, columns=["id"], connections=8) == 50_020
+    assert await pod.results.load_files(files, columns=["id"], connections=8, prefixes=_PREFIXES) == 50_020
     # a large file is a run of its own, and the small ones share one: no file cut, no run empty
     assert [load["files"] for load in store.loads] == [[files[0]], [files[1], files[2]]]
 
@@ -544,7 +569,7 @@ async def test_a_failure_in_one_of_the_side_by_side_requests_drops_and_advances_
     await _save(pod, "a", 1)
     store.failing_call = 1
     with pytest.raises(DataLayerUnavailableError, match="load 1 failed"):
-        await pod.results.load_files(_files(*([10_000] * 4)), columns=["id"], connections=4)
+        await pod.results.load_files(_files(*[10_000] * 4), columns=["id"], connections=4, prefixes=_PREFIXES)
     assert store.in_flight == 0, "a request was left running once the load raised"
     assert not pod.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the failed load's
@@ -553,18 +578,66 @@ async def test_a_failure_in_one_of_the_side_by_side_requests_drops_and_advances_
 async def test_one_connection_is_the_load_as_before(bus: FakeNatsClient, source: _CountingSource) -> None:
     store = _InFlightStore()
     pod = _Pod(bus, store, source=source)
-    files = _files(*([10_000] * 4))
-    await pod.results.load_files(files, columns=["id"])
+    files = _files(*[10_000] * 4)
+    await pod.results.load_files(files, columns=["id"], prefixes=_PREFIXES)
     assert [load["files"] for load in store.loads] == [files] and store.most_in_flight == 1
 
 
 async def test_a_load_over_no_connection_is_refused(bus: FakeNatsClient, store: _TableStore) -> None:
     pod = _Pod(bus, store)
     with pytest.raises(ValueError, match="connections"):
-        await pod.results.load_files(_FILES, columns=["id"], connections=0)
+        await pod.results.load_files(_FILES, columns=["id"], connections=0, prefixes=_PREFIXES)
     assert store.loads == []
 
 
 def test_the_default_transaction_bound_is_a_minute() -> None:
     assert _Results.LOAD_TIMEOUT_MS == 60_000
     assert _Results.LOAD_ROWS_PER_TRANSACTION == 50_000
+
+
+async def test_a_load_naming_no_key_prefix_is_refused_before_anything_is_sent(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    with pytest.raises(ValueError, match="names no key prefix"):
+        await pod.results.load_files(_FILES, columns=["id", "votes"], constants={"date_created": _WHEN})
+    assert store.loads == []
+    assert source.counts == {}
+
+
+async def test_a_prefix_that_does_not_lead_the_key_is_refused(bus: FakeNatsClient, store: _TableStore) -> None:
+    pod = _Pod(bus, store)
+    with pytest.raises(ValueError, match="not a key prefix"):
+        await pod.results.load_files(_FILES, columns=["id", "votes"], prefixes=[{"votes": 1}])
+    assert store.loads == []
+
+
+async def test_a_loads_epoch_and_its_request_name_every_key_prefix(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await pod.results.load_files(_FILES, columns=["id", "votes"], prefixes=[{"id": "a"}, {"id": "b"}, {"id": "a"}])
+    assert store.key_prefixes == [[{"id": "a"}, {"id": "b"}]]
+    record = source.changes[("lsf_results", "inc:1")]
+    assert record.whole_table and record.prefixes == [{"id": "a"}, {"id": "b"}] and record.partition is None
+
+
+async def test_constants_that_lead_the_key_are_the_loads_one_prefix(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await pod.results.load_files(_FILES, columns=["votes"], constants={"id": "z"})
+    record = source.changes[("lsf_results", "inc:1")]
+    # one prefix is named as the older partition too, for a follower that knows only that
+    assert record.prefixes == [{"id": "z"}] and record.partition == {"id": "z"}
+
+
+async def test_a_failed_loads_epoch_still_names_its_prefixes_never_the_whole_table(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    store.failing_file = 1
+    with pytest.raises(DataLayerUnavailableError):
+        await _load(pod)
+    record = source.changes[("lsf_results", "inc:1")]
+    assert record.prefixes == _PREFIXES

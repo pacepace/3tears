@@ -1,8 +1,11 @@
-"""A table emptied with TRUNCATE: L3 emptied alone, every cache of it dropped, other pods told by its generation.
+"""An operator's reset: L3 emptied with TRUNCATE alone, every cache of it dropped, other pods told by its generation.
 
 The contract this pins:
 
-- ``truncate()`` empties the table through its store's ``truncate``, outside any transaction;
+- ``reset()`` empties the table through its store's ``truncate``, outside any transaction, naming its reason;
+- its epoch record names ``reason="reset"``, so a follower reads the table again as that table's cold start;
+- ``truncate()`` on a table whose epochs are recorded is refused before anything is emptied (a load clears key
+  prefixes instead); on one whose are not, it empties the table as before;
 - this process's L1 rows go, and its L2 entries are read past until each is read through again;
 - a switched-on table's write generation advances once per call, with no row broadcast, so a pod
   following the table finds an advance it heard no row of and drops the table too;
@@ -72,6 +75,7 @@ class _TableStore(DurableStore):
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         self.truncated: list[str] = []
+        self.reasons: list[str | None] = []
         self.fetches = 0
         #: raised after the table is emptied, as a reply lost after the broker ran the TRUNCATE is
         self.lost_reply: BaseException | None = None
@@ -91,8 +95,9 @@ class _TableStore(DurableStore):
     async def scan(self, table: str, filters: Any = None) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows.values()]
 
-    async def truncate(self, table: str) -> None:
+    async def truncate(self, table: str, *, reason: str | None = None) -> None:
         self.truncated.append(table)
+        self.reasons.append(reason)
         self.rows.clear()
         if self.lost_reply is not None:
             raise self.lost_reply
@@ -122,7 +127,12 @@ class _CountingSource:
         return f"inc:{self.counts[table_name]}"
 
     async def advance_with_change(
-        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        reason: str | None = None,
     ) -> str:
         token = await self.advance(table_name)
         self.changes[(table_name, token)] = EpochChange(
@@ -131,6 +141,7 @@ class _CountingSource:
             whole_table=rows is None and not keys_unknown,
             keys_unknown=keys_unknown,
             rows=list(rows) if rows is not None else [],
+            reason=reason,
         )
         return token
 
@@ -194,11 +205,11 @@ def test_every_sql_backend_can_truncate() -> None:
     assert isinstance(SqlL3Backend(object()), TruncatingStore)
 
 
-async def test_truncate_empties_the_table_through_its_store(bus: FakeNatsClient, store: _TableStore) -> None:
+async def test_reset_empties_the_table_through_its_store(bus: FakeNatsClient, store: _TableStore) -> None:
     pod = _Pod(bus, store)
     await _save(pod, "a", 1)
     await _save(pod, "b", 2)
-    await pod.results.truncate()
+    await pod.results.reset()
     assert store.truncated == ["lsf_results"]
     assert store.rows == {}
 
@@ -207,7 +218,7 @@ async def test_this_process_s_l1_rows_leave(bus: FakeNatsClient, store: _TableSt
     pod = _Pod(bus, store)
     await _save(pod, "a", 1)
     assert pod.results.exists_in_cache_sync("a")
-    await pod.results.truncate()
+    await pod.results.reset()
     assert not pod.results.exists_in_cache_sync("a")
 
 
@@ -218,7 +229,7 @@ async def test_a_live_l2_entry_is_read_past_so_no_tier_answers_a_truncated_row(
     # it to L3, which holds nothing
     pod = _Pod(bus, store)
     await _save(pod, "a", 1)
-    await pod.results.truncate()
+    await pod.results.reset()
     fetches = store.fetches
     assert await pod.results.ensure("a") is None
     assert store.fetches == fetches + 1
@@ -230,7 +241,7 @@ async def test_a_switched_on_table_advances_its_generation_once_and_broadcasts_n
     pod = _Pod(bus, store, source=source)
     await _save(pod, "a", 1)
     published = len(bus.published)
-    await pod.results.truncate()
+    await pod.results.reset()
     assert source.counts["lsf_results"] == 2  # the save's advance, then the truncate's
     assert len(bus.published) == published
 
@@ -246,7 +257,7 @@ async def test_a_pod_following_the_table_drops_it_at_its_next_catch_up(
     await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert (await follower.results.ensure("a")) is not None
     assert follower.results.exists_in_cache_sync("a")
-    await writer.results.truncate()
+    await writer.results.reset()
     # TRUNCATE leaves no write mark and no row broadcast: the advance alone tells the follower
     verdict = await follower.registry.catch_up_generation(
         "lsf_results", await source.current("lsf_results"), changes=source
@@ -261,7 +272,7 @@ async def test_the_writer_does_not_drop_its_own_advance_again(
 ) -> None:
     pod = _Pod(bus, store, source=source)
     await pod.follow(source)
-    await pod.results.truncate()
+    await pod.results.reset()
     verdict = await pod.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert verdict is GenerationVerdict.CURRENT
 
@@ -271,8 +282,8 @@ async def test_truncating_twice_in_a_row_is_safe(
 ) -> None:
     pod = _Pod(bus, store, source=source)
     await _save(pod, "a", 1)
-    await pod.results.truncate()
-    await pod.results.truncate()
+    await pod.results.reset()
+    await pod.results.reset()
     assert store.truncated == ["lsf_results", "lsf_results"]
     assert source.counts["lsf_results"] == 3
     assert await pod.results.ensure("a") is None
@@ -281,7 +292,7 @@ async def test_truncating_twice_in_a_row_is_safe(
 async def test_a_table_saved_again_after_a_truncate_reads_the_new_row(bus: FakeNatsClient, store: _TableStore) -> None:
     pod = _Pod(bus, store)
     await _save(pod, "a", 1)
-    await pod.results.truncate()
+    await pod.results.reset()
     await _save(pod, "a", 7)
     row = await pod.results.ensure("a")
     assert row is not None and row["votes"] == 7
@@ -294,7 +305,7 @@ async def test_a_generation_that_cannot_advance_raises_after_the_table_is_emptie
     await _save(pod, "a", 1)
     source.failing = True
     with pytest.raises(GenerationUnavailableError):
-        await pod.results.truncate()
+        await pod.results.reset()
     assert store.rows == {}
     assert not pod.results.exists_in_cache_sync("a")
 
@@ -314,7 +325,7 @@ async def test_a_collection_with_no_durable_store_is_refused(bus: FakeNatsClient
     pod = _Pod(bus, store)
     pod.results.l3_pool = None
     with pytest.raises(ValueError, match="no durable store"):
-        await pod.results.truncate()
+        await pod.results.reset()
 
 
 async def test_a_store_that_cannot_truncate_is_refused(bus: FakeNatsClient) -> None:
@@ -322,7 +333,7 @@ async def test_a_store_that_cannot_truncate_is_refused(bus: FakeNatsClient) -> N
     pod = _Pod(bus, store)
     await _save(pod, "a", 1)
     with pytest.raises(ValueError, match="cannot truncate"):
-        await pod.results.truncate()
+        await pod.results.reset()
     assert pod.results.exists_in_cache_sync("a")
 
 
@@ -336,7 +347,7 @@ async def test_a_collection_deferring_its_l3_writes_is_refused_before_anything_i
     pod = _Pod(bus, store, cls=_WriteBehindResults, write_buffer=_Buffer())
     store.rows["a"] = {"id": "a", "votes": 1}
     with pytest.raises(ValueError, match="defers its L3 writes"):
-        await pod.results.truncate()
+        await pod.results.reset()
     assert store.truncated == []
     assert store.rows
 
@@ -352,7 +363,7 @@ async def test_a_truncate_whose_reply_is_lost_still_drops_and_advances_and_raise
     assert (await follower.results.ensure("a")) is not None
     store.lost_reply = DataLayerUnavailableError("l3.truncate: no reply")
     with pytest.raises(DataLayerUnavailableError, match="no reply"):
-        await writer.results.truncate()
+        await writer.results.reset()
     assert not writer.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the failed truncate's
     verdict = await follower.registry.catch_up_generation(
@@ -370,7 +381,7 @@ async def test_a_failed_truncate_s_own_failure_wins_over_a_generation_that_canno
     store.lost_reply = DataLayerUnavailableError("l3.truncate: no reply")
     source.failing = True
     with pytest.raises(DataLayerUnavailableError, match="no reply"):
-        await pod.results.truncate()
+        await pod.results.reset()
     assert not pod.results.exists_in_cache_sync("a")
 
 
@@ -381,7 +392,48 @@ async def test_a_truncate_cancelled_after_the_broker_ran_it_drops_and_advances_t
     await _save(pod, "a", 1)
     store.lost_reply = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
-        await pod.results.truncate()
+        await pod.results.reset()
     assert store.rows == {}
     assert not pod.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the cancelled truncate's
+
+
+async def test_a_recorded_tables_truncate_is_refused_before_anything_is_emptied(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    with pytest.raises(ValueError, match="clear_partition"):
+        await pod.results.truncate()
+    assert store.truncated == []
+    assert source.counts["lsf_results"] == 1  # the save's advance alone
+    assert pod.results.exists_in_cache_sync("a")
+
+
+async def test_a_resets_epoch_names_its_reason_and_the_store_is_told_it(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    await pod.results.reset()
+    assert store.reasons == ["reset"]
+    record = source.changes[("lsf_results", "inc:2")]
+    assert record.whole_table and record.reason == "reset" and record.prefixes is None
+
+
+async def test_a_follower_hears_a_reset_as_a_reset_never_as_an_older_writers_whole_record(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    writer = _Pod(bus, store, source=source)
+    follower = _Pod(bus, store, source=source)
+    await follower.follow(source)
+    heard: list[str] = []
+    follower.registry.register_derived_cache(
+        "lsf_results",
+        on_row=lambda message: None,
+        on_table_dropped=lambda: heard.append("dropped"),
+        on_table_reset=lambda: heard.append("reset"),
+    )
+    await writer.results.reset()
+    await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
+    assert heard == ["reset"]

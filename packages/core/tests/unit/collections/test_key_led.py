@@ -533,3 +533,49 @@ async def test_a_paged_cursor_binds_each_key_value_with_its_write_cast() -> None
     # the batch, the first page, then a page past a cursor whose jsonb value keeps its cast
     assert len(transport.fetched) == 3
     assert "WHERE tile = $1 AND (doc) > ($2::jsonb) ORDER BY doc LIMIT 2" in transport.fetched[2]
+
+
+# -- a partition cleared by its key prefixes -------------------------------------------------------
+
+
+class _TableConn(_Table):
+    """a caller's connection over one table: the key-led read answers from the rows, a delete is recorded."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows, cap=L3_RAIL_ROW_CAP)
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        self.executed.append((sql, params))
+        return "DELETE 1"
+
+
+def _deleted(executed: list[tuple[str, tuple[Any, ...]]]) -> list[tuple[str, int]]:
+    keys: list[tuple[str, int]] = []
+    for sql, (first, second) in executed:
+        if isinstance(first, list) and isinstance(second, list):
+            keys += list(zip(first, second, strict=True))  # each key whole, its columns unnested side by side
+        elif "feature_id = ANY" in sql:
+            keys += [(feature, second) for feature in first]
+        else:
+            keys += [(second, version) for version in first]
+    return sorted(keys)
+
+
+async def test_a_partition_is_cleared_by_its_key_prefixes_read_led_by_the_key_and_deleted_by_key() -> None:
+    collection, conn = _layer(), _TableConn(_rows(4, 3))
+    async with CallerTransaction(conn):
+        await collection.clear_partition(
+            [{"feature_id": "f0001"}, {"feature_id": "f0003", "source_version": 2}], conn=conn
+        )
+    [(sql, params)] = conn.fetched
+    assert sql.endswith("WHERE feature_id = ANY($1::text[])") and sorted(params[0]) == ["f0001", "f0003"]
+    assert _deleted(conn.executed) == [("f0001", 0), ("f0001", 1), ("f0001", 2), ("f0003", 2)]
+
+
+async def test_a_prefix_that_does_not_lead_the_key_clears_nothing() -> None:
+    collection, conn = _layer(), _TableConn(_rows(2, 2))
+    async with CallerTransaction(conn):
+        with pytest.raises(ValueError, match="not a key prefix"):
+            await collection.clear_partition([{"source_version": 1}], conn=conn)
+    assert conn.fetched == [] and conn.executed == []

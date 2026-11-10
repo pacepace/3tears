@@ -367,11 +367,13 @@ class TruncatingStore(Protocol):
     leaves one per row; it is not transactional and runs alone. No method takes SQL.
     """
 
-    async def truncate(self, table: str) -> None:
+    async def truncate(self, table: str, *, reason: str | None = None) -> None:
         """Remove every row of ``table``; an empty table is not an error.
 
         :param table: the table
         :ptype table: str
+        :param reason: ``"reset"`` for an operator's reset, which the epoch a broker records for it names
+        :ptype reason: str | None
         :return: nothing
         :rtype: None
         """
@@ -650,6 +652,7 @@ class LoadingStore(Protocol):
         constants: Mapping[str, Any],
         rows_per_transaction: int,
         timeout_ms: int,
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> LoadResult:
         """Insert every row of ``files`` into ``table``, insert-only; a key already held fails the load.
 
@@ -666,6 +669,8 @@ class LoadingStore(Protocol):
         :ptype rows_per_transaction: int
         :param timeout_ms: the most time one transaction may take, in milliseconds
         :ptype timeout_ms: int
+        :param key_prefixes: the key prefixes the load's rows fall in, which the epoch a broker records for it names
+        :ptype key_prefixes: Sequence[Mapping[str, Any]] | None
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
         """

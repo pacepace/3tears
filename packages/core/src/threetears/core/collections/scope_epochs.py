@@ -66,6 +66,17 @@ is a commit of what the write left: every scope it touched, and the data's versi
 clears. A writer that comes back is refused by the fence, as one a later write superseded. Without a
 lease nothing is abandoned, and readers keep what they hold until the next write commits.
 
+**A reader reads only what changed.** :meth:`ScopeEpochs.snapshot` keeps the snapshot it last read and, after its
+first, reads only the rows of a change: :data:`WHOLE`, every scope still pending, and every scope whose epoch passed
+the version it last read. That is every row a write can have changed since: a touch marks a scope pending, and a
+commit (an abandon included) moves each scope it settles to its own version, which is above every version committed
+before it began. :data:`WHOLE` is read first, in the read's first statement, so a commit landing while a read pages
+moves its scopes past the version that read keeps, and the next read takes them. A record it cannot trust (the
+writer's record recreated or gone, a version or an epoch gone back, a scope held as pending neither pending nor moved)
+is read whole again, counted (``scope_epochs_whole_reads_total``). A scope's row deleted outright, or an epoch set back
+by hand below the version held, is not seen: nothing here does either. Whatever the read, the answer is the one a whole
+read gives.
+
 **Scopes a write touched are recorded as it writes.** :meth:`ScopeEpochs.touch`, in the transaction
 of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
 scope, the ones an abandoned write left included: rows a write committed before it died are then
@@ -74,6 +85,7 @@ covered by the next write's epochs, even when that write does not change those s
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -82,6 +94,7 @@ from typing import Any, Final
 
 import asyncpg
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter
 
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
@@ -97,6 +110,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
+from threetears.core.keyset import read_keyset_pages
 
 __all__ = [
     "SCOPE_EPOCHS_TABLE",
@@ -119,13 +133,33 @@ SCOPE_EPOCHS_TABLE: Final = "scope_epochs"
 WHOLE: Final = "*"
 
 #: the columns a snapshot reads
-_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "pending", "date_updated")
+_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "pending", "date_created", "date_updated")
+
+#: why a snapshot reads the epochs table whole, as ``scope_epochs_whole_reads_total`` labels it. Only ``first`` (an
+#: instance's first read) is expected; every other is a record a read of its changes could not be trusted to follow
+_WHOLE_READ_WHYS: Final[Mapping[str, str]] = {
+    "first": "the first read of an instance: every scope is read once",
+    "reset": "the writer's record was recreated or is gone (the table emptied or replaced)",
+    "version_backwards": "the data's version went back",
+    "epoch_backwards": "a scope's epoch went back",
+    "pending_lost": "a scope held as pending is neither pending nor moved: its mark cleared without a commit moving it",
+}
 
 #: scopes one statement names when touching
 _TOUCH_BATCH: Final = 500
 
 #: a write in progress longer than this has most likely died: readers say so at warning, not info
 STALLED_WRITE_SECONDS: Final = 600
+
+
+def _whole_reads() -> Any:
+    return counter(
+        "scope_epochs_whole_reads_total",
+        description="whole reads of a scope epochs table, by table and why ("
+        + "; ".join(f"{why}: {what}" for why, what in _WHOLE_READ_WHYS.items())
+        + "); one per reader but the first is a record a read of its changes could not follow",
+        label_names=("table", "why"),
+    )
 
 
 class EpochRecordBusyError(RuntimeError):
@@ -259,6 +293,11 @@ class ScopeEpochs:
         self._writer = writer
         self._table = quote_identifier(collection.table_name)
         self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
+        # the snapshot last read, the rows it was built from (by scope), and the version a read of the changes reads past
+        self._held: EpochSnapshot | None = None
+        self._rows: dict[str, dict[str, Any]] = {}
+        self._since = 0
+        self._reading = asyncio.Lock()
 
     async def _bound_idle(self, conn: Any) -> None:
         """bound how long the caller's transaction may sit idle, when an idle timeout was given.
@@ -273,45 +312,120 @@ class ScopeEpochs:
             await conn.execute(f"SET LOCAL idle_in_transaction_session_timeout = {int(self._idle_ms)}")
 
     async def snapshot(self) -> EpochSnapshot:
-        """every scope's epoch and the data's version, read from L3.
+        """every scope's epoch and the data's version, read from L3: whole at the first read, then only what changed.
+
+        The module's "A reader reads only what changed": the answer is the one a whole read gives.
 
         :return: the snapshot
         :rtype: EpochSnapshot
         """
-        rows = await read_l3_rows(
-            self._collection.required_l3_pool,
-            self._collection.table_name,
-            _COLUMNS,
-            ("scope",),
-            page_size=self._page_size,
+        async with self._reading:
+            held = self._held
+            if held is None:
+                return await self._read_whole("first")
+            changed = await self._read_changed()
+            why = self._distrust(held, changed)
+            if why is not None:
+                return await self._read_whole(why)
+            return self._merge(held, changed)
+
+    async def _read_whole(self, why: str) -> EpochSnapshot:
+        """read every row, keep it, and answer its snapshot; counted by why.
+
+        The version the next read reads past is read first, on its own: a commit landing while the rows page then
+        moves its scopes past it, and the next read takes them.
+
+        :param why: why the table is read whole (:data:`_WHOLE_READ_WHYS`)
+        :ptype why: str
+        :return: the snapshot
+        :rtype: EpochSnapshot
+        """
+        _whole_reads().labels(table=self._collection.table_name, why=why).inc()
+        log.log(
+            logging.INFO if why == "first" else logging.WARNING,
+            "the scope epochs are read whole",
+            extra={"extra_data": {"table": self._collection.table_name, "why": why, "what": _WHOLE_READ_WHYS[why]}},
         )
-        version = 0
-        writing: int | None = None
-        writing_since: datetime | None = None
-        epochs: dict[str, int] = {}
-        previous: dict[str, int | None] = {}
-        pending: set[str] = set()
+        l3 = self._collection.required_l3_pool
+        record = await l3.fetch(f"SELECT epoch FROM {self._table} WHERE scope = $1", WHOLE)  # noqa: S608 - the owner's table name
+        rows = await read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size)
+        self._rows = {str(row["scope"]): row for row in rows}
+        self._since = int(record[0]["epoch"]) if record else 0
+        built = _Building()
         for row in rows:
-            scope = str(row["scope"])
-            if scope != WHOLE and row["pending"] is not None:
-                pending.add(scope)
-            if scope == WHOLE:
-                version = int(row["epoch"])
-                writing = None if row["writing"] is None else int(row["writing"])
-                writing_since = None if writing is None else _instant(row["date_updated"])
-                previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
-            elif int(row["epoch"]) > 0:
-                # a scope only touched has not moved yet: it has no epoch to name
-                epochs[scope] = int(row["epoch"])
-                previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
-        return EpochSnapshot(
-            version=version,
-            writing=writing,
-            epochs=epochs,
-            previous=previous,
-            writing_since=writing_since,
-            pending=frozenset(pending),
+            built.apply(row)
+        self._held = built.snapshot()
+        return self._held
+
+    async def _read_changed(self) -> list[dict[str, Any]]:
+        """the rows of what changed since the last read: :data:`WHOLE`, every pending scope, and every scope moved past it.
+
+        :data:`WHOLE` first (``later`` 0, every scope 1), so it is in the first statement whatever the collation sorts
+        first. One statement but for a change of more scopes than a page.
+
+        :return: the rows, :data:`WHOLE`'s first
+        :rtype: list[dict[str, Any]]
+        """
+        columns = ", ".join(quote_identifier(column) for column in _COLUMNS)
+        scope, pending, epoch = (quote_identifier(column) for column in ("scope", "pending", "epoch"))
+        # the version is an int this class read; the record's name a constant
+        select = (
+            f"SELECT {quote_identifier('later')}, {columns} FROM ("  # noqa: S608 - the owner's table name
+            f"SELECT CASE WHEN {scope} = '{WHOLE}' THEN 0 ELSE 1 END AS {quote_identifier('later')}, {columns} "
+            f"FROM {self._table} WHERE {scope} = '{WHOLE}' OR {pending} IS NOT NULL OR {epoch} > {int(self._since)}"
+            f") AS {quote_identifier('changed')}"
         )
+        read = await read_keyset_pages(
+            self._collection.required_l3_pool, select, ("later", "scope"), page_size=self._page_size
+        )
+        return [{column: row[column] for column in _COLUMNS} for row in read.rows]
+
+    def _distrust(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> str | None:
+        """why the rows of a change cannot be merged into the rows held, or None when they can.
+
+        :param held: the snapshot held
+        :ptype held: EpochSnapshot
+        :param changed: the rows :meth:`_read_changed` read
+        :ptype changed: list[dict[str, Any]]
+        :return: the why (:data:`_WHOLE_READ_WHYS`), or None
+        :rtype: str | None
+        """
+        record = next((row for row in changed if str(row["scope"]) == WHOLE), None)
+        kept = self._rows.get(WHOLE)
+        if kept is not None and (record is None or _instant(record["date_created"]) != _instant(kept["date_created"])):
+            return "reset"
+        if kept is not None and record is not None and int(record["epoch"]) < int(kept["epoch"]):
+            return "version_backwards"
+        for row in changed:
+            before = self._rows.get(str(row["scope"]))
+            if before is not None and int(row["epoch"]) < int(before["epoch"]):
+                return "epoch_backwards"
+        read = {str(row["scope"]) for row in changed}
+        if not held.pending <= read:
+            return "pending_lost"
+        return None
+
+    def _merge(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> EpochSnapshot:
+        """merge the rows of a change into the rows held, and answer the snapshot; the one held when nothing moved.
+
+        :param held: the snapshot held
+        :ptype held: EpochSnapshot
+        :param changed: the rows :meth:`_read_changed` read, trusted
+        :ptype changed: list[dict[str, Any]]
+        :return: the snapshot
+        :rtype: EpochSnapshot
+        """
+        record = next((row for row in changed if str(row["scope"]) == WHOLE), None)
+        self._since = int(record["epoch"]) if record is not None else 0
+        moved = [row for row in changed if self._rows.get(str(row["scope"])) != row]
+        if not moved:
+            return held
+        built = _Building.of(held)
+        for row in moved:
+            self._rows[str(row["scope"])] = row
+            built.apply(row)
+        self._held = built.snapshot()
+        return self._held
 
     async def settled(self) -> EpochSnapshot | Unsettled:
         """the snapshot, or :class:`Unsettled` (which write, how long it has run, what it touched) while one is in progress.
@@ -336,6 +450,7 @@ class ScopeEpochs:
                 f"write {snapshot.writing} in progress for {seconds} s",
                 epochs=snapshot.epochs,
                 pending=snapshot.pending,
+                version=snapshot.version,
             )
             stalled = seconds is not None and seconds > STALLED_WRITE_SECONDS
             # a write that began long ago and never committed is one that died: say so, with its age
@@ -604,6 +719,78 @@ class ScopeEpochs:
         :rtype: Callable[[], None]
         """
         return self._collection.add_l1_change_listener(lambda _scope: listener())
+
+
+class _Building:
+    """a snapshot being built from the rows read: every row of a whole read, or a held snapshot and the rows of a change.
+
+    One way to read a row for both, so a read of the changes answers what a whole read would.
+    """
+
+    def __init__(self) -> None:
+        self.version = 0
+        self.writing: int | None = None
+        self.writing_since: datetime | None = None
+        self.epochs: dict[str, int] = {}
+        self.previous: dict[str, int | None] = {}
+        self.pending: set[str] = set()
+
+    @classmethod
+    def of(cls, held: EpochSnapshot) -> _Building:
+        """a building that starts from ``held``.
+
+        :param held: the snapshot held
+        :ptype held: EpochSnapshot
+        :return: the building
+        :rtype: _Building
+        """
+        built = cls()
+        built.version, built.writing, built.writing_since = held.version, held.writing, held.writing_since
+        built.epochs, built.previous, built.pending = dict(held.epochs), dict(held.previous), set(held.pending)
+        return built
+
+    def apply(self, row: Mapping[str, Any]) -> None:
+        """take one row as read, replacing what the building held of its scope.
+
+        :param row: the row
+        :ptype row: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        scope = str(row["scope"])
+        previous = None if row["previous_epoch"] is None else int(row["previous_epoch"])
+        if scope == WHOLE:
+            self.version = int(row["epoch"])
+            self.writing = None if row["writing"] is None else int(row["writing"])
+            self.writing_since = None if self.writing is None else _instant(row["date_updated"])
+            self.previous[scope] = previous
+            return
+        if row["pending"] is not None:
+            self.pending.add(scope)
+        else:
+            self.pending.discard(scope)
+        if int(row["epoch"]) > 0:
+            self.epochs[scope] = int(row["epoch"])
+            self.previous[scope] = previous
+        else:
+            # a scope only touched has not moved yet: it has no epoch to name
+            self.epochs.pop(scope, None)
+            self.previous.pop(scope, None)
+
+    def snapshot(self) -> EpochSnapshot:
+        """the snapshot built.
+
+        :return: the snapshot
+        :rtype: EpochSnapshot
+        """
+        return EpochSnapshot(
+            version=self.version,
+            writing=self.writing,
+            epochs=self.epochs,
+            previous=self.previous,
+            writing_since=self.writing_since,
+            pending=frozenset(self.pending),
+        )
 
 
 def _instant(value: Any) -> datetime:
