@@ -50,7 +50,7 @@ per is that measure's, never the page's cost basis.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -196,9 +196,14 @@ def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
 
 
 def _read(
-    report_input: ReportInput, criterion: Criterion, figure: CriterionFigure, line: Figure, forms: PageForms | None
+    report_input: ReportInput,
+    criterion: Criterion,
+    figure: CriterionFigure,
+    line: Figure,
+    forms_of: Callable[[], PageForms],
 ) -> tuple[GateStatus, str]:
-    """One figure against its criterion's line: its status, and the reason it would give, in the page's ``forms``."""
+    """One figure against its criterion's line: its status, and the reason it would give, in the page's forms
+    (``forms_of``, asked for only where a reason is given)."""
     name = (
         criterion.statistic if criterion.statistic != "mean" else reader_name("criterion", criterion.id, report_input)
     )
@@ -209,10 +214,7 @@ def _read(
     borderline = interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold)
     if meets and not borderline:
         return "pass", ""
-    if forms is None:
-        # A reason read off any page (an analyst's gate check) states each figure in forms of its own, built from its
-        # input as its page builds them, and only where a reason is given.
-        forms = PageForms.of(report_input)
+    forms = forms_of()
     if line.scale in _MONEY_SCALES:
         # Money on the one owner's ruler (#993): both figures in its form, its count named once, in the criterion's
         # name (its own count replaced), never a per-1,000 mark. Each amount is a figure of what the criterion reads.
@@ -282,6 +284,15 @@ def gate_findings(
         raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
     if forms is not None:
         forms.checked(report_input)
+    held_forms: list[PageForms] = [forms] if forms is not None else []
+
+    def forms_of() -> PageForms:
+        # A reason read off any page (an analyst's gate check) states each figure in forms of its own, built from its
+        # input as its page builds them: once for every reason this reads, and only where a reason is given.
+        if not held_forms:
+            held_forms.append(PageForms.of(report_input))
+        return held_forms[0]
+
     narrowed = task is not None or cell is not None
     found: list[GateFinding] = []
     for held in report_input.criteria:
@@ -306,7 +317,7 @@ def gate_findings(
                 reason = _placed(report_input, no_figure, at_task, at_cell, narrowed)
                 found.append(GateFinding(held.id, "unknown", at_task, at_cell, None, reason))
                 continue
-            read, reason = _read(report_input, held, figure, line, forms)
+            read, reason = _read(report_input, held, figure, line, forms_of)
             if read != "pass":
                 placed = _placed(report_input, reason, at_task, at_cell, narrowed)
                 found.append(GateFinding(held.id, read, at_task, at_cell, figure, placed))

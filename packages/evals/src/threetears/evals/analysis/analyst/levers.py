@@ -69,6 +69,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.report.figure_keys import arm_settings, lever_of
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Judged, Measure, ReportInput, SettingValue
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -199,16 +200,20 @@ def _places(report_input: ReportInput) -> list[str]:
 
 
 def _value_figure(
-    report_input: ReportInput, settings: Mapping[str, Mapping[str, SettingValue]], arm: str, setting: str
+    report_input: ReportInput,
+    settings: Mapping[str, Mapping[str, SettingValue]],
+    arm: str,
+    setting: str,
+    forms: PageForms,
 ) -> CitedFigure | None:
     """An arm's value of a setting, by the key that states it: its own, else the control's it takes."""
     stated = next(held for held in report_input.arms if held.id == arm)
     if setting in stated.settings:
-        return cite_if(f"settings.{arm}.{setting}", report_input)
+        return cite_if(f"settings.{arm}.{setting}", report_input, forms=forms)
     control = next((held.id for held in report_input.arms if held.role == "control"), None)
     if control is None or settings[control].get(setting) != settings[arm].get(setting):
         return None
-    return cite_if(f"settings.{control}.{setting}", report_input)
+    return cite_if(f"settings.{control}.{setting}", report_input, forms=forms)
 
 
 def _varying(settings: Mapping[str, Mapping[str, SettingValue]]) -> list[str]:
@@ -291,33 +296,36 @@ def _effect_row(
     move: _Move,
     measure: str,
     place: str | None,
+    forms: PageForms,
 ) -> EffectRow:
     """One lever pair's effect, and its interval where both arms state one."""
     setting, first, second = move
     stem = _stem(setting, first, second, measure, place)
     return EffectRow(
         setting=setting,
-        from_arm=cite(f"arm:{first}", report_input),
-        to_arm=cite(f"arm:{second}", report_input),
-        from_value=_value_figure(report_input, settings, first, setting),
-        to_value=_value_figure(report_input, settings, second, setting),
-        figures=_with_interval(report_input, stem, "effect", ("level", "basis")),
+        from_arm=cite(f"arm:{first}", report_input, forms=forms),
+        to_arm=cite(f"arm:{second}", report_input, forms=forms),
+        from_value=_value_figure(report_input, settings, first, setting, forms),
+        to_value=_value_figure(report_input, settings, second, setting, forms),
+        figures=_with_interval(report_input, stem, "effect", ("level", "basis"), forms),
     )
 
 
-def _with_interval(report_input: ReportInput, stem: str, field: str, beside: Sequence[str]) -> list[CitedFigure]:
+def _with_interval(
+    report_input: ReportInput, stem: str, field: str, beside: Sequence[str], forms: PageForms
+) -> list[CitedFigure]:
     """A key's point figure, then its interval and the figures beside it, where an interval reads."""
-    point = cite(f"{stem}.{field}", report_input)
-    interval = cite_if(f"{stem}.interval", report_input)
+    point = cite(f"{stem}.{field}", report_input, forms=forms)
+    interval = cite_if(f"{stem}.interval", report_input, forms=forms)
     if interval is None:
         return [point]
-    found = [cite_if(f"{stem}.{other}", report_input) for other in beside]
+    found = [cite_if(f"{stem}.{other}", report_input, forms=forms) for other in beside]
     return [point, interval, *(figure for figure in found if figure is not None)]
 
 
-def _has_interval(report_input: ReportInput, stem: str) -> bool:
+def _has_interval(report_input: ReportInput, stem: str, forms: PageForms) -> bool:
     """Whether a lever or interaction key reads an interval."""
-    return cite_if(f"{stem}.interval", report_input) is not None
+    return cite_if(f"{stem}.interval", report_input, forms=forms) is not None
 
 
 def _clears(interval: CitedFigure | None) -> int:
@@ -399,12 +407,13 @@ def _interaction_row(
     crossed: tuple[_Move, _Move, str],
     measure: str,
     place: str | None,
+    forms: PageForms,
 ) -> InteractionRow:
     """Two effects of one move in contexts one other setting apart: the second minus the first, and the verdict."""
     one, two, across = crossed
-    first, second = (_effect_row(report_input, settings, move, measure, place) for move in (one, two))
+    first, second = (_effect_row(report_input, settings, move, measure, place, forms) for move in (one, two))
     stem = _crossing_stem(crossed, measure, place)
-    figures = _with_interval(report_input, stem, "difference", ("level",))
+    figures = _with_interval(report_input, stem, "difference", ("level",), forms)
     return InteractionRow(
         setting=one[0],
         across=across,
@@ -454,6 +463,8 @@ def lever_effects(
             valid_values=places,
         )
     settings = arm_settings(report_input)
+    # The page's forms, built once for every figure the table cites (each cite would build them again).
+    forms = PageForms.of(report_input)
     varying = _varying(settings)
     if not varying:
         raise RefusedInput(
@@ -495,10 +506,14 @@ def lever_effects(
             parameters=("place_filter",) if place_filter is not None else ("measure_key",),
         )
     crossed = _crossed(settings, moves)
-    read = [_interaction_row(report_input, settings, pair, measure_key, place_filter).verdict for pair in crossed]
+    read = [
+        _interaction_row(report_input, settings, pair, measure_key, place_filter, forms).verdict for pair in crossed
+    ]
     crossed = _one_reading_per_square(crossed, read)
-    moves.sort(key=lambda move: not _has_interval(report_input, _move_stem(move, measure_key, place_filter)))
-    crossed.sort(key=lambda pair: not _has_interval(report_input, _crossing_stem(pair, measure_key, place_filter)))
+    moves.sort(key=lambda move: not _has_interval(report_input, _move_stem(move, measure_key, place_filter), forms))
+    crossed.sort(
+        key=lambda pair: not _has_interval(report_input, _crossing_stem(pair, measure_key, place_filter), forms)
+    )
     total = len(moves) + len(crossed)
     end = offset + limit
     shown_moves = moves[offset:end]
@@ -512,15 +527,15 @@ def lever_effects(
         settings=[
             SettingRow(
                 setting=setting,
-                values=_values(report_input, settings, setting),
+                values=_values(report_input, settings, setting, forms),
                 isolated=bool(pairs[setting]),
                 note=None if pairs[setting] else _tangled(settings, setting),
             )
             for setting in varying
         ],
-        effects=[_effect_row(report_input, settings, move, measure_key, place_filter) for move in shown_moves],
+        effects=[_effect_row(report_input, settings, move, measure_key, place_filter, forms) for move in shown_moves],
         interactions=[
-            _interaction_row(report_input, settings, pair, measure_key, place_filter) for pair in shown_crossed
+            _interaction_row(report_input, settings, pair, measure_key, place_filter, forms) for pair in shown_crossed
         ],
         total=total,
         offset=offset,
@@ -529,7 +544,7 @@ def lever_effects(
 
 
 def _values(
-    report_input: ReportInput, settings: Mapping[str, Mapping[str, SettingValue]], setting: str
+    report_input: ReportInput, settings: Mapping[str, Mapping[str, SettingValue]], setting: str, forms: PageForms
 ) -> list[CitedFigure]:
     """Each value the arms hold of a setting, by the key of the first arm stating it."""
     seen: set[tuple[str, SettingValue]] = set()
@@ -539,7 +554,7 @@ def _values(
         if held in seen:
             continue
         seen.add(held)
-        figure = _value_figure(report_input, settings, arm, setting)
+        figure = _value_figure(report_input, settings, arm, setting, forms)
         if figure is not None:
             figures.append(figure)
     return figures
