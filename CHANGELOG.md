@@ -94,8 +94,9 @@ A production re-shoot of the number forms above found tables that read one measu
 - A mean's spread reads at the mean's precision: `$3.33 ± $0.09`, where it read `$0.088`.
 - The quick console reads a 0-to-1 grader in percent, as the page does (`Fields found: 38% (12 trials)`; it read
   `mean 0.375`), and rung 5's readings table reads a host's share as a rate.
-- A change chart's values table names the unit its changes are in whatever it draws (strata, contrasts, readings):
-  `-23 pts`, never `-23`.
+- A change chart's values table (diverging bars, a forest, a dot strip) names the unit its changes are in whatever
+  it draws (strata, contrasts, readings): `-23 pts`, never `-23`. A difference heatmap is not yet one of them: its
+  cells stay bare and its caption names the unit (`in points`).
 
 **Changed:**
 - **An interval writes its unit once.** Beside its figure, on the figure alone: a tooltip reads `85% (80 to 89)` and
@@ -111,13 +112,14 @@ A production re-shoot of the number forms above found tables that read one measu
 **Hosts:** a chart's `lo_text` and `hi_text` carry no unit but money's `$` (kit/API.md), so the shipped `kit.js`
 joins a tooltip as `85% (80 to 89)`; a host that prints the ends alone adds the unit after the high end. A pinned
 aspect page or quick line that read a cost per reply reads it per 1,000 replies. The report input now states a
-`share` unit for every unit-less fraction on 0 to 1 and every unit-less boolean, including a measure that reaches it
-through code's readings alone (a measurement's). A written page renders the report input its snapshot froze, so a
+`share` unit for every unit-less fraction on 0 to 1 and every unit-less boolean that isn't a check, and a measure that
+reaches it through code's readings alone (a measurement's) now carries its declared unit, whatever it is (`share`,
+`usd`, `ms`). A written page renders the report input its snapshot froze, so a
 stored report whose input predates this change prints such a measure as a bare fraction (`0.3`) until the host
 generates the report again; that covers every input frozen over the readings path, whenever it was frozen, not only
-those before 2026-11-09. Generating it again moves the frozen input's digest, so its snapshot id changes, and a
-scheduled mint of its writer case is refused as moved evidence until the host retires the case and mints it again.
-Nothing else stored changes.
+those before 2026-11-09. Generating it again moves the frozen input's digest, for every readings-path measure that
+declares a unit (`usd` and `ms` too, not only a share), so its snapshot id changes, and a scheduled mint of its
+writer case is refused as moved evidence until the host retires the case and mints it again.
 
 ### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
 

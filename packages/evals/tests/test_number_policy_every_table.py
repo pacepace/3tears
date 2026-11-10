@@ -343,5 +343,8 @@ async def test_a_fraction_grader_reads_in_percent_on_the_page_and_in_the_console
     result = await Eval(cases, {"solo": _answer}, [fields_found], k=1).run(store=":memory:", scope="share")
     console = [line.strip() for line in result.render().splitlines() if line.strip().startswith("Fields found")]
     assert console == ["Fields found: 38% (12 trials)"], console
+    # The full print's run-summary line too, which reads the measure off the summary's own text.
+    full = [line.strip() for line in result.render(full=True).splitlines() if line.strip().startswith("Fields found:")]
+    assert full == ["Fields found: 38% (12 trials)"], full
     page = [line for line in campaign_report_markdown(result.page).splitlines() if "| Fields found |" in line]
     assert page and all("| 38% |" in line or "| 38% (" in line for line in page), page

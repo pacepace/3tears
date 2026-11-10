@@ -111,7 +111,9 @@ def _column(block: RenderedBlock, name: str) -> list[str]:
 
 
 def _interval_column(block: RenderedBlock) -> str:
-    return next(column for column in block.columns if column.endswith("interval"))
+    """The interval's column: ``95% interval``, or a corrected family's ``95% interval (adjusted for 16
+    comparisons)``, whose head states the joint guarantee."""
+    return next(column for column in block.columns if column.endswith("interval") or " interval (" in column)
 
 
 # =============================================================================
