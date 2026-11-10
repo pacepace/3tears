@@ -105,7 +105,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, I
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from itertools import accumulate
-from operator import itemgetter
+from operator import itemgetter, methodcaller
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -2014,7 +2014,8 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
     """
     tenant = "tenant IS NULL AND $2::text IS NULL" if all_tenants else "tenant = $2::text"
     return (  # each interpolated piece is a fixed name this module builds
-        f"SELECT {_NOTED_MICROS} AS noted, keys, columns, char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes "
+        f"SELECT {_NOTED_MICROS} AS noted, {_KEYS_UNLESS_SPLIT} AS keys, columns, "
+        "char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes, key_text "
         f"FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
         f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} AND {_RESTORED} "
         "ORDER BY noted_at LIMIT $5"
@@ -2052,10 +2053,23 @@ _RESTORED: Final = (
 )
 
 
-#: a page's note's keys, columns and bytes, by their place in :func:`_noted_keys_sql`'s select list
+#: the note's keys as an array only where its ``key_text`` (the keys joined by ``chr(31)``) cannot be split back into
+#: them: a key value holding ``chr(31)`` adds a piece. Otherwise NULL, and the page splits ``key_text`` (one text a
+#: note decodes in a fraction of an array's time)
+_KEYS_UNLESS_SPLIT: Final = (
+    "CASE WHEN cardinality(keys) = 1 + char_length(key_text) - char_length(replace(key_text, chr(31), '')) "
+    "THEN NULL ELSE keys END"
+)
+
+#: a page's note's keys (NULL: split its key text), columns, bytes and key text, by their place in
+#: :func:`_noted_keys_sql`'s select list
 _KEYS_AT: Final = itemgetter(1)
 _COLUMNS_AT: Final = itemgetter(2)
 _BYTES_AT: Final = itemgetter(3)
+_KEY_TEXT_AT: Final = itemgetter(4)
+
+#: a note's key text split back into its keys
+_SPLIT_KEYS: Final = methodcaller("split", _KEY_SEPARATOR)
 
 
 def _key_bytes(keys: Sequence[str], columns: Sequence[tuple[str, str | None]] = ()) -> int:
@@ -2149,7 +2163,9 @@ async def _noted_keys_page(
         # the settings as they were read first: one round trip. Told only where the ring row is
         rings = await conn.fetch(
             f"SELECT was.bitmapscan, was.seqscan, was.sort, {_INDEX_ORDER}, current_ring, switch_no, "  # noqa: S608
-            f"previous_switched_at, wait_seconds FROM ({_SETTINGS_WERE}) was "
+            "previous_switched_at, wait_seconds, "
+            "switched_at + make_interval(secs => GREATEST(fence_seconds, wait_seconds)) AS writes_previous_until "
+            f"FROM ({_SETTINGS_WERE}) was "
             f"CROSS JOIN {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
         )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
@@ -2224,7 +2240,10 @@ async def _noted_keys_read(
     if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
         return "not_covered"
     order = (previous, current)
-    at = cursor or NotedKeysCursor(slot=previous)
+    # a bracket from after the last writer could still name the previous table holds no note of it: the first page
+    # starts at the current table, one read fewer (as noted_rows_since skips it)
+    first = current if reach >= ring["writes_previous_until"] else previous
+    at = cursor or NotedKeysCursor(slot=first)
     if at.slot not in order:
         return "not_covered"
     keys: list[tuple[str, ...]] = []
@@ -2245,7 +2264,15 @@ async def _noted_keys_read(
             whole = True
             notes = [note for note, size in zip(notes, sizes, strict=True) if size is not None]
             held = [each for each, size in zip(held, sizes, strict=True) if size is not None]
-        keys.extend(map(tuple, map(_KEYS_AT, notes)))
+        arrays = list(map(_KEYS_AT, notes))
+        if arrays.count(None) == len(arrays):
+            keys.extend(map(tuple, map(_SPLIT_KEYS, map(_KEY_TEXT_AT, notes))))
+        else:
+            # a key value holding the separator (rare): that note's keys as their array
+            keys.extend(
+                tuple(_SPLIT_KEYS(note[4]) if array is None else array)
+                for note, array in zip(notes, arrays, strict=True)
+            )
         if held.count(None) == len(held):
             columns.extend(held)
         else:
