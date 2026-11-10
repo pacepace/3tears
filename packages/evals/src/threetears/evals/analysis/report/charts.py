@@ -171,7 +171,8 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
         text = spell_at(value, int(match[3]), signed=bool(match[1]))
         return f"{text}{unit}" if unit == PERCENT else f"{text} {unit}"
     if (not unit and read_at == POINTS) or unit == POINTS:
-        # A change in points reads at a point's one decimal, a whole one too (``-3.0``, never ``-3`` beside ``-7.6``).
+        # A change in points that names no digits (a host's chart, or a figure of no measure) reads at a point's
+        # tenth; a package chart names its measure's digits in its format, read above.
         text = spell_at(value, POINT_PLACES if places is None else places, signed=bool(match[1]))
         return text if not unit else f"{text} {unit}"
     if not unit and read_at:
@@ -533,7 +534,8 @@ def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, s
     if match is not None and (
         _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
     ):
-        # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
+        # Both ends at one precision, a point's tenth for a figure no measure's forms spelled (a host's chart: a package
+        # chart's ends carry their text), more where an end that is not zero would read as one.
         at = ends_places(low, high, POINT_PLACES)
         said = (_formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at))
         return _unit_once(spec, said)

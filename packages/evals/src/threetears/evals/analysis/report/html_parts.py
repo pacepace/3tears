@@ -475,10 +475,10 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], _Scale], forms:
     """One quiet line under a table with glyphs: each scale's ends, written once, in the cells' own form and with the
     unit on every span, each range naming the columns drawn on it (``Pass rate (%) and Reply cites policy check (%)
     drawn from 47.2% to 100% · Turn time drawn from 973 to 1,029``); where one range is every glyph column's, it says
-    so (``Each column drawn from -7.8 to 35.4 pts``). A table on one scale that says what its glyphs draw
+    so (``Each column drawn from -7.8 to +35.4 pts``). A table on one scale that says what its glyphs draw
     (``TableBlock.glyph_key``) opens its range of differences with that sentence, so a change's mark names the
     baseline its tick stands for and which way is better: ``Each mark is a candidate's change from v1 (the tick) with
-    its 95% interval; right is better. Drawn from -7.8 to 35.4 pts.``"""
+    its 95% interval; right is better. Drawn from -7.8 to +35.4 pts.``"""
     if not scales:
         return ""
     headers = {column.key: column.header for column in block.columns}

@@ -63,6 +63,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import ABSENT, MoneyForm
 from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns
@@ -1882,11 +1883,12 @@ def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str =
     ``noun`` follows the level, as a column's head names what it holds (``95% interval (adjusted for 11
     comparisons)``)."""
     after = f" {noun}" if noun else ""
-    if family.family_size < 2 or family.interval_level is None:
+    guarantee = joint_guarantee(family.alpha, family.family_size, corrected=family.interval_level is not None)
+    if guarantee is None:
         level = family.interval_level if family.interval_level is not None else INTERVAL_LEVEL
         return f"{_level_text(level, forms)}{after}"
-    joint = f"{_level_text(1.0 - family.alpha, forms)}{after}"
-    return FAMILY_LEVEL_TEMPLATE.format(joint=joint, size=family.family_size)
+    joint, size = guarantee
+    return FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(joint, forms)}{after}", size=size)
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:

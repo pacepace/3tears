@@ -1946,7 +1946,7 @@ class PageForms:
         )
 
     def scale_span(self, scale: TableCell, unit: str, low: float, high: float) -> Printed:
-        """A glyph scale's ends as the line under its table states them, its unit once: ``-7.8 to 35.4 pts``, ``83.9%
+        """A glyph scale's ends as the line under its table states them, its unit once: ``-7.8 to +35.4 pts``, ``83.9%
         to 100%``, ``$0.031 to $0.10``; a score or a count to two significant figures (``-0.31 to 0.12``, ``-0.0069 to
         0.0025 notices``), one more only where two would print its ends alike (the review's P45).
 
@@ -3192,7 +3192,7 @@ def _scale_places(cell: TableCell, unit: str) -> int | None:
 
 def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
     """An interval on a glyph scale in the one form every page prints an interval in, ``low to high``: ``88.1 to
-    100%``, ``-7.8 to 35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
+    100%``, ``-7.8 to +35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
     pts``, never ``11``), the unit once after the high end; money's ``$`` on each end."""
 
     def signed(text: str, value: float) -> str:

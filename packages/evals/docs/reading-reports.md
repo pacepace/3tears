@@ -399,8 +399,9 @@ solid and then textured, so no loss reads as a failure. An **interval glyph** is
 the figure (Tufte's table-graphic): the interval as a whisker, the point as a dot, a zero line for a change, and a
 declared margin as a quiet band. Every cell of a column in one unit shares one scale, written once under the table,
 its two ends at one precision (`Each column drawn from -12.8 to +10.0 pts`; whole points, `-13 to +10 pts`, on a column that reads whole), so the rows compare at a glance. A
-change's matrix opens that line with what its marks draw (`Each mark is a candidate's change from production (the
-tick) with its interval, read at 95% to 98.33%; right is better. Drawn from -88.0 to 68.5 pts.`). A scale of levels
+change's matrix opens that line with what its marks draw and what their intervals guarantee together (`Each mark is a
+candidate's change from production (the tick) with its 95% interval (adjusted for 3 comparisons); right is better.
+Drawn from -88 to +68 pts.`); each interval's own corrected level is in Methods. A scale of levels
 runs below zero only where an interval on a measure not declared non-negative does. There are no standalone interval
 charts: the tables carry the intervals.
 

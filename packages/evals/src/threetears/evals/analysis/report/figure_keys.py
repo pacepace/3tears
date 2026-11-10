@@ -729,24 +729,42 @@ def _level(path: str, value: float | None, what: str) -> Figure:
     return replace(_number(path, value, what, "share"), level=True)
 
 
+def joint_guarantee(alpha: float | None, size: int, *, corrected: bool = True) -> tuple[float, int] | None:
+    """What a correcting family's intervals guarantee together, the one computation of it for every page: one minus
+    its alpha (a share, ``0.95``) over the family's size, which the written page's keys and headings
+    (:func:`joint_level`), the aspect page's headings and the code page's notes and scale lines state. None for a
+    family that corrects nothing, one that states no alpha, and one of fewer than two comparisons, which adjusts
+    nothing: its interval reads ``95%``, never "adjusted for 1 comparisons".
+
+    :param alpha: The family-wise error rate its comparisons hold at; None for none stated.
+    :ptype alpha: float | None
+    :param size: How many comparisons it corrects together.
+    :ptype size: int
+    :param corrected: Whether it corrects them at all.
+    :ptype corrected: bool
+    :return: The joint level and the family's size, or None.
+    :rtype: tuple[float, int] | None
+    """
+    if alpha is None or not corrected or size < 2:
+        return None
+    return (1.0 - float(alpha), size)
+
+
 def joint_level(family: ContrastFamily | None) -> tuple[float, int] | None:
-    """What a correcting family's intervals guarantee together, the one owner of it: one minus its alpha (a share,
-    ``0.95``) over the family's size, which a figure in the package's words holds (:attr:`Figure.joint`) and every
-    heading states (:func:`~threetears.evals.analysis.report.forms.interval_level`). None for no family, one that
-    corrects nothing (no correction, or ``none``), one that states no alpha, and one of fewer than two comparisons,
-    which adjusts nothing: its interval reads ``95%``, never "adjusted for 1 comparisons".
+    """What a written page's contrast family's intervals guarantee together (:func:`joint_guarantee`), which a figure
+    in the package's words holds (:attr:`Figure.joint`) and every heading states
+    (:func:`~threetears.evals.analysis.report.forms.interval_level`). None for no family, one that corrects nothing
+    (no correction, or ``none``), and every family :func:`joint_guarantee` reads none for.
 
     :param family: The contrast family, or None.
     :ptype family: ContrastFamily | None
     :return: The joint level and the family's size, or None.
     :rtype: tuple[float, int] | None
     """
-    if family is None or family.alpha is None:
+    if family is None:
         return None
     corrected = (family.correction or "").strip().lower() not in ("", "none")
-    if not corrected or not family.family_size or family.family_size < 2:
-        return None
-    return (1.0 - float(family.alpha), family.family_size)
+    return joint_guarantee(family.alpha, family.family_size or 0, corrected=corrected)
 
 
 def _end(path: str, interval: tuple[float, float] | None, statistic: str, what: str) -> float:
@@ -8101,6 +8119,7 @@ __all__ = [
     "gain_axis",
     "is_figure_key",
     "is_rubric_score",
+    "joint_guarantee",
     "joint_level",
     "key_form",
     "key_subjects",
