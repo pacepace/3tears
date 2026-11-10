@@ -148,6 +148,7 @@ from threetears.evals.analysis.report.words import (
     judged_heading,
     one_figure_each,
     stratum_name,
+    stratum_names,
     reading_verb,
     reading_heading,
     reason_words,
@@ -1623,7 +1624,7 @@ def _contrast_blocks(
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers, forms))
     blocks.extend(
         _strata_blocks(
-            surface, names, rulers, forms, check_names=bundle.named_checks(), stratum_names=bundle.stratum_names
+            surface, names, rulers, forms, check_names=bundle.named_checks(), stratum_names=_printed_strata(bundle)
         )
     )
     blocks.extend(_label_blocks(surface, names, rulers, forms))
@@ -2961,11 +2962,20 @@ def _by_stratum_row(table: TableBlock) -> TableBlock:
     )
 
 
-def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
-    """A stratum as a column header, a case's row and a disclosure print it: its name as
-    :func:`~threetears.evals.analysis.report.words.stratum_name` writes it (``edge case``), else :data:`NO_STRATUM`. A
-    program reads a stratum by its id (:meth:`~threetears.evals.quick.result.Result.strata`)."""
-    return NO_STRATUM if name is None else stratum_name(name, declared.get(name))
+def _printed_strata(bundle: AnalysisContextBundle) -> dict[str, str]:
+    """Each stratum the aspect's cells and trials declare, by id, to the name its page prints for it
+    (:func:`~threetears.evals.analysis.report.words.stratum_names`: its declared name, else its id humanized, else, where
+    two would print alike, its id)."""
+    ids = [held.stratum for cell in bundle.cell_measures for held in cell.strata if held.stratum is not None]
+    ids += [trial.stratum for trial in bundle.trials if trial.stratum]
+    return stratum_names(sorted(set(ids)), bundle.stratum_names)
+
+
+def _stratum_word(name: str | None, printed: Mapping[str, str]) -> str:
+    """A stratum as a column header, a case's row and a disclosure print it: its printed name
+    (:func:`_printed_strata`), else :data:`NO_STRATUM`. A program reads a stratum by its id
+    (:meth:`~threetears.evals.quick.result.Result.strata`)."""
+    return NO_STRATUM if name is None else printed.get(name) or stratum_name(name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
@@ -3274,6 +3284,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
     for trial in bundle.trials:
         by_case.setdefault(trial.case_id, []).append(trial)
     strata = any(trial.stratum for trial in bundle.trials)
+    printed = _printed_strata(bundle) if strata else {}
 
     def counts(case: str, key: str) -> tuple[int, int]:
         """How many of ``key``'s usable trials on ``case`` passed, of how many."""
@@ -3301,7 +3312,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
             "flag": {0: "regression", 1: "no usable trial", 2: None}[group(case)],
         }
         if strata:
-            row["stratum"] = _stratum_word(trials[0].stratum, bundle.stratum_names) if trials[0].stratum else None
+            row["stratum"] = _stratum_word(trials[0].stratum, printed) if trials[0].stratum else None
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
         # The ids are navigation, not information: in their own order, so a row reads T1 T2 T3 on every replay; which

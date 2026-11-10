@@ -302,7 +302,20 @@ def judged_label(heading: str) -> str:
     :return: The label.
     :rtype: str
     """
-    return heading[:1].upper() + heading[1:]
+    return label_case(heading)
+
+
+def label_case(text: str) -> str:
+    """Words as a label prints them, where they are a label rather than words in a sentence (a header, a chart's title,
+    a series, a table's row): the first letter a capital, the rest as written. The one owner of a label's capital:
+    :func:`judged_label` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` both take it.
+
+    :param text: The words.
+    :ptype text: str
+    :return: The label.
+    :rtype: str
+    """
+    return text[:1].upper() + text[1:]
 
 
 #: A judged dimension's heading as :func:`judged_heading` writes it, a score's scale or a ruler's words after its mark
@@ -335,6 +348,25 @@ def stratum_name(stratum: str, declared: str | None = None) -> str:
     :rtype: str
     """
     return declared or humanize("dimension", stratum)
+
+
+def stratum_names(strata: Iterable[str], declared: Mapping[str, str | None] | None = None) -> dict[str, str]:
+    """Each stratum's printed name (:func:`stratum_name`), by id, in the order given, where no two strata print alike:
+    two ids whose names would read the same (``off_lane`` and ``off.lane`` both ``off lane``) each print as the id
+    itself, so a reader never sees one stratum where the cases declare two.
+
+    :param strata: The strata's ids.
+    :ptype strata: Iterable[str]
+    :param declared: Each stratum's declared display name, by id, where it declares one.
+    :ptype declared: Mapping[str, str | None] | None
+    :return: Each id's printed name.
+    :rtype: dict[str, str]
+    """
+    named = {stratum: stratum_name(stratum, (declared or {}).get(stratum)) for stratum in dict.fromkeys(strata)}
+    counts: dict[str, int] = {}
+    for name in named.values():
+        counts[name] = counts.get(name, 0) + 1
+    return {stratum: name if counts[name] == 1 else stratum for stratum, name in named.items()}
 
 
 #: The verb a counted reading's figure takes in a sentence, by its name as the page heads it: only the pass rate's
@@ -731,8 +763,10 @@ __all__ = [
     "PASS_RATE",
     "judged_heading",
     "judged_label",
+    "label_case",
     "table_label",
     "stratum_name",
+    "stratum_names",
     "one_figure_each",
     "reading_heading",
     "reading_verb",
