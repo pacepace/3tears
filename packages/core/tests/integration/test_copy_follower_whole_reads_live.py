@@ -37,7 +37,7 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChan
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_arrow_types  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
-from threetears.core.collections.copy_follower import NEVER_HOLDS, CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
@@ -238,7 +238,7 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
             settled=lambda: asyncio.sleep(0, 1),
             generation=log.current,
             changes=log,
-            stamp_table=NEVER_HOLDS,
+            stamp_table="scope_epochs",
         )
         follower.register()
         await follower.warm()
