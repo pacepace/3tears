@@ -147,3 +147,4 @@ packages/core/src/threetears/core/ddl/index_health.py:unusable_indexes  # bluela
 packages/core/src/threetears/core/ddl/index_health.py:UnusableIndex  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
 packages/core/src/threetears/core/ddl/index_health.py:IndexDuplicateKeysError  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
 packages/core/src/threetears/core/ddl/index_health.py:IndexStillUnusableError  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
+packages/core/src/threetears/core/data/migrations/helpers.py:UniqueIndexBuildFailedError  # bluelabsio/14-eng-ai-bot: its migrations (v144 and every add_index of a unique index) raise it on PostgreSQL and YugabyteDB alike; the hub's migrate run reports the index it names
