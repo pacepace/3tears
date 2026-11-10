@@ -2079,3 +2079,61 @@ def test_a_repo_method_named_as_a_keyed_helper_is_the_repo_s_and_its_body_is_jud
     method, so its table never resolves, or a key its ``by`` names by an imported constant stays unread."""
     found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SAME_NAMED}))
     assert not any(function in ("Store.holds_any", "Pull._held") for function, _ in found), found
+
+
+_PRUNED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_before, read_after
+
+    LINKS = TableSchema(
+        name="links",
+        primary_key="token_id",
+        columns=[],
+        indexes=(Index("links_by_expiry", "expires_at"ASC, purpose="src/links.py::prune"),),
+    )
+    RUNS = TableSchema(
+        name="runs",
+        primary_key=("job", "run_id"),
+        columns=[],
+        indexes=(Index("runs_by_job_start", "job", "started", purpose="src/links.py::after"),),
+    )
+
+    async def prune(conn, cutoff):
+        await delete_before("links", collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff)
+
+    async def after(conn, job, started):
+        return await read_after(conn, "runs", columns=("job", "started"), id_column="started", after=started, limit=50, by={"job": job})
+"""
+
+_PRUNED_DDL = """
+    PRUNED = '''
+    -- purpose: src/links.py::prune
+    CREATE INDEX links_by_expiry ON links (expires_atASC);
+    '''
+
+    LINKS = "CREATE TABLE links (token_id TEXT PRIMARY KEY, expires_at TIMESTAMP)"
+"""
+
+
+@pytest.mark.parametrize(
+    ("declared", "declared_ddl"), [("", ""), (', asc="expires_at"', " ASC")], ids=["hashed", "ranged"]
+)
+def test_an_index_a_read_ranges_or_orders_from_its_first_column_is_declared_range_sharded(
+    tmp_path: Path, declared: str, declared_ddl: str
+) -> None:
+    """Flips if an index whose purposed read ranges or orders by its first column, nothing bound before it
+    (``delete_before`` on ``expires_at``), is accepted undeclared ``ASC`` (hashed on YugabyteDB, the read scans the
+    table), or refused once declared (``asc=``, or ``ASC`` in its ``CREATE INDEX``); or if one led by a bound column
+    (``runs_by_job_start``) is held to it."""
+    module = _PRUNED.replace('"expires_at"ASC', f'"expires_at"{declared}')
+    found = [f for f in no_whole_reads_findings(_config(tmp_path, {"links.py": module})) if "index-hashed-range" in f]
+    assert bool(found) == (not declared), found
+    assert not any("runs_by_job_start" in finding for finding in found), found
+    raw = _PRUNED.replace('indexes=(Index("links_by_expiry", "expires_at"ASC, purpose="src/links.py::prune"),),', "")
+    ddl = _PRUNED_DDL.replace("expires_atASC", f"expires_at{declared_ddl}")
+    found = [
+        f
+        for f in no_whole_reads_findings(_config(tmp_path, {"links.py": raw, "schema.py": ddl}))
+        if "index-hashed-range" in f
+    ]
+    assert bool(found) == (not declared_ddl), found

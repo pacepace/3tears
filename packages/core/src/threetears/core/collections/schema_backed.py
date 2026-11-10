@@ -349,6 +349,12 @@ class IndexDef:
         ``column.desc()`` so the declared index equals a migration
         that creates the column ``DESC``. a column cannot carry both
         ``desc`` and an operator class in ``ops``.
+    :cvar asc: names of the covered columns declared ascending in so many words (``expires_at ASC``). Postgres
+        sorts them the same either way; YugabyteDB range-shards an index whose first column is declared ``ASC`` (or
+        ``DESC``) and hashes it otherwise, and a hashed first column seeks no range and answers no order: a read of a
+        range (``expires_at < $1``) or in order (``ORDER BY expires_at LIMIT``) with nothing bound before that column
+        reads every row. Such an index names its first column here. Each name must also be in ``columns``, and in
+        neither ``desc`` nor ``ops``.
     :cvar nulls_not_distinct: when ``True`` (a ``unique`` index only), two
         rows whose covered columns are both NULL collide, as
         ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
@@ -382,6 +388,7 @@ class IndexDef:
     desc: tuple[str, ...] = ()
     nulls_not_distinct: bool = False
     include: tuple[str, ...] = ()
+    asc: tuple[str, ...] = ()
     purpose: str = field(default="", compare=False)
     plan_test: str = field(default="", compare=False)
     reason: str = field(default="", compare=False)
@@ -419,6 +426,12 @@ class IndexDef:
         if twice:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): include names {twice!r}, which are already its columns",
+            )
+        loose = [col for col in self.asc if col not in self.columns or col in self.desc or col in dict(self.ops or ())]
+        if loose:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): asc names {loose!r}, each of which must be one of its columns "
+                f"{self.columns!r} and neither desc nor carry an operator class",
             )
         both = [col for col in self.desc if col in dict(self.ops or ())]
         if both:
@@ -493,6 +506,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     purpose: str = "",
     plan_test: str = "",
     reason: str = "",
+    asc: str | Sequence[str] = (),
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -515,6 +529,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         Index("idx_memories_tags", "tags", using="gin")
         Index("idx_history", "agent_id", "date_created", desc="date_created")
         Index("t_by_state", "state", "geo", *primary_key, include=("votes", "pad"))
+        Index("t_by_expiry", "expires_at", asc="expires_at")  # a range read: range-sharded on YugabyteDB
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -563,6 +578,9 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     :param reason: why it is wide, or why its table carries more than
         three indexes (:attr:`IndexDef.reason`)
     :ptype reason: str
+    :param asc: the covered column(s) declared ``ASC`` in so many words, so YugabyteDB range-shards an index led by
+        one (:attr:`IndexDef.asc`); a bare ``str`` names one
+    :ptype asc: str | Sequence[str]
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -589,6 +607,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         desc=(desc,) if isinstance(desc, str) else tuple(desc),
         nulls_not_distinct=nulls_not_distinct,
         include=tuple(include),
+        asc=(asc,) if isinstance(asc, str) else tuple(asc),
         purpose=purpose,
         plan_test=plan_test,
         reason=reason,
@@ -1487,7 +1506,10 @@ class TableSchema:
                 idx_kwargs["postgresql_include"] = list(idx.include)
             sa.Index(
                 idx.name,
-                *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),
+                *(
+                    table.c[col].desc() if col in idx.desc else table.c[col].asc() if col in idx.asc else table.c[col]
+                    for col in idx.columns
+                ),
                 **idx_kwargs,
             )
 

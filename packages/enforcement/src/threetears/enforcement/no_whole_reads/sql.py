@@ -216,6 +216,8 @@ class Reader:
         set reads the ids the source's runs record named
     :ivar source_unit: whether the mark says ``unit="table"``: such a relation is a small static input read whole
         when the source's inputs record moved
+    :ivar local: whether the statement runs on a local backend (``execute_query`` / ``execute_arrow``: DuckDB, SQLite),
+        which hashes no index: no ``index-hashed-range`` is asked of what it reads
     :ivar view_keys: the keys every view the code the statement is written in builds declares, when that code is a
         declared view producer (``NoWholeReadsConfig.view_producers``): a ``CREATE VIEW`` there is judged by them
     :ivar ctes: the CTE names the code the statement is written in defines in its other statements (a fragment
@@ -231,6 +233,7 @@ class Reader:
     source_ids: frozenset[str] = frozenset()
     source_unit: bool = False
     view_keys: tuple[tuple[str, ...], ...] = ()
+    local: bool = False
 
 
 def _interpolation(match: re.Match[str]) -> str:
@@ -969,7 +972,10 @@ def _key_hit(
             and (level.order is None or level.order[1] == columns[prefix])
         )
         if _covers(columns, eq | contained, tenants) or ranged_next:
-            if table is not None:
+            if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
+                # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
+                reader.schema.use_from_lead(table, name, reader.names)
+            elif table is not None:
                 reader.schema.use(table, name, reader.names)
             return True
     order = level.order
@@ -979,10 +985,27 @@ def _key_hit(
             while prefix < len(key) and key[prefix] in eq:
                 prefix += 1
             if prefix < len(key) and key[prefix] == order[1] and not (eq - set(key[:prefix])) and ranged <= {order[1]}:
-                if name and table is not None:
+                if name and table is not None and prefix == 0 and not _local(reader, table):
+                    # an order from the index's first column, nothing bound before it: a hashed column has no order
+                    reader.schema.use_from_lead(table, name, reader.names)
+                elif name and table is not None:
                     reader.schema.use(table, name, reader.names)
                 return True
     return False
+
+
+def _local(reader: Reader, table: str) -> bool:
+    """whether a read of ``table`` is local, so no index of it is hashed: run on a local backend, or of a local copy's
+    relation, or of a change set being applied.
+
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param table: the bare table
+    :ptype table: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return reader.local or table.startswith(COPY_PREFIX) or reader.transient(table)
 
 
 def _order(masked: str, text: str) -> tuple[str, str] | None:
