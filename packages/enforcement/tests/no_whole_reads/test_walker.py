@@ -1838,3 +1838,145 @@ def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_decl
     assert not any(function == "_held" for function, _ in found), found
     assert ("_by_state", 'non-key-where "geos"') in found, found
     assert ("_loose", "unknown-predicate holds_any(table)") in found, found
+
+
+_RENAMED_VIEWS = """
+    def make(db):
+        db.execute("CREATE VIEW offices AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p")
+        db.execute("CREATE VIEW cased AS SELECT CASE WHEN p.race IS NULL THEN '' ELSE p.race END AS office_key FROM lsf_rows AS p")
+        db.execute("CREATE VIEW joined AS SELECT p.race || p.state AS office_key FROM lsf_rows AS p")
+
+    def by_office(db, office):
+        return db.execute_query(f"SELECT * FROM offices WHERE office_key = {office}")
+"""
+
+
+def test_a_view_column_that_renames_a_plain_column_passes_its_key_through(tmp_path: Path) -> None:
+    """Flips if a key column a view's body renames from a plain column (``p.race AS office_key``) is not passed
+    through, or if one it computes (a CASE, a concatenation) is."""
+    relations = {"offices": ("office_key",), "cased": ("office_key",), "joined": ("office_key",)}
+    found = _symbols(_config(tmp_path, {"views.py": _RENAMED_VIEWS}, local_relations=relations))
+    assert ("make", "view-key-not-passed cased.office_key") in found, found
+    assert ("make", "view-key-not-passed joined.office_key") in found, found
+    assert not any("offices" in symbol for _, symbol in found), found
+    assert not any(function == "by_office" for function, _ in found), found
+
+
+_QUALIFIED_VIEWS = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    SETTINGS = TableSchema(name="report_settings", primary_key="join_state_code", columns=[])
+
+    def make(db):
+        db.execute("CREATE OR REPLACE VIEW report.report_settings AS SELECT name, value FROM copy_settings")
+
+    def by_name(db, name):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE name = {name}")
+
+    def by_state(db, state):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE join_state_code = {state}")
+
+    async def l3_by_state(conn, state):
+        return await conn.fetch("SELECT * FROM report_settings WHERE join_state_code = $1", state)
+"""
+
+
+def test_a_view_in_a_schema_of_its_own_is_judged_by_its_copy_declaration_before_an_l3_table(tmp_path: Path) -> None:
+    """Flips if a view named in a schema of its own (``report.<v>``) is judged by the L3 table sharing its bare name,
+    rather than by the copy relation declared for it, or if the L3 table loses its own key."""
+    found = _symbols(_config(tmp_path, {"views.py": _QUALIFIED_VIEWS}, local_relations={"report_settings": ("name",)}))
+    assert not any(function in ("make", "by_name", "l3_by_state") for function, _ in found), found
+    assert ("by_state", "non-key-where report.report_settings") in found, found
+
+
+_VIEW_PRODUCERS = """
+    def _view_sql(view):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p"
+
+    def _bad_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT upper(office_key) AS office_key FROM lsf_rows"
+
+    class Parts:
+        def copy_view(self, view):
+            return f"CREATE VIEW {view} AS SELECT office_key, votes FROM lsf_rows"
+
+    def _stray_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT office_key FROM lsf_rows"
+"""
+
+
+def test_a_view_named_at_run_time_is_judged_by_the_keys_its_producer_declares(tmp_path: Path) -> None:
+    """Flips if a view a declared producer builds under a name it is handed is not judged by the producer's declared
+    keys (passed through, or computed), or if a producer nobody declares builds an undeclared view unseen."""
+    producers = {"_view_sql": ("office_key",), "_bad_view_sql": ("office_key",), "Parts.copy_view": ("office_key",)}
+    found = _symbols(_config(tmp_path, {"views.py": _VIEW_PRODUCERS}, view_producers=producers))
+    assert not any(function in ("_view_sql", "Parts.copy_view") for function, _ in found), found
+    assert any(function == "_bad_view_sql" and "view-key-not-passed" in symbol for function, symbol in found), found
+    assert any(function == "_stray_view_sql" and "undeclared-view" in symbol for function, symbol in found), found
+
+
+_DECLARED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES = "counties"
+    PRECINCTS = "precincts"
+    COUNTIES_SCHEMA = TableSchema(name=COUNTIES, primary_key=("state", "county"), columns=[])
+    PRECINCTS_SCHEMA = TableSchema(name=PRECINCTS, primary_key=("state", "precinct"), columns=[])
+    RUNS_SCHEMA = TableSchema(name="runs", primary_key="run_id", columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+        per_run: bool = False
+
+
+    TABLES = (Declared(name=COUNTIES), Declared(name=PRECINCTS, per_run=True))
+    WITH_RUNS = (Declared(name=COUNTIES), Declared(name="runs"))
+    NAMES = (COUNTIES, PRECINCTS)
+"""
+
+_LOOPED = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import NAMES, TABLES, WITH_RUNS
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+        async def holds_run(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_state(table.name, state)
+
+        async def _write(self, table, state):
+            return await self._held(table, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._write(table, state)
+
+        async def by_name(self, state):
+            for name in NAMES:
+                await holds_any(self._conn, name, by={"state": state})
+
+        async def with_runs(self, state):
+            for table in WITH_RUNS:
+                await self._store.holds_run(table.name, state)
+"""
+
+
+def test_a_table_bound_by_a_loop_over_a_declared_tuple_resolves_through_its_callers(tmp_path: Path) -> None:
+    """Flips if a keyed helper's table, named by a loop over a module tuple of declared tables (``for t in TABLES``,
+    ``t.name``) and handed down through parameters (``run`` -> ``_write`` -> ``_held`` -> ``Store.holds_state``),
+    stays unknown, or if one element whose key the read does not bind (``runs``) passes."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _DECLARED_TABLES, "pkg/pull.py": _LOOPED}))
+    assert not any(function in ("Store.holds_state", "Pull._held", "Pull.by_name") for function, _ in found), found
+    assert any(function == "Store.holds_run" and "runs" in symbol for function, symbol in found), found

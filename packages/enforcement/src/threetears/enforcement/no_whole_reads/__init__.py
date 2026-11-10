@@ -137,6 +137,9 @@ class NoWholeReadsConfig:
         ``_Work.put``): ``Class.method``, or a module function's name. A statement over what one returns -- the call in
         the placeholder, a name bound to it, a ``self`` attribute every assignment of which is one -- reads a change
         set; a method counts called on ``self`` in its class, on the class, or on a receiver known to be the class
+    :ivar view_producers: the repo's functions that build a view under a name they are handed (``_view_sql``,
+        ``Parts.copy_view``: ``Class.method`` or a module function's name), onto the key (or keys) every view each
+        builds declares: its ``CREATE VIEW {}`` is judged by them, as a declared view is by its own (passed through)
     :ivar verify_prefixes: repo-relative prefixes of load code (a writer, a loader, a follower), where a count or
         fingerprint even of one key's rows is a verification scan (``verify-aggregate``): the epoch and the source's
         own change records say what changed, so nothing counts rows to find out
@@ -164,6 +167,7 @@ class NoWholeReadsConfig:
     extra_narrowing: frozenset[str] = field(default_factory=frozenset)
     transient_relations: str = ""
     transient_producers: frozenset[str] = field(default_factory=frozenset)
+    view_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     verify_prefixes: tuple[str, ...] = ()
     minimum_files_scanned: int = 1
     schema_roots: tuple[Path, ...] = ()
@@ -299,6 +303,19 @@ def _dependency_roots(repo_root: Path) -> tuple[Path, ...]:
     )
 
 
+def _keys_of(declared: tuple[str, ...] | tuple[tuple[str, ...], ...]) -> tuple[tuple[str, ...], ...]:
+    """a declaration's keys: one key (its columns), or several.
+
+    :param declared: the declaration
+    :ptype declared: tuple[str, ...] | tuple[tuple[str, ...], ...]
+    :return: each key's columns
+    :rtype: tuple[tuple[str, ...], ...]
+    """
+    if all(isinstance(column, str) for column in declared):
+        return (tuple(str(column) for column in declared),)
+    return tuple(tuple(str(column) for column in key) for key in declared if not isinstance(key, str))
+
+
 def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     """every table key and index the repo (and the 3tears it reads) declares.
 
@@ -318,12 +335,7 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
         for written, declared in relations.items():
             # ``local_relations["*"]``: the default key of every copy relation the repo declares no key for
             name = "{}" if written == "*" and prefix else written
-            keys: list[tuple[str, ...]] = (
-                [tuple(str(column) for column in declared)]
-                if all(isinstance(column, str) for column in declared)
-                else [tuple(str(column) for column in key) for key in declared if not isinstance(key, str)]
-            )
-            for key in keys:
+            for key in _keys_of(declared):
                 catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
     return catalog
 
@@ -347,6 +359,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         schema=_schema_of(config),
         exec_calls=config.extra_exec_calls,
         producers=config.transient_producers,
+        view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
     )
     return scan.hits, scan
 
