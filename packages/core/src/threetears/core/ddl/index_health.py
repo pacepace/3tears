@@ -1,0 +1,189 @@
+"""find the indexes a failed build left unusable, and build each again from its own definition.
+
+An index build that fails part way leaves its index behind marked not valid, not ready or not live
+(``pg_index.indisvalid`` / ``indisready`` / ``indislive``). The planner never reads it, a unique one enforces
+nothing, and ``CREATE [UNIQUE] INDEX IF NOT EXISTS`` takes it as present, so a migration that declared it never
+heals it. YugabyteDB's docs say to drop such an index and create it again ("If online CREATE INDEX fails, an
+invalid index may be left behind"); on YugabyteDB 2026.1 an online build racing other DDL on the database was also
+seen to end that way with no error at all.
+
+:func:`rebuild_unusable_indexes` finds every such index in the named schemas and builds it again from the
+definition the catalog keeps for it (``pg_get_indexdef``): the very statement that declared it, so nothing is
+re-declared by hand. A unique index whose table now holds duplicate keys under its predicate is refused before
+anything is dropped, naming the duplicate keys: building it would fail, and dropping it first would lose even the
+definition. An index still unusable after its build raises.
+
+The duplicate check reads the table under the index's predicate, grouped by its key: a schema repair's own read,
+run only for an index found unusable.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Final
+
+from threetears.core.sql_fragments import quote_identifier
+from threetears.observe import get_logger
+
+__all__ = [
+    "IndexDuplicateKeysError",
+    "IndexStillUnusableError",
+    "UnusableIndex",
+    "rebuild_unusable_indexes",
+    "unusable_indexes",
+]
+
+log = get_logger(__name__)
+
+#: how many duplicate keys a refusal names
+_DUPLICATES_NAMED: Final = 10
+
+#: every index of the schemas that is not valid, ready and live, with what rebuilding it needs
+_UNUSABLE_SQL: Final = """
+SELECT n.nspname AS schema_name,
+       t.relname AS table_name,
+       c.relname AS index_name,
+       i.indisunique AS is_unique,
+       pg_get_indexdef(i.indexrelid) AS definition,
+       pg_get_expr(i.indpred, i.indrelid) AS predicate,
+       ARRAY(
+           SELECT pg_get_indexdef(i.indexrelid, k.position::int, true)
+             FROM generate_series(1, i.indnkeyatts) AS k(position)
+       ) AS key_terms
+  FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+  JOIN pg_class t ON t.oid = i.indrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY($1::text[])
+   AND NOT (i.indisvalid AND i.indisready AND i.indislive)
+ ORDER BY n.nspname, c.relname
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class UnusableIndex:
+    """an index a failed build left not valid, not ready or not live.
+
+    :ivar schema: its schema
+    :ivar table: its table
+    :ivar name: its name
+    :ivar unique: whether it is a unique index
+    :ivar definition: the statement that builds it again (``pg_get_indexdef``)
+    :ivar predicate: its partial-index predicate, ``None`` for a whole-table index
+    :ivar key_terms: its key columns or expressions, in key order
+    """
+
+    schema: str
+    table: str
+    name: str
+    unique: bool
+    definition: str
+    predicate: str | None
+    key_terms: tuple[str, ...]
+
+
+class IndexDuplicateKeysError(RuntimeError):
+    """a unique index cannot be built again: its table holds duplicate keys under its predicate.
+
+    :ivar index: the index
+    :ivar duplicates: the duplicate keys found (at most :data:`_DUPLICATES_NAMED`), each with its row count
+    """
+
+    def __init__(self, index: UnusableIndex, duplicates: Sequence[tuple[tuple[Any, ...], int]]) -> None:
+        self.index = index
+        self.duplicates = tuple(duplicates)
+        named = "; ".join(f"{key!r} x{count}" for key, count in self.duplicates)
+        super().__init__(
+            f"unique index {index.schema}.{index.name} is unusable and cannot be built again: "
+            f"{index.table} holds duplicate keys ({', '.join(index.key_terms)}): {named}. Resolve them, then repeat"
+        )
+
+
+class IndexStillUnusableError(RuntimeError):
+    """an index was built again and is still not valid, ready and live."""
+
+
+async def unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[UnusableIndex]:
+    """every index of ``schemas`` that is not valid, ready and live.
+
+    :param conn: a connection to the database, or anything with ``fetch`` answering rows by column name
+    :ptype conn: Any
+    :param schemas: the schemas to look in
+    :ptype schemas: Sequence[str]
+    :return: the indexes, by schema and name
+    :rtype: list[UnusableIndex]
+    """
+    rows = await conn.fetch(_UNUSABLE_SQL, list(schemas))
+    return [
+        UnusableIndex(
+            schema=row["schema_name"],
+            table=row["table_name"],
+            name=row["index_name"],
+            unique=bool(row["is_unique"]),
+            definition=row["definition"],
+            predicate=row["predicate"],
+            key_terms=tuple(row["key_terms"]),
+        )
+        for row in rows
+    ]
+
+
+async def _duplicate_keys(conn: Any, index: UnusableIndex) -> list[tuple[tuple[Any, ...], int]]:
+    """the keys a unique index would refuse: its table's rows under its predicate, grouped by its key terms.
+
+    :param conn: a connection to the database
+    :ptype conn: Any
+    :param index: the unique index
+    :ptype index: UnusableIndex
+    :return: up to :data:`_DUPLICATES_NAMED` duplicate keys, each with its row count
+    :rtype: list[tuple[tuple[Any, ...], int]]
+    """
+    terms = ", ".join(index.key_terms)
+    named = ", ".join(f"{term} AS k{position}" for position, term in enumerate(index.key_terms))
+    where = f" WHERE {index.predicate}" if index.predicate else ""
+    # NULLs never collide in a unique index, so a key holding one is no duplicate
+    not_null = " AND ".join(f"({term}) IS NOT NULL" for term in index.key_terms)
+    where = f"{where} AND {not_null}" if where else f" WHERE {not_null}"
+    rows = await conn.fetch(
+        f"SELECT {named}, count(*) AS n FROM {quote_identifier(index.schema)}.{quote_identifier(index.table)}"  # noqa: S608
+        f"{where} GROUP BY {terms} HAVING count(*) > 1 LIMIT {_DUPLICATES_NAMED}"
+    )
+    return [(tuple(row[f"k{i}"] for i in range(len(index.key_terms))), int(row["n"])) for row in rows]
+
+
+async def rebuild_unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[UnusableIndex]:
+    """build every unusable index of ``schemas`` again from its own definition; say which were rebuilt.
+
+    Every unique index is checked for duplicate keys before any index is dropped, so a refusal leaves every index as
+    it was. Each rebuild is said at WARNING.
+
+    :param conn: a connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
+        online only there); the caller holds the database's DDL lock where other DDL may run
+    :ptype conn: Any
+    :param schemas: the schemas to repair
+    :ptype schemas: Sequence[str]
+    :return: the indexes built again
+    :rtype: list[UnusableIndex]
+    :raises IndexDuplicateKeysError: when a unique index's table holds duplicate keys; nothing was dropped
+    :raises IndexStillUnusableError: when an index is still unusable after it was built again
+    """
+    found = await unusable_indexes(conn, schemas)
+    if not found:
+        return []
+    for index in found:
+        if index.unique:
+            duplicates = await _duplicate_keys(conn, index)
+            if duplicates:
+                raise IndexDuplicateKeysError(index, duplicates)
+    log.warning(
+        "indexes left unusable by a failed build; dropping and building each again from its definition",
+        extra={"extra_data": {"indexes": [f"{index.schema}.{index.name}" for index in found]}},
+    )
+    for index in found:
+        await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(index.schema)}.{quote_identifier(index.name)}")
+        await conn.execute(index.definition)
+    still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas)} & {(i.schema, i.name) for i in found}
+    if still:
+        raise IndexStillUnusableError(f"indexes still unusable after they were built again: {sorted(still)}")
+    return found
