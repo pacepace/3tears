@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 # (``WHERE status = 'active' AND next_fire_at <= now``). Partial cuts the
 # index footprint because expired one-shots accumulate.
 _CREATE_NEXT_FIRE_INDEX_SQL = (
+    "-- purpose: packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_due_for_tick\n"
+    "-- plan_test: packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire\n"
     "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_fire "
     "ON scheduled_jobs (next_fire_at) "
     "WHERE status = 'active' AND next_fire_at IS NOT NULL"
@@ -115,6 +117,8 @@ CREATE TABLE IF NOT EXISTS job_fires (
 
 # Per-job history index (descending time for "latest fire" hot path).
 _CREATE_JOB_TIME_INDEX_SQL = (
+    "-- purpose: packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs\n"
+    "-- plan_test: packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_job_time\n"
     "CREATE INDEX IF NOT EXISTS idx_job_fires_job_time ON job_fires (job_id, actual_fired_at DESC)"
 )
 

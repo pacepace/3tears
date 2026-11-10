@@ -38,6 +38,9 @@ from threetears.core.data.migrations import (
 from threetears.scheduled_jobs.migrations.v001_create_scheduled_jobs import (
     create_scheduled_jobs,
 )
+from threetears.scheduled_jobs.migrations.v002_dispatching_fires_index import (
+    add_dispatching_fires_index,
+)
 
 PACKAGE_NAME = "scheduled_jobs"
 
@@ -59,12 +62,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.PLATFORM,
     )
     pkg.version(1)(create_scheduled_jobs)
+    pkg.version(2)(add_dispatching_fires_index)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_dispatching_fires_index",
     "create_scheduled_jobs",
     "register",
 ]

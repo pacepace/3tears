@@ -1091,7 +1091,8 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
             rows = await self.l3_pool.fetch(
                 "UPDATE job_fires SET status = 'failed', error = $1 "
                 "WHERE status = 'dispatching' AND actual_fired_at < $2 "
-                "AND job_id IN (SELECT job_id FROM scheduled_jobs WHERE kind = ANY($3)) "
+                # each in-flight fire's job, by the job's own UNIQUE job_id
+                "AND EXISTS (SELECT 1 FROM scheduled_jobs j WHERE j.job_id = job_fires.job_id AND j.kind = ANY($3)) "
                 "RETURNING partition_key, fire_id",
                 REAPED_DISPATCH_ERROR,
                 cutoff,
