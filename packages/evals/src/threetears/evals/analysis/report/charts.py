@@ -31,7 +31,7 @@ from __future__ import annotations
 import functools
 import math
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
