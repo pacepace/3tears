@@ -936,7 +936,13 @@ def _key_hit(
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
             prefix += 1
-        ranged_next = prefix < len(columns) and columns[prefix] in ranged and level.limited
+        # a range on the index's next column pages it only when the read orders by that column
+        ranged_next = (
+            prefix < len(columns)
+            and columns[prefix] in ranged
+            and level.limited
+            and (level.order is None or level.order[1] == columns[prefix])
+        )
         if _covers(columns, eq | contained, tenants) or ranged_next:
             if table is not None:
                 reader.schema.use(table, name, reader.names)

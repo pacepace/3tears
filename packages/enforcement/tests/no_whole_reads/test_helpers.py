@@ -1,0 +1,168 @@
+"""A call to a keyed-read helper is judged by the statement it sends: keyed when its literal key is, an
+``unknown-predicate`` when the walk cannot read its arguments, a whole read when the key it names is not one."""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+from threetears.enforcement.no_whole_reads.helpers import (
+    UNSEEN,
+    helper_statements,
+    is_keyed_fragment,
+    narrows,
+)
+from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
+from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
+from threetears.enforcement.no_whole_reads.walker import DEFAULT_NARROWING_KEYWORDS
+
+#: the function the purposed sweep index names
+_SWEEP = "src/app.py::sweep"
+
+_DDL = f"""
+CREATE TABLE results (state TEXT, geo TEXT, id BIGINT, stamp TIMESTAMPTZ, kind TEXT, PRIMARY KEY (state, geo, id));
+CREATE TABLE leases (purpose TEXT, key TEXT, expires_at TIMESTAMPTZ, PRIMARY KEY (purpose, key));
+CREATE TABLE tenant_leases (customer_id UUID, key TEXT, expires_at TIMESTAMPTZ, PRIMARY KEY (customer_id, key));
+-- purpose: {_SWEEP}
+-- plan_test: tests/test_app.py::test_sweep_plan
+CREATE INDEX tenant_leases_by_expiry ON tenant_leases (customer_id, expires_at);
+CREATE TABLE grants (who TEXT, state TEXT, PRIMARY KEY (who, state));
+"""
+
+
+@pytest.fixture
+def schema(tmp_path: Path) -> SchemaCatalog:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "v001.sql").write_text(_DDL, encoding="utf-8")
+    return collect_schema(tmp_path, (tmp_path / "src",))
+
+
+def _call(code: str) -> ast.Call:
+    node = ast.parse(code).body[0]
+    assert isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    return node.value
+
+
+def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") -> list[list[tuple[str, str]]]:
+    judged = []
+    for statement in helper_statements(_call(code)):
+        assert statement.sql is not UNSEEN, statement
+        reader = Reader(schema, frozenset({name}))
+        judged.append([(finding.kind, finding.table.strip('"')) for finding in judge_sql(statement.sql, reader)])
+    return judged
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # a keyed batch by a leading part of the key, or by the key's rest after a pinned prefix
+        'read_keyed(c, "results", keys=KeyBatch(("state", "geo"), ks), columns=cols)',
+        'read_keyed_arrow(c, "results", keys=KeyBatch(("id",), ks), by={"state": s, "geo": g}, types=t)',
+        # a page after a bound prefix, ordered by the key's next column; one across the whole key
+        'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id", "bigint")], limit=5)',
+        'keyset_page(c, "results", columns=cols, by={}, order=[Sort("state"), Sort("geo"), Sort("id")], limit=5)',
+        # its visibility a keyed probe, or a reviewed caller-visibility builder
+        'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
+        'visible=[exists_keyed("grants", on={"state": "state"}, by={"who": w})])',
+        'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
+        "visible=[Fragment.of(caller_visible_customer_clause(user_id=u, customer_id_column=x, "
+        "scope_namespace_type=n))])",
+        'count_at_most(c, "results", by={"state": s}, at_most=3)',
+        'holds_any(c, "results", by={"state": s})',
+        'holds_any(c, "results")',
+        'read_after(c, "results", columns=cols, id_column="id", after=0, limit=3, by={"state": s, "geo": g})',
+    ],
+)
+def test_a_helper_naming_a_key_is_keyed(code: str, schema: SchemaCatalog) -> None:
+    """Flips if a keyed helper call is judged a whole read, or synthesizes no statement at all."""
+    judged = _judged(code, schema)
+    assert judged and all(findings == [] for findings in judged), judged
+
+
+def test_a_sweep_of_a_key_prefix_is_keyed_anywhere(schema: SchemaCatalog) -> None:
+    """Flips if a sweep binding a key prefix (purpose leads leases' key) is refused outside a purposed index."""
+    code = (
+        'delete_before(c, "leases", key=["purpose", "key"], column="expires_at", before=t, page=5, by={"purpose": p})'
+    )
+    assert _judged(code, schema, "src/app.py::elsewhere") == [[]]
+
+
+def test_a_tenant_sweep_is_keyed_only_through_the_index_naming_its_caller(schema: SchemaCatalog) -> None:
+    """Flips if a sweep bound only by its tenant passes without its purposed index, or fails with it."""
+    code = (
+        'delete_before(c, "tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, page=5, '
+        'by={"customer_id": p})'
+    )
+    assert _judged(code, schema, _SWEEP) == [[]]
+    assert _judged(code, schema, "src/app.py::elsewhere") != [[]]
+
+
+def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
+    code = 'counts_by(c, "results", column="geo", values=AnyOf(g), by={"state": s})'
+    assert _judged(code, schema) == [[("keyed-count", "results")]]
+
+
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [
+        # a batch of a later key column alone: every row is read to find them
+        ('read_keyed(c, "results", keys=KeyBatch(("geo",), ks), columns=cols)', "whole-select"),
+        ('holds_any(c, "results", by={"kind": k})', "non-key-where"),
+        ('count_at_most(c, "results", by={"kind": k}, at_most=3)', "non-key-where"),
+    ],
+)
+def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: SchemaCatalog) -> None:
+    """Flips if a helper call passes on its name alone, whatever key it names."""
+    judged = _judged(code, schema)
+    assert any(found[0] == kind for findings in judged for found in findings), judged
+
+
+@pytest.mark.parametrize(
+    ("code", "argument"),
+    [
+        ('read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)', "table"),
+        ('read_keyed(c, "results", keys=batch, columns=cols)', "keys"),
+        ('read_keyed(c, "results", keys=KeyBatch(columns, ks), columns=cols)', "keys"),
+        ('keyset_page(c, "results", columns=cols, by=pinned, order=[Sort("geo")], limit=5)', "by"),
+        ('keyset_page(c, "results", columns=cols, by={"state": s}, order=order, limit=5)', "order"),
+        ('keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort(column)], limit=5)', "order"),
+        ('keyset_page(c, "results", columns=cols, by={}, order=[Sort("geo")], limit=5, visible=[clause])', "visible"),
+        ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s})', "column"),
+        ('count_at_most(c, "results", at_most=3)', "by"),
+        ('holds_any(c, "results", by={**pinned})', "by"),
+        ('delete_before(c, "leases", key=key, column="expires_at", before=t, page=5)', "key"),
+        ('read_past_marks(c, "rel", columns=cols, marks=marks)', "marks"),
+    ],
+)
+def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argument: str) -> None:
+    """Flips if a call the walk cannot read is passed (or judged on a guess) instead of named unknown-predicate."""
+    statements = list(helper_statements(_call(code)))
+    assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, argument)]
+
+
+def test_any_other_call_sends_nothing() -> None:
+    assert list(helper_statements(_call('fetch("SELECT 1")'))) == []
+    assert list(helper_statements(_call('empty_tables(c, ["results"])'))) == []
+
+
+def test_the_acl_visibility_builders_are_keyed_fragments() -> None:
+    assert is_keyed_fragment(
+        _call("caller_visible_customer_clause(user_id=u, customer_id_column=x, scope_namespace_type=n)")
+    )
+    assert not is_keyed_fragment(_call("build_clause(u)"))
+
+
+@pytest.mark.parametrize(
+    ("code", "narrowed"),
+    [
+        ("keyset_pages(c, head, key, page_size=10, after=last)", False),
+        ("read_l3_rows(c, t, cols, key, since=mark)", False),
+        ('keyset_pages(c, head, key, page_size=10, where={"state": s}, after=last)', True),
+        ("read_l3_rows(c, t, cols, key, where_any=sets)", True),
+    ],
+)
+def test_where_a_pager_starts_does_not_narrow_it(code: str, narrowed: bool) -> None:
+    """Flips if a drain narrowed only by ``after=`` (every row from a place on) counts as keyed."""
+    assert narrows(_call(code), DEFAULT_NARROWING_KEYWORDS) is narrowed
