@@ -12,8 +12,8 @@ them there, the platform's database.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -179,7 +179,12 @@ def _keys(count: int) -> list[tuple[str, str, int]]:
 
 class TestReadKeyed:
     async def test_a_batch_of_keys_reads_its_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a keyed batch read scans past its keys' rows, or is over 2x the bare read of them."""
+        """Flips if a keyed batch read scans past its keys' rows, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same 600 keys looked
+        up on the real 300k-row table by its key (IN-unnest of natively typed arrays), returning the same rows. Never
+        a scan of a small copy holding only the answer: that skips the lookups the helper must make (it measured
+        0.40 ms against 2.30 ms for the keyed lookup, and read 4.6x where the helper is 1.5x the lookup)."""
         keys = list(dict.fromkeys(_keys(2000)))
         batch = KeyBatch(("state", "geo", "id"), keys, ("text", "text", "bigint"))
         recorder = PlanRecorder(seeded.conn)
@@ -191,14 +196,12 @@ class TestReadKeyed:
         assert plan_uses_index(plan, "results_pkey"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(keys), plan
         _batched_on_yugabyte(plan, seeded)
-        baseline = await _baseline(
-            seeded.conn,
+        bare_sql = (
             f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo, id) IN "
-            "(SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))",
-            [k[0] for k in keys],
-            [k[1] for k in keys],
-            [k[2] for k in keys],
+            "(SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))"
         )
+        typed = ([k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys])
+        baseline = await best_seconds(lambda: seeded.conn.fetch(bare_sql, *typed))
         took = await best_seconds(
             lambda: read_keyed(seeded.conn, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         )
@@ -315,11 +318,14 @@ class TestMarks:
 class TestDeleteBefore:
     async def test_a_sweep_deletes_page_by_page_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a sweep sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
-        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x one bare delete of the same 500
-        rows by the same predicate on the same table."""
+        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x the bare page delete.
+
+        The bare is the best hand-written statement doing the same work on the same table: it finds the page (the 500
+        oldest by stamp, ORDER BY ... LIMIT) and deletes it RETURNING the keys, as the helper must (it does not know
+        the page's end stamp, and the keys settle every cache). Never a range delete to a stamp the test looked up
+        first: that skips finding the page and returning its keys (0.89 ms against 2.05 ms)."""
         oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
         before = oldest + timedelta(seconds=3000)
-        page_end = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp OFFSET 500 LIMIT 1")
         planned = _WritePlans(seeded.conn)
         await _rolled_back(
             seeded.conn,
@@ -330,9 +336,11 @@ class TestDeleteBefore:
         plan = planned.plans[0]
         assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
         _batched_on_yugabyte(plan, seeded)
-        baseline = await _rolled_back(
-            seeded.conn, lambda: seeded.conn.execute(f"DELETE FROM {_TABLE} WHERE stamp < $1", page_end)
+        bare_page = (
+            f"DELETE FROM {_TABLE} AS t WHERE (t.state, t.geo, t.id) IN (SELECT state, geo, id FROM {_TABLE} "
+            "WHERE stamp < $1 ORDER BY stamp LIMIT 500) RETURNING t.state, t.geo, t.id"
         )
+        baseline = await _rolled_back(seeded.conn, lambda: seeded.conn.fetch(bare_page, before))
         took = await _rolled_back(
             seeded.conn,
             lambda: delete_before(
@@ -464,18 +472,22 @@ class TestCountsByRelations:
 
 class TestDeleteOldest:
     async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:
-        """Flips if a trim reads past the rows it deletes, or is over 2x one bare delete of them (SQLite, an L1 cache of
-        300,000 rows trimmed by 3,000)."""
-        local = sqlite3.connect(":memory:", check_same_thread=False)
+        """Flips if a cache trim reads past the rows it deletes (a sort of the table) or is over 2x the bare trim.
+
+        The bare is the best hand-written statement doing the same work on the same table through the same thread
+        hop: the same 3,000 oldest rows by rowid, deleted through asyncio.to_thread, since IO in a thread is the rule on
+        both sides. Never a range delete to a rowid the test already knows, run in the loop: that skips finding the
+        oldest rows and the hop (0.17 ms against 0.54 ms). Each side is the best of several runs, each rolled back,
+        so every run deletes from the same 300,000 rows."""
+        local = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
         try:
             local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
+            local.execute("BEGIN")
             local.executemany(
                 "INSERT INTO cached VALUES (?, ?, ?, ?)",
                 ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
             )
-            # the bare operation: the same 3,000 oldest rows deleted by their rowids from a table of the same size
-            local.execute("CREATE TABLE plain AS SELECT * FROM cached")
-            local.commit()
+            local.execute("COMMIT")
             plan = " ".join(
                 str(row[-1])
                 for row in local.execute(
@@ -484,12 +496,21 @@ class TestDeleteOldest:
                 )
             )
             assert "USE TEMP B-TREE" not in plan, plan
-            began = time.perf_counter()
-            local.execute("DELETE FROM plain WHERE rowid <= 3000")
-            baseline = time.perf_counter() - began
-            began = time.perf_counter()
+            bare = "DELETE FROM cached WHERE rowid IN (SELECT rowid FROM cached ORDER BY rowid LIMIT 3000)"
+
+            async def rolled_back(run: Any) -> float:
+                async def once() -> None:
+                    local.execute("BEGIN")
+                    try:
+                        await run()
+                    finally:
+                        local.execute("ROLLBACK")
+
+                return await best_seconds(once)
+
+            baseline = await rolled_back(lambda: asyncio.to_thread(local.execute, bare))
+            took = await rolled_back(lambda: delete_oldest(ThreadedSQLite(local), "cached", count=3000))
             deleted = await delete_oldest(ThreadedSQLite(local), "cached", count=3000)
-            took = time.perf_counter() - began
             assert deleted == 3000
             assert local.execute("SELECT min(rowid) FROM cached").fetchone()[0] == 3001
         finally:
