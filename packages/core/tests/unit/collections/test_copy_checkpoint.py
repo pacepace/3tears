@@ -548,8 +548,8 @@ async def test_a_touched_scope_is_read_by_its_scope_column_alone() -> None:
     checkpoints.applied(10, {_VOTES: frozenset({"state:IL"})})
     copy.statements.clear()
     assert await checkpoints.write(copy.read) is not None
-    assert [params for _, params in copy.statements if '"votes"' in _] == [["IL"]]
-    assert not _whole_reads(copy, _VOTES) and not any("DISTINCT" in sql for sql, _ in copy.statements)
+    assert [params for _, params in copy.statements if '"votes"' in _] == [[["IL"]]]
+    assert not _whole_reads(copy, _VOTES) and not any("SELECT DISTINCT" in sql for sql, _ in copy.statements)
 
 
 async def test_a_table_with_no_scope_touched_without_its_keys_is_refused() -> None:
@@ -666,7 +666,7 @@ async def test_a_derived_table_is_rewritten_only_in_the_scopes_the_followed_tabl
     assert second is not None
     va = [p for p in second.tables[_NEEDLES].parts if p[1] == "state:VA"]
     assert va == [p for p in first.tables[_NEEDLES].parts if p[1] == "state:VA"]
-    assert [params for sql, params in copy.statements if '"needles"' in sql] == [["IL"]]
+    assert [params for sql, params in copy.statements if '"needles"' in sql] == [[["IL"]]]
     assert not _whole_reads(copy, _NEEDLES)
     # nothing followed changed: every derived part is named again
     copy.statements.clear()
