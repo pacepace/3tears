@@ -50,7 +50,6 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
-from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.pagination import CursorError
 
@@ -178,7 +177,11 @@ class TestReadKeyed:
         single.binds_native_arrays = True  # type: ignore[attr-defined]
         await read_keyed(single, "t", keys=KeyBatch(("b",), [(1,), (12,)], ("bigint",)), columns=["b"])
         assert '"b" = ANY($1::bigint[])' in single.statements[0][0]
-        assert binds_native_arrays(object()) is False
+        # identity, not truthiness: a mock's auto-attribute (anything but True) is the rail's text arrays
+        truthy = _Recording(db)
+        truthy.binds_native_arrays = "yes"  # type: ignore[attr-defined]
+        await read_keyed(truthy, "t", keys=KeyBatch(("a", "b"), keys, ("text", "bigint")), columns=["b"])
+        assert "unnest($2::text[]::bigint[])" in truthy.statements[0][0]
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by`` is dropped (the read answers rows of every group) or bound to the wrong placeholder."""
