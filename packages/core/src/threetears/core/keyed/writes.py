@@ -32,6 +32,7 @@ from threetears.core.keyed._filters import (
     Fragment,
     binds_native_arrays,
     by_conditions,
+    prefix_conditions,
     quoted_table,
     renumbered,
 )
@@ -132,13 +133,14 @@ def _guarded(
     first: int,
     named: tuple[str, list[Any]] | None,
     alias: str | None = None,
+    prefix: Mapping[str, str] | None = None,
 ) -> tuple[str, list[Any]]:
-    """the ``WHERE`` naming a write's rows: its keys, ``by``, then ``where``, placeholders from ``first``.
+    """the ``WHERE`` naming a write's rows: its keys, ``by``, ``prefix``, then ``where``, placeholders from ``first``.
 
-    :raises ValueError: when neither keys nor ``by`` name a column
+    :raises ValueError: when neither keys, ``by`` nor ``prefix`` name a column
     """
-    if not by and named is None:
-        raise ValueError(f"a keyed write of {table} names the key of the rows it writes (by= or keys=)")
+    if not by and named is None and not prefix:
+        raise ValueError(f"a keyed write of {table} names the key of the rows it writes (by=, keys= or prefix=)")
     conditions: list[str] = []
     params: list[Any] = []
     if named is not None:
@@ -147,6 +149,10 @@ def _guarded(
     pinned, values = by_conditions(by, first=first + len(params), alias=alias)
     conditions += pinned
     params += values
+    if prefix:
+        ranged, bounds = prefix_conditions(prefix, first=first + len(params), alias=alias)
+        conditions += ranged
+        params += bounds
     for fragment in where:
         conditions.append(renumbered(fragment, first - 1 + len(params)))
         params += list(fragment.params)
@@ -187,6 +193,7 @@ async def _batched(
     where: Sequence[Fragment],
     returning: Sequence[str],
     batch: int,
+    prefix: Mapping[str, str] | None = None,
 ) -> KeyedWrite:
     """``head`` (``UPDATE ... SET ...`` or ``DELETE FROM ...``) once a batch of ``keys`` (once when None)."""
     natively = binds_native_arrays(conn)
@@ -197,7 +204,7 @@ async def _batched(
         if keys is not None and not chunk:
             continue
         named = None if chunk is None or keys is None else _named(keys, chunk, first, natively)
-        clause, params = _guarded(by, where, table, first, named)
+        clause, params = _guarded(by, where, table, first, named, prefix=prefix)
         written = await _run(conn, f"{head}{clause}{_returning(returning)}", [*head_params, *params], returning)
         count += written.count
         rows += written.rows
@@ -214,6 +221,7 @@ async def update_keyed(
     where: Sequence[Fragment] = (),
     returning: Sequence[str] = (),
     batch: int = DEFAULT_KEY_BATCH,
+    prefix: Mapping[str, str] | None = None,
 ) -> KeyedWrite:
     """set ``values`` on the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name.
 
@@ -236,9 +244,14 @@ async def update_keyed(
     :ptype returning: Sequence[str]
     :param batch: the most keys a statement names
     :ptype batch: int
+    :param prefix: text key columns -> the prefix the rows written start with, a range in ``COLLATE "C"`` order
+        (:func:`~threetears.core.keyed._filters.prefix_conditions`: it reads by a C-ordered index on the column, an
+        ASC one on YugabyteDB); none when None
+    :ptype prefix: Mapping[str, str] | None
     :return: the count written, and the rows returned
     :rtype: KeyedWrite
-    :raises ValueError: when ``values`` is empty, or neither ``by`` nor ``keys`` names a column
+    :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix
+        is empty or not text
     """
     if not values:
         raise ValueError(f"an update of {table} sets at least one column")
@@ -257,7 +270,7 @@ async def update_keyed(
             assignments.append(f"{quoted} = ${len(params)}")
     head = f"UPDATE {quoted_table(table)} SET {', '.join(assignments)}"
     return await _batched(
-        conn, table, head, params, keys=keys, by=by or {}, where=where, returning=returning, batch=batch
+        conn, table, head, params, keys=keys, by=by or {}, where=where, returning=returning, batch=batch, prefix=prefix
     )
 
 
@@ -270,6 +283,7 @@ async def delete_keyed(
     where: Sequence[Fragment] = (),
     returning: Sequence[str] = (),
     batch: int = DEFAULT_KEY_BATCH,
+    prefix: Mapping[str, str] | None = None,
 ) -> KeyedWrite:
     """delete the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name.
 
@@ -287,12 +301,16 @@ async def delete_keyed(
     :ptype returning: Sequence[str]
     :param batch: the most keys a statement names
     :ptype batch: int
+    :param prefix: text key columns -> the prefix the rows deleted start with, as :func:`update_keyed` takes it
+    :ptype prefix: Mapping[str, str] | None
     :return: the count deleted, and the rows returned
     :rtype: KeyedWrite
-    :raises ValueError: when neither ``by`` nor ``keys`` names a column
+    :raises ValueError: when neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix is empty or not text
     """
     head = f"DELETE FROM {quoted_table(table)}"
-    return await _batched(conn, table, head, [], keys=keys, by=by or {}, where=where, returning=returning, batch=batch)
+    return await _batched(
+        conn, table, head, [], keys=keys, by=by or {}, where=where, returning=returning, batch=batch, prefix=prefix
+    )
 
 
 async def update_from(

@@ -45,11 +45,13 @@ from threetears.core.keyed._filters import (
     Derived,
     Fragment,
     Lock,
+    Selected,
     batched_join_hint,
     binds_native_arrays,
     by_conditions,
     relation,
     renumbered,
+    selected_column,
 )
 from threetears.core.sql_fragments import quote_identifier
 
@@ -266,7 +268,7 @@ class _Statement:
 
 def _statement(
     table: str | Derived,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     keys: KeyBatch,
     by: Mapping[str, Any],
     lock: Lock | None = None,
@@ -274,7 +276,7 @@ def _statement(
 ) -> _Statement:
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
-    selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
+    selected = ", ".join(selected_column(column) for column in columns)
     return _Statement(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where))
 
 
@@ -313,7 +315,7 @@ async def read_keyed(
     table: str | Derived,
     *,
     keys: KeyBatch,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     by: Mapping[str, Any] | None = None,
     batch: int = DEFAULT_KEY_BATCH,
     row_cap: int | None = None,
@@ -329,8 +331,10 @@ async def read_keyed(
     :ptype table: str
     :param keys: the keys, a leading part of the table's key (or of an index declared for the caller's read)
     :ptype keys: KeyBatch
-    :param columns: the columns to read, TRUSTED identifiers
-    :ptype columns: Sequence[str]
+    :param columns: the columns to read, TRUSTED identifiers, or :class:`~threetears.core.keyed.Selected` expressions
+        under their own names (the warehouse's text of a timestamp: ``Selected("CAST(copied_at AS VARCHAR)",
+        "copied_at")``)
+    :ptype columns: Sequence[str | Selected]
     :param by: columns pinned beside the keys (a tenant), each a value or an :class:`~threetears.core.keyed.AnyOf`
     :ptype by: Mapping[str, Any] | None
     :param batch: the most keys a statement names

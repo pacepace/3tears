@@ -21,12 +21,14 @@ from threetears.core.keyed import (
     Fragment,
     Increment,
     KeyBatch,
+    Selected,
     Sort,
     StageMode,
     ThreadedDuckDB,
     ThreadedSQLite,
     apply_stage,
     counts_by,
+    counts_by_relations,
     delete_keyed,
     keyset_rows,
     read_keyed,
@@ -177,6 +179,66 @@ class TestReadKeyedWhere:
             assert sorted((row["a"], row["b"]) for row in rows) == expected, keys
 
 
+class TestReadKeyedSelected:
+    async def test_a_selected_expression_is_read_under_its_name(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a Selected column is quoted as an identifier, loses its name, or is read as the typed column."""
+        rows = await read_keyed(
+            ThreadedDuckDB(db),
+            "t",
+            keys=KeyBatch(("a",), [("k1",)]),
+            columns=["b", Selected("CAST(t.v AS VARCHAR)", "v")],
+        )
+        assert sorted((row["b"], row["v"]) for row in rows) == [(b, str(b)) for b in range(1, 100, 10)]
+
+    def test_a_selected_expression_takes_no_parameters(self) -> None:
+        """Flips if a placeholder in a trusted select item is let through (it would be misnumbered)."""
+        with pytest.raises(ValueError, match="no parameters"):
+            Selected("v + $1", "v")
+        with pytest.raises(ValueError, match="names its expression"):
+            Selected(" ", "v")
+
+
+class TestWritesByAPrefix:
+    @pytest.fixture
+    def named(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """``n``: text keys either side of a prefix's range, in code-point order."""
+        conn = duckdb.connect()
+        conn.execute("CREATE TABLE n (signal VARCHAR PRIMARY KEY, v INTEGER)")
+        keys = ["job", "job/", "job/1", "job/1/x", "job/zzz", "job0", "jobs", "jo", "other/1", "job/\U0010ffff"]
+        conn.executemany("INSERT INTO n VALUES (?, 0)", [[k] for k in keys])
+        yield conn
+        conn.close()
+
+    async def test_only_the_rows_starting_with_the_prefix_are_written(self, named: duckdb.DuckDBPyConnection) -> None:
+        """Flips if the range misses a row starting with the prefix (a trailing U+10FFFF, a deeper path) or reaches
+        one that does not ("job0", "jobs", "job" itself)."""
+        reader = _Recording(named)
+        updated = await update_keyed(reader, "n", values={"v": 1}, prefix={"signal": "job/"})
+        deleted = await delete_keyed(reader, "n", prefix={"signal": "job/"}, returning=["signal"])
+        starting = ["job/", "job/1", "job/1/x", "job/zzz", "job/\U0010ffff"]
+        assert updated.count == len(starting)
+        assert sorted(row["signal"] for row in deleted.rows) == sorted(starting)
+        assert sorted(row[0] for row in _plain(named, "SELECT signal FROM n")) == [
+            "jo",
+            "job",
+            "job0",
+            "jobs",
+            "other/1",
+        ]
+        assert all(
+            '"signal" COLLATE "C" >= $' in sql and '"signal" COLLATE "C" < $' in sql for sql, _ in reader.statements
+        )
+        assert reader.statements[-1][1] == ("job/", "job0")
+
+    async def test_an_empty_or_untyped_prefix_is_refused(self, named: duckdb.DuckDBPyConnection) -> None:
+        """Flips if an empty prefix (every row) or a non-text one is sent."""
+        with pytest.raises(ValueError, match="empty prefix"):
+            await delete_keyed(ThreadedDuckDB(named), "n", prefix={"signal": ""})
+        with pytest.raises(ValueError, match="is text"):
+            await update_keyed(ThreadedDuckDB(named), "n", values={"v": 1}, prefix={"signal": 7})  # type: ignore[dict-item]
+        assert _plain(named, "SELECT count(*) FROM n") == [(10,)]
+
+
 _BATCHES = [
     KeyBatch(("a",), [("k1",), ("k2",)]),
     KeyBatch(("a",), [("k1",), ("k2",)], as_list=True),
@@ -281,3 +343,40 @@ class TestCountsEveryValue:
         assert all("LIMIT 4" in sql for sql in paged)
         with pytest.raises(ValueError, match="the prefix of t it counts every value within"):
             await counts_by(reader, "t", column="b")
+
+
+class TestCountsPacked:
+    async def test_every_group_of_every_relation_comes_back_in_one_packed_statement(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if the packed count answers other counts than the unpacked one, takes more than one statement, or
+        answers more rows than its cap (several groups a row)."""
+        db.execute("CREATE TABLE u AS SELECT * FROM t WHERE b % 2 = 0")
+        tables = {"t": "t", "u": "u"}
+        values = AnyOf([f"k{i}" for i in range(10)] + ["absent"], "text")
+        unpacked = await counts_by_relations(ThreadedDuckDB(db), tables, column="a", values=values, by={"s": "on"})
+        reader = _Recording(db)
+        answered: list[int] = []
+
+        class _Counting(_Recording):
+            async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+                rows = await super().fetch(query, *params)
+                answered.append(len(rows))
+                return rows
+
+        reader = _Counting(db)
+        packed = await counts_by_relations(reader, tables, column="a", values=values, by={"s": "on"}, packed_rows=4)
+        assert packed == unpacked and packed["t"] and packed["u"]
+        assert len(reader.statements) == 1
+        assert answered[0] <= 4 < sum(len(groups) for groups in packed.values())
+
+    async def test_a_packed_count_names_how_many_groups_it_may_answer(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a packed count with neither values nor a bound on its groups is sent (its packing unknown)."""
+        with pytest.raises(ValueError, match="groups="):
+            await counts_by_relations(
+                ThreadedDuckDB(db), {"t": "t"}, column="a", where=[Fragment('"v" > $1', (5,))], packed_rows=10
+            )
+        counted = await counts_by_relations(
+            ThreadedDuckDB(db), {"t": "t"}, column="a", where=[Fragment('"v" > $1', (89,))], packed_rows=3, groups=10
+        )
+        assert counted == {"t": {f"k{i}": 1 for i in range(10)}}

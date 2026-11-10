@@ -36,7 +36,7 @@ one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no arrays (R
 
 from __future__ import annotations
 
-from threetears.core.keyed._filters import AnyOf, Derived, Fragment, Lock
+from threetears.core.keyed._filters import AnyOf, Derived, Fragment, Lock, Selected
 from threetears.core.keyed.counts import (
     BoundedCount,
     Dialect,
@@ -87,6 +87,7 @@ __all__ = [
     "Lock",
     "MarkedRead",
     "PageAfter",
+    "Selected",
     "Sort",
     "StageMode",
     "StageWrite",

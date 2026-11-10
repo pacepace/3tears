@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.core.keyed import AnyOf, counts_by, read_past_marks
+from threetears.core.keyed import AnyOf, KeyBatch, Selected, counts_by, read_keyed, read_past_marks
 from threetears.datasources.keyed_reader import DatasourceAnswerCut, DatasourceReader
 from threetears.datasources.query_client import DatasourceQueryResult
 
@@ -80,3 +80,18 @@ async def test_a_uuid_key_crosses_the_rail_as_text() -> None:
     key = UUID(int=7)
     await DatasourceReader(client, "redshift").fetch("SELECT 1 WHERE k = $1", key)  # type: ignore[arg-type]
     assert client.asked[0][2] == [str(key)]
+
+
+async def test_a_selected_expression_reaches_the_warehouse_as_written() -> None:
+    """Flips if a Selected column is quoted as one identifier on its way to the warehouse, or loses its name."""
+    client = _Client([{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}])
+    reader = DatasourceReader(client, "redshift")  # type: ignore[arg-type]
+    rows = await read_keyed(
+        reader,
+        "enr.lsf_runs",
+        keys=KeyBatch(("run_id",), [(7,)], as_list=True),
+        columns=["run_id", Selected("CAST(t.copied_at AS VARCHAR)", "copied_at")],
+    )
+    assert rows == [{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}]
+    ((_, query, _),) = client.asked
+    assert 'SELECT t."run_id", CAST(t.copied_at AS VARCHAR) AS "copied_at" FROM' in query

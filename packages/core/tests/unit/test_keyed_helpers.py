@@ -385,6 +385,33 @@ class TestMarks:
         with pytest.raises(ValueError, match="cold start"):
             await read_past_marks(ThreadedDuckDB(db), "t", columns=["b", "stamp"], marks={"stamp": None})
 
+    async def test_a_pinned_filtered_read_past_a_floor_reads_only_its_prefix(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if by= or where= is dropped (another prefix's rows read), a floor is not bound for a stamp with no
+        mark, the OR of the marks escapes the pins, or a cast stamp's bind is compared uncast."""
+        reader = _Recording(db)
+        floor = _START + timedelta(seconds=40)
+        read = await read_past_marks(
+            reader,
+            "t",
+            columns=["a", "b", "stamp", "v"],
+            marks={"stamp": None, "v": 1000},
+            by={"a": "k3"},
+            where=[Fragment('"v" % 2 = $1', (1,))],
+            floor={"stamp": floor},
+            casts={"stamp": "TIMESTAMP"},
+        )
+        expected = _plain(
+            db, "SELECT b FROM t WHERE a = 'k3' AND v % 2 = 1 AND (stamp > $1 OR v > 1000) ORDER BY b", floor
+        )
+        assert sorted(row["b"] for row in read.rows) == [row[0] for row in expected]
+        assert all(row["a"] == "k3" for row in read.rows)
+        ((sql, params),) = reader.statements
+        assert 'CAST("stamp" AS TIMESTAMP) > CAST($3 AS TIMESTAMP)' in sql and params[2] == floor
+        with pytest.raises(ValueError, match="cold start"):
+            await read_past_marks(ThreadedDuckDB(db), "t", columns=["stamp"], marks={"stamp": None}, floor={"v": 1})
+
     async def test_read_after_pages_a_prefix_by_its_growing_id(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a page re-reads its ``after`` row or reads outside the prefix."""
         page = await read_after(
