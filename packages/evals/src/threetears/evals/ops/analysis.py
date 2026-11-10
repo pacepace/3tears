@@ -35,10 +35,10 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.phase_log import charged, phase_logged
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arms
 from threetears.evals.analysis.report_doc_store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -1900,7 +1900,7 @@ async def analysis_generate(
             await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
             raise
         except EvalJobTimeout as timed_out:
-            await end_unrun(f"preparation did not finish in {format_number(timed_out.budget_s)} s")
+            await end_unrun(f"preparation did not finish in {PageForms.off_page().lone(timed_out.budget_s).text} s")
             return None
         except EvalServiceError as refused:
             await end_unrun(str(refused), refused_by=refused)
@@ -2624,10 +2624,11 @@ def bar_proposals_text(proposals: BarProposals) -> str:
         f"(incumbent {proposals.variant_key}); nothing is registered — adopt a bar by writing it into the host's "
         "registrations"
     ]
+    forms = PageForms.off_page()
     for bar in proposals.proposals:
         side = ">=" if bar.higher_is_better else "<="
         flag = f" — VACUOUS, do not adopt as written: {bar.vacuous_reason}" if bar.vacuous else ""
-        lines.append(f"- {bar.measure} {side} {format_number(bar.threshold)}{flag}")
+        lines.append(f"- {bar.measure} {side} {forms.lone(bar.threshold).text}{flag}")
         lines.append(f"  seeded from {bar.rationale}")
     if not proposals.proposals:
         lines.append("- no bar could be proposed")

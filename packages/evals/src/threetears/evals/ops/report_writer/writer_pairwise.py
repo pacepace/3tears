@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.analysis.report.blocks import ContrastOutcome, Verdict, VerdictReason
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.verdict import MIN_CASES
 from threetears.evals.analysis.report.words import comparison_words
 from threetears.evals.analysis.service import assemble_campaign_bundle
@@ -72,7 +73,6 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.declaration import CampaignArm, aware_instant, resolve_control_arm
-from threetears.evals.kernel.numbers import format_number, spell_count
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
@@ -1277,6 +1277,7 @@ def resolution_line(cases: int, *, projected: int | None = None, fewest: int | N
     :rtype: str
     """
     floor = resolution_floor(cases)
+    forms = PageForms.off_page()
     at = f"At {cases} case{'' if cases == 1 else 's'}"
     if fewest is not None and cases < fewest:
         at = f"{at}, under the {fewest} this eval asks for,"
@@ -1285,11 +1286,15 @@ def resolution_line(cases: int, *, projected: int | None = None, fewest: int | N
     else:
         # Rounded up, so the line never claims a share the test would not separate.
         percent = math.ceil(floor * 100 - 1e-9)
-        head = f"{at} this run can separate only a preference of {format_number(percent)}% or more, held on every case"
+        head = (
+            f"{at} this run can separate only a preference of {forms.lone(percent).text}% or more, held on every case"
+        )
     if projected is None:
         return f"{head}."
     settle = (
-        f"more than {spell_count(PROJECTION_CASE_CAP)}" if projected > PROJECTION_CASE_CAP else spell_count(projected)
+        f"more than {forms.count(PROJECTION_CASE_CAP).text}"
+        if projected > PROJECTION_CASE_CAP
+        else forms.count(projected).text
     )
     return f"{head}; the last run on these cases projected {settle} to settle."
 
