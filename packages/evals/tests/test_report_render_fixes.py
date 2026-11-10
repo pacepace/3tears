@@ -132,8 +132,9 @@ def test_the_weakest_margins_worst_case_is_read_on_the_corrected_interval_and_sa
     plain_worst, corrected_worst = float(reading.within_interval[0]), float(contrast.interval[0]) * 100
     assert corrected_worst < plain_worst  # the corrected interval reaches further (10.8 against 12.6 on Kairo)
     assert margin.corrected and margin.value == pytest.approx(corrected_worst)
+    # The words state what the corrected interval guarantees together, never its per-interval level (owner, Q3).
     said = render("{weakest.interval}", {}, forms=PageForms.of(held))
-    assert said.startswith("the multiplicity-corrected 99.69% interval")
+    assert said == "the 95% interval, adjusted for 16 comparisons"
 
 
 def test_a_margin_with_no_corrected_interval_says_it_is_read_on_the_plain_one() -> None:
@@ -141,7 +142,9 @@ def test_a_margin_with_no_corrected_interval_says_it_is_read_on_the_plain_one() 
     bare = held.model_copy(update={"contrasts": [c for c in held.contrasts if c.kind != "trial"]})
     margin = weakest_margin(bare)
     assert margin is not None and not margin.corrected
-    assert resolve("weakest.interval", bare).value == "the plain 95% interval, uncorrected"
+    # The nominal level is a number the page's forms print, so the resolver holds it as one.
+    assert resolve("weakest.interval", bare).value == pytest.approx(0.95)
+    assert render("{weakest.interval}", {}, forms=PageForms.of(bare)) == "the 95% interval"
 
 
 # --- 3. a recorded scale, with no judge tier to say it ---------------------------------------------------------------

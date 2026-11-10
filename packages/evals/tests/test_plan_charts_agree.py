@@ -62,9 +62,9 @@ from threetears.evals.analysis.report.charts import (
     RangeBarsChart,
     ScatterChart,
 )
-from threetears.evals.analysis.report.figure_keys import resolve, figure_unit
+from threetears.evals.analysis.report.figure_keys import figure_unit, held_kind, resolve
 from threetears.evals.analysis.report.parts.charting import contrast_unit
-from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import control_arm
@@ -404,6 +404,20 @@ def _figures(input_key: str, key: str) -> frozenset[float]:
     return frozenset(round(figure, _PLACES) for figure in drawn)
 
 
+def _key_quantity(input_key: str, key: str, drawn: Sequence[float], *, source: str = "") -> Quantity:
+    """How a page draws figures of ``key``: in its unit (look's quantity over the amounts drawn, so money takes its
+    one form), its format naming the decimals ``key``'s measure reads at on the page (number rule 1), as the page's
+    forms hold them; a chart of judged dimensions keys them as judged."""
+    report_input = _input(input_key)
+    kind = "judged" if source == "judged" else held_kind(report_input, key)
+    return PageForms.of(report_input).chart_quantity(figure_unit(report_input, key), drawn, measure=key, kind=kind)
+
+
+def _named(fmt: str | None, unplaced: str) -> bool:
+    """Whether a chart's format is ``unplaced`` (a quantity's format with no digits) naming its digits."""
+    return fmt is not None and re.fullmatch(rf"{re.escape(unplaced)}:\d", fmt) is not None
+
+
 def _is_figure(value: float, figures: frozenset[float]) -> bool:
     return round(value, _PLACES) in figures
 
@@ -423,16 +437,22 @@ def _figure_faults(input_key: str, spec: ChartSpec, data: Any, keys: Sequence[st
                 # Money's format follows every amount the chart draws of the measures sharing this axis, on every
                 # panel (#993: one form per chart); its ticks are written to the largest amount's decimals (owner
                 # ruling Q3, 2026-11-07), so the expectation reads every amount of every money measure on the axis.
+                # Any other axis names the decimals its measure reads at on the page (number rule 1); one drawing
+                # several measures alike (a share beside a percent) names one of theirs, each figure carrying its own
+                # text at its own.
                 money = [one for one in keys if quantity(figure_unit(report_input, one)).unit == MONEY]
-                sharing = [one for one in money if any(_is_figure(v, _figures(input_key, one)) for v in axis.values)]
+                on_axis = [one for one in keys if any(_is_figure(v, _figures(input_key, one)) for v in axis.values)]
+                sharing = [one for one in money if one in on_axis]
                 formats = {
-                    quantity(
-                        figure_unit(report_input, key),
+                    _key_quantity(
+                        input_key,
+                        key,
                         [drawn for one in sharing for drawn in _drawn_of(input_key, one, axes)]
                         if key in sharing
                         else _drawn_of(input_key, key, axes),
+                        source=spec.query.source,
                     ).fmt
-                    for key in whose
+                    for key in (whose if any(key in money for key in whose) else on_axis)
                 }
                 if axis.fmt not in formats:
                     faults.append(f"{value} is a figure of {whose}, drawn as {axis.fmt!r}, not {sorted(formats)}")
@@ -475,15 +495,12 @@ def _accepted_and_drawn(kind: str, **query: Any) -> Any:
 
 def _keys_of_each_panel(data: Any, keys: Sequence[str], input_key: str = "r1") -> list[str]:
     """The one measure whose figures each panel draws, every value its figure in its unit, formatted as it is."""
-    report_input = _input(input_key)
     found = []
     for axis in _axes(data):
         assert axis.values, "each panel draws values"
         whose = [key for key in keys if all(_is_figure(value, _figures(input_key, key)) for value in axis.values)]
         assert len(whose) == 1, f"one measure's figures in a panel, and {whose} hold them"
-        assert (
-            axis.fmt == quantity(figure_unit(report_input, whose[0]), _drawn_of(input_key, whose[0], _axes(data))).fmt
-        )
+        assert axis.fmt == _key_quantity(input_key, whose[0], _drawn_of(input_key, whose[0], _axes(data))).fmt
         found.append(whose[0])
     return found
 
@@ -548,7 +565,7 @@ def test_a_chart_of_tasks_in_one_unit_shares_one_format_and_span_across_its_pane
     spec, data = _accepted_and_drawn("heatmap", measures=rates)
     assert isinstance(data, HeatmapChart) and data.panels is not None
     assert all(panel.fmt is None and panel.domain is None for panel in data.panels)
-    assert data.fmt == quantity("percent").fmt
+    assert _named(data.fmt, quantity("percent").fmt)
     assert not _figure_faults("r1", spec, data, rates)
 
 
@@ -622,7 +639,7 @@ def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> No
     block = _drawn_on("r4", report_input, _accepted_on("r4", report_input, chart))
     assert isinstance(block, ChartBlock) and isinstance(block.data, BarsChart)
     data_drawn = block.data
-    assert data_drawn.panels is None and data_drawn.fmt == quantity("percent").fmt
+    assert data_drawn.panels is None and _named(data_drawn.fmt, quantity("percent").fmt)
     drawn = {round(row.value, _PLACES) for row in data_drawn.rows or [] if row.value is not None}
     held = _input("r4").measures
     expected = {round(float(stat.mean), _PLACES) for key in ("task", "specul") for stat in held[key].per_arm.values()}
@@ -689,7 +706,7 @@ def test_a_difference_heatmap_of_a_share_beside_a_percent_draws_each_at_its_own_
     block = _draw(input_key, spec)
     assert isinstance(block, ChartBlock) and isinstance(block.data, DiffHeatmapChart)
     data = block.data
-    assert data.detail_fmt == quantity("percent").fmt
+    assert _named(data.detail_fmt, quantity("percent").fmt)
     for row in data.rows:
         for key, cell in zip(keys, row.cells, strict=True):
             assert cell.detail is not None
@@ -707,7 +724,7 @@ def test_a_strip_per_arm_of_a_share_beside_a_percent_draws_each_at_its_own_scale
     block = _draw(input_key, spec)
     assert isinstance(block, ChartBlock) and isinstance(block.data, DotIntervalChart)
     data = block.data
-    assert data.panels is not None and data.fmt == quantity("percent").fmt
+    assert data.panels is not None and _named(data.fmt, quantity("percent").fmt)
     assert all(panel.fmt is None for panel in data.panels), "one quantity: every strip shares the chart's axis"
     drawn: dict[str, list[float]] = {key: [] for key in keys}
     for panel in data.panels:
@@ -730,7 +747,7 @@ def test_range_bars_of_a_share_beside_a_percent_draw_each_at_its_own_scale(input
     block = _draw(input_key, spec)
     assert isinstance(block, ChartBlock) and isinstance(block.data, RangeBarsChart)
     data = block.data
-    assert data.fmt == quantity("percent").fmt
+    assert _named(data.fmt, quantity("percent").fmt)
     ends = [end for group in data.groups for row in group.rows for end in (row.from_, row.to)]
     owned = {key: _own_figures(input_key, key, ends) for key in keys}
     assert all(owned.values()), f"each measure is drawn: {owned}"

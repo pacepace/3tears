@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_inputs
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.figure_keys import aspect_costs_per_thousand, render, resolve
@@ -143,9 +144,10 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
 
 def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_figures() -> None:
     held = _three_aspects()
+    forms = PageForms.of(held)
     (table,) = [
         table
-        for table in every_table(held, block_look(held, fact_arms(held)), forms=PageForms.of(held))
+        for table in every_table(held, block_look(held, fact_arms(held)), forms=forms)
         if table.name == "arms_by_measure"
     ]
     keys = [column.key for column in table.columns]
@@ -158,10 +160,10 @@ def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_
     for aspect in held.aspects:
         for index, arm in enumerate(arms):
             passed, usable = (_key_count(held, aspect.id, arm, field) for field in ("passed", "usable"))
-            # The figure as the key reads it, at its column's one precision (whole, or one decimal for the column
-            # where whole percents would print two alike: coordinator ruling, C-15).
+            # The aspect's own passes over its usable trials, at the pass rate's one precision on the page (number
+            # policy, rule 1).
             shown = str(by_place[aspect.name, index]["pass_rate"].value)
-            assert float(shown.rstrip("%")) == float(_pass_rate_text(passed, usable).rstrip("%")), shown
+            assert shown == forms.level(TRIAL_PASS_NAME, passed / usable, kind="trial").text, shown
     # A measure read on one aspect only is that aspect's, a dash on the others.
     column = f"measure:{_ARRIVAL_ONLY}"
     assert column in keys

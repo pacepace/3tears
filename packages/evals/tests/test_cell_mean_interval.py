@@ -113,7 +113,7 @@ def test_the_overall_gate_reads_the_derived_interval_and_implies_no_point_estima
     # Nano-XS few-shot's 90.1 clears the 90 gate on its point estimate, and the derived interval reaches below it.
     check = gate_check(held, "nano-xs.few", criterion="overall")
     assert check.status == "borderline"
-    assert check.borders == ("Overall accuracy 90.1%, derived interval 89.8–90.4%",)
+    assert check.borders == ("Overall accuracy 90.1%, derived interval 89.8 to 90.4%",)
 
 
 def test_qualifying_reads_the_numbers_never_the_name_the_definition_or_the_kind() -> None:

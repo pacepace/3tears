@@ -23,9 +23,8 @@ whose frontier yields no step (one option or none on it, or none of its steps be
 to ``price_tradeoff`` on that axis, which shows the frontier and why every other option is off it, and lists the gain
 axes whose frontier takes a step: the axes a ``prices`` block draws.
 
-**Money in a values table** reads as the figure keys write it: its whole dollars grouped by thousands (``$1,239``,
-:func:`~threetears.evals.analysis.report.charts.even_precision`). A plain table's bare numbers read alike within their
-column only, so a count beside a distance stays whole (``617``).
+**A values table** prints every figure as its page's forms decided it, money as the figure keys write it, never
+respelled for the cells beside it.
 
 **A page of rows** holds up to ``limit`` of them. The tool sizes it by its text (``fits``: the most rows within the
 limit whose page fits one tool result, one row at least), so nine example cards that fit are one page, and a page
@@ -57,7 +56,7 @@ from threetears.evals.analysis.report.block_spec import (
     small_multiple_faults,
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
+from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
@@ -145,9 +144,6 @@ _PRICES = "prices"
 #: The figure key grammar's heading for its path forms, and how each form is written under it.
 _FORMS_HEADING = "Paths:"
 _FORM = re.compile(r"^- `([^`]+)`")
-
-#: A table cell that is a number alone, signed or not: a count, a size, a distance, read alike only within its column.
-_BARE_NUMBER = re.compile(r"[+\-−]?\d[\d,]*(?:\.\d+)?")
 
 #: What a plain table draws, which no kit chart model says.
 _TABLE_READS = "a plain table: every row the query selects, a column for each figure the source holds"
@@ -455,12 +451,9 @@ def _parameter(path: str) -> str:
 def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
     """A drawn block's values, as the analyst reads them and a report document's page text prints them: a chart's
     table of every value it draws, or a table's own columns and cells, each cell after its arm's tag where it names an
-    arm, as the page's Markdown prints it; and in either, every number at one
-    precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
-    two figures compared read at one precision. A table's bare numbers (no unit, no words) read alike within their
-    column, which holds one figure: a count beside a distance in another column is no figure read alike, and stays
-    whole (``617``, never ``617.0``); a figure in its unit reads alike across the table, so today's ``97.1%`` and its
-    line's ``97.0%`` read at one precision.
+    arm, as the page's Markdown prints it. Every figure is its decided text, as its page's forms printed it (number
+    rule 5), never respelled here: so an interval of ``+3 to +7`` never reads ``+3.0 to +7`` beside a neighbour's
+    tenth, and a rate at its measure's tenth (``78.0%``) never drops to the whole percent a column rule would pick.
 
     :param block: The drawn block: a chart, or a table.
     :ptype block: ChartBlock | TableBlock
@@ -468,23 +461,13 @@ def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[s
     :rtype: tuple[list[str], list[list[str]]]
     """
     if isinstance(block, ChartBlock):
-        headers, body = block.values_table()
-        return headers, even_precision(body)
+        return block.values_table()
     columns = [column.header for column in block.columns]
     rows = [
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]
         for row in block.rows
     ]
-    # A table of what an analysis computes (compare, settle, levers) prints each figure as its key reads it.
-    as_keyed = block.name in ("compare", "settle", "levers")
-    across = even_precision(rows, percents=not as_keyed)
-    by_column = [
-        even_precision([[cell] for cell in column], percents=not as_keyed) for column in zip(*rows, strict=True)
-    ]
-    return columns, [
-        [by_column[at][row][0] if _BARE_NUMBER.fullmatch(cell) else across[row][at] for at, cell in enumerate(cells)]
-        for row, cells in enumerate(rows)
-    ]
+    return columns, rows
 
 
 def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:

@@ -138,16 +138,16 @@ it, and reads v2 against v1 in one row
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...
 | Aspect | Cases | ▸ v1 · pass rate | v2 · pass rate vs v1 |
 |---|---|---|---|
-| invoices | 30 | 81.1% (73 of 90 trials, 30 cases) | 97.8% · +16.7 pts (cannot tell apart) |
+| invoices | 30 | 81% (73 of 90 trials, 30 cases) | 98% · +17 pts (cannot tell apart) |
 ```
 
-with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: v2
+with the guardrail's row saying why, on the row's ruler beside its interval of `-13 to +13 pts`: `undecided: v2
 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the
 arm is shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
 answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One

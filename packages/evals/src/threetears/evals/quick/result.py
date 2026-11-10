@@ -989,14 +989,6 @@ def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None
     return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
 
 
-def _percent_interval(forms: PageForms, interval: tuple[float, float] | None) -> str:
-    """A rate's interval as the page writes one, in percent: ``[43.8%, 100%]``."""
-    if interval is None:
-        return ""
-    low, high = (forms.in_unit(100 * end, PERCENT, role="interval").text for end in interval)
-    return f", [{low}, {high}]"
-
-
 def _proportion_text(
     forms: PageForms,
     name: str,
@@ -1010,8 +1002,9 @@ def _proportion_text(
     if rate is None:
         return f"{name} none (no trial)"
     over = f" over {cases} case{'' if cases == 1 else 's'}" if cases < n else ""
-    level = forms.in_unit(100 * rate, PERCENT, role="level").text
-    return f"{name} {level} ({hits} of {n} trials{over}{_percent_interval(forms, interval)})"
+    # The rate and its interval at one precision, its interval's own (number rules 1 to 3): ``90% (… 58 to 98%)``.
+    level, ends = forms.lone_rate(100 * rate, None if interval is None else (100 * interval[0], 100 * interval[1]))
+    return f"{name} {level.text} ({hits} of {n} trials{over}{'' if ends is None else f', {ends.text}'})"
 
 
 def _label_text(forms: PageForms, statistics: LabelStatistics) -> str:

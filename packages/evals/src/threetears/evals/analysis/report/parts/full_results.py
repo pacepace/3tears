@@ -123,10 +123,10 @@ def _table(
     """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
     where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
     that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
-    carries the per-1,000 mark beside it. An interval's level is no rate: it reads as :func:`_level` wrote it, never
-    rounded to a column's whole percents. The page's forms hold both column rules, and record what each prints."""
+    carries the per-1,000 mark beside it. Every other figure prints its measure's decided text, which no column
+    respells; the page's forms record what each rate's cell prints, and hold the money column rule."""
     money = forms.money_columns(rows, by_row=by_row, reconciles=reconciles)
-    laid = forms.rate_columns(money, bare=bare_columns(list(columns)), keep=(_LEVEL,))
+    laid = forms.as_printed(money, bare=bare_columns(list(columns)), keep=(_LEVEL,))
     return TableBlock(
         section=WRITER_SECTION,
         name=name,

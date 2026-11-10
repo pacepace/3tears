@@ -753,15 +753,19 @@ def test_r2_arms_by_measure_reads_its_pass_rate_off_its_measure_once() -> None:
 @pytest.mark.parametrize(("name", "path"), _holding("contrasts"))
 def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str, path: str) -> None:
     report_input = _input(name)
+    forms = PageForms.of(report_input)
     table = _full(name, path, "contrasts")
     assert len(table.rows) == len(report_input.contrasts)
     for contrast, row in zip(report_input.contrasts, table.rows, strict=True):
         if contrast.delta is None:
             continue
         drawn = _number(row["change"].value)
+        # Read at its measure's one precision on the page (number policy, rule 2), so within half its last digit.
+        places = forms.measure(contrast.measure, kind=contrast.kind).places
+        tolerance = 0.051 if places is None else 0.51 * 10**-places
         # The scale is the drawn one: a rate in points, money per reply per 1,000 replies, any other figure as it is.
         assert any(
-            math.isclose(drawn, float(contrast.delta) * factor, rel_tol=0.01, abs_tol=0.051)
+            math.isclose(drawn, float(contrast.delta) * factor, rel_tol=0.01, abs_tol=tolerance)
             for factor in (1.0, 100.0, 1000.0)
         ), f"{contrast.arm} on {contrast.measure}: {row['change'].value} is not {contrast.delta} on any scale"
         assert (row["verdict"].status == "bad") == (contrast.verdict == "regressed")

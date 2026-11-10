@@ -80,6 +80,7 @@ from threetears.evals.analysis.report.parts.charting import (
     with_hollow_key,
     figure_interval,
     figure_kind,
+    floor_rate,
     money_words,
     misses_line,
     missing_note,
@@ -408,14 +409,15 @@ def _floor_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
     missing: list[str] = []
     for floor, reads in floors.items():
         # A floor's drops and margin are points of the rate it is read on.
-        rate = reads[0].reading or reads[0].speaks_for or ""
+        rate = floor_rate(reads[0])
         held_as = figure_kind(context, rate)
         drawn = context.forms.chart_quantity("points", change=True, measure=rate, kind=held_as)
         margins = {float(read.margin) for read in reads if read.margin is not None}
         line = reference_line(context, drawn)
         if line is None and len(margins) == 1:
             below = -next(iter(margins))
-            said = context.forms.chart_note(below, drawn, measure=rate, kind=held_as).text
+            # A margin is declared, not measured: its line reads as declared (``-15 pts``, never ``-15.0 pts``).
+            said = context.forms.declared(below, drawn.unit).text
             line = ChartReference(value=below, label=REFERENCE_TEMPLATE.format(kind="floor", value=said), kind="floor")
         dots = []
         by_arm = {read.arm: read for read in reads}

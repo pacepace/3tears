@@ -36,8 +36,9 @@ the page has or their order.
 **Strict, or reading.** Generation builds strict: a figure key that does not resolve, a block that does not complete
 or draw, a caveat code neither assigns nor proves immaterial where the document says it checked, or an arm
 recommended that the input does not hold, is refused (:class:`~threetears.evals.analysis.errors.UnresolvableReference`,
-naming the field path). A stored document is read with ``strict=False``, and degrades instead (plan §2.3): a key that
-no longer resolves prints ``—``; a block that no longer draws as its kind prints as a table of its values, else as its
+naming the field path). A stored document is read with ``strict=False``, and degrades instead, because a page a
+reader opens again must still open after its input or the package moved under it: a key that no longer resolves
+prints ``—``; a block that no longer draws as its kind prints as a table of its values, else as its
 caption alone, each with code's line saying so; and the page carries one note to regenerate. A document that no longer
 validates never reaches here: its stored record is refused by its version first
 (:class:`~threetears.evals.kernel.report_doc.EvalReportDoc`).

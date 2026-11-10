@@ -58,9 +58,9 @@ _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing.
 #: what Accuracy was on each arm and what the interval allows.
 _CHANGE_LEAD = (
     "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
-    "18 for v2. Over 20 paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 17 and 92 points worse. Accuracy on tone: v2 "
     "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
-    "paired cases, the interval puts v2 between 21.3 and 96.3 points better."
+    "paired cases, the interval puts v2 between 21 and 96 points better."
 )
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call

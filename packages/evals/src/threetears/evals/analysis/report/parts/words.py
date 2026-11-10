@@ -367,10 +367,10 @@ OPEN_MARKS_NOTE = "Open marks: no interval."
 #: A forest's margin line, and what its shaded band means.
 MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 
-#: An interval's level where its family is corrected together: each interval's level, then what the family's intervals
-#: hold at together, as a chart's head and a table both print it (``99.7% (95% across 16 comparisons)``), so a reader
-#: never meets a bare ``99.69%``.
-FAMILY_LEVEL_TEMPLATE = "{level} ({joint} across {size} comparisons)"
+#: An interval's level where its family is corrected together: the joint guarantee the family's intervals hold at, in
+#: plain words, as a chart's head and a table both print it (``95% (adjusted for 16 comparisons)``; a chart's head reads
+#: ``95% intervals (adjusted for 16 comparisons)``). The per-interval level (``99.69%``) is Method's and the glossary's.
+FAMILY_LEVEL_TEMPLATE = "{joint} (adjusted for {size} comparisons)"
 
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.
 BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}

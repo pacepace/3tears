@@ -48,8 +48,8 @@ retired planned page) are here, once:
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
 - **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
-  prints, a chart's head and a table's cell alike: to one decimal (``99.7%``), more only where one would round a level under 100 to ``100%``, and, where its
-  family corrects its comparisons together, what the family holds at once (``99.7% (95% across 16 comparisons)``).
+  prints, a chart's head and a table's cell alike: where its family corrects its comparisons together, the joint
+  guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input states it, never rounded.
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
@@ -73,7 +73,7 @@ from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.quantities import MONEY, POINTS
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import (
@@ -101,6 +101,7 @@ from threetears.evals.analysis.report_input import (
     Cell,
     Contrast,
     Criterion,
+    FloorRead,
     ReportInput,
     Stat,
     Stratum,
@@ -303,6 +304,22 @@ def money_drawn(
     lines = tuple(notes)
     per = tuple(line for line in money_notes(context.report_input, money) if line not in lines)
     return Drawn(chart_block(context, data, read_at=read_at), (*lines, *per))
+
+
+def floor_rate(floor: FloorRead) -> str:
+    """The key of the rate a floor's drop and margin are points of, as the page's forms hold it: the rate it reads, else
+    the pass rate (how each trial ended) for a floor with a margin. Its ``speaks_for`` names that rate in words ("the
+    pass rate"), which no measure's set is keyed by, so a drop keyed by it would read at the lone figure's decimals
+    beside a pass rate the page reads whole. A floor with neither (a cost floor) keys as before.
+
+    :param floor: The floor's reading on one arm.
+    :ptype floor: FloorRead
+    :return: The rate's key; its words, or empty, for a floor on no rate.
+    :rtype: str
+    """
+    if floor.reading:
+        return floor.reading
+    return TRIAL_PASS_NAME if floor.margin is not None else floor.speaks_for or ""
 
 
 def figure_kind(context: ChartContext, key: str) -> str:
@@ -735,10 +752,10 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
     if stored.kind == "margin":
         # A margin is in points, on the change axis below zero, whatever the chart's own quantity scales.
         value = -figure.value
-        # A margin is read on the pass rate's readings, so its line is a figure of the pass rate.
-        points = context.forms.chart_quantity("points", change=True, measure=TRIAL_PASS_NAME, kind="trial")
-        said = context.forms.chart_note(value, points, measure=TRIAL_PASS_NAME, kind="trial").text
-        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=said)
+        # A margin is declared, not measured, so its line and its values table read it as declared (``-15 pts``).
+        declared = context.forms.declared(value, POINTS)
+        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=declared.text)
+        return ChartReference(value=value, label=label, kind=stored.kind, value_text=declared.digits)
     else:
         value = figure.value * drawn.factor
         criterion = _keyed_criterion(stored.key, context.report_input)
@@ -1033,9 +1050,10 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
     """
     forms = context.forms
     units = {key: figure_unit(context.report_input, key) for key in values}
-    # A quantity's equality ignores its factor, so the quantity a unit draws as is the class of the units drawn alike.
+    # A quantity's equality ignores its factor, so the quantity a unit draws as is the class of the units drawn alike:
+    # asked of no measure, since two rates read at different decimals are still drawn alike, on one axis.
     kinds = {key: figure_kind(context, key) for key in values}
-    alike = {key: forms.chart_quantity(units[key], measure=key, kind=kinds[key]) for key in values}
+    alike = {key: forms.chart_quantity(units[key]) for key in values}
     shown: dict[Quantity, list[float]] = {}
     lead: dict[Quantity, str] = {}
     first: dict[Quantity, str] = {}

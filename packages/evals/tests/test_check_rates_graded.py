@@ -147,7 +147,12 @@ def test_a_graded_measure_reads_as_a_percent(name: str, inputs: dict[str, Report
     held = inputs[name]
     graded = [key for key, measure in held.measures.items() if measure.grade is not None and measure.per_arm]
     assert graded, f"{name} holds no graded measure on its lead aspect"
+    forms = PageForms.of(held)
     for key in graded:
+        # The rate reads at its measure's one precision, read from its uncertainty (number policy, rule 2), so its
+        # percent is the mean's to within half its last digit.
+        places = forms.measure(key).places
+        assert places is not None, f"{name}: {key} reads at no measure's precision"
         for arm, stat in held.measures[key].per_arm.items():
             if stat.mean is None:
                 continue
@@ -155,7 +160,7 @@ def test_a_graded_measure_reads_as_a_percent(name: str, inputs: dict[str, Report
             figure = cite(path, held)
             assert figure.scale == "share", f"{name}: {path} reads on the {figure.scale} scale"
             assert figure.reads.endswith("%"), f"{name}: {path} prints {figure.reads}, not a percent"
-            assert float(figure.reads.removesuffix("%")) == pytest.approx(stat.mean * 100, abs=0.05)
+            assert float(figure.reads.removesuffix("%")) == pytest.approx(stat.mean * 100, abs=0.5 * 10**-places)
             assert format_figure(resolve(path, held), ("pct",), forms=PageForms.of(held)) == figure.reads
 
 

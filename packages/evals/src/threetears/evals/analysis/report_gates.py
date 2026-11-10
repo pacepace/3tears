@@ -185,8 +185,8 @@ def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
 
 
 def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
-    """The figure's interval as a reason states it after the figure: ``±4.4``, ``interval 85.6–94.4%``, or ``derived
-    interval 89.8–90.4%`` where code derived it from the cells (the figure's ``derived``)."""
+    """The figure's interval as a reason states it after the figure: ``±4.4``, ``interval 85.6 to 94.4%``, or ``derived
+    interval 89.8 to 90.4%`` where code derived it from the cells (the figure's ``derived``)."""
     if figure.ci is not None:
         words = "derived interval " if figure.derived else "interval "
         return words + format_figure(replace(line, kind="interval", value=figure.ci), forms=forms)

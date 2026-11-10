@@ -259,7 +259,7 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
     # end of 0.0129 points takes the decimals that keep it off zero, and the far end reads at them too.
     assert lead == (
         f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
-        "Over 30 paired cases, the interval puts same between 0.01 and 43.33 points better.**"
+        "Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
@@ -294,7 +294,7 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
     lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
     assert lead == (
         f"**Pass rate: same against current {READING_WORDS[row.reading]}. Of 30 cases each, current passed 20 and same "
-        "26. The interval puts same between 0.01 and 43.33 points better.**"
+        "26. The interval puts same between 0.01 and 43 points better.**"
     )
     led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
     assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
@@ -327,7 +327,7 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     assert accuracy.heading == "Accuracy"
     assert lead == (
         f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
-        "same. Over 30 paired cases, the interval puts same between 0.01 and 43.33 points better.**"
+        "same. Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same may do worse than current on the No secret score guardrail")
@@ -363,7 +363,7 @@ def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_g
     lead, warning = _bold(page)
     assert lead == (
         f"**Pass rate: v2 against production {READING_WORDS[row.reading]}. Of 20 cases each, production passed 6 and "
-        "v2 19. The interval puts v2 between 28.4 and 88.3 points better.**"
+        "v2 19. The interval puts v2 between 28 and 88 points better.**"
     )
     assert warning == "**v2 may do worse than production on the reply polite (judged) guardrail on billing.**"
     html = header_html(page)
@@ -373,12 +373,12 @@ def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_g
 @pytest.mark.parametrize(
     ("passing", "words", "interval"),
     [
-        (19, "v2 against production shown better", "The interval puts v2 between 28.4 and 88.3 points better."),
-        (0, "v2 against production shown worse", "The interval puts v2 between 1.3 and 62.7 points worse."),
+        (19, "v2 against production shown better", "The interval puts v2 between 28 and 88 points better."),
+        (0, "v2 against production shown worse", "The interval puts v2 between 1 and 63 points worse."),
         (
             6,
             "the evidence cannot tell v2 and production apart",
-            "The interval allows v2 to be as much as 19.0 points worse or 19.0 better.",
+            "The interval allows v2 to be as much as 19 points worse or 19 better.",
         ),
     ],
     ids=["shown-better", "shown-worse", "undecided"],

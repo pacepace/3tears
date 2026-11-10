@@ -452,10 +452,12 @@ def _measure_of(held: ReportInput, row: SettleRow) -> str:
 
 
 def _level_words(row: SettleRow) -> tuple[float, str]:
-    """A row's level as its figure words it: the share, and the sidedness it states."""
-    assert row.level is not None and isinstance(row.level.value, str), row.level
-    percent, _space, sided = row.level.value.partition("% ")
-    return float(percent) / 100, sided
+    """A row's level as its figure words it: the share, which its figure holds as the number it reads, and the
+    sidedness it states."""
+    assert row.level is not None and isinstance(row.level.value, float), row.level
+    percent, _space, sided = row.level.reads.partition("% ")
+    assert float(percent) / 100 == pytest.approx(row.level.value), row.level
+    return row.level.value, sided
 
 
 def test_a_line_row_says_it_is_one_sided_and_gives_the_size_at_which_the_printed_two_sided_interval_clears() -> None:

@@ -99,8 +99,8 @@ _PER_COUNT = re.compile(r"^per [\d,]+")
 #: What joins an interval's two ends where code spells each with its unit (``1.2 s to 3.4 s``).
 _INTERVAL_JOIN = INTERVAL_TEMPLATE.format(low="", high="")
 #: A figure's number as code spells it, at the start of its spelling: a bound, a sign, money's sign, the digits, and a
-#: range's second end (``< 0.000001``, ``-$0.01``, ``27–28``). What follows it is the unit the figure prints.
-_SPELLED_NUMBER = re.compile(r"^[<>]?\s?[+\-−]?\$?\d[\d.,]*(?:–[+\-−]?\$?\d[\d.,]*)?")
+#: range's second end (``< 0.000001``, ``-$0.01``, ``27 to 28``). What follows it is the unit the figure prints.
+_SPELLED_NUMBER = re.compile(r"^[<>]?\s?[+\-−]?\$?\d[\d.,]*(?:(?:–| to )[+\-−]?\$?\d[\d.,]*)?")
 
 
 def _states_cost_per_thousand(report_input: ReportInput) -> bool:

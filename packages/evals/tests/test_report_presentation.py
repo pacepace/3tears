@@ -349,15 +349,15 @@ async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
     the count; under a cent even per 1,000,000 it reads there, to the decimals its least amount needs, and never with
     the per-1,000 mark beside the count."""
     pages = await _money_pages()
-    assert "| Production cost, per 1,000 replies | $3.00 [$3.00, $3.00] | 4 |" in pages["page 2"]
-    assert "| Production cost, per 1,000,000 replies | $3.00 [$3.00, $3.00] | 4 |" in pages["under a cent per 1,000"]
+    assert "| Production cost, per 1,000 replies | $3.00 ($3.00 to $3.00) | 4 |" in pages["page 2"]
+    assert "| Production cost, per 1,000,000 replies | $3.00 ($3.00 to $3.00) | 4 |" in pages["under a cent per 1,000"]
     assert (
-        "| Production cost, per 1,000,000 replies | $0.0030 [$0.0030, $0.0030] | 4 |"
+        "| Production cost, per 1,000,000 replies | $0.0030 ($0.0030 to $0.0030) | 4 |"
         in pages["under a cent at the cap"]
     )
     read = 0
     for page in pages.values():
-        for found in re.finditer(r"\$(\d[\d,]*\.?\d*) \[\$(\d[\d,]*\.?\d*), \$(\d[\d,]*\.?\d*)\]", page):
+        for found in re.finditer(r"\$(\d[\d,]*\.?\d*) \(\$(\d[\d,]*\.?\d*) to \$(\d[\d,]*\.?\d*)\)", page):
             mean, low, high = (float(group.replace(",", "")) for group in found.groups())
             assert low <= mean <= high, found.group(0)
             read += 1
@@ -366,10 +366,11 @@ async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
 
 async def test_a_money_contrasts_interval_reads_in_its_changes_form() -> None:
     """A cost contrast's change and its interval's ends are one set, in one form: never $0.51 beside [$0.4107,
-    $0.606]. The change carries its sign, as every change does (visual pass, chunk V5)."""
+    $0.606]. The change carries its sign, as every change does (visual pass, chunk V5), and so does each end of its
+    interval, in the one form an interval prints in."""
     pages = await _money_pages()
-    assert "| +$0.47 | [$0.35, $0.60] |" in pages["contrast"]
-    assert "| +$0.00047 | [$0.00035, $0.00060] |" in pages["contrast under a cent per 1,000"]
+    assert "| +$0.47 | +$0.35 to +$0.60 |" in pages["contrast"]
+    assert "| +$0.00047 | +$0.00035 to +$0.00060 |" in pages["contrast under a cent per 1,000"]
 
 
 async def test_a_partly_priced_total_says_so_in_its_own_row() -> None:

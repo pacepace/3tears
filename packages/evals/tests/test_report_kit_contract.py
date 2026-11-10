@@ -12,13 +12,11 @@ page's ``chart_svg``. Only a tick label is still the kit's to write: a tick's po
 - **Both drawers read every text field the models define** that names a value they draw.
 - **Each drawer prints each value's own text in its own place**, per kind: the static page here, the kit in
   ``test_report_kit_charts`` (a browser, integration).
+- **Every format names its digits**, so nothing a chart draws is left to the kit's "as many decimals as it needs".
 
-What this does not hold yet, and why: a gate matrix's and a lattice's costs and a heatmap cell's count still draw by
-their formats (:data:`_DRAWN_BY_FORMAT`), and rung 5's preference strip carries no texts (the kit rounds its shares as
-before), since only the policy flip (C5) moves what a reader sees; and the package's ``fmt`` still names no digits on some charts (``pct``, ``num``,
-``ms``). Those digits now only write tick labels, and naming them moves the drawn ticks, which the policy flip (C5)
-does in one step with every other form. ``scripts/check.py``'s render of the reference pages, which drives a browser,
-holds the kit's drawing itself (integration).
+A heatmap cell's count still draws by its format (:data:`_DRAWN_BY_FORMAT`): a count's fixed form, which its format
+writes. Rung 5's preference strip is held by ``test_writer_eval_preference``. ``scripts/check.py``'s render of the
+reference pages, which drives a browser, holds the kit's drawing itself (integration).
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ from pydantic import BaseModel
 from threetears.evals.analysis import ChartBlock
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report import charts as chart_models
-from threetears.evals.analysis.report.chart_svg import chart_drawing
+from threetears.evals.analysis.report.chart_svg import DRAWERS, chart_drawing
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS, StoredCharts, drawn_charts, stored_charts
 from packages.evals.tests.report_kit_support import MARKED_CHARTS
@@ -67,11 +65,17 @@ _TEXT_OF = {
 #: drawn, and needs no text.
 _DRAWN_WITH = {"detail": "detail_fmt", "latency": "latency_fmt"}
 
-#: Values the kit still draws by their format, each with why, held to today's drawing until the policy flip (C5).
+#: Values the kit draws by their format, each with why.
 _DRAWN_BY_FORMAT = {
-    "cost": "a gate matrix's and a lattice's cost, drawn at `cost_fmt`'s digits ($5) where its table reads $4.60",
     "n": "a heatmap cell's count, a count's fixed form: drawn by `n_fmt` (1.2k), its tooltip and table grouped",
 }
+
+#: The kit's formats whose digits are their own (kit.js ``K_FMTS``, which reads no digits for them): a count whole, an
+#: amount in thousands of dollars, a duration in its own unit. Every other format a chart names says its digits.
+_FIXED_DIGITS = frozenset({"int", "usdk", "dur"})
+
+#: A kit format naming its digits: ``pct:1``, ``+num:0``.
+_NAMED_DIGITS = re.compile(r"\+?[a-z]+:\d")
 
 #: Text fields only the values table prints: a stacked bar's parts and a reference line's value are drawn as lengths
 #: and lines, never as numbers, and a heatmap draws no cell's interval.
@@ -159,6 +163,88 @@ def test_every_value_a_page_s_chart_draws_reaches_the_kit_as_text() -> None:
     assert not missing, "values drawn without their text:\n  " + "\n  ".join(missing)
 
 
+def _formats(node: Any, where: str) -> Iterator[tuple[str, str]]:
+    """Every format under ``node`` (``fmt``, ``tick_fmt``, ``cost_fmt`` and their kin), by its path."""
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _formats(item, f"{where}[{index}]")
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            if (key == "fmt" or key.endswith("_fmt")) and isinstance(value, str):
+                yield f"{where}.{key}", value
+            else:
+                yield from _formats(value, f"{where}.{key}")
+
+
+def test_every_format_a_page_s_chart_names_says_its_digits() -> None:
+    """A format without digits (``pct``) leaves the kit to write a value by its own rule, as many decimals as it
+    needs up to two, wherever the value carries no text: a tick, a host's re-render. So each one names them."""
+    unnamed = [
+        f"{where}: {path} = {fmt!r}"
+        for where, block in _page_charts()
+        for path, fmt in _formats(block.kit_chart()[1], "data")  # type: ignore[index]
+        if fmt.lstrip("+").split(":")[0] not in _FIXED_DIGITS and not _NAMED_DIGITS.fullmatch(fmt)
+    ]
+
+    assert not unnamed, "formats naming no digits:\n  " + "\n  ".join(unnamed)
+
+
+def _costs(block: ChartBlock) -> list[tuple[float | None, str | None]]:
+    """Each cost a gate matrix or a lattice draws, with its text, in cell order."""
+    data = block.data
+    assert isinstance(data, (chart_models.GateMatrixChart, chart_models.LatticeChart))
+    return [(cell.cost, cell.cost_text) for row in data.rows for cell in row.cells if cell.cost is not None]
+
+
+def test_a_gate_matrix_and_a_lattice_draw_each_cost_as_the_page_s_money_writes_it() -> None:
+    """A cost drew at ``cost_fmt``'s digits, ``$5`` where the matrix's table read ``$4.60``: each cell carries the
+    cost as the page's money writes it, its unit included, and the kit and the table print that one text."""
+    charts = dict(_page_charts())
+    matrix, lattice = charts["r1/r1-anchor/gate_matrix"], charts["r3/r3-anchor/lattice"]
+
+    assert _costs(matrix)[:4] == [
+        (24.0, "$24 per 1,000 conversations"),
+        (58.0, "$58 per 1,000 conversations"),
+        (4.6, "$4.60 per 1,000 conversations"),
+        (8.9, "$8.90 per 1,000 conversations"),
+    ]
+    assert _costs(lattice)[:4] == [
+        (180.0, "$180 per 1,000,000 turns"),
+        (260.0, "$260 per 1,000,000 turns"),
+        (610.0, "$610 per 1,000,000 turns"),
+        (28.0, "$28 per 1,000,000 turns"),
+    ]
+    _, body = matrix.data.table([])  # type: ignore[union-attr]
+    assert body[0][3] == "Passes, $4.60 per 1,000 conversations"
+
+
+def _first_ends(where: str) -> tuple[str | None, str | None, str | None]:
+    """The first row of a fixture's chart carrying an interval: its value's text and its ends'."""
+    charts = [block for name, block in _page_charts() if name == where]
+    rows = [row for block in charts for row in getattr(block.data, "rows", None) or [] if row.lo_text is not None]
+    return rows[0].value_text, rows[0].lo_text, rows[0].hi_text
+
+
+def test_an_interval_s_ends_carry_its_unit_once_so_a_drawer_only_joins_them() -> None:
+    """Number rule 3: an interval writes its unit once, after its high end, at its figure's precision, so the kit and
+    the static page join the ends' texts as they are (``98% (96 to 100%)``). Money keeps its own form, each end with its ``$``, as the page's
+    forms write a money interval (``$1.76 to $2.03``), so a chart's tooltip reads it as its page's table does."""
+    # r1's pass rate reads whole (its intervals' half-widths are 2 to 6 points), so its ends do too: never "95.8"
+    # beside "98%" (number rules 1 and 3).
+    assert _first_ends("r1/r1-anchor/dot_interval") == ("98%", "96", "100%")
+    assert _first_ends("r5/r5-run/bars") == ("$1.89", "$1.76", "$2.03")
+
+
+def test_a_change_over_strata_draws_its_value_at_its_measure_s_precision() -> None:
+    """r5's strata bars drew ``-22.93`` beside a note of ``-23 pts``: a change of one stratum reads as the page's forms
+    print its measure, whole points here (number rule 1), in its bar's value and its note alike."""
+    (chart,) = [block for name, block in _page_charts() if name == "r5/r5-anchor/diverging_bars"]
+    rows = getattr(chart.data, "rows", None) or [row for panel in chart.data.panels or [] for row in panel.rows or []]  # type: ignore[union-attr]
+    assert (rows[0].label, rows[0].value_text, rows[0].note) == ("off lane", "-23", "-23 pts from 66%")
+    # Every bar's value is its note's figure (a change of 0.11 keeps its tenth off zero, in both).
+    assert all(row.note is not None and row.note.startswith(f"{row.value_text} pts ") for row in rows)
+
+
 def _text_fields() -> list[tuple[type[BaseModel], str]]:
     """Every text field a public chart model defines, with the model."""
     return sorted(
@@ -199,15 +285,18 @@ def _drawn(svg: str) -> tuple[list[tuple[str, ...]], list[str]]:
     return tips, [html.unescape(text) for text in re.findall(r">([^<>]+)</(?:tspan|text)>", svg)]
 
 
-def test_every_kind_the_static_page_draws_on_a_page_has_a_marked_chart() -> None:
-    """Each kind a page's chart is drawn in by the static page has a marked chart of its own (:data:`MARKED_CHARTS`),
-    so a kind a page draws is never left out of the per-kind check below: a new kind a resolver draws fails here until
-    its markers are written."""
-    drawn = {block.chart for _, block in _page_charts() if chart_drawing(block) is not None}
+def test_every_kind_the_static_page_draws_has_a_marked_chart() -> None:
+    """Each kind the static page draws (its drawers' own registry, :data:`~threetears.evals.analysis.report.chart_svg.
+    DRAWERS`, which :func:`~threetears.evals.analysis.report.chart_svg.chart_drawing` draws from) has a marked chart of
+    its own (:data:`MARKED_CHARTS`), and every marked chart is of a kind it draws. So a kind is never left out of the
+    per-kind check below because no fixture's page happens to draw it: a new drawer fails here until its markers are
+    written."""
     marked = {one.kind for one in MARKED_CHARTS.values()}
 
-    assert drawn, "the fixtures' pages draw charts, so this must check some"
-    assert drawn <= marked, f"drawn by the static page with no marked chart: {sorted(drawn - marked)}"
+    assert set(DRAWERS) - marked == set(), (
+        f"drawn by the static page with no marked chart: {sorted(set(DRAWERS) - marked)}"
+    )
+    assert marked - set(DRAWERS) == set(), f"marked, but no kind the static page draws: {sorted(marked - set(DRAWERS))}"
 
 
 @pytest.mark.parametrize("name", list(MARKED_CHARTS))

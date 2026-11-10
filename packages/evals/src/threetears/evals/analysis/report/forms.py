@@ -7,8 +7,8 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
 
 - :class:`PageForms` is built once per page, before any part is assembled: :meth:`PageForms.of` for a written page
   (a report input), :meth:`PageForms.of_campaign` for a campaign's code page (its readings and its aspects' pages),
-  :meth:`PageForms.of_bundle` for an aspect's own page (its bundle, which holds no report input: its contrasts' and
-  guardrails' sets, each surface's as today). A written page's forms carry their input
+  :meth:`PageForms.of_bundle` for an aspect's own page (its bundle, which holds no report input: one set per reading
+  over every surface; :meth:`PageForms.of_aspects` for a campaign's aspects together, each set across the campaign). A written page's forms carry their input
   (:attr:`PageForms.report_input`), so a figure key reads the input its forms were built from.
   It holds one :class:`MeasureForm` per measure the page can state, and keeps a ledger (:class:`_Issued`) of every text
   it hands out, by measure and role, which is what a test reads to hold one figure to one text across surfaces.
@@ -38,16 +38,18 @@ as a site (``tests/test_one_owner_of_number_forms.py``); only :class:`PageForms`
 migrated route. What a measure is (a rate, money on a ruler, shown at all) is
 :mod:`~threetears.evals.analysis.report.campaign.measure_kinds`'s, and where a decision is a public function of
 another module (a measure's unit, :func:`~threetears.evals.analysis.report.figure_keys.figure_unit`), the form calls
-it; a measure's set's places, which the keys and the Full results both read (:func:`figure_places`), are decided here.
-The
-differences between surfaces that reproduce today's page (a chart's note spelling a figure alone, ``alone``) are named
-where they are taken, so the flip removes them in one place.
-A chart's forms (``PageForms.chart_*``) still decide over a chart's own drawn values, as today; each takes the measure
-and kind of a measure's figure (``chart_amounts`` its measures' keys), and the policy flip re-decides them by measure
-there. So do a table's column rules (:meth:`PageForms.rate_columns`, :meth:`PageForms.money_columns`), over the cells
-a table already built, each recording what every rate or money cell prints; and a stored table's glyph scale
-(:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a page's writer, which holds
-no page's forms and asks its own.
+it.
+
+**A written page under the number policy.** A written page's measure reads at one precision on the whole page, read
+from its uncertainty (:func:`policy_places` over its set's half-widths, :func:`_measure_sets`), and every figure of it,
+in a table, a chart, a key's prose or alone, prints at that precision in the policy's one form (:func:`policy_rate`,
+:func:`policy_figure`, :func:`policy_interval`); which figures share a set is :func:`campaign_set`'s alone. A chart's
+forms (``PageForms.chart_*``) read a figure's measure's precision where they are handed its measure and kind, and
+decide over the chart's own drawn values only where they are not. A written page's table respells no rate
+(:meth:`PageForms.as_printed` records what each prints). Money's column rule (:meth:`PageForms.money_columns`) holds
+on every page, deciding over the cells a table already built and recording what every money cell prints; and a stored
+table's glyph scale (:meth:`PageForms.scale_span`, :meth:`PageForms.glyph_said`), read off the scale's cell by a
+page's writer, which holds no page's forms and asks its own.
 
 **Why at page assembly.** The bundle is fingerprinted evidence and the report input a stored snapshot that recorded
 writer runs replay, so neither carries presentation. Page assembly is the first place that sees the whole page, and
@@ -74,7 +76,6 @@ from threetears.evals.analysis.quantities import (
     delta_unit,
     is_money,
     number_in,
-    render_cell,
     with_unit,
 )
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
@@ -83,7 +84,6 @@ from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRule
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
     MULTIPLE_UNIT,
-    RANGE_TEMPLATE,
     RUBRIC_SCALE,
     Figure,
     criterion_ruler,
@@ -91,7 +91,9 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     held_kind,
     held_means,
+    held_stats,
     is_rubric_score,
+    joint_level,
     plus_signed,
     resolve,
     rubric_score,
@@ -99,15 +101,18 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report.blocks import CellValue, TableCell, interval_text
 from threetears.evals.analysis.report.charts import (
     KitChart,
-    bare_places,
-    percent_at,
-    percent_places,
-    respell_bare,
-    respell_percents,
 )
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
-from threetears.evals.analysis.report_input import Contrast, ContrastFamily, Criterion, ReportInput
+from threetears.evals.analysis.report_input import (
+    Contrast,
+    ContrastFamily,
+    Criterion,
+    Reading,
+    ReportInput,
+    Stat,
+)
+from threetears.evals.analysis.stats import mean_interval
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report.verdict import MIN_CASES, interval_words
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
@@ -187,15 +192,6 @@ Role = Literal[
 #: page's side-by-side figures), which states no page's measure.
 _PageKind = Literal["written", "code", "aspect", "off"]
 
-#: Which of an aspect page's surfaces states a reading's changes or levels: the contrasts table (and the statistics
-#: beside it), the verdict line's sentences, a program's contrast rows, or the guardrails table. Each reads its own set
-#: today (the sentences' money over every contrast tested, one under the case floor too, where the table's is over the
-#: contrasts it shows); the policy makes them one set per measure.
-_ContrastSurface = Literal["contrasts", "sentences", "rows", "guardrails"]
-
-#: The most decimals a measured figure on the scorecard is stated to, before its column's precision is applied.
-_MEASURED_PLACES = 4
-
 
 @dataclass(frozen=True)
 class Printed:
@@ -231,13 +227,14 @@ class _PrintedInterval:
     :ivar low: The low end as given.
     :ivar high: The high end as given.
     :ivar text: The whole text, as every surface prints it.
-    :ivar low_text: The low end's text, as the page prints it (with its unit on a written page: ``-6.0 pts``).
-    :ivar high_text: The high end's text, as the page prints it.
+    :ivar low_text: The low end's text, as the page prints it: on a written page without its unit, which the interval
+        writes once after its high end (``-13`` of ``-13 to -2 pts``).
+    :ivar high_text: The high end's text, as the page prints it (``-2 pts``).
     :ivar unit: The interval's unit; empty for none.
     :ivar low_digits: The low end's number with its sign, never its unit, on every page.
     :ivar high_digits: The high end's number with its sign, never its unit.
-    :ivar digits: The whole interval with neither end's unit, joined as the page joins it (``-6.0 to +1.6``,
-        ``[-3.5, 7.9]``): what a cell under a head that names the unit prints.
+    :ivar digits: The whole interval with neither end's unit, in the one form every page joins an interval in
+        (``-6.0 to +1.6``, ``-3 to +8``): what a cell under a head that names the unit prints.
     """
 
     low: float
@@ -286,17 +283,29 @@ class PreferenceShares:
     places: int
 
     def share_text(self, value: float) -> str:
-        """One of the three as text, at :attr:`places` whatever its significant figures: an end of ``99.998`` short of
-        all, a share of ``49.9996`` off even, and two shares that sum to 100 as printed (``91.071`` and ``8.929``). The
-        three are one set, and a set reads at one precision, so each keeps the set's decimals, a whole one too
-        (``80.000`` beside ``99.998``).
+        """One of the three as text, without its ``%``: :meth:`share_percent`'s digits, so the table, the line, the
+        answer and the strip's marks read one text.
 
         :param value: One of the three.
         :ptype value: float
         :return: Its text.
         :rtype: str
         """
-        return f"{value:.{self.places}f}"
+        return self.share_percent(value).removesuffix(PERCENT)
+
+    def share_percent(self, value: float) -> str:
+        """One of the three with its ``%``, rounded half to even at :attr:`places` whatever its significant figures
+        (:func:`policy_percent`): an end of ``99.998`` short of all, a share of ``49.9996`` off even, and two shares
+        that sum to 100 as printed (``91.071`` and ``8.929``). The three are one set, and a set reads at one precision,
+        so each keeps the set's decimals, a whole one too (``80.000`` beside ``99.998``); only an exact zero reads
+        whole, ``0%``: a share of none states no precision.
+
+        :param value: One of the three.
+        :ptype value: float
+        :return: Its text.
+        :rtype: str
+        """
+        return policy_percent(value, self.places)
 
     def cell(self, value: float) -> CellValue:
         """A share as a table cell, decided once for both shares: numbers where the set reads whole (the one number
@@ -313,9 +322,10 @@ class PreferenceShares:
 
     @property
     def fmt(self) -> str:
-        """The kit's format a chart draws the shares in, at the set's decimals, so its values table and its tooltips
-        read each share as the line under it does (``pct:3`` for ``49.998%``); ``pct`` where they read whole."""
-        return "pct" if self.places == 0 else f"pct:{self.places}"
+        """The kit's format a chart draws the shares in, naming the set's decimals where they read whole too
+        (``pct:3`` for ``49.998%``, ``pct:0``): a format that names none leaves the kit's own "as many decimals as it
+        needs" to any share drawn without its text."""
+        return f"pct:{self.places}"
 
     @property
     def ends(self) -> tuple[str, str] | None:
@@ -350,11 +360,10 @@ class MeasureForm:
         by its measure's figures alone (:func:`~threetears.evals.analysis.report.figure_keys.is_rubric_score` with
         no kind), where one that names ``measure`` is never read as a score; the same as ``span`` for any other kind.
     :ivar places: The decimals every figure of the measure reads at under the number policy, its levels, changes and
-        interval ends alike, read from its uncertainty (:func:`policy_places`); None while today's decisions
-        (``level_decimals``, ``change_decimals``) spell them.
+        interval ends alike, read from its uncertainty (:func:`policy_places`); None on a page whose forms still
+        spell them by ``level_decimals`` and ``change_decimals``.
     :ivar half_width: The narrowest 95% half-width among the measure's headline intervals (each arm's level, each
-        comparison), as printed, which ``places`` is read from; None for a measure with no interval, and while
-        today's decisions hold.
+        comparison), as printed, which ``places`` is read from; None for a measure with no interval.
     """
 
     key: str
@@ -400,10 +409,10 @@ class PageForms:
         self._measures = dict(measures)
         self._issued: list[_Issued] = []
         self._input = report_input
-        # An aspect page's contrasts' and guardrails' decisions, by the surface that states them (:meth:`of_bundle`).
+        # An aspect page's contrasts' and guardrails' decisions, one per reading (:meth:`of_bundle`).
         self._bundle: AnalysisContextBundle | None = None
-        self._contrast_places: dict[_ContrastSurface, dict[tuple[str, str], ContrastPlaces]] = {}
-        self._change_money: dict[_ContrastSurface, dict[tuple[str, str], MoneyForm]] = {}
+        self._contrast_places: dict[tuple[str, str], ContrastPlaces] = {}
+        self._change_money: dict[tuple[str, str], MoneyForm] = {}
         # Each table cell a builder made as a figure of a measure (:meth:`of_measure`), by the cell's id, with that
         # measure and its reading, so a column rule that spells the cell records it under them. The cell is held beside
         # its id, so the id names that cell for as long as these forms are read.
@@ -440,7 +449,11 @@ class PageForms:
                     kinds.setdefault((key, "judged" if judged_only else "measure"), None)
         if _counts_passes(report_input):
             kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
-        measures = {(key, kind): _written_form(report_input, key, kind) for key, kind in kinds}
+        stated, set_figures = _written_stated(report_input, kinds)
+        # The campaign's one table (:func:`_measure_sets`) over what the input holds of it: every compared interval the
+        # campaign's code page and aspect pages state is an arm's level or a comparison's change the input carries too.
+        sets = _measure_sets(stated)
+        measures = {(key, kind): _written_form(report_input, key, kind, sets, set_figures) for key, kind in kinds}
         return cls("written", measures, report_input)
 
     @classmethod
@@ -457,7 +470,8 @@ class PageForms:
     @classmethod
     def of_campaign(cls, readings: CampaignReadings, reports: Mapping[str, Report]) -> PageForms:
         """A campaign code page's forms: the pass rate a change or a choice reads, and every measure its scorecard
-        states, each as the scorecard decides it.
+        states, each at the places its uncertainty sets (:func:`policy_places`) over the campaign's set of it
+        (:func:`campaign_set`): the page's own intervals and every aspect page's.
 
         :param readings: What code read off the campaign.
         :ptype readings: CampaignReadings
@@ -466,70 +480,82 @@ class PageForms:
         :return: The page's forms.
         :rtype: PageForms
         """
+        campaign = _measure_sets(_campaign_stated([report.bundle for report in reports.values()], readings))
         measures: dict[tuple[str, _MeasureKind], MeasureForm] = {}
         if readings.readings or readings.pairs:
             # A change's readings and a choice's pairs hold the pass rate's changes and intervals in points already,
-            # and its levels as shares; the scorecard prints both at a point's one decimal.
-            measures[TRIAL_PASS_NAME, "trial"] = MeasureForm(
-                key=TRIAL_PASS_NAME,
-                kind="trial",
-                reads_as="rate",
-                unit=PERCENT,
-                change_unit=POINTS,
-                factor=100.0,
-                change_factor=1.0,
-                level_decimals=POINT_PLACES,
-                change_decimals=POINT_PLACES,
-                span=100.0,
-            )
+            # and its levels as shares.
+            widths = _set_widths(campaign, "code", TRIAL_PASS_NAME, "trial")
+            measures[TRIAL_PASS_NAME, "trial"] = _rate_form(TRIAL_PASS_NAME, "trial", widths, change_factor=1.0)
         shown = shown_measures(readings)
         rulers = money_rulers(readings, reports)
         rates = rate_measures(readings, reports, {})
         for key in dict.fromkeys(reading.measure for reading in shown):
-            measures[key, "measure"] = _scorecard_form(key, shown, rates, rulers)
-        return cls("code", measures)
+            widths = _set_widths(campaign, "code", key, "measure")
+            measures[key, "measure"] = _scorecard_form(key, shown, rates, rulers, widths)
+        forms = cls("code", measures)
+        # Each aspect's readings' sets, so a figure the page states on an aspect's ruler (a bar's value and interval)
+        # reads as that aspect's page states it.
+        for report in reports.values():
+            bundle = report.bundle
+            surface = bundle_decision_surface(bundle)
+            compared = [
+                comparison for family in bundle.multiple_comparisons.families for comparison in family.comparisons
+            ]
+            held = _contrast_places(bundle, surface, report_rulers(surface, bundle.measure_catalog), compared, campaign)
+            forms._contrast_places = {**held, **forms._contrast_places}
+        return forms
 
     @classmethod
     def of_bundle(cls, bundle: AnalysisContextBundle) -> PageForms:
-        """An aspect's own page's forms (code's page over the aspect's bundle, which holds no report input): each
-        reading's places and each money measure's form for its changes, as every surface that states the aspect's
-        contrasts and guardrails decides them today, each over its own set (:data:`_ContrastSurface`).
+        """An aspect's own page's forms, built alone (code's page over the aspect's bundle, which holds no report
+        input): the aspect is its campaign, so its set of each reading is its own (:meth:`of_aspects` for a campaign's
+        aspects together).
 
         :param bundle: The aspect's evidence.
         :ptype bundle: AnalysisContextBundle
         :return: The page's forms.
         :rtype: PageForms
         """
+        return cls._of_bundle(bundle, _measure_sets(_campaign_stated([bundle])))
+
+    @classmethod
+    def of_aspects(
+        cls, bundles: Sequence[AnalysisContextBundle], readings: CampaignReadings | None = None
+    ) -> dict[str, PageForms]:
+        """Every aspect page's forms of one campaign, by the aspect's label: each reading at the places the campaign's
+        set of it sets (:func:`campaign_set`), its aspects' intervals and the code page's (``readings``), so a measure
+        reads at one precision on every page of the campaign.
+
+        :param bundles: The campaign's aspects' bundles.
+        :ptype bundles: Sequence[AnalysisContextBundle]
+        :param readings: What code read off the campaign, whose intervals join the set; None for none.
+        :ptype readings: CampaignReadings | None
+        :return: Each aspect's forms.
+        :rtype: dict[str, PageForms]
+        """
+        campaign = _measure_sets(_campaign_stated(bundles, readings))
+        return {bundle.aspect: cls._of_bundle(bundle, campaign) for bundle in bundles}
+
+    @classmethod
+    def _of_bundle(cls, bundle: AnalysisContextBundle, campaign: Mapping[MeasureSet, Sequence[float]]) -> PageForms:
+        """An aspect's own page's forms: each reading's places, one set per reading over every surface the page states
+        it on (its contrasts, the verdict line's sentences, a program's rows, its guardrails), read from the campaign's
+        set of it; and each money measure's one form for its changes."""
         forms = cls("aspect", {})
         forms._bundle = bundle
         surface = bundle_decision_surface(bundle)
         rulers = report_rulers(surface, bundle.measure_catalog)
         compared = [comparison for family in bundle.multiple_comparisons.families for comparison in family.comparisons]
-        # The sentences read each contrast once, by its arm, measure, reading and aspect, the last tested winning.
-        tested = list(
-            {
-                (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): comparison
-                for family in bundle.multiple_comparisons.families
-                for comparison in family.comparisons
-            }.values()
-        )
-        shown = [comparison for comparison in compared if _resolvable(comparison)]
+        forms._contrast_places = _contrast_places(bundle, surface, rulers, compared, campaign)
         guardrails = bundle.guardrails.checks if bundle.guardrails is not None else []
-        forms._contrast_places = {
-            "contrasts": _contrast_places(bundle, surface, rulers, shown),
-            "sentences": _contrast_places(bundle, surface, rulers, [c for c in tested if _resolvable(c)]),
-            "rows": _contrast_places(bundle, surface, rulers, shown),
-        }
-        forms._change_money = {
-            "contrasts": _change_money(rulers, ((c.name, c.reading, c.delta, c.interval) for c in shown)),
-            "sentences": _change_money(rulers, ((c.name, c.reading, c.delta, c.interval) for c in tested)),
-            "rows": _change_money(
-                rulers, ((c.name, c.reading, c.delta, c.interval) for c in compared if cls.small_n(c) is None)
-            ),
-            "guardrails": _change_money(
-                rulers, ((check.name, check.reading, check.delta, check.interval) for check in guardrails)
-            ),
-        }
+        forms._change_money = _change_money(
+            rulers,
+            [
+                *((c.name, c.reading, c.delta, c.interval) for c in compared),
+                *((check.name, check.reading, check.delta, check.interval) for check in guardrails),
+            ],
+        )
         return forms
 
     @property
@@ -542,43 +568,68 @@ class PageForms:
             raise ValueError(f"a {self.page} page's forms hold no aspect's bundle")
         return self._bundle
 
-    def contrast_places(self, name: str, reading: str, *, stated_in: _ContrastSurface) -> ContrastPlaces | None:
-        """How one reading's contrast figures read on one surface of an aspect's page: its set's places.
+    def contrast_places(self, name: str, reading: str) -> ContrastPlaces | None:
+        """How one reading's figures read on an aspect's page, on every surface that states them: its set's places.
 
         :param name: The reading's measure or dimension.
         :ptype name: str
         :param reading: Which reading of it (``measure``, ``judged``, ``trial``).
         :ptype reading: str
-        :param stated_in: The surface that states the figures.
-        :ptype stated_in: _ContrastSurface
-        :return: The places; None where the surface states no contrast of the reading that its set holds.
+        :return: The places; None where the page states no contrast of the reading.
         :rtype: ContrastPlaces | None
         """
-        return self._contrast_places.get(stated_in, {}).get((name, reading))
+        return self._contrast_places.get((name, reading))
 
-    def change_money(self, name: str, reading: str, *, stated_in: _ContrastSurface) -> MoneyForm | None:
-        """The one form a money measure's changes read in on one surface of an aspect's page, a change and its
-        interval's ends alike (#993); None for a measure of another unit.
+    def change_money(self, name: str, reading: str) -> MoneyForm | None:
+        """The one form a money measure's changes read in on an aspect's page, a change and its interval's ends alike
+        (#993), on every surface that states them; None for a measure of another unit.
 
         :param name: The measure's name.
         :ptype name: str
         :param reading: Which reading of it.
         :ptype reading: str
-        :param stated_in: The surface that states the changes.
-        :ptype stated_in: _ContrastSurface
         :return: The form, or None.
         :rtype: MoneyForm | None
         """
-        return self._change_money.get(stated_in, {}).get((name, reading))
+        return self._change_money.get((name, reading))
 
-    # --- an aspect's own page: each figure as its surface spells it today --------------------------------------------
+    def recorded(
+        self, rows: Sequence[Mapping[str, TableCell]], *, bare: Mapping[str, str] | None = None
+    ) -> list[dict[str, TableCell]]:
+        """A code or an aspect page's table, each rate and money cell recorded as it prints, under the measure its
+        builder named (:meth:`of_measure`), and carrying that text (``value_text``): its builder decided the cell's
+        form by its measure's set, so nothing respells it, and the ledger holds every rate and money figure the table
+        prints, as it holds every other.
+
+        :param rows: The table's rows, by column key, as their builders made them.
+        :ptype rows: Sequence[Mapping[str, TableCell]]
+        :param bare: The columns whose head names their unit (:func:`~threetears.evals.analysis.report.blocks.bare_columns`);
+            None for none.
+        :ptype bare: Mapping[str, str] | None
+        :return: The rows, each rate and money cell recorded.
+        :rtype: list[dict[str, TableCell]]
+        """
+        named = bare or {}
+        return [
+            {
+                key: self._issue_cell(cell, cell)
+                if _a_rate_cell(cell, key in named)
+                or _rate_words(cell, key in named)
+                or (cell.is_number and is_money(cell.unit))
+                else cell
+                for key, cell in row.items()
+            }
+            for row in rows
+        ]
+
+    # --- an aspect's own page: each figure at its reading's one set ---------------------------------------------------
     #
     # An aspect's page states each figure on its reading's ruler for the report
-    # (:class:`~threetears.evals.analysis.report.figures.MeasureRuler`), at the places the surface's set reads at
-    # (:meth:`contrast_places`) and in the money form its changes read in (:meth:`change_money`), where the surface
-    # holds them. Each method takes the ruler and the set's decisions the caller read off these forms, as
-    # :meth:`money_on` takes its ruler, and records what it prints under the reading it is a figure of (its measure or
-    # dimension, and ``measure``, ``judged`` or ``trial``); the policy decides them by measure instead.
+    # (:class:`~threetears.evals.analysis.report.figures.MeasureRuler`), at the places its reading's set reads at across
+    # the campaign (:meth:`contrast_places`) and in the money form its changes read in (:meth:`change_money`), whichever
+    # surface states it. Each method takes the ruler, reads the set's places off these forms where its caller hands
+    # none, and records what it prints under the reading it is a figure of (its measure or dimension, and ``measure``,
+    # ``judged`` or ``trial``).
 
     @staticmethod
     def small_n(comparison: FamilyComparison) -> int | None:
@@ -622,22 +673,15 @@ class PageForms:
         :return: The level.
         :rtype: Printed
         """
-        scaled = value * ruler.factor
-        if places is not None and places.level is not None and _reads_at_set_places(ruler.unit):
-            text = "0" if scaled == 0 else spell_at(scaled, places.level)
-        elif is_money(ruler.unit) and ruler.money is not None:
-            text = ruler.money.spell(scaled)
-        elif ruler.unit == PERCENT or is_money(ruler.unit):
-            text = with_unit(scaled, ruler.unit)
-        else:
-            text = number_in(scaled, ruler.unit)
+        text = _ruled_level_text(ruler, value * ruler.factor, self._set_places(places, measure, kind))
         unit = _on_the_figure(ruler.unit)
         return self._issue(*_keyed(measure, kind), "level", value, text, _digits_of(text, unit), unit)
 
     def ruled_spread(self, ruler: MeasureRuler, sem: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A mean's standard error on its ruler, stated beside the mean as ``± spread``: money to its own two
         significant figures, as every money figure reads (``$0.0074`` beside ``$0.046``), never rounded to a zero it
-        is not; any other unit as a bare number at the unit's precision (a rate's in points' one decimal).
+        is not; any other unit as a bare number at its reading's places where the page holds them, never rounded to
+        zero, else at the unit's precision.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
@@ -654,7 +698,12 @@ class PageForms:
         if is_money(ruler.unit) and ruler.money is not None:
             text = money_form([scaled], rate=ruler.money.rate).spell(scaled)
             return self._issue(*_keyed(measure, kind), "half_width", sem, text, _digits_of(text, MONEY), MONEY)
-        text = number_in(scaled, ruler.unit)
+        # At its reading's places, as the mean beside it reads, kept off zero: a spread is never none.
+        places = self._set_places(None, measure, kind)
+        if places is not None and places.change is not None:
+            text = policy_figure(scaled, places.change, bounds=_ZERO_BOUND)
+        else:
+            text = number_in(scaled, ruler.unit)
         return self._issue(*_keyed(measure, kind), "half_width", sem, text, text, "")
 
     def ruled_interval(
@@ -667,11 +716,11 @@ class PageForms:
         measure: str = "",
         kind: _MeasureKind = None,
     ) -> _PrintedInterval:
-        """A level's interval as ``[low, high]`` on its ruler (an arm's figure's, a bar's value's): where ``places``
-        gives the set's places for levels, both ends at one precision and never past what a level can take (a count's
-        never below zero, a score's within its scale), an end of exactly zero ``0``; money's ends in the ruler's one
-        form; any other unit's on each end where the unit sits on the number (``[88.1%, 100%]``), once after the
-        bracket otherwise (``[0.45, 0.55] s``).
+        """A level's interval in its one form, ``low to high``, on its ruler (an arm's figure's, a bar's value's): at
+        its reading's set's places for levels, never past what a level can take (a count's never below zero, a score's
+        within its scale), each end kept off zero and a rate's off its floor and ceiling (``88.1 to 99.7%``), the unit
+        once after the high end (``0.45 to 0.55 s``); money's ends in the ruler's one form, each with its ``$``; with no
+        set's places, each end at the unit's precision.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
@@ -689,16 +738,18 @@ class PageForms:
         :rtype: _PrintedInterval
         """
         drawn = [low * ruler.factor, high * ruler.factor]
-        if places is not None and places.level is not None and _reads_at_set_places(ruler.unit):
+        places = self._set_places(places, measure, kind)
+        if is_money(ruler.unit) and ruler.money is not None:
+            texts = _money_ends(ruler.money.spell_ends(drawn[0], drawn[1]), drawn[0], drawn[1], change=False)
+        elif places is not None and places.level is not None:
             if places.floor is not None:
                 drawn = [max(end, places.floor) for end in drawn]
             if places.ceiling is not None:
                 drawn = [min(end, places.ceiling) for end in drawn]
-            texts = _ends_at(drawn[0], drawn[1], places.level, ruler.unit, level=True)
-        elif is_money(ruler.unit) and ruler.money is not None:
-            texts = _bracketed(*ruler.money.spell_ends(drawn[0], drawn[1]))
+            bounds = _RATE_BOUNDS if ruler.unit == PERCENT else ()
+            texts = _ends_at(drawn[0], drawn[1], places.level, ruler.unit, change=False, bounds=bounds)
         else:
-            texts = _ends_in(drawn[0], drawn[1], ruler.unit)
+            texts = _ends_in(drawn[0], drawn[1], ruler.unit, change=False)
         return self._ruled_interval(measure, kind, low, high, texts, ruler.unit)
 
     def ruled_change_interval(
@@ -712,11 +763,11 @@ class PageForms:
         measure: str = "",
         kind: _MeasureKind = None,
     ) -> _PrintedInterval:
-        """An interval on a change, on its ruler in the unit a change is stated in: money's ends in the form its
-        changes read in (``form``, :meth:`change_money`); a rate's in points at a point's one decimal where the set
-        holds no places, never past 100 points; any other unit's at the set's places for changes (``places``), both
-        ends alike (``[-6.9, 11.0] pts``), never past what a change can be (a score's from -4 to 4 on a 1–5 scale);
-        else each end by the unit's precision.
+        """An interval on a change in its one form, ``low to high``, its ends signed, on its ruler in the unit a change
+        is stated in: money's ends in the form its changes read in (``form``, :meth:`change_money`), each with its
+        ``$``; any other unit's at its reading's set's places (``-6.9 to +11.0 pts``), each end kept off zero on its
+        own (``-15 to -0.03 pts``), never past what a change can be (a score's from -4 to 4 on a 1–5 scale); a rate's in
+        points at a point's one decimal where no set holds places; else each end by the unit's precision.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
@@ -737,16 +788,17 @@ class PageForms:
         """
         drawn_low, drawn_high = low * ruler.factor, high * ruler.factor
         unit = delta_unit(ruler.unit)
+        places = self._set_places(places, measure, kind)
         if form is not None and is_money(ruler.unit):
-            texts = _bracketed(*form.spell_ends(drawn_low, drawn_high))
-        elif ruler.unit == PERCENT and (places is None or places.change is None):
-            texts = _ends_at(max(drawn_low, -100.0), min(drawn_high, 100.0), POINT_PLACES, POINTS)
+            texts = _money_ends(form.spell_ends(drawn_low, drawn_high), drawn_low, drawn_high, change=True)
         elif places is not None and places.change is not None:
             if (span := places.span()) is not None:
                 drawn_low, drawn_high = max(drawn_low, -span), min(drawn_high, span)
-            texts = _ends_at(drawn_low, drawn_high, places.change, unit)
+            texts = _ends_at(drawn_low, drawn_high, places.change, unit, change=True)
+        elif ruler.unit == PERCENT:
+            texts = _ends_at(max(drawn_low, -100.0), min(drawn_high, 100.0), POINT_PLACES, POINTS, change=True)
         else:
-            texts = _ends_in(drawn_low, drawn_high, unit)
+            texts = _ends_in(drawn_low, drawn_high, unit, change=True)
         return self._ruled_interval(measure, kind, low, high, texts, unit)
 
     def ruled_level_cell(
@@ -764,7 +816,7 @@ class PageForms:
         means in one row read alike (#993).
 
         A cell a table's column rule spells (a rate's, money) is recorded there, as it prints
-        (:meth:`rate_columns`, :meth:`money_columns`); any other is recorded here.
+        (:meth:`money_columns`); any other is recorded here.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
@@ -782,16 +834,22 @@ class PageForms:
         if value is None:
             return TableCell(value=None)
         drawn = value * ruler.factor
-        if places is not None and places.level is not None and _reads_at_set_places(ruler.unit):
-            cell = TableCell(value=drawn, unit=ruler.unit, decimals=places.level)
-        elif ruler.money is not None and is_money(ruler.unit):
+        places = self._set_places(places, measure, kind)
+        if ruler.money is not None and is_money(ruler.unit):
             money = ruler.money
             cell = TableCell(
                 value=drawn, unit=ruler.unit, decimals=money.places_of([drawn]), per_thousand=money.per_thousand
             )
-        else:
-            cell = TableCell(value=drawn, unit=ruler.unit)
-        return self._ruled_cell(measure, kind, "level", value, cell)
+            return self._ruled_cell(measure, kind, "level", value, cell, cell.figure)
+        if places is not None and places.level is not None:
+            text = _ruled_level_text(ruler, drawn, places)
+            if ruler.unit and ruler.unit != PERCENT:
+                text = _joined(text, ruler.unit)
+            at = policy_bounded_places(drawn, places.level, bounds=_RATE_BOUNDS if ruler.unit == PERCENT else ())
+            cell = TableCell(value=drawn, unit=ruler.unit, decimals=at)
+            return self._ruled_cell(measure, kind, "level", value, cell, text)
+        cell = TableCell(value=drawn, unit=ruler.unit)
+        return self._ruled_cell(measure, kind, "level", value, cell, cell.figure)
 
     def ruled_change_cell(
         self,
@@ -837,8 +895,14 @@ class PageForms:
         if delta is None:
             return TableCell(value=None)
         unit = delta_unit(ruler.unit)
+        if places is None and (held := self._set_places(None, measure, kind)) is not None:
+            places = held.change
         if places is None and ruler.unit == PERCENT:
             places = POINT_PLACES
+        if places is not None and form is None:
+            places = policy_bounded_places(
+                delta * ruler.factor, places, bounds=_ZERO_BOUND if ruler.unit == PERCENT else ()
+            )
         if interval is None:
             cell = TableCell(value=delta * ruler.factor, unit=unit, decimals=places, signed=True)
         else:
@@ -855,7 +919,13 @@ class PageForms:
         if form is not None:
             decided = form.places_of([float(delta * ruler.factor), cell.low, cell.high], ends=(cell.low, cell.high))
             cell = cell.model_copy(update={"decimals": decided, "per_thousand": form.per_thousand})
-        return self._ruled_cell(measure, kind, "change", delta, cell)
+            return self._ruled_cell(measure, kind, "change", delta, cell, cell.figure)
+        if places is None:
+            return self._ruled_cell(measure, kind, "change", delta, cell, cell.figure)
+        digits = policy_figure(
+            delta * ruler.factor, places, bounds=_ZERO_BOUND if ruler.unit == PERCENT else (), signed=True
+        )
+        return self._ruled_cell(measure, kind, "change", delta, cell, _joined(digits, unit))
 
     def ruled_allows(
         self,
@@ -897,10 +967,9 @@ class PageForms:
         :rtype: str
         """
         low, high = (end * ruler.factor for end in interval)
-        if places is not None and places.change is not None:
-            if (span := places.span()) is not None:
-                low, high = max(low, -span), min(high, span)
-            places = places._replace(change=ends_places(low, high, places.change))
+        places = self._set_places(places, measure, kind)
+        if places is not None and places.change is not None and (span := places.span()) is not None:
+            low, high = max(low, -span), min(high, span)
 
         def size(value: float) -> str:
             return self._ruled_size(ruler, value, form=form, places=places, measure=measure, kind=kind)
@@ -938,6 +1007,13 @@ class PageForms:
         """
         return spell_stored_counts(sentence)
 
+    def _set_places(self, places: ContrastPlaces | None, measure: str, kind: _MeasureKind) -> ContrastPlaces | None:
+        """The places a ruled figure reads at: those its caller read off these forms, else its reading's set's on an
+        aspect page, so every figure of a reading reads at one precision whichever table states it."""
+        if places is not None or not measure:
+            return places
+        return self._contrast_places.get((measure, _measure_kind(kind)))
+
     def _ruled_size(
         self,
         ruler: MeasureRuler,
@@ -955,8 +1031,9 @@ class PageForms:
             self._issued.append(_Issued(*_keyed(measure, kind), "change", value, text))
             return text
         unit = delta_unit(ruler.unit)
+        # Each end is kept off zero on its own, as the interval's cell prints it (``0.03 points``, never ``0 points``).
         number = (
-            spell_at(abs(value), places.change)
+            policy_figure(abs(value), places.change, bounds=_ZERO_BOUND)
             if places is not None and places.change is not None
             else number_in(abs(value), unit)
         )
@@ -981,18 +1058,20 @@ class PageForms:
             unit=unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=f"[{low_digits}, {high_digits}]",
+            digits=f"{low_digits} to {high_digits}",
         )
 
-    def _ruled_cell(self, measure: str, kind: _MeasureKind, role: Role, value: float, cell: TableCell) -> TableCell:
-        """Record a cell an aspect page's builder decided, unless a column rule spells it and records it there, under
-        the cell's measure (:meth:`of_measure`): a rate's or a change in points (:meth:`rate_columns`), or money
-        (:meth:`money_columns`). A cell recorded here carries the text recorded (``value_text``)."""
+    def _ruled_cell(
+        self, measure: str, kind: _MeasureKind, role: Role, value: float, cell: TableCell, text: str
+    ) -> TableCell:
+        """A cell an aspect page's builder decided, carrying its text (``value_text``): a rate's or money's held under
+        its measure (:meth:`of_measure`), which the page's tables record as they print (:meth:`recorded`); any other
+        recorded here, under its measure."""
+        decided = cell.model_copy(update={"value_text": text})
         if cell.unit in (PERCENT, POINTS) or is_money(cell.unit):
-            return self.of_measure(cell, measure=measure, kind=kind)
-        text = cell.figure
+            return self.of_measure(decided, measure=measure, kind=kind)
         self._issued.append(_Issued(*_keyed(measure, kind), role, value, text))
-        return cell.model_copy(update={"value_text": text})
+        return decided
 
     # --- measures ----------------------------------------------------------------------------------------------------
 
@@ -1076,8 +1155,8 @@ class PageForms:
         :ptype value: float | None
         :param kind: The measure's kind.
         :ptype kind: _MeasureKind
-        :param alone: Whether the level is printed by itself (a chart's note, a key no table prints), which today reads
-            by the lone figure rule rather than at its set's decimals.
+        :param alone: Whether the level is printed by itself (a chart's note, a key no table prints). It moves no digit:
+            every page reads every level of a measure at its set's one precision, alone or in a table.
         :ptype alone: bool
         :return: The level.
         :rtype: Printed
@@ -1087,16 +1166,13 @@ class PageForms:
             # A written page spells a figure that is no number as its rule does, the dash in its unit (``— ms``).
             return self._issue(form.key, form.kind, "level", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
         if self.page == "written":
-            text = _written_level(form, value, alone=alone)
+            text = _written_level(form, value)
             return self._issue(form.key, form.kind, "level", value, text, _digits_of(text, form.unit), form.unit)
-        return self._code_issue(form, "level", value, _code_scaled(form, value), alone=alone)
+        return self._code_issue(form, "level", value, _code_scaled(form, value))
 
-    def drawn_level(
-        self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False
-    ) -> Printed:
+    def drawn_level(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
         """A level of a measure given as the code page draws it (a rate already in percent: a change's baseline, the
-        mean of its cases' shares), in its measure's form. A level computed in percent is rounded as computed, never
-        divided back into a share first, so its digits are the ones the page read before.
+        mean of its cases' shares), in its measure's form, wherever the page states it, in a cell or in words.
 
         :param key: The measure's key.
         :ptype key: str
@@ -1104,9 +1180,6 @@ class PageForms:
         :ptype value: float | None
         :param kind: The measure's kind.
         :ptype kind: _MeasureKind
-        :param alone: Whether the level is stated by itself in words (``from v1's 86.7%``), which today spells a rate
-            at its form's decimals from the level as drawn, not from the cell's rounded number.
-        :ptype alone: bool
         :return: The level.
         :rtype: Printed
         :raises ValueError: The forms are a written page's, whose levels are drawn from their quantity.
@@ -1116,12 +1189,6 @@ class PageForms:
             raise ValueError(f"a level of {form.key!r} is given as drawn only on a code page")
         if value is None or not math.isfinite(value):
             return self._issue(form.key, form.kind, "level", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
-        if alone and form.reads_as == "rate":
-            text = percent_at(value, POINT_PLACES if form.level_decimals is None else form.level_decimals)
-            held = _code_held(form, value)
-            return self._issue(
-                form.key, form.kind, "level", value, text, _digits_of(text, form.unit), form.unit, held=held
-            )
         return self._code_issue(form, "level", value, value)
 
     def change(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
@@ -1133,7 +1200,8 @@ class PageForms:
         :ptype value: float | None
         :param kind: The measure's kind.
         :ptype kind: _MeasureKind
-        :param alone: Whether the change is printed by itself, which today reads by the lone figure rule.
+        :param alone: Whether the change is printed by itself; a written page reads every change of a measure at its
+            one precision, whatever prints it.
         :ptype alone: bool
         :return: The change.
         :rtype: Printed
@@ -1143,12 +1211,12 @@ class PageForms:
             # As a level: a written page spells a change that is no number in its unit (``— pts``).
             return self._issue(form.key, form.kind, "change", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
         if self.page == "written":
-            text = _written_change(form, value, alone=alone)
+            text = _written_change(form, value)
         else:
             text = _code_change(form, value)
         unit = form.change_unit
         if self.page == "code":
-            held, decimals = _code_change_held(form, value), form.change_decimals
+            held, decimals = _code_change_held(form, value), _code_change_places(form, value)
             return self._issue(
                 form.key, form.kind, "change", value, text, _digits_of(text, unit), unit, held=held, decimals=decimals
             )
@@ -1173,17 +1241,10 @@ class PageForms:
             raise ValueError(f"a half-width of {form.key!r} is stated only on a code page")
         held = _code_change_held(form, value)
         unit = form.change_unit
-        text = TableCell(value=held, unit=unit, decimals=form.change_decimals).figure
+        decimals = _code_change_places(form, value)
+        text = _joined(policy_figure(value * form.change_factor, decimals, bounds=()), unit)
         return self._issue(
-            form.key,
-            form.kind,
-            "half_width",
-            value,
-            text,
-            _digits_of(text, unit),
-            unit,
-            held=held,
-            decimals=form.change_decimals,
+            form.key, form.kind, "half_width", value, text, _digits_of(text, unit), unit, held=held, decimals=decimals
         )
 
     def interval(
@@ -1222,7 +1283,7 @@ class PageForms:
             unit=unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(self.page, low_digits, high_digits),
+            digits=_interval_join(low_digits, high_digits),
         )
 
     def bracketed(
@@ -1260,7 +1321,7 @@ class PageForms:
             form.key, form.kind, "level", value, text, _digits_of(text, MONEY), MONEY, held=drawn, decimals=places
         )
         low_text, high_text = cell.amount(drawn_low), cell.amount(drawn_high)
-        joined = f"[{low_text}, {high_text}]"
+        joined = f"{low_text} to {high_text}"
         self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), joined))
         low_digits, high_digits = _digits_of(low_text, MONEY), _digits_of(high_text, MONEY)
         interval = _PrintedInterval(
@@ -1272,7 +1333,7 @@ class PageForms:
             unit=MONEY,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(self.page, low_digits, high_digits),
+            digits=_interval_join(low_digits, high_digits),
         )
         return level, interval
 
@@ -1297,9 +1358,10 @@ class PageForms:
         if self.page != "code":
             raise ValueError(f"an interval of {form.key!r} is sized this way only on a code page")
         scaled_low, scaled_high = low * form.change_factor, high * form.change_factor
-        decimals = POINT_PLACES if form.change_decimals is None else form.change_decimals
-        places = ends_places(scaled_low, scaled_high, decimals)
-        low_text, high_text = spell_at(abs(scaled_low), places), spell_at(abs(scaled_high), places)
+        # Each end is sized off zero on its own, as the interval's cell prints it (``0.03 points``, never ``0``).
+        low_text, high_text = (
+            policy_figure(abs(end), _code_places(form), bounds=_ZERO_BOUND) for end in (scaled_low, scaled_high)
+        )
         text = f"{low_text} to {high_text}"
         # A sentence states each end's size apart (``between 3.5 and 7.9 points worse``), never the two joined, so
         # each is issued apart: the interval, by its ends, and the text the sentence prints of each.
@@ -1320,9 +1382,8 @@ class PageForms:
         )
 
     def stated_interval(self, key: str, low: float, high: float, *, kind: _MeasureKind = "measure") -> _PrintedInterval:
-        """An interval as a code page's folded table of every measure states it, ``[low, high]``: each end as the fold
-        states a value, by the lone figure rule at its cell's precision (a rate in percent to a decimal, any other
-        measure to four decimals).
+        """An interval as a code page's folded table of every measure states it, in its one form, ``low to high``, at
+        its measure's places, as the scorecard states it (#1127 item 8).
 
         :param key: The measure's key.
         :ptype key: str
@@ -1339,10 +1400,8 @@ class PageForms:
         form = self.measure(key, kind=kind)
         if self.page != "code":
             raise ValueError(f"an interval of {form.key!r} is stated this way only on a code page")
-        low_text, high_text = (
-            _joined(format_number(_code_held(form, _code_scaled(form, end))), form.unit) for end in (low, high)
-        )
-        text = f"[{low_text}, {high_text}]"
+        # The fold's rows read at the measure's places, as the scorecard does (#1127 item 8).
+        low_text, high_text, text = _code_interval(form, low, high, change=False)
         self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, form.unit), _digits_of(high_text, form.unit)
         return _PrintedInterval(
@@ -1354,7 +1413,7 @@ class PageForms:
             unit=form.unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(self.page, low_digits, high_digits),
+            digits=_interval_join(low_digits, high_digits),
         )
 
     # --- decisions that print nothing --------------------------------------------------------------------------------
@@ -1401,31 +1460,31 @@ class PageForms:
         return self._issue("", "", "count", float(count), text, text, "")
 
     def p(self, value: float | None) -> Printed:
-        """A p-value, as the page prints one today: by the lone figure rule.
+        """A p-value as APA writes it (:func:`policy_p`): ``< 0.001`` under a thousandth, three decimals below 0.1, two
+        from it up (``0.50``, ``1.00``). It is no measurement, so no measure's decimals reach it.
 
         :param value: The p-value; None for none.
         :ptype value: float | None
         :return: The p-value.
         :rtype: Printed
         """
-        text = format_number(value)
+        text = policy_p(value)
         return self._issue("", "", "p", value, text, text, "")
 
     def effect(self, value: float | None) -> Printed:
-        """An effect size or a correlation, as the page prints one today: by the lone figure rule.
+        """An effect size or a correlation at two decimals, its sign kept (:func:`policy_effect`): ``0.08``, ``0.12``.
 
         :param value: The effect; None for none.
         :ptype value: float | None
         :return: The effect.
         :rtype: Printed
         """
-        text = format_number(value)
+        text = policy_effect(value)
         return self._issue("", "", "effect", value, text, text, "")
 
     def confidence(self, level: str, family: ContrastFamily | None = None) -> Printed:
-        """An interval's level, as every surface prints it (:func:`interval_level`): one decimal, more only where one
-        would read a level under 100 as ``100%``, and what the family holds at once beside it where it corrects its
-        comparisons together.
+        """An interval's level, as every heading prints it (:func:`interval_level`): the joint guarantee where its
+        family corrects its comparisons together (``95% (adjusted for 16 comparisons)``), any other level as stated.
 
         :param level: The level as the input states it (``99.69%``).
         :ptype level: str
@@ -1467,18 +1526,24 @@ class PageForms:
             "", "", "confidence", level, text, text.removesuffix(PERCENT), PERCENT, held=self.told_apart(level)
         )
 
-    def declared(self, value: float | None, unit: str = "") -> Printed:
-        """A value the input declares (a margin, a floor, a setting), as the page prints one today: by the lone figure
-        rule, in its unit.
+    def declared(self, value: float | None, unit: str = "", *, signed: bool = False) -> Printed:
+        """A value the input declares (a margin, a floor, a setting) exactly as declared, in its unit
+        (:func:`policy_declared`): ``-15 pts``, never ``-15.0 pts``. It was chosen, not measured, so no measure's
+        decimals reach it.
 
         :param value: The value; None for none.
         :ptype value: float | None
         :param unit: Its unit; empty for none.
         :ptype unit: str
+        :param signed: Whether a positive value carries its ``+``, as one read beside a signed change does (``+15
+            pts``).
+        :ptype signed: bool
         :return: The value.
         :rtype: Printed
         """
-        digits = format_number(value)
+        digits = policy_declared(value)
+        if signed and value is not None and math.isfinite(value):
+            digits = plus_signed(digits, value)
         text = _joined(digits, unit) if value is not None and math.isfinite(value) else digits
         return self._issue("", "", "declared", value, text, digits, unit if text != digits else "")
 
@@ -1497,10 +1562,10 @@ class PageForms:
         return self._issue("", "", "share", value, text, text.removesuffix(PERCENT), PERCENT, held=round(100 * value))
 
     def pass_k(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
-        """A pass^k of a measure (the chance a case passes every one of k runs, 0 to 1), in percent to a decimal, as a
-        code page's depth tables hold one today; the column's rule then spells it. It is recorded under its measure,
-        which today's form does not read, and a page that states no other figure of the measure (a measurement's
-        depth table) holds no form for it, so none is looked up.
+        """A pass^k of a measure (the chance a case passes every one of k runs, 0 to 1), in percent: on a code page that
+        holds the measure's form, at its places, kept off its floor and ceiling, as a rate of the measure; elsewhere,
+        and on a page that states no other figure of the measure (a measurement's depth table), to a decimal by the
+        lone figure rule. It is recorded under its measure.
 
         :param key: The measure's key.
         :ptype key: str
@@ -1514,6 +1579,15 @@ class PageForms:
         measure = _measure_kind(kind)
         if value is None or not math.isfinite(value):
             return self._issue(key, measure, "pass_k", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
+        if self.page == "code" and (key, measure) in self._measures:
+            # A code page reads a pass^k at its measure's places, as a rate of the measure, in its depth tables too.
+            form = self._measures[key, measure]
+            places = policy_bounded_places(100 * value, _code_places(form), bounds=_RATE_BOUNDS)
+            held = float(round_half_even(100 * value, places))
+            text = policy_rate(100 * value, _code_places(form))
+            return self._issue(
+                key, measure, "pass_k", value, text, _digits_of(text, PERCENT), PERCENT, held=held, decimals=places
+            )
         held = round(100 * value, POINT_PLACES)
         text = _joined(format_number(held), PERCENT)
         return self._issue(key, measure, "pass_k", value, text, _digits_of(text, PERCENT), PERCENT, held=held)
@@ -1597,6 +1671,59 @@ class PageForms:
         """
         text = f"{value:.{_READING_PLACES}f}"
         return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
+
+    def score_readings(
+        self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
+    ) -> dict[str, Printed]:
+        """A judged score's readings across an off-page table's row, one per arm, each its mean at one precision for the
+        row: a score states no interval there, so its decimals are rule 2's for a score's spread at that many cases, a
+        hundredth from :data:`_SCORE_HUNDREDTHS_FROM` cases up and a tenth below, where a hundredth is noise (plan
+        §2.3: rung 5's ``4.9`` at 7 cases, never ``4.86``).
+
+        :param reads: Each arm's mean and the cases it is over, by arm.
+        :ptype reads: Mapping[str, tuple[float, int]]
+        :param measure: The judged dimension's key.
+        :ptype measure: str
+        :param kind: Its kind.
+        :ptype kind: _MeasureKind
+        :return: Each arm's reading, by arm.
+        :rtype: dict[str, Printed]
+        """
+        fewest = min((n for _, n in reads.values()), default=0)
+        places = SCORE_PLACES if fewest >= _SCORE_HUNDREDTHS_FROM else SCORE_PLACES - 1
+        said = {}
+        for arm, (mean, _) in reads.items():
+            text = policy_figure(mean, places, bounds=())
+            said[arm] = self._issue(*_keyed(measure, kind), "reading", mean, text, text, "")
+        return said
+
+    def rate_readings(
+        self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
+    ) -> dict[str, Printed]:
+        """A rate's readings across an off-page table's row, one per arm, each a percent and the count it is of
+        (``14% (1 of 7)``), never a fraction at two decimals (``0.14``), which reads as no rate. The row is one
+        measure, so every arm's reads at one precision: the table reads no interval, so two significant figures of
+        its least figure but zero, at most one decimal, each kept off 0% and 100% (:func:`policy_places`,
+        :func:`policy_rate`). Of a measure: a boolean measure's rate, or a pass/fail judged dimension's, in the
+        rung-5 readings table.
+
+        :param reads: Each arm's rate, 0 to 1, and the trials it was read on, by arm.
+        :ptype reads: Mapping[str, tuple[float, int]]
+        :param measure: The measure's key.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``).
+        :ptype kind: _MeasureKind
+        :return: Each arm's reading, by arm.
+        :rtype: dict[str, Printed]
+        """
+        places = policy_places((), [rate * 100 for rate, _ in reads.values()], capped=True)
+        readings = {}
+        for arm, (rate, n) in reads.items():
+            percent = policy_rate(rate * 100, places)
+            text = f"{percent} ({spell_count(round(rate * n))} of {spell_count(n)})"
+            digits = percent.removesuffix(PERCENT)
+            readings[arm] = self._issue(*_keyed(measure, kind), "reading", rate, text, digits, PERCENT)
+        return readings
 
     def echoed(self, value: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A value an author declared, echoed back in a refusal or an error as Python's general format writes it
@@ -1698,8 +1825,10 @@ class PageForms:
         """A candidate's share of a judge's preference and the interval the pass read on the difference of the two
         shares, on the share scale: the two shares run 0 to 1 and sum to 1, so a difference ``d`` is the candidate's
         share ``(1 + d) / 2``. Each end is held within 0 to 100%, the scale a share lies on. The shares and the ends
-        read at one precision, the fewest decimals that keep each on its side of none, even and all, and the three
-        apart.
+        read at one precision, read from the interval's uncertainty as a rate's is (:func:`policy_places`, at most one
+        decimal: ``40 to 60%``), with just enough more that none prints on none, all or even, the share where neither
+        arm is preferred (an end of ``49.7%``, never ``50%``; :func:`policy_bounded_places`), and that two ends do not
+        print alike (``67.01 to 67.03``, never ``67.0 to 67.0``).
 
         :param share: The candidate's share, 0 to 1; None when nothing was scored.
         :ptype share: float | None
@@ -1712,7 +1841,13 @@ class PageForms:
             return None
         points = share * 100
         ends = None if difference is None else [min(100.0, max(0.0, (1 + end) / 2 * 100)) for end in difference]
-        places = _even_places([points, *(ends or [])])
+        widths = [] if ends is None else [(ends[1] - ends[0]) / 2]
+        held = policy_places(widths, [points], capped=True)
+        places = max(policy_bounded_places(value, held, bounds=_PREFERENCE_BOUNDS) for value in [points, *(ends or [])])
+        if ends is not None:
+            # Two ends that would print alike take the decimals that tell them apart (number rule 3), and the shares
+            # read at them too, so they still sum to 100 at one precision.
+            places = ends_places(ends[0], ends[1], places)
         candidate = round(points, places)
         shares = PreferenceShares(
             candidate=candidate,
@@ -1725,9 +1860,8 @@ class PageForms:
 
     def glyph_title(self, value: float, low: float, high: float, *, unit: str, margin: float | None = None) -> Printed:
         """What an interval glyph drawn with no table's text beside it states in its title, as it prints one today:
-        the figure in its unit by the number rule, then its interval as the row's own interval cell spells it (the unit
-        on each end where it sits on the number, ``[88.1%, 100%]``, ``[-$0.01, $0.06]``; once after the bracket
-        otherwise, ``[-4.2, 2] pts``), then a declared margin, ``±5 pts``. A table's glyph states its cells' text
+        the figure in its unit by the number rule, then its interval in its one form (``88.1 to 100%``,
+        ``-$0.01 to $0.06``, ``-4.2 to 2 pts``), then a declared margin, ``±5 pts``. A table's glyph states its cells' text
         instead; this is the glyph's own, of no measure.
 
         :param value: The figure, in ``unit``.
@@ -1743,8 +1877,13 @@ class PageForms:
         :return: The title.
         :rtype: Printed
         """
-        if unit == PERCENT or is_money(unit):
-            interval = f"[{with_unit(low, unit)}, {with_unit(high, unit)}]"
+        if unit == PERCENT:
+            interval = f"{number_in(low, unit)} to {with_unit(high, unit)}"
+        elif is_money(unit):
+            interval = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
+        elif unit == POINTS:
+            # A change in points: its ends carry their signs.
+            interval = f"{plus_signed(number_in(low, unit), low)} to {plus_signed(number_in(high, unit), high)} {unit}"
         else:
             interval = interval_text(low, high, unit) + (f" {unit}" if unit else "")
         said = f"{with_unit(value, unit)}, interval {interval}"
@@ -1763,10 +1902,10 @@ class PageForms:
         self, scale: TableCell, unit: str, value: float, low: float, high: float, *, margin: float | None = None
     ) -> Printed:
         """What a table glyph's title states: its figure, its interval and its declared margin, as the scale's cells
-        write them (``-5.0 pts, interval [-6.9, 11.0] pts, margin ±15.0 pts``): a figure in points at the cells'
-        decimals, a point's one where they name none, the margin alike, as the chart's margin line reads it; any other
-        figure as the cells write it (their money form, a bare figure at its column's precision), and the interval's
-        two ends at the cells' one precision (``[88.1%, 100%]``, never ``11`` beside ``-6.9``).
+        write them (``-5.0 pts, interval -6.9 to +11.0 pts, margin ±15 pts``): a figure in points at the cells'
+        decimals, a point's one where they name none, the margin as declared, as the chart's margin line reads it; any other
+        figure as the cells write it (their money form, a bare figure at its column's precision), and the interval in
+        its one form at the cells' one precision (``88.1 to 100%``, never ``11`` beside ``-6.9``).
 
         :param scale: The scale's cell, which spells a number as the column's cells do.
         :ptype scale: TableCell
@@ -1785,8 +1924,33 @@ class PageForms:
         """
         said = f"{_scale_figure(scale, unit, value)}, interval {_scale_interval(scale, unit, low, high)}"
         if margin is not None:
-            said += f", margin ±{_scale_figure(scale, unit, margin)}"
+            # A margin is declared, not measured: it reads as declared (``±15 pts``), never at the cells' decimals.
+            said += f", margin ±{with_unit(margin, unit)}"
         return self._issue("", "", "lone", value, said, said, "")
+
+    def lone_rate(self, level: float, interval: tuple[float, float] | None) -> tuple[Printed, Printed | None]:
+        """A rate and its interval, in percent, that no page's measure holds (a quick print's line): both at the
+        decimals the interval's own half-width gives a rate (rules 1 and 2, at most one), the level kept off 0% and
+        100% (``99.7%``, never ``100%``) unless it sits there, and the interval in its one form, ``low to high`` with
+        its ``%`` once (rule 3), each end kept off its bounds. With no interval the level reads by the number rule.
+
+        :param level: The rate, in percent.
+        :ptype level: float
+        :param interval: Its interval's ends, in percent; None for none.
+        :ptype interval: tuple[float, float] | None
+        :return: The level, and the interval or None.
+        :rtype: tuple[Printed, Printed | None]
+        """
+        if interval is None:
+            return self.in_unit(level, PERCENT, role="level"), None
+        low, high = interval
+        places = policy_places([(high - low) / 2], [low, high], capped=True)
+        said = policy_rate(level, places)
+        _, _, text = policy_interval(low, high, places, change=False, bounds=_RATE_BOUNDS, unit=PERCENT)
+        self._issued.append(_Issued("", "", "interval", (low, high), text))
+        return self._issue("", "", "level", level, said, said.removesuffix(PERCENT), PERCENT), Printed(
+            value=None, text=text, digits=text, unit=""
+        )
 
     def scale_span(self, scale: TableCell, unit: str, low: float, high: float) -> Printed:
         """A glyph scale's ends as the line under its table states them, its unit once: ``-7.8 to 35.4 pts``, ``83.9%
@@ -1807,13 +1971,14 @@ class PageForms:
         if scale.unit and (unit == PERCENT or is_money(unit)):
             text = f"{_scale_spell(scale, unit, low)} to {_scale_spell(scale, unit, high)}"
         elif (places := _scale_places(scale, unit)) is not None and unit != PERCENT:
-            # The ends of a set, at its one precision (`-12.8 to 10.0 pts`, never `10 pts` beside `-12.8`).
-            if unit == POINTS:
-                # A scale in points, its margin's ends among them, reads at a point's one decimal, as the chart's
-                # margin line and the glyph's title do (``-15.0 to 15.0 pts``).
-                places = max(POINT_PLACES, places)
+            # The ends of a set, at its cells' one precision, the measure's (`-13 to +10 pts` on a whole-point column,
+            # `-12.8 to +10.0 pts` where the cells read a tenth), never `10 pts` beside `-12.8`. A scale in points is
+            # one of changes, so its ends carry their signs (number rule 3).
             at = ends_places(low, high, places)
-            text = f"{spell_at(low, at)} to {spell_at(high, at)}" + (f" {unit}" if unit else "")
+            signed = unit == POINTS
+            text = f"{spell_at(low, at, signed=signed)} to {spell_at(high, at, signed=signed)}" + (
+                f" {unit}" if unit else ""
+            )
         elif unit in (PERCENT, POINTS):
             ends = f"{number_in(low, unit)} to {number_in(high, unit)}"
             text = (
@@ -1869,10 +2034,12 @@ class PageForms:
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
         :ptype kind: _MeasureKind
-        :return: The quantity.
+        :return: The quantity, its format naming its measure's decimals (``pct:0``), so a value the kit writes with no
+            text beside it reads as the page prints it.
         :rtype: Quantity
         """
-        return quantity(unit, values, change=change)
+        drawn = quantity(unit, values, change=change)
+        return quantity(unit, values, change=change, places=self._named_places(drawn, values, measure, kind))
 
     @overload
     def chart_quantity_of(self, unit: str, figures: Iterable[float], *, change: bool = False) -> Quantity: ...
@@ -1905,10 +2072,13 @@ class PageForms:
         :ptype measure: str
         :param kind: The measure's kind (None reads as ``measure``), required with a measure.
         :ptype kind: _MeasureKind
-        :return: The quantity.
+        :return: The quantity, its format naming its measure's decimals, as :meth:`chart_quantity`'s does.
         :rtype: Quantity
         """
-        return quantity_of(unit, figures, change=change)
+        figures = tuple(figures)
+        drawn = quantity_of(unit, figures, change=change)
+        named = self._named_places(drawn, [figure * drawn.factor for figure in figures], measure, kind)
+        return quantity_of(unit, figures, change=change, places=named)
 
     def chart_amounts(self, report_input: ReportInput, keys: Sequence[str]) -> Quantity:
         """The one ruler a change chart's money is drawn on: money's scale over every mean the input holds of every
@@ -1991,7 +2161,8 @@ class PageForms:
         :return: The value.
         :rtype: Printed
         """
-        text = figure_text(value, drawn)
+        places = self._chart_places(drawn, measure, kind)
+        text = figure_text(value, drawn) if places is None else _placed_text(value, drawn, places, change=drawn.change)
         return self._chart_issue(measure, kind, "change" if drawn.change else "level", value, text, drawn.unit)
 
     @overload
@@ -2018,7 +2189,10 @@ class PageForms:
         :rtype: Printed
         """
         form = drawn.money
-        if drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
+        places = self._chart_places(drawn, measure, kind)
+        if places is not None:
+            text = _placed_text(value, drawn, places, change=False)
+        elif drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
             places = max(form.places(value), form.decimals)
             text = MoneyForm(per_thousand=form.per_thousand, decimals=places).spell(value)
         else:
@@ -2053,8 +2227,16 @@ class PageForms:
         :return: The interval.
         :rtype: _PrintedInterval
         """
-        low_text, high_text = figure_text(low, drawn), figure_text(high, drawn)
-        text = _interval_words(low, high, drawn)
+        places = self._chart_places(drawn, measure, kind)
+        if places is None:
+            low_text, high_text = figure_text(low, drawn), figure_text(high, drawn)
+            text = _interval_words(low, high, drawn)
+        else:
+            bounds = _RATE_BOUNDS if drawn.rate and not drawn.change else ()
+            low_digits, high_digits, text = policy_interval(
+                low, high, places, change=drawn.change, bounds=bounds, unit=drawn.unit
+            )
+            low_text, high_text = low_digits, _joined(high_digits, drawn.unit)
         self._issued.append(_Issued(*_keyed(measure, kind), "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, drawn.unit), _digits_of(high_text, drawn.unit)
         return _PrintedInterval(
@@ -2066,8 +2248,29 @@ class PageForms:
             unit=drawn.unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join("written", low_digits, high_digits),
+            digits=_interval_join(low_digits, high_digits),
         )
+
+    def _chart_places(self, drawn: Quantity, measure: str, kind: _MeasureKind) -> int | None:
+        """The decimals a chart's figure of a measure reads at: its measure's (:attr:`MeasureForm.places`), as every
+        other surface of the page prints it; None for money, which keeps its ruler's form, and for a figure of no
+        measure the page holds (an off-page chart's, a price per point), which its quantity's rule spells."""
+        if not measure or drawn.unit == MONEY:
+            return None
+        form = self._measures.get((measure, _measure_kind(kind)))
+        return None if form is None else form.places
+
+    def _named_places(self, drawn: Quantity, values: Iterable[float], measure: str, kind: _MeasureKind) -> int | None:
+        """The decimals a chart's format names: its measure's (:meth:`_chart_places`); for a figure of no measure the
+        page holds (a preference, an empty chart's axis), the unit's own where its format names them (a score's two),
+        else its drawn values' as a set with no interval reads them, two significant figures of the least
+        (:func:`set_places`), none for no value; None for money, whose digits are its one form's."""
+        if drawn.unit == MONEY:
+            return None
+        places = self._chart_places(drawn, measure, kind)
+        if places is not None:
+            return places
+        return None if ":" in drawn.fmt else set_places(values)
 
     def chart_count(self, count: float) -> Printed:
         """A count as a chart's words print it, whole and grouped
@@ -2219,18 +2422,16 @@ class PageForms:
     # and a page-level test can hold a key's text to its table's. The flip decides a key's whole text here, by its
     # measure and role.
 
-    def key_places(self, key: str, *, kind: _MeasureKind, change: bool) -> int | None:
-        """The decimals a figure key's plain figure of a measure reads at, as the page's tables print it: a judged
-        score's two, any other measure's at its set's (:func:`figure_places`), its levels' or its changes'; None where
-        the measure has no such set, and the number rule spells its figure. A decision that prints nothing, so nothing
-        is issued.
+    def key_places(self, key: str, *, kind: _MeasureKind) -> int | None:
+        """The decimals a figure key's figure of a measure reads at: its measure's, its levels, changes and interval
+        ends alike (:attr:`MeasureForm.places`), as every table of the page prints it; None where the page holds no
+        such measure, or its money keeps its own form, and the number rule spells its figure. A decision that prints
+        nothing, so nothing is issued.
 
         :param key: The measure's or judged dimension's key.
         :ptype key: str
-        :param kind: The measure's kind: ``judged`` for a 1–5 score, which reads at a score's two decimals.
+        :param kind: The measure's kind: ``judged`` for a judged dimension.
         :ptype kind: _MeasureKind
-        :param change: Whether the figure is a change, read at its changes' set.
-        :ptype change: bool
         :return: The decimals, or None.
         :rtype: int | None
         :raises ValueError: The forms hold no report input (a code page's, an off-page surface's), which a key's set
@@ -2240,13 +2441,14 @@ class PageForms:
             raise ValueError(
                 f"a figure key's set of {key!r} is read from a written page's report input, and none is held"
             )
-        return figure_places(self._input, key, change=change, judged=_measure_kind(kind) == "judged")
+        form = self._measures.get((key, _measure_kind(kind)))
+        return None if form is None else form.places
 
     def key_number(self, figure: Figure, value: float) -> str:
-        """A plain figure's number as a figure key prints it, unsigned and without its unit: at its measure's set's
-        decimals (:meth:`key_places`) where the figure is one the page's tables print of that measure (a level, a
-        change, an interval or one of its ends, a criterion's figure or its gap), else by the lone figure rule, as an
-        adjusted p or a count of repeats keeps it.
+        """A plain figure's number as a figure key prints it, unsigned and without its unit: at its measure's decimals
+        (:meth:`key_places`), an exact zero whole, where the figure is one the page's tables print of that measure (a
+        level, a change, an interval or one of its ends, a criterion's figure or its gap), else by the lone figure rule,
+        as an adjusted p or a count of repeats keeps it.
 
         A count's thousands are grouped (``4,000,000``), as a sentence states a count. A number figure's digits are
         recorded as printed; an interval's ends are recorded by :meth:`key_plain_ends`, which reads them both.
@@ -2259,18 +2461,20 @@ class PageForms:
         :rtype: str
         """
         places = self._key_figure_places(figure)
-        text = format_number(value) if places is None else spell_at(value, places)
+        text = format_number(value) if places is None else policy_figure(value, places, bounds=())
         text = group_thousands(text) if figure.scale == "count" else text
         if figure.kind != "interval":
-            role: Role = "lone" if places is None else "change" if figure.change else "level"
-            self._issue(*_key_set(figure), role, value, text, text, "")
+            # Recorded where the tables hold it (_key_role), whatever set its digits read: a criterion's figure of a
+            # measure with no set of levels is still that measure's level.
+            self._issue(*_key_set(figure), _key_role(figure), value, text, text, "")
         return text
 
     def key_plain_ends(
         self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str], *, absolute: bool
     ) -> tuple[str, str] | None:
-        """An interval's two plain ends at one precision, as every set reads: the decimals the page's tables print the
-        figure's set at (:meth:`key_number`), else two significant figures of the interval's width, which is what its
+        """An interval's two plain ends at one precision: its measure's decimals in the one interval form, each end kept
+        off zero (:func:`policy_interval`), where the page's tables print the figure's set (:meth:`key_number`); else
+        two significant figures of the interval's width, which is what its
         ends can tell apart (``2.84–3.00`` for 2.839 to 3), never padded to its finer end's digits; more only where an
         end that is not zero would read as one. An end from :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up, or
         one read as a bound, leaves both as they are.
@@ -2283,7 +2487,8 @@ class PageForms:
         :ptype numbers: tuple[str, str]
         :param absolute: Whether the key reads the ends' sizes (``abs``), unsigned.
         :ptype absolute: bool
-        :return: The two ends' texts, each with the figure's unit; None where they stay as spelled.
+        :return: The two ends' texts, the high one with the figure's unit where the measure's decimals read them, else
+            each with it; None where they stay as spelled.
         :rtype: tuple[str, str] | None
         """
         unit = f" {figure.unit}" if figure.unit else ""
@@ -2294,8 +2499,15 @@ class PageForms:
             return None
         shown = [abs(value) if absolute else value for value in values]
         held = self._key_figure_places(figure)
-        places = ends_places(shown[0], shown[1], held if held is not None else set_places([shown[1] - shown[0]]))
         signed = figure.change and not absolute
+        if held is not None:
+            # The one interval form's ends at the measure's decimals, each kept off zero (policy_interval).
+            low, high, _text = policy_interval(shown[0], shown[1], held, change=signed, bounds=())
+            # The unit written once, after the high end, as the one interval form writes it (``-0.007 to +0.002
+            # notices``).
+            self._key_ends(figure, values, (low, high + unit))
+            return low, high + unit
+        places = ends_places(shown[0], shown[1], set_places([shown[1] - shown[0]]))
         texts = [spell_at(value, places) for value in shown]
         low, high = (
             plus_signed(text, value) if signed and float(text) != 0 else text
@@ -2305,9 +2517,10 @@ class PageForms:
         return low + unit, high + unit
 
     def key_points_ends(self, figure: Figure, values: tuple[float, float], *, absolute: bool) -> tuple[str, str]:
-        """An interval in points with both ends at one precision, as every set reads: a point's one decimal, a whole
-        end too (``-29.0 to +57.6``), or more where an end that is not zero would read as one (``-2.2 to -0.04``, never
-        ``-2.2 to 0.0``, which would hide which side of zero it lies). A lone figure in points keeps the number rule,
+        """An interval in points with both ends at one precision: its rate's decimals where the page holds the rate,
+        each end kept off zero (``-15.1 to -0.03``); else a point's one decimal, a whole end too (``-29.0 to +57.6``),
+        or more where an end that is not zero would read as one (``-2.2 to -0.04``, never ``-2.2 to 0.0``, which would
+        hide which side of zero it lies). A lone figure in points keeps the number rule,
         which writes a whole one whole.
 
         :param figure: What the key resolved to; a share's ends are read in points (x 100).
@@ -2320,6 +2533,13 @@ class PageForms:
         :rtype: tuple[str, str]
         """
         hundred = [value * 100 if figure.scale == "share" else value for value in values]
+        places = self._key_rate_places(figure)
+        if places is not None:
+            # The one interval form's ends at the rate's decimals, each kept off zero (policy_interval).
+            shown = [abs(value) for value in hundred] if absolute else hundred
+            low, high, _text = policy_interval(shown[0], shown[1], places, change=not absolute, bounds=())
+            self._key_ends(figure, values, (low, high))
+            return low, high
         at = ends_places(hundred[0], hundred[1], POINT_PLACES)
         low, high = (
             spell_at(abs(value), at) if absolute else plus_signed(spell_at(value, at), value) for value in hundred
@@ -2333,10 +2553,12 @@ class PageForms:
     # recorded once both are decided (:meth:`key_ends`), since a key may respell them together.
 
     def key_percent(self, figure: Figure, hundred: float, *, tens: bool = False) -> str:
-        """A rate's figure in percent, its digits without the ``%``: by the number rule for a percent, a descriptive
-        ratio whole (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.whole`), an interval's confidence
-        level to every digit the rule keeps, and ``tens`` to the nearest 10% (the ``pct10`` filter, an approximation
-        the writer chooses).
+        """A rate's figure in percent, its digits without the ``%``: at its measure's decimals where the page holds the
+        rate (:meth:`_key_rate_places`), else by the number rule for a percent; a descriptive ratio whole
+        (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.whole`); an interval's confidence level as stored
+        (the per-interval level ``{family.level}`` cites), or the joint guarantee, which a figure in the package's own
+        words holds as its value (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.joint`); and ``tens`` to the nearest 10% (the ``pct10`` filter, an
+        approximation the writer chooses).
 
         :param figure: What the key resolved to.
         :ptype figure: Figure
@@ -2347,16 +2569,26 @@ class PageForms:
         :return: Its digits.
         :rtype: str
         """
+        places = self._key_rate_places(figure)
         if tens:
             text = format_number(float(round(hundred / 10) * 10))
         elif figure.level:
+            # An interval's level as its figure holds it: the joint guarantee where the package's own words state one
+            # (its value, from :func:`joint_level`), else the level as stored, the per-interval one {family.level}
+            # cites by definition.
             text = format_number(hundred)
+        elif figure.whole:
+            text = number_in(float(round(hundred)), PERCENT)
+        elif places is not None:
+            # A rate's level at its measure's decimals, kept off its floor and its ceiling; a change kept off zero.
+            text = policy_figure(hundred, places, bounds=_ZERO_BOUND if figure.change else _RATE_BOUNDS)
         else:
-            text = number_in(float(round(hundred)) if figure.whole else hundred, PERCENT)
+            text = number_in(hundred, PERCENT)
         return self._key_issue(figure, hundred, text)
 
     def key_points(self, figure: Figure, hundred: float) -> str:
-        """A figure in points, its digits unsigned, by the number rule for points.
+        """A figure in points, its digits unsigned: at its rate's decimals where the page holds the rate, kept off
+        zero (:meth:`_key_rate_places`), else by the number rule for points.
 
         :param figure: What the key resolved to; a share's figure is read in points (x 100).
         :ptype figure: Figure
@@ -2365,7 +2597,9 @@ class PageForms:
         :return: Its digits.
         :rtype: str
         """
-        return self._key_issue(figure, hundred, number_in(hundred, POINTS))
+        places = self._key_rate_places(figure)
+        text = number_in(hundred, POINTS) if places is None else policy_figure(hundred, places, bounds=_ZERO_BOUND)
+        return self._key_issue(figure, hundred, text)
 
     def key_money(
         self,
@@ -2477,8 +2711,8 @@ class PageForms:
         which refuses a filter that does not suit), one significant figure more for an interval whose two differing ends
         would read alike (owner ruling Q3), both ends at one precision where the spelling sets one (plain, points), and
         the two joined: one figure where they read alike, ``low to high`` where a count is said once after them (money
-        per what it counts, the count after), where an end carries a sign or the key asks for ``interval``, else
-        ``low–high`` with the unit once (``27–28%``).
+        per what it counts, the count after), each end's own unit where the two differ, else the one interval form,
+        its unit once after the high end, signed or not (``-13 to -2 pts``, ``27 to 28%``; number rule 3).
 
         :param figure: What the key resolved to.
         :ptype figure: Figure
@@ -2516,10 +2750,11 @@ class PageForms:
             return first + first_unit
         if first_unit == second_unit and first_unit.startswith(" per "):
             return INTERVAL_TEMPLATE.format(low=first, high=second) + first_unit
-        signed = spelling == "pts" or figure.change or low < 0 or high < 0
-        if joined or signed or first_unit != second_unit:
+        if first_unit != second_unit:
             return INTERVAL_TEMPLATE.format(low=first + first_unit, high=second + second_unit)
-        return RANGE_TEMPLATE.format(low=first, high=second) + second_unit
+        # The one interval form, signed or not (number rule 3): its unit written once, after the high end (``-13 to -2
+        # pts``, ``27 to 28%``).
+        return INTERVAL_TEMPLATE.format(low=first, high=second) + second_unit
 
     def key_ends(self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str]) -> tuple[str, str]:
         """An interval's two ends as a key prints them, once both are decided, each recorded apart under the measure
@@ -2552,101 +2787,34 @@ class PageForms:
         self._issued += [_Issued(*key, "interval", values, text) for text in texts]
 
     def _key_figure_places(self, figure: Figure) -> int | None:
-        """A key's figure's set's decimals (:meth:`key_places`), where the figure is one the page's tables print of the
-        measure it is of (:func:`_tabled`); None otherwise. A criterion's gap is a difference on its measure, read at
-        its changes' set. Only a plain figure of a measure or a judged score reads at a set: a rate, money, a count, a
-        multiple and the pass rate's comparisons keep their spellings' own rules."""
+        """A key's figure's measure's decimals (:meth:`key_places`), where the figure is one the page's tables print of
+        the measure it is of (:func:`_tabled`); None otherwise. Only a plain figure of a measure or a judged score reads
+        here: a rate's and a change in points read theirs by their spellings (:meth:`_key_rate_places`), and money, a
+        count and a multiple keep their spellings' own rules."""
         if figure.set_of is None or not _tabled(figure) or figure.scale != "plain" or figure.unit == MULTIPLE_UNIT:
             return None
         key, kind = figure.set_of
         if kind == "trial" or (kind == "judged" and not rubric_score(self.report_input, key)):
             return None
-        change = figure.change or (bool(figure.measure) and figure.statistic in _CRITERION_GAPS)
-        return self.key_places(key, kind=kind, change=change)
+        return self.key_places(key, kind=kind)
+
+    def _key_rate_places(self, figure: Figure) -> int | None:
+        """The decimals a key's rate or change in points reads at: its measure's, where the figure is one the page's
+        tables print of a rate the page holds (:func:`_tabled`); None otherwise (an interval's confidence level, a
+        figure of no measure), which its spelling's own rule prints."""
+        if figure.set_of is None or figure.level or not _tabled(figure) or self._input is None:
+            return None
+        key, kind = figure.set_of
+        form = self._measures.get((key, _measure_kind(kind)))
+        return form.places if form is not None and form.reads_as == "rate" else None
 
     # --- a table's column rules: today's, each deciding over the cells its table already built --------------------
     #
-    # A table states each set of its rates and its money at one precision, decided over the column (or the row) after
-    # its cells are built. These hold those decisions, relocated: a cell keeps its value and glyph, and takes the
-    # decimals its set reads at, or, where it states its figures in words, those words respelled. Each records the
-    # text every cell it reads prints, under the measure its builder named (:meth:`of_measure`), and a number carries
-    # that text as its decided text (``value_text``), so the ledger holds what a rate or money column prints, not only
-    # what its cells were built from. The flip retires both: a cell then prints its measure's text.
-
-    def rate_columns(
-        self,
-        rows: Sequence[Mapping[str, TableCell]],
-        *,
-        bare: Mapping[str, str] | None = None,
-        keep: Collection[str] = (),
-    ) -> list[dict[str, TableCell]]:
-        """A table's rows with each column's percentages at one precision: whole percents (``60%``, ``63%``), and one
-        decimal for the whole column only where whole percents would print two of its values alike or an interval's two
-        ends alike (``62.9%`` beside ``63.2%``); an exact zero reads ``0%`` in every column, so ``0.0%`` and ``0%``
-        never stand on one page (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07;
-        :func:`~threetears.evals.analysis.report.charts.percent_places`).
-
-        A column holding a percentage written to two decimals or more (an interval's confidence level, ``99.69%``) is a
-        level, not a rate, and keeps its digits. A cell that states no percentage, or a number in another unit, is left
-        as it is; a cell's other words stay as written.
-
-        Every rate's cell it reads is recorded as it prints (``column``), under the measure its builder named
-        (:meth:`of_measure`): a number in percent or in points, a bare figure under a head naming its unit, and a cell
-        stating a rate in its words (``[1.0%, 9.0%]``, ``-7.6 pts``), respelled or not; a number carries the text
-        recorded (``value_text``). A column it keeps is its builder's, recorded where that cell was decided.
-
-        :param rows: The table's rows, by column key.
-        :ptype rows: Sequence[Mapping[str, TableCell]]
-        :param bare: The columns whose head names their unit, ``(%)`` or ``(pts)``
-            (:func:`~threetears.evals.analysis.report.blocks.bare_columns`), so their cells state bare figures
-            (``21.1``, ``[17.2, 25]``), each by the unit it names: every column of one unit in the table reads at one
-            precision by the same rule (a figure type across its columns: points, or percent), its leading figure and
-            its interval's ends. None for none.
-        :ptype bare: Mapping[str, str] | None
-        :param keep: The columns left as their builder wrote them, which are no rate (an interval's level, ``99.69%``
-            beside ``95%``, never rounded to a column's whole percents).
-        :ptype keep: Collection[str]
-        :return: The rows, each column's percentages respelled at its one precision.
-        :rtype: list[dict[str, TableCell]]
-        """
-        bare = {key: unit for key, unit in (bare or {}).items() if key not in keep}
-        keys = list(dict.fromkeys(key for row in rows for key in row))
-        places = {
-            key: chosen
-            for key in keys
-            if key not in bare and key not in keep
-            if (chosen := percent_places(_said(row[key]) for row in rows if key in row)) is not None
-        }
-        by_unit = {
-            unit: bare_places(_said(row[key]) for row in rows for key in bare if bare[key] == unit and key in row)
-            for unit in set(bare.values())
-        }
-        # A change in points reads at a point's one decimal, a whole one too (`29.0`, never `29` beside `-7.6`): the
-        # unit's precision, which whole percents' rule for levels never coarsens: a set reads at one precision.
-        by_unit = {
-            unit: POINT_PLACES if unit == "(pts)" and chosen is not None else chosen for unit, chosen in by_unit.items()
-        }
-        figures = {key: chosen for key, unit in bare.items() if (chosen := by_unit[unit]) is not None}
-        laid = [
-            {
-                key: _respelled_percents(cell, places[key])
-                if key in places
-                else _respelled_bare(cell, figures[key])
-                if key in figures
-                else cell
-                for key, cell in row.items()
-            }
-            for row in rows
-        ]
-        return [
-            {
-                key: self._issue_cell(cell, built[key])
-                if key not in keep and (_a_rate_cell(cell, key in bare) or _rate_words(cell, key in bare))
-                else cell
-                for key, cell in row.items()
-            }
-            for row, built in zip(laid, rows, strict=True)
-        ]
+    # A table states each set of its money in one form, decided over the column (or the row) after its cells are
+    # built: a cell keeps its value and glyph, and takes the form its set reads in. It records the text every cell it
+    # reads prints, under the measure its builder named (:meth:`of_measure`), and a number carries that text as its
+    # decided text (``value_text``), so the ledger holds what a money column prints, not only what its cells were built
+    # from. A rate's cell prints its measure's text, decided where it is built.
 
     def money_columns(
         self,
@@ -2741,7 +2909,7 @@ class PageForms:
 
     def of_measure(self, cell: TableCell, *, measure: str, kind: _MeasureKind) -> TableCell:
         """A cell a builder made, held as a figure of ``measure`` read as ``kind``, so a column rule that spells it
-        (:meth:`rate_columns`, :meth:`money_columns`) records what it prints under that measure: the ledger then holds a
+        (:meth:`money_columns`) records what it prints under that measure: the ledger then holds a
         rate's or money's table cell by its measure, as it holds every other figure the page prints. Nothing is
         printed, so nothing is issued.
 
@@ -2757,6 +2925,40 @@ class PageForms:
         if measure:
             self._cell_measures[id(cell)] = (cell, *_keyed(measure, kind))
         return cell
+
+    def as_printed(
+        self,
+        rows: Sequence[Mapping[str, TableCell]],
+        *,
+        bare: Mapping[str, str] | None = None,
+        keep: Collection[str] = (),
+    ) -> list[dict[str, TableCell]]:
+        """A table's rows as their builders decided them, each rate's cell recorded as it prints, under the measure its
+        builder named (:meth:`of_measure`), and a number carrying the text recorded (``value_text``). Every rate a
+        written page's table prints is its measure's decided text, so no column respells it; a cell a builder laid
+        from a key's words (a gate's line, a pass rate a figure key states) is recorded here, so the ledger holds what
+        every rate cell prints.
+
+        :param rows: The table's rows, by column key.
+        :ptype rows: Sequence[Mapping[str, TableCell]]
+        :param bare: The columns whose head names their unit (:func:`~threetears.evals.analysis.report.blocks.
+            bare_columns`), whose bare figures are a rate's; None for none.
+        :ptype bare: Mapping[str, str] | None
+        :param keep: The columns that state no rate (an interval's level), recorded where they were decided.
+        :ptype keep: Collection[str]
+        :return: The rows, each rate's number carrying its text.
+        :rtype: list[dict[str, TableCell]]
+        """
+        under = {key: unit for key, unit in (bare or {}).items() if key not in keep}
+        return [
+            {
+                key: self._issue_cell(cell, cell)
+                if key not in keep and (_a_rate_cell(cell, key in under) or _rate_words(cell, key in under))
+                else cell
+                for key, cell in row.items()
+            }
+            for row in rows
+        ]
 
     # --- the ledger --------------------------------------------------------------------------------------------------
 
@@ -2799,12 +3001,10 @@ class PageForms:
         self._issued.append(_Issued(key, kind, role, value, text))
         return Printed(value=value, text=text, digits=digits, unit=unit, held=held, decimals=decimals)
 
-    def _code_issue(
-        self, form: MeasureForm, role: Role, value: float, scaled: float, *, alone: bool = False
-    ) -> Printed:
+    def _code_issue(self, form: MeasureForm, role: Role, value: float, scaled: float) -> Printed:
         """A code page's level, from its value scaled into the unit it is printed in: the number its cell holds, the
-        decimals the cell writes it at, and its text; ``alone``, a rate or a measured figure by the lone figure rule at
-        its cell's precision, as the folded table of every measure states it."""
+        decimals the cell writes it at, and its text, at its measure's places wherever the page states it, the folded
+        table of every measure too (#1127 item 8)."""
         if form.ruler is not None:
             places = form.ruler.form.places_of([scaled])
             text = TableCell(value=scaled, unit=MONEY, decimals=places).figure
@@ -2812,22 +3012,18 @@ class PageForms:
                 form.key, form.kind, role, value, text, _digits_of(text, MONEY), MONEY, held=scaled, decimals=places
             )
         held = _code_held(form, scaled)
-        if alone:
-            text = _joined(format_number(held), form.unit)
-            return self._issue(
-                form.key, form.kind, role, value, text, _digits_of(text, form.unit), form.unit, held=held
-            )
-        text = _code_cell_text(form, held)
+        unit = form.unit
+        text = _code_cell_text(form, scaled)
         return self._issue(
             form.key,
             form.kind,
             role,
             value,
             text,
-            _digits_of(text, form.unit),
-            form.unit,
+            _digits_of(text, unit),
+            unit,
             held=held,
-            decimals=form.level_decimals,
+            decimals=_code_level_places(form, scaled),
         )
 
 
@@ -2848,6 +3044,10 @@ _CHART_LINES = frozenset({"reference", "x_reference", "price_line"})
 #: The fields a view of a page's input replaces (:meth:`PageForms.over`): a configs chart's grid. Every other field is
 #: the input's own.
 _GRID = frozenset({"factors", "configs"})
+
+#: The fewest cases a judged score with no interval reads to a hundredth at: below it a hundredth is noise, and the
+#: score reads a tenth (plan §2.3, rule 2 for a score's spread at a few cases).
+_SCORE_HUNDREDTHS_FROM = 30
 
 #: The decimals an off-page reading is stated to (:meth:`PageForms.reading`).
 _READING_PLACES = 2
@@ -2894,13 +3094,6 @@ def _places(values: Sequence[float]) -> int:
     return _MOST_SIDE_BY_SIDE_PLACES
 
 
-def _even_places(values: Sequence[float]) -> int:
-    """The fewest decimals at which shares in percent keep their side of none (0), of even (50) and of all (100), and
-    shares that differ still differ (:func:`_places` about each): a lean off even, or an end short of none or all,
-    stays visible whatever the rounding."""
-    return max(_places([value - edge for value in values]) for edge in (0.0, EVEN_SHARE, 100.0))
-
-
 def _joined(digits: str, unit: str) -> str:
     """Digits and their unit, spaced as the package writes the unit."""
     if not unit:
@@ -2918,10 +3111,9 @@ def _digits_of(text: str, unit: str) -> str:
     return text.removesuffix(unit).rstrip() if text.endswith(unit) else text
 
 
-def _interval_join(page: _PageKind, low: str, high: str) -> str:
-    """Two ends joined as the page joins an interval: ``low to high`` on a written page, ``[low, high]`` on a code
-    page's scorecard."""
-    return f"[{low}, {high}]" if page == "code" else f"{low} to {high}"
+def _interval_join(low: str, high: str) -> str:
+    """Two ends joined as every page joins an interval: ``low to high``."""
+    return f"{low} to {high}"
 
 
 def _keyed(measure: str, kind: _MeasureKind) -> tuple[str, str]:
@@ -2947,6 +3139,37 @@ def _measure_kind(kind: _MeasureKind) -> str:
     return "measure" if kind is None else kind
 
 
+#: A measure's set as :func:`campaign_set` names it: the scope it holds across, then the measure's kind and key.
+MeasureSet = tuple[str, str, str]
+
+#: What a measure's set holds across: its whole campaign (the owner's set-scope ruling), or each page alone (``"page"``),
+#: which the owner may yet choose. The one line that decides it, read by :func:`campaign_set` alone.
+_SET_SCOPE: Literal["campaign", "page"] = "campaign"
+
+
+def campaign_set(page: str, measure: str, kind: _MeasureKind) -> MeasureSet:
+    """The set a figure of ``measure`` stated on ``page`` joins: two figures share a set, and so its decimals, exactly
+    when this names one set for both.
+
+    The one place that decides a set's scope. A set is the measure across the whole campaign, its written page, its
+    code page and every aspect page alike (the owner's set-scope ruling), so the scope is ``"campaign"`` wherever the
+    figure is stated. The owner may yet let each page decide: that is :data:`_SET_SCOPE` reading ``"page"``, one line,
+    and the scope is then ``page``. Every page reads its sets from its campaign's one table (:func:`_measure_sets`),
+    each half-width in it keyed here by the page that states it, so nothing else moves.
+
+    :param page: The name of the page that states the figure: ``written``, ``code``, or an aspect's page
+        (:func:`_aspect_page`).
+    :ptype page: str
+    :param measure: The measure's key.
+    :ptype measure: str
+    :param kind: The measure's kind; None for a measure's own.
+    :ptype kind: _MeasureKind
+    :return: The set's name.
+    :rtype: MeasureSet
+    """
+    return (page if _SET_SCOPE == "page" else "campaign", _measure_kind(kind), measure)
+
+
 def _scale_spell(cell: TableCell, unit: str, number: float) -> str:
     """A number on a glyph scale as the scale's cells write it, its unit on it: ``$0.046``, ``88.1%``, ``-7.8 pts``; a
     bare figure at its column's one precision (``2.7``) where the cell carries one."""
@@ -2957,8 +3180,7 @@ def _scale_spell(cell: TableCell, unit: str, number: float) -> str:
 
 def _scale_figure(cell: TableCell, unit: str, number: float) -> str:
     """A figure on a glyph scale as its interval's ends read: in points at the cell's decimals, a point's one where it
-    names none (``-5.0 pts``), the cell's own figure and its declared margin alike (``±15.0 pts``, as the chart's
-    margin line reads it); any other as :func:`_scale_spell` writes it."""
+    names none (``-5.0 pts``); any other as :func:`_scale_spell` writes it."""
     if unit == POINTS and (cell.decimals is None or not cell.unit):
         return f"{spell_at(number, POINT_PLACES if cell.decimals is None else cell.decimals)} {POINTS}"
     return _scale_spell(cell, unit, number)
@@ -2975,16 +3197,24 @@ def _scale_places(cell: TableCell, unit: str) -> int | None:
 
 
 def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
-    """An interval on a glyph scale as the row's interval cell spells it: ``[88.1%, 100%]``, ``[-7.8, 35.4] pts``, both
-    ends at the cells' one precision (``[-6.9, 11.0] pts``, never ``11``)."""
-    on_number = unit == PERCENT or is_money(unit) or not unit
+    """An interval on a glyph scale in the one form every page prints an interval in, ``low to high``: ``88.1 to
+    100%``, ``-7.8 to +35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
+    pts``, never ``11``), the unit once after the high end; money's ``$`` on each end."""
+
+    def signed(text: str, value: float) -> str:
+        # A change's ends carry their signs; a level's do not.
+        return plus_signed(text, value) if cell.signed or cell.zero_line else text
+
     if (places := _scale_places(cell, unit)) is not None and unit != PERCENT:
         at = ends_places(low, high, places)
-        ends = f"[{spell_at(low, at)}, {spell_at(high, at)}]"
-        return ends if on_number or not unit else f"{ends} {unit}"
-    if on_number:
-        return f"[{_scale_spell(cell, unit, low)}, {_scale_spell(cell, unit, high)}]"
-    return f"[{number_in(low, unit)}, {number_in(high, unit)}] {unit}"
+        ends = f"{signed(spell_at(low, at), low)} to {signed(spell_at(high, at), high)}"
+        return f"{ends} {unit}" if unit and not is_money(unit) else ends
+    if unit == PERCENT or is_money(unit) or not unit:
+        low_text, high_text = _scale_spell(cell, unit, low), _scale_spell(cell, unit, high)
+        if unit == PERCENT:
+            low_text = low_text.removesuffix(PERCENT)
+        return f"{signed(low_text, low)} to {signed(high_text, high)}"
+    return f"{signed(number_in(low, unit), low)} to {signed(number_in(high, unit), high)} {unit}"
 
 
 def _two_figures(low: float, high: float) -> tuple[str, str]:
@@ -3002,8 +3232,14 @@ def _two_figures(low: float, high: float) -> tuple[str, str]:
 
 
 def _key_set(figure: Figure) -> tuple[str, str]:
-    """The key a figure key's printed part is held under in the ledger: the measure whose set it reads, by its kind,
-    or neither for a figure of no measure's set (a count, an adjusted p)."""
+    """The key a figure key's printed part is held under in the ledger: the measure the page's tables hold it under
+    where its family names one its path does not (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.
+    ledger_as`, an arm's cost per reply under the page's cost), else the measure whose set it reads, by its kind, or
+    neither for a figure of no measure's set (a count, an adjusted p). The decimals it prints at read its set alone
+    (:meth:`PageForms._key_figure_places`), so where it is held moves no digit."""
+    if figure.ledger_as is not None:
+        key, kind, _role = figure.ledger_as
+        return (key, _measure_kind(kind))
     if figure.set_of is None:
         return ("", "")
     key, kind = figure.set_of
@@ -3015,9 +3251,12 @@ _MONEY_SCALES = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
 
 
 def _key_role(figure: Figure) -> Role:
-    """What a key's figure is to the measure whose set it is held under: its level or its change where it is a figure
-    the page's tables print of that measure (:func:`_tabled`), else a lone figure, as :meth:`PageForms.key_number`
-    holds one it spells by the number rule."""
+    """What a key's figure is to the measure it is held under: the role the page's tables hold it in where its family
+    names one its statistic does not (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.ledger_as`, a
+    percentile as a level); else its level or its change where it is a figure the page's tables print of that measure
+    (:func:`_tabled`), whether or not its digits read at the measure's set; else a lone figure."""
+    if figure.ledger_as is not None:
+        return figure.ledger_as[2]
     if figure.set_of is None or not _tabled(figure):
         return "lone"
     if figure.change:
@@ -3063,35 +3302,6 @@ def _rate_words(cell: TableCell, bare: bool) -> bool:
 _A_DIGIT = re.compile(r"\d")
 
 
-def _said(cell: TableCell) -> str:
-    """A cell's text as it prints, without its flag: its number in its unit, or its value."""
-    return (
-        cell.amount(float(cell.value)) if cell.unit and isinstance(cell.value, int | float) else render_cell(cell.value)
-    )
-
-
-def _respelled_bare(cell: TableCell, places: int) -> TableCell:
-    """A bare figure's cell at ``places`` decimals (:func:`~threetears.evals.analysis.report.charts.respell_bare`); a
-    number keeps its value and glyph."""
-    if cell.is_number and not cell.unit:
-        return cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_bare(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
-
-
-def _respelled_percents(cell: TableCell, places: int) -> TableCell:
-    """A cell with every percentage it states at ``places`` decimals
-    (:func:`~threetears.evals.analysis.report.charts.respell_percents`); a number held with the percent unit keeps its
-    value, glyph and status and reads at its column's precision, or at the decimals its builder set."""
-    if cell.is_number and cell.unit == PERCENT:
-        # A builder that chose the cell's decimals (a level a change is read from, at its unit's one decimal) keeps them.
-        return cell if cell.decimals is not None else cell.model_copy(update={"decimals": places})
-    text = _said(cell)
-    respelled = respell_percents(text, places)
-    return cell if respelled == text else cell.model_copy(update={"value": respelled})
-
-
 def _cell_amounts(cell: TableCell) -> list[float | None]:
     """A money cell's amounts: its value and its interval's ends."""
     value = cell.value
@@ -3103,11 +3313,11 @@ def _cell_amounts(cell: TableCell) -> list[float | None]:
 
 
 def interval_level(level: str, family: ContrastFamily | None) -> str:
-    """An interval's level as every surface prints it, a chart's head and a table's cell alike: to one decimal
-    (``99.69%`` reads ``99.7%``), more only where one would round a level under 100 to ``100%``, which no interval holds
-    at (``99.95%`` stays ``99.95%``); a level stored in words, as stored. Where ``family`` corrects its comparisons
-    together at this level, what the family holds at once follows (``99.7% (95% across 16 comparisons)``), so a reader
-    never meets a bare ``99.69%``.
+    """An interval's level as every heading prints it, a chart's head and a table's column alike: where ``family``
+    corrects its comparisons together at this level, the joint guarantee they hold at, in plain words (``95% (adjusted
+    for 16 comparisons)``, which a chart's head prints ``95% intervals (adjusted for 16 comparisons)``), so a reader
+    meets the guarantee they act on and never a rounded per-interval level; any other level as the input states it
+    (``95%``, an uncorrected ``98.33%``), never rounded. The per-interval level is Method's and the glossary's.
 
     :param level: The level as the input states it (``99.69%``).
     :ptype level: str
@@ -3116,28 +3326,11 @@ def interval_level(level: str, family: ContrastFamily | None) -> str:
     :return: The level's words.
     :rtype: str
     """
-    shown = _readable_level(level)
-    if family is None or family.level != level or family.alpha is None:
-        return shown
-    corrected = (family.correction or "").strip().lower() not in ("", "none")
-    if not corrected or not family.family_size or family.family_size < 2:
-        return shown
-    joint = f"{format_number((1 - float(family.alpha)) * 100)}%"
-    return FAMILY_LEVEL_TEMPLATE.format(level=shown, joint=joint, size=family.family_size)
-
-
-def _readable_level(level: str) -> str:
-    number = level.strip().removesuffix("%")
-    try:
-        value = float(number)
-    except ValueError:
-        # NOSILENT: a level stored in words is printed as the input wrote it; no number is lost.
-        return level
-    places = 1
-    while value < 100 and round(value, places) >= 100 and places < len(number.partition(".")[2]):
-        places += 1
-    text = spell_at(value, places)
-    return f"{text.rstrip('0').rstrip('.')}%"
+    stated = level.strip()
+    joint = joint_level(family) if family is not None and family.level == level else None
+    if joint is None:
+        return stated
+    return FAMILY_LEVEL_TEMPLATE.format(joint=f"{format_number(joint[0] * 100)}{PERCENT}", size=joint[1])
 
 
 def _interval_words(low: float, high: float, drawn: Quantity) -> str:
@@ -3195,46 +3388,6 @@ def _tabled(figure: Figure) -> bool:
     return statistic in _LEVEL_FIGURES or (bool(figure.measure) and statistic in (_CRITERION_LEVEL, *_CRITERION_GAPS))
 
 
-def figure_places(
-    report_input: ReportInput, key: str, *, change: bool = False, judged: bool = False, factor: float = 1.0
-) -> int | None:
-    """The decimals every plain figure of a measure or judged dimension reads at wherever the page prints it, its Full
-    results and the keys its prose cites alike: a judged score's two (:data:`~threetears.evals.kernel.numbers.
-    SCORE_PLACES`); any other figure at two significant figures of the least of its set as drawn
-    (:func:`~threetears.evals.kernel.numbers.set_places`), its levels (every mean the input holds of it) or its changes
-    (every corrected comparison's on it), each a set of its own. None for a figure with no such set: a judged level off
-    the rubric, a key that is neither, or a measure the input holds no figure of in that set, whose figure keeps the
-    number rule.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param key: The measure's or judged dimension's key.
-    :ptype key: str
-    :param change: Whether the figures are changes.
-    :ptype change: bool
-    :param judged: Whether the figures are a judged dimension's (a comparison of kind ``judged``), not a measure's.
-    :ptype judged: bool
-    :param factor: What each figure is multiplied by where it is drawn: the set is placed as it prints.
-    :ptype factor: float
-    :return: The decimals, or None.
-    :rtype: int | None
-    """
-    if rubric_score(report_input, key) and (judged or key not in report_input.measures):
-        return SCORE_PLACES
-    if change:
-        held = [
-            float(contrast.delta)
-            for contrast in report_input.contrasts
-            if contrast.measure == key and (contrast.kind == "judged") == judged and contrast.delta is not None
-        ]
-    elif judged or key not in report_input.measures:
-        return None
-    else:
-        held = held_means(report_input, key)
-    # A measure the input holds no such figure of has no set: its figure keeps the number rule, never zero decimals.
-    return set_places(value * factor for value in held) if held else None
-
-
 # --- the written page: the Full results' decisions ---------------------------------------------------------------------
 
 
@@ -3288,51 +3441,78 @@ def _change_quantity(
     )
 
 
-def _level_decimals(report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None) -> int | None:
-    """The decimals every level of a measure reads at in every Full results table, by the one owner the keys citing it
-    read too (:func:`figure_places`), as drawn: a judged score at two,
-    any other measured figure (a count per trial, a time) at two significant figures of the least of every mean the
-    input holds of it, so its column reads at one precision (``1.4`` beside ``1.5``). None for a rate, whose column
-    rule spells it, and for money, whose form does.
+def _written_stated(
+    report_input: ReportInput, kinds: Iterable[tuple[str, _MeasureKind]]
+) -> tuple[list[_Width], dict[MeasureSet, list[float]]]:
+    """A written page's own half-widths, each compared (:data:`_Provenance`), and its sets' figures
+    (:func:`campaign_set`): the half-width of each headline interval of a measure, as stored (each arm's level, on the page and on each aspect; each comparison's
+    change, the pass rate's readings and pairs among them, held in points, so restated as shares), and each set's
+    figures as printed, which a set with no interval reads its decimals from.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :param key: The measure's or judged dimension's key.
-    :ptype key: str
-    :param drawn: How its levels are drawn (:func:`_level_quantity`).
-    :ptype drawn: Quantity
-    :param kind: A contrast's kind where the key is one's; None for a measure's.
-    :ptype kind: str | None
-    :return: The decimals, or None.
-    :rtype: int | None
+    :param kinds: Each measure the page states, by its key and kind.
+    :ptype kinds: Iterable[tuple[str, _MeasureKind]]
+    :return: The half-widths, stated on the written page, and each set's figures.
+    :rtype: tuple[list[_Width], dict[MeasureSet, list[float]]]
     """
-    if drawn.unit in (MONEY, PERCENT, POINTS):
-        return None
-    return figure_places(report_input, key, judged=kind == "judged", factor=drawn.factor)
+    found: list[tuple[tuple[str, str], float | None]] = []
+    figures: dict[MeasureSet, list[float]] = {}
+    for key, kind in kinds:
+        stated: str | None = None if kind == "measure" else kind
+        levels = _level_quantity(report_input, key, kind=stated)
+        if levels.unit == MONEY:
+            # Money keeps its own ruled form, chosen over its amounts (owner ruling Q3), which no half-width reaches.
+            continue
+        changes = quantity(figure_unit(report_input, key, kind=kind), change=True)
+        set_key = _set_key(key, _measure_kind(_set_kind(report_input, key, kind)))
+        held_figures = figures.setdefault(campaign_set("written", *set_key), [])
+        held = [c for c in report_input.contrasts if (c.measure, _measure_kind(c.kind)) == (key, kind)]
+        found += [(set_key, _half_width(c.interval)) for c in held]
+        held_figures += [float(c.delta) * changes.factor for c in held if c.delta is not None]
+        if kind == "trial":
+            for aspect in report_input.aspects:
+                found += [(set_key, _reading_width(reading)) for reading in aspect.readings]
+                found += [(set_key, _half_width(pair.interval, 100.0)) for pair in aspect.pairs]
+                held_figures += [
+                    100.0 * row.passed / row.usable
+                    for row in aspect_board(report_input, aspect.id).values()
+                    if row.passed is not None and row.usable
+                ]
+            continue
+        table = report_input.judged.get(key) if kind == "judged" else report_input.measures.get(key)
+        if table is not None:
+            stats = [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())]
+            found += [(set_key, _stat_width(stat)) for stat in stats]
+        # A level is any statistic the input holds of an arm (its mean, a p50 or a p95 where it states no mean), so a
+        # measure with no interval reads at two figures of the least of them (rule 2), never at none.
+        held_figures += [
+            float(level) * levels.factor
+            for stat in held_stats(report_input, key)
+            for level in (stat.mean, stat.p50, stat.p95)
+            if level is not None
+        ]
+    return _stated("written", [(key, width, "compared") for key, width in found]), figures
 
 
-def _change_decimals(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> int | None:
-    """The decimals a comparison's change and its interval's ends read at: a rate's in points at one decimal (``-6.0
-    pts`` beside ``-7.6 pts``); a score's at two and any other measured change at two significant figures of the least
-    change the page states of its measure, as drawn, by the one owner the keys citing it read too
-    (:func:`figure_places`); None for money, whose form spells it.
+def _set_kind(report_input: ReportInput, key: str, kind: _MeasureKind) -> _MeasureKind:
+    """The kind a written page's figure joins its set under: a comparison that names no kind, or ``measure``, on a key
+    the input holds only as a judged dimension is that dimension's, so one dimension never reads at two precisions."""
+    if kind == "measure" and key not in report_input.measures and key in report_input.judged:
+        return "judged"
+    return kind
 
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param measure: The measure's key.
-    :ptype measure: str
-    :param kind: The comparison's kind.
-    :ptype kind: str | None
-    :param drawn: How its changes are drawn (:func:`_change_quantity`).
-    :ptype drawn: Quantity
-    :return: The decimals, or None.
-    :rtype: int | None
-    """
-    if drawn.unit == MONEY:
-        return None
-    if drawn.unit == POINTS:
-        return POINT_PLACES
-    return figure_places(report_input, measure, change=True, judged=kind == "judged", factor=drawn.factor)
+
+def _stat_width(stat: Stat) -> float | None:
+    """An arm's level's half-width, as given: the one it states, else its interval's."""
+    return float(stat.half_width) if stat.half_width is not None else _half_width(stat.ci)
+
+
+def _reading_width(reading: Reading) -> float | None:
+    """A reading's half-width as a share (it is held in points): the one its precision states, else its interval's."""
+    if reading.precision is not None and reading.precision.half_width is not None:
+        return float(reading.precision.half_width) / 100.0
+    return _half_width(reading.within_interval, 100.0)
 
 
 def _change_span(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> float | None:
@@ -3357,54 +3537,17 @@ def _change_span(report_input: ReportInput, measure: str, kind: str | None, draw
     return None
 
 
-def _at_decimals(value: float, places: int, unit: str, *, signed: bool = False) -> str:
-    """A figure at its set's decimals (:func:`~threetears.evals.kernel.numbers.spell_at`), its unit spaced as the
-    package writes it (``1.4 notices``, ``4.75``, ``-6.0 pts``). A level that is exactly zero reads ``0`` (nothing
-    happened, which no precision qualifies, as ``0%`` reads in a column of percents); a change reads its zero at its
-    set's decimals (``0.0 pts`` beside ``-5.0 pts``).
-
-    :param value: The figure, as drawn.
-    :ptype value: float
-    :param places: Its set's decimals.
-    :ptype places: int
-    :param unit: Its unit; empty for none.
-    :ptype unit: str
-    :param signed: Whether it is a change, read signed.
-    :ptype signed: bool
-    :return: Its text.
-    :rtype: str
-    """
-    text = "0" if value == 0 and not signed else spell_at(value, places, signed=signed)
-    return _joined(text, unit)
-
-
-def _change_ends(low: float, high: float, places: int, unit: str, *, span: float | None) -> tuple[str, str]:
-    """A change's interval's two ends, as drawn, at one precision: kept within how far the measure can move (``span``),
-    at the set's decimals or more where those would print a non-zero end as zero or two ends alike
-    (:func:`~threetears.evals.kernel.numbers.ends_places`), each signed in its unit.
-
-    :param low: The low end, as drawn.
-    :ptype low: float
-    :param high: The high end, as drawn.
-    :ptype high: float
-    :param places: The changes' set's decimals.
-    :ptype places: int
-    :param unit: Their unit; empty for none.
-    :ptype unit: str
-    :param span: How far a change can reach either way, as drawn; None for unbounded.
-    :ptype span: float | None
-    :return: The two ends' texts.
-    :rtype: tuple[str, str]
-    """
-    if span is not None:
-        # A change never reaches past what its measure can move: a score's by its scale's width, a rate's by 100 points.
-        low, high = max(low, -span), min(high, span)
-    at = ends_places(low, high, places)
-    return _at_decimals(low, at, unit, signed=True), _at_decimals(high, at, unit, signed=True)
-
-
-def _written_form(report_input: ReportInput, key: str, kind: _MeasureKind) -> MeasureForm:
-    """One measure's form on a written page, from the Full results' decisions; a measure's own kind is None there."""
+def _written_form(
+    report_input: ReportInput,
+    key: str,
+    kind: _MeasureKind,
+    sets: Mapping[MeasureSet, Sequence[float]],
+    figures: Mapping[MeasureSet, Sequence[float]],
+) -> MeasureForm:
+    """One measure's form on a written page: how its figures are drawn, and the decimals its set reads at, read from
+    its uncertainty across the campaign (``sets``, as stored, drawn in its unit here; :func:`policy_places`), a rate's
+    and its changes' to at most one, else from its figures; a measure's own kind is None there. Money keeps the form
+    its ruler chooses."""
     stated: str | None = None if kind == "measure" else kind
     levels = _level_quantity(report_input, key, kind=stated)
     held = [c for c in report_input.contrasts if (c.measure, _measure_kind(c.kind)) == (key, kind)]
@@ -3418,6 +3561,13 @@ def _written_form(report_input: ReportInput, key: str, kind: _MeasureKind) -> Me
         if is_rubric_score(report_input, key, kind=stated)
         else "measured"
     )
+    places: int | None = None
+    narrowest: float | None = None
+    if reads_as != "money":
+        set_key = _set_key(key, _measure_kind(_set_kind(report_input, key, kind)))
+        widths = [width * levels.factor for width in _set_widths(sets, "written", *set_key)]
+        narrowest = min(widths) if widths else None
+        places = policy_places(widths, figures.get(campaign_set("written", *set_key), ()), capped=reads_as == "rate")
     return MeasureForm(
         key=key,
         kind=kind,
@@ -3426,8 +3576,8 @@ def _written_form(report_input: ReportInput, key: str, kind: _MeasureKind) -> Me
         change_unit=changes.unit,
         factor=levels.factor,
         change_factor=changes.factor,
-        level_decimals=_level_decimals(report_input, key, levels, kind=stated),
-        change_decimals=_change_decimals(report_input, key, kind, changes),
+        level_decimals=None,
+        change_decimals=None,
         money=levels.money,
         change_money=changes.money,
         span=_change_span(report_input, key, kind, changes),
@@ -3435,6 +3585,8 @@ def _written_form(report_input: ReportInput, key: str, kind: _MeasureKind) -> Me
         changes=changes,
         scale=_RUBRIC_SCALE_TEXT if reads_as == "score" else "",
         unnamed_span=_change_span(report_input, key, stated, changes),
+        places=places,
+        half_width=narrowest,
     )
 
 
@@ -3449,81 +3601,251 @@ def _drawn(form: MeasureForm, *, change: bool) -> Quantity:
     return drawn
 
 
-def _written_level(form: MeasureForm, value: float, *, alone: bool) -> str:
-    """A level as the Full results state it: at its set's decimals; a rate, money or a lone level by its quantity's
-    note rule (:func:`~threetears.evals.analysis.report.parts.look.figure_text`)."""
+def _written_level(form: MeasureForm, value: float) -> str:
+    """A level as every surface of a written page states it, at its measure's decimals: a rate kept off its floor and
+    its ceiling (:func:`policy_rate`), any other figure in its unit (:func:`policy_figure`), an exact zero whole
+    (``0 notices``); money, and a figure that is no number, by its quantity's note rule
+    (:func:`~threetears.evals.analysis.report.parts.look.figure_text`)."""
     drawn = _drawn(form, change=False)
-    if form.level_decimals is not None and not alone:
-        return _at_decimals(value * drawn.factor, form.level_decimals, drawn.unit)
-    return figure_text(value * drawn.factor, drawn)
+    scaled = value * drawn.factor
+    if form.places is None:
+        return figure_text(scaled, drawn)
+    if not math.isfinite(scaled):
+        # A figure that is no number reads as the dash in its unit (``— items``), as the number rule spells it.
+        return _joined(_ABSENT_TEXT, drawn.unit)
+    if form.reads_as == "rate":
+        return policy_rate(scaled, form.places)
+    return _joined(policy_figure(scaled, form.places, bounds=()), drawn.unit)
 
 
-def _written_change(form: MeasureForm, value: float, *, alone: bool) -> str:
-    """A change as the Full results' comparisons state it: signed at its set's decimals; money or a lone change by its
-    quantity's note rule."""
+def _written_change(form: MeasureForm, value: float) -> str:
+    """A change as every surface of a written page states it, signed at its measure's decimals: a change in points
+    kept off zero (``-0.03 pts``, never ``-0.0 pts``), any other at its measure's decimals alone; money, and a figure
+    that is no number, by its quantity's note rule."""
     drawn = _drawn(form, change=True)
-    if form.change_decimals is not None and not alone:
-        return _at_decimals(value * drawn.factor, form.change_decimals, drawn.unit, signed=True)
-    return figure_text(value * drawn.factor, drawn)
+    scaled = value * drawn.factor
+    if form.places is None:
+        return figure_text(scaled, drawn)
+    if not math.isfinite(scaled):
+        return _joined(_ABSENT_TEXT, drawn.unit)
+    bounds = _ZERO_BOUND if drawn.unit == POINTS else ()
+    return _joined(policy_figure(scaled, form.places, bounds=bounds, signed=True), drawn.unit)
 
 
 def _written_interval(
     form: MeasureForm, low: float, high: float, *, change: bool, span: float | None
 ) -> tuple[str, str, str]:
-    """An interval as the written page states it, ``low to high``: a change's as the Full results' comparisons do, its
-    ends kept within how far the measure can move and read at one precision; a level's as a chart's tooltip does."""
+    """An interval as every surface of a written page states it, in its one form (:func:`policy_interval`): ``low to
+    high`` at its measure's decimals, the unit once (``-13 to -2 pts``), a change's ends signed and kept within how far
+    the measure can move, each end kept off zero, and a rate level's off its floor and its ceiling. Money's, and an
+    interval with an end that is no number, by its quantity's note rule. Each end's text is as the interval prints it,
+    the unit once, after the high end."""
     drawn = _drawn(form, change=change)
-    if not change or form.change_decimals is None:
-        scaled = (low * drawn.factor, high * drawn.factor)
-        text = _interval_words(scaled[0], scaled[1], drawn)
-        return figure_text(scaled[0], drawn), figure_text(scaled[1], drawn), text
-    low_text, high_text = _change_ends(
-        low * drawn.factor, high * drawn.factor, form.change_decimals, drawn.unit, span=span
+    scaled = (low * drawn.factor, high * drawn.factor)
+    if form.places is None or not all(math.isfinite(end) for end in scaled):
+        return figure_text(scaled[0], drawn), figure_text(scaled[1], drawn), _interval_words(*scaled, drawn)
+    if change and span is not None:
+        # A change never reaches past what its measure can move: a score's by its scale's width, a rate's by 100 points.
+        scaled = (max(scaled[0], -span), min(scaled[1], span))
+    bounds = _RATE_BOUNDS if form.reads_as == "rate" and not change else ()
+    low_digits, high_digits, text = policy_interval(
+        scaled[0], scaled[1], form.places, change=change, bounds=bounds, unit=drawn.unit
     )
-    return low_text, high_text, _interval_join("written", low_text, high_text)
+    return low_digits, _joined(high_digits, drawn.unit), text
+
+
+def _placed_text(value: float, drawn: Quantity, places: int, *, change: bool) -> str:
+    """A chart's drawn figure of a measure at its measure's decimals, as the page's tables print it: a change signed, in
+    points kept off zero; a rate's level kept off its floor and its ceiling; any other in its unit."""
+    if not math.isfinite(value):
+        return figure_text(value, drawn)
+    if change:
+        bounds = _ZERO_BOUND if drawn.unit == POINTS else ()
+        return _joined(policy_figure(value, places, bounds=bounds, signed=True), drawn.unit)
+    if drawn.unit == PERCENT:
+        return policy_rate(value, places)
+    return _joined(policy_figure(value, places, bounds=()), drawn.unit)
+
+
+# --- which figures share a measure's set: the campaign's ----------------------------------------------------------
+
+
+#: The key the pass rate's half-widths are held under, whichever page states it: a change's or a choice's readings
+#: (``trial``), a measurement's scorecard (its ``passed`` measure) and an aspect page's ``trial`` contrasts alike.
+_PASS_RATE = (TRIAL_PASS_NAME, "trial")
+
+
+def _set_key(name: str, reading: str) -> tuple[str, str]:
+    """The key one reading's half-widths are held under across the campaign's pages: its name and reading, the pass
+    rate's one key wherever it is stated."""
+    return _PASS_RATE if name == TRIAL_PASS_NAME else (name, reading)
+
+
+def _half_width(interval: tuple[float, float] | None, scale: float = 1.0) -> float | None:
+    """An interval's half-width, as stored (``scale`` divides one held in points back into a share); None for none, and
+    for one of no width, which says nothing of the precision."""
+    if interval is None or interval[1] == interval[0]:
+        return None
+    return abs(float(interval[1]) - float(interval[0])) / 2 / scale
+
+
+def _aspect_page(label: str) -> str:
+    """An aspect's own page's name, as :func:`campaign_set` reads it."""
+    return f"aspect {label}"
+
+
+#: Where a half-width comes from, as it is gathered: ``compared``, an interval on a figure a reader compares (an arm's
+#: level, a comparison's change); ``pooled``, one on a figure pooled over the arms' or the comparisons' own (the code
+#: page's campaign-wide pass rate and its change); ``derived``, one no page prints, the engine draws from a level's
+#: standard error (an aspect page states a judged score's level as its mean and its spread). Only a ``compared`` one
+#: sets a measure's digits (owner ruling, set digits): the rest print at the form it sets (:func:`_measure_sets`).
+_Provenance = Literal["compared", "pooled", "derived"]
+
+#: One half-width as it is gathered: its reading's key, its width as stored, and where it comes from.
+_Gathered = tuple[tuple[str, str], float | None, _Provenance]
+
+
+@dataclass(frozen=True)
+class _Width:
+    """One half-width a page of the campaign states: the page, its reading's name and kind, its width as stored, and
+    where it comes from (:data:`_Provenance`)."""
+
+    page: str
+    name: str
+    reading: str
+    half_width: float
+    provenance: _Provenance
+
+
+def _stated(page: str, widths: Iterable[_Gathered]) -> list[_Width]:
+    """Half-widths one page states, by their reading's key; an absent one, and one that is no number, left out."""
+    return [
+        _Width(page, name, reading, float(width), provenance)
+        for (name, reading), width, provenance in widths
+        if width is not None and math.isfinite(width) and width > 0
+    ]
+
+
+def _readings_stated(readings: CampaignReadings) -> list[_Width]:
+    """The half-widths a campaign's code page states, as stored, by reading: each change's and each pair's interval
+    on the pass rate (held in points, so restated as shares) and each arm's interval on a measure, all compared; and
+    each arm's interval pooled across the aspects, its level's and its change's."""
+    found: list[_Gathered] = []
+    for row in readings.readings:
+        found += [
+            (_PASS_RATE, _half_width(interval, 100.0), "compared")
+            for interval in (row.gain_interval, row.drop_interval, row.within_interval)
+        ]
+    found += [(_PASS_RATE, _half_width(pair.interval, 100.0), "compared") for pair in readings.pairs]
+    found += [
+        (_set_key(reading.measure, "measure"), _half_width(reading.interval), "compared")
+        for reading in readings.measures
+    ]
+    if readings.aggregate is not None:
+        for arm in readings.aggregate.arms:
+            found.append((_PASS_RATE, _half_width(arm.pass_rate.interval, 100.0), "pooled"))
+            if arm.change is not None:
+                found.append((_PASS_RATE, _half_width(arm.change.interval, 100.0), "pooled"))
+    return _stated("code", found)
+
+
+def _bundle_stated(bundle: AnalysisContextBundle) -> list[_Width]:
+    """The half-widths an aspect's page states, as stored, by reading: each contrast's interval on its change, each
+    guardrail's and each arm's own interval on a measure's level as its cell holds it, all compared; and a judged
+    score's level's, derived from its cell's mean and spread inside the dimension's scale, which the page states as
+    the mean and its spread, never as an interval."""
+    surface = bundle_decision_surface(bundle)
+    found: list[_Gathered] = [
+        (_set_key(comparison.name, comparison.reading), _half_width(comparison.interval), "compared")
+        for family in bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+    ]
+    for cell in surface.cells:
+        for summary in cell.measures.measures:
+            if summary.ci_low is not None and summary.ci_high is not None:
+                found.append(
+                    (_set_key(summary.name, "measure"), _half_width((summary.ci_low, summary.ci_high)), "compared")
+                )
+        for judged in cell.judged:
+            facts = surface.dimensions.get(judged.dimension)
+            if judged.mean is None or judged.sem is None or facts is None:
+                continue
+            interval = mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
+            found.append(((judged.dimension, "judged"), _half_width(interval), "derived"))
+    if bundle.guardrails is not None:
+        found += [
+            (_set_key(check.name, check.reading), _half_width(check.interval), "compared")
+            for check in bundle.guardrails.checks
+        ]
+    return _stated(_aspect_page(bundle.aspect), found)
+
+
+def _campaign_stated(
+    bundles: Iterable[AnalysisContextBundle], readings: CampaignReadings | None = None
+) -> list[_Width]:
+    """Every half-width a campaign's aspect pages and its code page state, as stored, each by the page that states it
+    and where it comes from."""
+    stated = [width for bundle in bundles for width in _bundle_stated(bundle)]
+    return stated if readings is None else [*stated, *_readings_stated(readings)]
+
+
+def _measure_sets(stated: Iterable[_Width]) -> dict[MeasureSet, tuple[float, ...]]:
+    """The campaign's one table: every compared half-width its pages state, by the set each joins
+    (:func:`campaign_set`), which the written page, the code page and every aspect page read their decimals from
+    alike. The one place the owner's set-digits ruling is decided: a pooled or derived half-width joins no set, so it
+    never sets a measure's digits, and its figure prints at the form the compared ones set."""
+    held: dict[MeasureSet, list[float]] = {}
+    for width in stated:
+        if width.provenance != "compared":
+            continue
+        held.setdefault(campaign_set(width.page, *_set_key(width.name, width.reading)), []).append(width.half_width)
+    return {key: tuple(found) for key, found in held.items()}
+
+
+def _set_widths(sets: Mapping[MeasureSet, Sequence[float]], page: str, name: str, reading: str) -> tuple[float, ...]:
+    """The half-widths a reading's figures on ``page`` read their places from: every one its set holds in the
+    campaign's table (:func:`campaign_set`)."""
+    return tuple(sets.get(campaign_set(page, *_set_key(name, reading)), ()))
 
 
 # --- the code page: the scorecard's decisions --------------------------------------------------------------------------
 
 
-def _measured_decimals(figures: Iterable[float]) -> int | None:
-    """The decimals a column of measured figures (neither a rate nor money, whose columns have forms of their own)
-    reads at on the scorecard: the set's (:func:`~threetears.evals.kernel.numbers.set_places`), so ``2.737`` beside
-    ``0`` reads ``2.7`` and ``99.2345`` beside ``100`` reads ``99`` and ``100``; None for a column of zeros, which the
-    number rule spells.
-
-    :param figures: The column's figures, as its cells hold them.
-    :ptype figures: Iterable[float]
-    :return: The decimals, or None.
-    :rtype: int | None
-    """
-    held = list(figures)
-    if not any(figure != 0 for figure in held):
-        return None
-    return set_places(held)
+def _rate_form(key: str, kind: str, widths: Sequence[float], *, change_factor: float) -> MeasureForm:
+    """A rate's form on a code page: in percent, its changes in points, every figure at the places its narrowest
+    interval sets (:func:`policy_places`, capped at one decimal)."""
+    places = policy_places([100.0 * width for width in widths], capped=True)
+    return MeasureForm(
+        key=key,
+        kind=kind,
+        reads_as="rate",
+        unit=PERCENT,
+        change_unit=POINTS,
+        factor=100.0,
+        change_factor=change_factor,
+        level_decimals=places,
+        change_decimals=places,
+        span=100.0,
+        places=places,
+        half_width=100.0 * min(widths) if widths else None,
+    )
 
 
 def _scorecard_form(
-    key: str, shown: Sequence[MeasureReading], rates: frozenset[str], rulers: Mapping[str, MoneyRuler]
+    key: str,
+    shown: Sequence[MeasureReading],
+    rates: frozenset[str],
+    rulers: Mapping[str, MoneyRuler],
+    widths: Sequence[float],
 ) -> MeasureForm:
-    """One measure's form on a measurement's scorecard: a rate in percent to a decimal, money on its ruler, any other
-    measure at its column's decimals over every cell that holds one figure of it (a cell read under several setups
-    holds none)."""
+    """One measure's form on a measurement's scorecard: a rate in percent, money on its ruler, any other measure in its
+    own unit, a rate and a measured figure at the places the campaign's set of it sets (:func:`policy_places`); a
+    measure with no interval at two significant figures of its least figure, over every cell that holds one figure of
+    it (a cell read under several setups holds none)."""
     # A rate is decided before money, so a measure both a rate and money would print its money through the rate's form;
     # no measure the package reads is both, and the scorecard's cells check money first.
     if key in rates:
-        return MeasureForm(
-            key=key,
-            kind="measure",
-            reads_as="rate",
-            unit=PERCENT,
-            change_unit=POINTS,
-            factor=100.0,
-            change_factor=100.0,
-            level_decimals=None,
-            change_decimals=POINT_PLACES,
-            span=100.0,
-        )
+        return _rate_form(key, "measure", widths, change_factor=100.0)
     ruler = rulers.get(key)
     if ruler is not None:
         return MeasureForm(
@@ -3543,12 +3865,8 @@ def _scorecard_form(
     for reading in shown:
         if reading.measure == key:
             cells.setdefault((reading.aspect, reading.arm), []).append(reading)
-    figures = [
-        round(found[0].value, _MEASURED_PLACES)
-        for found in cells.values()
-        if len(found) == 1 and found[0].value is not None
-    ]
-    decimals = _measured_decimals(figures)
+    figures = [found[0].value for found in cells.values() if len(found) == 1 and found[0].value is not None]
+    places = policy_places(widths, figures)
     return MeasureForm(
         key=key,
         kind="measure",
@@ -3557,9 +3875,24 @@ def _scorecard_form(
         change_unit="",
         factor=1.0,
         change_factor=1.0,
-        level_decimals=decimals,
-        change_decimals=decimals,
+        level_decimals=places,
+        change_decimals=places,
+        places=places,
+        half_width=min(widths) if widths else None,
     )
+
+
+def _code_places(form: MeasureForm) -> int:
+    """The places every figure of a code page's measure reads at (:attr:`MeasureForm.places`)."""
+    return 0 if form.places is None else form.places
+
+
+def _code_bounds(form: MeasureForm, *, change: bool) -> tuple[float, ...]:
+    """The boundaries a code page's figure may not print onto: a rate's floor and ceiling for its level, zero for a
+    change in points; none for any other measure's figure (rule 2 sets its places alone)."""
+    if form.reads_as != "rate":
+        return ()
+    return _ZERO_BOUND if change else _RATE_BOUNDS
 
 
 def _code_scaled(form: MeasureForm, value: float) -> float:
@@ -3567,49 +3900,62 @@ def _code_scaled(form: MeasureForm, value: float) -> float:
     return form.ruler.drawn(value) if form.ruler is not None else value * form.factor
 
 
+def _code_level_places(form: MeasureForm, scaled: float) -> int:
+    """The places one level reads at: its measure's, or more where a rate would print onto its floor or ceiling."""
+    return policy_bounded_places(scaled, _code_places(form), bounds=_code_bounds(form, change=False))
+
+
 def _code_held(form: MeasureForm, scaled: float) -> float:
-    """The number a scorecard's cell holds for a level, scaled: a rate in percent to a decimal, any other figure to
-    four decimals."""
-    return round(scaled, POINT_PLACES if form.reads_as == "rate" else _MEASURED_PLACES)
+    """The number a scorecard's cell holds for a level, scaled: rounded half to even at the places it reads at, so a
+    cell that writes it at those places prints its decided text."""
+    return float(round_half_even(scaled, _code_level_places(form, scaled)))
 
 
-def _code_cell_text(form: MeasureForm, held: float) -> str:
-    """A level's text as the scorecard's cell states it, from the number the cell holds: a rate in percent, any other
-    figure at its column's decimals."""
-    unit = PERCENT if form.reads_as == "rate" else ""
-    return TableCell(value=held, unit=unit, decimals=form.level_decimals).figure
+def _code_cell_text(form: MeasureForm, scaled: float) -> str:
+    """A level's text as the code page states it: a rate in percent (``0%`` for none), any other figure at its
+    measure's places in its unit, an exact zero whole."""
+    if form.reads_as == "rate":
+        return policy_rate(scaled, _code_places(form))
+    return _joined(policy_figure(scaled, _code_places(form), bounds=()), form.unit)
+
+
+def _code_change_places(form: MeasureForm, value: float) -> int:
+    """The places one change reads at: its measure's, or more where a change in points would print onto zero."""
+    return policy_bounded_places(value * form.change_factor, _code_places(form), bounds=_code_bounds(form, change=True))
 
 
 def _code_change_held(form: MeasureForm, value: float) -> float:
-    """The number a scorecard's cell holds for a change (or how far one reaches), scaled into its unit and rounded to
-    the changes' decimals, a point's one where they have none."""
-    decimals = form.change_decimals
-    return round(value * form.change_factor, POINT_PLACES if decimals is None else decimals)
+    """The number a scorecard's cell holds for a change (or how far one reaches), scaled into its unit and rounded half
+    to even at the places it reads at."""
+    return float(round_half_even(value * form.change_factor, _code_change_places(form, value)))
 
 
 def _code_change(form: MeasureForm, value: float) -> str:
-    """A change as the scorecard's cell states it: signed, in points at a point's one decimal for a rate."""
-    return TableCell(
-        value=_code_change_held(form, value), unit=form.change_unit, decimals=form.change_decimals, signed=True
-    ).figure
+    """A change as the code page states it: signed, in its unit (points for a rate), at its measure's places."""
+    digits = policy_figure(
+        value * form.change_factor, _code_places(form), bounds=_code_bounds(form, change=True), signed=True
+    )
+    return _joined(digits, form.change_unit)
 
 
 def _code_interval(form: MeasureForm, low: float, high: float, *, change: bool) -> tuple[str, str, str]:
-    """An interval as the scorecard states it, ``[low, high]``: a change's in its unit's precision, the unit in its
-    column's head; a level's ends each as its cell writes them."""
-    if change:
-        text = interval_text(low * form.change_factor, high * form.change_factor, form.change_unit)
-        low_text, _, high_text = text.removeprefix("[").removesuffix("]").partition(", ")
-        return low_text, high_text, text
-    if form.ruler is not None:
+    """An interval as the code page states it, in its one form, ``low to high`` (:func:`policy_interval`): a change's
+    ends signed, in points for a rate, the unit once after the high end; money's ends each in its ruler's form."""
+    if form.ruler is not None and not change:
         low_text, high_text = form.ruler.spell_ends(low, high)
-        return low_text, high_text, f"[{low_text}, {high_text}]"
-    cell = TableCell(value=0.0, unit=form.unit, decimals=form.level_decimals)
-    ends = (cell.amount(low * form.factor), cell.amount(high * form.factor))
-    return ends[0], ends[1], f"[{ends[0]}, {ends[1]}]"
+        return low_text, high_text, f"{low_text} to {high_text}"
+    factor = form.change_factor if change else form.factor
+    ends = [low * factor, high * factor]
+    if form.span is not None:
+        floor = -form.span if change else 0.0
+        ends = [min(max(end, floor), form.span) for end in ends]
+    unit = form.change_unit if change else form.unit
+    bounds = _RATE_BOUNDS if form.reads_as == "rate" and not change else ()
+    low_text, high_text, _ = policy_interval(ends[0], ends[1], _code_places(form), change=change, bounds=bounds)
+    return _joined(low_text, unit), _joined(high_text, unit), f"{low_text} to {_joined(high_text, unit)}"
 
 
-# --- an aspect page's contrasts: today's sets, relocated --------------------------------------------------------------
+# --- an aspect page's contrasts: one set per reading -----------------------------------------------------------------
 
 
 def _resolvable(comparison: FamilyComparison) -> bool:
@@ -3623,55 +3969,81 @@ def _reading_places(
     ruler: MeasureRuler,
     name: str,
     reading: str,
-    levels: Iterable[float],
-    changes: Iterable[float],
+    widths: Sequence[float],
+    figures: Iterable[float],
 ) -> ContrastPlaces:
-    """One reading's :class:`ContrastPlaces`, from every level and change of it a surface states, drawn on its ruler.
-
-    A rate reads its changes in points at one decimal; a judged score (a dimension on a scale other than 0 to 1) at
-    two decimals, its levels and changes alike; money by its own form; every other measured figure (a count per
-    trial, a time) at two significant figures of its set's least figure but zero (:func:`set_places`), its levels and
-    its changes each a set of their own.
-    """
+    """One reading's :class:`ContrastPlaces`: its levels and its changes at the places its narrowest interval sets
+    (:func:`policy_places`, drawn on its ruler), a rate's capped at one decimal, a reading with no interval at two
+    significant figures of its least figure; money by its own form. A level never runs past what it can take."""
+    drawn = [width * ruler.factor for width in widths]
     if is_money(ruler.unit):
         return ContrastPlaces(None, None, floor=0.0)
     if ruler.unit == PERCENT:
-        return ContrastPlaces(None, POINT_PLACES, floor=0.0, ceiling=100.0)
+        places = policy_places(drawn, figures, capped=True)
+        return ContrastPlaces(places, places, floor=0.0, ceiling=100.0)
+    places = policy_places(drawn, figures)
     if reading == "judged":
         facts = surface.dimensions.get(name)
         bounds = facts.value_range if facts is not None else None
         if bounds is not None:
             low, high = (bound * ruler.factor for bound in bounds)
             scale = f"{format_number(low)}–{format_number(high)}"
-            return ContrastPlaces(SCORE_PLACES, SCORE_PLACES, floor=low, ceiling=high, scale=scale)
+            return ContrastPlaces(places, places, floor=low, ceiling=high, scale=scale)
     described = bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name) if reading == "measure" else None
     floor = described.interval_floor if described is not None else None
     ceiling = described.value_range[1] if described is not None and described.value_range is not None else None
     return ContrastPlaces(
-        set_places(levels),
-        set_places(changes),
+        places,
+        places,
         floor=floor * ruler.factor if floor is not None else None,
         ceiling=ceiling * ruler.factor if ceiling is not None else None,
     )
 
 
 def _contrast_places(
-    bundle: AnalysisContextBundle, surface: DecisionSurface, rulers: Rulers, comparisons: Iterable[FamilyComparison]
+    bundle: AnalysisContextBundle,
+    surface: DecisionSurface,
+    rulers: Rulers,
+    comparisons: Iterable[FamilyComparison],
+    campaign: Mapping[MeasureSet, Sequence[float]],
 ) -> dict[tuple[str, str], ContrastPlaces]:
-    """Each reading's :class:`ContrastPlaces` over ``comparisons``: its set is every arm's figure and every change on
-    it, by name and reading."""
-    held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+    """Each reading's :class:`ContrastPlaces` over every contrast an aspect's page states and every reading it holds
+    a half-width of, by name and reading: its places from its set's half-widths across the campaign (``campaign``,
+    :func:`campaign_set`), its figures where it has none."""
+    # A reading the page states no contrast of (a bar's, a guardrail's, a per-label statistic's) still has its set: from
+    # its half-widths, else from every arm's figure of it.
+    held: dict[tuple[str, str], list[float]] = {(width.name, width.reading): [] for width in _bundle_stated(bundle)}
+    for cell in surface.cells:
+        for summary in cell.measures.measures:
+            figure = summary.rate if summary.rate is not None else summary.mean
+            if figure is not None:
+                held.setdefault((summary.name, "measure"), []).append(
+                    figure * rulers.of(summary.name, "measure").factor
+                )
+        for judged in cell.judged:
+            if judged.mean is not None:
+                held.setdefault((judged.dimension, "judged"), []).append(
+                    judged.mean * rulers.of(judged.dimension, "judged").factor
+                )
     for comparison in comparisons:
         ruler = rulers.of(comparison.name, comparison.reading)
-        levels, changes = held.setdefault((comparison.name, comparison.reading), ([], []))
-        levels += [
+        figures = held.setdefault((comparison.name, comparison.reading), [])
+        figures += [
             side.mean * ruler.factor for side in (comparison.control, comparison.contrast) if side.mean is not None
         ]
         if comparison.delta is not None:
-            changes.append(comparison.delta * ruler.factor)
+            figures.append(comparison.delta * ruler.factor)
     return {
-        (name, reading): _reading_places(bundle, surface, rulers.of(name, reading), name, reading, levels, changes)
-        for (name, reading), (levels, changes) in held.items()
+        (name, reading): _reading_places(
+            bundle,
+            surface,
+            rulers.of(name, reading),
+            name,
+            reading,
+            _set_widths(campaign, _aspect_page(bundle.aspect), name, reading),
+            figures,
+        )
+        for (name, reading), figures in held.items()
     }
 
 
@@ -3679,7 +4051,7 @@ def _change_money(
     rulers: Rulers, changes: Iterable[tuple[str, str, float | None, tuple[float, float] | None]]
 ) -> dict[tuple[str, str], MoneyForm]:
     """The one form each money measure's changes read in, a change and its interval's ends alike (#993): from every
-    change a surface states of the measure and the widths of their intervals, on the measure's ruler
+    change an aspect's page states of the measure and the widths of their intervals, on the measure's ruler
     (:meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`), by name and reading. A measure of another unit
     has none."""
     held: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
@@ -3700,51 +4072,64 @@ def _change_money(
     return forms
 
 
-def _reads_at_set_places(unit: str) -> bool:
-    """Whether an aspect page's level in ``unit`` reads at its set's places: any unit but a percent, which its column's
-    rule spells, and money, which reads in its form."""
-    return not is_money(unit) and unit != PERCENT
-
-
 def _on_the_figure(unit: str) -> str:
     """The unit an aspect page writes on a figure itself (money's ``$``, a percent's ``%``); empty for any other unit,
-    which the row's heading or the bracket's end names once."""
+    which the row's heading or the interval's end names once."""
     if is_money(unit):
         return MONEY
     return unit if unit == PERCENT else ""
 
 
-def _ends_at(low: float, high: float, places: int, unit: str, *, level: bool = False) -> tuple[str, str, str]:
-    """An interval's two ends at one precision (:func:`~threetears.evals.kernel.numbers.ends_places`) and the interval,
-    its unit on each end where it sits on the number, once after the bracket otherwise: ``[-6.9, 11.0] pts``,
-    ``[62.3%, 65.1%]``. A level's end of exactly zero reads ``0`` (``[0, 0.92]``), as a level of zero does."""
-    at = ends_places(low, high, places)
-    ends = ["0" if level and end == 0 else spell_at(end, at) for end in (low, high)]
-    if unit in UNSPACED_UNITS:
-        return f"{ends[0]}{unit}", f"{ends[1]}{unit}", f"[{ends[0]}{unit}, {ends[1]}{unit}]"
-    return ends[0], ends[1], f"[{ends[0]}, {ends[1]}]" + (f" {unit}" if unit else "")
+def _ruled_level_text(ruler: MeasureRuler, scaled: float, places: ContrastPlaces | None) -> str:
+    """A level's text on an aspect page, from its value on its ruler: money in its ruler's form; at its reading's places
+    where its set holds them, a rate with its ``%`` and kept off its floor and ceiling (``99.7%``, never ``100%``), any
+    other bare, its unit in the row's heading (an exact zero ``0``); else by the unit's precision."""
+    if is_money(ruler.unit) and ruler.money is not None:
+        return ruler.money.spell(scaled)
+    if places is not None and places.level is not None:
+        if ruler.unit == PERCENT:
+            return policy_rate(scaled, places.level)
+        return policy_figure(scaled, places.level, bounds=())
+    if ruler.unit == PERCENT or is_money(ruler.unit):
+        return with_unit(scaled, ruler.unit)
+    return number_in(scaled, ruler.unit)
 
 
-def _ends_in(low: float, high: float, unit: str) -> tuple[str, str, str]:
-    """An interval's two ends, each at its unit's precision, and the interval: the unit on each end where it sits on
-    the number (``[88.1%, 100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise (``[0.45, 0.55] s``)."""
-    if unit == PERCENT or is_money(unit):
-        return _bracketed(with_unit(low, unit), with_unit(high, unit))
-    ends = number_in(low, unit), number_in(high, unit)
-    return ends[0], ends[1], f"[{ends[0]}, {ends[1]}]" + (f" {unit}" if unit else "")
+def _ends_at(
+    low: float, high: float, places: int, unit: str, *, change: bool, bounds: Collection[float] = ()
+) -> tuple[str, str, str]:
+    """An interval's two ends in its one form at its reading's places (:func:`policy_interval`): ``-6.9 to +11.0 pts``,
+    ``62.3 to 65.1%``. Each end's text carries the unit where it sits on the number, a percent's; the unit is written
+    once, after the high end."""
+    low_text, high_text, _ = policy_interval(low, high, places, change=change, bounds=bounds)
+    on = _on_the_figure(unit)
+    return _joined(low_text, on), _joined(high_text, on), f"{low_text} to {_joined(high_text, unit)}"
 
 
-def _bracketed(low: str, high: str) -> tuple[str, str, str]:
-    """Two ends that carry their unit, and the interval: ``[low, high]``."""
-    return low, high, f"[{low}, {high}]"
+def _ends_in(low: float, high: float, unit: str, *, change: bool) -> tuple[str, str, str]:
+    """An interval's two ends, each at its unit's precision, in the one form: ``88.1 to 100%``, ``0.45 to 0.55 s``; a
+    change's ends signed."""
+    ends = [number_in(end, "") for end in (low, high)]
+    if change:
+        ends = [plus_signed(end, value) for end, value in zip(ends, (low, high), strict=True)]
+    on = _on_the_figure(unit)
+    return _joined(ends[0], on), _joined(ends[1], on), f"{ends[0]} to {_joined(ends[1], unit)}"
+
+
+def _money_ends(texts: tuple[str, str], low: float, high: float, *, change: bool) -> tuple[str, str, str]:
+    """Two money ends, each in its form with its ``$``, and the interval in its one form: ``$0.033 to $0.035``, a
+    change's ends signed (``-$0.0030 to +$0.0019``)."""
+    low_text, high_text = texts
+    if change:
+        low_text, high_text = plus_signed(low_text, low), plus_signed(high_text, high)
+    return low_text, high_text, f"{low_text} to {high_text}"
 
 
 # === The number policy's primitives ===================================================================================
 #
 # The number policy in parts small enough to hold each to its own cases: the decimals a measure reads at, read from its
-# uncertainty; the one form an interval prints in; and the fixed forms of the figures that are no measurement. Nothing
-# calls them yet. A page's forms take them up when the policy replaces today's decisions, on every surface at once, so
-# until then every page prints as it does today. Each is public so that a call from outside this module is a site the
+# uncertainty; the one form an interval prints in; and the fixed forms of the figures that are no measurement. A page's
+# forms decide every figure through them. Each is public so that a call from outside this module is a site the
 # ratchet counts (``tests/test_one_owner_of_number_forms.py``): a surface reaches them only through a page's forms,
 # asked by measure and role.
 
@@ -3768,6 +4153,11 @@ _ZERO_BOUND = (0.0,)
 
 #: A rate's floor and ceiling, in percent: a rate under 100 that reads ``100%`` says every case passed.
 _RATE_BOUNDS = (0.0, 100.0)
+
+#: A judge's preference share's boundaries, in percent: none, all, and the even point, where neither arm is preferred.
+#: A share or an end of ``49.7`` that read ``50`` would hide that it falls short of even (the owner's "important
+#: boundaries").
+_PREFERENCE_BOUNDS = (*_RATE_BOUNDS, 50.0)
 
 
 def policy_places(

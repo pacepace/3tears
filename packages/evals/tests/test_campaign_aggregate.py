@@ -126,13 +126,13 @@ def test_the_equal_weight_row_prints_each_arm_s_figure_as_the_matrix_prints_its_
     assert across["aspect"].text == EQUAL_WEIGHT_ROW
     by_arm = {arm.label: across[f"arm:{arm.variant_key}"] for arm in shape.arms}
     assert {label: cell.text for label, cell in by_arm.items()} == {
-        # Each figure in its unit at the one decimal the matrix's cells read at, each level the mean of its column's
+        # Each figure in its unit at the places the matrix's cells read at, each level the mean of its column's
         # levels above, the change's own basis, said once on the control's cell; a candidate's level, then its change
         # signed (visual pass V2).
-        "production": "46.7% (mean of the aspects above, each weighted equally)",
-        "v2": "48.3% · +1.7 pts",
-        "v3": "45.0% · -1.7 pts",
-        "v4": "48.3% · +1.7 pts",
+        "production": "47% (mean of the aspects above, each weighted equally)",
+        "v2": "48% · +2 pts",
+        "v3": "45% · -2 pts",
+        "v4": "48% · +2 pts",
     }
     # Each change's interval is drawn beside it, against zero. The control's level is the mean of its cells above, and
     # the aggregate's interval is on its pooled rate, another basis, so none is drawn beside it (visual pass V2).
@@ -142,8 +142,8 @@ def test_the_equal_weight_row_prints_each_arm_s_figure_as_the_matrix_prints_its_
     assert by_arm["production"].low is None and by_arm["production"].high is None
     assert by_arm["v2"].zero_line and not by_arm["production"].zero_line
     assert (
-        f"| {EQUAL_WEIGHT_ROW} | — | 46.7% (mean of the aspects above, each weighted equally) | 48.3% · +1.7 pts | "
-        "45.0% · -1.7 pts | 48.3% · +1.7 pts |" in campaign_report_markdown(page)
+        f"| {EQUAL_WEIGHT_ROW} | — | 47% (mean of the aspects above, each weighted equally) | 48% · +2 pts | "
+        "45% · -2 pts | 48% · +2 pts |" in campaign_report_markdown(page)
     )
     # The weighting is said once, in the methods.
     said = [
@@ -251,7 +251,8 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.00, in
     # the one form beta's $0.80 needs (#993), as the scoreboard reads it.
     assert "| Arm | Cost per 1,000 replies | Interval | Pass rate (%) | Interval (%) |" in markdown
-    assert "| alpha | $4.00 | [$4.00, $4.00] | 88 | [74, 100] |" in markdown  # (%) columns at one precision (N-4)
+    # The pass rate and its interval at the pass rate's places on the page, each interval in its one form.
+    assert "| alpha | $4.00 | $4.00 to $4.00 | 88 | 74 to 100 |" in markdown
 
 
 def test_s1_draws_every_arm_across_its_aspects() -> None:

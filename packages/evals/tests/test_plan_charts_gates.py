@@ -396,8 +396,10 @@ def test_a_floors_matrix_reads_each_floors_status() -> None:
         cell = data.rows[keys.index(floor.floor)].cells[columns.index(_arm_name(report_input, floor.arm))]
         assert cell.status == {"held": "good", "unclear": "warn", "broken": "bad"}[floor.status]
         assert cell.label.lower() == floor.status
-        assert floor.worst_drop is not None and cell.reasons
-        assert f"{floor.worst_drop:.1f}".rstrip("0").rstrip(".") in cell.reasons[0]
+        assert floor.worst_drop is not None and floor.margin is not None and cell.reasons
+        # r5's two rates (the pass rate, a floor that reads none, and holds character) read in whole points on its page
+        # (number rule 2), so each drop does too (10.79 and 7.11), and the margin prints as declared, never "+15.0".
+        assert cell.reasons[0] == f"worst drop +{round(floor.worst_drop)} pts against a +{floor.margin:g} pts margin"
 
 
 @pytest.mark.parametrize(("name", "source"), [("r4", "measures"), ("r3", "configs"), ("r2", "configs")])

@@ -20,8 +20,8 @@ records draw them, on the code pages of the shape campaigns, and on charts resol
 - a dot strip's ticks share the precision their step needs ("$0.00, $0.05, $0.10"; "0%, 50%, 100%"), never the
   decimals a value is stated to;
 - a line chart's end labels and a static matrix's headings and row labels wrap, never cut;
-- a family-corrected level reads in every chart head of contrasts as the plain form, "99.7% intervals (95% across 16
-  comparisons)".
+- a family-corrected level reads in every chart head of contrasts as the joint guarantee, "95% intervals (adjusted for
+  16 comparisons)".
 
 Mutations that turn this file red: linear ticks on a log axis (``kFmtTicks`` in ``kScatter``'s log branch); bars drawn
 on a log axis; a label too long for its column drawn as its tag; points labelled only where they carry a label; the
@@ -604,7 +604,8 @@ def test_a_dot_strips_ticks_share_the_precision_their_step_needs(
 @pytest.mark.parametrize("kind", ["diverging_bars", "dot_interval"])
 def test_a_family_corrected_level_reads_plainly_on_every_chart_of_contrasts(kind: str) -> None:
     """Kairo's corrected contrasts drawn as diverging bars or a dot strip printed "99.69% intervals" in the head, as
-    the forest did. Every chart of them reads "99.7% intervals (95% across 16 comparisons)" now."""
+    the forest did. Every chart of them reads the guarantee the family holds at, "95% intervals (adjusted for 16
+    comparisons)", now."""
     report_input = _input("prototype5/kairo")
     spec = ChartSpec.model_validate(
         {
@@ -632,26 +633,26 @@ def test_a_family_corrected_level_reads_plainly_on_every_chart_of_contrasts(kind
     )
     block = drawn.chart
     assert isinstance(block, ChartBlock) and block.data is not None
-    assert block.data.level == "99.7% (95% across 16 comparisons)"  # type: ignore[union-attr]
+    assert block.data.level == "95% (adjusted for 16 comparisons)"  # type: ignore[union-attr]
     for width, svg in _svgs(block):
         texts = _texts(svg)
-        assert "99.7% intervals (95% across 16 comparisons)" in texts, (width, texts)
+        assert "95% intervals (adjusted for 16 comparisons)" in texts, (width, texts)
         assert not [text for text in texts if "99.69" in text], width
 
 
 def test_a_family_corrected_level_reads_plainly_in_the_chart_head() -> None:
     """Kairo's corrected forest printed "99.69% intervals" in its head, a level a reader cannot read. Its head reads
-    "99.7% intervals (95% across 16 comparisons)" now, on the chart and in its values table, and 99.69% is printed
+    "95% intervals (adjusted for 16 comparisons)" now, on the chart and in its values table, and 99.69% is printed
     nowhere on it."""
     for name in ("prototype5/kairo",):
         forests = [block for asked, source, block, _ in _charts(name) if (asked, source) == ("forest", "contrasts")]
         assert forests
         for block in forests:
             assert isinstance(block.data, ForestChart)
-            assert block.data.level == "99.7% (95% across 16 comparisons)"
+            assert block.data.level == "95% (adjusted for 16 comparisons)"
             headers, _ = block.values_table()
-            assert "99.7% interval (95% across 16 comparisons)" in headers
+            assert "95% interval (adjusted for 16 comparisons)" in headers
             for width, svg in _svgs(block):
                 texts = _texts(svg)
-                assert "99.7% intervals (95% across 16 comparisons)" in texts, width
+                assert "95% intervals (adjusted for 16 comparisons)" in texts, width
                 assert not [text for text in texts if "99.69" in text], width

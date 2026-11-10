@@ -752,7 +752,7 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
     se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
       const at=t=>t&&t[i];
-      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])}–${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])} to ${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
     ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
   // end labels stacked to avoid collisions, to the right of the last point
   // each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line
@@ -796,7 +796,7 @@ function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
     const nl=noted?kWrap(r.note,m.r-10):[kAs(r.value_text,opt.fmt,r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
-    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} [${kAs(r.lo_text,opt.fmt,r.lo)}, ${kAs(r.hi_text,opt.fmt,r.hi)}]`]));});
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`]));});
   return s;}
 
 // ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
@@ -1047,7 +1047,17 @@ const chip=a=>armChip(a,COL[a.id]);
 const monthly=c=>c*VOL/1000;
 const usd0=v=>"$"+Math.round(v).toLocaleString();
 const usdK=v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":usd0(v);
-const pts=v=>(v>0?"+":"")+v.toFixed(1);
+// The number policy (packages/evals/docs/design.md, The number policy): a measure reads at the decimals its narrowest
+// interval supports (its first significant digit, or its second when that is a 1 or a 2), a rate or a change in
+// points at one decimal at most, every interval "low to high". Rounding is half-to-even, as the package's.
+const even=(v,d)=>{const r=v*10**d,f=Math.floor(r);const t=Math.abs(r-f-0.5)<1e-9?(f%2===0?f:f+1):Math.round(r);return t/10**d;};
+const placesOf=(halves,cap=1)=>{const h=Math.min(...halves.filter(x=>x>0));if(!isFinite(h))return 0;const e=Math.floor(Math.log10(h)),lead=Math.floor(h/10**e+1e-9);return Math.max(0,Math.min(cap,(lead<=2?1:0)-e));};
+const at=(v,d,signed)=>{const t=even(v,d);return (signed&&t>0?"+":"")+(t===0?0:t).toFixed(d);};
+// each aspect's decimals, from its changes' intervals; the depth rates' from theirs; the preference's from its own
+const P_ASP=Object.fromEntries(D.aspects.map(x=>[x.id,placesOf(D.arms.filter(a=>a.delta).map(a=>(a.delta[x.id].hi-a.delta[x.id].lo)/2))]));
+const P_DEPTH=placesOf(D.arms.flatMap(a=>a.persona_by_depth.map(x=>x.ci)));
+const P_PREF=placesOf(D.human_pref.rows.map(r=>r.ci));
+const pts=v=>at(v,P_ASP.persona,true);
 const guardOK=a=>D.aspects.filter(x=>x.guard).every(x=>a.results[x.id]>=x.guard);
 // depth-level costs: each arm's per-reply cost scales with context length
 const norm=D.depth.reduce((s,d)=>s+d.share*d.cost_mult,0);
@@ -1069,7 +1079,7 @@ const mainPool=[O.prod,O.f64,O.hyb1,O.hyb0,O.hyb2];
 (function(){const a=O.f64,h=O.hyb1;
   document.getElementById("h1").textContent=`Switching to ${A.f64.tag} (${A.f64.short}) saves ${usdK(a.save)} a month but loses ${a.loss.toFixed(0)} points of personality, mostly in long conversations.`;
   document.getElementById("lede").innerHTML=`A hybrid that hands conversations back to Production after turn five keeps ${Math.round(h.save/a.save*100)}% of the savings for ${Math.round(h.loss/a.loss*100)}% of the loss. Which option is right depends on what a point of personality is worth, and the eval didn't set that.`;
-  document.getElementById("d-trade").innerHTML=`${A.f64.tag} costs ${Math.round((1-A.f64.cost/P.cost)*100)}% less (${usdK(a.save)}/month) and is ${(P.p95-A.f64.p95).toFixed(1)} s faster at p95. In-character rate drops ${a.loss.toFixed(1)} points (interval ${(-A.f64.delta.persona.hi).toFixed(1)} to ${(-A.f64.delta.persona.lo).toFixed(1)}). Every other aspect holds.`;
+  document.getElementById("d-trade").innerHTML=`${A.f64.tag} costs ${Math.round((1-A.f64.cost/P.cost)*100)}% less (${usdK(a.save)}/month) and is ${(P.p95-A.f64.p95).toFixed(1)} s faster at p95. In-character rate drops ${at(a.loss,P_ASP.persona)} points (interval ${at(-A.f64.delta.persona.hi,P_ASP.persona)} to ${at(-A.f64.delta.persona.lo,P_ASP.persona)}). Every other aspect holds.`;
   const f=flips([O.prod,O.f64,O.hyb1]);
   document.getElementById("d-flip").innerHTML=f.map(s=>`${s.to==null?`Above ${usd0(s.from)}`:s.from===0?`Below ${usd0(s.to)}`:`${usd0(s.from)}–${usd0(s.to)}`} per point: <strong>${s.o.short}</strong>`).join(".<br>")+".";
   document.getElementById("d-lean").innerHTML=`<strong>Pilot the hybrid with a handoff after turn five.</strong> It wins for any price between ${usd0(f[1].from)} and ${usd0(f[1].to)} a point, and the pilot tests its one untested assumption. A full switch only makes sense if a point is worth under ${usd0(f[0].to)} a month.`;})();
@@ -1077,7 +1087,7 @@ const mainPool=[O.prod,O.f64,O.hyb1,O.hyb0,O.hyb2];
 // ---- options table + summary bars
 (function(){const rows=[O.prod,O.f64,O.hyb1,O.f16,O.cor];
   document.getElementById("opt").innerHTML=`<thead><tr><th>Option</th><th class="r">Per month</th><th class="r">Saves</th><th class="r">In-character</th><th class="r">$ per point lost</th><th>Guardrails</th></tr></thead><tbody>`+
-  rows.map(o=>`<tr class="${o.id==="hyb1"?"hl":""}"><td>${o.id==="hyb1"?"<strong>":""}${o.arm?(o.id==="prod"?"Keep "+chip(o.arm):"Switch to "+chip(o.arm)):o.short}${o.id==="hyb1"?"</strong> · lean":""}</td><td class="r">${usd0(o.monthly)}</td><td class="r">${o.save>0?usdK(o.save):"–"}</td><td class="r">${o.pers.toFixed(1)}%${o.id!=="prod"?` <span style="color:var(--muted)">(${pts(o.dP)})</span>`:""}</td><td class="r">${o.ppp?usd0(o.ppp):"–"}</td><td>${o.guard?pill("good","Pass"):pill("bad",D.aspects.filter(x=>x.guard&&o.arm.results[x.id]<x.guard).map(x=>x.id==="facts"?"Facts":"Speculation").join(", "))}</td></tr>`).join("")+"</tbody>";
+  rows.map(o=>`<tr class="${o.id==="hyb1"?"hl":""}"><td>${o.id==="hyb1"?"<strong>":""}${o.arm?(o.id==="prod"?"Keep "+chip(o.arm):"Switch to "+chip(o.arm)):o.short}${o.id==="hyb1"?"</strong> · lean":""}</td><td class="r">${usd0(o.monthly)}</td><td class="r">${o.save>0?usdK(o.save):"–"}</td><td class="r">${at(o.pers,P_ASP.persona)}%${o.id!=="prod"?` <span style="color:var(--muted)">(${pts(o.dP)})</span>`:""}</td><td class="r">${o.ppp?usd0(o.ppp):"–"}</td><td>${o.guard?pill("good","Pass"):pill("bad",D.aspects.filter(x=>x.guard&&o.arm.results[x.id]<x.guard).map(x=>x.id==="facts"?"Facts":"Speculation").join(", "))}</td></tr>`).join("")+"</tbody>";
   const lab=o=>o.arm?(o.id==="prod"?"Production":`${o.arm.tag} · ${o.arm.short}`):"Hybrid, turn 5";
   setChart(document.getElementById("sum-cost"),{domain:[0,28000],fmt:"usdk",row_height:24,
     rows:rows.map(o=>({id:o.id,label:lab(o),value:o.monthly,color:o.arm?COL[o.id]:HYB,muted:!o.guard,strong:o.id==="hyb1",note:usdK(o.monthly)+(o.save>0?`  −${Math.round(o.save/O.prod.monthly*100)}%`:""),tip:[o.short,`${usd0(o.monthly)} a month`]}))});
@@ -1093,7 +1103,7 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Short name</th><th>Role
 (function(){const ch=D.arms.filter(a=>a.role!=="control");
   setChart(document.getElementById("aspects"),{fmt:"+num:0",level:"95%",row_height:30,label_width:190,label_width_narrow:120,panel_min_rem:24,
     panels:D.aspects.map(asp=>{const ext=Math.max(2,...ch.map(a=>Math.max(Math.abs(a.delta[asp.id].lo),Math.abs(a.delta[asp.id].hi))));
-      return {title:asp.name,subtitle:`Production ${P.results[asp.id].toFixed(1)}% · ${asp.guard?`guardrail ${asp.guard}%`:asp.kind==="judged"?"judged":"checked"}`,
+      return {title:asp.name,subtitle:`Production ${at(P.results[asp.id],P_ASP[asp.id])}% · ${asp.guard?`guardrail ${asp.guard}%`:asp.kind==="judged"?"judged":"checked"}`,
         domain:[-Math.ceil(ext+1),Math.max(2,Math.ceil(Math.max(...ch.map(a=>a.delta[asp.id].hi))+1))],
         rows:ch.map(a=>{const d=a.delta[asp.id],v=a.results[asp.id],broke=asp.guard&&v<asp.guard;
           return {id:a.id,label:`${a.tag} · ${a.short}`,value:d.v,lo:d.lo,hi:d.hi,color:COL[a.id],note:pts(d.v)+(broke?` → ${v}%, below ${asp.guard}%`:""),strong:!!broke,
@@ -1110,7 +1120,7 @@ setChart(document.getElementById("cats"),{domain:[-14,1],fmt:"int",row_height:32
 
 // ---- human preference: bars diverge from 50%, no preference
 setChart(document.getElementById("pref"),{domain:[30,75],fmt:"pct",level:"95%",row_height:40,label_width:220,label_width_narrow:130,reference:{value:50,kind:"no_preference"},
-  rows:D.human_pref.rows.map(r=>({id:r.id,label:r.name,value:r.prod_pref,lo:r.prod_pref-r.ci,hi:r.prod_pref+r.ci,color:"--ink-2",note:`${r.prod_pref}% prefer Production`,strong:r.id==="long",tip:[r.name,`${r.prod_pref}% preferred Production (±${r.ci})`]}))});
+  rows:D.human_pref.rows.map(r=>({id:r.id,label:r.name,value:r.prod_pref,lo:r.prod_pref-r.ci,hi:r.prod_pref+r.ci,color:"--ink-2",note:`${at(r.prod_pref,P_PREF)}% prefer Production`,strong:r.id==="long",tip:[r.name,`${at(r.prod_pref,P_PREF)}% preferred Production (${at(r.prod_pref-r.ci,P_PREF)} to ${at(r.prod_pref+r.ci,P_PREF)}%)`]}))});
 
 // ---- tradeoff map: savings against points lost, the price line set by the explorer
 let price=1500,hk=1;
@@ -1135,12 +1145,12 @@ function explore(){price=+ep.value;document.getElementById("o-p").textContent=us
   document.getElementById("e-note").innerHTML=`At ${usd0(price)} per point, <strong>${win.short}</strong> has the highest net value: ${usd0(ranked[0].net)} a month after pricing the points it loses.${win.hybrid?" This option is modeled, so it needs the pilot before it can be trusted.":""}`;
   document.getElementById("e-flips").innerHTML=f.map(s=>`<span class="${s.o===win?"on":""}">${s.to==null?`${usd0(s.from)}+`:`${usd0(s.from)}–${usd0(s.to)}`}: ${s.o.short}</span>`).join("");
   document.getElementById("e-rank").innerHTML=`<thead><tr><th>Option</th><th class="r">Saves / month</th><th class="r">Points lost</th><th class="r">Cost of those points</th><th class="r">Net value / month</th></tr></thead><tbody>`+
-    ranked.map((r,i)=>`<tr class="${i===0?"hl":""}"><td>${i===0?"<strong>":""}${r.o.short}${i===0?"</strong>":""}${r.o.guard?"":" "+pill("bad","Guardrail")}</td><td class="r">${usd0(r.o.save)}</td><td class="r">${r.o.loss.toFixed(1)}</td><td class="r">${usd0(price*r.o.loss)}</td><td class="r" style="color:${r.net<0?"var(--bad)":"var(--ink)"}">${usd0(r.net)}</td></tr>`).join("")+"</tbody>";
+    ranked.map((r,i)=>`<tr class="${i===0?"hl":""}"><td>${i===0?"<strong>":""}${r.o.short}${i===0?"</strong>":""}${r.o.guard?"":" "+pill("bad","Guardrail")}</td><td class="r">${usd0(r.o.save)}</td><td class="r">${at(r.o.loss,P_ASP.persona)}</td><td class="r">${usd0(price*r.o.loss)}</td><td class="r" style="color:${r.net<0?"var(--bad)":"var(--ink)"}">${usd0(r.net)}</td></tr>`).join("")+"</tbody>";
   drawMap();}
 [ep,eg].forEach(e=>e.addEventListener("input",explore));explore();
 
 // ---- full table
 (function(){const t=document.getElementById("full");
   t.innerHTML=`<thead><tr><th>Arm</th>${D.aspects.map(a=>`<th class="r">${a.name}</th>`).join("")}${D.depth.map(d=>`<th class="r">In-character, turns ${d.name}</th>`).join("")}<th class="r">Per 1k</th><th class="r">p50</th><th class="r">p95</th></tr></thead><tbody>`+
-  D.arms.map(a=>`<tr><td>${chip(a)}</td>${D.aspects.map(x=>`<td class="r">${a.results[x.id].toFixed(1)}%${a.delta?` <span style="color:var(--muted)">${pts(a.delta[x.id].v)} [${a.delta[x.id].lo}, ${a.delta[x.id].hi}]</span>`:""}</td>`).join("")}${a.persona_by_depth.map(x=>`<td class="r">${x.v.toFixed(1)}% <span style="color:var(--muted)">±${x.ci}</span></td>`).join("")}<td class="r">${fmt.usd(a.cost)}</td><td class="r">${a.p50.toFixed(1)} s</td><td class="r">${a.p95.toFixed(1)} s</td></tr>`).join("")+"</tbody>";})();
+  D.arms.map(a=>`<tr><td>${chip(a)}</td>${D.aspects.map(x=>{const d=P_ASP[x.id],c=a.delta&&a.delta[x.id];return `<td class="r">${at(a.results[x.id],d)}%${c?` <span style="color:var(--muted)">${at(c.v,d,true)} (${at(c.lo,d,true)} to ${at(c.hi,d,true)})</span>`:""}</td>`;}).join("")}${a.persona_by_depth.map(x=>`<td class="r">${at(x.v,P_DEPTH)}% <span style="color:var(--muted)">(${at(x.v-x.ci,P_DEPTH)} to ${at(x.v+x.ci,P_DEPTH)})</span></td>`).join("")}<td class="r">${fmt.usd(a.cost)}</td><td class="r">${a.p50.toFixed(1)} s</td><td class="r">${a.p95.toFixed(1)} s</td></tr>`).join("")+"</tbody>";})();
 </script>

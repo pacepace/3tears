@@ -94,6 +94,7 @@ from threetears.evals.analysis.report.parts.charting import (
     factor_token,
     figure_stat,
     figure_kind,
+    floor_rate,
     measure_words,
     money_words,
     point_labels,
@@ -275,6 +276,8 @@ def _task_matrix(context: ChartContext) -> Drawn:
     picks = routing_picks(report_input, arms)
     gating = _gating(report_input)
     rows: list[GateRow] = []
+    # Each row's cost measure: a task's costs are its own figures on a cost measure, which its cells record under.
+    row_measures: list[str] = []
     costs_drawn: list[float] = []
     cost_measures: set[str] = set()
     measures_drawn = {
@@ -311,6 +314,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
             ]
             reasons = [line for line in said if line] + ([share] if share is not None else [])
             cells.append(GateCell(status="neutral", label=_ungated(gating), reasons=reasons or None, cost=cost))
+        row_measures.append(costs.measure)
         rows.append(
             GateRow(
                 label=slice_name(context, task),
@@ -322,19 +326,6 @@ def _task_matrix(context: ChartContext) -> Drawn:
     # The costs are their tasks' figures on a cost measure, of one noun (refused below otherwise): named by the first.
     cost_measure = min(cost_measures, default="")
     priced = context.forms.chart_quantity("usd_per_1k", costs_drawn, measure=cost_measure, kind="measure")
-    if priced.factor != 1:
-        # Costs under a cent per 1,000 are drawn per 1,000,000 (look's money), every cell alike.
-        rows = [
-            row.model_copy(
-                update={
-                    "cells": [
-                        cell.model_copy(update={"cost": cell.cost * priced.factor}) if cell.cost is not None else cell
-                        for cell in row.cells
-                    ]
-                }
-            )
-            for row in rows
-        ]
     # Each task's costs are its own figures on a cost measure: what they are per is that measure's, not the page's.
     nouns = {per_noun(report_input.measures[key]) for key in cost_measures}
     if len(nouns) > 1:
@@ -342,16 +333,37 @@ def _task_matrix(context: ChartContext) -> Drawn:
             f"its tasks' costs are read on measures counting different things ({', '.join(sorted(cost_measures))}), "
             "and a matrix prints one cost unit"
         )
+    cost_unit = per_count(next(iter(nouns)), priced.counted) if costs_drawn else None
+    # Costs under a cent per 1,000 are drawn per 1,000,000 (look's money), every cell alike, and each cell's cost
+    # carries the text its table prints, so the matrix draws the money the page decided.
+    rows = [
+        row.model_copy(
+            update={"cells": [_priced(context, cell, priced, cost_unit, measure=measure) for cell in row.cells]}
+        )
+        for row, measure in zip(rows, row_measures, strict=True)
+    ]
     data = GateMatrixChart(
         columns=[ChartColumn(label=_arm_name(context, arm)) for arm in arms],
         rows=rows,
         row_header=GATE_HEADERS["tasks"],
         cost_fmt=priced.fmt if costs_drawn else None,
-        cost_unit=per_count(next(iter(nouns)), priced.counted) if costs_drawn else None,
+        cost_unit=cost_unit,
         pick_label=PICK_LABEL if picks else None,
     )
     # The costs' count is the matrix's own cost unit words; each measure's money says it in a line under the chart.
     return money_drawn(context, data, money=list(measures_drawn.items()))
+
+
+def _priced(context: ChartContext, cell: GateCell, priced: Quantity, unit: str | None, *, measure: str) -> GateCell:
+    """A matrix cell with its cost at the costs' factor and its text: the amount as the page's forms write it on the
+    costs' money form, then what it is per (``$4.60 per 1,000 conversations``), the one text the kit and the matrix's
+    table print. The text is recorded under the cell's own cost measure, its task's. A cell with no cost is as it
+    was."""
+    if cell.cost is None:
+        return cell
+    cost = cell.cost * priced.factor
+    said = context.forms.chart_note(cost, priced, measure=measure, kind="measure").text
+    return cell.model_copy(update={"cost": cost, "cost_text": f"{said} {unit}" if unit else said})
 
 
 def _direction(reading: Reading) -> str:
@@ -437,13 +449,14 @@ def _floor_cell(context: ChartContext, floor: FloorRead | None) -> GateCell:
     if floor is None:
         return GateCell(status="neutral", label=NO_READING)
     # A floor's drop and margin are points of the rate it is read on.
-    rate = floor.reading or floor.speaks_for or ""
+    rate = floor_rate(floor)
     kind = figure_kind(context, rate)
     points = context.forms.chart_quantity("points", change=True, measure=rate, kind=kind)
     reasons = []
     if floor.worst_drop is not None and floor.margin is not None:
         drop = context.forms.chart_note(float(floor.worst_drop), points, measure=rate, kind=kind).text
-        margin = context.forms.chart_note(float(floor.margin), points, measure=rate, kind=kind).text
+        # A margin prints as declared (number rule 4): "+15 pts", never at its rate's decimals, "+15.0 pts".
+        margin = context.forms.declared(float(floor.margin), points.unit, signed=True).text
         reasons.append(FLOOR_REASON_TEMPLATE.format(drop=drop, margin=margin))
     if floor.reading:
         reasons.append(FLOOR_READS_TEMPLATE.format(rate=measure_words(context.report_input, floor.reading, prose=True)))
@@ -841,6 +854,7 @@ def _lattice(context: ChartContext) -> Drawn:
         if latency_key is not None
         else None
     )
+    cost_unit = per_count(cost_basis(report_input).noun, priced.counted) if costs else None
     # A config no gate reads has no status: its tile carries no pill, never a pass where nothing was gated.
     gated = bool(_gating(report_input))
     lattice_rows = []
@@ -851,13 +865,13 @@ def _lattice(context: ChartContext) -> Drawn:
             shown = value * drawn.factor
             said = forms.chart_note(shown, drawn, measure=key, kind=kind).text
             tip = [_config_name(report_input, arm), f"{money_words(report_input, key, drawn)} {said}"]
-            if cost is not None:
+            cost_text = None
+            if cost is not None and cost_unit is not None:
                 share = priced_in_part(report_input, arm)
                 priced_at = forms.chart_note(cost * priced.factor, priced, measure=cost_key, kind=cost_kind).text
-                tip.append(
-                    f"{priced_at} {per_count(cost_basis(report_input).noun, priced.counted)}"
-                    + (f" ({share})" if share is not None else "")
-                )
+                # The tile prints the cost its tooltip states, as the page's forms write it.
+                cost_text = f"{priced_at} {cost_unit}"
+                tip.append(cost_text + (f" ({share})" if share is not None else ""))
             if latency is not None and timed is not None:
                 latency_kind = figure_kind(context, latency_key or "")
                 timed_at = forms.chart_note(latency * timed.factor, timed, measure=latency_key or "", kind=latency_kind)
@@ -867,6 +881,7 @@ def _lattice(context: ChartContext) -> Drawn:
                     id=arm,
                     value=shown,
                     cost=cost * priced.factor if cost is not None else None,
+                    cost_text=cost_text,
                     latency=latency * timed.factor if latency is not None and timed is not None else None,
                     status=GATE_STATUS[check.status] if check is not None else None,
                     status_label=GATE_WORDS[check.status] if check is not None else None,
@@ -882,7 +897,7 @@ def _lattice(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         bar_domain=(bar[0], bar[1]),
         cost_fmt=priced.fmt if costs else None,
-        cost_unit=per_count(cost_basis(report_input).noun, priced.counted) if costs else None,
+        cost_unit=cost_unit,
         latency_fmt=timed.fmt if timed is not None else None,
         emphasis=context.emphasis,
     )

@@ -94,7 +94,9 @@ def test_a_candidate_against_the_control_is_settled_on_the_aspects_own_paired_re
             assert row.cases_needed.value == math.ceil((_z(level) * per_case / abs(difference)) ** 2)
             assert row.wrong_side is not None
             assert row.wrong_side.value == pytest.approx(_NORMAL.cdf(-abs(difference) / se))
-            assert row.level is not None and row.level.value == f"{level * 100:g}% two-sided"
+            # The level is a number the page's forms print, said with its sidedness.
+            assert row.level is not None and row.level.value == pytest.approx(level)
+            assert row.level.reads == f"{level * 100:g}% two-sided"
             _holds_its_count_basis(held, row, aspect, arms, basis="paired")
 
 

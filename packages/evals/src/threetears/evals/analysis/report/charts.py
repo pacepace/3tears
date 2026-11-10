@@ -28,7 +28,6 @@ its own.
 
 from __future__ import annotations
 
-import decimal
 import functools
 import math
 import re
@@ -45,6 +44,7 @@ from threetears.evals.kernel.numbers import (
     ends_places,
     format_number,
     group_thousands,
+    round_half_even,
     spell_at,
 )
 from threetears.evals.analysis.quantities import (
@@ -458,28 +458,12 @@ def percent_places(texts: Iterable[str]) -> int | None:
         # may be 90.48%), so the column keeps its decimal rather than print a rounding the digits cannot decide.
         return 1
     stated = {float(match[2]) for match in found}
-    return 0 if len({percent_at(value, 0) for value in stated}) == len(stated) else 1
-
-
-def percent_at(value: float, places: int) -> str:
-    """A percentage at ``places`` decimals, half away from zero, its sign kept; an exact zero reads ``0%``, which
-    states no precision.
-
-    :param value: The percentage, in percent.
-    :ptype value: float
-    :param places: The decimals.
-    :ptype places: int
-    :return: ``63%``, ``62.9%``, ``0%``.
-    :rtype: str
-    """
-    if value == 0:
-        return "0%"
-    step = decimal.Decimal(1).scaleb(-places)
-    return f"{decimal.Decimal(repr(value)).quantize(step, rounding=decimal.ROUND_HALF_UP)}%"
+    return 0 if len({round_half_even(value, 0) for value in stated}) == len(stated) else 1
 
 
 def respell_percents(text: str, places: int) -> str:
-    """Every percentage a cell's text states at ``places`` decimals (:func:`percent_at`); its other words as written.
+    """Every percentage a cell's text states at ``places`` decimals, rounded half to even (an exact zero ``0%``, which
+    states no precision); its other words as written.
 
     :param text: The cell's text.
     :ptype text: str
@@ -488,66 +472,8 @@ def respell_percents(text: str, places: int) -> str:
     :return: The text.
     :rtype: str
     """
-    return _CELL_PERCENT.sub(lambda match: match[1] + percent_at(float(match[2]), places), text)
-
-
-#: A bare figure a cell under a ``(%)`` or ``(pts)`` head states: its leading figure, before any words in
-#: parentheses (``20.2 (167 of 828 trials)``), and an interval's two ends (``[17.2, 25]``).
-_LEADING_FIGURE = re.compile(r"^([+\-−]?)(\d+(?:\.\d+)?)(?=$| )")
-_BRACKETED = re.compile(r"\[([+\-−]?)(\d+(?:\.\d+)?), ([+\-−]?)(\d+(?:\.\d+)?)\]")
-
-
-def _bare_figures(text: str) -> list[str]:
-    """The bare figures one cell states: its leading one and its interval's ends."""
-    found = [match[2] for match in _LEADING_FIGURE.finditer(text)]
-    for match in _BRACKETED.finditer(text):
-        found += [match[2], match[4]]
-    return found
-
-
-def bare_places(texts: Iterable[str]) -> int | None:
-    """The decimals a column of bare percents or points reads at, by :func:`percent_places`'s rule: whole, one
-    decimal where whole figures would print two alike or a figure at a half cannot decide its whole. None for a
-    column that states none, or one written to two decimals or more.
-
-    :param texts: The column's cells, as they print.
-    :ptype texts: Iterable[str]
-    :return: 0 or 1; None for a column to leave as it is.
-    :rtype: int | None
-    """
-    return percent_places(f"{figure}%" for text in texts for figure in _bare_figures(text))
-
-
-def bare_at(value: float, places: int) -> str:
-    """A bare figure at ``places`` decimals, half away from zero, its sign kept; an exact zero reads ``0``.
-
-    :param value: The figure.
-    :ptype value: float
-    :param places: The decimals.
-    :ptype places: int
-    :return: ``21``, ``-7.4``, ``0``.
-    :rtype: str
-    """
-    if value == 0:
-        return "0"
-    step = decimal.Decimal(1).scaleb(-places)
-    return str(decimal.Decimal(repr(value)).quantize(step, rounding=decimal.ROUND_HALF_UP))
-
-
-def respell_bare(text: str, places: int) -> str:
-    """A cell's leading bare figure and its interval's ends at ``places`` decimals (:func:`bare_at`).
-
-    :param text: The cell's text.
-    :ptype text: str
-    :param places: The column's decimals (:func:`bare_places`).
-    :ptype places: int
-    :return: The text.
-    :rtype: str
-    """
-    text = _LEADING_FIGURE.sub(lambda match: match[1] + bare_at(float(match[2]), places), text, count=1)
-    return _BRACKETED.sub(
-        lambda match: f"[{match[1]}{bare_at(float(match[2]), places)}, {match[3]}{bare_at(float(match[4]), places)}]",
-        text,
+    return _CELL_PERCENT.sub(
+        lambda match: match[1] + ("0" if float(match[2]) == 0 else round_half_even(float(match[2]), places)) + "%", text
     )
 
 
@@ -662,19 +588,36 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
 
 def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, str]:
     """An interval's two ends as its values table and the kit print them: under the chart's format (at ``read_at``'s
-    precision where it names one: :func:`_formatted`), both at one precision."""
+    precision where it names one: :func:`_formatted`), both at one precision, the unit written once
+    (:func:`_unit_once`)."""
     match = _FORMAT_SPEC.fullmatch(spec)
     if match is not None and (
         _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
     ):
         # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
         at = ends_places(low, high, POINT_PLACES)
-        return _formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at)
+        said = (_formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at))
+        return _unit_once(spec, said)
     said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
     if said[0] == said[1] and low != high:
         # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
         said = (_formatted(spec, low, read_at, finer=True), _formatted(spec, high, read_at, finer=True))
-    return said
+    return _unit_once(spec, said)
+
+
+def _unit_once(spec: str, ends: tuple[str, str]) -> tuple[str, str]:
+    """An interval's two end texts with their format's unit written once, as the page writes an interval (number rule
+    3): after the high end (``15 to 89%``, ``-1.0 to +5.0 pts``). Money keeps its own form, each end with its ``$``
+    (``$3.90 to $4.30``), as the page's forms write a money interval. So every drawer joins the two texts as they are,
+    and never strips a unit itself. Ends that do not both carry the unit are as they were."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    unit = _FORMAT_UNITS.get(match[2], "") if match is not None else ""
+    low, high = ends
+    if not unit or unit == MONEY:
+        return ends
+    if low.endswith(unit) and high.endswith(unit):
+        return low.removesuffix(unit).rstrip(), high
+    return ends
 
 
 def _end_texts(
@@ -761,13 +704,13 @@ def _reference_spelled(reference: ChartReference | None, spec: str, read_at: str
     return reference.model_copy(update={"value_text": _formatted(spec, reference.value, read_at)})
 
 
-#: An interval level with a gloss after it in parentheses: ``99.7% (95% across 16 comparisons)``.
+#: An interval level with a gloss after it in parentheses: ``95% (adjusted for 16 comparisons)``.
 _GLOSSED_LEVEL = re.compile(r"^(\S+) (\(.+\))$")
 
 
 def _interval_head(level: str | None) -> str:
     """A values table's interval column head: ``95% interval``; a glossed level keeps its gloss last, as the chart's
-    head does (``99.7% interval (95% across 16 comparisons)``)."""
+    head does (``95% interval (adjusted for 16 comparisons)``)."""
     glossed = _GLOSSED_LEVEL.fullmatch(level or "")
     return f"{glossed[1]} interval {glossed[2]}" if glossed else f"{level} interval"
 
@@ -1478,7 +1421,7 @@ class GateCell(_KitModel):
     cost_text: str | None = Field(
         default=None,
         description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
-        "package leaves it unset until its costs are decided by measure.",
+        "package sets it to the cost as the page's money writes it.",
     )
 
 
@@ -1511,7 +1454,7 @@ class GateMatrixChart(_Drawable):
 
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        # A cost the package draws carries its text; a host's cost without one is spelled here from `cost_fmt`.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = [self.row_header or "", *(column.label for column in self.columns)]
         body = []
@@ -1550,7 +1493,7 @@ class LatticeCell(_KitModel):
     cost_text: str | None = Field(
         default=None,
         description="The cost as printed, `cost_unit` included; spelled from `cost_fmt` and `cost_unit` when none. The "
-        "package leaves it unset until its costs are decided by measure.",
+        "package sets it to the cost as the page's money writes it.",
     )
     latency_text: str | None = Field(
         default=None, description="The latency as printed; spelled from `latency_fmt` when none."
@@ -1598,7 +1541,7 @@ class LatticeChart(_Drawable):
 
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
-        # A cost carries no text the package sets, so the kit draws it by `cost_fmt` while its table reads it here.
+        # A cost the package draws carries its text; a host's cost without one is spelled here from `cost_fmt`.
         costs = _cost_texts(self.cost_fmt, self.cost_unit, [cell for row in self.rows for cell in row.cells])
         headers = ["", *(column.label for column in self.columns)]
         body = []

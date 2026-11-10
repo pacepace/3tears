@@ -646,7 +646,7 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     # A share's mean is on the percent ruler, its interval in points; the level sits once in the column's header.
     assert stats["control_mean"] == pytest.approx(50.0)
     assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
-    assert next(column.header for column in table.columns if column.key == "interval") == "Interval (95%)"  # type: ignore[attr-defined]
+    assert next(column.header for column in table.columns if column.key == "interval") == "95% interval"  # type: ignore[attr-defined]
     assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
 
 

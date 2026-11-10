@@ -38,6 +38,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock, TableCell
 from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.quick.files import load_evals
 
 from packages.evals.tests.campaign_page_support import kairo_page
@@ -62,13 +63,13 @@ _RUNGS: dict[str, tuple[str, str, str | None]] = {
 #: A candidate's change cell as every serializer prints it: its level, then its change signed in points at one
 #: decimal (an exact zero reads ``0``, which states no precision), then its marks.
 #: A zero change reads at the column's one decimal, unsigned (``0.0 pts``, beside ``-5.0 pts``).
-_CHANGE = re.compile(r"^(?P<level>\d+(?:\.\d)?)% · (?P<change>[+-]\d+\.\d|0\.0) pts(?: \((?P<marks>.+)\))?$")
+_CHANGE = re.compile(r"^(?P<level>\d+(?:\.\d+)?)% · (?P<change>[+-]\d+(?:\.\d+)?|0) pts(?: \((?P<marks>.+)\))?$")
 
 #: The baseline a candidate's cell states, where its aspect's candidates read different cases.
-_STATED = re.compile(r"from .+'s (?P<level>\d+(?:\.\d)?)%")
+_STATED = re.compile(r"from .+'s (?P<level>\d+(?:\.\d+)?)%")
 
-#: The control's cell: its level at one decimal (an exact zero ``0%``), then what it is over.
-_CONTROL = re.compile(r"^(?P<level>\d+\.\d|0)% \((?P<over>.+)\)$")
+#: The control's cell: its level at the pass rate's places (an exact zero ``0%``), then what it is over.
+_CONTROL = re.compile(r"^(?P<level>\d+(?:\.\d+)?)% \((?P<over>.+)\)$")
 
 #: The line under a table of glyphs.
 _AXIS = re.compile(r'<p class="axis">(.*?)</p>')
@@ -149,6 +150,13 @@ def _figure(text: str) -> float:
     return 0.0 if text == "0" else float(text)
 
 
+def _last_place(*texts: str) -> float:
+    """The size of one unit in the last place the finest of ``texts`` prints: ``1`` for whole figures, ``0.1`` for one
+    decimal, so a sum of figures each rounded there closes within a multiple of it."""
+    decimals = max(len(text.partition(".")[2]) for text in texts)
+    return 10.0**-decimals
+
+
 # --- L1: each change names the measure and the control it is against -------------------------------------------------
 
 
@@ -181,7 +189,8 @@ def test_the_line_under_the_matrix_names_the_tick_as_the_control_and_says_which_
     control = page.readings.control_label
     assert f"change from {control} (the tick)" in line, line
     assert "right is better" in line, line
-    assert re.search(r"Drawn from -?[\d.]+ to -?[\d.]+ pts\.", line), line
+    # A scale of changes, its ends signed (number rule 3).
+    assert re.search(r"Drawn from [+-]?[\d.]+ to [+-]?[\d.]+ pts\.", line), line
 
 
 # --- L2 and L3: a change is signed, in points, beside its level, and the levels close on it -----------------------
@@ -216,7 +225,9 @@ def test_each_change_reads_its_level_then_its_change_signed_in_points_and_the_ar
             stated = _STATED.search(said["marks"] or "")
             baseline = float(stated["level"]) if stated is not None else float(control["level"])
             closes = float(said["level"]) - baseline - change
-            assert abs(closes) <= 0.1 + 1e-9, (cell.text, row[control_key].text)
+            # Each of the three is rounded on its own, half a unit in its last place, at the pass rate's places.
+            slack = 1.5 * _last_place(said["level"], said["change"], stated["level"] if stated else control["level"])
+            assert abs(closes) <= slack + 1e-9, (cell.text, row[control_key].text)
             checked += 1
     assert checked, "the matrix holds a change"
 
@@ -225,24 +236,24 @@ def test_a_control_level_that_is_not_its_trials_passed_says_what_it_is_a_mean_of
     pages: dict[str, CampaignReport],
 ) -> None:
     """Scaled's control passed 167 of 828 trials (20.2%) over 418 cases, while every change reads the 380 cases both
-    arms ran, on which the control's mean is 20.5%: its cell prints the change's own baseline, and says so. Trips on
-    ``20 (167 of 828 trials, 418 cases)``."""
+    arms ran, on which the control's mean is 20.5%: its cell prints the change's own baseline, at the pass rate's whole
+    percents, and says so. Trips on ``20 (167 of 828 trials, 418 cases)``."""
     page = pages["scaled"]
     (row,) = _matrix(page).rows
-    assert row[f"arm:{page.readings.control}"].text == "20.5% (mean of 380 cases)"
+    assert row[f"arm:{page.readings.control}"].text == "21% (mean of 380 cases)"
     # The trials passed stay one step down, in the fold.
     folded = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
     assert {cells["control"].text for cells in folded.rows} == {"167 of 828 trials"}
 
 
 def test_a_control_whose_trials_passed_are_its_baseline_states_its_count() -> None:
-    """S1's control ran each case once, so its trials passed are its baseline: ``90.0% (18 of 20 cases)``, and a
+    """S1's control ran each case once, so its trials passed are its baseline: ``90% (18 of 20 cases)``, and a
     control that passes nothing still says it cannot show a drop."""
     page = s1_change().page()
     matrix = _matrix(page)
     control = f"arm:{page.readings.control}"
     said = {row["aspect"].text: row[control].text for row in matrix.rows}
-    assert said["billing"] == "90.0% (18 of 20 cases)"
+    assert said["billing"] == "90% (18 of 20 cases)"
     assert said["refunds"] == "0% (0 of 20 cases; cannot show a drop)"
 
 
@@ -252,11 +263,11 @@ def test_where_candidates_read_different_cases_each_names_its_own_baseline(
     """V2 reads cases 1 to 15, where production passed all, and v3 cases 6 to 20, where it passed 13: no one level is
     every change's baseline. The control's cell is its trials passed, and each candidate states the level its own
     change is read from, which its level less closes on. Trips on a candidate cell naming no baseline (its change
-    then read against 90.0%, which neither is), or on a stated baseline its level and change do not close on."""
+    then read against 90%, which neither is), or on a stated baseline its level and change do not close on."""
     page = pages["uneven"]
     (row, *_) = _matrix(page).rows
     assert row["aspect"].text == "billing", "the control: billing is the split aspect"
-    assert row[f"arm:{page.readings.control}"].text == "90.0% (18 of 20 cases)"
+    assert row[f"arm:{page.readings.control}"].text == "90% (18 of 20 cases)"
     labels = {reading.arm: reading.arm_label for reading in page.readings.readings}
     stated = {}
     for arm, label in labels.items():
@@ -264,21 +275,29 @@ def test_where_candidates_read_different_cases_each_names_its_own_baseline(
         assert said is not None and said["marks"] is not None, row[f"arm:{arm}"].text
         baseline = _STATED.search(said["marks"])
         assert baseline is not None and said["marks"].endswith(f"from production's {baseline['level']}%"), said["marks"]
-        assert abs(float(said["level"]) - float(baseline["level"]) - _figure(said["change"])) <= 0.1 + 1e-9, said.string
+        slack = 1.5 * _last_place(said["level"], said["change"], baseline["level"])
+        assert abs(float(said["level"]) - float(baseline["level"]) - _figure(said["change"])) <= slack + 1e-9, (
+            said.string
+        )
         stated[label] = baseline["level"]
-    assert stated == {"v2": "100.0", "v3": "86.7"}
+    assert stated == {"v2": "100", "v3": "87"}
 
 
-# --- L7: one decimal, on the matrix and in its fold ------------------------------------------------------------------
+# --- L7: one precision, the pass rate's, on the matrix and in its fold --------------------------------------------
+
+#: The places each page's pass rate reads at, set by the narrowest interval a reader compares across its campaign
+#: (owner ruling, set digits: a pooled aggregate never sets them): whole points on every page, Kairo's too.
+_CHANGE_PLACES = {"rung3": 0, "kairo": 0, "scaled": 0, "scaled_two_aspects": 0, "s1": 0, "uneven": 0}
 
 
 @pytest.mark.parametrize("name", _CHANGE_PAGES)
-def test_a_change_reads_at_one_decimal_on_the_matrix_and_in_its_fold_alike(
+def test_a_change_reads_at_the_pass_rate_s_places_on_the_matrix_and_in_its_fold_alike(
     pages: dict[str, CampaignReport], name: str
 ) -> None:
-    """Kairo's qwen3.8-flash change is -7.6: its fold printed ``-7.6`` while its matrix printed ``-8``, the column's
-    whole percents. Trips on a whole-number change where the reading holds a decimal, and on a fold and a matrix that
-    print one change two ways."""
+    """Kairo's qwen3.8-flash change of -7.6 printed ``-7.6`` in its fold while its matrix printed ``-8``, the column's
+    whole percents. A change now reads at the places the pass rate's narrowest compared interval sets across the campaign
+    (one decimal at most), rounded half to even, on the matrix and in its fold alike. Trips on a fold and a matrix that
+    print one change two ways, and on a change at other places than its cell's."""
     page = pages[name]
     matrix = _changes(page)
     labels = {column.key: column.header.split(" · ")[0] for column in matrix.columns}
@@ -292,13 +311,16 @@ def test_a_change_reads_at_one_decimal_on_the_matrix_and_in_its_fold_alike(
     folded = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
     in_fold = {(row["aspect"].text, row["arm"].text): row["change"].text.removesuffix(" pts") for row in folded.rows}
     assert on_matrix == in_fold
+    at = _CHANGE_PLACES[name]
     for arm in {reading.arm_label for reading in page.readings.readings}:
-        expected = sorted(round(reading.change, 1) for reading in page.readings.readings if reading.arm_label == arm)
+        expected = sorted(
+            float(round_half_even(reading.change, at)) for reading in page.readings.readings if reading.arm_label == arm
+        )
         shown = sorted((text for (_, named), text in on_matrix.items() if named == arm), key=_figure)
         assert [_figure(text) for text in shown] == expected, (arm, expected, shown)
-        assert all(text == "0" or "." in text for text in shown), shown
+        assert all(text == "0" or len(text.partition(".")[2]) == at for text in shown), shown
     if name == "kairo":
-        assert "-7.6" in on_matrix.values()
+        assert "-8" in on_matrix.values() and "-7.6" not in on_matrix.values()
 
 
 @pytest.mark.parametrize("name", ["s1", "scaled_two_aspects", "uneven"])
@@ -309,7 +331,7 @@ def test_the_row_across_every_aspect_reads_the_mean_of_the_levels_above_and_clos
     control's is the mean of the control's cells above (each its changes' baseline), and says so once; each
     candidate's is the mean of its own cells above, then its change signed, as every candidate cell reads. Its level
     less the control's is then its change. Scaled across two aspects printed the aggregate's pooled 21.1% beside
-    candidate-a's ``23.5% · +1.9 pts``, which do not close; the control's cells above read 21.6% and 21.4%. Where an
+    candidate-a's ``23.5% · +1.9 pts``, which do not close; the control's cells above read 22% and 21%. Where an
     aspect's candidates read different cases (the uneven page's billing), the control's cells are not every change's
     baseline, so each candidate names the mean of its own baselines above (each its cell's stated one, else the
     control's level on that aspect), and closes on that. Trips on a pooled level, a level that is not the mean of the
@@ -321,13 +343,14 @@ def test_the_row_across_every_aspect_reads_the_mean_of_the_levels_above_and_clos
     control = f"arm:{page.readings.control}"
     above = [float(_CONTROL.fullmatch(row[control].text)["level"]) for row in aspects]  # type: ignore[index]
     said = re.fullmatch(
-        r"(?P<level>\d+\.\d)% \(mean of the aspects above, each weighted equally\)", across[control].text
+        r"(?P<level>\d+(?:\.\d+)?)% \(mean of the aspects above, each weighted equally\)", across[control].text
     )
     assert said is not None, across[control].text
     base = float(said["level"])
-    assert abs(base - sum(above) / len(above)) <= 0.051, (base, above)
+    half = 0.5 * _last_place(said["level"]) + 1e-3
+    assert abs(base - sum(above) / len(above)) <= half, (base, above)
     if name == "scaled_two_aspects":
-        assert (above, base) == ([21.6, 21.4], 21.5)
+        assert (above, base) == ([22.0, 21.0], 22.0)
     split = any(_STATED.search(cell.text) for row in aspects for cell in row.values())
     assert split == (name == "uneven"), "the control: only the uneven page reads an aspect's candidates apart"
     checked = 0
@@ -338,7 +361,7 @@ def test_the_row_across_every_aspect_reads_the_mean_of_the_levels_above_and_clos
         assert figure is not None, cell.text
         cells = [_CHANGE.fullmatch(row[key].text) for row in aspects]
         levels = [float(said["level"]) for said in cells]  # type: ignore[index]
-        assert abs(float(figure["level"]) - sum(levels) / len(levels)) <= 0.051, (cell.text, levels)
+        assert abs(float(figure["level"]) - sum(levels) / len(levels)) <= half, (cell.text, levels)
         # Each baseline above: the one its cell states, else the control's level on that aspect.
         baselines = [
             float(stated["level"]) if (stated := _STATED.search(said["marks"] or "")) else level  # type: ignore[index]
@@ -348,13 +371,14 @@ def test_the_row_across_every_aspect_reads_the_mean_of_the_levels_above_and_clos
         if split:
             assert stated is not None, cell.text
             against = float(stated["level"])
-            assert abs(against - sum(baselines) / len(baselines)) <= 0.051, (cell.text, baselines)
+            assert abs(against - sum(baselines) / len(baselines)) <= half, (cell.text, baselines)
         else:
             assert stated is None, cell.text
             against = base
-        # Each level is a mean of cells already rounded to one decimal, rounded again, beside a change and a baseline
-        # rounded on their own: the row closes within that rounding (float slack aside).
-        assert abs(float(figure["level"]) - against - _figure(figure["change"])) <= 0.2 + 1e-9, (cell.text, against)
+        # Each level is a mean of cells already rounded at the pass rate's places, rounded again, beside a change and a
+        # baseline rounded on their own: the row closes within that rounding (float slack aside).
+        slack = 2 * _last_place(figure["level"], figure["change"])
+        assert abs(float(figure["level"]) - against - _figure(figure["change"])) <= slack + 1e-9, (cell.text, against)
         checked += 1
     assert checked == len({reading.arm for reading in page.readings.readings})
 
@@ -377,7 +401,7 @@ def test_a_one_arm_scorecard_is_turned_a_row_per_measure_with_no_glyph() -> None
     assert [row["aspect"].text for row in rates] == ["accuracy", "clarity"]
     # A rate states its percent and its count on the figure, its interval in the figure's form.
     assert re.fullmatch(r"\d+% \(\d+ of \d+ trials, 20 cases\)", rates[0]["value"].text), rates[0]["value"].text
-    assert re.fullmatch(r"\[\d+%, \d+%\]", rates[0]["interval"].text), rates[0]["interval"].text
+    assert re.fullmatch(r"\d+ to \d+%", rates[0]["interval"].text), rates[0]["interval"].text
     assert {row["cases"].text for row in matrix.rows} == {"20"}
 
 

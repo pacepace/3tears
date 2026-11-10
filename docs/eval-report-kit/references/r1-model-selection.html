@@ -338,9 +338,9 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
   <h1>Ship Atlas-M on all traffic. It is the only candidate that clears every gate.</h1>
   <p class="lede">Cheaper models win two of the five tasks, but routing traffic to them is blocked: both fail the speculation gate, and speculation bait shows up inside every task. Routing would cut cost by <strong id="b-save">34%</strong> once a cheaper model clears that gate.</p>
   <div class="decision">
-    <div class="rec"><span class="k">Recommendation</span><span class="v"><strong>Atlas-M everywhere.</strong> <span id="b-cost"></span> per 1k conversations, p95 under 3.0 s on every task.</span></div>
+    <div class="rec"><span class="k">Recommendation</span><span class="v"><strong>Atlas-M everywhere.</strong> <span id="b-cost"></span> per 1k conversations, p95 under 3 s on every task.</span></div>
     <div><span class="k">Why not the others</span><span class="v">Atlas-L has the best quality but misses the latency budget on 4 of 5 tasks. Brisk-S and Open-70B speculate too often (81% and 89% decline rate, floor 95%).</span></div>
-    <div><span class="k">Watch</span><span class="v">Atlas-M's issue resolution in troubleshooting is 90%, right at the floor (CI ±4.4). Re-test with 400 conversations before launch.</span></div>
+    <div><span class="k">Watch</span><span class="v">Atlas-M's issue resolution in troubleshooting is 90%, right at the floor (interval 86 to 94%). Re-test with 400 conversations before launch.</span></div>
     <div><span class="k">Next decision</span><span class="v">Evaluate a speculation guard on Brisk-S. If it reaches 95%, route billing to Brisk-S and small talk to Open-70B.</span></div>
   </div>
   <div class="grid2"><div class="fig mini"><h3>Cost per 1k conversations</h3><p class="cap" style="margin:0 0 .4rem">Blended over September traffic. Faded bars fail at least one task.</p><div class="chart" id="sum-cost" data-kind="bars"></div></div>
@@ -350,7 +350,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 
 <section>
   <header><span class="eyebrow">Where each candidate passes</span><h2>Atlas-M passes every task. The cheapest passing model differs by task.</h2>
-  <p class="takeaway">Each cell checks overall quality (floor 85), every task-specific behavior against its own floor, and p95 latency (3.0 s). Amber means the score clears the floor but its 95% interval crosses it.</p></header>
+  <p class="takeaway">Each cell checks overall quality (floor 85), every task-specific behavior against its own floor, and p95 latency (3 s). Amber means the score clears the floor but its 95% interval crosses it.</p></header>
   <div class="chart" id="gate" data-kind="gate_matrix"></div>
 </section>
 
@@ -367,7 +367,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 </section>
 
 <section>
-  <header><span class="eyebrow">Latency</span><h2>Atlas-L's p95 exceeds 3.0 s everywhere except small talk.</h2>
+  <header><span class="eyebrow">Latency</span><h2>Atlas-L's p95 exceeds 3 s everywhere except small talk.</h2>
   <p class="takeaway">Each bar runs from p50 to p95 response time. Research is the slowest task because it includes a tool round trip.</p></header>
   <div class="fig"><div class="chart" id="lat" data-kind="range_bars"></div><p class="cap">Measured end to end from user message to final token, staging environment, 2026-10-21.</p></div>
 </section>
@@ -733,7 +733,7 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
     se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
       const at=t=>t&&t[i];
-      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])}–${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])} to ${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
     ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
   // end labels stacked to avoid collisions, to the right of the last point
   // each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line
@@ -777,7 +777,7 @@ function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
     const nl=noted?kWrap(r.note,m.r-10):[kAs(r.value_text,opt.fmt,r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
     nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
-    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} [${kAs(r.lo_text,opt.fmt,r.lo)}, ${kAs(r.hi_text,opt.fmt,r.hi)}]`]));});
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`]));});
   return s;}
 
 // ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
@@ -1023,11 +1023,15 @@ const CID=D.candidates.map(c=>c.id), NAME=Object.fromEntries(D.candidates.map(c=
 const COL={"atlas-l":"--s1","atlas-m":"--s2","brisk-s":"--s3","open-70b":"--s5"};
 const SHAPE={"atlas-l":"circle","atlas-m":"square","brisk-s":"triangle","open-70b":"diamond"};
 const T=Object.fromEntries(D.tasks.map(t=>[t.id,t]));
+// The number policy (packages/evals/docs/design.md, The number policy): every interval reads "low to high", its ends
+// at the figure's own decimals (the rates here are stored whole). Latency has no interval, so it reads at two
+// significant figures of its least figure, a p50 under a second: hundredths. A budget prints as declared.
+const span=(v,ci,cap=100)=>`${Math.round(v-ci)} to ${Math.round(Math.min(cap,v+ci))}`;const sec=v=>v.toFixed(2)+" s";const said=v=>`${+v} s`;
 // ---- gate logic (shared by matrix, options and explorer)
 function check(t,c,cr){const R=T[t].results[c];const fails=[],borders=[];
   if(R.overall<cr.overall)fails.push(`Quality ${R.overall} < ${cr.overall}`);else if(R.overall-R.overall_ci<cr.overall)borders.push(`Quality ${R.overall}, interval crosses ${cr.overall}`);
-  for(const d of T[t].dims){const v=R.dims[d.id];if(v.v<d.floor)fails.push(`${d.name} ${v.v}% < ${d.floor}%`);else if(v.v-v.ci<d.floor)borders.push(`${d.name} ${v.v}% ±${v.ci}`);}
-  if(R.p95>cr.p95)fails.push(`p95 ${R.p95.toFixed(1)} s > ${cr.p95.toFixed(1)} s`);
+  for(const d of T[t].dims){const v=R.dims[d.id];if(v.v<d.floor)fails.push(`${d.name} ${v.v}% < ${d.floor}%`);else if(v.v-v.ci<d.floor)borders.push(`${d.name} ${v.v}% (${span(v.v,v.ci)}%)`);}
+  if(R.p95>cr.p95)fails.push(`p95 ${sec(R.p95)} > ${said(cr.p95)}`);
   return {status:fails.length?"bad":borders.length?"warn":"good",fails,borders};}
 const routable=D.tasks.filter(t=>t.routable).map(t=>t.id), crossCut=D.tasks.filter(t=>!t.routable).map(t=>t.id);
 function passesAll(c,cr,ids){return ids.every(t=>check(t,c,cr).status!=="bad");}
@@ -1054,7 +1058,7 @@ const CR={overall:D.criteria.overall,p95:D.criteria.p95};
   rows.sort((a,b)=>(b.rec?1:0)-(a.rec?1:0)||(a.routed?-1:0)-(b.routed?-1:0)||a.cost-b.cost);
   tb.innerHTML=rows.map(r=>{const g=r.routed?pill("warn","Blocked by speculation gate"):r.n===5?pill("good","5 of 5 tasks"):pill("bad",`${r.n} of 5 tasks`);
     const d=(r.cost/recCost-1)*100;
-    return `<tr class="${r.rec?"hl":""}"><td>${r.rec?"<strong>":""}${r.name}${r.rec?"</strong> · recommended":""}</td><td>${g}</td><td class="r">${fmt.usd(r.cost)}</td><td class="r">${r.rec?"–":(d>0?"+":"")+Math.round(d)+"%"}</td><td class="r">${r.q.toFixed(1)}</td><td class="r">${r.p95.toFixed(1)} s</td></tr>`}).join("");
+    return `<tr class="${r.rec?"hl":""}"><td>${r.rec?"<strong>":""}${r.name}${r.rec?"</strong> · recommended":""}</td><td>${g}</td><td class="r">${fmt.usd(r.cost)}</td><td class="r">${r.rec?"–":(d>0?"+":"")+Math.round(d)+"%"}</td><td class="r">${r.q.toFixed(1)}</td><td class="r">${sec(r.p95)}</td></tr>`}).join("");
 })();
 
 // ---- summary bars
@@ -1075,25 +1079,25 @@ setChart(document.getElementById("pareto"),{legend:LEGEND,panel_min_rem:12.6,hei
   panels:D.tasks.map(t=>({title:t.name,subtitle:t.dims.length?t.dims.length+" behavior"+(t.dims.length>1?"s":"")+" gated":"Overall quality only",
     points:CID.map(c=>{const R=t.results[c],r=check(t.id,c,CR);const why=r.fails.length?`Fails: ${r.fails.join("; ")}`:r.status==="warn"?`Borderline: ${r.borders.join("; ")}`:"Passes all gates";
       return {id:c,label:NAME[c],narrow_label:NAME[c],x:R.cost,y:R.overall,color:COL[c],shape:SHAPE[c],hollow:r.status==="bad",
-        tip:[`${NAME[c]} · ${t.name}`,`Quality ${R.overall} ±${R.overall_ci} · ${fmt.usd(R.cost)} / 1k · p95 ${R.p95.toFixed(1)} s`,why]};})}))});
+        tip:[`${NAME[c]} · ${t.name}`,`Quality ${R.overall} (${span(R.overall,R.overall_ci)}) · ${fmt.usd(R.cost)} / 1k · p95 ${sec(R.p95)}`,why]};})}))});
 
 // ---- dims small multiples
 (function(){const panels=[];
   for(const t of D.tasks)for(const d of t.dims)panels.push({title:d.name,subtitle:`${t.name} · floor ${d.floor}%`,reference:{value:d.floor,kind:"floor"},
     rows:CID.map(c=>{const v=t.results[c].dims[d.id];const fail=v.v<d.floor,hi=Math.min(100,v.v+v.ci);
       return {id:c,label:NAME[c],value:v.v,lo:v.v-v.ci,hi,color:COL[c],shape:SHAPE[c],hollow:fail,strong:!fail,
-        tip:[`${NAME[c]} · ${d.name}`,`${v.v}% (95% CI ${(v.v-v.ci).toFixed(1)}–${hi.toFixed(1)})`,`${fail?"Below":"Meets"} the ${d.floor}% floor`]};})});
+        tip:[`${NAME[c]} · ${d.name}`,`${v.v}% (95% interval, ${span(v.v,v.ci)}%)`,`${fail?"Below":"Meets"} the ${d.floor}% floor`]};})});
   for(const t of D.tasks.filter(t=>!t.dims.length))panels.push({title:t.name,subtitle:"No task-specific behaviors. Gated on overall quality only; see the cost and quality chart above."});
   setChart(document.getElementById("dims"),{panel_min_rem:12.6,domain:[70,100],ticks:[70,80,90,100],fmt:"pct",level:"95%",panels});})();
 
 // ---- latency ranges
-setChart(document.getElementById("lat"),{legend:LEGEND,domain:[0,5.5],ticks:[0,1,2,3,4,5],fmt:"s:0",reference:{value:CR.p95,label:`budget ${CR.p95.toFixed(1)} s`,kind:"budget"},
+setChart(document.getElementById("lat"),{legend:LEGEND,domain:[0,5.5],ticks:[0,1,2,3,4,5],fmt:"s:0",reference:{value:CR.p95,label:`budget ${said(CR.p95)}`,kind:"budget"},
   groups:D.tasks.map(t=>({label:t.name,short_label:t.name.split(" ")[0],rows:CID.map(c=>{const R=t.results[c],over=R.p95>CR.p95;
-    return {label:NAME[c],from:R.p50,to:R.p95,color:COL[c],shape:SHAPE[c],hollow:over,tip:[`${NAME[c]} · ${t.name}`,`p50 ${R.p50.toFixed(2)} s · p95 ${R.p95.toFixed(2)} s`].concat(over?[`Over the ${CR.p95.toFixed(1)} s budget`]:[])};})}))});
+    return {label:NAME[c],from:R.p50,to:R.p95,color:COL[c],shape:SHAPE[c],hollow:over,tip:[`${NAME[c]} · ${t.name}`,`p50 ${sec(R.p50)} · p95 ${sec(R.p95)}`].concat(over?[`Over the ${said(CR.p95)} budget`]:[])};})}))});
 
 // ---- explorer
 const cl=document.getElementById("c-lat"),cq=document.getElementById("c-q"),cx=document.getElementById("c-x");
-function explore(){const cr={overall:+cq.value,p95:+cl.value};document.getElementById("o-lat").textContent=cr.p95.toFixed(1)+" s";document.getElementById("o-q").textContent=cr.overall;
+function explore(){const cr={overall:+cq.value,p95:+cl.value};document.getElementById("o-lat").textContent=said(cr.p95);document.getElementById("o-q").textContent=cr.overall;
   const P=plans(cr,cx.checked);const singles=P.single.filter(s=>s.ok).map(s=>s.c).sort((a,b)=>blended(Object.fromEntries(routable.map(t=>[t,a])))-blended(Object.fromEntries(routable.map(t=>[t,b]))));
   const bestSingle=singles[0];const sCost=bestSingle?blended(Object.fromEntries(routable.map(t=>[t,bestSingle]))):null;const rCost=P.routedOk?blended(P.routed):null;
   const st=[];st.push(`<div class="stat"><span class="big">${bestSingle?NAME[bestSingle]:"None"}</span><span class="lab">Cheapest single model passing all 5 tasks</span></div>`);
@@ -1106,12 +1110,12 @@ function explore(){const cr={overall:+cq.value,p95:+cl.value};document.getElemen
   else{note.className="callout";note.textContent=`Routing adds nothing under these gates: the cheapest qualifying model is the same on every task${cx.checked?". Uncheck the speculation requirement to see what routing would save if that risk were handled elsewhere.":"."}`;}
   let h=`<thead><tr><th>Task</th><th>Routed to</th><th class="r">Quality</th><th class="r">Cost / 1k</th><th class="r">p95</th><th>Also qualifying</th></tr></thead><tbody>`;
   for(const t of routable){const c=P.routed[t];const R=c&&T[t].results[c];const others=CID.filter(o=>o!==c&&check(t,o,cr).status!=="bad"&&(!cx.checked||passesAll(o,cr,crossCut)));
-    h+=`<tr><td>${T[t].name}</td><td>${c?`<span class="sw" style="background:var(${COL[c]})"></span>${NAME[c]}`:pill("bad","No model qualifies")}</td><td class="r">${R?R.overall:"–"}</td><td class="r">${R?fmt.usd(R.cost):"–"}</td><td class="r">${R?R.p95.toFixed(1)+" s":"–"}</td><td>${others.map(o=>NAME[o]).join(", ")||"–"}</td></tr>`;}
+    h+=`<tr><td>${T[t].name}</td><td>${c?`<span class="sw" style="background:var(${COL[c]})"></span>${NAME[c]}`:pill("bad","No model qualifies")}</td><td class="r">${R?R.overall:"–"}</td><td class="r">${R?fmt.usd(R.cost):"–"}</td><td class="r">${R?sec(R.p95):"–"}</td><td>${others.map(o=>NAME[o]).join(", ")||"–"}</td></tr>`;}
   document.getElementById("w-plan").innerHTML=h+"</tbody>";}
 [cl,cq,cx].forEach(e=>e.addEventListener("input",explore));explore();
 
 // ---- full table
 (function(){const rows=[];for(const t of D.tasks)for(const c of CID){const R=t.results[c];rows.push({task:t.name,model:NAME[c],c,q:R.overall,ci:R.overall_ci,cost:R.cost,p50:R.p50,p95:R.p95,dims:t.dims.map(d=>`${d.name} ${R.dims[d.id].v}%`).join(" · "),st:check(t.id,c,CR).status});}
   const tbl=document.getElementById("full");tbl.innerHTML=`<thead><tr><th class="sort" data-k="task">Task</th><th class="sort" data-k="model">Model</th><th>Gate</th><th class="sort r" data-k="q">Quality</th><th class="sort r" data-k="cost">Cost / 1k</th><th class="sort r" data-k="p50">p50</th><th class="sort r" data-k="p95">p95</th><th>Behaviors</th></tr></thead><tbody></tbody>`;
-  sortable(tbl,rows,s=>{tbl.querySelector("tbody").innerHTML=s.map(r=>`<tr><td>${r.task}</td><td><span class="sw" style="background:var(${COL[r.c]})"></span>${r.model}</td><td>${pill(r.st,{good:"Pass",warn:"Borderline",bad:"Fail"}[r.st])}</td><td class="r">${r.q} <span style="color:var(--muted)">±${r.ci}</span></td><td class="r">${fmt.usd(r.cost)}</td><td class="r">${r.p50.toFixed(2)} s</td><td class="r">${r.p95.toFixed(2)} s</td><td class="wrap">${r.dims||"–"}</td></tr>`).join("");},"task",1);})();
+  sortable(tbl,rows,s=>{tbl.querySelector("tbody").innerHTML=s.map(r=>`<tr><td>${r.task}</td><td><span class="sw" style="background:var(${COL[r.c]})"></span>${r.model}</td><td>${pill(r.st,{good:"Pass",warn:"Borderline",bad:"Fail"}[r.st])}</td><td class="r">${r.q} <span style="color:var(--muted)">(${span(r.q,r.ci)})</span></td><td class="r">${fmt.usd(r.cost)}</td><td class="r">${sec(r.p50)}</td><td class="r">${sec(r.p95)}</td><td class="wrap">${r.dims||"–"}</td></tr>`).join("");},"task",1);})();
 </script>

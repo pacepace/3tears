@@ -82,7 +82,7 @@ emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: do
   Escalates score: 98.9%, 89 of 90 trials
   Accuracy: 90%, 81 of 90 trials
   per label:
-    account: precision 100% (17 of 17 trials over 7 cases, [56.9%, 100%]), recall 81% (17 of 21 trials over 7 cases, ...
+    account: precision 100% (17 of 17 trials over 7 cases, 57 to 100%), recall 81% (17 of 21 trials over 7 cases, ...
     ...
   total spend: $0.0019, the results' cost
 top misses (5 of 20 failed trials):
@@ -259,7 +259,7 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: 83.3%, 75 of 90 trials
   ...
@@ -268,7 +268,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -279,11 +279,11 @@ guardrail's row, and the trials' census:
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
-| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +16.7 pts | [-1.5, 25.9] | — | cannot tell apart |
-| Number score | 83.3% [66.8%, 92.5%] | 100.0% [88.1%, 100.0%] | +16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
-| No invented total score | v2 | 99% | 99% | 30 paired | 0.0 pts | [-13.4, 13.4] pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
+| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -8 to +35 pts | cannot tell apart | 30 paired |
+| No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 
@@ -479,7 +479,7 @@ writer_eval = WriterEval(
   the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
 - **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
 
-What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08), replayed from `packages/evals/` with no key: the arms, the first
+What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08 and 2026-11-10), replayed from `packages/evals/` with no key: the arms, the first
 readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
 turns came from (each path printed whole):
 
@@ -487,7 +487,7 @@ turns came from (each path printed whole):
 writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gemini-3.8-flash
 | reading | shipped | lead-first |
 |---|---|---|
-| Report finished | 0.43 | 0.86 |
+| Report finished | 43% (3 of 7) | 86% (6 of 7) |
 | Bounces | 0.86 | 1.00 |
 ...
 | Must-fix findings open | 0.43 | 0.29 |
@@ -495,22 +495,22 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 ...
 | Writer turns | 12.57 | 12.29 |
 ...
-| report_writer.first_screen (judged) | 5.00 | 5.00 |
-| report_writer.coherent_story (judged) | 4.71 | 5.00 |
-| report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
-| report_writer.sound_elision (judged) | 5.00 | 5.00 |
-| report_writer.confounds_handled (judged) | 5.00 | 5.00 |
-| report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
-| report_writer.evidence_fits_claims (judged) | 4.43 | 4.71 |
+| report_writer.first_screen (judged) | 5.0 | 5.0 |
+| report_writer.coherent_story (judged) | 5.0 | 4.9 |
+| report_writer.honest_emphasis (judged) | 5.0 | 4.7 |
+| report_writer.sound_elision (judged) | 4.7 | 5.0 |
+| report_writer.confounds_handled (judged) | 5.0 | 5.0 |
+| report_writer.actionable_next_steps (judged) | 5.0 | 5.0 |
+| report_writer.evidence_fits_claims (judged) | 4.6 | 4.7 |
 ...
 | Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 52 | 48 | 15 to 89 |
-| lead-first | both pages finished | cannot tell apart (too few cases) | 50 | 50 | 0 to 100 |
+| lead-first | every pair | cannot tell apart | 70 | 30 | 33 to 100 |
+| lead-first | both pages finished | cannot tell apart (too few cases) | 62 | 38 | 0 to 100 |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 86% (6 of 7) | 9 | 0 | 3,115 | $0.14 of $1.95 |
+| lead-first | 86% (6 of 7) | -2 | 0 | 33 | $0.13 of $1.95 |
 ...
 promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -522,14 +522,14 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 cases would settle it.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 70% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 70%, roughly 30 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:
 
 ```text
-| Report finished | 43% [16%, 75%] | 86% [49%, 97%] | +42.9 pts | [-49.5, 100.0] pts | cannot tell apart | 7 paired |
-| Must-fix findings open | 0.43 [0, 0.92] | 0.29 [0, 0.98] | -0.14 | [-1.31, 1.03] | cannot tell apart | 7 paired |
+| Report finished | 43% (16 to 75) | 86% (49 to 97) | +43 pts | -49 to +100 pts | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.4 (0 to 0.9) | 0.3 (0 to 1.0) | -0.1 | -1.3 to +1.0 | cannot tell apart | 7 paired |
 ```
 
 | What | Recorded |
@@ -546,14 +546,14 @@ it may spend, and what to do when a recording run is cut short.
 **The lesson: a judge that scores one page at a time sits at the ceiling here, so the arms are read side by side,
 and at seven cases even that reading is mostly the judge's own noise.** Every judged item reads 5 or near it for both
 arms: the writer revises each page until the editor passes it on the same rubric, so the scores bunch at the top and
-cannot tell the arms apart. Read side by side, the same judge gave lead-first 52% of its preference (50% is even), and
-its two orders agreed on 6 of 7 cases. Recorded seven times on the same seven cases, a few lines of the pages apart
-each time, the judge read between 43% and 70%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
+cannot tell the arms apart. Read side by side, the same judge gave lead-first 73% of its preference (50% is even), and
+its two orders agreed on 6 of 7 cases. Recorded again and again on the same seven cases, a few lines of the pages
+apart each time, the judge has read between 43% and 73%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
 tell the arms apart on either: 6 of 7 lead-first reports finished against 3 of 7, with fewer must-fix findings left
 open (0.29 a report against 0.43). That preference is the promotion read's primary reading, fixed before the run: it
 reads `promote` only when the preference favours the candidate on enough held-out cases, no gated reading regressed
 and every guardrail held. 7 held-out cases, each written once (k=1), separate only a large effect, and the pass gives
-the size that would settle this one only if the share it read were the true one: if it stayed near 52%, roughly 3,000
+the size that would settle this one only if the share it read were the true one: if it stayed near 73%, roughly 20
 held-out cases. So the read is `Undecided`, which never promotes, and recording the call stays a person's act. That
 is the answer at this size, stated rather than tuned around: what would answer it is more cases or more repeats of
 each, and each costs a recorded report. [Pairwise

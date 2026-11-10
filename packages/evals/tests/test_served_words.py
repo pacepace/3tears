@@ -91,13 +91,13 @@ def test_a_cell_stores_its_value_and_only_the_text_its_page_s_forms_printed() ->
         TableCell.model_validate({"value": 0.5, "text": "a lie"})
     # A column rule decides the cell's text, records it in the page's ledger and stores exactly that text.
     forms = PageForms.off_page()
-    (row,) = forms.rate_columns([{"rate": TableCell(value=62.94, unit="%")}])
+    (row,) = forms.money_columns([{"cost": TableCell(value=0.11, unit="usd")}])
     (printed,) = forms.ledger
-    assert row["rate"].model_dump(mode="json")["value_text"] == printed.text == row["rate"].text == "63%"
+    assert row["cost"].model_dump(mode="json")["value_text"] == printed.text == row["cost"].text == "$0.11"
     # A new value drops it, and the cell derives its text from the value it now holds.
-    moved = row["rate"].model_copy(update={"value": 70.44})
+    moved = row["cost"].model_copy(update={"value": 0.2})
     assert moved.value_text is None and "value_text" not in moved.model_dump(mode="json")
-    assert moved.text == TableCell(value=70.44, unit="%", decimals=0).text == "70%"
+    assert moved.text == TableCell(value=0.2, unit="usd", decimals=2).text == "$0.20"
 
 
 def test_a_cells_decided_text_is_what_it_prints_and_never_outlives_what_it_was_decided_from() -> None:

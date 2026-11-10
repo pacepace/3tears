@@ -1103,8 +1103,9 @@ def _campaign_page(
         aspect.label: aspect.design.measure_order if aspect.design is not None else [] for aspect in campaign.aspects
     }
     # Each aspect's forms, built once: its page reads them, and so does the campaign page's lead, which states that
-    # page's verdict sentences.
-    forms = {aspect.aspect: PageForms.of_bundle(aspect) for aspect in bundle.aspects}
+    # page's verdict sentences. Each reads its measures at the campaign's set of them, the code page's readings too, so
+    # a measure reads alike on every page of the campaign.
+    forms = PageForms.of_aspects(bundle.aspects, readings)
     reports = {
         aspect.aspect: build_code_only_report_in_forms(
             aspect,
