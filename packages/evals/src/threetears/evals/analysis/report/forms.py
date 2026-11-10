@@ -682,16 +682,28 @@ class PageForms:
         unit = _on_the_figure(ruler.unit)
         return self._issue(*_keyed(measure, kind), "level", value, text, _digits_of(text, unit), unit)
 
-    def ruled_spread(self, ruler: MeasureRuler, sem: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
-        """A mean's standard error on its ruler, stated beside the mean as ``± spread``: money to its own two
-        significant figures, as every money figure reads (``$0.0074`` beside ``$0.046``), never rounded to a zero it
-        is not; any other unit as a bare number at its reading's places where the page holds them, never rounded to
-        zero, else at the unit's precision.
+    def ruled_spread(
+        self,
+        ruler: MeasureRuler,
+        sem: float,
+        *,
+        mean: float | None = None,
+        measure: str = "",
+        kind: _MeasureKind = None,
+    ) -> Printed:
+        """A mean's standard error on its ruler, stated beside the mean as ``± spread``, at the mean's precision (rule
+        1: one measure, one precision): money to the decimals the mean beside it reads to (``$3.33 ± $0.09``, never
+        ``$0.088``), any other unit as a bare number at its reading's places where the page holds them, else at the
+        decimals the mean beside it reads to; never rounded to a zero it is not, where it takes the figures that keep
+        it off zero.
 
         :param ruler: The reading's ruler.
         :ptype ruler: MeasureRuler
         :param sem: The standard error, as stored.
         :ptype sem: float
+        :param mean: The mean it is stated beside, as stored; None where it stands alone, which reads it by its own
+            figures.
+        :ptype mean: float | None
         :param measure: The measure or dimension it is the spread of; empty for none.
         :ptype measure: str
         :param kind: Its reading.
@@ -701,12 +713,19 @@ class PageForms:
         """
         scaled = sem * ruler.factor
         if is_money(ruler.unit) and ruler.money is not None:
-            text = money_form([scaled], rate=ruler.money.rate).spell(scaled)
+            decimals = ruler.money.places_of([mean * ruler.factor]) if mean is not None else None
+            if decimals is not None and (scaled == 0 or float(round_half_even(scaled, decimals)) != 0):
+                text = TableCell(value=scaled, unit=MONEY, decimals=decimals).figure
+            else:
+                text = money_form([scaled], rate=ruler.money.rate).spell(scaled)
             return self._issue(*_keyed(measure, kind), "half_width", sem, text, _digits_of(text, MONEY), MONEY)
         # At its reading's places, as the mean beside it reads, kept off zero: a spread is never none.
         places = self._set_places(None, measure, kind)
         if places is not None and places.change is not None:
             text = policy_figure(scaled, places.change, bounds=_ZERO_BOUND)
+        elif mean is not None:
+            beside = _ruled_level_text(ruler, mean * ruler.factor, None)
+            text = policy_figure(scaled, _decimals_in(beside), bounds=_ZERO_BOUND)
         else:
             text = number_in(scaled, ruler.unit)
         return self._issue(*_keyed(measure, kind), "half_width", sem, text, text, "")
@@ -3099,6 +3118,12 @@ def _places(values: Sequence[float]) -> int:
             if len(set(rounded)) == len(set(values)):
                 return places
     return _MOST_SIDE_BY_SIDE_PLACES
+
+
+def _decimals_in(text: str) -> int:
+    """How many decimals a figure's text is written to: ``2`` for ``$3.33``, none for ``90%``."""
+    found = re.search(r"\.(\d+)", text)
+    return len(found[1]) if found is not None else 0
 
 
 def _joined(digits: str, unit: str) -> str:
