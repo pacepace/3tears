@@ -201,7 +201,8 @@ class TestReadKeyed:
         assert sorted((r["state"], r["geo"], r["id"]) for r in rows) == sorted(keys)
         _plans_ok(recorder, seeded)
         # the keys found by the key's index, about one row read a key, on PostgreSQL and YugabyteDB alike
-        (plan,) = recorder.plans
+        # the page's own statement (a reader that is no asyncpg connection is asked its database once, beside it)
+        (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
         assert plan_uses_index(plan, "results_pkey"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(keys), plan
         _batched_on_yugabyte(plan, seeded)
