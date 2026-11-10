@@ -19,6 +19,8 @@ as keyed by construction, judged by the key it names):
   (:class:`Derived`), judged on its own text where it is written;
 - **a source's change record past a saved mark**: :func:`read_past_marks` (stamps), :func:`read_after` (a growing
   id), :func:`read_keyed` (the ids a runs record named);
+- **a write by key** (a status flip, a stamp, a fence-checked save, a delete of a key's rows): :func:`update_keyed`,
+  :func:`delete_keyed` (:class:`KeyedWrite`); a listing's every row, page after page: :func:`keyset_rows`;
 - **an expiry sweep or a stale-row reap** a page at a time through its index: :func:`delete_before`,
   :func:`update_before`; a cache's trim to its cap by its key's order (SQLite's rowid): :func:`delete_oldest`;
 - **a cache derived from rows**, kept by key: :class:`threetears.epoch.RowFollower`;
@@ -47,7 +49,7 @@ from threetears.core.keyed.counts import (
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
-from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_page
+from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     DEFAULT_KEY_BATCH,
     KeyBatch,
@@ -57,6 +59,7 @@ from threetears.core.keyed.rows import (
     read_keyed_arrow,
 )
 from threetears.core.keyed.whole_reads import WholeReads
+from threetears.core.keyed.writes import KeyedWrite, delete_keyed, update_keyed
 
 __all__ = [
     "DEFAULT_KEY_BATCH",
@@ -68,6 +71,7 @@ __all__ = [
     "KeyBatch",
     "KeyPage",
     "KeyTooWide",
+    "KeyedWrite",
     "Lock",
     "MarkedRead",
     "PageAfter",
@@ -80,12 +84,14 @@ __all__ = [
     "counts_by",
     "counts_by_relations",
     "delete_before",
+    "delete_keyed",
     "delete_oldest",
     "empty_tables",
     "estimated_rows",
     "exists_keyed",
     "holds_any",
     "keyset_page",
+    "keyset_rows",
     "read_after",
     "read_joined",
     "read_keyed",
@@ -93,4 +99,5 @@ __all__ = [
     "read_past_marks",
     "rows_affected",
     "update_before",
+    "update_keyed",
 ]

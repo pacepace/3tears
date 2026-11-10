@@ -43,7 +43,7 @@ from threetears.core.keyed._filters import Derived, Fragment, Lock, by_condition
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["Sort", "KeyPage", "exists_keyed", "keyset_page"]
+__all__ = ["Sort", "KeyPage", "exists_keyed", "keyset_page", "keyset_rows"]
 
 
 @dataclass(frozen=True)
@@ -247,3 +247,59 @@ async def keyset_page(
     rows = answered[:limit]
     more = len(answered) > limit
     return KeyPage(rows=rows, next_cursor=_encode(order, rows[-1]) if more else None)
+
+
+async def keyset_rows(
+    conn: Any,
+    table: str | Derived,
+    *,
+    columns: Sequence[str],
+    by: Mapping[str, Any],
+    order: Sequence[Sort],
+    page: int = 500,
+    visible: Sequence[Fragment] = (),
+    where: Sequence[Fragment] = (),
+) -> list[dict[str, Any]]:
+    """every row of ``table`` that ``by`` names, in ``order``: :func:`keyset_page` read page after page to the last.
+
+    For a listing whose caller takes every row (a conversation's schedules, a group's members): each statement reads
+    one page through the sort's index, never the prefix's rows in one statement past the transport's cap.
+
+    :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
+    :ptype conn: Any
+    :param table: the table (``schema.table``), or a derived relation
+    :ptype table: str | Derived
+    :param columns: the columns read, TRUSTED identifiers; each sort column among them
+    :ptype columns: Sequence[str]
+    :param by: the bound prefix, as :func:`keyset_page` takes it
+    :ptype by: Mapping[str, Any]
+    :param order: the sort, its last column unique among the rows ``by`` names
+    :ptype order: Sequence[Sort]
+    :param page: the rows a statement reads
+    :ptype page: int
+    :param visible: visibility clauses, as :func:`keyset_page` takes them
+    :ptype visible: Sequence[Fragment]
+    :param where: filters beside the prefix, as :func:`keyset_page` takes them
+    :ptype where: Sequence[Fragment]
+    :return: the rows, in the sort's order
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: as :func:`keyset_page`
+    """
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        found = await keyset_page(
+            conn,
+            table,
+            columns=columns,
+            by=by,
+            order=order,
+            limit=page,
+            cursor=cursor,
+            visible=visible,
+            where=where,
+        )
+        rows.extend(found.rows)
+        if found.next_cursor is None:
+            return rows
+        cursor = found.next_cursor

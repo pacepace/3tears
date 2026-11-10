@@ -34,13 +34,16 @@ from threetears.core.keyed import (
     ThreadedSQLite,
     counts_by_relations,
     delete_before,
+    delete_keyed,
     delete_oldest,
     holds_any,
     keyset_page,
+    keyset_rows,
     read_joined,
     read_keyed,
     read_past_marks,
     update_before,
+    update_keyed,
 )
 from threetears.core.testing.calibrate import best_seconds, budget_problem
 from threetears.core.testing.plans import (
@@ -428,6 +431,90 @@ class TestUpdateBefore:
         assert swept.statements == 3000 // 500 + 1
         assert await seeded.conn.fetchval(f"SELECT count(*) FROM {_TABLE} WHERE stamp < $1", before) == 0
         problem = _budget("an update_before page of 500 rows", took, baseline)
+        assert problem is None, problem
+
+
+class _Executes:
+    """a connection whose every write is recorded, then run."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+        self.asked: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.asked.append((sql, args))
+        return str(await self._conn.execute(sql, *args))
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        self.asked.append((sql, args))
+        return await self._conn.fetch(sql, *args)
+
+
+class TestKeyedWrites:
+    async def test_an_update_and_a_delete_by_key_write_their_rows_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if an update or a delete by a (state, geo) prefix plans other than through the key's index, writes
+        other than its 30 rows, or is over 2x the bare statement.
+
+        The bare is the same write hand-written on the same table: ``UPDATE results SET votes = $3 WHERE state = $1
+        AND geo = $2`` (and the ``DELETE``), natively bound; the helper writes exactly that statement, quoted."""
+        by = {"state": "S11", "geo": "017"}
+        recorder = _Executes(seeded.conn)
+        transaction = seeded.conn.transaction()
+        await transaction.start()
+        try:
+            updated = await update_keyed(recorder, _TABLE, values={"votes": -1}, by=by)
+            deleted = await delete_keyed(recorder, _TABLE, by=by, returning=["id"])
+        finally:
+            await transaction.rollback()
+        assert (updated.count, deleted.count, len(deleted.rows)) == (_IDS, _IDS, _IDS)
+        for sql, args in recorder.asked:
+            plan = await explain_write(seeded.conn, sql, *args)
+            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            assert plan.rows_scanned <= 1.1 * _IDS, plan
+        bare_update = await _rolled_back(
+            seeded.conn,
+            lambda: seeded.conn.execute(
+                f"UPDATE {_TABLE} SET votes = $3 WHERE state = $1 AND geo = $2", "S11", "017", -1
+            ),
+        )
+        took_update = await _rolled_back(
+            seeded.conn, lambda: update_keyed(seeded.conn, _TABLE, values={"votes": -1}, by=by)
+        )
+        bare_delete = await _rolled_back(
+            seeded.conn,
+            lambda: seeded.conn.fetch(f"DELETE FROM {_TABLE} WHERE state = $1 AND geo = $2 RETURNING id", "S11", "017"),
+        )
+        took_delete = await _rolled_back(
+            seeded.conn, lambda: delete_keyed(seeded.conn, _TABLE, by=by, returning=["id"])
+        )
+        problems = [
+            _budget("update_keyed of a key's 30 rows", took_update, bare_update),
+            _budget("delete_keyed of a key's 30 rows", took_delete, bare_delete),
+        ]
+        assert problems == [None, None], problems
+
+    async def test_a_drained_listing_reads_page_by_page_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if keyset_rows loses or doubles a row of a state's 6,000, a page's plan reads past its rows, or the
+        drain is over 2x the bare.
+
+        The bare is the one hand-written statement reading the same rows in the same order through the same index
+        (``SELECT ... WHERE state = $1 ORDER BY geo, id``): the drain pays a statement a page for never reading a
+        prefix past the transport's cap in one."""
+        order = [Sort("geo"), Sort("id", cast="bigint")]
+        columns = ["state", "geo", "id", "votes"]
+        recorder = PlanRecorder(seeded.conn)
+        rows = await keyset_rows(recorder, _TABLE, columns=columns, by={"state": "S23"}, order=order, page=1000)
+        bare_sql = f"SELECT state, geo, id, votes FROM {_TABLE} WHERE state = $1 ORDER BY geo, id"
+        assert [(r["geo"], r["id"]) for r in rows] == [
+            (r["geo"], r["id"]) for r in await seeded.conn.fetch(bare_sql, "S23")
+        ]
+        assert len(rows) == _GEOS * _IDS
+        _plans_ok(recorder, seeded)
+        baseline = await best_seconds(lambda: seeded.conn.fetch(bare_sql, "S23"))
+        took = await best_seconds(
+            lambda: keyset_rows(seeded.conn, _TABLE, columns=columns, by={"state": "S23"}, order=order, page=1000)
+        )
+        problem = _budget("keyset_rows of a state's 6,000 rows, 1,000 a page", took, baseline)
         assert problem is None, problem
 
 

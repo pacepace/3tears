@@ -194,6 +194,42 @@ async def _seed(conn: Any, table: str, rows: list[Mapping[str, Any]]) -> None:
         )
 
 
+async def _written(
+    conn: Any,
+    table: str,
+    seeded: list[Mapping[str, Any]],
+    columns: Sequence[str] | None,
+    state_sql: str,
+    write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]],
+) -> tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]:
+    """one side of a write's comparison, on its own seeded table: the rows it returned and the table after it.
+
+    :param conn: the connection
+    :ptype conn: Any
+    :param table: the TRUSTED table
+    :ptype table: str
+    :param seeded: the case's rows
+    :ptype seeded: list[Mapping[str, Any]]
+    :param columns: the returned columns compared; every column when None
+    :ptype columns: Sequence[str] | None
+    :param state_sql: the read of the table after the write
+    :ptype state_sql: str
+    :param write: the write, handed the connection, returning its rows
+    :ptype write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]]
+    :return: the returned rows and the table's rows, normalised
+    :rtype: tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]
+    """
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        await _seed(conn, table, seeded)
+        returned = [_normal(dict(found), columns) for found in await write(conn)]
+        state = [_normal(dict(found), None) for found in await conn.fetch(state_sql)]
+    finally:
+        await transaction.rollback()
+    return returned, state
+
+
 async def assert_same_results(
     conn: Any,
     *,
@@ -206,6 +242,7 @@ async def assert_same_results(
     order_by: Sequence[str] | None = None,
     ordered: bool | None = None,
     page_size: int = 5,
+    state_sql: str | None = None,
 ) -> None:
     """seed ``table`` for every case, run ``old_sql`` and ``helper`` on the same rows, and fail on any difference.
 
@@ -233,6 +270,9 @@ async def assert_same_results(
     :ptype ordered: bool | None
     :param page_size: the helper's page, where the page boundary cases sit
     :ptype page_size: int
+    :param state_sql: for a write, the read of the table after it (every column of every row, say); each side then
+        runs on its own seeded table and what this reads is compared too (as a multiset, every column); None for a read
+    :ptype state_sql: str | None
     :return: nothing
     :rtype: None
     :raises AssertionError: naming each case whose rows differ, and how
@@ -240,14 +280,24 @@ async def assert_same_results(
     compare_order = bool(_ORDER_BY.search(old_sql)) if ordered is None else ordered
     differences: list[str] = []
     for case in _cases(page_size):
-        transaction = conn.transaction()
-        await transaction.start()
-        try:
-            await _seed(conn, table, [row(seed) for seed in _seeded(case)])
-            old = [_normal(dict(found), columns) for found in await conn.fetch(old_sql, *params)]
-            new = [_normal(dict(found), columns) for found in await helper(conn)]
-        finally:
-            await transaction.rollback()
+        seeded = [row(seed) for seed in _seeded(case)]
+        if state_sql is None:
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await _seed(conn, table, seeded)
+                old = [_normal(dict(found), columns) for found in await conn.fetch(old_sql, *params)]
+                new = [_normal(dict(found), columns) for found in await helper(conn)]
+            finally:
+                await transaction.rollback()
+        else:
+            old, old_state = await _written(
+                conn, table, seeded, columns, state_sql, lambda c: c.fetch(old_sql, *params)
+            )
+            new, new_state = await _written(conn, table, seeded, columns, state_sql, helper)
+            difference = _differ(f"{case.name} (the table after)", old_state, new_state, None, False)
+            if difference is not None:
+                differences.append(difference)
         difference = _differ(case.name, old, new, order_by, compare_order)
         if difference is not None:
             differences.append(difference)

@@ -43,11 +43,13 @@ from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.keyed._filters import (
     IN_SUBQUERY,
     Derived,
+    Fragment,
     Lock,
     batched_join_hint,
     binds_native_arrays,
     by_conditions,
     relation,
+    renumbered,
 )
 from threetears.core.sql_fragments import quote_identifier
 
@@ -130,6 +132,16 @@ class _Statement:
     keys: KeyBatch
     by: Mapping[str, Any]
     lock: Lock | None = None
+    where: Sequence[Fragment] = ()
+
+    def _guards(self, before: int) -> tuple[list[str], list[Any]]:
+        """the ``where`` fragments, renumbered past the ``before`` parameters the statement already binds."""
+        conditions: list[str] = []
+        params: list[Any] = []
+        for fragment in self.where:
+            conditions.append(renumbered(fragment, before + len(params)))
+            params += list(fragment.params)
+        return conditions, params
 
     def _locked(self, sql: str) -> str:
         if self.lock is None:
@@ -162,8 +174,13 @@ class _Statement:
                 )
                 named = f"({', '.join(columns)}) IN ({rows})"
             conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
-            where = " AND ".join([named, *conditions])
-            return self._locked(f"{head} WHERE {where}"), (*(value for key in chunk for value in key), *pinned)
+            guards, guarded = self._guards(len(chunk) * width + len(pinned))
+            where = " AND ".join([named, *conditions, *guards])
+            return self._locked(f"{head} WHERE {where}"), (
+                *(value for key in chunk for value in key),
+                *pinned,
+                *guarded,
+            )
         # each key column's values bound as one text array, the ARRAY cast to the column's type: the column is
         # compared with values of its own type, never wrapped or compared element by element through a cast, so the
         # planner reads the key's index by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
@@ -176,24 +193,32 @@ class _Statement:
         conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
         if width == 1 and not self.keys.null_safe:
-            where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions])
-            return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned)
+            guards, guarded = self._guards(width + len(pinned))
+            where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions, *guards])
+            return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned, *guarded)
         unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
         if self.keys.null_safe:
             # a NULL bucket matches only by IS NOT DISTINCT FROM, which = ANY cannot say: joined to the keys
             joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
-            where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
+            guards, guarded = self._guards(width + len(pinned))
+            kept = [*conditions, *guards]
+            where = f" WHERE {' AND '.join(kept)}" if kept else ""
+            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (
+                *arrays,
+                *pinned,
+                *guarded,
+            )
         # the keys joined to the table as rows: a nested loop over the key's index, each key one lookup. Never a
         # column = ANY its values beside it: those name the values' cross product (600 keys over 50 states, 200
         # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch
         # the loop (batched_join_hint): one storage request for the batch, not one a key
         named = f"({', '.join(columns)}) IN (SELECT {unnested})"
         bounds, bounded = self._tight_bounds(arrays, native, len(chunk), first=width + len(pinned) + 1)
-        where = " AND ".join([named, *conditions, *bounds])
+        guards, guarded = self._guards(width + len(pinned) + len(bounded))
+        where = " AND ".join([named, *conditions, *bounds, *guards])
         return (
             self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}"),
-            (*arrays, *pinned, *bounded),
+            (*arrays, *pinned, *bounded, *guarded),
         )
 
     def _tight_bounds(
@@ -240,12 +265,17 @@ class _Statement:
 
 
 def _statement(
-    table: str | Derived, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any], lock: Lock | None = None
+    table: str | Derived,
+    columns: Sequence[str],
+    keys: KeyBatch,
+    by: Mapping[str, Any],
+    lock: Lock | None = None,
+    where: Sequence[Fragment] = (),
 ) -> _Statement:
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    return _Statement(table=table, selected=selected, keys=keys, by=by, lock=lock)
+    return _Statement(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where))
 
 
 def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
@@ -288,6 +318,7 @@ async def read_keyed(
     batch: int = DEFAULT_KEY_BATCH,
     row_cap: int | None = None,
     lock: Lock | None = None,
+    where: Sequence[Fragment] = (),
 ) -> list[dict[str, Any]]:
     """the rows of ``table`` the keys name (within ``by``), ``batch`` keys a statement.
 
@@ -308,12 +339,15 @@ async def read_keyed(
     :ptype row_cap: int | None
     :param lock: the row lock taken on the rows read (the caller's transaction), in the key's order; none when None
     :ptype lock: Lock | None
+    :param where: filters beside the key, each a fragment written as ``t."col"`` from ``$1`` (a status the row must
+        not hold, a range); none when empty
+    :ptype where: Sequence[Fragment]
     :return: the rows, in no promised order (in the key's order when locked)
     :rtype: list[dict[str, Any]]
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = _statement(table, columns, keys, by or {}, lock)
+    statement = _statement(table, columns, keys, by or {}, lock, where)
     natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:

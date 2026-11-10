@@ -128,3 +128,25 @@ async def test_every_case_leaves_the_table_as_it_was(conn: _Duck) -> None:
     await conn.execute("INSERT INTO t VALUES ('kept', 1, 'x', 1)")
     await assert_same_results(conn, table="t", row=_row, old_sql=_OLD, params=["t0"], helper=_asking(_OLD, "t0"))
     assert await conn.fetch("SELECT tenant, k FROM t") == [{"tenant": "kept", "k": 1}]
+
+
+_STATE = "SELECT tenant, k, v, s FROM t"
+
+
+async def test_a_write_is_compared_by_the_table_it_leaves(conn: _Duck) -> None:
+    """Flips if a write's comparison reads only what it returned: the same update passes; one that drops its tenant
+    filter (returning nothing either way) fails on the table after it, naming the case."""
+    update = "UPDATE t SET v = 'w' WHERE tenant = $1 AND k = $2"
+    await assert_same_results(
+        conn, table="t", row=_row, old_sql=update, params=["t0", 0], helper=_asking(update, "t0", 0), state_sql=_STATE
+    )
+    with pytest.raises(AssertionError, match=r"a tenant boundary \(the table after\)"):
+        await assert_same_results(
+            conn,
+            table="t",
+            row=_row,
+            old_sql="UPDATE t SET v = 'w' WHERE tenant = $1 AND k >= $2",
+            params=["t0", 0],
+            helper=_asking("UPDATE t SET v = 'w' WHERE k >= $1", 0),
+            state_sql=_STATE,
+        )
