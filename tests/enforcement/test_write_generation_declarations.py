@@ -59,7 +59,9 @@ _DECLARATION = "write_generation"
 _SWITCHED_ON = "WRITE_GENERATION"
 _NAMED_DECLARATIONS = frozenset({_SWITCHED_ON, "L2_WRITE_GENERATION", "WRITE_GENERATION_UNDECLARED"})
 _OPT_OUT = "NoWriteGeneration"
-_PASSES = frozenset({"generation_catchup_tick", "follow_generation_key"})
+#: what judges a followed table's generation: the timed pass, the key watch, or the supervised watches that
+#: run the key watch (``follow_tables`` starts a ``TableFollower``, one ``follow_generation_key`` per table)
+_PASSES = frozenset({"generation_catchup_tick", "follow_generation_key", "follow_tables"})
 
 #: the module that defines ``follow_generation``, and the one whose watcher calls it and IS a pass.
 _FOLLOW_DEFINERS = frozenset(

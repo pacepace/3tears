@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "3tears-mcp"
 version = "0.95.0"
-description = "Shared MCP framework: McpServer + McpTool + PlatformHttpClient + per-tool RBAC backed by mcp_tool_grants and the task-02 epoch broadcast"
+description = "Shared MCP framework: McpServer + McpTool + PlatformHttpClient + per-tool RBAC backed by mcp_tool_grants, followed by write generation"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
@@ -33,7 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # The grant store: LocalGrantAuthorizer, mcp.rbac and mcp.migrations -- grants in Postgres, kept
-# coherent across pods by an epoch broadcast. The only part of the package that needs the rest of
+# coherent across pods by following the table's write generation. The only part of the package that needs the rest of
 # the family, so a server that brings its own Authorizer does not install it.
 grants = [
     "3tears>=0.95.0,<0.96.0",

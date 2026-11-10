@@ -14,8 +14,10 @@ authorizer raise, denied), handler failure, and the happy path.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -25,9 +27,21 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from threetears.core.collections.registry import CollectionRegistry
 from threetears.mcp.auth import BearerTokenIdentityProvider, Identity, LocalGrantAuthorizer
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
+
+
+class _NoGeneration:
+    """a generation reader over a table with no change log yet: it reads ``None`` and is pushed ``None``."""
+
+    async def read(self, table_name: str) -> str | None:
+        return None
+
+    async def watch(self, table_name: str) -> AsyncGenerator[str | None]:
+        yield None
+        await asyncio.Event().wait()
 
 
 # ---------------------------------------------------------------------
@@ -393,18 +407,12 @@ class TestDispatchErrorPaths:
     @pytest.mark.asyncio
     async def test_a_grant_cache_that_never_loaded_is_an_authz_error_not_a_denial(self) -> None:
         """a failed first load used to start empty, so every caller read as lacking the permission."""
-        listener = MagicMock()
-        listener.subscribe = AsyncMock()
-        listener.catch_up = AsyncMock(return_value=0)
-        listener.last_seen = MagicMock(return_value=0)
-        epoch_client = MagicMock()
-        epoch_client.current = AsyncMock(return_value=0)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
             grant_reader=AsyncMock(return_value=None),
-            epoch_client=epoch_client,
-            epoch_listener=listener,
-            catchup_interval_seconds=3600.0,
+            registry=CollectionRegistry(),
+            generation_reader=_NoGeneration(),
+            retry_interval_seconds=3600.0,
         )
         identity = Identity(principal_type="user", principal_id=uuid4())
         server = McpServer(
@@ -422,18 +430,12 @@ class TestDispatchErrorPaths:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """the authorizer logged the failed reload with its traceback; each refusal adds nothing new."""
-        listener = MagicMock()
-        listener.subscribe = AsyncMock()
-        listener.catch_up = AsyncMock(return_value=0)
-        listener.last_seen = MagicMock(return_value=0)
-        epoch_client = MagicMock()
-        epoch_client.current = AsyncMock(return_value=0)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
             grant_reader=AsyncMock(return_value=None),
-            epoch_client=epoch_client,
-            epoch_listener=listener,
-            catchup_interval_seconds=3600.0,
+            registry=CollectionRegistry(),
+            generation_reader=_NoGeneration(),
+            retry_interval_seconds=3600.0,
         )
         server = McpServer(
             name="test",

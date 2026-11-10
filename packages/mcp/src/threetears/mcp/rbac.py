@@ -14,15 +14,17 @@ mutation discipline:
   REST endpoint that mutated the row, so the bump lives there for
   symmetry with task-02 Chunks B and C).
 - :meth:`remove_grant` same shape.
-- :class:`~threetears.mcp.auth.LocalGrantAuthorizer` subscribes to the
-  rbac epoch via :class:`~threetears.epoch.EpochListener`; a bump names the
-  grant it changed (``{"grant_id": ..., "action": ...}``) and the authorizer
-  reads that one grant by key (:meth:`McpToolGrantCollection.read_grant`).
+- the table is switched on (``write_generation=WRITE_GENERATION``): every
+  committed write advances its generation and records the grant it changed.
+  :class:`~threetears.mcp.auth.LocalGrantAuthorizer` is a cache derived from
+  the table and follows it, so each changed grant -- heard as a row broadcast,
+  or found by the generation walk when the broadcast was lost -- is read by
+  key (:meth:`McpToolGrantCollection.read_grant`).
 
-cross-pod coherence is therefore: write -> bump -> broadcast -> sibling
-authorizers read the named grant. the whole table is read only to fill an
-empty cache at start, or after an operator reset of the epoch
-(:meth:`McpToolGrantCollection.load_all_grants`).
+the whole table is read only to fill an empty cache at start, or after a
+write that changed the whole table (:meth:`McpToolGrantCollection.load_all_grants`).
+the ``mcp.rbac`` epoch bump the callers still publish is no longer what keeps
+the authorizer current.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from uuid_utils import uuid7
 
 from sqlalchemy import MetaData, Table
 
+from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
@@ -133,6 +136,10 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             ),
             SchemaIndex("idx_mcp_tool_grants_tool", "tool_name"),
         ),
+        # every committed grant write advances the table's generation and records the grant it changed,
+        # so LocalGrantAuthorizer follows the table and reads each changed grant by key -- a lost
+        # broadcast included -- never every grant again
+        write_generation=WRITE_GENERATION,
     )
 
     @property
@@ -271,10 +278,10 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         """return every grant row: the cold-start fill of an empty grant cache.
 
         the framework's :class:`~threetears.mcp.auth.LocalGrantAuthorizer`
-        calls this only to fill its empty cache at start, and after an
-        operator reset of the rbac epoch (the counter was replaced, so no
-        bump says what changed). an ``mcp.rbac`` bump never reaches it: the
-        bump names its grant and :meth:`read_grant` reads that one. rows go
+        calls this only to fill its empty cache at start, and after a write
+        that changed the whole table (a truncate, a load: the operator's
+        reset). a changed grant never reaches it: the follow names it and
+        :meth:`read_grant` reads that one. rows go
         straight from L3 (no caching here -- the authorizer owns the
         in-memory cache).
 
