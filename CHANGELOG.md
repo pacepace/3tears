@@ -15,7 +15,7 @@ is now the result model's JSON whole for every action, `report_read`'s `body` in
 `Action.text_field` and `ActionOutcome.text_field`, which declared the field to leave out, are removed.
 
 **Hosts:** a host's own `Action` that declared `text_field` drops it. An MCP client now gets `report_read`'s body in
-its structured content too, beside the same body as text, so that call's reply is roughly double the bytes.
+its structured content too, beside the same body as text, so that call's reply carries the body twice.
 
 ### evals: a table cell holding a number carries its decided text
 

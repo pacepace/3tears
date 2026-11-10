@@ -730,11 +730,11 @@ class CatalogueTool(Tool):
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: dict[str, Any]
         :return: The result: text always; as structured content, the result model's JSON whole when the call
-            succeeded (``report_read``'s ``body`` included, which is also its text), or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery``
-            (the corrected call's fields) where the refusal carries one, and the error flag when it was refused or
-            raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
-            error flag alone, with text saying so and to read what it may have done before calling it again, when it
-            outlived the call timeout. A note the ``annotate`` hook answered follows the outcome's text as a text block
+            succeeded (``report_read``'s ``body`` included, which is also its text), or
+            ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery`` (the
+            corrected call's fields) where the refusal carries one, and the error flag when it was refused or raised
+            (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the error flag alone, with text saying so
+            and to read what it may have done before calling it again, when it outlived the call timeout. A note the ``annotate`` hook answered follows the outcome's text as a text block
             of its own, and changes nothing else (:data:`CallAnnotator`).
         :rtype: ToolResult
         """
