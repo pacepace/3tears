@@ -501,16 +501,19 @@ class _Atom:
     """one predicate, as the key judgement reads it.
 
     :ivar kind: ``eq`` (a column equals a bound value), ``range`` (a column against a bound bound), ``join`` (a
-        column equals another column), ``filter`` (anything else), ``unseen`` (an interpolation the walk cannot see)
+        column equals another column), ``either`` (an ``OR`` of branches each binding columns: ``branches``),
+        ``filter`` (anything else), ``unseen`` (an interpolation the walk cannot see)
     :ivar column: the column, ``(qualifier, name)``
     :ivar other: the other column of a join
     :ivar bound: whether the predicate holds a bound value at all
+    :ivar branches: an ``either``'s branches, each the atoms it binds
     """
 
     kind: str
     column: tuple[str, str] = ("", "")
     other: tuple[str, str] = ("", "")
     bound: bool = False
+    branches: tuple[tuple[_Atom, ...], ...] = ()
 
 
 def _atoms(predicate: str) -> list[_Atom]:
@@ -537,6 +540,9 @@ def _atoms(predicate: str) -> list[_Atom]:
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
             return [_Atom("eq", columns.pop(), bound=True)]
+        if all(atoms and all(atom.kind in {"eq", "range"} for atom in atoms) for atoms in each):
+            # ``a = ANY($1) OR b = ANY($1)``: keyed when every branch keys the read by its own index or key
+            return [_Atom("either", bound=True, branches=tuple(tuple(atoms) for atoms in each))]
         return [_Atom("filter", bound=bound)]
     if re.match(r"\s*(?:NOT\b|EXISTS\b)", masked, re.IGNORECASE):
         return [_Atom("filter", bound=bound)]
@@ -812,6 +818,8 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     contained: list[set[str]] = [set() for _ in range(count)]
     other: list[int] = [0] * count
     joins: list[tuple[int, str, int, str]] = []
+    #: per relation, the OR predicates whose every branch binds only its columns
+    eithers: list[list[_Atom]] = [[] for _ in range(count)]
     for column in level.outer:
         for i in _owner(level, ""):
             eq[i].add(column)
@@ -840,6 +848,16 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
             for i in _owner(level, qualifier):
                 contained[i].add(name)
                 other[i] += 1
+        elif atom.kind == "either":
+            owners = {tuple(_owner(level, part.column[0])) for branch in atom.branches for part in branch}
+            known_branches = all(_known(level, part.column[0]) for branch in atom.branches for part in branch)
+            if len(owners) == 1 and known_branches:
+                for i in owners.pop():
+                    eithers[i].append(atom)
+                    other[i] += 1
+            else:
+                for i in _owner(level, ""):
+                    other[i] += 1
         elif atom.kind in {"filter", "unseen"}:
             for i in _owner(level, ""):
                 other[i] += 1
@@ -874,10 +892,80 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
                 reader,
                 relation,
             )
+            if not hit:
+                hit = any(
+                    _either_keys(
+                        atom,
+                        primary,
+                        purposed,
+                        (eq[index], ranged[index], contained[index], tenants),
+                        other[index],
+                        level,
+                        index,
+                        reader,
+                        relation,
+                    )
+                    for atom in eithers[index]
+                )
             if hit:
                 keyed[index] = True
                 grew = True
     return keyed, known
+
+
+def _either_keys(
+    atom: _Atom,
+    primary: list[tuple[str, ...]],
+    purposed: list[tuple[str, tuple[str, ...]]],
+    bound: tuple[set[str], set[str], set[str], frozenset[str]],
+    filters: int,
+    level: _Level,
+    index: int,
+    reader: Reader,
+    relation: _Relation,
+) -> bool:
+    """whether an ``OR`` keys a relation: every branch, with the rest of the read's bound columns, keys it by its own
+    index or key (each branch's index is credited as used). One branch that keys nothing leaves the read whole.
+
+    :param atom: the ``either`` atom
+    :ptype atom: _Atom
+    :param primary: the relation's primary keys
+    :ptype primary: list[tuple[str, ...]]
+    :param purposed: its indexes whose purpose names the reader
+    :ptype purposed: list[tuple[str, tuple[str, ...]]]
+    :param bound: its columns bound outside the ``OR`` (equality, range, containment) and its tenant columns
+    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str]]
+    :param filters: how many other predicates may filter it
+    :ptype filters: int
+    :param level: the level
+    :ptype level: _Level
+    :param index: its position in the level
+    :ptype index: int
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: whether every branch keys it
+    :rtype: bool
+    """
+    eq, ranged, contained, tenants = bound
+    hits = []
+    for branch in atom.branches:
+        branch_eq = eq | {part.column[1] for part in branch if part.kind == "eq"}
+        branch_ranged = ranged | {part.column[1] for part in branch if part.kind == "range"}
+        hits.append(
+            _key_hit(
+                primary,
+                purposed,
+                (branch_eq, branch_ranged, contained, tenants),
+                filters,
+                level,
+                index,
+                reader,
+                relation,
+            )
+        )
+    return all(hits)
 
 
 def _covers(key: tuple[str, ...], bound: set[str], tenants: frozenset[str]) -> bool:
