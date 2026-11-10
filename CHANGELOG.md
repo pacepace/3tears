@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the pass rule names every check that fails a trial, and count.failures counts failed trials
+
+**Fixed:** an aspect held to a host's check (a boolean measure with a better end, a pass/fail scorer or a label match)
+fails a trial on the check's other value, but its pass rule named only "every goal check" and the rubric level, so an
+arm failing nearly every trial on the check read as passing everything the analyst could see. The rule now names each
+check that is no goal check, by the name the page gives its measure and the value it must hold to pass (`Never topped
+up is false`): in the rule's label (`aspects.<aspect>.pass_rule`, and `pass_threshold_label`'s new `checks`), in its
+sentence (`.description`, which now says "every goal check passed" where it said "every check passed"), in
+`PassRule.named_checks` (new) and in the analyst overview's aspect row (`checks`, new). An aspect held to such checks
+alone no longer reads "no criterion".
+
+`count.failures.<aspect>.<arm>` (and `FailedTrials.failed`) counted trials scoring a nought on one campaign-wide judged
+dimension, and read 0 where 178 of 180 trials failed on a check. It now counts every trial the pass rule failed, for any
+cause, the scoreboard's `failed` on that aspect. The examples are still noughts on the primary judged dimension where
+the snapshot names one; `examples_list`'s `pool` and the keys' own text say they are no sample of every failure.
+
+**Hosts:** a stored report that cites `count.failures` re-reads the trials its run failed, which is the scoreboard's
+count and can be far above what it read before; a sentence that read it as noughts on one dimension now misstates
+it. A pass rule's label and sentence change wording wherever a check besides goal checks is in force. No key is
+renamed and nothing stored is migrated.
+
 ### evals: an MCP client reads a report from structured content alone
 
 **Fixed:** over MCP, `report_read` returned no page to a client that shows a result's structured content in place of

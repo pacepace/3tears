@@ -235,7 +235,7 @@ class _Builder:
         strata = self.strata()
         shown = self.examples(primary, strata, examples, per_slice=per_slice, excerpt=excerpt, inputs=counted)
         tallies: dict[str, object] = (
-            {"failed_trials": self.failed_trials(primary), "case_overlap": self.case_overlap()} if counted else {}
+            {"failed_trials": self.failed_trials(), "case_overlap": self.case_overlap()} if counted else {}
         )
         return ReportInput.model_validate(
             {
@@ -427,6 +427,7 @@ class _Builder:
             for name, descriptor in aspect.measure_catalog.items()
             if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
         )
+        named = [_check_held(name, aspect.measure_catalog[name]) for name in checks if goal_check_of(name) is None]
         criteria: list[PassCriterion] = []
         if any(goal_check_of(name) is not None for name in checks):
             criteria.append("goal_checks")
@@ -435,10 +436,11 @@ class _Builder:
         return PassRule(
             criteria=criteria,
             threshold=threshold,
-            label=pass_threshold_label(k, threshold, criteria=criteria),
+            label=pass_threshold_label(k, threshold, criteria=criteria, checks=named),
             dimensions=dimensions,
             boundary=sorted(measure.name for measure in judged if measure.axis == "boundary"),
             checks=checks,
+            named_checks=named,
             no_criterion=sum(row.no_criterion for row in aspect.scoreboard),
         )
 
@@ -898,7 +900,7 @@ class _Builder:
         trials = [(aspect, trial) for aspect in self.ordered for trial in aspect.trials]
 
         def failed(trial: TrialRow) -> bool:
-            return _failed(trial, primary)
+            return _in_example_pool(trial, primary)
 
         def order(item: tuple[AnalysisContextBundle, TrialRow]) -> tuple[bool, float, str]:
             aspect, trial = item
@@ -944,18 +946,18 @@ class _Builder:
 
     # ------------------------------------------------------------------ counted off the trials
 
-    def failed_trials(self, primary: str | None) -> list[FailedTrials]:
-        """Each slice's failed trials, as the examples count a failure, on every aspect whose trials the bundle holds
-        whole (:func:`_holds_every_failure`); a slice of an aspect it does not is left out, so it reads as not
-        counted."""
+    def failed_trials(self) -> list[FailedTrials]:
+        """Each slice's failed trials, every trial its pass rule failed for any cause, as the scoreboard's ``failed``
+        counts them, on every aspect whose trials the bundle holds every failure of (:func:`_holds_every_failure`); a
+        slice of an aspect it does not is left out, so it reads as not counted."""
         arms = {arm.id: index for index, arm in enumerate(self.arms())}
         counts: dict[tuple[str, str, str | None], int] = {}
         for aspect in self.ordered:
-            if not _holds_every_failure(aspect, primary):
+            if not _holds_every_failure(aspect):
                 continue
             for trial in aspect.trials:
                 key = (aspect.aspect, self.arm(trial.arm), trial.stratum)
-                counts[key] = counts.get(key, 0) + int(_failed(trial, primary))
+                counts[key] = counts.get(key, 0) + int(trial.state == "failed")
         place = {aspect.aspect: index for index, aspect in enumerate(self.ordered)}
         ordered = sorted(counts, key=lambda key: (place[key[0]], arms.get(key[1], len(arms)), key[1], key[2] or ""))
         return [
@@ -1095,12 +1097,27 @@ def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
     return "judged" if rule.dimensions else "checked" if rule.checks else None
 
 
+def _check_held(name: str, descriptor: MetricDescriptor) -> str:
+    """A check that is no goal check, as its aspect's pass rule names it everywhere the rule is stated: the measure by
+    the name the page gives it and the value it must hold for the trial to pass, ``Never topped up is false``. The
+    other value fails the trial (:meth:`~threetears.evals.kernel.metrics.MetricDescriptor.check_failed`): a label
+    match fails on false, a pass/fail scorer on its worse end."""
+    passes = name == MATCH_MEASURE or descriptor.higher_is_better is not False
+    if name == MATCH_MEASURE or descriptor.data_type == "boolean":
+        held = "true" if passes else "false"
+    else:
+        held = "1" if passes else "0"
+    return f"{measure_name(name, descriptor.reader_name)} is {held}"
+
+
 def _pass_rule_sentence(rule: PassRule) -> str:
-    """How a trial on an aspect passes, in one plain sentence built from its pass rule."""
+    """How a trial on an aspect passes, in one plain sentence built from its pass rule: goal checks summed up, every
+    other check named as the rule names it (``PassRule.named_checks``)."""
     judged = "every judged dimension, guardrails aside," if rule.boundary else "every judged dimension"
     held = [
         "its candidate did not fail",
-        *(["every check passed"] if rule.checks else []),
+        *(["every goal check passed"] if "goal_checks" in rule.criteria else []),
+        *rule.named_checks,
         *([f"{judged} scored at least {rule.threshold} of 5"] if rule.dimensions else []),
     ]
     if len(held) == 1:
@@ -1190,31 +1207,19 @@ def _failure_excerpt(text: str, reason: str | None, chars: int) -> str:
     return (_CUT if start > 0 else "") + text[start:end] + (_CUT if end < len(text) else "")
 
 
-def _failed(trial: TrialRow, primary: str | None) -> bool:
-    """Whether a trial is a failure the examples show: a nought on the primary judged dimension where there is one,
-    else a failed trial."""
+def _in_example_pool(trial: TrialRow, primary: str | None) -> bool:
+    """Whether a trial is in the pool the examples are kept from: a nought on the primary judged dimension where there
+    is one, else a failed trial. A trial a check failed, or another dimension, is in it only with no primary."""
     if primary is not None:
         return trial.judged.get(primary) == 0
     return trial.state == "failed"
 
 
-def _holds_every_failure(aspect: AnalysisContextBundle, primary: str | None) -> bool:
-    """Whether an aspect's trials hold every failure its run had, as the examples count one. None was left out of the
-    bundle; or the cap, which keeps every failed and lost trial before any that passed, kept one that passed, so only
-    passed trials were left out, and a passed trial is no failure: with no primary judged dimension a failure is a
-    failed trial, and with one, a nought on it fails the trial only where it decides pass, a capability dimension
-    (``JudgedMeasure.axis``) *(inferred: under a composite pass rule a normalised ordinal capability dimension could
-    read nought on a trial that passed)*. A primary dimension that does not (a boundary dimension, or one the bundle does not
-    describe) can score nought on a trial that passed and was left out, so such an aspect is not held whole."""
-    if aspect.trials_omitted == 0:
-        return True
-    passed = [trial for trial in aspect.trials if trial.state == "passed"]
-    if not passed or any(_failed(trial, primary) for trial in passed):
-        return False
-    if primary is None:
-        return True
-    described = [measure for measure in aspect.judged_measures if measure.name == primary]
-    return bool(described) and all(measure.axis == "capability" for measure in described)
+def _holds_every_failure(aspect: AnalysisContextBundle) -> bool:
+    """Whether an aspect's trials hold every trial its run failed. None was left out of the bundle; or the cap, which
+    keeps every failed and lost trial before any that passed, kept one that passed, so only passed trials were left
+    out."""
+    return aspect.trials_omitted == 0 or any(trial.state == "passed" for trial in aspect.trials)
 
 
 def _started(text: str, chars: int) -> str:

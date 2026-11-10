@@ -41,8 +41,8 @@ their rule to the writer's page; the code pages need their own package change. C
 
 | Skill | Skill digest | Analyst text digest | Editor text digest |
 |---|---|---|---|
-| shipped | `5ae589a74388d9025ad57e4cc776c8a028b9f357e6264101c7b367bc71c17d78` | `acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db` | `5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70` |
-| headline-answers | printed by the run | `0dd4aaf5eb73987d953962d7a09e0ff3ce86e88e959c656b95154378e375c312` | `7531c1a9f9affc141730de506510b448273365bd1e3835ef4ed42ac7de15cb5f` |
+| shipped | `365899f8f20b93066db371d8879372a241076ea892b935a84ca7c392dc0e4de5` | `813723e64e35f283aedc9bf85ce0a0e43d342d5d026362c358927134d5df3332` | `5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70` |
+| headline-answers | printed by the run | `09334b5dc07a05d445b85df4aeec6e32427deebfa8c9fe2ae5f4a44de2e974e9` | `7531c1a9f9affc141730de506510b448273365bd1e3835ef4ed42ac7de15cb5f` |
 
 The candidate's skill digest covers this file, so this file cannot hold it: the acceptance readout prints it, and
 `acceptance.json` records it under `candidate_skill`. The analyst's text is read with no note withheld.

@@ -60,9 +60,10 @@ their count, at the cells' stated level. A criterion figure's ``low`` and ``high
 derived, and refused, as unstated with why, wherever the figure does not qualify.
 
 **What else a sentence counts or compares.** ``count.examples`` and ``count.failures`` (per aspect and arm) say how
-many failed trials the snapshot froze as examples and how many the run had; ``overlap.<aspect>.<aspect>.`` whether
-two aspects ran the same cases; ``confusion.<axis>.<arm>.<expected>.<predicted>`` one cell of a classifier's
-confusion; ``cost.gap.<arm>.<arm>.`` two arms' costs apart, per 1,000, per month and as a multiple. A count the input
+many trials the snapshot froze as examples and how many trials the run failed, for any cause;
+``overlap.<aspect>.<aspect>.`` whether two aspects ran the same cases; ``confusion.<axis>.<arm>.<expected>.<predicted>``
+one cell of a classifier's confusion; ``cost.gap.<arm>.<arm>.`` two arms' costs apart, per 1,000, per month and as a
+multiple. A count the input
 does not hold (an uncounted input counts no failures, a bare one holds no case ids) is refused as unstated, never read
 as none.
 
@@ -72,10 +73,10 @@ them, with ``.retried``, ``.lost``, ``.calls`` (the answered ones), ``.share`` (
 ``.uncounted`` (trials whose calls counted none) beside it. Copied where one role counted them; a share over several
 roles is computed here and marked derived. An arm no role counted for is no key at all: not counted is never none.
 
-**How a trial passes.** ``aspects.<aspect>.pass_rule`` reads the label of the aspect's pass rule, ``.pass_threshold``
-the level a judged dimension must reach, ``.no_criterion`` the trials that passed with nothing to fail them,
-``.graded_by`` judged or checked, and ``.description`` the rule in a sentence. An input that states no rule refuses
-them as unstated.
+**How a trial passes.** ``aspects.<aspect>.pass_rule`` reads the label of the aspect's pass rule, which names every
+check that fails a trial besides the goal checks (``Never topped up is false``), ``.pass_threshold`` the level a judged
+dimension must reach, ``.no_criterion`` the trials that passed with nothing to fail them, ``.graded_by`` judged or
+checked, and ``.description`` the rule in a sentence. An input that states no rule refuses them as unstated.
 
 **What a contrast counted.** ``contrast.<arm>.<measure>.n_cases`` reads the cases the contrast's test read, one mean
 per case, ``.control_n_cases`` the control's where they differ, ``.paired`` the word ``paired`` or ``unpaired``, and
@@ -856,7 +857,12 @@ def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
         return _number(path, aspect.margin, "the aspect's margin", "points")
     rule = aspect.pass_rule
     if field == "pass_rule":
-        return _text(path, rule.label if rule is not None else None, "the aspect's pass rule")
+        return _text(
+            path,
+            rule.label if rule is not None else None,
+            "the aspect's pass rule: every goal check, each other check with the value it must hold to pass, and the "
+            "level each counted judged dimension must reach",
+        )
     if field == "pass_threshold":
         return _number(path, rule.threshold if rule is not None else None, "the aspect's pass threshold", "plain")
     if field == "no_criterion":
@@ -1409,17 +1415,17 @@ def _slice_figure(
 
 _SCOREBOARD_STATISTICS = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
 
-#: How the examples count a failure, which ``count.failures`` counts by, and why it is not the scoreboard's ``failed``.
+#: What ``count.failures`` counts, and what the examples beside it are: a failure is a trial its pass rule failed.
 _FAILURES_RULE = (
-    "A failure here is a nought on the primary judged dimension where the snapshot names one, else a trial that "
-    "failed: it is not `scoreboard.<arm>.failed`, which counts every trial that failed, for any cause, so the two "
-    "differ by design where trials fail on something else"
+    "A failure is a trial its pass rule failed, for any cause: a check, a judged dimension or the candidate, as "
+    "`scoreboard.<arm>.failed` counts them on the aspect. The examples are not a sample of them where the snapshot "
+    "names a primary judged dimension: they are trials scoring a nought on it, so a trial a check failed is never one"
 )
 
 #: What the scoreboard's ``failed`` counts, beside ``count.failures``.
 _SCOREBOARD_FAILED = (
-    "`failed` counts every trial that failed, for any cause; `count.failures.<aspect>.<arm>` counts failures as the "
-    "examples do (a nought on the primary judged dimension, where there is one), so the two can differ"
+    "`failed` counts every trial its pass rule failed, for any cause, as `count.failures.<aspect>.<arm>` does on the "
+    "aspect"
 )
 
 
@@ -3015,7 +3021,7 @@ def _levels_count(report_input: ReportInput, values: tuple[str, ...], path: str)
     return _count(path, len(factor.levels))
 
 
-# --- the examples a snapshot froze, and the failed trials they were kept from -------------------------------------
+# --- the examples a snapshot froze, and the trials the run failed --------------------------------------------------
 
 
 def _failures_held(report_input: ReportInput, aspects: Sequence[str], path: str) -> list[FailedTrials]:
@@ -6428,8 +6434,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("count.examples"),
         _keyed("<aspect>", _example_aspects),
         _Ids("<arm>", _example_arms),
-        what="how many of one arm's failed trials on one aspect the snapshot froze as examples (`count.examples` "
-        "counts every one)",
+        what="how many of one arm's trials on one aspect the snapshot froze as examples (`count.examples` counts every "
+        "one)",
         resolve=_kept_count,
         example="count.examples.answers.fast.v2",
     ),
@@ -6445,9 +6451,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("count.failures"),
         _keyed("<aspect>", _example_aspects),
         _Ids("<arm>", _example_arms),
-        what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
-        "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
-        "count them. " + _FAILURES_RULE,
+        what="how many of one arm's trials on one aspect failed (`count.failures` counts every one); not known, and "
+        "refused, where the snapshot does not count them. " + _FAILURES_RULE,
         resolve=_failed_trials_count,
         example="count.failures.answers.fast.v2",
     ),

@@ -215,6 +215,16 @@ _POOL = (
     "names the share of the failures it rests on"
 )
 
+#: What the examples are where the snapshot names a primary judged dimension: noughts on it, never every failure.
+_POOL_ON_PRIMARY = (
+    "the trials frozen with the snapshot that scored a nought on {primary}, the primary judged dimension, failed or "
+    "not: up to three per aspect, arm and stratum, every slice's first before any slice's second and its other cases "
+    "before a repeat; each excerpt cut around the failure (centred on the passage the judge's reason quotes, else the "
+    "reply's end), with the judge's reason on {primary}. They are no sample of every failure: a trial a check or "
+    "another dimension failed is never one. kept_from says, per aspect and arm, how many were kept beside how many "
+    "trials failed for any cause, so a pattern read in them names what it rests on and never a share of the failures"
+)
+
 
 class _Fact(BaseModel):
     """A fact tool's result or row: frozen, and no field it does not declare."""
@@ -307,13 +317,20 @@ class AspectRow(_Fact):
     aspect: str = Field(description="The aspect's id, as every `aspects.<aspect>.` key names it.")
     asked: bool | None = Field(description="Whether the campaign's question asks about it.")
     graded_by: str | None = Field(description="judged (a judge, with any checks beside it) or checked (checks alone).")
-    # The four below are left out where the input states no pass rule, so an older snapshot's overview reads as it did;
+    # The five below are left out where the input states no pass rule, so an older snapshot's overview reads as it did;
     # the rule's sentence is `aspects.<aspect>.description` and its level `.pass_threshold`, cited where written.
     pass_rule: CitedFigure | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description="How a trial on it passes, as the pages label it (`aspects.<aspect>.pass_rule`): the depth, every "
-        "goal check, and the level each counted judged dimension must reach.",
+        "goal check, each other check in `checks`, and the level each counted judged dimension must reach.",
+    )
+    checks: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each check besides the goal checks that fails a trial on its own, as the rule names it: the "
+        "measure and the value it must hold to pass (`Never topped up is false`); the other value fails the trial "
+        "whatever its goal checks and judged dimensions read.",
     )
     no_criterion: CitedFigure | None = Field(
         default=None,
@@ -713,6 +730,7 @@ def campaign_overview(
             graded_by=aspect.graded_by,
             pass_rule=cite_if(f"aspects.{aspect.id}.pass_rule", report_input),
             no_criterion=cite_if(f"aspects.{aspect.id}.no_criterion", report_input),
+            checks=aspect.pass_rule.named_checks if aspect.pass_rule is not None else [],
             counted=aspect.pass_rule.dimensions if aspect.pass_rule is not None else [],
             guardrails=aspect.pass_rule.boundary if aspect.pass_rule is not None else [],
             margin=cite_if(f"aspects.{aspect.id}.margin", report_input),
@@ -1463,16 +1481,16 @@ class ExampleRow(_Fact):
 
 
 class ExampleSlice(_Fact):
-    """One aspect and arm's failed trials (one stratum's, where the call names one): how many the snapshot froze as
-    examples, and how many the run had."""
+    """One aspect and arm (one stratum, where the call names one): how many trials the snapshot froze as examples, and
+    how many the run failed."""
 
     aspect: str = Field(description="The aspect.")
     arm: CitedFigure = Field(description="The arm.")
     stratum: str | None = Field(description="The stratum or task, where the call names one; none for all of them.")
-    kept: CitedFigure = Field(description="The failed trials frozen as examples (`count.examples.<aspect>.<arm>`).")
+    kept: CitedFigure = Field(description="The trials frozen as examples (`count.examples.<aspect>.<arm>`).")
     failed: CitedFigure | None = Field(
-        description="The failed trials the run had, as the examples count a failure (`count.failures.<aspect>.<arm>`); "
-        "none where the snapshot does not count them."
+        description="The trials the run failed, for any cause, as its scoreboard's failed counts them "
+        "(`count.failures.<aspect>.<arm>`); none where the snapshot does not count them."
     )
     unknown: str = Field(description="Why the failed trials are not known, where they are not; empty where they are.")
 
@@ -1484,7 +1502,8 @@ class ExampleListing(_Fact):
     pool: str = Field(description="What the examples are.")
     kept_from: list[ExampleSlice] = Field(
         description="Per aspect and arm the filters keep (and stratum, where stratum_filter names one), the examples "
-        "frozen against the failed trials the run had, whatever the outcome filter: what the examples are a sample of."
+        "frozen against the trials the run failed, whatever the outcome filter; `pool` says whether the examples are a "
+        "sample of those failures."
     )
     #: What its total counts, one and many: its page says how much of the whole it holds in it.
     page_unit: ClassVar[tuple[str, str]] = ("example", "examples")
@@ -1522,7 +1541,7 @@ def _kept_from(
     report_input: ReportInput, arm_filter: str | None, aspect_filter: str | None, stratum_filter: str | None
 ) -> list[ExampleSlice]:
     """Each aspect and arm an example or a failed-trial count names, as the filters keep them: the examples kept, and
-    the failed trials they were kept from where the snapshot counts them."""
+    the trials the run failed where the snapshot counts them."""
     named = [(example.aspect, example.arm, example.stratum) for example in report_input.examples]
     named += [(row.aspect, row.arm, row.stratum) for row in report_input.failed_trials or ()]
     order = {arm: index for index, arm in enumerate(_arm_ids(report_input))}
@@ -1619,7 +1638,7 @@ def examples_list(
     page, next_offset = _page(kept, limit, offset)
     return ExampleListing(
         examples=[_example_row(report_input, example, example_result_ids) for example in page],
-        pool=_POOL,
+        pool=_POOL if (primary := report_input.primary_judged) is None else _POOL_ON_PRIMARY.format(primary=primary),
         kept_from=_kept_from(report_input, arm_filter, aspect_filter, stratum_filter),
         total=len(kept),
         offset=offset,

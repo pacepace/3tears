@@ -4,9 +4,9 @@ Contracts held here (``threetears.evals.analysis.report_input_build.report_input
 ``analyst.snapshot.analyst_input`` builds a snapshot's input; ``analyst.facts.examples_list`` and
 ``campaign_overview``; the ``count.examples``, ``count.failures`` and ``overlap`` key families; the example cards):
 
-- **each slice's failed trials are counted off the bundle**, a failure as the examples count one (a nought on the
-  primary judged dimension, else a failed trial), so every kept example falls in a slice that failed at least as
-  often as it was kept from; an aspect whose bundle left failures out is not counted, and reads as not known;
+- **each slice's failed trials are counted off the bundle**, every trial its pass rule failed, for any cause, so
+  every kept example falls in a slice that failed at least as often as it was kept from; an aspect whose bundle left
+  failures out is not counted, and reads as not known;
 - **examples_list says what the examples are a sample of**: per aspect and arm the filters keep, how many it froze
   against how many failed, and why not where the snapshot does not count them (a bare input);
 - **an example carries the start of what its case asked**, where the bundle holds it;
@@ -14,8 +14,8 @@ Contracts held here (``threetears.evals.analysis.report_input_build.report_input
 - **which cases two aspects ran** is counted off the bundle's case ids, keyed and listed by the overview, and reads
   as not known where the snapshot does not hold them;
 - **an example card names its aspect** where the input holds more than one;
-- **the failures key and the scoreboard's failed count** each say, in their own key text, that they count a failure
-  differently, and how.
+- **the failures key and the scoreboard's failed count** read the same trials, and each one's key text says so, and
+  that the examples are noughts on the primary judged dimension, no sample of every failure.
 
 Every expectation is computed from the bundle or the input, never typed.
 """
@@ -62,14 +62,13 @@ def _counted(name: str) -> ReportInput:
     return budget_inputs()[name]
 
 
-def _failures(bundle: CampaignBundle, primary: str | None) -> dict[tuple[str, str, str | None], int]:
-    """Each slice's failed trials, read off the bundle's trials as the examples count a failure."""
+def _failures(bundle: CampaignBundle) -> dict[tuple[str, str, str | None], int]:
+    """Each slice's failed trials, read off the bundle's trials: every one its pass rule failed."""
     counted: dict[tuple[str, str, str | None], int] = {}
     for aspect in bundle.aspects:
         for trial in aspect.trials:
             key = (aspect.aspect, bundle.label_of(trial.arm), trial.stratum)
-            failed = trial.judged.get(primary) == 0 if primary is not None else trial.state == "failed"
-            counted[key] = counted.get(key, 0) + int(failed)
+            counted[key] = counted.get(key, 0) + int(trial.state == "failed")
     return counted
 
 
@@ -86,7 +85,7 @@ def test_each_slices_failed_trials_are_counted_off_the_bundle(name: str) -> None
     assert _every_failure_held(bundle), "each fixture bundle holds every failure"
     assert held.failed_trials is not None
     read = {(row.aspect, row.arm, row.stratum): row.failed for row in held.failed_trials}
-    assert read == _failures(bundle, held.primary_judged)
+    assert read == _failures(bundle)
     for example in held.examples:
         kept = sum(
             (e.aspect, e.arm, e.stratum) == (example.aspect, example.arm, example.stratum) for e in held.examples
@@ -94,24 +93,21 @@ def test_each_slices_failed_trials_are_counted_off_the_bundle(name: str) -> None
         assert read[example.aspect or "", example.arm or "", example.stratum] >= kept
 
 
-def test_the_failures_key_and_the_scoreboards_failed_count_say_why_they_differ() -> None:
-    """Kairo's analyst read `count.failures` at 126 beside the scoreboard's 200 failed with no word on why: the two count
-    a failure differently by design. Each key's own text, as the key check serves it, names the other and the rule."""
+def test_the_failures_key_reads_the_scoreboards_failed_trials_and_says_what_the_examples_are() -> None:
+    """Kairo's analyst read `count.failures` at 126 beside the scoreboard's 200 failed: a key named failures counted
+    noughts on one judged dimension. It counts every trial the pass rule failed, so each arm's reads the scoreboard's;
+    its own text says so, and that the examples are noughts on the primary judged dimension, no sample of them."""
     held = _counted(KAIRO)
     assert held.failed_trials is not None and held.primary_judged is not None
     lead = held.aspects[0].id
-    differ = [
-        arm
-        for arm, row in held.scoreboard.items()
-        if resolve(f"count.failures.{lead}.{arm}", held).value != sum(row.failed.values())
-    ]
-    assert differ, "the control: an arm whose two counts differ"
-    arm = differ[0]
+    for arm, row in held.scoreboard.items():
+        assert resolve(f"count.failures.{lead}.{arm}", held).value == sum(row.failed.values())
+    arm = next(iter(held.scoreboard))
     failures, board = figure_keys_check(held, [f"count.failures.{lead}.{arm}", f"scoreboard.{arm}.failed"]).keys
     assert failures.status == board.status == "reads"
     assert failures.what is not None and board.what is not None
     assert "`scoreboard.<arm>.failed`" in failures.what and "primary judged dimension" in failures.what
-    assert "`count.failures.<aspect>.<arm>`" in board.what and "primary judged dimension" in board.what
+    assert "`count.failures.<aspect>.<arm>`" in board.what
 
 
 def test_an_aspect_whose_bundle_left_failures_out_is_not_counted_and_reads_as_not_known() -> None:
@@ -304,27 +300,25 @@ def _capped(bundle: CampaignBundle, axis: str) -> CampaignBundle:
     return bundle.model_copy(update={"aspects": [capped, *rest]})
 
 
-@pytest.mark.parametrize(("axis", "counted"), [("capability", True), ("boundary", False)])
-def test_a_capped_aspect_is_counted_only_where_its_primary_dimension_decides_pass(axis: str, counted: bool) -> None:
-    """A trial that passed can score nought on a primary judged dimension that does not decide pass (a boundary
-    dimension), and the cap leaves passed trials out first: such an aspect's failures are not known, never undercounted.
-    One whose primary dimension decides pass (capability) loses no failure to the cap."""
+@pytest.mark.parametrize("axis", ["capability", "boundary"])
+def test_a_capped_aspect_that_kept_a_passed_trial_counts_every_failure_whatever_its_primary_dimension(
+    axis: str,
+) -> None:
+    """The cap keeps every failed and lost trial before any that passed, so an aspect that kept one that passed lost no
+    failure to it: its failures are counted, and the primary judged dimension's axis, which says nothing of which
+    trials failed, changes nothing."""
     bundle = _capped(shape_bundle("s3"), axis)
     held = analyst_input(bundle)
     assert held.primary_judged == "answer.correct"
     capped = bundle.aspects[0].aspect
     arm = held.arms[0].id
-    if counted:
-        assert held.failed_trials is not None and capped in {row.aspect for row in held.failed_trials}
-        expected = _failures(shape_bundle("s3"), held.primary_judged)
-        assert resolve(f"count.failures.{capped}.{arm}", held).value == sum(
-            count for (aspect, _arm, _stratum), count in expected.items() if aspect == capped
-        )
-    else:
-        with pytest.raises(UnstatedFigure):
-            resolve(f"count.failures.{capped}.{arm}", held)
-        row = next(row for row in examples_list(held, {}, limit=200).kept_from if row.aspect == capped)
-        assert row.failed is None and row.unknown
+    assert held.failed_trials is not None and capped in {row.aspect for row in held.failed_trials}
+    expected = _failures(shape_bundle("s3"))
+    assert resolve(f"count.failures.{capped}.{arm}", held).value == sum(
+        count for (aspect, named, _stratum), count in expected.items() if (aspect, named) == (capped, arm)
+    )
+    row = next(row for row in examples_list(held, {}, limit=200).kept_from if row.aspect == capped)
+    assert row.failed is not None and not row.unknown
 
 
 @pytest.mark.parametrize("name", sorted(BUNDLES))
