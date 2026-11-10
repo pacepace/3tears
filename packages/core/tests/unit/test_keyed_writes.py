@@ -156,8 +156,39 @@ class TestKeysetRows:
         )
         plain = _plain(db, "SELECT a, b, s FROM t WHERE a = 'k4' ORDER BY s ASC NULLS LAST, b DESC")
         assert [(row["a"], row["b"], row["s"]) for row in rows] == plain
-        assert len(reader.statements) == 4
+        # 10 rows, 3 a page: each statement keeps the row that said more follow, so 4 + 4 + 2, never a row read twice
+        assert len(reader.statements) == 3
         assert all("LIMIT 4" in sql for sql, _ in reader.statements)
+
+    async def test_a_one_direction_sort_steps_by_the_row_comparison_off_yugabyte(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a drain of a one-direction sort past its first page asks the dialect more than once, steps by
+        the expansion where the database is not YugabyteDB (PostgreSQL plans a bitmap scan and a sort for it), by
+        the row comparison on YugabyteDB (it reads a hashed bucket from its start for it), or a one-page drain asks
+        anything but its page."""
+        order = [Sort("a"), Sort("b", cast="bigint")]
+        plain = _plain(db, "SELECT a, b FROM t WHERE s = 'on' ORDER BY a, b")
+
+        class _Yugabyte(_Recording):
+            async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+                if query.startswith("SELECT version()"):
+                    self.statements.append((query, params))
+                    return [{"v": "PostgreSQL 15.12-YB-2026.1.0.0-b0"}]
+                return await super().fetch(query, *params)
+
+        for reader, by_row in ((_Recording(db), True), (_Yugabyte(db), False)):
+            rows = await keyset_rows(reader, "t", columns=["a", "b"], by={"s": "on"}, order=order, page=7)
+            assert [(row["a"], row["b"]) for row in rows] == plain
+            asked = [sql for sql, _ in reader.statements]
+            assert [sql.startswith("SELECT version()") for sql in asked].count(True) == 1
+            assert asked[1].startswith("SELECT version()")
+            pages = asked[2:]
+            assert len(pages) == -(-len(plain) // 8) - 1
+            assert all(('(t."a", t."b") > (' in sql) is by_row for sql in pages), pages[0]
+        single = _Recording(db)
+        rows = await keyset_rows(single, "t", columns=["a", "b"], by={"a": "k1"}, order=order, page=50)
+        assert len(rows) == 10 and len(single.statements) == 1
 
 
 class TestReadKeyedWhere:
