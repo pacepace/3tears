@@ -274,7 +274,7 @@ CONTRAST_VERDICT_WORDS: dict[str, str] = {
     "improved": "Improved",
     "regressed": "Regressed",
     "equivalent": "Equivalent",
-    # The undecided reading in the glossary's words, as a cell says it (owner ruling Q2): never "not separated".
+    # The undecided reading in the glossary's words, as a cell says it (owner ruling): never "not separated".
     "not_separated": CANNOT_TELL_APART.capitalize(),
     "untested": "Untested",
 }
@@ -490,7 +490,7 @@ STATISTIC_NOTE = "Each bar is the arm's {statistic}."
 
 #: GENERATOR §3: which way a change reads, by the direction of the change, never by the margin. An interval across
 #: zero is the undecided reading in the glossary's words, as a cell says it
-#: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`, owner ruling Q2), never "not separated".
+#: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`, owner ruling), never "not separated".
 _CHANGE_WORDS: dict[str, str] = {"worse": "worse", "better": "better", "": CANNOT_TELL_APART}
 
 

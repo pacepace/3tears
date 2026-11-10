@@ -1,4 +1,4 @@
-"""Figures: one money form, one precision, charts that read cold (presentation build, chunk 3).
+"""Figures: one money form, one precision, charts that read cold.
 
 The review's A4 holds a page to one money form per figure type and one precision per figure. It found money in five
 forms on one page (P17), a total of $0.00413 spelled ``$4.13/1000`` (P16), rounding that printed an interval's two ends
@@ -81,7 +81,7 @@ _RUNGS: dict[str, tuple[str, str, str | None]] = {
 #: An amount of money as a page writes it, its digits after the point captured: ``$0.046``, ``-$1,400.00``.
 _MONEY = re.compile(r"[+\-]?\$(\d[\d,]*)(?:\.(\d+))?")
 
-#: The retired per-1,000 mark on an amount (Q4).
+#: The retired per-1,000 mark on an amount.
 _MARK = re.compile(r"\$[\d.,]+/1000")
 
 #: An interval whose two printed ends are alike: ``[$0.045, $0.045]``, ``[4.2%, 4.2%]``.
@@ -227,7 +227,7 @@ def test_every_chart_s_money_ticks_read_in_its_values_table_s_form(rungs: dict[s
 def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
     rungs: dict[str, _Rung], name: str
 ) -> None:
-    """Q4: the ``/1000`` mark is retired; the count is in the header (``Cost per 1,000 replies``). Q3: a total is plain
+    """The ``/1000`` mark is retired; the count is in the header (``Cost per 1,000 replies``). A total is plain
     dollars, to two significant figures under a dollar."""
     rung = rungs[name]
     for text in [*_page_texts(rung), str(rung.result)]:
@@ -251,7 +251,7 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
 
 def test_an_interval_takes_one_figure_more_only_where_two_would_print_its_ends_alike() -> None:
     """P19: ``$0.045 [$0.045, $0.045]`` hid the interval; one figure more tells its ends apart, and no more, for that
-    interval alone (owner ruling Q3: "one more only where"): the set's other amounts keep two figures."""
+    interval alone (owner ruling: "one more only where"): the set's other amounts keep two figures."""
     plain = money_form([0.0451, 0.0448, 0.0453, 0.11])
     assert plain.spell(0.0448) == plain.spell(0.0453) == "$0.045"
     assert plain.spell_ends(0.0448, 0.0453) == ("$0.0448", "$0.0453")
@@ -586,7 +586,7 @@ def _kairo_text() -> str:
     return doc_page_text(page)
 
 
-#: The retired words for an undecided reading (owner ruling Q2).
+#: The retired words for an undecided reading (owner ruling).
 _RETIRED = re.compile(r"\bnot separated\b", re.IGNORECASE)
 
 
@@ -653,7 +653,7 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
 
 
 def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_words() -> None:
-    """Owner ruling Q2, landed with rung 5's judge recorded again (2026-11-07): every table a written page draws, the
+    """Owner ruling, landed with rung 5's judge recorded again (2026-11-07): every table a written page draws, the
     corrected comparisons and a chart's values table among them, says an undecided reading ``cannot tell apart``, never
     ``not separated``. The writer's own sentences are its words, not the package's, so only the rows code lays out are
     held here."""
@@ -863,7 +863,7 @@ def test_no_rate_on_a_rung_s_tables_reads_past_a_tenth_but_to_keep_off_a_boundar
 ) -> None:
     """A rate reads at its measure's places, at most a tenth of a point; it takes more only to keep off its floor or its
     ceiling (``99.97%``, never ``100.0%``), as an interval's level does (``99.69%``). A column may hold two measures'
-    rates at their own places (owner ruling Q2, 2026-11-08), so the per-column rule of 2026-11-07 is retired."""
+    rates at their own places (owner ruling, 2026-11-08), so the per-column rule of 2026-11-07 is retired."""
     percent = re.compile(r"(?<![\w.])(\d+)(?:\.(\d+))?%(?!\d)")
     for table in _tables(rungs[name].page):
         for column in table.columns:

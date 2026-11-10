@@ -3,7 +3,7 @@
 What is here is the rule's two ENDS stated as properties rather than cases, the signed form, and the canary that keeps a
 second implementation from growing back: two formatters in one engine is how one analysis came to
 print a latency as ``1.235e+04`` beside an interval that spelled the same magnitude ``12,346``. The walk that finds
-every site deciding a figure's form outside the rule, and the ratchet over them, are
+every site deciding a figure's form outside the rule, and the list of those right for good, are
 ``test_one_owner_of_number_forms.py``.
 """
 

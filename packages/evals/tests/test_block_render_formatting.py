@@ -265,7 +265,7 @@ def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell
     costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
     assert len(costs) > 1, "the control: r1's matrix prices its cells"
     # One form for every cost the matrix prints (#993): each task cost to the places money_form gives it, a rate per
-    # 1,000 in whole dollars from $10 and to cents under it (owner ruling Q3, 2026-11-07), whatever else its cell says.
+    # 1,000 in whole dollars from $10 and to cents under it (owner ruling, 2026-11-07), whatever else its cell says.
     held = _inputs()["r1"]
     stated = [
         cost

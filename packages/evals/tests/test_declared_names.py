@@ -453,7 +453,7 @@ class TestAStoredReasonIsNeverReworded:
     def test_a_reading_s_stored_unseparated_sentence_says_the_evidence_cannot_tell_its_arms_apart(self) -> None:
         """A campaign reading stores ``its interval reaches zero, so v2 and production are not separated`` with an
         analysis's readings (test_campaign_readings holds the stored words); a page says it in the glossary's
-        sentence (owner ruling Q2), the arms as stored."""
+        sentence (owner ruling), the arms as stored."""
         stored = "its interval reaches zero, so v2 and production are not separated"
         assert reason_words(stored) == "its interval reaches zero, so the evidence cannot tell v2 and production apart"
         assert reason_words(f"{stored}; more") == (

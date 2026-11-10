@@ -377,7 +377,7 @@ class Figure:
     ``joint`` marks a level said in the package's own words as the guarantee a correcting family holds together: the
     figure's value is that joint level (one minus the family's alpha, ``95%``), and ``joint`` holds it with the
     family's size, which the words print where they hold ``{comparisons}`` (``the 95% interval, adjusted for
-    16 comparisons``, owner ruling Q3); None for every other figure. The per-interval level a correction sets
+    16 comparisons``, owner ruling); None for every other figure. The per-interval level a correction sets
     (``99.69%``) is no such figure: its own keys state it as the input does.
     """
 

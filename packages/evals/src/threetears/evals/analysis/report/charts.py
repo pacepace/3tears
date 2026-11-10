@@ -514,8 +514,8 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
             found.string[found.start(2) - 1 : found.start(2)] == "$"
             or found.string[found.end() : found.end() + 1] == "%"
         ):
-            # Money is never padded: each amount reads to its own two significant figures (money_form, owner ruling
-            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110. A percentage keeps its measure's decided precision.
+            # Money is never padded: each amount reads to its own two significant figures (money_form, by owner ruling),
+            # so $0.11 beside $0.008 stays $0.11, never $0.110. A percentage keeps its measure's decided precision.
             return found.group(0)
         if wanted > _MOST_PADDED:
             return found.group(0)

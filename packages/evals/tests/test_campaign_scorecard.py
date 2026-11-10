@@ -261,7 +261,7 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
         ("billing", "no separation"),
     ]
     # The matrix marks the arm ahead in its own cell, and no other; each aspect's rate carries the count it is computed
-    # over, first (presentation build, chunk 1: a first-screen rate carries its count).
+    # over, first (a first-screen rate carries its count).
     matrix = _table(page, "scorecard")
     marks = {row["aspect"].text: {arm: cell.flag for arm, cell in _by_arm(matrix, row).items()} for row in matrix.rows}
     assert marks == {
@@ -488,7 +488,7 @@ def test_a_change_s_cell_is_its_change_its_interval_against_the_margin_and_its_r
     assert billing["v2"].text == "30% · -60 pts (shown worse)"
     assert (billing["v2"].low, billing["v2"].high) == v2.drop_interval
     assert billing["v2"].margin == 10 and billing["v2"].zero_line
-    # The control's rate carries the count it is computed over (presentation build, chunk 1).
+    # The control's rate carries the count it is computed over.
     assert billing["production"].text == "90% (18 of 20 cases)"
     assert matrix.rows[0]["cases"].text == "20"
 
@@ -518,7 +518,7 @@ def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
     on billing and tone it can move either way."""
     matrix = _table(s1_change().page(), "scorecard")
     controls = {row["aspect"].text: _by_arm(matrix, row)["production"].text for row in matrix.rows}
-    # Each with the count it is computed over, then its mark (presentation build, chunk 1).
+    # Each with the count it is computed over, then its mark.
     assert controls == {
         "billing": "90% (18 of 20 cases)",
         "tone": "50% (10 of 20 cases)",
@@ -975,7 +975,7 @@ def _right(case: Mapping[str, int], answer: str) -> bool:
 
 
 async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_bare_figure() -> None:
-    """A measurement's spend under a cent a reply carries its form (the money ruling, Q4 of 2026-11-07): drawn per
+    """A measurement's spend under a cent a reply carries its form (the money ruling of 2026-11-07): drawn per
     1,000 replies with the count in its header, never a mark on the figure, its interval's ends in the same form, in
     the matrix and in the fold alike, never ``0.0003`` or ``0``."""
     result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")

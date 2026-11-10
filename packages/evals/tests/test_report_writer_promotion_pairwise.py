@@ -346,7 +346,7 @@ async def test_a_primary_reading_not_separated_is_undecided_however_the_gated_re
     assert set(_outcomes(read, "contrast").values()) == {"improved"}
     assert read.primary is not None and (read.primary.outcome, read.primary.reason) == ("not_separated", "no_margin")
     assert read.decision == "undecided", read.why
-    # The undecided reading in the glossary's sentence (owner ruling Q2).
+    # The undecided reading in the glossary's sentence (owner ruling).
     assert "the evidence cannot tell " in read.why and " apart" in read.why
     assert read.cases_to_settle is None, "an estimate of zero is settled by no count of cases"
 
@@ -364,7 +364,7 @@ async def test_a_primary_reading_on_too_few_cases_is_undecided_and_named_by_its_
     detail = f"{len(_TOLD)} cases, under the {MIN_CASES} a rate needs"
     assert read.primary.reason_detail == detail
     assert f"too few cases to decide ({detail})" in read.why
-    reads = CANNOT_TELL_APART if outcome == "not_separated" else outcome.replace("_", " ")  # owner ruling Q2
+    reads = CANNOT_TELL_APART if outcome == "not_separated" else outcome.replace("_", " ")  # owner ruling
     assert f"| primary | {reads} (too few cases) |" in read.readout
 
 

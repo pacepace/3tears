@@ -258,7 +258,7 @@ def _places(amounts: Iterable[str]) -> set[int]:
 
 
 def _two_forms(amounts: Iterable[str]) -> bool:
-    """Whether a set of amounts reads in two forms of money (owner ruling Q3, 2026-11-07: one count of significant
+    """Whether a set of amounts reads in two forms of money (owner ruling, 2026-11-07: one count of significant
     figures per set, never one count of decimals): an amount under a dollar to other than two significant figures, or
     three where it reconciles with a month beside it; one from a dollar to $10 to other than cents; or amounts from $10
     up both in whole dollars (a rate's) and to cents (a total's)."""

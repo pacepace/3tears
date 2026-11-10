@@ -1,10 +1,10 @@
-"""One owner of number forms: every place a figure's form is decided today is listed, and the list only shrinks.
+"""One owner of number forms: every place a figure's form is decided is an owner, or is named, with its reason, as
+right for good.
 
 A number's form is its digits, sign, unit and interval as printed. Spelling one number is centralised already
 (``kernel/numbers.py``); deciding which figures form a set, and how many digits the set reads at, is not: it happens
 at hundreds of sites, at three different times, by several owners, so one measure prints two ways on one page ("85%"
-in a table, "85.3%" in the chart head). Every decision moves into ``analysis/report/forms.py``, and this test keeps
-that migration honest:
+in a table, "85.3%" in the chart head). Every decision is ``analysis/report/forms.py``'s, and this test holds it there:
 
 * **The walk** reads every module of ``threetears/evals`` and the kit's ``kit.js``, and finds each site that decides
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
@@ -20,25 +20,25 @@ that migration honest:
   So is a public free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and
   role, is the migrated route.
 * **The engine** (:data:`_ENGINE_TREES`): the trees whose imports, followed to their end, never reach
-  ``threetears.evals.analysis`` reach no page's forms, and what they spell (a launch's refusal, a timeout's message) is no page figure. There a call to a primitive
-  of ``kernel/numbers.py`` is the route, not a site, and a function returning one is no wrapper to a caller in the
-  engine, though it is one to a caller above the line; a format spec,
-  ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere. Above that line ``PageForms``
-  is the only route, through ``PageForms.off_page()`` for a surface no page prints.
-* **The ratchet** compares the walk with ``fixtures/number_form_sites.txt``, keyed by (module, enclosing qualname,
-  form) with a count. A moved line keeps its entry; a new site in the same function, or in a new one, fails. An entry
-  that overstates its count, or names nothing, also fails, so every migration cuts the file and the list only
-  shrinks.
+  ``threetears.evals.analysis`` reach no page's forms, and what they spell (a launch's refusal, a timeout's
+  message) is no page figure. There a call to a primitive of ``kernel/numbers.py`` is the route, not a site, and a
+  function returning one is no wrapper to a caller in the engine, though it is one to a caller above the line; a
+  format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere. Above that line
+  ``PageForms`` is the only route, through ``PageForms.off_page()`` for a surface no page prints.
+* **The rule** fails on any site the walk finds that :data:`_PERMANENT` does not name, and on any entry there that
+  names no site, so a rewritten expression loses its exemption rather than keeping it unseen.
 * **What the wrapper rule cannot see** is a stated limit, not a hidden one: a figure reached through another object's
   method of a common name, a property read through anything but ``self``, or a method handed on by reference from
   anything but ``self``; lines appended then joined, a ``yield``, a tuple unpacked; a formatter a factory returns (a
   nested function, a lambda or a ``functools.partial``, as ``chart_svg._kit_format`` does), and a lambda table, each
   counted once where its site is written rather than at every call of it; or digits derived as ``floor(v + 0.5)``. A
   function's nested returns count as its own, which over-counts, the safe way.
-* **The permanent list** (:data:`_PERMANENT`) names the few sites whose fixed form is right for good (SVG
-  coordinates and opacities, the kit's formats restated for the static page), each with its reason.
+* **The permanent list** (:data:`_PERMANENT`) names the sites whose fixed form is right for good, keyed by module,
+  expression and form, each with its reason: text stored where a fingerprint holds it, arithmetic, CSS, SVG and the
+  kit's own drawing, the helpers ``forms.py`` imports and so cannot route through, and messages no page prints. It
+  has a ceiling (:data:`_PERMANENT_CEILING`): a new exemption is an owner's decision, made where the ceiling is.
 
-It also holds the report trees to the stricter rule ``test_numbers.py`` held them to before the ratchet existed:
+It also holds the report trees to the stricter rule ``test_numbers.py`` held them to before this test existed:
 under ``analysis/`` and ``ops/`` no format spec chooses digits except a share's ``%`` and a permanent site.
 """
 
@@ -58,7 +58,6 @@ import pytest
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _PACKAGE = "threetears/evals"
-_ALLOWLIST = Path(__file__).resolve().parent / "fixtures" / "number_form_sites.txt"
 
 #: The rule's spelling primitives, and the module that decides a page's forms. Nothing in either is a site: they are
 #: where a form is meant to be decided. A tree without ``forms.py`` (a self-test's) walks as before it existed.
@@ -128,22 +127,19 @@ _PRIVATE_SET_HELPERS = frozenset(
 #: where the rest of that directory is not read as a report.
 _SPELLING_TREES = ("threetears/evals/analysis", "threetears/evals/ops")
 
-#: What sits inside :data:`_SPELLING_TREES` and is not held to the stricter rule (the ratchet still lists its sites):
-#: ``report/svg.py`` spells only a glyph's drawing coordinates (to a tenth of a unit), every value it shows a reader
-#: going through the rule. ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four
-#: decimals a per-call price needs.
-_NOT_READ_AS_REPORTS = (
-    "threetears/evals/analysis/report/svg.py",
-    "threetears/evals/analysis/out_of_run_spend.py",
-)
+#: What sits inside :data:`_SPELLING_TREES` and is not held to the stricter rule (its sites are still named in
+#: :data:`_PERMANENT`): ``report/svg.py`` spells only a glyph's drawing coordinates (to a tenth of a unit), every value
+#: it shows a reader going through the rule.
+_NOT_READ_AS_REPORTS = ("threetears/evals/analysis/report/svg.py",)
 
 #: The engine: the trees from which no import, followed through the package to its end, reaches
 #: ``threetears.evals.analysis`` (:class:`TestTheEngineRule` holds them to it), so no page's forms reach them and
 #: what they spell is no page figure. ``actions``, ``testing`` and ``transports`` reach it through ``ops``, and
 #: ``providers`` through ``testing``, so they are above the line. In them a call to a primitive of
 #: ``kernel/numbers.py``, called, handed on or a parameter's default, is the route rather than a site, and a function
-#: returning one is no wrapper to a caller there (it is one to a caller above the line); a format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites. The
-#: list only narrows: a tree joins it by an owner's decision, which raises :data:`_ENGINE_TREES_CEILING`.
+#: returning one is no wrapper to a caller there (it is one to a caller above the line); a format spec, ``round()``,
+#: ``quantize()`` and digits from a ``log10`` stay sites. The list only narrows: a tree joins it by an owner's
+#: decision, which raises :data:`_ENGINE_TREES_CEILING`.
 _ENGINE_TREES = tuple(
     f"{_PACKAGE}/{tree}"
     for tree in (
@@ -170,7 +166,7 @@ def _in_engine(module: str) -> bool:
 _NUMERIC_TYPES = frozenset("eEfFgGn%")
 
 #: A share of a whole spelled as a percentage (``.0%``) is a different sentence from a measured value, "37% of it",
-#: and carries its own fixed precision. The stricter rule passes it by presentation type; the ratchet still lists it,
+#: and carries its own fixed precision. The stricter rule passes it by presentation type; the walk still counts it,
 #: because a page's share prints through ``forms.share``.
 _PERCENTAGE_TYPE = "%"
 
@@ -180,9 +176,83 @@ _KIT_FORMAT = (
     "the kit's named format, restated from kit.js for the static page and pinned to number-format-cases.json: "
 )
 
+#: Why each permanent site's fixed form is right for good, one sentence per kind, shared by the entries of that kind.
+_COVARIATE_RATIO = (
+    "a stored covariate, the reasoning share of a reply's tokens, rounded as arithmetic before it is kept"
+)
+_PHASE_TIMINGS = "stored phase timings, summed in milliseconds and rounded as arithmetic before they are kept"
+_JUDGE_SCORE = "a judge's criterion score normalised to its scale and rounded as arithmetic before it is kept"
+_TOKEN_BUDGET = "a token count: a share of the provider's cap rounded to whole tokens, sent to the provider"
+_NEGOTIATION_RATIO = (
+    "a settings note's ratio; the negotiation package may not import the kernel, so it cannot spell through numbers"
+)
+_FINGERPRINT = "a float written at fixed significant figures into a fingerprint, which moves if its form does"
+_SCHEMA_VALUE = (
+    "a declared value echoed as written; the schema loads before the kernel and importing kernel.numbers from it "
+    "cycles through schema.models"
+)
+_TOOL_LIMIT = "a character limit in a tool's description, grouped by the rule's own primitive; no page prints it"
+_CATALOGUE_BOUND = "a bound echoed as declared in a model catalogue's load refusal; no page prints it"
+_CONFORMANCE_TIMEOUT = "a timeout, as declared, in a job conformance check's message; no page prints it"
+_TRANSPORT_TIMEOUT = "a timeout, as declared, in a transport's error to its caller; no page prints it"
+_KIT_FLOAT = "float cleanup of an axis tick's position before it is placed, not a printed figure"
+_KIT_PIXELS = "a chart's height in pixels, not a printed figure"
+_KIT_COLOUR = "the share of a colour mix, not a printed figure"
+_KIT_TOOLTIP_COUNT = "a heatmap tooltip's count of cases, a whole number grouped by thousands"
+_KIT_DEFAULT = "the format a confusion chart reads in when the host's chart names none"
+_WHOLE_CASES = "a count of cases recovered from a share of a whole count, rounded to whole cases"
+_UNANSWERED_COUNT = "a count of unanswered cases in a figure key's line, grouped by the rule's own primitive"
+_COST_UNIT = (
+    "the money ruler, the one owner of a set of amounts' form; forms.py imports it, so it cannot route through forms, "
+    "and its callers are the page's forms"
+)
+_QUANTITIES = (
+    "a figure in its unit, spelled by the number rule; forms.py imports this module, so it cannot route through "
+    "forms, and each helper stays a primitive by its name, so its callers are sites"
+)
+_LOOK = (
+    "a drawn figure's form by its unit and the money ruler; forms.py imports this module, so it cannot route through "
+    "forms, and the helper stays a primitive by its name, so its callers are sites"
+)
+_RESPELL = (
+    "the chart texts' spelling of the kit's named formats, which forms.chart_texts delegates to so a chart's drawn "
+    "figures read as the kit draws them"
+)
+_TABLE_CELL = "a values cell that holds words, a yes or no, or nothing; a number cell carries its decided text"
+_HOST_CHART = "a chart a host built with no decided texts, spelled by the number rule so it still reads"
+_STORED_READING = "a reason stored in a campaign's readings, which are fingerprinted, so its text may not move"
+_WHOLE_COUNT = "a test that a count is whole, not a printed figure"
+_CSS_WIDTH = "a table column's width in rem, written to the page's CSS, not a figure"
+_CLASSIFIER = "a classifier: it reads a figure's unit to refuse mismatched axes and sets no digits"
+_SVG_FIXED = _KIT_FORMAT + "a number at the format's fixed decimals, as toFixed writes it"
+_SVG_USD = _KIT_FORMAT + "dollars at two significant figures under ten"
+_SVG_TICKS = "axis arithmetic: where a tick falls and how fine the step is, as the kit's script places them"
+_BUNDLE = "text stored in the fingerprinted analysis bundle, so changing its form moves every bundle's fingerprint"
+_SNAPSHOT = "text stored in the report-input snapshot, which a stored report reads back unchanged"
+_CENT_CEILING = "arithmetic: a budget in cents with its float error cleaned before it is rounded up to the cent"
+_STORED_MEAN = "a stored mean latency, rounded as arithmetic before it is kept"
+_COUNTS_FROM_SHARES = "arithmetic: a count recovered from a share of a whole count"
+_WHOLE_SECONDS = "arithmetic: whole seconds split into hours, minutes and seconds"
+_MARGIN_ARITHMETIC = "arithmetic: a margin in points with its float error cleaned, before it is declared"
+
+_WHOLE_FROM_SHARE = "a whole count recovered from a share; sets no digits"
+_INTERVAL_SENTENCE = (
+    "the interval's sentence around the sizes the page's forms decided (forms.sizes); it chooses words, not digits"
+)
+_HEAT_COUNT = (
+    "a count in a heatmap row's table text; format_number prints a whole number in full, and charts sits below forms"
+)
+_AXIS = "axis arithmetic: tick positions and the kit's named axis format"
+_KERNEL_TIMEOUT = "relays the kernel's timeout message verbatim; no page prints it"
+_TABLE_CLASSIFIER = (
+    "classifies a table column's unit and scale (and which money set it reads in); its printed digits are the page's "
+    "forms'"
+)
+
 #: Sites whose fixed form is right for good, keyed by (module, expression, spec or form) so a moved line keeps its
 #: entry and a rewritten expression loses it. Each reason says why the fixed form is right there; an entry no site
-#: matches any more fails the suite.
+#: matches any more fails the suite. A permanent site wraps nothing, so a helper whose every site is named here is no
+#: wrapper, and its callers are sites only where it is a primitive by its name.
 _PERMANENT: dict[tuple[str, str, str], str] = {
     # Money's spelling (two significant figures, cents from ten cents up) is numbers.spell_dollars, in the
     # rule's own module.
@@ -202,13 +272,351 @@ _PERMANENT: dict[tuple[str, str, str], str] = {
     ("threetears/evals/analysis/report/svg.py", "round_figures(value)", ".1f"): (
         "an SVG coordinate, to a tenth of a px, which no reader reads as a number"
     ),
+    ("threetears/evals/kernel/covariates.py", "round(reasoning / completion, 6)", "round()"): _COVARIATE_RATIO,
+    ("threetears/evals/kernel/covariates.py", "round(accumulator.get(key, 0.0) + ms, 3)", "round()"): _PHASE_TIMINGS,
+    ("threetears/evals/run/judge.py", "round(SCALES[scales[name]].normalized(score), 4)", "round()"): _JUDGE_SCORE,
+    ("threetears/evals/negotiation/settings.py", "round(share * cap)", "round()"): _TOKEN_BUDGET,
+    (
+        "threetears/evals/negotiation/settings.py",
+        "float(Fraction(budget, asked.max_tokens))",
+        ".2f",
+    ): _NEGOTIATION_RATIO,
+    ("threetears/evals/negotiation/settings.py", "float(BUDGET_SHARES[effort])", ".2f"): _NEGOTIATION_RATIO,
+    ("threetears/evals/schema/hashing.py", "value", ".{}g"): _FINGERPRINT,
+    ("threetears/evals/schema/values.py", "resolved_scale.value", "g"): _SCHEMA_VALUE,
+    (
+        "threetears/evals/actions/analyst.py",
+        "group_thousands(str(GAP_TEXT_MAX_CHARS))",
+        "group_thousands()",
+    ): _TOOL_LIMIT,
+    ("threetears/evals/providers/catalogue.py", "bound", "g"): _CATALOGUE_BOUND,
+    (
+        "threetears/evals/testing/jobs_conformance.py",
+        "spell_declared(self.call_return_timeout_s)",
+        "spell_declared()",
+    ): _CONFORMANCE_TIMEOUT,
+    (
+        "threetears/evals/testing/jobs_conformance.py",
+        "spell_declared(timeout_s)",
+        "spell_declared()",
+    ): _CONFORMANCE_TIMEOUT,
+    (
+        "threetears/evals/transports/fastmcp/__init__.py",
+        "spell_declared(timeout_s)",
+        "spell_declared()",
+    ): _TRANSPORT_TIMEOUT,
+    (
+        "threetears/evals/transports/fastmcp/__init__.py",
+        "spell_declared(stopped.timeout_s)",
+        "spell_declared()",
+    ): _TRANSPORT_TIMEOUT,
+    ("threetears/evals/analysis/report/kit/kit.js", ".toFixed(10)", "toFixed()"): _KIT_FLOAT,
+    ("threetears/evals/analysis/report/kit/kit.js", ".toPrecision(12)", "toPrecision()"): _KIT_FLOAT,
+    (
+        "threetears/evals/analysis/report/kit/kit.js",
+        "Math.round(Math.min(380,Math.max(300,w*.45)))",
+        "Math.round()",
+    ): _KIT_PIXELS,
+    ("threetears/evals/analysis/report/kit/kit.js", "Math.round(18+mag*72)", "Math.round()"): _KIT_COLOUR,
+    ("threetears/evals/analysis/report/kit/kit.js", '.toLocaleString("en-US")', "toLocaleString()"): _KIT_TOOLTIP_COUNT,
+    ("threetears/evals/analysis/report/kit/kit.js", 'namedFmt(d.fmt||"pct:1")', "namedFmt"): _KIT_DEFAULT,
+    ("threetears/evals/analysis/report/figure_keys.py", "round(cases * share)", "round()"): _WHOLE_CASES,
+    ("threetears/evals/analysis/report/figure_keys.py", "round(overall.count * share)", "round()"): _WHOLE_CASES,
+    (
+        "threetears/evals/analysis/report/figure_keys.py",
+        "group_thousands(str(count))",
+        "group_thousands()",
+    ): _UNANSWERED_COUNT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "self.form.spell(value * self.scale, signed=signed)",
+        "spell()",
+    ): _COST_UNIT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "self.form.spell_ends(low * self.scale, high * self.scale, signed=signed)",
+        "spell_ends()",
+    ): _COST_UNIT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "self.form.for_changes((change * self.scale if change is not None else None for change in changes), "
+        "(width * self.scale if width is not None else None for width in widths))",
+        "for_changes()",
+    ): _COST_UNIT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "money_form(held, rate=counts, reconciles=reconciles)",
+        "money_form()",
+    ): _COST_UNIT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "money_form((amount * scale for amount in held), rate=counts, reconciles=reconciles)",
+        "money_form()",
+    ): _COST_UNIT,
+    ("threetears/evals/analysis/report/cost_unit.py", "format_number(float(count))", "format_number()"): _COST_UNIT,
+    (
+        "threetears/evals/analysis/report/cost_unit.py",
+        "group_thousands(format_number(float(count)))",
+        "group_thousands()",
+    ): _COST_UNIT,
+    (
+        "threetears/evals/analysis/quantities.py",
+        "format_number(_at_precision(value, unit))",
+        "format_number()",
+    ): _QUANTITIES,
+    ("threetears/evals/analysis/quantities.py", "format_number(value)", "format_number()"): _QUANTITIES,
+    ("threetears/evals/analysis/quantities.py", "number_in(value, unit)", "number_in()"): _QUANTITIES,
+    (
+        "threetears/evals/analysis/quantities.py",
+        "format_signed(_at_precision(value, unit))",
+        "format_signed()",
+    ): _QUANTITIES,
+    ("threetears/evals/analysis/quantities.py", "round(value, 1)", "round()"): _QUANTITIES,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "drawn.money.spell(value, signed=drawn.change)",
+        "spell()",
+    ): _LOOK,
+    ("threetears/evals/analysis/report/parts/look.py", "format_number(float(round(size)))", "format_number()"): _LOOK,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "group_thousands(format_number(float(round(size))))",
+        "group_thousands()",
+    ): _LOOK,
+    ("threetears/evals/analysis/report/parts/look.py", "round(size)", "round()"): _LOOK,
+    ("threetears/evals/analysis/report/parts/look.py", "spell_dollars(size)", "spell_dollars()"): _LOOK,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "spell_at(value, POINT_PLACES, signed=drawn.change)",
+        "spell_at()",
+    ): _LOOK,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "signed_with_unit(value, drawn.unit)",
+        "signed_with_unit()",
+    ): _LOOK,
+    ("threetears/evals/analysis/report/parts/look.py", "with_unit(value, drawn.unit)", "with_unit()"): _LOOK,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "amounts.money.for_changes(changes, widths)",
+        "for_changes()",
+    ): _LOOK,
+    ("threetears/evals/analysis/report/parts/look.py", "quantity(unit, change=change)", "quantity()"): _LOOK,
+    (
+        "threetears/evals/analysis/report/parts/look.py",
+        "quantity(unit, [figure * factor for figure in figures], change=change, places=places)",
+        "quantity()",
+    ): _LOOK,
+    (
+        "threetears/evals/analysis/report/charts.py",
+        "MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)",
+        "MoneyForm()",
+    ): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "form.spell(value, signed=bool(match[1]))", "spell()"): _RESPELL,
+    (
+        "threetears/evals/analysis/report/charts.py",
+        "MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)",
+        "MoneyForm()",
+    ): _RESPELL,
+    (
+        "threetears/evals/analysis/report/charts.py",
+        "spell_at(value, int(match[3]), signed=bool(match[1]))",
+        "spell_at()",
+    ): _RESPELL,
+    (
+        "threetears/evals/analysis/report/charts.py",
+        "spell_at(value, POINT_PLACES if places is None else places, signed=bool(match[1]))",
+        "spell_at()",
+    ): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "number_in(value, read_at)", "number_in()"): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "signed_with_unit(value, unit)", "signed_with_unit()"): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "with_unit(value, unit)", "with_unit()"): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "group_thousands(digits)", "group_thousands()"): _RESPELL,
+    ("threetears/evals/analysis/report/charts.py", "ends_places(low, high, POINT_PLACES)", "ends_places()"): _RESPELL,
+    ("threetears/evals/analysis/report/blocks.py", "render_cell(self.value)", "render_cell()"): _TABLE_CELL,
+    (
+        "threetears/evals/analysis/report/blocks.py",
+        "with_unit(passed(bar) / bar.total * 100, PERCENT)",
+        "with_unit()",
+    ): _HOST_CHART,
+    (
+        "threetears/evals/analysis/report/blocks.py",
+        "with_unit(amount * _REPLIES_PER_COST_UNIT, self.unit)",
+        "with_unit()",
+    ): _HOST_CHART,
+    ("threetears/evals/analysis/report/blocks.py", "with_unit(point.pass_rate, PERCENT)", "with_unit()"): _HOST_CHART,
+    (
+        "threetears/evals/analysis/report/blocks.py",
+        "with_unit(point.pass_rate_high, PERCENT)",
+        "with_unit()",
+    ): _HOST_CHART,
+    (
+        "threetears/evals/analysis/report/blocks.py",
+        "with_unit(point.pass_rate_low, PERCENT)",
+        "with_unit()",
+    ): _HOST_CHART,
+    ("threetears/evals/analysis/report/blocks.py", "number_in(amount * scale, self.unit)", "number_in()"): _HOST_CHART,
+    ("threetears/evals/analysis/report/blocks.py", "number_in(value, unit)", "number_in()"): _HOST_CHART,
+    ("threetears/evals/analysis/report/blocks.py", "number_in(high, unit)", "number_in()"): _HOST_CHART,
+    ("threetears/evals/analysis/report/blocks.py", "number_in(low, unit)", "number_in()"): _HOST_CHART,
+    ("threetears/evals/analysis/report/said.py", "format_number(figure.value)", "format_number()"): _STORED_READING,
+    (
+        "threetears/evals/analysis/report/said.py",
+        "format_number(round(100 * figure.value, 2))",
+        "format_number()",
+    ): _STORED_READING,
+    ("threetears/evals/analysis/report/said.py", "round(100 * figure.value, 2)", "round()"): _STORED_READING,
+    (
+        "threetears/evals/analysis/report/said.py",
+        "format_number(round(figure.value, POINT_PLACES))",
+        "format_number()",
+    ): _STORED_READING,
+    ("threetears/evals/analysis/report/said.py", "round(figure.value, POINT_PLACES)", "round()"): _STORED_READING,
+    ("threetears/evals/analysis/report/decision.py", "round(count)", "round()"): _WHOLE_COUNT,
+    (
+        "threetears/evals/analysis/report/html_parts.py",
+        "round(min(max(widest + _CELL_PAD_REM, low), high), 2)",
+        "round()",
+    ): _CSS_WIDTH,
+    (
+        "threetears/evals/analysis/report/html_parts.py",
+        "round(chars * _HEAD_REM_PER_CHAR + _CELL_PAD_REM, 2)",
+        "round()",
+    ): _CSS_WIDTH,
+    (
+        "threetears/evals/analysis/report/html_parts.py",
+        "round(min(max(max(widths) + _CELL_PAD_REM, low), high), 2)",
+        "round()",
+    ): _CSS_WIDTH,
+    ("threetears/evals/analysis/report/html_parts.py", "round(min(max(widest, low), high), 2)", "round()"): _CSS_WIDTH,
+    ("threetears/evals/analysis/report/parts/charting.py", "quantity(unit, change=change)", "quantity()"): _CLASSIFIER,
+    ("threetears/evals/analysis/report/parts/charting.py", "quantity('points')", "quantity()"): _CLASSIFIER,
+    ("threetears/evals/analysis/report/parts/charting.py", "quantity(unit, change=True)", "quantity()"): _CLASSIFIER,
+    (
+        "threetears/evals/analysis/report/chart_svg.py",
+        "Decimal(value).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)",
+        "quantize()",
+    ): _SVG_FIXED,
+    ("threetears/evals/analysis/report/chart_svg.py", "math.floor(math.log10(size))", "floor(log10)"): _SVG_USD,
+    ("threetears/evals/analysis/report/chart_svg.py", "round(step * 10 ** places)", "round()"): _SVG_TICKS,
+    (
+        "threetears/evals/analysis/report/chart_svg.py",
+        "math.floor(math.log10((b - a) / n))",
+        "floor(log10)",
+    ): _SVG_TICKS,
+    ("threetears/evals/analysis/report/chart_svg.py", "round(value, 10)", "round()"): _SVG_TICKS,
+    ("threetears/evals/analysis/report/chart_svg.py", "math.ceil(math.log10(b))", "ceil(log10)"): _SVG_TICKS,
+    ("threetears/evals/analysis/report/chart_svg.py", "math.floor(math.log10(a))", "floor(log10)"): _SVG_TICKS,
+    ("threetears/evals/analysis/report/chart_svg.py", "round(min(380, max(300, w * 0.45)))", "round()"): _KIT_PIXELS,
+    ("threetears/evals/analysis/report/chart_svg.py", "round(18 + size * 72)", "round()"): _KIT_COLOUR,
+    ("threetears/evals/analysis/bundle/assemble.py", "format_number(margin)", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/bundle/assemble.py", "format_number(bounds[0])", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/bundle/assemble.py", "format_number(bounds[1])", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/bundle/bars.py", "format_number(threshold)", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(alpha)", "format_number()"): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/comparisons.py",
+        "format_number(100 * (1 - alpha / family_size))",
+        "format_number()",
+    ): _BUNDLE,
+    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(100 * (1 - alpha))", "format_number()"): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/comparisons.py",
+        "format_number(verdict.interval[0])",
+        "format_number()",
+    ): _BUNDLE,
+    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(line)", "format_number()"): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/comparisons.py",
+        "format_number(verdict.interval[1])",
+        "format_number()",
+    ): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/coverage.py",
+        "format_number(sum(sems) / len(sems))",
+        "format_number()",
+    ): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/schema.py",
+        "format_number(CALIBRATION_MIN_AGREEMENT)",
+        "format_number()",
+    ): _BUNDLE,
+    (
+        "threetears/evals/analysis/bundle/schema.py",
+        "format_number(SEPARATION_MIN_AGREEMENT)",
+        "format_number()",
+    ): _BUNDLE,
+    ("threetears/evals/analysis/report_input_build.py", "format_number(100 * level)", "format_number()"): _SNAPSHOT,
+    ("threetears/evals/ops/report_writer/tally.py", "round(ceiling.usd * 100, 6)", "round()"): _CENT_CEILING,
+    ("threetears/evals/analysis/lenses/frontier.py", "round(sum(totals) / n_latency, 3)", "round()"): _STORED_MEAN,
+    ("threetears/evals/analysis/lenses/frontier.py", "format_number(margin)", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/aspects.py", "format_number(margin)", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/latency_partition.py", "format_number(-remainder)", "format_number()"): _BUNDLE,
+    ("threetears/evals/analysis/depth.py", "round(share * count)", "round()"): _COUNTS_FROM_SHARES,
+    ("threetears/evals/analysis/measurement_windows.py", "round(seconds)", "round()"): _WHOLE_SECONDS,
+    ("threetears/evals/quick/result.py", "round(100 * margin, 10)", "round()"): _MARGIN_ARITHMETIC,
+    (
+        "threetears/evals/analysis/report/campaign/scorecard.py",
+        "round(share * summary.n)",
+        "round()",
+    ): _WHOLE_FROM_SHARE,
+    (
+        "threetears/evals/analysis/report/campaign/scorecard.py",
+        "interval_words(row.arm_label, interval[0], interval[1], "
+        "amount=lambda value: size[abs(value)], unit=' points')",
+        "interval_words()",
+    ): _INTERVAL_SENTENCE,
+    ("threetears/evals/analysis/report/charts.py", "format_number(n)", "format_number()"): _HEAT_COUNT,
+    ("threetears/evals/analysis/report/parts/look.py", "math.ceil(-math.log10(top / 5))", "ceil(log10)"): _AXIS,
+    ("threetears/evals/analysis/report/parts/look.py", "math.floor(math.log10(value))", "floor(log10)"): _AXIS,
+    ("threetears/evals/analysis/report/parts/look.py", "math.ceil(math.log10(max(values)))", "ceil(log10)"): _AXIS,
+    ("threetears/evals/analysis/report/parts/look.py", "math.floor(math.log10(min(values)))", "floor(log10)"): _AXIS,
+    ("threetears/evals/analysis/report/parts/look.py", "round(math.log10(domain[0]))", "round()"): _AXIS,
+    ("threetears/evals/analysis/report/parts/look.py", "round(math.log10(domain[1]))", "round()"): _AXIS,
+    ("threetears/evals/ops/analysis.py", "timed_out_detail(timed_out)", "timed_out_detail()"): _KERNEL_TIMEOUT,
+    ("threetears/evals/ops/sweeps.py", "timed_out_detail(timed_out)", "timed_out_detail()"): _KERNEL_TIMEOUT,
+    (
+        "threetears/evals/analysis/report/parts/resolve_table.py",
+        "quantity_of(figure_unit(context.report_input, key), [read[0] for read in reads if read is not None])",
+        "quantity_of()",
+    ): _TABLE_CLASSIFIER,
+    (
+        "threetears/evals/analysis/report/parts/resolve_table.py",
+        "quantity_of(unit, held_means(report_input, key))",
+        "quantity_of()",
+    ): _TABLE_CLASSIFIER,
+    (
+        "threetears/evals/analysis/report/parts/resolve_table.py",
+        "quantity(unit, change=True)",
+        "quantity()",
+    ): _TABLE_CLASSIFIER,
+    (
+        "threetears/evals/analysis/report/parts/resolve_table.py",
+        "quantity('points', change=True)",
+        "quantity()",
+    ): _TABLE_CLASSIFIER,
+    (
+        "threetears/evals/analysis/report/parts/resolve_table.py",
+        "quantity_of(figure_unit(context.report_input, measure), [float(number) for read in reads "
+        "if read.measure == measure for number in (read.value, read.bar, *(read.interval or ())) "
+        "if number is not None])",
+        "quantity_of()",
+    ): _TABLE_CLASSIFIER,
 }
 
-#: The one-line remedy every ratchet failure ends with.
+#: The most sites :data:`_PERMANENT` may name. It only comes down: an entry routed through ``forms.py`` lowers it, and a
+#: new exemption raises it only by an owner's decision, in the same change.
+_PERMANENT_CEILING = 135
+
+#: The one-line remedy every failure of the rule ends with.
 _REMEDY = (
     "route the figure through analysis/report/forms.py (PageForms; off_page() where no page prints it), or, in the "
-    "engine trees, through a kernel/numbers.py primitive"
+    "engine trees, through a kernel/numbers.py primitive; naming it in _PERMANENT is an owner's decision, which "
+    "raises _PERMANENT_CEILING"
 )
+
+#: A citation of a plan, a chunk, a review or a question that no reader of the clone can open: a reason states itself.
+_CITES = re.compile(r"\bplan\b|rev-\d{8}T\d{6}Z|\bQ\d+\b|\bC\d{1,2}[a-g]?(-\d)?\b|\bchunks? \d+\b")
 
 
 @dataclass(frozen=True)
@@ -216,7 +624,7 @@ class _Site:
     """One place a figure's form is decided.
 
     :ivar module: The file, relative to the package's ``src``.
-    :ivar line: Its line, for the reader of a failure only: the ratchet's key leaves it out.
+    :ivar line: Its line, for the reader of a failure only: no key holds it.
     :ivar qualname: The enclosing definition (``Class.method``, ``outer.inner``; ``<module>`` or ``<top>`` outside one).
     :ivar form: How the form is decided: ``f-string spec``, ``round()``, ``format_number()``, ``toFixed()`` ...
     :ivar expression: The value spelled, for a spec; the call or reference itself otherwise.
@@ -641,6 +1049,8 @@ class _PythonForms(ast.NodeVisitor):
         self.class_tests: set[int] = set()
         #: The functions each enclosing definition builds inside itself: one it returns is a factory's formatter.
         self.built: list[frozenset[str]] = []
+        #: The names each enclosing scope binds itself (its parameters, what it assigns or loops over).
+        self.bound: list[frozenset[str]] = []
 
     @property
     def where(self) -> tuple[str, str]:
@@ -663,7 +1073,9 @@ class _PythonForms(ast.NodeVisitor):
                 if inner is not node and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))
             )
         )
+        self.bound.append(_bound_here(node))
         self.generic_visit(node)
+        self.bound.pop()
         self.built.pop()
         if isinstance(node, ast.ClassDef):
             self.classes.pop()
@@ -677,6 +1089,25 @@ class _PythonForms(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scoped(node)
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self.bound.append(_bound_here(node))
+        self.generic_visit(node)
+        self.bound.pop()
+
+    def _reads_a_local(self, value: ast.expr) -> bool:
+        """Whether ``value`` is, or is a field read of, a name its scope binds itself: a local named like a primitive
+        (``confidence=interval_level``, ``family.interval_level``) holds a value, not the primitive. ``self`` and
+        ``cls`` are left to the wrapper methods :meth:`_Lookup.named` resolves through them."""
+        root = value
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return (
+            isinstance(root, ast.Name)
+            and root.id not in ("self", "cls")
+            and bool(self.bound)
+            and (root.id in self.bound[-1])
+        )
 
     def _returns_what_it_built(self, node: ast.AST) -> bool:
         """Whether ``node`` returns, by name, a function its enclosing definition built: a factory's formatter, whose
@@ -699,9 +1130,32 @@ class _PythonForms(ast.NodeVisitor):
             assert isinstance(node, ast.Call)
             self.class_tests |= {id(names) for argument in node.args[1:] for names in _class_tuples(argument)}
         for value in [] if id(node) in self.class_tests or self._returns_what_it_built(node) else _handed_values(node):
+            if self._reads_a_local(value):
+                continue
             if (handed := self.lookup.named(value, self.where, as_value=True)) is not None:
                 self._add(value, f"{handed}()", ast.unparse(value))
         super().generic_visit(node)
+
+
+def _bound_here(scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> frozenset[str]:
+    """The names ``scope`` binds itself: a function's parameters, and every name it assigns, loops over or binds with
+    ``as``, read without entering a nested function or class, which binds its own. An import binds the module's name
+    for what it imports, so it is not counted."""
+    names: set[str] = set()
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        arguments = scope.args
+        names |= {argument.arg for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)}
+        names |= {argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument is not None}
+    pending: list[ast.AST] = list(scope.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+    return frozenset(names)
 
 
 #: The builtins whose arguments name a class to test against, read rather than handed on.
@@ -1185,7 +1639,8 @@ _JS_PICK_BY_FIELD = re.compile(r"\s*\(\s*d\s*\.\s*(?:[A-Za-z_$][\w$]*_)?fmt\s*[,
 
 
 def _js_found(code: str, forms: Iterable[tuple[str, re.Pattern[str]]]) -> Iterator[tuple[str, re.Match[str]]]:
-    """Each match of ``forms`` in ``code`` but a declaration's name and a pick by a data field (:data:`_KIT_PICKERS`)."""
+    """Each match of ``forms`` in ``code`` but a declaration's name and a pick by a data field
+    (:data:`_KIT_PICKERS`)."""
     for form, pattern in forms:
         for match in pattern.finditer(code):
             if _JS_DECLARED.search(code, 0, match.start()):
@@ -1231,7 +1686,7 @@ def _js_sites(source: str, module: str = "sample.js") -> list[_Site]:
     return sorted(sites, key=lambda site: (site.line, site.form, site.expression))
 
 
-# --- The walk and the ratchet -------------------------------------------------------------------------------------
+# --- The walk and the rule ----------------------------------------------------------------------------------------
 
 
 def _walked_modules(root: Path = _SOURCE_ROOT) -> list[Path]:
@@ -1262,7 +1717,7 @@ def _all_sites() -> tuple[_Site, ...]:
     return (*_walk_python(sources), *kit)
 
 
-def _ratcheted(sites: Iterable[_Site]) -> list[_Site]:
+def _unnamed(sites: Iterable[_Site]) -> list[_Site]:
     return [site for site in sites if site.permanent_key not in _PERMANENT]
 
 
@@ -1270,63 +1725,33 @@ def _tally(sites: Iterable[_Site]) -> Counter[tuple[str, str, str]]:
     return Counter(site.key for site in sites)
 
 
-_ENTRY = re.compile(r"^(?P<module>[^|]+?) \| (?P<qualname>[^|]+?) \| (?P<form>[^|]+?) \| (?P<count>[1-9]\d*)$")
+class TestTheRule:
+    """Every site the walk finds is an owner's or named in :data:`_PERMANENT`, and every entry there names a site."""
 
-
-def _parse_allowlist(text: str) -> dict[tuple[str, str, str], int]:
-    """The allowlist's entries; a malformed line, a repeated key or an unsorted file is refused."""
-    entries: dict[tuple[str, str, str], int] = {}
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip() or line.startswith("#"):
-            continue
-        match = _ENTRY.match(line)
-        assert match, f"{_ALLOWLIST.name}:{number}: not `module | qualname | form | count`: {line!r}"
-        key = (match["module"], match["qualname"], match["form"])
-        assert key not in entries, f"{_ALLOWLIST.name}:{number}: {key} is listed twice"
-        entries[key] = int(match["count"])
-    assert list(entries) == sorted(entries), f"{_ALLOWLIST.name} is not sorted by (module, qualname, form)"
-    return entries
-
-
-def _allowlist() -> dict[tuple[str, str, str], int]:
-    return _parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8"))
-
-
-def _over(live: Counter[tuple[str, str, str]], listed: dict[tuple[str, str, str], int]) -> dict:
-    return {key: (count, listed.get(key, 0)) for key, count in live.items() if count > listed.get(key, 0)}
-
-
-def _under(live: Counter[tuple[str, str, str]], listed: dict[tuple[str, str, str], int]) -> dict:
-    return {key: (live.get(key, 0), count) for key, count in listed.items() if count > live.get(key, 0)}
-
-
-class TestTheRatchet:
-    """Every site the walk finds is listed at its count, and every listed count is a site the tree still holds."""
-
-    def test_no_site_is_new(self):
-        sites = _ratcheted(_all_sites())
-        over = _over(_tally(sites), _allowlist())
-        shown = [
-            f"{' | '.join(key)}: {live} in the tree, {listed} listed\n      "
-            + "\n      ".join(site.shown() for site in sites if site.key == key)
-            for key, (live, listed) in sorted(over.items())
-        ]
-        assert not over, f"new number-form sites: {_REMEDY}.\n  " + "\n  ".join(shown)
-
-    def test_no_entry_outlives_its_sites(self):
-        under = _under(_tally(_ratcheted(_all_sites())), _allowlist())
-        shown = [
-            f"{' | '.join(key)}: {listed} listed, {live} in the tree" for key, (live, listed) in sorted(under.items())
-        ]
-        assert not under, (
-            f"the list only shrinks: cut each entry below to its count in the tree (drop it at 0) in "
-            f"tests/fixtures/{_ALLOWLIST.name}.\n  " + "\n  ".join(shown)
-        )
+    def test_no_site_is_outside_the_owners_and_the_permanent_list(self):
+        sites = _unnamed(_all_sites())
+        shown = [site.shown() for site in sites]
+        assert not sites, f"number-form sites outside the owners: {_REMEDY}.\n  " + "\n  ".join(shown)
 
     def test_every_permanent_site_still_names_a_site(self):
         """An exemption nothing matches is one a rewritten line walked out of without anyone deciding."""
         live = {site.permanent_key for site in _all_sites()}
         assert sorted(set(_PERMANENT) - live) == []
+
+    def test_every_permanent_reason_is_stated_and_cites_nothing_a_reader_cannot_open(self):
+        unstated = [key for key, reason in _PERMANENT.items() if not reason.strip()]
+        citing = {key: found.group() for key, reason in _PERMANENT.items() if (found := _CITES.search(reason))}
+        assert unstated == []
+        assert citing == {}
+
+    def test_the_permanent_list_and_the_engine_have_a_ceiling(self):
+        assert len(_PERMANENT) <= _PERMANENT_CEILING
+        assert len(_ENGINE_TREES) <= _ENGINE_TREES_CEILING
+
+    def test_a_reason_that_cites_a_plan_or_an_id_is_caught(self):
+        for reason in ("named at C6", "owner ruling Q3", "see the plan", "rev-20261110T135620Z", "chunk 6", "C10b"):
+            assert _CITES.search(reason), reason
+        assert not _CITES.search("a CSS rem width, planned by the table's columns; Q-sort C-5")
 
     def test_the_walk_reads_every_module_but_the_owners_and_the_kit(self):
         """Derived from the tree, so a module added anywhere in the package is walked the day it lands."""
@@ -1343,24 +1768,12 @@ class TestTheRatchet:
         assert before == moved == Counter({("sample.py", "f", "round()"): 1})
         assert added == Counter({("sample.py", "f", "round()"): 2})
 
-    def test_the_ratchet_fails_both_ways(self):
-        live = _tally(_python_sites("def f(v):\n    return round(v, 1)\n\ndef g(v):\n    return round(v)\n"))
-        listed = {("sample.py", "f", "round()"): 2}
-        assert _over(live, listed) == {("sample.py", "g", "round()"): (1, 0)}
-        assert _under(live, listed) == {("sample.py", "f", "round()"): (1, 2)}
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "a.py | f | round() | 0\n",
-            "a.py | f | round()\n",
-            "a.py | f | round() | 1\na.py | f | round() | 1\n",
-            "b.py | f | round() | 1\na.py | f | round() | 1\n",
-        ],
-    )
-    def test_a_malformed_allowlist_is_refused(self, text):
-        with pytest.raises(AssertionError):
-            _parse_allowlist(text)
+    def test_a_permanent_entry_keeps_a_moved_line_and_loses_a_rewritten_expression(self, monkeypatch):
+        monkeypatch.setitem(_PERMANENT, ("sample.py", "round(v, 1)", "round()"), "a self-test's permanent site")
+        moved = _python_sites("\n\n# a comment\ndef g(v):\n\n    return round(v, 1)\n")
+        rewritten = _python_sites("def g(v):\n    return round(v, 2)\n")
+        assert _unnamed(moved) == []
+        assert [site.expression for site in _unnamed(rewritten)] == ["round(v, 2)"]
 
 
 class TestTheReportTreesKeepTheStricterRule:
@@ -1369,7 +1782,7 @@ class TestTheReportTreesKeepTheStricterRule:
     Derived from the source rather than from a function name: a second ``def format_number`` is one way to grow a
     second rule, and an inline ``f"{value:.4g}"`` is the commoner one, the shape that printed a latency ``1.235e+04``
     in a results pivot beside an interval spelling the same magnitude ``12346``. The engine's validation messages
-    outside these trees are not read as reports, so the ratchet lists them instead.
+    outside these trees are not read as reports, so :data:`_PERMANENT` names them instead.
     """
 
     def test_a_module_named_by_itself_is_walked(self):
@@ -1582,7 +1995,7 @@ class TestAWrapperIsAPrimitive:
         )
         sites = _python_sites(source, _CHART_SVG)
         assert [(site.qualname, site.form) for site in sites] == [("_faded", "f-string spec")]
-        assert _ratcheted(sites) == []
+        assert _unnamed(sites) == []
 
     def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self, tmp_path):
         """A decision moved into ``forms.py`` and called from a surface is decided where it is called, so a module
@@ -1729,7 +2142,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
                 "def other(v):\n    return tenths(v)\n"
             ),
         }
-        ratcheted = _ratcheted(_walk_python(sources))
+        ratcheted = _unnamed(_walk_python(sources))
         assert [(site.module, site.qualname, site.form) for site in ratcheted] == [
             ("threetears/evals/caller.py", "level", "number_in()")
         ]
@@ -1774,6 +2187,26 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
             "    return {'level': family.interval_level, 'form': form}\n"
         )
         assert _python_sites(source) == []
+
+    def test_a_local_named_like_a_primitive_or_a_field_read_of_one_is_not(self):
+        """A parameter, an assignment or a loop's name is a value: handing it on, or a field read through it, hands
+        on no primitive. The primitive by the same name, where nothing local shadows it, still is."""
+        source = (
+            "def f(rows, interval_level):\n"
+            "    for family in rows:\n"
+            "        g(confidence=interval_level, level=family.interval_level)\n"
+            "    spell = format_number\n"
+            "    return h(spell)\n\n"
+            "def k(verdict):\n"
+            "    return g(verdict.interval_level, numbers.interval_level)\n\n"
+            "def m(v):\n"
+            "    return g(key=interval_level)\n"
+        )
+        assert _forms(_python_sites(source)) == [
+            ("f", "format_number()", "format_number"),
+            ("k", "interval_level()", "numbers.interval_level"),
+            ("m", "interval_level()", "interval_level"),
+        ]
 
     def test_a_class_test_still_sees_a_site_it_is_handed(self):
         """Only the class it names is read: a figure spelled inside the test, or a primitive handed to a call there,
@@ -1887,8 +2320,8 @@ def _route_to_analysis(graph: Mapping[str, Iterable[str]], start: str) -> list[s
 
 
 class TestTheEngineRule:
-    """In the trees whose imports never reach the analysis package a ``numbers`` primitive is the route; anything else that
-    decides a form there is a site, as anywhere."""
+    """In the trees whose imports never reach the analysis package a ``numbers`` primitive is the route; anything else
+    that decides a form there is a site, as anywhere."""
 
     def test_no_engine_module_reaches_the_analysis_package(self):
         """The rule holds only while no page's forms are reachable there: an engine module whose imports, followed
@@ -2028,7 +2461,8 @@ class TestTheEngineRule:
                 "from threetears.evals.run.budget import cap_words\n\ndef note(v):\n    return cap_words(v)\n"
             ),
             "threetears/evals/run/launch.py": (
-                "from threetears.evals.run.budget import cap_words\n\ndef refusal(v):\n    return 'over ' + cap_words(v)\n"
+                "from threetears.evals.run.budget import cap_words\n\n"
+                "def refusal(v):\n    return 'over ' + cap_words(v)\n"
             ),
         }
         assert [(site.module, site.qualname, site.form) for site in _walk_python(sources)] == [

@@ -62,7 +62,7 @@ def test_the_plain_interval_a_weakest_margin_is_read_on_holds_its_level_as_a_num
 
 
 def test_the_corrected_interval_a_weakest_margin_is_read_on_states_its_joint_guarantee() -> None:
-    """The package's own words say what the corrected interval guarantees together, never its 99.69% (owner, Q3): the
+    """The package's own words say what the corrected interval guarantees together, never its 99.69% (owner ruling): the
     figure holds the joint level as its value and, beside it, the family's size, for the page's forms to print."""
     held = _input("r5")
     figure = resolve("weakest.interval", held)

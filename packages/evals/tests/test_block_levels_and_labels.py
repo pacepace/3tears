@@ -367,7 +367,7 @@ def _bare_checks() -> list[tuple[ReportInput, str, str]]:
 
 
 def test_a_check_labelled_by_its_bare_expression_heads_its_column_by_its_name() -> None:
-    # The owner's check-name ruling (Q11): a written page's table heads an undeclared check by what it tests, as the
+    # The owner's check-name ruling: a written page's table heads an undeclared check by what it tests, as the
     # code page does, never by its expression.
     for held, key, check in _bare_checks():
         block = block_render(held, block_kind="table", query=_query("measures", measures=[key]))
@@ -403,7 +403,7 @@ def _price_charts() -> list[tuple[ReportInput, BarsChart]]:
 def test_a_money_charts_labels_and_ticks_share_one_spelling_grouped() -> None:
     """A price chart's notes and its ticks in the one form of every amount it draws (#993): each amount to two
     significant figures, a price per 1,000 (a rate) in whole dollars from $10 and a month's (a total) to cents (owner
-    ruling Q3, 2026-11-07); the kit draws its ticks to the largest amount's decimals, thousands grouped."""
+    ruling, 2026-11-07); the kit draws its ticks to the largest amount's decimals, thousands grouped."""
     for held, data in _price_charts():
         assert data.rows is not None
         drawn = [end for row in data.rows for end in (row.value, row.lo, row.hi) if end is not None]

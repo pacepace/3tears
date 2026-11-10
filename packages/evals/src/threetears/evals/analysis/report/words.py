@@ -593,8 +593,8 @@ def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
 #
 # A computed arm name is spelled from its levels (:func:`~threetears.evals.analysis.arms.arm_names`), and that spelling
 # is frozen with the evidence: a derived arm's label, the bundle's arms and the census order read it, so it never
-# changes. What a reader is shown is decided here, at render time only (Q10, 2026-11-07): a level too long to print
-# whole is never shown cut, and the engine's placeholder for an empty text level never shows at all.
+# changes. What a reader is shown is decided here, at render time only (owner ruling, 2026-11-07): a level too long
+# to print whole is never shown cut, and the engine's placeholder for an empty text level never shows at all.
 
 #: The engine's placeholders for an empty level (:mod:`~threetears.evals.kernel.host.kinds`).
 _PLACEHOLDERS = frozenset({NO_VALUE_DISPLAY, EMPTY_VALUE_DISPLAY})

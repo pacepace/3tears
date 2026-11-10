@@ -168,7 +168,7 @@ def spell_stored_counts(sentence: str) -> str:
 def spell_dollars(amount: float) -> str:
     """An amount of money as the package spells it, alone: a total in the money form (:func:`money_form`), so one
     amount reads alike in a sentence, a byline and the table beside it: ``$0`` for zero, two significant figures
-    and cents at least (owner ruling Q3), the whole dollars grouped by thousands, a negative amount's sign before the
+    and cents at least (owner ruling), the whole dollars grouped by thousands, a negative amount's sign before the
     dollar sign.
 
     The one money rule a run's summary (:func:`~threetears.evals.analysis.summary.dollars_text`, which adds the word
@@ -189,18 +189,18 @@ UNPRICED = "unpriced"
 #: it is drawn per a thousand times more of what it counts (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`).
 CENT = 0.01
 
-#: The significant figures money is written to (owner ruling Q3): two, one more only where two would print an
+#: The significant figures money is written to (owner ruling): two, one more only where two would print an
 #: interval's two ends alike or leave a rate off the total it sits beside (:data:`RECONCILED_WITHIN`).
 MONEY_FIGURES = 2
 
 #: How far a rate's printed figures may round it where a total computed from it is printed beside it (a cost per 1,000
 #: beside its monthly cost at the declared volume): the printed rate times the printed volume lands within this share
-#: of the printed total, or the rate takes one more figure (owner ruling Q3, "one more figure only where needed").
+#: of the printed total, or the rate takes one more figure (owner ruling, "one more figure only where needed").
 RECONCILED_WITHIN = 0.005
 
 #: The least amount a rate reads in whole dollars from: two significant figures of $75 are its dollars, and money is
 #: written in cents or whole dollars, never one decimal; from $100 a rate's two figures round into the dollars ($123
-#: reads ``$120``). A total reads to cents whatever its size (owner ruling Q3).
+#: reads ``$120``). A total reads to cents whatever its size (owner ruling).
 RATE_WHOLE_FROM = 10.0
 
 #: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008. Retired
@@ -215,10 +215,10 @@ class MoneyForm:
     """One spelling of money for a whole set of amounts: a column, a chart's axis, a figure-key family
     (``cost_per_1k.*``). Every member of the set is written by one rule (#993, as the 2026-11-07 ruling reads it: one
     count of significant figures, never one count of decimals), which :func:`money_form` chooses from the set: each
-    amount to two significant figures, so $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100`` (owner ruling
-    Q3). A total reads to cents from a dollar up whatever its size (``$1,208.00``); a rate (money per something) reads
-    to cents from a dollar and in whole dollars from :data:`RATE_WHOLE_FROM` (``$75 [$73, $77]``), its two figures
-    rounding into the dollars from $100 (``$120`` for $123), never one decimal.
+    amount to two significant figures, so $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100`` (owner
+    ruling). A total reads to cents from a dollar up whatever its size (``$1,208.00``); a rate (money per something)
+    reads to cents from a dollar and in whole dollars from :data:`RATE_WHOLE_FROM` (``$75 [$73, $77]``), its two
+    figures rounding into the dollars from $100 (``$120`` for $123), never one decimal.
 
     - ``figures``: the significant figures each member is written to (:data:`MONEY_FIGURES`). ``None`` for a form that
       writes every member to ``decimals`` alike: one a report stored, or a chart's ticks read back from its format.
@@ -279,7 +279,7 @@ class MoneyForm:
         """The decimals a table cell holding these amounts (its value and its interval's ends) writes every one of
         them to, so a cell reads at one precision: the finest any of them is written to (:meth:`places`); and, where
         the cell's interval ``ends`` would read alike at those decimals though they differ, one significant figure
-        more, for this cell alone (owner ruling Q3: "one more only where").
+        more, for this cell alone (owner ruling: "one more only where").
 
         :param amounts: The cell's amounts, in dollars as stored; ``None``, zero and non-finite ones are passed over.
         :ptype amounts: Iterable[float | None]
@@ -380,7 +380,7 @@ class MoneyForm:
 
 def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconciles: bool = False) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set: plain dollars, each
-    amount to two significant figures (owner ruling Q3, 2026-11-07). A total reads to cents from a dollar up whatever
+    amount to two significant figures (owner ruling, 2026-11-07). A total reads to cents from a dollar up whatever
     its size; a rate reads in whole dollars from :data:`RATE_WHOLE_FROM`, to its two figures ($123 reads ``$120``). An
     interval whose two ends would read alike takes one figure more where it is spelled (:meth:`MoneyForm.spell_ends`,
     :meth:`MoneyForm.places_of`), never the whole set. ``None`` and non-finite members say nothing of the form and are passed over. Charts, figure keys and
@@ -407,7 +407,7 @@ def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconcile
 def _member_decimals(magnitude: float, figures: int, *, rate: bool) -> int:
     """The decimals that give a non-zero magnitude ``figures`` significant figures: never fewer than cents for a total
     or a rate under :data:`RATE_WHOLE_FROM`; a rate from it up to its figures where they end at the dollar or before
-    it (``-1`` for $123: ``$120``, owner ruling Q3), else to cents, since money is never written to one decimal. Placed
+    it (``-1`` for $123: ``$120``, owner ruling), else to cents, since money is never written to one decimal. Placed
     by the magnitude as rounded to those figures, so one that rounds across a power of ten (0.0996 to 0.10) is written
     to the decimals of what it became."""
     exponent = int(f"{magnitude:.{figures - 1}e}".split("e")[1])
@@ -556,7 +556,7 @@ def ends_places(low: float, high: float, places: int) -> int:
     """The decimals an interval's two ends read at: the set's, or more where the set's would print a non-zero end as a
     zero (``-0.0`` for -0.03, an interval that excludes zero reading as if it touched it) or two ends that differ alike;
     both ends take them, so the interval still reads at one precision (as money's ends take one figure more, owner
-    ruling Q3).
+    ruling).
 
     :param low: The low end, as drawn.
     :ptype low: float

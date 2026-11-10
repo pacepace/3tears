@@ -159,7 +159,7 @@ VOLUMED = [name for name in sorted(INPUTS) if INPUTS[name].meta.volume_per_month
 def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(name: str) -> None:
     """r2's page printed "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls: $0.30 x 4,000 is
     $1,200. A price reads to two significant figures, and to a third where two would leave the product more than half a
-    percent off the month printed beside it (owner ruling Q3: one more figure only where needed), so the product is
+    percent off the month printed beside it (owner ruling: one more figure only where needed), so the product is
     within half a percent of the month."""
     held = INPUTS[name]
     volume = held.meta.volume_per_month

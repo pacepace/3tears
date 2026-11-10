@@ -132,7 +132,7 @@ def test_the_weakest_margins_worst_case_is_read_on_the_corrected_interval_and_sa
     plain_worst, corrected_worst = float(reading.within_interval[0]), float(contrast.interval[0]) * 100
     assert corrected_worst < plain_worst  # the corrected interval reaches further (10.8 against 12.6 on Kairo)
     assert margin.corrected and margin.value == pytest.approx(corrected_worst)
-    # The words state what the corrected interval guarantees together, never its per-interval level (owner, Q3).
+    # The words state what the corrected interval guarantees together, never its per-interval level (owner ruling).
     said = render("{weakest.interval}", {}, forms=PageForms.of(held))
     assert said == "the 95% interval, adjusted for 16 comparisons"
 
@@ -180,7 +180,7 @@ def test_a_goal_check_with_no_declared_name_is_named_alike_by_every_reader() -> 
         update={"measures": {**held.measures, key: held.measures[key].model_copy(update={"label": check})}}
     )
     printed = measure_words(labelled, key)
-    # Named by what it tests (the owner's check-name ruling, Q11), never by its expression.
+    # Named by what it tests (the owner's check-name ruling), never by its expression.
     assert printed == check_names([check], {})[check] and check not in printed
     assert reader_name("measure", key, labelled) == printed
 

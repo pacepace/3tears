@@ -144,7 +144,7 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     assert "| Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) |" in pairwise
     assert "| share |" not in pairwise and "| reads |" not in pairwise
 
-    # The written page opens on the question under the title, then what it compares (presentation chunk 4), then the
+    # The written page opens on the question under the title, then what it compares, then the
     # answer, before anything else.
     page = written["markdown"].read_text(encoding="utf-8").splitlines()
     assert page[1] == f'"{QUESTION}"' and page[3] == compares.text and page[5] == f"**{answer.text}**"
