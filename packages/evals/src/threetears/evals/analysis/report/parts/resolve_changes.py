@@ -1451,7 +1451,8 @@ def _diverging(context: ChartContext) -> Drawn:
             dots=dots or None,
             emphasis=context.emphasis,
         )
-    return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at)
+    # Its values table names the unit every change is in (``-23 pts``), whatever source the changes come from.
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at, table_unit=drawn.unit)
 
 
 #: The kinds this module resolves.
