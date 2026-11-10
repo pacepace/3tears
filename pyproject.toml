@@ -587,10 +587,8 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
-    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec, the export reader
-    # (a warehouse export's parquet files) and the SQL store's direct load from files import it.
-    "threetears.core.collections.scoped_snapshot",
-    # and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
+    # pyarrow ships no py.typed marker; the export reader (a warehouse export's parquet files), the SQL store's
+    # direct load from files, and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
     "threetears.core.collections.complete_copy",
     # and a copy follower's keyed reads and its checkpoint's parts (Arrow IPC)
     "threetears.core.collections.copy_follower",

@@ -420,8 +420,8 @@ async def retire_pod_objects(
 class PodObjectStore:
     """a tool pod's own Object Store and pointer bucket, bound, with the two asks the pod makes of the hub.
 
-    What a :class:`~threetears.core.collections.scoped_snapshot.ScopedSnapshot` takes as its
-    ``store``, ``pointers``, ``ensure_buckets`` and ``retire``. Built by :func:`bind_pod_object_store`.
+    Its ``store``, ``pointers``, ``ensure_buckets`` and ``retire`` are what a pod's own objects need (a copy's
+    checkpoint parts and their pointer). Built by :func:`bind_pod_object_store`.
 
     :param nats_client: the pod's connected NATS client
     :ptype nats_client: NatsClient

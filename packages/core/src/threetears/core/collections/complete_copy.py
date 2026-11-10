@@ -383,7 +383,7 @@ def l3_row_pages(
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """the rows :func:`read_l3_rows` reads, handed over a page at a time as each is read.
 
-    For a reader that must not hold every row at once (a scoped snapshot's rebuild): it keeps what
+    For a reader that must not hold every row at once: it keeps what
     it needs of each page before the next is asked for. The same statements as :func:`read_l3_rows`,
     in the same order; the last page may be empty.
 

@@ -271,7 +271,6 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
         },
         "packages/channels/src/threetears/channels/presence/fanout.py::RoomFanout._subscribe_locked": _NOT_WIRED,
         "packages/core/src/threetears/core/collections/registry.py::CollectionRegistry.start_invalidation_listener": every,
-        "packages/core/src/threetears/core/collections/scoped_snapshot.py::ScopedSnapshot._follow": _ON_THE_INBOX,
         # a write generation is followed through the KV key watch, on the inbox: the change log's, or an
         # L2-kept table's generation key in the collections bucket
         "packages/nats/src/threetears/nats/kv.py::NatsChangeLog.watch": _ON_THE_INBOX,

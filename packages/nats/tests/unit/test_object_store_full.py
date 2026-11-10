@@ -1,6 +1,6 @@
 """A write JetStream refuses for want of room is an ObjectStoreFullError; every other refusal is not.
 
-The scoped snapshot sweeps its store and tries once more only on this error, so the mapping from
+A pod's own store writer sweeps its store and tries once more only on this error, so the mapping from
 JetStream's codes is what its recovery rests on: a code mapped wrongly either never sweeps a full
 store or sweeps one that is failing for another reason.
 """

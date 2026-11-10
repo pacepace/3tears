@@ -577,7 +577,7 @@ async def read_counted_partition_arrow(
     """one part's rows of a counted export as one Arrow table, held to its count as
     :func:`read_counted_partition` holds its rows.
 
-    For a caller that hands the rows on as Arrow (a scoped snapshot's stage): each file is read
+    For a caller that hands the rows on as Arrow: each file is read
     straight into Arrow, and no row is ever a Python object. Needs ``pyarrow`` (the ``export`` extra).
 
     :param store: an object store over the export bucket

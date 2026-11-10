@@ -451,4 +451,34 @@ A JetStream push consumer's `deliver_subject` and every request's reply subject 
 against the requester's permissions, so any pod that can write a value and read it back can put
 that value on any subject in its account (probed on nats-server 2.12.6, 2026-10-07). No grant closes
 it; the defence is the receiver's. The evidence, the scope and the pinned test:
-[design-scoped-snapshot.md](design-scoped-snapshot.md#known-residual-a-pod-can-put-its-own-bytes-on-any-subject).
+
+It is pinned by
+`packages/nats/tests/integration/test_a_pod_can_bounce_its_bytes_to_any_subject_residual_live.py`.
+That test asserts the hole exists, so when it starts failing, the hole has closed: remove the test
+and this section.
+
+Probed on 2026-10-07 against nats-server 2.12.6, with a real minted tool-pod JWT applied as config
+permissions:
+
+1. **Push-consumer delivery is not checked.** A named push consumer on the pod's own bucket is
+   admitted by the grant, because its filter rides in the create subject. Its `deliver_subject`,
+   though, rides in the request body, which no subject permission sees. The server delivered the
+   pod's stored bytes to `bounce.tools.internal.<another pod>` and to another principal's inbox,
+   although the pod may publish to neither.
+2. **Reply subjects are not checked.** Every request the grant admits is answered on the request's
+   reply subject, and NATS never checks that subject against the requester's permissions. A direct
+   get of a value the pod wrote came back verbatim on a subject the pod may not publish. The same
+   holds for pull `MSG.NEXT` and any JetStream API call.
+
+So changing the read shape (pull consumers, ordered consumers, direct gets) closes nothing. Any pod
+that can write a value and read it back has this, through every L2 grant:
+
+- its own KV buckets and Object Store
+- its owner keys in the shared buckets
+- its scope of the collections bucket
+
+**The defence belongs to the receiver.** If a subject's receiver trusts the subject alone (no
+signed token, no correlation id it minted itself), a pod can feed it the pod's own bytes. Pace
+decided on 2026-10-07 to audit those receivers; their fixes are separate work. The other route is
+separate NATS accounts per principal with explicit exports and imports, since deliveries and
+replies stay inside an account.

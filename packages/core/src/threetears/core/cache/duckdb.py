@@ -270,7 +270,7 @@ def arrow_rows(table: Any) -> list[dict[str, Any]]:
 
 def query_arrow(connection: Any, sql: str, params: Sequence[Any] = ()) -> Any:
     """:meth:`DuckDBBackend.execute_arrow` on any DuckDB connection or cursor: a read transaction's cursor
-    (:meth:`DuckDBBackend.read_snapshot`, a scoped snapshot's read), whose caller holds it alone.
+    (:meth:`DuckDBBackend.read_snapshot`), whose caller holds it alone.
 
     :param connection: the connection or cursor to run the query on
     :ptype connection: duckdb.DuckDBPyConnection
@@ -1313,7 +1313,7 @@ class DuckDBBackend:
             nulls = {name: None in lists[index] for index, name in enumerate(columns)}
             arrow = _as_arrow(f"an export of {table}", lists) if rows else None
         # the table refuses a NULL only in a column it holds NOT NULL (its own key's): a key given here may name a
-        # column it holds nullable (a scoped snapshot's key, a NULL in it read as its own group)
+        # column it holds nullable (a NULL in it read as its own group)
         refused = self._not_null.get(table, frozenset(self._pk_columns(primary_key)))
         for key in self._pk_columns(primary_key):
             if nulls.get(key) and key in refused:

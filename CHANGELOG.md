@@ -8,6 +8,17 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core: `ScopedSnapshot` and `SharedSnapshot` are removed
+
+**Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,
+`VersionedRead`, `StagedPartitions`, `CatchUpOutcome`, `CatchUpResult`, `ScopeLag`, `L3ReadProgress`,
+`open_tool_pod_snapshot`) and `threetears.core.collections.shared_snapshot` (`SharedSnapshot`). A pod that needs its
+tables whole follows them with `CopyFollower` (reads only what each epoch changed, checkpoints in its own Object
+Store); the shared-memory store (`threetears.core.shared_arrow`) publishes from any DuckDB cursor. Their allowlist
+and waiver entries go with them, and `docs/design-scoped-snapshot.md`'s NATS residual moves to
+`docs/design-durable-coordination.md`. The `snapshot` extra stays (pyarrow beside duckdb, which the copy follower
+reads with).
+
 ### core: a copy's rows cross the L3 rail as Arrow
 
 - **`l3.tx.copy` as Arrow (core).** To a hub whose `tx.begin` reply says `copy_arrow`, `copy_records_to_table`

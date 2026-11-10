@@ -8,7 +8,6 @@ packages/channels/src/threetears/channels/presence/sweeper.py :: PresenceSweeper
 packages/core/src/threetears/core/collections/base.py :: BaseCollection._advance_l2_generation :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
 packages/core/src/threetears/core/collections/base.py :: BaseCollection._async_propagate_write :: except KvError :: 2 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
 packages/core/src/threetears/core/collections/base.py :: BaseCollection._withdraw_unpersisted_cas :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
-packages/core/src/threetears/core/collections/scoped_snapshot.py :: ScopedSnapshot._put_chunk :: except ObjectStoreFullError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
 packages/core/src/threetears/core/security/door_request.py :: DoorRequestDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
 packages/core/src/threetears/core/security/service_envelope.py :: ServiceEnvelopeDoor._verified :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise
 packages/registry/src/threetears/registry/health.py :: HeartbeatSubscriber.handle_heartbeat :: except KvError :: 1 :: route the KV failure through degrade_l2(exc, table=..., op=...), or re-raise

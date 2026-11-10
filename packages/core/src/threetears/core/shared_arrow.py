@@ -261,7 +261,7 @@ def _quoted(identifier: str) -> str:
 
 
 def epochs_version(epochs: Mapping[str, int]) -> str:
-    """a version name for the data at ``epochs`` (scope -> epoch, a scoped snapshot's read's): the same epochs always
+    """a version name for the data at ``epochs`` (scope -> epoch): the same epochs always
     name the same version, and any epoch moving names another.
 
     :param epochs: scope -> epoch
@@ -2049,7 +2049,7 @@ class SharedArrowStore:
 
         :param version: the version's name
         :ptype version: str
-        :param cursor: a DuckDB connection or cursor, held still for the publish (a scoped snapshot's read)
+        :param cursor: a DuckDB connection or cursor, held still for the publish (a read transaction's cursor)
         :ptype cursor: duckdb.DuckDBPyConnection
         :param queries: table name -> the SQL whose answer it holds
         :ptype queries: Mapping[str, str]

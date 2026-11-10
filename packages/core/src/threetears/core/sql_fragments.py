@@ -1,7 +1,7 @@
 """SQL text every tier builds the same way: identifier quoting and equality filters.
 
 The L1 backends (SQLite, DuckDB), the L3 readers (the whole-table copies, scope epochs, the
-scoped snapshot) and the datasource drivers all interpolate identifiers into SQL. Each spelling
+copy follower) and the datasource drivers all interpolate identifiers into SQL. Each spelling
 lives here once, so a table or column name means the same thing on every path that names it.
 """
 

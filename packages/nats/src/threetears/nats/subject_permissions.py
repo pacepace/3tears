@@ -159,7 +159,7 @@ WORKSPACE_LOCKS_BUCKET_SUFFIX: Final[str] = "workspace-locks"
 AGENT_POD_PLATFORM_BUCKET_SUFFIXES: Final[tuple[str, ...]] = (WORKSPACE_LOCKS_BUCKET_SUFFIX,)
 
 #: the suffix of a tool pod's OWN Object Store bucket, ``{ns}-{pod scope}-objects``: immutable named
-#: objects the pod writes and reads (a scoped snapshot's columnar chunks). The hub declares it when
+#: objects the pod writes and reads (a copy follower's checkpoint parts). The hub declares it when
 #: the pod asks (``Subjects.hub_object_store_declare``), bounded, on memory storage; the pod binds it
 #: and never creates or purges it, and asks the hub to retire what it no longer serves.
 TOOL_POD_OBJECTS_BUCKET_SUFFIX: Final[str] = "objects"

@@ -21,7 +21,7 @@ and that work reads, or produces, more data than you want copied per process.
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it, and a part file when the last version naming it goes; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds, part files no kept version names among it. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, and a reader's `read` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` names the base's files it does not rewrite: they exist once, the store counts them once, and the publish touches none of them. |
 | What a publish costs | The files it writes and one manifest, whatever the version holds besides. The sweep it leaves (readers told, superseded versions retired, their files removed) runs after it returns, on the store's own thread, one at a time; `store.settle()` waits for it. A publish short of room sweeps first itself. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
@@ -66,11 +66,10 @@ l1 = duckdb.connect()
 l1.execute("CREATE TABLE races AS SELECT 'VA' AS state, 10 AS votes")
 store.publish_query("v2", l1.cursor(), {"races": "SELECT * FROM races"})
 
-# named by a scoped snapshot's epochs, so the same data is the same version
-async def on_change(snapshot) -> None:
+# named by the epochs of the data it holds (scope -> epoch), so the same data is the same version
+async def on_change(epochs: dict[str, int]) -> None:
     def publish() -> None:
-        with snapshot.read_versioned() as read:
-            store.publish_query(epochs_version(read.epochs), read.cursor, {"races": "SELECT * FROM races"})
+        store.publish_query(epochs_version(epochs), l1.cursor(), {"races": "SELECT * FROM races"})
     await asyncio.to_thread(publish)
 ```
 
@@ -80,6 +79,9 @@ async def on_change(snapshot) -> None:
 - A version is staged under a hidden name and renamed into place whole, so a reader never sees half of one.
 - `SharedArrowFullError` means the store would pass `max_bytes`; nothing of the refused version is kept and the
   current one keeps serving.
+- A copy that is only written and never read by the serving process can be held compressed:
+  `DuckDBBackend(compressed=True)` keeps its tables in a DuckDB catalog attached with `COMPRESS` and checkpoints after
+  each write on a thread of its own, off the write's path (the reports' real tables: a quarter of the memory).
 
 ## Publish a change a part at a time
 
@@ -163,32 +165,6 @@ segment.close()  # the version holds its own link to the file
 
 - The tiering policy (which groups merge, how many levels, rewriting only the merged part that holds a dropped run)
   is the caller's. These two calls are the only primitive it needs.
-
-## Publish a scoped snapshot's copy
-
-`threetears.core.collections.shared_snapshot.SharedSnapshot` publishes a scoped snapshot's L1 a scope's part at a
-time: each version is written from one read of the copy, and only the scopes whose epoch moved since the version it
-published last are written again.
-
-```python
-import asyncio
-from threetears.core.collections.shared_snapshot import SharedSnapshot
-
-shared = SharedSnapshot(store, snapshot_tables)          # the snapshot's SnapshotTable declarations
-
-
-async def on_change() -> None:
-    def publish() -> None:
-        with snapshot.read_versioned() as read:
-            shared.publish(read)                          # named by the read's epochs unless version_name= says
-    await asyncio.to_thread(publish)
-```
-
-- `extra_tables=` adds tables written whole into every version, from the read (what its epochs are, say).
-- A store whose current version this publisher did not make is written whole.
-- A copy that is only written and never read by the serving process can be held compressed:
-  `DuckDBBackend(compressed=True)` keeps its tables in a DuckDB catalog attached with `COMPRESS` and checkpoints after
-  each write on a thread of its own, off the write's path (the reports' real tables: a quarter of the memory).
 
 ## Read the current version in the serving process
 
@@ -395,11 +371,12 @@ thread. Right after a publish, the sweep it left may still be running on the sto
 
 ## What it saves, measured
 
-`scripts/measure-shared-arrow.py` loads a spec'd set of tables into DuckDB, publishes them, and has N workers scan
+Measured 2026-10-30 by a script retired with the scoped snapshot (`scripts/measure-shared-arrow.py` in the git
+history). It loaded a spec'd set of tables into DuckDB, published them, and had N workers scan
 every column at once, reporting each process's PSS (`/proc/<pid>/smaps_rollup`): one process holding the copy
 (today), that process beside the store and workers (`shared`), each worker loading its own copy (`naive`), and the
-serving process reading the store itself with its DuckDB copy held compressed only to take changes (`store`). Run it
-on Linux with the store on `/dev/shm`.
+serving process reading the store itself with its DuckDB copy held compressed only to take changes (`store`), on Linux
+with the store on `/dev/shm`.
 
 The reports pod's dev tables (9.0M rows, its real DuckDB column types, generated values, each state's rows side by
 side), 2026-10-30:

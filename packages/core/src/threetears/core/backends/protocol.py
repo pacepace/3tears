@@ -65,8 +65,8 @@ __all__ = [
 class L3Reader(Protocol):
     """the read half of :class:`L3Backend` a whole-table copy needs: parameterized SELECTs.
 
-    Every :class:`L3Backend` is one. The copies (:mod:`threetears.core.collections.complete_copy`,
-    the scoped snapshot) take this narrower seam so a test double need answer only the reads they
+    Every :class:`L3Backend` is one. The whole-table copies (:mod:`threetears.core.collections.complete_copy`)
+    take this narrower seam so a test double need answer only the reads they
     make, while mypy still refuses an object that cannot run SQL at all (a :class:`DurableStore`).
     """
 
