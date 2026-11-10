@@ -133,6 +133,10 @@ class NoWholeReadsConfig:
     :ivar extra_narrowing: the repo's own keywords that narrow them
     :ivar transient_relations: a regular expression of relations that are a change set being applied (a stage of
         rows a change named), never a data table; empty for none
+    :ivar transient_producers: the repo's functions whose returned relation is such a change set (``Stages._stage``,
+        ``_Work.put``): ``Class.method``, or a module function's name. A statement over what one returns -- the call in
+        the placeholder, a name bound to it, a ``self`` attribute every assignment of which is one -- reads a change
+        set; a method counts called on ``self`` in its class, on the class, or on a receiver known to be the class
     :ivar verify_prefixes: repo-relative prefixes of load code (a writer, a loader, a follower), where a count or
         fingerprint even of one key's rows is a verification scan (``verify-aggregate``): the epoch and the source's
         own change records say what changed, so nothing counts rows to find out
@@ -159,6 +163,7 @@ class NoWholeReadsConfig:
     extra_pagers: frozenset[str] = field(default_factory=frozenset)
     extra_narrowing: frozenset[str] = field(default_factory=frozenset)
     transient_relations: str = ""
+    transient_producers: frozenset[str] = field(default_factory=frozenset)
     verify_prefixes: tuple[str, ...] = ()
     minimum_files_scanned: int = 1
     schema_roots: tuple[Path, ...] = ()
@@ -341,6 +346,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         verify_prefixes=config.verify_prefixes,
         schema=_schema_of(config),
         exec_calls=config.extra_exec_calls,
+        producers=config.transient_producers,
     )
     return scan.hits, scan
 

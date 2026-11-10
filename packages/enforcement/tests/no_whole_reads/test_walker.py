@@ -1737,3 +1737,104 @@ def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_an
     assert not any(function == "newest" for function, _ in found), found
     findings = no_whole_reads_findings(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
     assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_PRODUCED = """
+    class Stages:
+        def __init__(self, db):
+            self._db = db
+
+        @staticmethod
+        def _stage(stage):
+            return f'"__s_{stage}"'
+
+        def rows(self, stage):
+            return self._db.execute(f"SELECT * FROM {self._stage(stage)}")
+
+
+    class _Work:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def put(self, rows):
+            return "w"
+
+
+    class Other:
+        def put(self, rows):
+            return "o"
+
+
+    def settle(conn, rows):
+        work = _Work(conn)
+        named = work.put(rows)
+        return conn.execute(f"SELECT * FROM {named}")
+
+
+    def widen(work: _Work, conn, rows):
+        return conn.execute(f"SELECT * FROM {work.put(rows)}")
+
+
+    class Pass:
+        def __init__(self, work: _Work):
+            self.work = work
+            self.new = work.put(None)
+
+        def read(self, conn):
+            return conn.execute(f"SELECT * FROM {self.new} AS n JOIN {self.work.put(None)} AS k ON n.a = k.a")
+
+
+    def unrelated(other: Other, conn):
+        return conn.execute(f"SELECT * FROM {other.put(1)}")
+"""
+
+
+def test_a_relation_a_declared_transient_producer_returns_is_a_change_set(tmp_path: Path) -> None:
+    """Flips if a relation named by a declared transient producer's return (``Stages._stage``, ``_Work.put``) -- the
+    call in the placeholder, a name bound to it, or a ``self`` attribute assigned it -- is judged as a data table, if
+    an undeclared producer's (``Other.put``, the same method name on another class) is not, or if undeclared the same
+    reads are not judged at all."""
+    modules = {"pkg/produced.py": _PRODUCED}
+    readers = {"Stages.rows", "settle", "widen", "Pass.read"}
+    bare = _symbols(_config(tmp_path, modules))
+    assert readers | {"unrelated"} <= {function for function, _ in bare}, bare
+    found = _symbols(_config(tmp_path, modules, transient_producers=frozenset({"Stages._stage", "_Work.put"})))
+    assert not readers & {function for function, _ in found}, found
+    assert "unrelated" in {function for function, _ in found}, found
+
+
+_TABLE_PARAMETER = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import GEOS
+
+
+    async def _held(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def _by_state(conn, table, state):
+        return await holds_any(conn, table, by={"state": state})
+
+
+    async def _loose(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def callers(conn, named):
+        await _held(conn, GEOS, "g1")
+        await _held(conn, table="geos", geo="g2")
+        await _by_state(conn, GEOS, "s")
+        await _loose(conn, GEOS, "g3")
+        await _loose(conn, named, "g4")
+"""
+
+
+def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_declared_table(tmp_path: Path) -> None:
+    """Flips if a keyed helper called with a table parameter stays unknown when every caller of its function passes a
+    literal or a module constant (``_held``: keyed; ``_by_state``: judged against that table, so non-key), or
+    resolves when one caller passes a value the walk cannot read (``_loose``)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/probe.py": _TABLE_PARAMETER}))
+    assert not any(function == "_held" for function, _ in found), found
+    assert ("_by_state", 'non-key-where "geos"') in found, found
+    assert ("_loose", "unknown-predicate holds_any(table)") in found, found
