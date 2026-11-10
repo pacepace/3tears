@@ -1469,7 +1469,7 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
         if declared is not None
         else [tuple(column.lower() for column in key) for key in reader.view_keys]
     )
-    if not keys:
+    if declared is None and not reader.view_keys:
         return [_SqlFinding("undeclared-view", name)]
     passed = _passed_through(text[match.end() :])
     missing = sorted(column for key in keys for column in key if passed is not None and column not in passed)

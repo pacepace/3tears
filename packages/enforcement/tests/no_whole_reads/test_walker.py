@@ -1902,6 +1902,9 @@ _VIEW_PRODUCERS = """
 
     def _stray_view_sql(view):
         return f"CREATE VIEW {view} AS SELECT office_key FROM lsf_rows"
+
+    def newest(db):
+        db.execute("CREATE OR REPLACE VIEW report.newest AS SELECT max(model) AS model FROM lsf_rows")
 """
 
 
@@ -1909,8 +1912,11 @@ def test_a_view_named_at_run_time_is_judged_by_the_keys_its_producer_declares(tm
     """Flips if a view a declared producer builds under a name it is handed is not judged by the producer's declared
     keys (passed through, or computed), or if a producer nobody declares builds an undeclared view unseen."""
     producers = {"_view_sql": ("office_key",), "_bad_view_sql": ("office_key",), "Parts.copy_view": ("office_key",)}
-    found = _symbols(_config(tmp_path, {"views.py": _VIEW_PRODUCERS}, view_producers=producers))
-    assert not any(function in ("_view_sql", "Parts.copy_view") for function, _ in found), found
+    found = _symbols(
+        _config(tmp_path, {"views.py": _VIEW_PRODUCERS}, view_producers=producers, local_relations={"newest": ()})
+    )
+    # a copy relation declared with no key (one row) is declared all the same
+    assert not any(function in ("_view_sql", "Parts.copy_view", "newest") for function, _ in found), found
     assert any(function == "_bad_view_sql" and "view-key-not-passed" in symbol for function, symbol in found), found
     assert any(function == "_stray_view_sql" and "undeclared-view" in symbol for function, symbol in found), found
 
@@ -1980,3 +1986,96 @@ def test_a_table_bound_by_a_loop_over_a_declared_tuple_resolves_through_its_call
     found = _symbols(_config(tmp_path, {"pkg/tables.py": _DECLARED_TABLES, "pkg/pull.py": _LOOPED}))
     assert not any(function in ("Store.holds_state", "Pull._held", "Pull.by_name") for function, _ in found), found
     assert any(function == "Store.holds_run" and "runs" in symbol for function, symbol in found), found
+
+
+_SPLICED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES_SCHEMA = TableSchema(name="counties", primary_key=("state", "county"), columns=[])
+    FEED_SCHEMA = TableSchema(name="feed", primary_key=("state", "race"), columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+
+
+    FEEDS = (Declared(name="feed"),)
+    TABLES = (Declared(name="counties"), *FEEDS)
+    STATE = "state"
+"""
+
+_SPLICED = """
+    from typing import Protocol
+
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import TABLES
+
+    BY_NAME = {table.name: table for table in TABLES}
+
+
+    class Holding(Protocol):
+        async def holds_state(self, table: str, state: str) -> bool:
+            'whether the table holds the state.'
+            ...
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state, *, pulled=None):
+            return await self._store.holds_state(table.name, state)
+
+        async def run(self, state, behind, fresh):
+            for table in () if behind else TABLES:
+                await self._held(table, state, **({"pulled": {}} if fresh else {}))
+
+        async def one(self, name, state):
+            await self._held(BY_NAME[name], state)
+"""
+
+
+def test_a_loop_s_tables_resolve_through_a_spliced_tuple_a_conditional_a_lookup_and_a_spread_call(
+    tmp_path: Path,
+) -> None:
+    """Flips if a keyed helper's table stays unknown when the tuple splices another (``*FEEDS``), the loop iterates a
+    conditional (``() if behind else TABLES``), a caller looks one up in a dict built over the tuple
+    (``BY_NAME[name]``) or spreads keywords (``**{...}``) beside the table it names, or the helper's protocol declares
+    the same method (a stub, not a second definition)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SPLICED}))
+    assert not any(function in ("Store.holds_state", "Pull._held") for function, _ in found), found
+
+
+_SAME_NAMED = """
+    from threetears.core import keyed
+
+    from pkg.tables import STATE, TABLES
+
+
+    class Store:
+        async def holds_any(self, table, state):
+            return await keyed.holds_any(self._conn, table, by={STATE: state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_any(table.name, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._held(table, state)
+"""
+
+
+def test_a_repo_method_named_as_a_keyed_helper_is_the_repo_s_and_its_body_is_judged(tmp_path: Path) -> None:
+    """Flips if a call of the repo's own method named as a 3tears keyed helper (``self._store.holds_any``) is judged
+    as the helper's call, or if the helper's own call in its body (``keyed.holds_any``) counts as a call of the
+    method, so its table never resolves, or a key its ``by`` names by an imported constant stays unread."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SAME_NAMED}))
+    assert not any(function in ("Store.holds_any", "Pull._held") for function, _ in found), found

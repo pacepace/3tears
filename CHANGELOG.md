@@ -62,8 +62,12 @@ A repo names the functions whose returned relation is a change set being applied
 a statement over one reads no data table. A keyed helper called with a parameter every call site fills with a literal
 or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. So is one bound
 by a loop over a module tuple (`for name in NAMES`; `table.name` for `for table in TABLES` when the tuple holds
-declared objects with a constant `name`), and a parameter its callers hand on from their own parameters, followed up
-to four calls. An entry-only operator mark counts a method call as its caller only on a receiver known to be the
+declared objects with a constant `name`; a tuple splicing another, `*FEEDS`; a loop over `() if behind else
+TABLES`; a lookup in a dict built over one, `BY_NAME[name]`), and a parameter its callers hand on from their own
+parameters, followed up to six calls (a caller spreading `**kwargs` leaves only the parameters it does not name
+unknown; a protocol's stub is no second definition; a call on an imported module, `keyed.holds_any`, is never the
+repo's method of that name, and a call on an object's attribute, `self._store.holds_any`, is the repo's method, judged
+in its body). A `by` keyed by a constant (`{STATE_COLUMN: state}`) reads as that column. An entry-only operator mark counts a method call as its caller only on a receiver known to be the
 marked class. A view column that renames a plain column (`p.race AS office_key`) passes the key through; a computed
 one does not. A relation in a schema of its own (`report.<view>`) is judged by the copy relation declared for it
 before an L3 table sharing its bare name. A repo names the functions that build a view under a name they are handed
