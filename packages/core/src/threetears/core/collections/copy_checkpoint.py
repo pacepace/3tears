@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
+from threetears.core.keyed import WholeReads
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
@@ -103,13 +104,19 @@ SCHEMA_CHANGE: Final = "schema_change"
 #: ``touched=None``)
 _WHOLE_TOUCH: Final = "whole_touch"
 
-#: every why ``copy_checkpoint_whole_writes_total`` counts; nothing else reads a table whole from the copy
-_WHOLE_WRITE_WHYS: Final[Mapping[str, str]] = {
-    COLD_START: "no checkpoint holds the table (the first, or one whose parts did not read back): its cold start",
-    SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
-    _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
-    "named no tables",
-}
+#: every why ``copy_checkpoint_whole_writes_total`` counts; nothing else reads a table whole from the copy. Only a
+#: cold start is expected
+_WHOLE_WRITES: Final = WholeReads(
+    "copy_checkpoint_whole_writes_total",
+    subject="tables a checkpoint write read whole from the copy",
+    whys={
+        COLD_START: "no checkpoint holds the table (the first, or one whose parts did not read back): its cold start",
+        SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
+        _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
+        "named no tables",
+    },
+    expected={COLD_START},
+)
 
 #: the stage a part read back is patched in: a change set being applied, never a data table
 _PART_STAGE: Final = f"{STAGE_PREFIX}ckpt_part__"
@@ -122,16 +129,6 @@ def _writes() -> Any:
         "again) and outcome (written; failed; skipped: another replica holds the lock, the copy has no stamp yet, "
         "or a later checkpoint moved the pointer first)",
         label_names=("kind", "outcome"),
-    )
-
-
-def _whole_writes() -> Any:
-    return counter(
-        "copy_checkpoint_whole_writes_total",
-        description="tables a checkpoint write read whole from the copy, by table and why ("
-        + "; ".join(f"{why}: {what}" for why, what in _WHOLE_WRITE_WHYS.items())
-        + "); every other write reads only the touched scopes and keys",
-        label_names=("table", "why"),
     )
 
 
@@ -380,7 +377,7 @@ class _Plan:
     :ivar prior: the entry this replica's copy of it last matched, its objects still named; None when written whole
     :ivar scopes: a scoped table's scopes to read again from the copy (empty: every part named again)
     :ivar keys: a table with no scope: the keys to patch its part by (empty: its part named again)
-    :ivar why: a :data:`_WHOLE_WRITE_WHYS` key when the table is read whole from the copy; None otherwise
+    :ivar why: a :data:`_WHOLE_WRITES` why when the table is read whole from the copy; None otherwise
     """
 
     table: FollowedTable
@@ -901,7 +898,7 @@ class CopyCheckpoints:
             self._priors[plan.table.name] = tables[plan.table.name]
             self._missing.pop(plan.table.name, None)
             if plan.why is not None:
-                _whole_writes().labels(table=plan.table.name, why=plan.why).inc()
+                _WHOLE_WRITES.count(plan.why, table=plan.table.name)
         _writes().labels(kind=kind, outcome="written").inc()
         if newest is not None and newest.previous is not None:
             gone = newest.previous.names() - checkpoint.live()

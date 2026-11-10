@@ -54,6 +54,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
     ),
     "epoch-bypass": frozenset(
         {
+            # a local cache table's trim to its cap (L1 only: it refuses any other connection); no L3 row, no epoch
+            f"{_CORE}/keyed/deletes.py::delete_oldest",
             # the collection write path: every save, delete and L2 put the rule routes writes into, method by
             # method, so a raw write added anywhere else in BaseCollection is a finding
             f"{_CORE}/collections/base.py::BaseCollection.save_entity",
