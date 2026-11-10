@@ -55,7 +55,7 @@ from threetears.core.backends.protocol import (
     TruncatingStore,
     parse_rowcount,
 )
-from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS
+from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyset import read_keyset_pages
@@ -984,9 +984,11 @@ class SqlL3Backend:
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
         return written
 
-    async def truncate(self, table: str, *, reason: str | None = None) -> None:  # noqa: ARG002 - the collection records it
+    async def truncate(self, table: str, *, reason: str | None = None) -> None:
         """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction. On a direct pool the collection
-        records the epoch itself, ``reason`` with it.
+        records the epoch itself, ``reason`` with it, and the truncate's change note names it too
+        (:data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`, set for the statement's session and cleared
+        after), so a log restored from the notes puts the reset back as a reset.
 
         On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
         request), under the database's DDL lock and only for a table of the caller's own data
@@ -997,6 +999,8 @@ class SqlL3Backend:
 
         :param table: the table, named as the store's other statements name it
         :ptype table: str
+        :param reason: ``"reset"`` for an operator's reset; on the rail the request names it for the broker
+        :ptype reason: str | None
         :return: nothing
         :rtype: None
         :raises ValueError: when a request-scoped connection is bound, or the name is not a plain
@@ -1007,12 +1011,21 @@ class SqlL3Backend:
                 f"TRUNCATE of {table!r} runs alone, outside any transaction; a request's bound connection is open"
             )
         if isinstance(self._pool, TruncatingStore):
-            await self._pool.truncate(table)
+            await self._pool.truncate(table, **({"reason": reason} if reason is not None else {}))
             return
         statement = f"TRUNCATE TABLE {as_written(_plain_identifier(table))}"
+        reach = note_reach_text(reason=reason)
         with _unmask_asyncpg_release_race():
             async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
-                await conn.execute(statement)
+                if not reach:
+                    await conn.execute(statement)
+                else:
+                    # TRUNCATE runs alone, so its reach is the session's for the one statement, never left behind
+                    await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, reach)
+                    try:
+                        await conn.execute(statement)
+                    finally:
+                        await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, "")
         _logger.info("table truncated", extra={"extra_data": {"table": table}})
 
     async def analyze(self, table: str) -> None:
@@ -1037,10 +1050,12 @@ class SqlL3Backend:
         constants: Mapping[str, Any],
         rows_per_transaction: int,
         timeout_ms: int,
-        key_prefixes: Sequence[Mapping[str, Any]] | None = None,  # noqa: ARG002 - the collection records them
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> LoadResult:
         """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes. On a direct pool
-        the collection records the epoch itself, ``key_prefixes`` with it.
+        the collection records the epoch itself, ``key_prefixes`` with it, and each transaction's whole-table change
+        note names them too (:data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`), so a log restored from
+        the notes puts the load back as its prefixes. On the rail the request names them for the broker.
 
         The load's columns are checked against the table's registered schema first, on either path,
         so a caller's local run refuses what the rail would. On the rail the broker then does it
@@ -1071,6 +1086,8 @@ class SqlL3Backend:
         :ptype rows_per_transaction: int
         :param timeout_ms: the most time one transaction may take, in milliseconds
         :ptype timeout_ms: int
+        :param key_prefixes: the key prefixes the load's rows fall in, each the leading key columns and their values
+        :ptype key_prefixes: Sequence[Mapping[str, Any]] | None
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
         :raises ValueError: when no schema is registered for ``table``, no column is named, a column
@@ -1113,6 +1130,7 @@ class SqlL3Backend:
                 constants=constants,
                 rows_per_transaction=rows_per_transaction,
                 timeout_ms=timeout_ms,
+                **({"key_prefixes": key_prefixes} if key_prefixes else {}),
             )
         unwritable = [declared[name] for name in names if not schema_sql.copy_writes(declared[name])]
         if unwritable:
@@ -1123,6 +1141,7 @@ class SqlL3Backend:
             _check_load_url(file.url)
         fixed = [schema_sql.normalize_write_value(declared[name], value) for name, value in constants.items()]
         key_positions = [names.index(name) for name in schema.pk_columns]
+        reach = note_reach_text(prefixes=key_prefixes)
         loaded: list[FileLoad] = []
         for index, file in enumerate(files):
             data = await _fetch_load_file(file.url)
@@ -1146,7 +1165,16 @@ class SqlL3Backend:
                     async with asyncio.timeout(timeout_ms / 1000), self._pool.acquire() as conn, conn.transaction():
                         # the load's epoch names the whole table, so its change note does too: one per
                         # transaction, never one per copied row (threetears.core.collections.change_notes)
-                        await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
+                        if reach:
+                            # and names the load's prefixes, as its epoch does
+                            await conn.execute(
+                                "SELECT set_config($1, '1', true), set_config($2, $3, true)",
+                                NOTE_WHOLE_SETTING,
+                                NOTE_REACH_SETTING,
+                                reach,
+                            )
+                        else:
+                            await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
                         await conn.copy_records_to_table(table, records=batch, columns=names)
             loaded.append(FileLoad(index=index, rows_loaded=len(records)))
         result = LoadResult(row_count=sum(file.rows_loaded for file in loaded), files=tuple(loaded))

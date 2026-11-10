@@ -57,6 +57,7 @@ __all__ = [
     "records_changes",
     "changed_row_runs",
     "check_change_form",
+    "check_whole_reach",
     "epoch_change_record",
     "read_epoch_change",
 ]
@@ -204,12 +205,12 @@ class EpochChange(BaseModel):
                 f"an epoch change of {self.table!r} at {self.token!r} names a partition only as a whole-table record, "
                 f"and names at least one column"
             )
-        _check_whole_reach(self.prefixes, self.reason, whole_table=self.whole_table)
+        check_whole_reach(self.prefixes, self.reason, whole_table=self.whole_table)
         _check_noted_between(self.noted_between, keys_unknown=self.keys_unknown)
         return self
 
 
-def _check_whole_reach(prefixes: Sequence[Mapping[str, str]] | None, reason: str | None, *, whole_table: bool) -> None:
+def check_whole_reach(prefixes: Sequence[Mapping[str, str]] | None, reason: str | None, *, whole_table: bool) -> None:
     """refuse key prefixes or a reason on a record that is not whole-table, an empty prefix, or a reason not known.
 
     :param prefixes: the record's key prefixes, or None
@@ -497,7 +498,7 @@ async def advance_recording(
         if tenant is not None:
             extra["tenant"] = tenant
         whole = rows is None and not keys_unknown
-        _check_whole_reach(prefixes, reason, whole_table=whole)
+        check_whole_reach(prefixes, reason, whole_table=whole)
         if prefixes and len(prefixes) == 1 and not partition:
             partition = prefixes[0]
         if partition and whole and _takes(source, "partition"):
@@ -706,7 +707,7 @@ def epoch_change_body(
     if partition is not None and (rows is not None or keys_unknown):
         raise ValueError("a partition narrows a whole-table change: pass rows=None without keys_unknown")
     _check_noted_between(noted_between, keys_unknown=keys_unknown)
-    _check_whole_reach(prefixes, reason, whole_table=rows is None and not keys_unknown)
+    check_whole_reach(prefixes, reason, whole_table=rows is None and not keys_unknown)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,

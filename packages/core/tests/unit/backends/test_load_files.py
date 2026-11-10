@@ -50,7 +50,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.ddl.change_notes import NOTE_WHOLE_SETTING
+from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
 
 SCHEMA = TableSchema(
@@ -330,6 +330,23 @@ async def test_a_sql_store_over_the_rail_loads_through_the_broker() -> None:
     assert [subject for subject, _ in broker.requests] == ["test.l3.load_files"]
 
 
+async def test_a_sql_store_over_the_rail_names_the_load_s_key_prefixes_to_the_broker() -> None:
+    broker = _Broker()
+    store = SqlL3Backend(broker.proxy())
+    store.register_schema("lsf_rows", SCHEMA)
+    await store.load_files(
+        "lsf_rows",
+        _FILES,
+        columns=["geo", "votes"],
+        constants={"race": "r1"},
+        rows_per_transaction=50_000,
+        timeout_ms=60_000,
+        key_prefixes=[{"race": "r1"}],
+    )
+    [(_, body)] = broker.requests
+    assert body["key_prefixes"] == [{"race": "r1"}], "the broker's epoch record and the load's notes name them"
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -472,6 +489,17 @@ async def test_a_direct_load_copies_each_file_ordered_by_key_in_transactions_of_
     # the file's columns, then the constants; ordered by the key (race, geo); a uuid as an insert binds it
     assert records == [("g1", 1, _SOURCE, "r1", _WHEN), ("g2", 2, _SOURCE, "r1", _WHEN)]
     assert pool.committed[1][0][1] == [("g3", 0, _SOURCE, "r1", _WHEN)]
+
+
+async def test_a_direct_load_names_its_key_prefixes_for_each_transaction_s_whole_note(tmp_path: Path) -> None:
+    pool = _Pool()
+    files = [_parquet_file(tmp_path / "a.parquet", _geo_rows("g3", "g1", "g2"))]
+    await _direct(_store(pool), files, key_prefixes=[{"race": "r1"}])
+    assert len(pool.settings) == 2, "one setting statement a transaction"
+    for setting in pool.settings:
+        assert setting[0] == NOTE_WHOLE_SETTING
+        assert setting[1] == NOTE_REACH_SETTING
+        assert json.loads(setting[2]) == {"prefixes": [{"race": "r1"}]}
 
 
 async def test_a_key_already_held_stops_the_load_at_that_transaction(tmp_path: Path) -> None:

@@ -130,6 +130,13 @@ operator's reset.
   lead the key with) and is refused naming neither; the rail's `l3.load_files` names them (`key_prefixes`) and
   `l3.truncate` its `reason`. `clear_partition(prefixes, conn=)` deletes key prefixes by key on a caller's
   transaction.
+- A change note keeps that reach, so a log put back from the notes does too. A whole-table write names it in
+  `threetears.core.ddl.change_notes.NOTE_REACH_SETTING` (`note_reach_text(prefixes=, reason=)`), and its
+  whole-table note keeps it as its `columns`. The keeper folds a table's whole notes into one restored record that
+  names every load's prefixes (`NotedChange.prefixes`), or a reset (`NotedChange.reason`); only notes naming no
+  reach come back as the plain whole table. Rows beside a load's prefixes are restored by name. The SQL store sets
+  it on a direct pool and now hands `reason` and `key_prefixes` on to the rail. A broker sets it in its own
+  `l3.load_files` transactions and around its `l3.truncate`.
 - A registry tells a derived cache each prefix (`drop_partitions`) and a reset (`on_table_reset=`), counts every
   whole drop by why (`collection_whole_table_drops_total`), and catches a table it is behind on up from its change
   notes since it was last current (`resolve_behind_from_notes`; a whole-table note leaves it behind, `notes_whole`).

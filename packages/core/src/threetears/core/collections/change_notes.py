@@ -100,7 +100,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -111,7 +111,7 @@ from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, EpochChange, check_whole_reach
 from threetears.core.collections.generation import NotedTable, split_generation_token
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.ddl.change_notes import (
@@ -300,12 +300,22 @@ class NotedChange:
         is then empty, since the whole-table record covers every row
     :ivar tenant: the tenant the rows belong to (:mod:`threetears.core.tenancy`), whose key the
         record is restored under; ``None`` for ``_all``
+    :ivar prefixes: for a whole-table change, the key prefixes its notes named (a load's,
+        :data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`): the restored record names them, so a follower
+        reads each as a key range. Rows outside them come back as their own changes
+    :ivar reason: for a whole-table change, the reason its notes named: only an operator's reset
+        (:data:`~threetears.core.collections.epoch_change.RESET_REASON`), restored as a reset
     """
 
     table: str
     rows: tuple[ChangedRow, ...] = ()
     whole_table: bool = False
     tenant: str | None = None
+    prefixes: tuple[Mapping[str, str], ...] = ()
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        check_whole_reach(self.prefixes or None, self.reason, whole_table=self.whole_table)
 
 
 @runtime_checkable
@@ -1697,27 +1707,27 @@ class _StreamedChanges:
 
     async def _stream(self) -> AsyncIterator[NotedChange]:
         async with self._pool.acquire() as conn, conn.transaction():
-            whole = sorted(
-                (
-                    (str(row["table_name"]), None if row["tenant"] is None else str(row["tenant"]))
-                    for row in await conn.fetch(
-                        f"SELECT DISTINCT table_name, tenant FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
-                        "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
-                        self._since,
-                    )
-                ),
-                key=lambda pair: (pair[0], pair[1] or ""),
-            )
-            for noted, tenant in whole:
+            reaches: dict[tuple[str, str | None], list[Any]] = {}
+            for row in await conn.fetch(
+                # a whole note's columns are its write's reach (NOTE_REACH_SETTING): a load's prefixes, a reset
+                f"SELECT DISTINCT table_name, tenant, columns::text AS reach FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
+                "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
+                self._since,
+            ):
+                pair = (str(row["table_name"]), None if row["tenant"] is None else str(row["tenant"]))
+                reaches.setdefault(pair, []).append(row["reach"])
+            for noted, tenant in sorted(reaches, key=lambda pair: (pair[0], pair[1] or "")):
                 self.tables += 1
                 # a whole-table change carries no row: under its schema for a schema table, else on _all
-                yield NotedChange(table=noted, tenant=tenant, whole_table=True)
-            # a row its tenant's whole-table change (or the table's _all one) already covers is not named again
+                yield _whole_change(noted, tenant, reaches[(noted, tenant)])
+            # a row its tenant's whole-table change (or the table's _all one) already covers is not named again; a
+            # load's names only its prefixes, so a row beside them is named (one inside them twice, which is harmless)
             cursor = conn.cursor(
                 f"SELECT DISTINCT table_name, tenant, key_text, keys, columns FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
                 "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
                 f"AND NOT EXISTS (SELECT 1 FROM {self._coverage} w WHERE w.key_text IS NULL "
                 "AND w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant) "
+                "AND (w.columns IS NULL OR NOT w.columns ? 'prefixes') "
                 "AND ($1::timestamptz IS NULL OR w.noted_at >= $1)) ORDER BY table_name, tenant",
                 self._since,
                 prefetch=_RESTORE_PAGE,
@@ -1736,6 +1746,47 @@ class _StreamedChanges:
                 rows[(tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]))] = None
             if group is not None and rows:
                 yield _change(group[0], rows, group[1])
+
+
+def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> NotedChange:
+    """one table's whole-table notes of one tenant folded into one change, keeping the reach they name.
+
+    A reset among them makes the change a reset (it reads the table as on a first start, which covers any load). A
+    note naming no reach (an older writer's, a bare truncate, a whole-marked copy) makes it the plain whole table,
+    the one answer that covers it. Otherwise it names every prefix its loads named, each once.
+
+    :param table: the table
+    :ptype table: str
+    :param tenant: the notes' tenant, ``None`` for ``_all``
+    :ptype tenant: str | None
+    :param reaches: each distinct whole note's reach as JSON text, or ``None`` for a note naming none
+    :ptype reaches: Sequence[Any]
+    :return: the change
+    :rtype: NotedChange
+    :raises GenerationUnavailableError: when a note's reach is not one this module writes
+    """
+    prefixes: dict[tuple[tuple[str, str], ...], None] = {}
+    plain = False
+    for raw in reaches:
+        value = None if raw is None else json.loads(raw) if isinstance(raw, str) else raw
+        if value is None:
+            plain = True
+        elif isinstance(value, dict) and value.get("reason") == RESET_REASON:
+            return NotedChange(table=table, tenant=tenant, whole_table=True, reason=RESET_REASON)
+        elif isinstance(value, dict) and isinstance(value.get("prefixes"), list) and value["prefixes"]:
+            for prefix in value["prefixes"]:
+                if not isinstance(prefix, dict) or not prefix:
+                    raise GenerationUnavailableError(
+                        f"a whole-table note of {table!r} names a malformed prefix: {raw!r}"
+                    )
+                prefixes[tuple(sorted((str(column), str(each)) for column, each in prefix.items()))] = None
+        else:
+            raise GenerationUnavailableError(f"a whole-table note of {table!r} names a reach not known: {raw!r}")
+    if plain or not prefixes:
+        return NotedChange(table=table, tenant=tenant, whole_table=True)
+    return NotedChange(
+        table=table, tenant=tenant, whole_table=True, prefixes=tuple(dict(prefix) for prefix in sorted(prefixes))
+    )
 
 
 def _change(

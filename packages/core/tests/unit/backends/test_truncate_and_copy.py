@@ -23,6 +23,7 @@ from threetears.core.backends.broker_generation import BrokerGenerationSource
 from threetears.core.backends.nats_proxy import CONSTRAINT_VIOLATION_ERROR_CODE, NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_insert_params
 from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
+from threetears.core.collections.epoch_change import RESET_REASON
 from threetears.core.collections.schema_backed import (
     BYTES_TYPE,
     DATETIMETZ_TYPE,
@@ -33,6 +34,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
+from threetears.core.ddl.change_notes import NOTE_REACH_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
 
 #: the transaction a recording broker opens
@@ -132,11 +134,20 @@ async def test_a_sql_store_over_the_rail_truncates_through_the_broker() -> None:
     assert [subject for subject, _ in broker.requests] == ["test.l3.truncate"]
 
 
+async def test_a_sql_store_over_the_rail_names_a_reset_to_the_broker() -> None:
+    broker = _Broker()
+    await SqlL3Backend(broker.proxy()).truncate("lsf_rows", reason=RESET_REASON)
+    [(_, body)] = broker.requests
+    assert body["reason"] == RESET_REASON, "the broker's epoch record and the truncate's note name the reset"
+
+
 class _LockingConn:
     """one asyncpg-shaped connection that answers the DDL lock's statements and keeps the rest."""
 
     def __init__(self) -> None:
         self.statements: list[str] = []
+        #: each executed statement's parameters, by statement
+        self.params: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         self.statements.append(sql)
@@ -148,6 +159,7 @@ class _LockingConn:
 
     async def execute(self, sql: str, *params: Any) -> str:
         self.statements.append(sql)
+        self.params.append((sql, params))
         return "TRUNCATE TABLE"
 
 
@@ -172,6 +184,19 @@ async def test_a_direct_pool_truncates_on_one_connection_holding_the_ddl_lock() 
     assert statements.index("TRUNCATE TABLE lsf_rows") == 2
     assert "pg_try_advisory_lock" in statements[1]
     assert "pg_advisory_unlock" in statements[3]
+
+
+async def test_a_direct_pool_s_reset_names_its_reach_for_the_truncate_s_note_and_clears_it_after() -> None:
+    pool = _DirectPool()
+    await SqlL3Backend(pool).truncate("lsf_rows", reason=RESET_REASON)
+    executed = pool.conn.params
+    truncate = [sql for sql, _ in executed].index("TRUNCATE TABLE lsf_rows")
+    named = [params for sql, params in executed[:truncate] if NOTE_REACH_SETTING in params]
+    assert [json.loads(params[-1]) for params in named] == [{"reason": RESET_REASON}], (
+        "the truncate's whole-table note names the reset"
+    )
+    cleared = [params for sql, params in executed[truncate + 1 :] if NOTE_REACH_SETTING in params]
+    assert [params[-1] for params in cleared] == [""], "the connection goes back to the pool naming no reach"
 
 
 async def test_truncate_is_refused_inside_a_request_s_bound_transaction() -> None:

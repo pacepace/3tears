@@ -34,9 +34,10 @@ the margin.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Final
+from typing import Any, Final
 
 from threetears.core.tenancy import Tenancy
 from threetears.core.sql_fragments import quote_identifier
@@ -44,6 +45,7 @@ from threetears.core.sql_fragments import quote_identifier
 __all__ = [
     "DEFAULT_NOTE_FENCE",
     "NOTE_PUT_FUNCTION",
+    "NOTE_REACH_SETTING",
     "NOTE_RING_SIZE",
     "NOTE_SLOT_SETTING",
     "NOTE_TRIGGERS",
@@ -55,6 +57,7 @@ __all__ = [
     "change_notes_ddl",
     "inexact_note_columns",
     "note_function_name",
+    "note_reach_text",
     "slot_max_age",
     "note_table",
     "note_trigger_sql",
@@ -116,12 +119,45 @@ _TABLE_FUNCTION_PREFIX: Final = "threetears_note_"
 #: whole-table note rather than a note each: the load's epoch names the whole table too
 NOTE_WHOLE_SETTING: Final = "threetears.note_whole"
 
+#: the setting a whole-table write names its reach in, as JSON (:func:`note_reach_text`): a load's key prefixes
+#: (``{"prefixes": [...]}``) or an operator's reset (``{"reason": "reset"}``), as its epoch record names them. A
+#: whole-table note takes it as its ``columns`` (a keyed note's invalidation columns), so a restore puts the record
+#: back with that reach rather than as the plain whole table. Transaction-local for a load's transactions; a
+#: ``TRUNCATE``, which runs alone, sets it for the session and clears it after. Unset or empty: the note names none
+NOTE_REACH_SETTING: Final = "threetears.note_reach"
+
 #: the rows a transaction copies from which it is marked whole (:data:`NOTE_WHOLE_SETTING`): one note for the
 #: table rather than one a row. The notes name at most this many rows a table to the write-mark reconciler
 #: (more are advanced with their keys unknown), so a note a row past it costs a write each and names nothing.
 #: The hub's ``l3.tx.copy`` counts a session's copied rows against it; a direct connection's
 #: :meth:`~threetears.core.backends.sql.SqlL3Backend.copy_many` its own call's
 WHOLE_COPY_ROWS: Final = 10_000
+
+
+def note_reach_text(*, prefixes: Sequence[Mapping[str, Any]] | None = None, reason: str | None = None) -> str:
+    """a whole-table write's reach as :data:`NOTE_REACH_SETTING` holds it, and its whole-table note keeps it.
+
+    The writer sets it in the write's transaction (``SELECT set_config($1, $2, true)``), the broker as a direct
+    pool does, so the note a restore reads names what the epoch record named.
+
+    :param prefixes: a load's or a clear's key prefixes, each the leading key columns and their values
+    :ptype prefixes: Sequence[Mapping[str, Any]] | None
+    :param reason: an operator's reset (``"reset"``)
+    :ptype reason: str | None
+    :return: the JSON text, ``""`` for no reach
+    :rtype: str
+    :raises ValueError: when both are named
+    """
+    if prefixes and reason is not None:
+        raise ValueError("a whole-table write names key prefixes or a reason, never both")
+    if prefixes:
+        return json.dumps(
+            {"prefixes": [{str(column): str(value) for column, value in prefix.items()} for prefix in prefixes]},
+            separators=(",", ":"),
+        )
+    if reason is not None:
+        return json.dumps({"reason": reason}, separators=(",", ":"))
+    return ""
 
 
 def slot_max_age(fence: timedelta) -> timedelta:
@@ -207,6 +243,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "keys TEXT[], "
         # the keys joined by chr(31), the scrub's lookup: led by the (key_text, table_name) index
         "key_text TEXT, "
+        # a keyed note's invalidation columns; a whole-table note's reach (NOTE_REACH_SETTING), or NULL
         "columns JSONB, "
         # the tenant the row belongs to (threetears.core.tenancy); NULL for _all
         "tenant TEXT, "
@@ -318,6 +355,10 @@ def _put_function_sql(schema: str) -> str:
         "  read_ring BOOLEAN;\n"
         "  kept TEXT;\n"
         "BEGIN\n"  # one line: plpgsql source, each interpolated piece is one PERFORM statement the module builds
+        # a whole-table note (no keys) names the write's reach, when the write named one (NOTE_REACH_SETTING)
+        "  IF noted_keys IS NULL AND noted_columns IS NULL THEN\n"
+        f"    noted_columns := nullif(current_setting('{NOTE_REACH_SETTING}', true), '')::jsonb;\n"
+        "  END IF;\n"
         # the slot is decided at a statement's first note and kept for the rest of that statement
         "  IF current_setting('threetears.note_ring_at', true) IS DISTINCT FROM statement_timestamp()::text THEN\n"
         f"    cached := current_setting('{NOTE_SLOT_SETTING}', true);\n"

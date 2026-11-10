@@ -26,19 +26,23 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import MetaData
 
+from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
-from threetears.core.collections.epoch_change import ChangedRow, key_text, read_epoch_change_body
+from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
 from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
@@ -46,6 +50,7 @@ from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import (
+    NOTE_REACH_SETTING,
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
     NOTE_TRUNCATE_TRIGGER,
@@ -1105,3 +1110,146 @@ class TestANoteCarriesItsTenant:
             )
         }
         assert NOTE_TRUNCATE_TRIGGER in triggers and _LEGACY_TRUNCATE_TRIGGER not in triggers
+
+
+@dataclass
+class _Loaded:
+    """a loaded table beside the ring: its name, a direct store over it, its keeper and the keeper's log."""
+
+    table: str
+    store: SqlL3Backend
+    keeper: ChangeNoteKeeper
+    bus: FakeNatsClient
+    source: EpochGenerationSource
+
+
+async def _loaded_table(pool: asyncpg.Pool, schema: str, table: str) -> _Loaded:
+    """a table keyed by (race, geo) beside the ring, noted, a direct store over it, and a keeper whose ring has
+    switched once, so its coverage holds the notes written next."""
+    loaded = f"{table}_lsf"
+    await pool.execute(f"CREATE TABLE {schema}.{loaded} (race TEXT, geo TEXT, votes TEXT, PRIMARY KEY (race, geo))")
+    bus = FakeNatsClient()
+    source = EpochGenerationSource(bus, restored_from_l3=True, restore_wait=timedelta(seconds=1))
+    await source.start_log()
+    keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0))
+    await keeper.install()
+    await keeper.install_triggers([NotedTable(table=loaded, keys=("race", "geo"))])
+    await keeper.run_pass()
+    await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+    await keeper.run_pass()
+    store = SqlL3Backend(pool)
+    store.register_schema(
+        loaded,
+        TableSchema(
+            name=loaded,
+            primary_key=("race", "geo"),
+            columns=[
+                SchemaColumn("race", STRING_TYPE),
+                SchemaColumn("geo", STRING_TYPE),
+                SchemaColumn("votes", STRING_TYPE),
+            ],
+        ),
+    )
+    return _Loaded(table=loaded, store=store, keeper=keeper, bus=bus, source=source)
+
+
+async def _load_race(store: SqlL3Backend, table: str, path: Any, race: str, *geos: str) -> None:
+    """load ``geos`` of ``race`` from a parquet file, a transaction a row, naming the race as its key prefix."""
+    file = path / f"{race}.parquet"
+    pq.write_table(pa.Table.from_pylist([{"geo": geo, "votes": "1"} for geo in geos]), file)
+    await store.load_files(
+        table,
+        [LoadFile(url=file.as_uri(), rows=len(geos))],
+        columns=["geo", "votes"],
+        constants={"race": race},
+        rows_per_transaction=1,
+        timeout_ms=10_000,
+        key_prefixes=[{"race": race}],
+    )
+
+
+async def _restored_records(loaded: _Loaded) -> list[Any]:
+    """lose the log, let the keeper put it back, and read what it appended for the loaded table."""
+    source, table = loaded.source, loaded.table
+    loaded.bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
+    assert (await loaded.keeper.run_pass()).restored is not None
+    state = await source.log_state()
+    assert state is not None and state.continues is not None
+    records = [await source.epoch_at(seq) for seq in range(1, state.last_seq + 1)]
+    return [record for record in records if record is not None and record.table == table]
+
+
+class TestAWholeNoteNamesItsReachAndTheRestoreKeepsIt:
+    async def test_a_load_s_note_names_its_prefixes_a_reset_s_the_reset_a_bare_truncate_nothing(
+        self, ring: tuple[asyncpg.Pool, str, str], tmp_path: Any
+    ) -> None:
+        pool, schema, table = ring
+        it = await _loaded_table(pool, schema, table)
+        loaded, store, keeper = it.table, it.store, it.keeper
+        await _load_race(store, loaded, tmp_path, "r1", "g1", "g2")
+        await store.truncate(loaded, reason=RESET_REASON)
+        await store.truncate(loaded)
+        current = (await keeper.ring()).current
+        notes = await pool.fetch(
+            f"SELECT columns FROM {schema}.{note_table(current)} WHERE table_name = $1 AND key_text IS NULL "
+            "ORDER BY noted_at",
+            loaded,
+        )
+        reaches = [None if note["columns"] is None else json.loads(note["columns"]) for note in notes]
+        assert reaches == [
+            {"prefixes": [{"race": "r1"}]},
+            {"prefixes": [{"race": "r1"}]},
+            {"reason": RESET_REASON},
+            None,
+        ], "one whole note a load transaction naming its prefix; the reset's names the reset; a bare truncate's none"
+        assert await pool.fetchval("SELECT current_setting($1, true)", NOTE_REACH_SETTING) in (None, ""), (
+            "no connection is left naming a reach"
+        )
+
+    async def test_loads_restore_as_one_record_of_their_prefixes_and_a_row_beside_them_is_kept(
+        self, ring: tuple[asyncpg.Pool, str, str], tmp_path: Any
+    ) -> None:
+        pool, schema, table = ring
+        it = await _loaded_table(pool, schema, table)
+        loaded, store = it.table, it.store
+        await _load_race(store, loaded, tmp_path, "r1", "g1", "g2")
+        await _load_race(store, loaded, tmp_path, "r2", "g1")
+        await pool.execute(f"INSERT INTO {loaded} VALUES ('r3', 'g9', '1')")
+
+        records = await _restored_records(it)
+        whole = [record for record in records if record.whole_table]
+        assert len(whole) == 1, "the table's whole notes fold into one record"
+        assert sorted(prefix["race"] for prefix in whole[0].prefixes or []) == ["r1", "r2"], (
+            "the loads' prefixes, never the plain whole table"
+        )
+        assert whole[0].reason is None
+        named = [row.ids for record in records for row in record.rows]
+        assert ["r3", "g9"] in named, "a row outside every prefix is restored by name"
+
+    async def test_a_reset_restores_as_a_reset_whatever_was_loaded_after_it(
+        self, ring: tuple[asyncpg.Pool, str, str], tmp_path: Any
+    ) -> None:
+        pool, schema, table = ring
+        it = await _loaded_table(pool, schema, table)
+        loaded, store = it.table, it.store
+        await store.truncate(loaded, reason=RESET_REASON)
+        await _load_race(store, loaded, tmp_path, "r1", "g1")
+
+        records = await _restored_records(it)
+        assert [(record.whole_table, record.reason, record.prefixes) for record in records] == [
+            (True, RESET_REASON, None)
+        ], "a reset, never a plain whole record, and nothing the reset already covers"
+
+    async def test_a_bare_truncate_restores_plain_whole(
+        self, ring: tuple[asyncpg.Pool, str, str], tmp_path: Any
+    ) -> None:
+        pool, schema, table = ring
+        it = await _loaded_table(pool, schema, table)
+        loaded, store = it.table, it.store
+        await _load_race(store, loaded, tmp_path, "r1", "g1")
+        await store.truncate(loaded)
+
+        records = await _restored_records(it)
+        assert [(record.whole_table, record.reason, record.prefixes) for record in records] == [(True, None, None)], (
+            "a whole note naming no reach: the whole table, as an older writer's"
+        )

@@ -649,6 +649,10 @@ def _by_tenant(rows: Sequence[ChangedRow]) -> list[tuple[str | None, list[Change
 def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]:
     """the records a restore of ``changes`` appends: per table its row runs within the record bound, or the whole table.
 
+    A whole-table record keeps the reach its notes named, as the writer's record named it: a load's key prefixes
+    (one prefix also as the older ``partition``), or an operator's reset. Only notes naming no reach come back as the
+    plain whole table.
+
     :param changes: what the notes say changed, per table
     :ptype changes: Sequence[NotedChange]
     :return: ``(key, body)`` per record
@@ -657,7 +661,16 @@ def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]
     records: list[tuple[str, bytes]] = []
     for change in changes:
         if change.whole_table:
-            bodies = [epoch_change_body(change.table, None)]
+            prefixes = list(change.prefixes) or None
+            bodies = [
+                epoch_change_body(
+                    change.table,
+                    None,
+                    partition=prefixes[0] if prefixes is not None and len(prefixes) == 1 else None,
+                    prefixes=prefixes,
+                    reason=change.reason,
+                )
+            ]
         elif change.rows:
             bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
         else:
