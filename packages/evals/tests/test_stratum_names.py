@@ -177,8 +177,9 @@ class TestNamingAStratumMovesNoIdentity:
 # --- names reach the report input and the page ----------------------------------------------------------------------
 
 
-def _with_strata(shape: Shape, names: dict[str, str]) -> Shape:
-    """``shape`` with its first aspect's cells each read again in a stratum, and the aspect declaring ``names``."""
+def _with_strata(shape: Shape, names: dict[str, str], strata: tuple[str, ...] = ("off_lane",)) -> Shape:
+    """``shape`` with its first aspect's cells each read again in each of ``strata``, and the aspect declaring
+    ``names``."""
     first = next(iter(shape.bundles))
     bundles = dict(shape.bundles)
     held = bundles[first]
@@ -187,12 +188,14 @@ def _with_strata(shape: Shape, names: dict[str, str]) -> Shape:
             update={
                 "strata": [
                     StratumFacts(
-                        stratum="off_lane",
-                        n_observations=cell.n_observations,
-                        n_cases=cell.n_cases or 1,
+                        stratum=stratum,
+                        # The cell's observations shared out among its strata, each held in one.
+                        n_observations=cell.n_observations // len(strata) + (at < cell.n_observations % len(strata)),
+                        n_cases=max(1, (cell.n_cases or 1) // len(strata)),
                         measures=cell.measures,
                         judged=cell.judged,
                     )
+                    for at, stratum in enumerate(strata)
                 ]
             }
         )
@@ -211,8 +214,8 @@ def _with_strata(shape: Shape, names: dict[str, str]) -> Shape:
     )
 
 
-def _input(names: dict[str, str]) -> Any:
-    shape = _with_strata(s1_change(), names)
+def _input(names: dict[str, str], strata: tuple[str, ...] = ("off_lane",)) -> Any:
+    shape = _with_strata(s1_change(), names, strata)
     return report_input(
         build_campaign_bundle(shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings)
     )
@@ -235,12 +238,24 @@ class TestADeclaredNameReachesThePage:
         assert resolve("strata.off_lane.name", built).value == "Off-lane asks"
         assert render("Worst in {strata.off_lane.name}", {}, forms=PageForms.of(built)) == "Worst in Off-lane asks"
 
+    def test_two_ids_that_would_print_alike_each_print_as_their_id_in_a_figure_key(self) -> None:
+        """``edge_case`` and ``edge__case`` would both print ``edge case``: a figure key and the reader name print each
+        as its id, so no sentence reads one stratum where the cases declare two."""
+        built = _input({}, ("edge_case", "edge__case"))
+        assert [resolve(f"strata.{held}.name", built).value for held in ("edge_case", "edge__case")] == [
+            "edge_case",
+            "edge__case",
+        ]
+        assert reader_name("stratum", "edge__case", built) == "edge__case"
+        # The control: either alone prints as its name.
+        assert resolve("strata.edge_case.name", _input({}, ("edge_case",))).value == "edge case"
+
     def test_a_name_no_stratum_holds_reaches_nothing(self) -> None:
         assert [stratum.name for stratum in _input({"elsewhere": "Elsewhere"}).strata] == [None]
 
     @staticmethod
-    def _headers(names: dict[str, str]) -> list[str]:
-        shape = _with_strata(s1_change(), names)
+    def _headers(names: dict[str, str], strata: tuple[str, ...] = ("off_lane",)) -> list[str]:
+        shape = _with_strata(s1_change(), names, strata)
         bundle = next(iter(shape.bundles.values()))
         report = build_code_only_report(bundle, assembled_at="2026-10-08T00:00:00+00:00")
         (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
@@ -249,6 +264,12 @@ class TestADeclaredNameReachesThePage:
     def test_an_aspects_stratum_column_is_headed_by_its_declared_name(self) -> None:
         headers = self._headers({"off_lane": "Off-lane asks"})
         assert "Off-lane asks" in headers and "off_lane" not in headers
+
+    def test_two_ids_that_would_print_alike_each_head_their_column_by_their_id(self) -> None:
+        headers = self._headers({}, ("edge_case", "edge__case"))
+        assert "edge_case" in headers and "edge__case" in headers and "edge case" not in headers
+        # The control: either alone heads its column by its name.
+        assert "edge case" in self._headers({}, ("edge_case",))
 
     def test_an_undeclared_stratum_column_is_headed_by_its_reader_name(self) -> None:
         # The name a written page's charts print for it (Discodon's C5b re-shoot found "off lane" in a chart and
