@@ -1,4 +1,4 @@
-"""A stored report document read on its snapshot degrades rather than refuses; generation refuses (plan §2.3).
+"""A stored report document read on its snapshot degrades rather than refuses; generation refuses.
 
 Each case starts from the third prototype's Kairo document, which builds strict with nothing degraded, and plants
 one thing that no longer reads:

@@ -1,7 +1,7 @@
 """A chart's labels sit clear of its drawn lines, its interval marks read at 3:1, and a table holds an interval on one
 line, at every width a host gives the page.
 
-Discodon's C5b re-shoot (2026-11-10, item 8), on the Character v2 written report and two SearXNG code pages:
+Discodon's re-shoot of 2026-11-10 (item 8), on the Character v2 written report and two SearXNG code pages:
 
 - the zero line struck through the margin's label ("margin -15 pts; shaded: no worse than the margin") at 1104 and
   688 px, and at 688 px through a forest's head ("95% intervals (adjusted for 10 comparisons)") and its groups'

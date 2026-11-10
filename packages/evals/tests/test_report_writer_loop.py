@@ -13,7 +13,7 @@ Contracts held here:
   ``should_fix`` is sent back while a revision remains and makes no draft, unless it was first raised in round 1 as a
   ``must_fix`` (owner rulings 2026-10-31 and 2026-11-09), and a revision a cleared review sends that ends short stores
   the report it cleared, finished;
-- **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
+- **endings**: ``over_budget`` stores the last reviewed document with its review's findings, or nothing
   when no review was read; ``refused`` and ``review_failed`` store nothing, and ``failed`` nothing ever; the tally
   keeps every turn. A revision a cleared review sent that ends ``over_budget``, ``refused`` or ``review_failed`` ends
   ``stored`` instead, as the rounds say;

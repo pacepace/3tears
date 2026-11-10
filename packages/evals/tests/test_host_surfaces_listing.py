@@ -1,4 +1,4 @@
-"""A host's surfaces print a campaign the way its report reads (presentation build, chunk 6; Discodon, 2026-11-07).
+"""A host's surfaces print a campaign the way its report reads (Discodon, 2026-11-07).
 
 Contracts held here (``campaigns_list``'s ``CampaignLine.report``, the reader name of an arm, the report document's
 markdown and text):
@@ -6,13 +6,13 @@ markdown and text):
 - **the headline**: a report document its editor passed lists its own headline, every figure key written out as its
   page prints it; a draft lists code's verdict. Code's warnings and its line on when criteria were set are listed in
   ``caveats`` beside the headline, never inside it, and ``analyses_list``'s verdict is those lines then that verdict
-  (Q7). A document whose snapshot is gone, or that no longer reads, lists code's verdict and says to regenerate;
+  (owner ruling). A document whose snapshot is gone, or that no longer reads, lists code's verdict and says to regenerate;
 - **no cut**: no listing line holds a cut of a prompt or of the question. At render time only, an arm whose level is
   too long to print is named by its campaign label, else by its lever alone (``Extractor instructions``), one name on
   every surface; where two arms would then read alike, each surface adds the tag it prints the arm by (``Extractor
   instructions (B)``), the document page and the listing alike, which no figure key appends twice; the empty level of
   a text lever reads ``no <lever>``, never ``(none)``, and an empty number lever keeps its placeholder; the question
-  prints whole, in its own field (Q10);
+  prints whole, in its own field (owner ruling);
 - **frozen evidence never moves**: the labels a bundle freezes, and its fingerprint, are the ones the build before this
   change froze for the same campaign;
 - **no raw key**: no markdown, text or listing output of the ``toyhost_doc`` capture holds a figure key in braces, the
@@ -145,7 +145,7 @@ def test_a_passed_document_lists_its_own_headline_with_code_s_caveats_beside_it(
 
 
 def test_a_draft_lists_its_own_headline_marked_a_draft_with_code_s_caveats_beside_it() -> None:
-    # Re-pinned at the presentation chunk 4 merge: a draft lists "Draft: <its headline>" (DRAFT_HEADLINE), where it
+    # Re-pinned when the written page came to open on its question: a draft lists "Draft: <its headline>" (DRAFT_HEADLINE), where it
     # listed code's verdict; code's caveats stay beside it.
     _, line = _listed(_edited(_as_draft))
     assert line.report is not None and line.report.draft

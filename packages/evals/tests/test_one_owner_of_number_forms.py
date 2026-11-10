@@ -3,19 +3,28 @@
 A number's form is its digits, sign, unit and interval as printed. Spelling one number is centralised already
 (``kernel/numbers.py``); deciding which figures form a set, and how many digits the set reads at, is not: it happens
 at hundreds of sites, at three different times, by several owners, so one measure prints two ways on one page ("85%"
-in a table, "85.3%" in the chart head). The number-forms plan moves every decision into ``analysis/report/forms.py``.
-This test keeps that migration honest:
+in a table, "85.3%" in the chart head). Every decision moves into ``analysis/report/forms.py``, and this test keeps
+that migration honest:
 
 * **The walk** reads every module of ``threetears/evals`` and the kit's ``kit.js``, and finds each site that decides
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
   (``kernel/numbers.py`` and ``analysis/report/forms.py``), and in ``kit.js`` the digit primitives and the named
-  formats used outside ``K_FMTS`` / ``fmt``. A package function that returns what a site produced is a primitive
+  formats used outside the kit's owners of them (:data:`_KIT_OWNERS`), but a pick by a field of the chart's data,
+  whose format Python decided. A package function that returns what a site produced is a primitive
   too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. That holds where
   the figure reaches the return through a helper that hands back what it is given (``with_unit`` hands
   ``number_in``'s figure to ``_joined``), by an argument, a nested call or a local: the helper is derived, not listed,
   and alone, handed a value nobody decided, it is no site. A primitive stored in a table or bound to a name is a site
-  where it is stored, and a wrapper property is one where ``self`` reads it. So is a public free function of
-  ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and role, is the migrated route.
+  where it is stored, handed on as a parameter's default or returned by name, and a wrapper property is one where
+  ``self`` reads it; a class named in an ``isinstance`` or ``issubclass`` test is read, not handed on, and is none.
+  So is a public free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and
+  role, is the migrated route.
+* **The engine** (:data:`_ENGINE_TREES`): the trees whose imports, followed to their end, never reach
+  ``threetears.evals.analysis`` reach no page's forms, and what they spell (a launch's refusal, a timeout's message) is no page figure. There a call to a primitive
+  of ``kernel/numbers.py`` is the route, not a site, and a function returning one is no wrapper to a caller in the
+  engine, though it is one to a caller above the line; a format spec,
+  ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere. Above that line ``PageForms``
+  is the only route, through ``PageForms.off_page()`` for a surface no page prints.
 * **The ratchet** compares the walk with ``fixtures/number_form_sites.txt``, keyed by (module, enclosing qualname,
   form) with a count. A moved line keeps its entry; a new site in the same function, or in a new one, fails. An entry
   that overstates its count, or names nothing, also fails, so every migration cuts the file and the list only
@@ -51,8 +60,8 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _PACKAGE = "threetears/evals"
 _ALLOWLIST = Path(__file__).resolve().parent / "fixtures" / "number_form_sites.txt"
 
-#: The rule's spelling primitives, and the module that decides a page's forms from C2 on. Nothing in either is a
-#: site: they are where a form is meant to be decided. ``forms.py`` does not exist before C2, so it is optional.
+#: The rule's spelling primitives, and the module that decides a page's forms. Nothing in either is a site: they are
+#: where a form is meant to be decided. A tree without ``forms.py`` (a self-test's) walks as before it existed.
 _RULE = "threetears/evals/kernel/numbers.py"
 _FORMS = "threetears/evals/analysis/report/forms.py"
 _OWNERS = (_RULE, _FORMS)
@@ -61,12 +70,25 @@ _OWNERS = (_RULE, _FORMS)
 #: (``test_report_kit_pages``), so walking one walks both.
 _KIT_JS = "threetears/evals/analysis/report/kit/kit.js"
 
-#: The kit's two named-format tables, its owners of a drawn figure's form: a site inside either is not a site.
-_KIT_OWNERS = frozenset({"fmt", "K_FMTS"})
+#: The kit's owners of a drawn figure's form: its two named-format tables and the helpers that pick and apply a named
+#: format (``kShort`` writes a table's digits, ``namedFmt`` picks a table entry by its name, ``kTickFmt`` and
+#: ``kTickLabels`` an axis's). A site inside one is not a site; a call to one outside them still is, by its name.
+_KIT_OWNERS = frozenset({"fmt", "K_FMTS", "kShort", "namedFmt", "kTickFmt", "kTickLabels"})
 
-#: The set and precision helpers outside the rule that the plan's inventory names as deciding a figure's form. A
-#: call to one, or one passed as a function value, is a site. The rule's own public callables join them by derivation
+#: The kit's pickers of a named format. Called with a field of the chart's data (``namedFmt(d.fmt)``), a picker
+#: applies the format Python decided and wrote into the data, where the walk reads it, so the call is no site; a
+#: literal, a default or anything else it is handed is the kit deciding, and is one.
+_KIT_PICKERS = ("namedFmt", "kTickFmt", "kTickLabels")
+
+#: The set and precision helpers outside the rule that decide a figure's form, each a primitive by its name. A call to
+#: one, or one passed as a function value, is a site. The rule's own public callables join them by derivation
 #: (:func:`_rule_primitives`), so a primitive added to ``numbers.py`` is covered without an edit here.
+#: ``number_in``, ``with_unit``, ``signed_with_unit`` and ``render_cell`` (a figure in its unit, or a values cell)
+#: live where ``forms.py`` imports them, so they cannot route through it: each stays a primitive by name, so its
+#: callers are sites even where its own body is named in :data:`_PERMANENT` (a permanent site wraps nothing, so
+#: derivation alone would let them go).
+#: ``figure_keys.held_means`` is not listed: it returns a measure's floats, and what reads them to classify a measure
+#: (its scale, its unit, whether it is a rubric score) sets no digits.
 #: ``figure_keys.format_figure`` is not listed: it chooses which spelling a key's filters name and refuses one that
 #: does not suit, and every number it prints, an interval's precision and how its ends are joined are a
 #: ``PageForms.key_*`` method's, so a call to it decides nothing. A primitive written back into it is a site where it
@@ -77,13 +99,16 @@ _SET_HELPERS = frozenset(
         "dollars_text",
         "figure_places",
         "figure_text",
-        "held_means",
         "interval_level",
         "interval_words",
+        "number_in",
+        "render_cell",
+        "signed_with_unit",
+        "with_unit",
     }
 )
 
-#: Families the plan names by prefix (``percent_*``, ``respell_*``, ``quantity*``), so a new member is a site too.
+#: Families named by prefix (``percent_*``, ``respell_*``, ``quantity*``), so a new member is a site too.
 _SET_HELPER_PREFIXES = ("percent_", "respell_", "quantity")
 
 #: Private helpers that decide a figure's places, keyed by the one module allowed to call them (a leading underscore
@@ -112,12 +137,41 @@ _NOT_READ_AS_REPORTS = (
     "threetears/evals/analysis/out_of_run_spend.py",
 )
 
+#: The engine: the trees from which no import, followed through the package to its end, reaches
+#: ``threetears.evals.analysis`` (:class:`TestTheEngineRule` holds them to it), so no page's forms reach them and
+#: what they spell is no page figure. ``actions``, ``testing`` and ``transports`` reach it through ``ops``, and
+#: ``providers`` through ``testing``, so they are above the line. In them a call to a primitive of
+#: ``kernel/numbers.py``, called, handed on or a parameter's default, is the route rather than a site, and a function
+#: returning one is no wrapper to a caller there (it is one to a caller above the line); a format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites. The
+#: list only narrows: a tree joins it by an owner's decision, which raises :data:`_ENGINE_TREES_CEILING`.
+_ENGINE_TREES = tuple(
+    f"{_PACKAGE}/{tree}"
+    for tree in (
+        "gen",
+        "kernel",
+        "negotiation",
+        "run",
+        "schema",
+        "storage",
+    )
+)
+_ENGINE_TREES_CEILING = 6
+
+#: The package the engine may not import.
+_ANALYSIS = "threetears.evals.analysis"
+
+
+def _in_engine(module: str) -> bool:
+    """Whether ``module`` (relative to the package's ``src``) sits in a tree of :data:`_ENGINE_TREES`."""
+    return any(module.startswith(f"{tree}/") for tree in _ENGINE_TREES)
+
+
 #: Presentation types that choose how many digits a reader sees. ``d`` and ``s`` do not.
 _NUMERIC_TYPES = frozenset("eEfFgGn%")
 
 #: A share of a whole spelled as a percentage (``.0%``) is a different sentence from a measured value, "37% of it",
 #: and carries its own fixed precision. The stricter rule passes it by presentation type; the ratchet still lists it,
-#: because from C3 on a share prints through ``forms.share``.
+#: because a page's share prints through ``forms.share``.
 _PERCENTAGE_TYPE = "%"
 
 #: The static page's chart drawer, and why its kit formats spell as they do.
@@ -128,7 +182,7 @@ _KIT_FORMAT = (
 
 #: Sites whose fixed form is right for good, keyed by (module, expression, spec or form) so a moved line keeps its
 #: entry and a rewritten expression loses it. Each reason says why the fixed form is right there; an entry no site
-#: matches any more fails the suite. Only C6 adds to it.
+#: matches any more fails the suite.
 _PERMANENT: dict[tuple[str, str, str], str] = {
     # Money's spelling (two significant figures, cents from ten cents up) is numbers.spell_dollars, in the
     # rule's own module.
@@ -152,7 +206,8 @@ _PERMANENT: dict[tuple[str, str, str], str] = {
 
 #: The one-line remedy every ratchet failure ends with.
 _REMEDY = (
-    "route the figure through analysis/report/forms.py (or, in C6 only, name the site in _PERMANENT with its reason)"
+    "route the figure through analysis/report/forms.py (PageForms; off_page() where no page prints it), or, in the "
+    "engine trees, through a kernel/numbers.py primitive"
 )
 
 
@@ -412,14 +467,17 @@ class _Index:
 
 @dataclass(frozen=True)
 class _Lookup:
-    """What a call names to be a site: the rule's and the plan's primitives, and the wrappers derived so far.
+    """What a call names to be a site: the rule's primitives and the set helpers, and the wrappers derived so far.
 
     :ivar index: The walked modules' definitions and imports.
     :ivar functions: ``(module, name)`` of every module-level or nested function found to be a wrapper.
     :ivar methods: ``(module, "Class.name")`` of every method found to be a wrapper.
-    :ivar primitives: The names a call is a site by: the rule's, the plan's and ``forms.py``'s public functions.
+    :ivar primitives: The names a call is a site by: the rule's, the set helpers and ``forms.py``'s public functions.
     :ivar carriers: Each function, by its key, that returns what some of its parameters were given, with those
         parameters: a call that hands one of them a form returns that form, so it carries a site to its caller.
+    :ivar engine_route: Whether a ``numbers`` primitive is the route inside :data:`_ENGINE_TREES`: so for a call made
+        there, and not for one made above the line, where an engine function returning a primitive's text is a
+        wrapper like any other.
     """
 
     index: _Index
@@ -427,6 +485,7 @@ class _Lookup:
     methods: frozenset[tuple[str, str]] = frozenset()
     primitives: frozenset[str] = _BASE_PRIMITIVES
     carriers: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    engine_route: bool = True
 
     def callees(self, func: ast.expr, where: tuple[str, str]) -> list[tuple[str, str]]:
         """The keys of the package functions a call of ``func`` reaches, resolved as :meth:`named` resolves a wrapper.
@@ -481,9 +540,11 @@ class _Lookup:
 
         A family prefix or a method name is also an ordinary local's name (``quantity``, ``places``), so a value
         handed on is matched by exact name only, and a method only as an attribute call. ``where`` is the call's
-        module and enclosing class (empty outside one), which is what ``self`` names.
+        module and enclosing class (empty outside one), which is what ``self`` names. In the engine
+        (:data:`_ENGINE_TREES`) the rule's own callables and methods are the route and name nothing.
         """
         module, cls = where
+        engine = self.engine_route and _in_engine(module)
         if isinstance(node, ast.Name):
             name = node.id
             if (module, name) in _PRIVATE_SET_HELPERS or (module, name) in self.functions:
@@ -492,7 +553,7 @@ class _Lookup:
                 return name
         elif isinstance(node, ast.Attribute):
             name = node.attr
-            if not as_value and name in _RULE_METHODS:
+            if not as_value and name in _RULE_METHODS and not engine:
                 return name
             owner = node.value
             if isinstance(owner, ast.Name):
@@ -506,7 +567,7 @@ class _Lookup:
                 return name
         else:
             return None
-        if name.startswith("_"):
+        if name.startswith("_") or (engine and name in _RULE_CALLABLES):
             return None
         if name in self.primitives or (not as_value and name.startswith(_SET_HELPER_PREFIXES)):
             return name
@@ -576,6 +637,10 @@ class _PythonForms(ast.NodeVisitor):
         self.scope: list[str] = []
         self.classes: list[str] = []
         self.sites: list[_Site] = []
+        #: The collections an ``isinstance`` or ``issubclass`` test names its classes in, whose elements it reads.
+        self.class_tests: set[int] = set()
+        #: The functions each enclosing definition builds inside itself: one it returns is a factory's formatter.
+        self.built: list[frozenset[str]] = []
 
     @property
     def where(self) -> tuple[str, str]:
@@ -589,7 +654,17 @@ class _PythonForms(ast.NodeVisitor):
         self.scope.append(node.name)
         if isinstance(node, ast.ClassDef):
             self.classes.append(node.name)
+        self.built.append(
+            frozenset()
+            if isinstance(node, ast.ClassDef)
+            else frozenset(
+                inner.name
+                for inner in ast.walk(node)
+                if inner is not node and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+        )
         self.generic_visit(node)
+        self.built.pop()
         if isinstance(node, ast.ClassDef):
             self.classes.pop()
         self.scope.pop()
@@ -603,6 +678,12 @@ class _PythonForms(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scoped(node)
 
+    def _returns_what_it_built(self, node: ast.AST) -> bool:
+        """Whether ``node`` returns, by name, a function its enclosing definition built: a factory's formatter, whose
+        site is counted where it is written, not again where it is handed back."""
+        returned = node.value if isinstance(node, ast.Return) else None
+        return isinstance(returned, ast.Name) and bool(self.built) and returned.id in self.built[-1]
+
     def generic_visit(self, node: ast.AST) -> None:
         for form, expression, spec in _spec_sites(node):
             self._add(node, form, expression, spec)
@@ -612,29 +693,56 @@ class _PythonForms(ast.NodeVisitor):
         elif (read := self.lookup.read(node, self.where)) is not None:  # a property is called by reading it
             self._add(node, f"{read}()", ast.unparse(node))
         # A primitive handed on as a function value (``map(format_number, ...)``, ``key=spell_at``, a table of
-        # formatters, a name bound to one) decides where it is applied, which the walk cannot follow, so it is
-        # counted where it is handed on, which is here.
-        for value in _handed_values(node):
+        # formatters, a name bound to one, a parameter's default, a return) decides where it is applied, which the
+        # walk cannot follow, so it is counted where it is handed on, which is here.
+        if _tests_a_class(node):
+            assert isinstance(node, ast.Call)
+            self.class_tests |= {id(names) for argument in node.args[1:] for names in _class_tuples(argument)}
+        for value in [] if id(node) in self.class_tests or self._returns_what_it_built(node) else _handed_values(node):
             if (handed := self.lookup.named(value, self.where, as_value=True)) is not None:
                 self._add(value, f"{handed}()", ast.unparse(value))
         super().generic_visit(node)
 
 
-def _handed_values(node: ast.AST) -> list[ast.expr]:
-    """The expressions ``node`` hands on as values: a call's arguments, and, by bare name, a dict's values, a
-    collection's elements and what an assignment binds.
+#: The builtins whose arguments name a class to test against, read rather than handed on.
+_CLASS_TESTS = frozenset({"isinstance", "issubclass"})
 
-    Outside a call only a bare name counts: an attribute there (``family.interval_level``) is far likelier a field
-    read than a method handed on. An annotation or an ``isinstance`` test reads a class, not a formatter, and is none
-    of these. A function returning a formatter it built is a factory, whose site is counted where it is written.
+
+def _tests_a_class(node: ast.AST) -> bool:
+    """Whether ``node`` is an ``isinstance`` or ``issubclass`` call: its arguments are read, never handed on."""
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _CLASS_TESTS
+
+
+def _class_tuples(node: ast.expr) -> Iterator[ast.Tuple]:
+    """The tuples, nested to any depth, that a class test's second argument names its classes in."""
+    if isinstance(node, ast.Tuple):
+        yield node
+        for element in node.elts:
+            yield from _class_tuples(element)
+
+
+def _handed_values(node: ast.AST) -> list[ast.expr]:
+    """The expressions ``node`` hands on as values: a call's arguments and a parameter's default, and, by bare name,
+    a dict's values, a collection's elements, what an assignment binds and what a ``return`` returns.
+
+    Outside a call and a default only a bare name counts: an attribute there (``family.interval_level``) is far
+    likelier a field read than a method handed on, where a default, evaluated once as the function is defined, reads
+    no instance. An annotation, or the class an ``isinstance`` or ``issubclass`` test names, reads a class, not a
+    formatter, and is none of these. A function returning a formatter it built is a factory, whose site is counted
+    where it is written; one returning a primitive by its name hands that primitive on, and is a site where it does.
     """
+    if _tests_a_class(node):
+        return []
     if isinstance(node, ast.Call):
         return [*node.args, *(keyword.value for keyword in node.keywords)]
+    if isinstance(node, ast.arguments):
+        defaults = [*node.defaults, *(default for default in node.kw_defaults if default is not None)]
+        return [default for default in defaults if isinstance(default, (ast.Name, ast.Attribute))]
     if isinstance(node, ast.Dict):
         values: list[ast.expr | None] = list(node.values)
     elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         values = list(node.elts)
-    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+    elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
         values = [node.value]
     else:
         values = []
@@ -771,7 +879,9 @@ def _carried_parameters(
     return frozenset(name for name in parameters if _returns_a_form(function, where, lookup, frozenset({name})))
 
 
-def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVES) -> _Lookup:
+def _derive_wrappers(
+    index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVES, *, engine_route: bool = True
+) -> _Lookup:
     """Every function over the walked modules that returns a form, and every one that returns what it was handed,
     to the fixed point.
 
@@ -796,7 +906,7 @@ def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVE
         for function, reached, cls in _definitions(tree)
         if not function.name.startswith("__")
     ]
-    lookup = _Lookup(index, primitives=primitives)
+    lookup = _Lookup(index, primitives=primitives, engine_route=engine_route)
     fresh: frozenset[str] | None = None
     while True:
         wrappers: dict[tuple[str, str], bool] = {}
@@ -820,16 +930,22 @@ def _derive_wrappers(index: _Index, primitives: frozenset[str] = _BASE_PRIMITIVE
             lookup.methods | {key for key, method in wrappers.items() if method},
             primitives,
             {**lookup.carriers, **carriers},
+            engine_route,
         )
 
 
 def _walk_python(sources: dict[str, str], primitives: frozenset[str] = _BASE_PRIMITIVES) -> list[_Site]:
-    """Every site in ``sources`` (module to text), with the wrappers derived over them as primitives."""
+    """Every site in ``sources`` (module to text), with the wrappers derived over them as primitives.
+
+    Derived twice where the engine is walked: a call made inside :data:`_ENGINE_TREES` is read with ``numbers`` as
+    the route, and one made above the line with every engine function that returns a primitive's text a wrapper.
+    """
     index = _Index({module: ast.parse(text) for module, text in sources.items()})
-    lookup = _derive_wrappers(index, primitives)
+    above = _derive_wrappers(index, primitives, engine_route=False)
+    engine = _derive_wrappers(index, primitives) if any(_in_engine(module) for module in index.trees) else above
     sites = []
     for module, tree in index.trees.items():
-        visitor = _PythonForms(module, lookup)
+        visitor = _PythonForms(module, engine if _in_engine(module) else above)
         visitor.visit(tree)
         sites.extend(visitor.sites)
     return sorted(sites, key=lambda site: (site.module, site.line, site.form, site.expression))
@@ -1062,11 +1178,21 @@ def _js_returned(code: str, start: int, end: int) -> list[tuple[int, int]]:
     return spans
 
 
+#: A picker's call whose one argument, or whose first, is a format field of the chart's data as every drawer of the
+#: kit names it: ``d``, the chart's data, and its ``fmt`` or a ``<role>_fmt`` (``d.fmt``, ``d.cost_fmt``). A field
+#: of any other object (a constant table's ``K_DEF.fmt``) is the kit's own choice, and a site.
+_JS_PICK_BY_FIELD = re.compile(r"\s*\(\s*d\s*\.\s*(?:[A-Za-z_$][\w$]*_)?fmt\s*[,)]")
+
+
 def _js_found(code: str, forms: Iterable[tuple[str, re.Pattern[str]]]) -> Iterator[tuple[str, re.Match[str]]]:
+    """Each match of ``forms`` in ``code`` but a declaration's name and a pick by a data field (:data:`_KIT_PICKERS`)."""
     for form, pattern in forms:
         for match in pattern.finditer(code):
-            if not _JS_DECLARED.search(code, 0, match.start()):
-                yield form, match
+            if _JS_DECLARED.search(code, 0, match.start()):
+                continue
+            if form in _KIT_PICKERS and _JS_PICK_BY_FIELD.match(code, match.end()):
+                continue
+            yield form, match
 
 
 def _js_sites(source: str, module: str = "sample.js") -> list[_Site]:
@@ -1330,6 +1456,10 @@ class TestTheWalkSeesEveryPythonForm:
             ("charts.respell_bare(t, 1)", ("<module>", "respell_bare()", "charts.respell_bare(t, 1)")),
             ("percent_columns(rows)", ("<module>", "percent_columns()", "percent_columns(rows)")),
             ("look.quantity_of(u, v)", ("<module>", "quantity_of()", "look.quantity_of(u, v)")),
+            ("number_in(v, '%')", ("<module>", "number_in()", "number_in(v, '%')")),
+            ("quantities.with_unit(v, 'ms')", ("<module>", "with_unit()", "quantities.with_unit(v, 'ms')")),
+            ("signed_with_unit(d, 'pts')", ("<module>", "signed_with_unit()", "signed_with_unit(d, 'pts')")),
+            ("list(map(render_cell, row))", ("<module>", "render_cell()", "render_cell")),
             ("list(map(format_number, xs))", ("<module>", "format_number()", "format_number")),
             ("sorted(xs, key=numbers.spell_at)", ("<module>", "spell_at()", "numbers.spell_at")),
             ("Decimal(v).quantize(step)", ("<module>", "quantize()", "Decimal(v).quantize(step)")),
@@ -1360,6 +1490,8 @@ class TestTheWalkSeesEveryPythonForm:
             "f(self.respelled)",
             "math.log10(v)",
             "math.floor(v / step)",
+            # A measure's held means are floats: what reads them to classify a measure sets no digits.
+            "held_means(report_input, key)",
         ],
     )
     def test_the_walk_leaves_what_decides_no_form(self, source):
@@ -1584,8 +1716,27 @@ class TestASiteHandedThroughAHelperIsStillASite:
             ("Ruler.head", "figure()", "self.figure(v)"),
         ]
 
+    def test_a_helper_named_a_primitive_keeps_its_callers_when_its_body_is_permanent(self, monkeypatch):
+        """A permanent site wraps nothing, so a helper whose body is named permanently would lose its callers by
+        derivation alone; one listed by name keeps them."""
+        quantities = "threetears/evals/analysis/quantities.py"
+        monkeypatch.setitem(_PERMANENT, (quantities, "v", ".1f"), "a self-test's permanent body")
+        sources = {
+            quantities: "def number_in(v, unit):\n    return f'{v:.1f}'\n\ndef tenths(v):\n    return f'{v:.1f}'\n",
+            "threetears/evals/caller.py": (
+                "from threetears.evals.analysis.quantities import number_in, tenths\n\n"
+                "def level(v):\n    return number_in(v, 'ms')\n\n"
+                "def other(v):\n    return tenths(v)\n"
+            ),
+        }
+        ratcheted = _ratcheted(_walk_python(sources))
+        assert [(site.module, site.qualname, site.form) for site in ratcheted] == [
+            ("threetears/evals/caller.py", "level", "number_in()")
+        ]
+
     def test_the_package_s_own_with_unit_is_a_primitive(self):
-        """``with_unit`` hands ``number_in``'s figure to ``_joined``, so every call to it is a site (C3g review)."""
+        """``with_unit`` hands ``number_in``'s figure to ``_joined``, so every call to it is a site, by its name and by
+        derivation alike."""
         quantities = "threetears/evals/analysis/quantities.py"
         sources = {
             quantities: (_SOURCE_ROOT / quantities).read_text(encoding="utf-8"),
@@ -1617,10 +1768,45 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
 
     def test_an_annotation_a_class_test_or_a_field_read_is_not(self):
         source = (
-            "def f(form: MoneyForm, family) -> MoneyForm:\n"
+            "def f(form: MoneyForm, family, kind) -> MoneyForm:\n"
+            "    assert isinstance(form, MoneyForm) and not issubclass(kind, (str, (MoneyForm, int)))\n"
             "    level = family.interval_level\n"
             "    return {'level': family.interval_level, 'form': form}\n"
         )
+        assert _python_sites(source) == []
+
+    def test_a_class_test_still_sees_a_site_it_is_handed(self):
+        """Only the class it names is read: a figure spelled inside the test, or a primitive handed to a call there,
+        is a site as anywhere."""
+        source = "ok = isinstance(format_number(v), str) and isinstance(apply(spell_at), (MoneyForm,))\n"
+        assert _forms(_python_sites(source)) == [
+            ("<module>", "format_number()", "format_number(v)"),
+            ("<module>", "spell_at()", "spell_at"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("def f(v, spell=format_number):\n    return spell(v)\n", ("f", "format_number()", "format_number")),
+            ("def f(v, *, spell=spell_at):\n    return spell(v, 1)\n", ("f", "spell_at()", "spell_at")),
+            (
+                "def f(v, spell=numbers.format_number):\n    return spell(v)\n",
+                ("f", "format_number()", "numbers.format_number"),
+            ),
+            ("f = lambda v, spell=format_number: spell(v)\n", ("<module>", "format_number()", "format_number")),
+        ],
+        ids=["positional", "keyword-only", "through-a-module", "lambda"],
+    )
+    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source, expected):
+        assert _forms(_python_sites(source)) == [expected]
+
+    def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self):
+        """The returner hands the primitive on, so its own call decides nothing and is no site."""
+        source = "def pick(kind):\n    return format_number\n\ndef use(v):\n    return pick('n')(v)\n"
+        assert _forms(_python_sites(source)) == [("pick", "format_number()", "format_number")]
+
+    def test_a_default_or_a_return_of_anything_else_is_not(self):
+        source = "def f(v, places=PLACES, unit=config.unit):\n    return places\n"
         assert _python_sites(source) == []
 
     def test_a_property_that_returns_a_form_is_a_site_where_self_reads_it(self):
@@ -1632,6 +1818,221 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         assert _forms(_python_sites(source)) == [
             ("Cell.figure", "spell_at()", "spell_at(self.value, 1)"),
             ("Cell.text", "figure()", "self.figure"),
+        ]
+
+
+def _imported(module: str, tree: ast.Module) -> Iterator[str]:
+    """Every module ``tree`` imports, absolute, wherever the import sits (a function, a ``TYPE_CHECKING`` block), and
+    each name a ``from`` import takes as the module it may be; ``importlib.import_module`` of a literal too."""
+    package = _dotted(module).split(".") if module.endswith("__init__.py") else _dotted(module).split(".")[:-1]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            named = [node.module] if node.module else []
+            base = ".".join([*package[: len(package) - node.level + 1], *named]) if node.level else ".".join(named)
+            yield base
+            yield from (f"{base}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+        elif (
+            isinstance(node, ast.Call)
+            and (node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", ""))
+            == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            yield node.args[0].value
+
+
+def _is_analysis(dotted: str) -> bool:
+    return dotted == _ANALYSIS or dotted.startswith(f"{_ANALYSIS}.")
+
+
+def _imports_analysis(module: str, source: str) -> list[str]:
+    """What ``module`` imports from ``threetears.evals.analysis`` directly."""
+    return sorted({name for name in _imported(module, ast.parse(source)) if _is_analysis(name)})
+
+
+def _import_graph(root: Path = _SOURCE_ROOT) -> dict[str, frozenset[str]]:
+    """Each module of the package under ``root``, dotted, with the modules of the package it imports (a package
+    imported, or one a name is taken from, is its ``__init__``)."""
+    paths = {_dotted(path.relative_to(root).as_posix()): path for path in sorted((root / _PACKAGE).rglob("*.py"))}
+    return {
+        dotted: frozenset(
+            name
+            for name in _imported(path.relative_to(root).as_posix(), ast.parse(path.read_text(encoding="utf-8")))
+            if name in paths
+        )
+        for dotted, path in paths.items()
+    }
+
+
+def _route_to_analysis(graph: Mapping[str, Iterable[str]], start: str) -> list[str]:
+    """The chain of imports by which ``start`` reaches the analysis package, shortest first found; empty where none
+    does, followed to the fixed point."""
+    came_from: dict[str, str | None] = {start: None}
+    queue = [start]
+    while queue:
+        module = queue.pop(0)
+        if _is_analysis(module):
+            chain = [module]
+            while (before := came_from[chain[-1]]) is not None:
+                chain.append(before)
+            return chain[::-1]
+        for imported in sorted(graph.get(module, ())):
+            if imported not in came_from:
+                came_from[imported] = module
+                queue.append(imported)
+    return []
+
+
+class TestTheEngineRule:
+    """In the trees whose imports never reach the analysis package a ``numbers`` primitive is the route; anything else that
+    decides a form there is a site, as anywhere."""
+
+    def test_no_engine_module_reaches_the_analysis_package(self):
+        """The rule holds only while no page's forms are reachable there: an engine module whose imports, followed
+        through the package to the fixed point, reach the analysis package is above the line, and its spellings
+        route through ``PageForms`` like any other. A tree joins the engine whole or not at all."""
+        graph = _import_graph()
+        engine = [module for module in graph if _in_engine(f"{module.replace('.', '/')}/")]
+        assert len(engine) > 100  # every tree is read, not only the first
+        routes = {module: route for module in engine if (route := _route_to_analysis(graph, module))}
+        assert routes == {}, "\n".join(" -> ".join(route) for route in routes.values())
+
+    def test_a_route_to_the_analysis_package_is_followed_through_every_import(self):
+        graph = {
+            "threetears.evals.run.launch": ["threetears.evals.testing"],
+            "threetears.evals.testing": ["threetears.evals.testing.jobs"],
+            "threetears.evals.testing.jobs": ["threetears.evals.ops"],
+            "threetears.evals.ops": ["threetears.evals.analysis.report.forms"],
+            "threetears.evals.kernel.numbers": ["threetears.evals.kernel"],
+            "threetears.evals.kernel": ["threetears.evals.kernel.numbers"],
+        }
+        assert _route_to_analysis(graph, "threetears.evals.run.launch") == [
+            "threetears.evals.run.launch",
+            "threetears.evals.testing",
+            "threetears.evals.testing.jobs",
+            "threetears.evals.ops",
+            "threetears.evals.analysis.report.forms",
+        ]
+        assert _route_to_analysis(graph, "threetears.evals.kernel.numbers") == []
+
+    def test_the_import_graph_reads_packages_and_names_taken_from_them(self, tmp_path):
+        files = {
+            "threetears/evals/run/__init__.py": "from threetears.evals.run.launch import go\n",
+            "threetears/evals/run/launch.py": "from ..testing import Recorded\n\ndef go():\n    import json\n",
+            "threetears/evals/testing/__init__.py": "from .jobs import Recorded\n",
+            "threetears/evals/testing/jobs.py": "from threetears.evals import ops\n",
+            "threetears/evals/ops.py": "x = importlib.import_module('threetears.evals.analysis')\n",
+            "threetears/evals/analysis/__init__.py": "",
+        }
+        for name, text in files.items():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        graph = _import_graph(tmp_path)
+        assert graph["threetears.evals.run.launch"] == {"threetears.evals.testing"}
+        assert graph["threetears.evals.testing.jobs"] == {"threetears.evals.ops"}
+        assert _route_to_analysis(graph, "threetears.evals.run") == [
+            "threetears.evals.run",
+            "threetears.evals.run.launch",
+            "threetears.evals.testing",
+            "threetears.evals.testing.jobs",
+            "threetears.evals.ops",
+            "threetears.evals.analysis",
+        ]
+
+    def test_the_engine_scope_only_narrows(self):
+        """Six trees at most, each a top-level package of its own: a tree joins only by an owner's decision, which
+        raises the ceiling in the same change."""
+        assert len(_ENGINE_TREES) <= _ENGINE_TREES_CEILING == 6
+        assert len(set(_ENGINE_TREES)) == len(_ENGINE_TREES)
+        for tree in _ENGINE_TREES:
+            assert (_SOURCE_ROOT / tree).is_dir(), tree
+            assert tree.startswith(f"{_PACKAGE}/") and tree.count("/") == _PACKAGE.count("/") + 1, tree
+        assert _in_engine("threetears/evals/run/launch.py")
+        assert not _in_engine("threetears/evals/runner.py")
+        assert not _in_engine("threetears/evals/analysis/report/forms.py")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from threetears.evals.analysis.report.forms import PageForms\n",
+            "from threetears.evals import analysis\n",
+            "import threetears.evals.analysis.quantities as q\n",
+            "from ..analysis import quantities\n",
+            "def f():\n    from threetears.evals.analysis import aspects\n",
+            "if TYPE_CHECKING:\n    from threetears.evals.analysis.report import forms\n",
+            "m = importlib.import_module('threetears.evals.analysis.quantities')\n",
+        ],
+    )
+    def test_every_way_of_importing_the_analysis_package_is_seen(self, source):
+        assert _imports_analysis("threetears/evals/run/launch.py", source) != []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from threetears.evals.kernel.numbers import format_number\n",
+            "from threetears.evals.ops import analyst\n",
+            "from .analysis_measures import BarAdjudication\n",
+            "import threetears.evals.analysis_tools\n",
+        ],
+    )
+    def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source):
+        assert _imports_analysis("threetears/evals/kernel/surface.py", source) == []
+
+    def test_a_numbers_primitive_is_the_route_in_the_engine_and_a_site_above_it(self):
+        """Called, handed on, a default or a method of the rule's: none is a site in the engine, and a function
+        returning one is no wrapper there. The same text above the line is a site at every one."""
+        body = (
+            "from threetears.evals.kernel.numbers import format_number\n\n"
+            "def refusal(v):\n    return f'{format_number(v)} over the cap'\n\n"
+            "def message(v):\n    return refusal(v)\n\n"
+            "SPELL = {'n': format_number}\n\n"
+            "def ends(form, v, spell=format_number):\n    return form.spell(v)\n"
+        )
+        engine = "threetears/evals/run/launch.py"
+        above = "threetears/evals/ops/launch_words.py"
+        sites = _walk_python({engine: body, above: body})
+        assert {site.module for site in sites} == {above}
+        assert [(site.qualname, site.form) for site in sites] == [
+            ("refusal", "format_number()"),
+            ("message", "refusal()"),
+            ("<module>", "format_number()"),
+            ("ends", "format_number()"),
+            ("ends", "spell()"),
+        ]
+
+    def test_a_spec_round_quantize_and_log10_stay_sites_in_the_engine(self):
+        source = (
+            "def waited(s):\n    return f'{s:.1f} s'\n\n"
+            "def message(s):\n    return 'after ' + waited(s)\n\n"
+            "def places(v, step):\n"
+            "    return round(v, 2), Decimal(v).quantize(step), math.floor(math.log10(v))\n"
+        )
+        assert _forms(_python_sites(source, "threetears/evals/kernel/job_timeout.py")) == [
+            ("waited", "f-string spec", "s"),
+            ("message", "waited()", "waited(s)"),
+            ("places", "floor(log10)", "math.floor(math.log10(v))"),
+            ("places", "quantize()", "Decimal(v).quantize(step)"),
+            ("places", "round()", "round(v, 2)"),
+        ]
+
+    def test_a_page_module_calling_an_engine_helper_is_a_site(self):
+        """``numbers`` is the route only for a call made in the engine: an engine helper that returns a primitive's
+        text is a wrapper to a page module, so a page cannot borrow the engine's route to decide a figure. Inside the
+        engine, its own callers stay no site."""
+        sources = {
+            "threetears/evals/run/budget.py": ("def cap_words(v):\n    return f'a cap of {format_number(v)}'\n"),
+            "threetears/evals/analysis/report/notes.py": (
+                "from threetears.evals.run.budget import cap_words\n\ndef note(v):\n    return cap_words(v)\n"
+            ),
+            "threetears/evals/run/launch.py": (
+                "from threetears.evals.run.budget import cap_words\n\ndef refusal(v):\n    return 'over ' + cap_words(v)\n"
+            ),
+        }
+        assert [(site.module, site.qualname, site.form) for site in _walk_python(sources)] == [
+            ("threetears/evals/analysis/report/notes.py", "note", "cap_words()")
         ]
 
 
@@ -1650,8 +2051,9 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(v){return fmt.usd(v);}", ("a", "fmt.", "fmt.usd(v)")),
             ("function a(v){return K_FMTS.pct(v,1);}", ("a", "K_FMTS", "K_FMTS.pct(v,1)")),
             ('function a(d){return namedFmt(d.fmt||"pct:1");}', ("a", "namedFmt", 'namedFmt(d.fmt||"pct:1")')),
-            ("function a(d){return kTickFmt(d.fmt);}", ("a", "kTickFmt", "kTickFmt(d.fmt)")),
-            ("function a(d,t){return kTickLabels(d.fmt,t);}", ("a", "kTickLabels", "kTickLabels(d.fmt,t)")),
+            ('function a(){return kTickFmt("pct");}', ("a", "kTickFmt", 'kTickFmt("pct")')),
+            ('function a(t){return kTickLabels("pct",t);}', ("a", "kTickLabels", 'kTickLabels("pct",t)')),
+            ("function a(spec){return namedFmt(spec);}", ("a", "namedFmt", "namedFmt(spec)")),
             ("function a(v){return kShort(v,1);}", ("a", "kShort", "kShort(v,1)")),
         ],
     )
@@ -1690,10 +2092,49 @@ class TestTheWalkSeesEveryKitForm:
             "function namedFmt(spec){return spec;}",
             "const kShort=(v,d)=>v;",
             "const K_STEP_FMTS=new Set(['num']);",
+            # The owners' own bodies: a table's digits, a pick by name, an axis's ticks.
+            "const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);",
+            "function namedFmt(spec){const f=K_FMTS[spec];return v=>f(v,1);}",
+            "const kTickFmt=spec=>namedFmt(spec.replace(/:\\d$/,''));",
+            "function kTickLabels(spec,ticks){return ticks.map(t=>Math.round(t)+kTickFmt(spec)(t));}",
         ],
     )
     def test_the_walk_leaves_what_the_kit_does_not_decide(self, source):
         assert _js_sites(source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "function a(d){return namedFmt(d.fmt);}",
+            "function a(d){const f=d.cost_fmt?namedFmt(d.cost_fmt):null;return f;}",
+            "function a(d){return kTickFmt( d.fmt );}",
+            "function a(d,tv){return kTickLabels(d.fmt,tv);}",
+            "function a(d){return namedFmt(d.x_fmt)+namedFmt(d.latency_fmt);}",
+        ],
+    )
+    def test_a_pick_by_a_data_field_is_not_a_site(self, source):
+        """The data's format is decided in Python, which the walk reads; the kit only applies it."""
+        assert _js_sites(source) == []
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ('function a(d){return namedFmt(d.fmt||"pct:1");}', 'namedFmt(d.fmt||"pct:1")'),
+            ('function a(d){return namedFmt(d.on?"pct:1":d.fmt);}', 'namedFmt(d.on?"pct:1":d.fmt)'),
+            ('function a(){return namedFmt("usd:0");}', 'namedFmt("usd:0")'),
+            ("function a(fmts){return namedFmt(fmts[0]);}", "namedFmt(fmts[0])"),
+            ("function a(){return namedFmt(K_DEF.fmt);}", "namedFmt(K_DEF.fmt)"),
+            ("function a(o){return namedFmt(o.chart.x_fmt);}", "namedFmt(o.chart.x_fmt)"),
+            ("function a(d){return namedFmt(d.label);}", "namedFmt(d.label)"),
+        ],
+    )
+    def test_a_pick_the_kit_decides_is_a_site(self, source, expected):
+        """A literal, a default beside the data's field, or anything but the field itself is the kit's choice."""
+        assert _forms(_js_sites(source)) == [("a", "namedFmt", expected)]
+
+    def test_a_call_to_an_owner_outside_the_owners_is_still_a_site(self):
+        source = "const kShort=(v,d)=>(+v).toFixed(d);\nfunction a(v){return kShort(v,1)+' ms';}\n"
+        assert _forms(_js_sites(source)) == [("a", "kShort", "kShort(v,1)")]
 
     def test_a_function_returning_a_kit_site_makes_its_callers_sites(self):
         source = (

@@ -4,7 +4,7 @@
 
 | What | Recorded |
 |---|---|
-| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-10, over the C5c pages (`7601153ed`) |
+| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-10, over the pages built at `7601153ed` |
 | Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
 | Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
 | Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.63 |
