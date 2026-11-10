@@ -436,8 +436,9 @@ class TestReadJoined:
         """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them.
 
         The bare is the best hand-written statement doing the same work on the same table: the rows of the page's 200
-        (state, geo) values, looked up by the key (IN-unnest of natively typed arrays), as a caller knowing only the
-        page's values must. Never a read of a plain copy holding only the answer: that skips the 200 lookups."""
+        (state, geo) values by the key, IN-unnest of natively typed arrays with each column bound to its distinct
+        values (the keys alone plan on PostgreSQL as a hash join over the whole table: 18 ms against 6 ms). Never a
+        read of a plain copy holding only the answer: that skips the 200 lookups."""
         page = [{"state": "S11", "geo": f"{g:03d}"} for g in range(1, 201)]
         recorder = PlanRecorder(seeded.conn)
         joined = await read_joined(
@@ -452,9 +453,11 @@ class TestReadJoined:
         baseline = await _bare(
             seeded.conn,
             f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo) IN "
-            "(SELECT * FROM unnest($1::text[], $2::text[]))",
+            "(SELECT * FROM unnest($1::text[], $2::text[])) AND state = ANY($3::text[]) AND geo = ANY($4::text[])",
             [row["state"] for row in page],
             [row["geo"] for row in page],
+            list(dict.fromkeys(row["state"] for row in page)),
+            list(dict.fromkeys(row["geo"] for row in page)),
         )
         took = await best_seconds(
             lambda: read_joined(
