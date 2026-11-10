@@ -211,7 +211,7 @@ def _dot(
     forms, kind = context.forms, figure_kind(context, measure)
     tip = [label, forms.chart_note(value, drawn, measure=measure, kind=kind).text]
     if interval is not None:
-        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).text}"
+        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).beside}"
     if drawn.unit == MONEY and arm and (share := priced_in_part(context.report_input, arm)) is not None:
         # A cost over part of the arm's calls is a smaller total, never stated bare.
         tip[1] += f" ({share})"

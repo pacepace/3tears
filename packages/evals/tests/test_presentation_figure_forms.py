@@ -775,7 +775,8 @@ def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:
     )
     drawn = grid_html(block)
     # The margin is declared, so it reads as declared (number rule 4), never at the cells' tenth.
-    assert "<title>16.7 pts, interval -7.8 to +35.4 pts, margin ±5 pts</title>" in drawn
+    # A change's figure carries its sign, as its cell does, and the unit once, on the figure (number rule 3).
+    assert "<title>+16.7 pts, interval -7.8 to +35.4, margin ±5 pts</title>" in drawn
     assert '<p class="axis">Each column drawn from -7.8 to +35.4 pts</p>' in drawn
     assert drawn.count('class="viz-margin"') == 2
 

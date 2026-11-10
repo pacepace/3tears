@@ -70,7 +70,7 @@ def test_the_scorecard_opens_on_the_preference_drawn_against_even(rung5: WriterR
     ]
     assert (chart.domain, chart.fmt, chart.level) == ((0, 100), "pct:0", "95%")
     # Its mark carries the table's figures as text, so its tooltip and values table print them, not the kit's rule.
-    assert [(row.value_text, row.lo_text, row.hi_text) for row in chart.rows or []] == [("70%", "33", "100%")]
+    assert [(row.value_text, row.lo_text, row.hi_text) for row in chart.rows or []] == [("70%", "33", "100")]
     # The baseline is drawn and named: even, at 50.
     assert chart.reference is not None
     assert (chart.reference.value, chart.reference.label) == (50, "even (50%)")

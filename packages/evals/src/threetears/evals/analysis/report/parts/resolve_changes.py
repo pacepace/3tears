@@ -499,7 +499,7 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
         ends = None
         if low is not None and high is not None:
             ends = forms.chart_interval(low, high, drawn, measure=rate, kind="trial")
-            tip[1] += f", {ends.text}"
+            tip[1] += f", {ends.beside}"
         changes.append(
             _Change(
                 id=arm,
@@ -561,7 +561,7 @@ def _contrast_changes(
             ends = None
             if interval is not None:
                 ends = context.forms.chart_interval(*interval, here, measure=group.key, kind=contrast.kind)
-                tip[2] += f", {ends.text}"
+                tip[2] += f", {ends.beside}"
             shown = contrast_words(report_input, contrast, None) if panelled else words
             if contrast.kind == "trial":
                 base, count = _passes(context, contrast.aspect)
@@ -954,7 +954,7 @@ def _analysed_change(
     ends = None
     if interval is not None:
         ends = forms.chart_interval(*interval, drawn, measure=measure, kind=kind)
-        tip[-1] += f", {ends.text}"
+        tip[-1] += f", {ends.beside}"
     return _Change(
         id=row_id,
         label=label,

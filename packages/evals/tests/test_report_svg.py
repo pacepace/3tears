@@ -288,8 +288,8 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the
 def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
     svg = interval_glyph_svg(-1.1, -4.2, 2.0, unit="pts", scale=(-7.0, 36.7), margin=5.0)
     assert svg.startswith('<svg class="viz-glyph" viewBox="0 0 120 14" role="img">')
-    # The interval in its one form, a change's ends signed, the unit once (number rule 3).
-    assert "<title>-1.1 pts, interval -4.2 to +2 pts, margin ±5 pts</title>" in svg
+    # The interval in its one form, a change's ends signed, the unit once, on the figure (number rule 3).
+    assert "<title>-1.1 pts, interval -4.2 to +2, margin ±5 pts</title>" in svg
     for mark in ("viz-track", "viz-zero", "viz-band", "viz-whisker", "viz-point"):
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg
@@ -314,7 +314,8 @@ def test_a_glyph_on_a_twentieth_of_a_px_draws_the_same_at_its_one_ulp_neighbours
 def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
     svg = interval_glyph_svg(0.92, 0.85, 0.99, unit="s", scale=(0.8, 1.5))
     assert 'class="viz-zero"' not in svg and 'class="viz-band"' not in svg
-    assert "<title>0.92 s, interval 0.85 to 0.99 s</title>" in svg
+    # The unit once, on the figure, the interval beside it bare (number rule 3).
+    assert "<title>0.92 s, interval 0.85 to 0.99</title>" in svg
 
 
 def test_the_legend_names_only_the_states_that_occur() -> None:

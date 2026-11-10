@@ -547,18 +547,36 @@ def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, s
 
 
 def _unit_once(spec: str, ends: tuple[str, str]) -> tuple[str, str]:
-    """An interval's two end texts with their format's unit written once, as the page writes an interval (number rule
-    3): after the high end (``15 to 89%``, ``-1.0 to +5.0 pts``). Money keeps its own form, each end with its ``$``
-    (``$3.90 to $4.30``), as the page's forms write a money interval. So every drawer joins the two texts as they are,
-    and never strips a unit itself. Ends that do not both carry the unit are as they were."""
+    """An interval's two end texts with their format's unit taken off both, as the page writes an interval (number
+    rule 3: the unit once): beside its figure, which carries the unit (``85% (80 to 89)``, a tooltip's), or alone in a
+    table's column, which writes it once after the high end (:func:`_interval`, ``80 to 89%``). Money keeps its own
+    form, each end with its ``$`` (``$3.90 to $4.30``), as the page's forms write a money interval. Ends that do not
+    both carry the unit are as they were."""
     match = _FORMAT_SPEC.fullmatch(spec)
     unit = _FORMAT_UNITS.get(match[2], "") if match is not None else ""
     low, high = ends
     if not unit or unit == MONEY:
         return ends
     if low.endswith(unit) and high.endswith(unit):
-        return low.removesuffix(unit).rstrip(), high
+        return low.removesuffix(unit).rstrip(), high.removesuffix(unit).rstrip()
     return ends
+
+
+def _table_unit(spec: str, read_at: str = "") -> str:
+    """The unit a chart's values table writes after a figure or an interval standing alone in its cell: its format's,
+    else the unit its block reads the values at (``pts`` beside a ``+num`` format); none for money, whose ``$`` each
+    figure carries, or for a figure of no unit."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    unit = (_FORMAT_UNITS.get(match[2], "") if match is not None else "") or read_at
+    return "" if unit == MONEY else unit
+
+
+def _unit_after(text: str, unit: str) -> str:
+    """A figure's text with its unit after it, where it does not already end in it; as it is with no unit, or for a
+    cell that holds no figure."""
+    if not unit or not text or text.endswith(unit) or not any(char.isdigit() for char in text):
+        return text
+    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
 
 
 def _end_texts(
@@ -595,11 +613,12 @@ def _said(text: str | None) -> str:
     return text
 
 
-def _interval(low: str | None, high: str | None) -> str:
-    """An interval as a table cell: its two ends' texts, empty without one."""
+def _interval(low: str | None, high: str | None, unit: str = "") -> str:
+    """An interval as a table cell: its two ends' texts, empty without one; standing alone in its column, it writes
+    ``unit`` once after its high end (``80 to 89%``), and beside its figure none (``unit`` empty)."""
     if low is None or high is None:
         return ""
-    return f"{low} to {high}"
+    return f"{low} to {_unit_after(high, unit)}"
 
 
 def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:
@@ -622,20 +641,20 @@ def _restates(note: str | None, value: float | None, said: str, spec: str, read_
 OPEN_ABOVE = "from {low} up, no upper bound"
 
 
-def _bar_interval(low: str | None, high: str | None) -> str:
+def _bar_interval(low: str | None, high: str | None, unit: str = "") -> str:
     """A bar's interval as a table cell: :func:`_interval`'s, or one open above (a low end alone) in words."""
     if low is not None and high is None:
-        return OPEN_ABOVE.format(low=low)
-    return _interval(low, high)
+        return OPEN_ABOVE.format(low=_unit_after(low, unit))
+    return _interval(low, high, unit)
 
 
-def _reference_row(reference: ChartReference | None, width: int) -> list[list[str]]:
+def _reference_row(reference: ChartReference | None, width: int, unit: str = "") -> list[list[str]]:
     """A chart's reference line as a last table row: its label (or kind) and its value's text, padded to ``width``,
-    at the precision its rows read at, so a margin reads ``-15.0`` in the table its label says it in."""
+    in the unit its rows' figures carry (``unit``), so a margin reads ``-15 pts`` in the table its label says it in."""
     if reference is None or reference.kind == "no_preference":
         return []
     name = reference.label or reference.kind
-    return [[name, _said(reference.value_text), *([""] * (width - 2))]]
+    return [[name, _unit_after(_said(reference.value_text), unit), *([""] * (width - 2))]]
 
 
 def _reference_spelled(reference: ChartReference | None, spec: str, read_at: str = "") -> ChartReference | None:
@@ -780,7 +799,8 @@ class _BarsFields(_Kind):
         grouped = any(row.group is not None for row in rows)
         stacked = any(row.segments for row in rows)
         intervals = any(row.lo is not None for row in rows)
-        said = [_said(row.value_text) for row in rows]
+        unit = _table_unit(self._format, read_at)
+        said = [_unit_after(_said(row.value_text), unit) for row in rows]
         kept = [
             None if _restates(row.note, row.total, text, self._format, read_at) else row.note
             for row, text in zip(rows, said, strict=True)
@@ -807,11 +827,11 @@ class _BarsFields(_Kind):
                     _tagged(row.tag, row.label),
                     text,
                     *([parts] if stacked else []),
-                    *([_bar_interval(row.lo_text, row.hi_text)] if intervals else []),
+                    *([_bar_interval(row.lo_text, row.hi_text, unit)] if intervals else []),
                     *([note or ""] if notes else []),
                 ]
             )
-        reference = _reference_row(self.reference, len(headers) - grouped)
+        reference = _reference_row(self.reference, len(headers) - grouped, unit)
         return headers, body + [[""] * grouped + line for line in reference]
 
 
@@ -902,7 +922,8 @@ class ForestChart(_Drawable):
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
-        said = [_said(row.value_text) for row in self.rows]
+        unit = _table_unit(self.fmt, read_at)
+        said = [_unit_after(_said(row.value_text), unit) for row in self.rows]
         kept = [
             None if _restates(row.note, row.value, text, self.fmt, read_at) else row.note
             for row, text in zip(self.rows, said, strict=True)
@@ -920,12 +941,12 @@ class ForestChart(_Drawable):
                 *([row.group or ""] if grouped else []),
                 row.label,
                 text,
-                _interval(row.lo_text, row.hi_text),
+                _interval(row.lo_text, row.hi_text, unit),
                 *([note or ""] if notes else []),
             ]
             for row, text, note in zip(self.rows, said, kept, strict=True)
         ]
-        reference = _reference_row(self.reference, len(headers) - grouped)
+        reference = _reference_row(self.reference, len(headers) - grouped, unit)
         return headers, body + [[""] * grouped + line for line in reference]
 
 
@@ -1239,7 +1260,8 @@ class _DotIntervalFields(_Kind):
     @_spelled_first
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
-        said = [_said(row.value_text) for row in rows]
+        unit = _table_unit(self._format, read_at)
+        said = [_unit_after(_said(row.value_text), unit) for row in rows]
         kept = [
             None if _restates(row.note, row.value, text, self._format, read_at) else row.note
             for row, text in zip(rows, said, strict=True)
@@ -1250,12 +1272,12 @@ class _DotIntervalFields(_Kind):
             [
                 row.label,
                 text,
-                *([_interval(row.lo_text, row.hi_text)] if self.level else []),
+                *([_interval(row.lo_text, row.hi_text, unit)] if self.level else []),
                 *([note or ""] if notes else []),
             ]
             for row, text, note in zip(rows, said, kept, strict=True)
         ]
-        return headers, body + _reference_row(self.reference, len(headers))
+        return headers, body + _reference_row(self.reference, len(headers), unit)
 
 
 class DotIntervalPanel(_DotIntervalFields, _PanelText):
