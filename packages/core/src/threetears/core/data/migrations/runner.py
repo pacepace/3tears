@@ -51,6 +51,7 @@ from threetears.core.collections.generation import noted_tables
 from threetears.core.data.migrations.change_notes import give_noted_tables_their_note_trigger
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
 from threetears.core.data.store import DataStore
+from threetears.core.ddl.index_health import rebuild_unusable_indexes
 from threetears.observe import contain, get_logger, traced
 
 __all__ = [
@@ -190,6 +191,7 @@ class MigrationRunner:
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.PLATFORM, target, applied)
+            await _rebuild_unusable_indexes(session)
         return result
 
     @traced
@@ -221,6 +223,7 @@ class MigrationRunner:
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.AGENT, target, applied)
+            await _rebuild_unusable_indexes(session)
         return result
 
     @traced
@@ -463,6 +466,7 @@ class MigrationRunner:
             applied = await self._query_applied_versions(session)
             self._verify_ledger_identity([package], applied)
             count = await self._apply_package_pending(session, package, applied)
+            await _rebuild_unusable_indexes(session)
         return count
 
     def pending_sequence(self, scope: MigrationScope) -> list[tuple[str, int]]:
@@ -940,6 +944,60 @@ def _preview_data_store(preview: PreviewStore) -> DataStore:
     """
     result = DataStore.over_session(preview, holds_ddl_lock=True)
     return result
+
+
+class _Fetching:
+    """a migration store read through ``fetch``, as :mod:`threetears.core.ddl.index_health` reads a connection."""
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """the statement's rows.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
+        return await self._store.query(sql, *params)
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """run a statement.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: its status
+        :rtype: str
+        """
+        return await self._store.execute(sql, *params)
+
+
+async def _rebuild_unusable_indexes(store: DataStore) -> None:
+    """
+    build again every index of the run's schema that a failed build left unusable, still under the run's DDL lock.
+
+    An online ``CREATE INDEX`` on YugabyteDB that fails part way, or races other DDL on the database, leaves its index
+    behind not valid, and ``CREATE INDEX IF NOT EXISTS`` takes it as present ever after. Any migration's index
+    statement can meet that, so the run repairs its schema once, at its end, rather than each statement after itself
+    (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`). A unique index whose table holds duplicate
+    keys refuses the run, naming them.
+
+    :param store: the run's locked store, bound to its schema
+    :ptype store: DataStore
+    :return: nothing
+    :rtype: None
+    :raises IndexDuplicateKeysError: when an unusable unique index's table holds duplicate keys
+    :raises IndexStillUnusableError: when an index is still unusable after it was built again
+    """
+    rows = await store.query("SELECT current_schema() AS schema_name")
+    schema = rows[0]["schema_name"] if rows else None
+    if schema:
+        await rebuild_unusable_indexes(_Fetching(store), [schema])
 
 
 def _as_data_store(store: DataStore | MigrationSession) -> DataStore:
