@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from threetears.core.keyed._filters import AnyOf, by_conditions
+from threetears.core.keyed._filters import AnyOf, Derived, Fragment, by_conditions, relation, renumbered
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
     "Dialect",
     "count_at_most",
     "counts_by",
+    "counts_by_relations",
     "empty_tables",
     "estimated_rows",
     "holds_any",
@@ -129,33 +130,38 @@ def _where(by: Mapping[str, Any]) -> tuple[str, list[Any]]:
     return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
 
 
-async def count_at_most(conn: Any, table: str, *, by: Mapping[str, Any], at_most: int) -> BoundedCount:
-    """how many of the rows ``by`` names ``table`` holds, counting at most ``at_most + 1`` of them.
+async def count_at_most(
+    conn: Any, table: str | Derived, *, at_most: int, by: Mapping[str, Any] | None = None
+) -> BoundedCount:
+    """how many of the rows ``by`` names ``table`` holds (any of its rows when None), counting at most
+    ``at_most + 1`` of them: ``SELECT count(*) FROM (SELECT 1 FROM t WHERE <by> LIMIT $n)``.
+
+    Unkeyed, it is a bounded probe of the table's first rows, never more than the bound: the size class of a table no
+    estimate is kept for (an L1 cache, a table never analysed).
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
-    :ptype table: str
-    :param by: the rows to count: a leading part of the key, each a value or an :class:`~threetears.core.keyed.AnyOf`
-    :ptype by: Mapping[str, Any]
+    :param table: the table (``schema.table`` quoted a segment at a time), or a derived relation
+    :ptype table: str | Derived
     :param at_most: the bound
     :ptype at_most: int
+    :param by: the rows to count: a leading part of the key, each a value or an :class:`~threetears.core.keyed.AnyOf`;
+        any rows when None
+    :ptype by: Mapping[str, Any] | None
     :return: the count, and whether rows past the bound are held
     :rtype: BoundedCount
-    :raises ValueError: when ``by`` names nothing or ``at_most`` is under zero
+    :raises ValueError: when ``at_most`` is under zero
     """
-    if not by:
-        raise ValueError(f"a bounded count of {table} names the rows it counts")
     if at_most < 0:
         raise ValueError(f"a bounded count counts at least none, got {at_most}")
-    where, values = _where(by)
-    sql = f"SELECT count(*) AS held FROM (SELECT 1 FROM {quote_identifier(table)}{where} LIMIT {at_most + 1}) AS held"
-    rows = await conn.fetch(sql, *values)
+    where, values = _where(by or {})
+    sql = f"SELECT count(*) AS held FROM (SELECT 1 FROM {relation(table, 'r')}{where} LIMIT ${len(values) + 1}) AS held"
+    rows = await conn.fetch(sql, *values, at_most + 1)
     held = int(rows[0]["held"])
     return BoundedCount(count=min(held, at_most), more=held > at_most)
 
 
-async def holds_any(conn: Any, table: str, *, by: Mapping[str, Any] | None = None) -> bool:
+async def holds_any(conn: Any, table: str | Derived, *, by: Mapping[str, Any] | None = None) -> bool:
     """whether ``table`` holds any row ``by`` names (any row at all when None): one row read, at most.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
@@ -168,7 +174,7 @@ async def holds_any(conn: Any, table: str, *, by: Mapping[str, Any] | None = Non
     :rtype: bool
     """
     where, values = _where(by or {})
-    rows = await conn.fetch(f"SELECT 1 AS held FROM {quote_identifier(table)}{where} LIMIT 1", *values)
+    rows = await conn.fetch(f"SELECT 1 AS held FROM {relation(table, 'r')}{where} LIMIT 1", *values)
     return bool(rows)
 
 
@@ -195,50 +201,113 @@ async def empty_tables(conn: Any, tables: Sequence[str]) -> list[str]:
 
 async def counts_by(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     column: str,
-    values: AnyOf,
+    values: AnyOf | None = None,
+    where: Sequence[Fragment] = (),
     by: Mapping[str, Any] | None = None,
     batch: int = 999,
 ) -> dict[Any, int]:
-    """how many rows of ``table`` each of ``values`` holds in ``column`` (within ``by``), ``batch`` values a statement.
+    """how many rows of ``table`` each value of ``column`` holds (within ``by``), ``batch`` values a statement.
 
     ``SELECT "column", count(*) FROM t WHERE <by> AND "column" = ANY($n::<cast>[]) GROUP BY "column"``: each statement
     counts the rows its own keys name, so ``by`` and ``column`` together must be a leading part of the key (or of an
-    index declared for the caller's read). A batch answers at most ``batch`` groups, under the rail's row cap.
+    index declared for the caller's read). The values are named by ``values``, or by ``where`` (a bounded subquery on
+    the source's own record, ``"run_id" IN (SELECT run_id FROM runs WHERE status = 'ok' AND ...)``) in one statement.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
-    :ptype table: str
+    :param table: the table (``schema.table``), or a derived relation
+    :ptype table: str | Derived
     :param column: the column counted by, a TRUSTED identifier
     :ptype column: str
-    :param values: its values, and the array type they bind as
-    :ptype values: AnyOf
+    :param values: its values, and how they bind (an array, or a list for a warehouse); None when ``where`` names them
+    :ptype values: AnyOf | None
+    :param where: filters naming the rows counted beside ``by``, each a fragment from ``$1``
+    :ptype where: Sequence[Fragment]
     :param by: the prefix pinned ahead of it (a state, a tenant)
     :ptype by: Mapping[str, Any] | None
     :param batch: the most values a statement names
     :ptype batch: int
     :return: value -> its rows; a value holding none is absent
     :rtype: dict[Any, int]
-    :raises ValueError: when ``batch`` is under one, or ``by`` names ``column`` too
+    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values`` nor ``where``
+        names the rows
+    """
+    counted = await counts_by_relations(
+        conn, {"": table}, column=column, values=values, where=where, by=by, batch=batch
+    )
+    return counted[""]
+
+
+async def counts_by_relations(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    *,
+    column: str,
+    values: AnyOf | None = None,
+    where: Sequence[Fragment] = (),
+    by: Mapping[str, Any] | None = None,
+    batch: int = 999,
+) -> dict[str, dict[Any, int]]:
+    """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
+    keyed count, so a warehouse answers every relation in the statements one relation took.
+
+    A statement answers at most ``batch`` groups over every relation together: each names ``batch // len(tables)``
+    values (at least one).
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param tables: a label -> each relation (``schema.table``, or a derived relation)
+    :ptype tables: Mapping[str, str | Derived]
+    :param column: the column counted by, in every relation
+    :ptype column: str
+    :param values: its values; None when ``where`` names them
+    :ptype values: AnyOf | None
+    :param where: filters naming the rows counted beside ``by``, each a fragment from ``$1``, the same in every
+        relation
+    :ptype where: Sequence[Fragment]
+    :param by: the prefix pinned in every relation
+    :ptype by: Mapping[str, Any] | None
+    :param batch: the most groups a statement answers
+    :ptype batch: int
+    :return: label -> value -> its rows; every label present
+    :rtype: dict[str, dict[Any, int]]
+    :raises ValueError: as :func:`counts_by`, or when no relation is named
     """
     if batch < 1:
-        raise ValueError(f"a keyed count names at least one value a statement, got {batch}")
+        raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
+    if not tables:
+        raise ValueError("a keyed count names at least one relation")
     pinned = dict(by or {})
     if column in pinned:
-        raise ValueError(f"{table}: {column} is counted by, so it is not also pinned")
-    unique = list(dict.fromkeys(values.values))
-    counted: dict[Any, int] = {}
+        raise ValueError(f"{column} is counted by, so it is not also pinned")
+    if values is None and not where:
+        raise ValueError(f"a keyed count names its values of {column}, or a filter naming them")
+    labels = list(tables)
+    counted: dict[str, dict[Any, int]] = {label: {} for label in labels}
     quoted = quote_identifier(column)
-    for start in range(0, len(unique), batch):
-        chunk = AnyOf(unique[start : start + batch], values.cast, as_list=values.as_list)
-        conditions, params = by_conditions({**pinned, column: chunk})
-        sql = (
-            f"SELECT {quoted} AS counted, count(*) AS held FROM {quote_identifier(table)} "
-            f"WHERE {' AND '.join(conditions)} GROUP BY {quoted}"
-        )
-        for row in await conn.fetch(sql, *params):
-            counted[row["counted"]] = int(row["held"])
+    if values is None:
+        chunks: list[dict[str, Any]] = [{}]
+    else:
+        unique = list(dict.fromkeys(values.values))
+        size = max(1, batch // len(labels))
+        chunks = [
+            {column: AnyOf(unique[start : start + size], values.cast, as_list=values.as_list)}
+            for start in range(0, len(unique), size)
+        ]
+    for chunk in chunks:
+        conditions, params = by_conditions({**pinned, **chunk})
+        for fragment in where:
+            conditions.append(renumbered(fragment, len(params)))
+            params += list(fragment.params)
+        clause = " AND ".join(conditions)
+        parts = [
+            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(tables[label], 'r')} "
+            f"WHERE {clause} GROUP BY {quoted}"
+            for index, label in enumerate(labels)
+        ]
+        for row in await conn.fetch(" UNION ALL ".join(parts), *params):
+            counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted

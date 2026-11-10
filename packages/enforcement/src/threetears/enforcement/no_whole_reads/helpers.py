@@ -12,8 +12,9 @@ declared keys.
 A call whose table, key, ``by``, sort or column is not a literal the walk can read (a name bound at run time, a
 comprehension) answers :data:`UNSEEN`: the walk reports it ``unknown-predicate``, never a pass. One exception, as
 for SQL a caller writes: a keyed batch over a table a generic reader is handed (``read_keyed(l3, table.name,
-keys=KeyBatch(table.key, ...))``) is written with the names as interpolations (``{name}``, ``{key}``), and the rule
-reads a key named as one (``{key}``, ``{pk}``) as the key, and any other as a predicate it cannot see. ``empty_tables`` and
+keys=KeyBatch(table.key, ...))``, its table and its key both names) is written with the names as interpolations
+(``{name}``, ``{key}``), and the rule reads a key named as one (``{key}``, ``{pk}``) as the key, and any other as a
+predicate it cannot see. ``empty_tables`` and
 ``estimated_rows`` read one row of each table, or the catalog, whatever they are passed: nothing of theirs is judged.
 
 Visibility: a listing's ``visible=`` clauses are judged each on its own, as the correlated probe it is
@@ -65,6 +66,8 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_after",
         "read_past_marks",
         "delete_before",
+        "delete_oldest",
+        "counts_by_relations",
         "update_before",
     }
 )
@@ -222,13 +225,22 @@ def _where(conditions: Sequence[str]) -> str:
 
 
 def _read_keyed(call: ast.Call) -> list[str]:
-    table = _named(_argument(call, "table", 1), "table")
+    table_node = _argument(call, "table", 1)
     keys = _key_batch_columns(_argument(call, "keys", None))
+    own: list[str] = []
+    if isinstance(table_node, ast.Constant) or (isinstance(table_node, ast.Call) and _name(table_node) == "Derived"):
+        table, own = _relation(table_node, "table")
+    elif keys[0].startswith("{"):
+        # a generic reader's own table by its own key: judged as the interpolated SQL it would write
+        table = _named(table_node, "table")
+    else:
+        # an interpolated table read by literal columns: the walk cannot match the columns to any table's key
+        raise _Unseen("table")
     pinned, _ = _conditions(_by(_argument(call, "by", None)), first=len(keys) + 1, alias="t")
     unnested = ", ".join(f"${index + 1}" for index in range(len(keys)))
     named = ", ".join(f"k{index}" for index in range(len(keys)))
     joined = " AND ".join(f"t.{column} = k.k{index}" for index, column in enumerate(keys))
-    return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
+    return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}", *own]
 
 
 def _visible(call: ast.Call) -> list[str]:
@@ -276,13 +288,13 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
 
 
 def _keyset_page(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
+    table, own = _relation(_argument(call, "table", 1), "table")
     order = _sort_columns(_argument(call, "order", None))
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     filtered, place = _filters(call, place)
     page = [*pinned, *filtered, f"{_quoted(order[0])} > ${place}"]
     ordered = ", ".join(_quoted(column) for column in order)
-    return [f"SELECT * FROM {_quoted(table)} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call)]
+    return [f"SELECT * FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call), *own]
 
 
 def _read_joined(call: ast.Call) -> list[str]:
@@ -297,31 +309,78 @@ def _read_joined(call: ast.Call) -> list[str]:
     return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
 
 
-def _counts_by(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
-    column = _text(_argument(call, "column", None), "column")
+def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
+    """a relation a helper reads, as its statement names it, and the statements it holds of its own: a table literal
+    (``schema.table`` quoted a segment at a time), or a ``Derived("SELECT ...")`` judged on its own text."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return ".".join(_quoted(part) for part in node.value.split(".")), []
+    if isinstance(node, ast.Call) and _name(node) == "Derived":
+        derived = _text(_argument(node, "sql", 0), argument)
+        return f"({derived})", [derived]
+    raise _Unseen(argument)
+
+
+def _count_of(relation: str, column: str, call: ast.Call, *, values: bool) -> str:
     pinned, place = _conditions(_by(_argument(call, "by", None)))
-    conditions = [*pinned, f"{_quoted(column)} = ANY(${place})"]
-    return [f"SELECT {_quoted(column)}, count(*) FROM {_quoted(table)}{_where(conditions)} GROUP BY {_quoted(column)}"]
+    conditions = [*pinned]
+    if values:
+        conditions.append(f"{_quoted(column)} = ANY(${place})")
+        place += 1
+    filtered, _ = _filters(call, place)
+    conditions += filtered
+    return f"SELECT {_quoted(column)}, count(*) FROM {relation} AS r{_where(conditions)} GROUP BY {_quoted(column)}"
+
+
+def _counts_by(call: ast.Call) -> list[str]:
+    relation, own = _relation(_argument(call, "table", 1), "table")
+    column = _text(_argument(call, "column", None), "column")
+    values = _argument(call, "values", None) is not None
+    if not values and _argument(call, "where", None) is None:
+        raise _Unseen("values")
+    return [_count_of(relation, column, call, values=values), *own]
+
+
+def _counts_by_relations(call: ast.Call) -> list[str]:
+    tables = _argument(call, "tables", 1)
+    if not isinstance(tables, ast.Dict) or not tables.values:
+        raise _Unseen("tables")
+    column = _text(_argument(call, "column", None), "column")
+    values = _argument(call, "values", None) is not None
+    if not values and _argument(call, "where", None) is None:
+        raise _Unseen("values")
+    statements: list[str] = []
+    for node in tables.values:
+        relation, own = _relation(node, "tables")
+        statements += [_count_of(relation, column, call, values=values), *own]
+    return statements
 
 
 def _probe(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
-    by = _argument(call, "by", None)
-    if by is None and _name(call) == "count_at_most":
-        raise _Unseen("by")
-    pinned, _ = _conditions(_by(by))
-    # holds_any reads one row; count_at_most a bound of them
-    limit = 1 if _name(call) == "holds_any" else _LIMIT
-    return [f"SELECT 1 FROM {_quoted(table)}{_where(pinned)} LIMIT {limit}"]
+    relation, own = _relation(_argument(call, "table", 1), "table")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    # holds_any reads one row; count_at_most at most its bound, bound as a parameter (a probe of a table's first rows
+    # when it names no key)
+    limit = "1" if _name(call) == "holds_any" else f"${place}"
+    return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} LIMIT {limit}", *own]
+
+
+def _delete_oldest(call: ast.Call) -> list[str]:
+    table, _ = _relation(_argument(call, "table", 1), "table")
+    key_node = _argument(call, "key", None)
+    key = "rowid" if key_node is None else _text(key_node, "key")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    return [
+        f"DELETE FROM {table} WHERE {_quoted(key)} IN (SELECT {_quoted(key)} FROM {table}{_where(pinned)} "
+        f"ORDER BY {_quoted(key)} LIMIT ${place})"
+    ]
 
 
 def _read_after(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
+    table, own = _relation(_argument(call, "table", 1), "table")
     column = _text(_argument(call, "id_column", None), "id_column")
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     conditions = [*pinned, f"{_quoted(column)} > ${place}"]
-    return [f"SELECT * FROM {_quoted(table)}{_where(conditions)} ORDER BY {_quoted(column)} LIMIT {_LIMIT}"]
+    return [f"SELECT * FROM {table} AS r{_where(conditions)} ORDER BY {_quoted(column)} LIMIT {_LIMIT}", *own]
 
 
 def _read_past_marks(call: ast.Call) -> list[str]:
@@ -374,6 +433,8 @@ _SYNTHESIZERS: Final = {
     "read_after": _read_after,
     "read_past_marks": _read_past_marks,
     "delete_before": _delete_before,
+    "delete_oldest": _delete_oldest,
+    "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
 }
 

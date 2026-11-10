@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -77,6 +78,24 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await conn.close()
+
+
+class _Settling:
+    """a collection's pool and bypassing write, the keys it is told of kept: what a paged sweep settles."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self.required_l3_pool = conn
+        self.settled: list[Any] = []
+
+    @asynccontextmanager
+    async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[Any]:
+        settled = self.settled
+
+        class _Write:
+            def touches(self, *keys: Any) -> None:
+                settled.extend(keys)
+
+        yield _Write()
 
 
 async def _baseline(conn: asyncpg.Connection, rows_sql: str, *args: Any) -> float:
@@ -233,7 +252,7 @@ class TestDeleteBefore:
             baseline = time.perf_counter() - began
         began = time.perf_counter()
         swept = await delete_before(
-            seeded.conn, _TABLE, key=["state", "geo", "id"], column="stamp", before=before, page=500
+            _Settling(seeded.conn), _TABLE, key=["state", "geo", "id"], column="stamp", before=before, page=500
         )
         took = time.perf_counter() - began
         assert swept.deleted == 3000

@@ -10,6 +10,8 @@ the batch bound, the placeholders, the cursor's step.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 import sqlite3
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -21,7 +23,9 @@ import pytest
 from threetears.core.keyed import (
     AnyOf,
     BoundedCount,
+    Derived,
     Dialect,
+    Fragment,
     KeyBatch,
     KeyTooWide,
     Lock,
@@ -31,7 +35,9 @@ from threetears.core.keyed import (
     WholeReads,
     count_at_most,
     counts_by,
+    counts_by_relations,
     delete_before,
+    delete_oldest,
     empty_tables,
     estimated_rows,
     exists_keyed,
@@ -44,7 +50,6 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
-from threetears.core.keyed._filters import Fragment, renumbered
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.pagination import CursorError
 
@@ -64,6 +69,26 @@ def db() -> Iterator[duckdb.DuckDBPyConnection]:
     conn.execute("INSERT INTO grants VALUES ('ann', 'k1'), ('ann', 'k2'), ('bob', 'k3')")
     yield conn
     conn.close()
+
+
+class _Collection:
+    """the part of a collection a paged write uses: its pool, and a bypassing write naming the keys it touched."""
+
+    def __init__(self, reader: Any) -> None:
+        self.required_l3_pool = reader
+        self.settled: list[Any] = []
+        self.writes = 0
+
+    @asynccontextmanager
+    async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[Any]:
+        collection = self
+        self.writes += 1
+
+        class _Write:
+            def touches(self, *keys: Any) -> None:
+                collection.settled.extend(keys)
+
+        yield _Write()
 
 
 class _Recording:
@@ -209,10 +234,20 @@ class TestKeysetPage:
                 ThreadedDuckDB(db), "t", columns=["b"], by={}, order=[Sort("b", "bigint")], limit=3, cursor="!!"
             )
 
-    def test_a_fragment_naming_a_parameter_it_does_not_bind_is_refused(self) -> None:
+    async def test_a_fragment_naming_a_parameter_it_does_not_bind_is_refused(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a visibility clause naming more placeholders than it binds is sent (it would read another's)."""
         with pytest.raises(ValueError, match="binds 1"):
-            renumbered(Fragment("x = $1 AND y = $2", ("a",)), 3)
-        assert renumbered(Fragment("x = $1 AND y = $2", ("a", "b")), 3) == "x = $4 AND y = $5"
+            await keyset_page(
+                ThreadedDuckDB(db),
+                "t",
+                columns=["a", "b"],
+                by={"a": "k1"},
+                order=[Sort("b", "bigint")],
+                limit=3,
+                visible=[Fragment('t."a" = $1 AND t."b" = $2', ("k1",))],
+            )
 
 
 class TestCounts:
@@ -292,8 +327,10 @@ class TestDeleteBefore:
     async def test_a_sweep_deletes_page_by_page_until_a_short_page(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if the sweep deletes everything in one statement, or stops before the rows past its bound are gone."""
         reader = _Recording(db)
-        swept = await delete_before(reader, "t", key=["a", "b"], column="b", before=30, page=7)
+        collection = _Collection(reader)
+        swept = await delete_before(collection, "t", key=["a", "b"], column="b", before=30, page=7)
         assert (swept.deleted, swept.statements) == (30, 5)
+        assert sorted(collection.settled) == sorted((f"k{i % 10}", i) for i in range(30)) and collection.writes == 5
         assert _plain(db, "SELECT count(*) FROM t WHERE b < 30") == [(0,)]
         assert _plain(db, "SELECT count(*) FROM t") == [(70,)]
         assert all("LIMIT 7" in sql for sql, _ in reader.statements)
@@ -339,8 +376,9 @@ class TestUpdateBefore:
         """Flips if a reap updates in one statement, or re-reads the rows it already moved."""
         db.execute("ALTER TABLE t ADD COLUMN status VARCHAR DEFAULT 'dispatching'")
         reader = _Recording(db)
+        collection = _Collection(reader)
         reaped = await update_before(
-            reader,
+            collection,
             "t",
             key=["a", "b"],
             column="b",
@@ -350,13 +388,16 @@ class TestUpdateBefore:
             page=7,
         )
         assert (reaped.deleted, reaped.statements) == (30, 5)
+        assert len(collection.settled) == 30
         assert _plain(db, "SELECT count(*) FROM t WHERE status = 'failed'") == [(30,)]
         assert all("LIMIT 7" in sql for sql, _ in reader.statements)
 
     async def test_an_update_that_leaves_its_rows_in_its_pages_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a reap that would read the same page forever is sent."""
         with pytest.raises(ValueError, match="move its rows out"):
-            await update_before(ThreadedDuckDB(db), "t", key=["a", "b"], column="b", before=30, set_to={"v": 0}, page=7)
+            await update_before(
+                _Collection(ThreadedDuckDB(db)), "t", key=["a", "b"], column="b", before=30, set_to={"v": 0}, page=7
+            )
 
 
 class TestWithoutArrays:
@@ -403,8 +444,17 @@ class TestWithoutArrays:
             if cursor is None:
                 break
         assert seen == list(range(3, 100, 10))
-        swept = await delete_before(conn, "t", key=["a", "b"], column="b", before=20, page=6)
+        swept = await delete_before(_Collection(conn), "t", key=["a", "b"], column="b", before=20, page=6)
         assert (swept.deleted, swept.statements) == (20, 4)
+        assert await count_at_most(conn, "t", at_most=50) == BoundedCount(count=50, more=True)
+        assert await delete_oldest(conn, "t", count=30) == 30
+        assert await count_at_most(conn, "t", at_most=100) == BoundedCount(count=50, more=False)
+        assert lite.execute("SELECT min(rowid) FROM t").fetchone() == (51,)
+
+    async def test_delete_oldest_refuses_anything_but_a_local_cache(self) -> None:
+        """Flips if a cache trim, which settles no cache, is run on an L3 connection."""
+        with pytest.raises(TypeError, match="local cache"):
+            await delete_oldest(_Answering(), "t", count=3)
 
 
 class _Answering:
@@ -480,3 +530,39 @@ class TestFiltersLocksAndJoins:
         )
         expected = _plain(db, "SELECT b FROM t WHERE a = 'k2' AND b < 40 AND stamp IS NOT NULL ORDER BY b")
         assert [row["b"] for row in read.rows] == [row[0] for row in expected]
+
+
+class TestRelations:
+    async def test_counts_of_several_relations_come_in_one_statement(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if each relation is counted by its own statement, or a relation's counts land on another's label."""
+        db.execute("CREATE TABLE u AS SELECT * FROM t WHERE b < 50")
+        reader = _Recording(db)
+        counted = await counts_by_relations(
+            reader,
+            {"all": "t", "low": "u", "derived": Derived("SELECT a, b FROM t WHERE b >= 90")},
+            column="a",
+            values=AnyOf(["k1", "k2"]),
+        )
+        assert counted == {"all": {"k1": 10, "k2": 10}, "low": {"k1": 5, "k2": 5}, "derived": {"k1": 1, "k2": 1}}
+        assert len(reader.statements) == 1 and reader.statements[0][0].count(" UNION ALL ") == 2
+
+    async def test_a_count_named_by_a_bounded_subquery_needs_no_list_of_values(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a count named by the source's own record (a subquery) is refused or binds the ids one by one."""
+        counted = await counts_by(
+            ThreadedDuckDB(db),
+            "t",
+            column="a",
+            where=[Fragment('"a" IN (SELECT a FROM grants WHERE who = $1)', ("ann",))],
+        )
+        assert counted == {"k1": 10, "k2": 10}
+        with pytest.raises(ValueError, match="names its values"):
+            await counts_by(ThreadedDuckDB(db), "t", column="a")
+
+    async def test_a_schema_qualified_table_is_quoted_a_segment_at_a_time(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if ``schema.table`` is quoted as one identifier (a table that does not exist)."""
+        rows = await read_keyed(
+            ThreadedDuckDB(db), "main.t", keys=KeyBatch(("a", "b"), [("k1", 1)], ("text", "bigint")), columns=["v"]
+        )
+        assert rows == [{"v": 1}]

@@ -19,11 +19,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.core.keyed._filters import by_conditions
+from threetears.core.keyed._filters import by_conditions, quoted_table
 from threetears.core.keyed.counts import rows_affected
+from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["SweptRows", "delete_before", "update_before"]
+__all__ = ["SweptRows", "delete_before", "delete_oldest", "update_before"]
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class SweptRows:
 
 
 async def delete_before(
-    conn: Any,
+    collection: Any,
     table: str,
     *,
     key: Sequence[str],
@@ -50,12 +51,17 @@ async def delete_before(
     page: int,
     by: Mapping[str, Any] | None = None,
     most_pages: int | None = None,
+    conn: Any = None,
 ) -> SweptRows:
     """delete the rows of ``table`` (within ``by``) whose ``column`` is before ``before``, ``page`` rows a statement.
 
-    :param conn: anything with an asyncpg-shaped ``execute`` answering the status (``DELETE 3``)
-    :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
+    Each page is one statement inside ``collection``'s
+    :meth:`~threetears.core.collections.base.BaseCollection.bypassing_write`, its deleted keys named by ``RETURNING``,
+    so every cache of the rows it deleted is settled (evicted and broadcast, or enrolled in the caller's transaction).
+
+    :param collection: the collection serving ``table``
+    :ptype collection: BaseCollection
+    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
     :ptype table: str
     :param key: its primary key's columns, TRUSTED identifiers: the rows a page deletes are named by them
     :ptype key: Sequence[str]
@@ -69,6 +75,8 @@ async def delete_before(
     :ptype by: Mapping[str, Any] | None
     :param most_pages: the most statements this call sends; every page until a short one when None
     :ptype most_pages: int | None
+    :param conn: the caller's transaction (a ``CallerTransaction``'s connection); the collection's pool when None
+    :ptype conn: Any
     :return: the rows deleted and the statements sent
     :rtype: SweptRows
     :raises ValueError: when ``key`` is empty or ``page`` / ``most_pages`` is under one
@@ -80,23 +88,55 @@ async def delete_before(
     conditions, params = by_conditions(by or {})
     conditions.append(f"{quote_identifier(column)} < ${len(params) + 1}")
     params.append(before)
-    named = ", ".join(quote_identifier(part) for part in key)
-    sql = (
-        f"DELETE FROM {quote_identifier(table)} WHERE ({named}) IN (SELECT {named} FROM {quote_identifier(table)} "
-        f"WHERE {' AND '.join(conditions)} ORDER BY {quote_identifier(column)} LIMIT {page})"
+    return await _paged(collection, conn, _Paged(table, key, column, conditions, page), params, most_pages)
+
+
+@dataclass(frozen=True)
+class _Paged:
+    """one paged write: the rows of ``table`` matching ``conditions``, ``page`` of them a statement in ``column``'s
+    order, deleted, or set to ``assignments`` when there are any."""
+
+    table: str
+    key: Sequence[str]
+    column: str
+    conditions: Sequence[str]
+    page: int
+    assignments: Sequence[str] = ()
+
+
+async def _paged(collection: Any, conn: Any, write: _Paged, params: Sequence[Any], most_pages: int | None) -> SweptRows:
+    """run a paged write until a page touches fewer rows than it asked for, each page inside the collection's
+    ``bypassing_write`` so the keys it returned are settled in every cache."""
+    named = ", ".join(quote_identifier(part) for part in write.key)
+    table = quoted_table(write.table)
+    rows_of = (
+        f"({named}) IN (SELECT {named} FROM {table} WHERE {' AND '.join(write.conditions)} "
+        f"ORDER BY {quote_identifier(write.column)} LIMIT {write.page}) RETURNING {named}"
     )
-    deleted = statements = 0
+    if write.assignments:
+        sql = f"UPDATE {table} SET {', '.join(write.assignments)} WHERE {rows_of}"
+    else:
+        sql = f"DELETE FROM {table} WHERE {rows_of}"
+    reader = conn if conn is not None else collection.required_l3_pool
+    touched = statements = 0
     while most_pages is None or statements < most_pages:
-        swept = rows_affected(await conn.execute(sql, *params))
+        async with collection.bypassing_write(conn=conn) as settled:
+            rows = await reader.fetch(sql, *params)
+            settled.touches(*(_entity_id(row, write.key) for row in rows))
         statements += 1
-        deleted += swept
-        if swept < page:
+        touched += len(rows)
+        if len(rows) < write.page:
             break
-    return SweptRows(deleted=deleted, statements=statements)
+    return SweptRows(deleted=touched, statements=statements)
+
+
+def _entity_id(row: Mapping[str, Any], key: Sequence[str]) -> Any:
+    """a row's key as a collection names it: the value of a one-column key, a tuple of a composite one."""
+    return row[key[0]] if len(key) == 1 else tuple(row[column] for column in key)
 
 
 async def update_before(
-    conn: Any,
+    collection: Any,
     table: str,
     *,
     key: Sequence[str],
@@ -106,6 +146,7 @@ async def update_before(
     page: int,
     by: Mapping[str, Any] | None = None,
     most_pages: int | None = None,
+    conn: Any = None,
 ) -> SweptRows:
     """set ``set_to`` on the rows of ``table`` (within ``by``) whose ``column`` is before ``before``, a page at a time.
 
@@ -114,8 +155,9 @@ async def update_before(
     than it asked for. Each update must move its rows out of the pages it reads (``set_to`` names a column of ``by``,
     or ``column`` itself), or the next page would read them again: that is refused.
 
-    :param conn: anything with an asyncpg-shaped ``execute`` answering the status (``UPDATE 3``)
-    :ptype conn: Any
+    :param collection: the collection serving ``table``: each page runs in its ``bypassing_write``, the keys it
+        updated named by ``RETURNING``, so every cache of them is settled
+    :ptype collection: BaseCollection
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param key: its primary key's columns, TRUSTED identifiers
@@ -132,6 +174,8 @@ async def update_before(
     :ptype by: Mapping[str, Any] | None
     :param most_pages: the most statements this call sends; every page until a short one when None
     :ptype most_pages: int | None
+    :param conn: the caller's transaction (a ``CallerTransaction``'s connection); the collection's pool when None
+    :ptype conn: Any
     :return: the rows updated and the statements sent
     :rtype: SweptRows
     :raises ValueError: when ``key`` or ``set_to`` is empty, a bound is under one, or the update leaves its rows in
@@ -155,16 +199,51 @@ async def update_before(
     params += values
     conditions.append(f"{quote_identifier(column)} < ${len(params) + 1}")
     params.append(before)
-    named = ", ".join(quote_identifier(part) for part in key)
-    sql = (
-        f"UPDATE {quote_identifier(table)} SET {', '.join(assignments)} WHERE ({named}) IN (SELECT {named} FROM "
-        f"{quote_identifier(table)} WHERE {' AND '.join(conditions)} ORDER BY {quote_identifier(column)} LIMIT {page})"
+    return await _paged(
+        collection, conn, _Paged(table, key, column, conditions, page, tuple(assignments)), params, most_pages
     )
-    updated = statements = 0
-    while most_pages is None or statements < most_pages:
-        touched = rows_affected(await conn.execute(sql, *params))
-        statements += 1
-        updated += touched
-        if touched < page:
-            break
-    return SweptRows(deleted=updated, statements=statements)
+
+
+async def delete_oldest(
+    conn: Any,
+    table: str,
+    *,
+    count: int,
+    key: str = "rowid",
+    by: Mapping[str, Any] | None = None,
+) -> int:
+    """delete ``table``'s ``count`` oldest rows (within ``by``) by its key's order: a cache's trim back to its cap.
+
+    ``DELETE FROM t WHERE "rowid" IN (SELECT "rowid" FROM t WHERE <by> ORDER BY "rowid" LIMIT $n)``: an L1 table's
+    rowid is the key it is stored by, so the trim reads its first ``count`` keys and no more. The caller knows how far
+    past its cap the table is from a count it keeps (a trigger's) or a bounded probe
+    (:func:`~threetears.core.keyed.count_at_most` with no ``by``, ``at_most`` the cap plus the most it trims).
+
+    :param conn: the local cache's connection: :class:`~threetears.core.keyed.ThreadedSQLite` or
+        :class:`~threetears.core.keyed.ThreadedDuckDB`. An L1 table is no L3 row and follows no epoch; an L3 table's
+        rows are deleted through its collection (:func:`delete_before`)
+    :ptype conn: ThreadedSQLite | ThreadedDuckDB
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param count: how many rows to delete; none when under one
+    :ptype count: int
+    :param key: the column whose order is the rows' age: SQLite's ``rowid``, or a key column (a growing id)
+    :ptype key: str
+    :param by: columns pinned ahead of it
+    :ptype by: Mapping[str, Any] | None
+    :return: the rows deleted
+    :rtype: int
+    :raises TypeError: when ``conn`` is not a local cache's
+    """
+    if not isinstance(conn, ThreadedSQLite | ThreadedDuckDB):
+        raise TypeError(f"delete_oldest trims a local cache's table; {table} is read through {type(conn).__name__}")
+    if count < 1:
+        return 0
+    conditions, params = by_conditions(by or {})
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    named = quote_identifier(key)
+    sql = (
+        f"DELETE FROM {quoted_table(table)} WHERE {named} IN (SELECT {named} FROM {quoted_table(table)}{where} "
+        f"ORDER BY {named} LIMIT ${len(params) + 1})"
+    )
+    return rows_affected(await conn.execute(sql, *params, count))

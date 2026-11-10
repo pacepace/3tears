@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
 
-from threetears.core.keyed._filters import Fragment, Lock, by_conditions, renumbered
+from threetears.core.keyed._filters import Derived, Fragment, Lock, by_conditions, quoted_table, relation, renumbered
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
@@ -173,13 +173,13 @@ def exists_keyed(table: str, *, on: Mapping[str, str], by: Mapping[str, Any] | N
         raise ValueError(f"a visibility probe of {table} names how it joins the paged row")
     joined = [f"v.{quote_identifier(inner)} = t.{quote_identifier(outer)}" for inner, outer in on.items()]
     pinned, params = by_conditions(by or {}, alias="v")
-    sql = f"EXISTS (SELECT 1 FROM {quote_identifier(table)} AS v WHERE {' AND '.join([*joined, *pinned])})"
+    sql = f"EXISTS (SELECT 1 FROM {quoted_table(table)} AS v WHERE {' AND '.join([*joined, *pinned])})"
     return Fragment(sql=sql, params=tuple(params))
 
 
 async def keyset_page(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     columns: Sequence[str],
     by: Mapping[str, Any],
@@ -194,8 +194,8 @@ async def keyset_page(
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
-    :ptype table: str
+    :param table: the table (``schema.table``), or a derived relation
+    :ptype table: str | Derived
     :param columns: the columns read, TRUSTED identifiers; each sort column among them
     :ptype columns: Sequence[str]
     :param by: the bound prefix (a tenant, a parent), each a value or an ``AnyOf``; empty pages across every row
@@ -240,7 +240,7 @@ async def keyset_page(
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    sql = f"SELECT {selected} FROM {quote_identifier(table)} AS t{clause} ORDER BY {_order_by(order)} LIMIT {limit + 1}"
+    sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {_order_by(order)} LIMIT {limit + 1}"
     if lock is not None:
         sql += lock.of("t")
     answered = [dict(row) for row in await conn.fetch(sql, *params)]

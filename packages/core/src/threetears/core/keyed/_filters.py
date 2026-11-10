@@ -16,7 +16,7 @@ from typing import Any, Final
 
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["AnyOf", "Fragment", "Lock", "by_conditions", "renumbered"]
+__all__ = ["AnyOf", "Derived", "Fragment", "Lock", "by_conditions", "quoted_table", "relation", "renumbered"]
 
 #: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
@@ -48,6 +48,46 @@ class AnyOf:
     def __post_init__(self) -> None:
         if not _SQL_TYPE.match(self.cast):
             raise ValueError(f"AnyOf: {self.cast!r} is not a SQL type name")
+
+
+@dataclass(frozen=True)
+class Derived:
+    """a derived relation a keyed helper reads from: a TRUSTED ``SELECT`` written by its caller, read as
+    ``FROM (<sql>) AS <alias>`` (a warehouse's per-family long relation). The no-whole-reads rule judges its text on
+    its own, where it is written.
+
+    :param sql: the ``SELECT``, with no parameters of its own
+    :ptype sql: str
+    """
+
+    sql: str
+
+
+def relation(table: str | Derived, alias: str) -> str:
+    """how a helper names the relation it reads: a table quoted segment by segment (``schema.table`` as
+    ``"schema"."table"``), or a derived relation in parentheses, either under ``alias``.
+
+    :param table: a TRUSTED table name, or a :class:`Derived` relation
+    :ptype table: str | Derived
+    :param alias: the alias the statement reads it by
+    :ptype alias: str
+    :return: ``<relation> AS <alias>``
+    :rtype: str
+    """
+    if isinstance(table, Derived):
+        return f"({table.sql}) AS {alias}"
+    return f"{quoted_table(table)} AS {alias}"
+
+
+def quoted_table(table: str) -> str:
+    """a TRUSTED table name quoted a segment at a time: ``schema.table`` as ``"schema"."table"``.
+
+    :param table: the name
+    :ptype table: str
+    :return: the quoted name
+    :rtype: str
+    """
+    return ".".join(quote_identifier(part) for part in table.split("."))
 
 
 class Lock(StrEnum):

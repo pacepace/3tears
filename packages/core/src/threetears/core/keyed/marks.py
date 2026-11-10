@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.core.keyed._filters import by_conditions
+from threetears.core.keyed._filters import Derived, by_conditions, relation
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["MarkedRead", "PageAfter", "read_after", "read_past_marks"]
@@ -122,7 +122,7 @@ class PageAfter:
 
 async def read_after(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     columns: Sequence[str],
     id_column: str,
@@ -164,7 +164,7 @@ async def read_after(
     params.append(after)
     selected = ", ".join(quote_identifier(column) for column in columns)
     sql = (
-        f"SELECT {selected} FROM {quote_identifier(table)} WHERE {' AND '.join(conditions)} "
+        f"SELECT {selected} FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)} "
         f"ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
     )
     rows = [dict(row) for row in await conn.fetch(sql, *params)]

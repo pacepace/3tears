@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.keyed._filters import Lock, by_conditions
+from threetears.core.keyed._filters import Derived, Lock, by_conditions, relation
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 __all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
@@ -103,7 +103,7 @@ def _text(value: Any) -> str | None:
 class _Statement:
     """the statement one keyed read sends a batch: built once for arrays, once a batch for a list of keys."""
 
-    table: str
+    table: str | Derived
     selected: str
     keys: KeyBatch
     by: Mapping[str, Any]
@@ -125,7 +125,7 @@ class _Statement:
         :rtype: tuple[str, tuple[Any, ...]]
         """
         width = len(self.keys.columns)
-        head = f"SELECT {self.selected} FROM {quote_identifier(self.table)} AS t"
+        head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
         if self.keys.as_list:
             columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
             if width == 1:
@@ -148,7 +148,7 @@ class _Statement:
 
 
 def _statement(
-    table: str, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any], lock: Lock | None = None
+    table: str | Derived, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any], lock: Lock | None = None
 ) -> _Statement:
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
@@ -168,7 +168,7 @@ async def _read_split(
     size: Callable[[Any], int],
     keys: Sequence[tuple[Any, ...]],
     row_cap: int | None,
-    table: str,
+    table: str | Derived,
 ) -> list[Any]:
     """one batch's answers: the batch read whole, or in halves while an answer reaches ``row_cap``."""
     answered = await fetch(keys)
@@ -188,7 +188,7 @@ async def _read_split(
 
 async def read_keyed(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     keys: KeyBatch,
     columns: Sequence[str],
@@ -236,7 +236,7 @@ async def read_keyed(
 
 async def read_keyed_arrow(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     keys: KeyBatch,
     types: Mapping[str, Any],
@@ -281,7 +281,7 @@ async def read_keyed_arrow(
 async def read_joined(
     conn: Any,
     rows: Sequence[Mapping[str, Any]],
-    table: str,
+    table: str | Derived,
     *,
     on: Mapping[str, str],
     columns: Sequence[str],

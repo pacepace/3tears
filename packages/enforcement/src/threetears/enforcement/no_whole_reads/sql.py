@@ -81,6 +81,9 @@ HEAD: Final[str] = "head"
 #: the code a repo names as load code (``verify-aggregate``)
 KEYED_COUNT: Final[str] = "keyed-count"
 
+#: a SQLite table's implicit key: the rowid its b-tree is stored by (an L1 cache's tables)
+ROWID: Final[str] = "rowid"
+
 #: the column an interpolation the code names as the key stands for (``{pk}``, ``{key_column}``)
 PK_TOKEN: Final[str] = "{pk}"
 
@@ -785,7 +788,12 @@ def _keys(
         if index.columns and set(purposes(index.purpose)) & reader.names
     ]
     keys = [*declared.primary_keys, *declared.unique_keys]
-    return [*keys, *([(PK_TOKEN,)] if keys else [])], purposed, TENANT_COLUMNS | declared.tenant_columns
+    # a SQLite table's rowid is its own key (the b-tree it is stored in): a cap's trim ordered by it is a keyed range
+    return (
+        [*keys, *([(PK_TOKEN,), (ROWID,)] if keys else [])],
+        purposed,
+        TENANT_COLUMNS | declared.tenant_columns,
+    )
 
 
 def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:

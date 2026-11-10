@@ -420,3 +420,22 @@ def test_a_dollar_interpolation_is_a_bind_placeholder(schema: SchemaCatalog) -> 
     assert _kinds("SELECT a FROM t WHERE k = ${n}", schema) == []
     assert _kinds("SELECT a FROM t WHERE flag = ${n}", schema) == [("non-key-where", "t")]
     assert _kinds("SELECT a FROM t WHERE {x}", schema) == [("unknown-predicate", "t")]
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        # an L1 cache's trim to its cap: rowid is the key its b-tree is stored by
+        ("DELETE FROM t WHERE rowid IN (SELECT rowid FROM t ORDER BY rowid LIMIT $1)", []),
+        ("SELECT rowid FROM t ORDER BY rowid DESC LIMIT 1000 OFFSET 5000", []),
+        # ordered by anything else, still every row sorted
+        ("SELECT rowid FROM t ORDER BY created LIMIT 5", [("whole-select", "t")]),
+        # a bounded probe of a table's first rows
+        ("SELECT count(*) FROM (SELECT 1 FROM t LIMIT $1) AS held", []),
+    ],
+)
+def test_a_sqlite_rowid_is_a_key_and_a_bound_probe_passes(
+    sql: str, expected: list[tuple[str, str]], schema: SchemaCatalog
+) -> None:
+    """Flips if a rowid-ordered cap trim is called a whole read, or a non-key order under a LIMIT passes."""
+    assert _kinds(sql, schema) == expected

@@ -123,8 +123,9 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
     ("code", "argument"),
     [
         ('read_keyed(c, f(), keys=KeyBatch(("state",), ks), columns=cols)', "table"),
+        ('read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)', "table"),
         ('read_keyed(c, "results", keys=batch, columns=cols)', "keys"),
-        ('read_keyed(c, "results", keys=KeyBatch(columns, ks), columns=cols)', "keys"),
+        ('read_keyed(c, "results", keys=KeyBatch(f(), ks), columns=cols)', "keys"),
         ('keyset_page(c, "results", columns=cols, by=pinned, order=[Sort("geo")], limit=5)', "by"),
         ('keyset_page(c, "results", columns=cols, by={"state": s}, order=order, limit=5)', "order"),
         ('keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort(column)], limit=5)', "order"),
@@ -201,12 +202,6 @@ def test_a_generic_keyed_batch_is_judged_as_its_interpolated_sql(
     assert [[kind for kind, _ in findings] for findings in _judged(code, schema)] == [expected]
 
 
-def test_a_named_column_of_a_table_the_walk_cannot_name_is_no_pass(schema: SchemaCatalog) -> None:
-    """Flips if a batch over an interpolated table passes on a literal column the walk cannot match to a key."""
-    judged = _judged('read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)', schema)
-    assert judged != [[]]
-
-
 def test_a_page_s_filters_are_judged_with_it(schema: SchemaCatalog) -> None:
     """Flips if a page's where= fragments are dropped from the statement judged, or a non-literal one passes."""
     code = (
@@ -224,3 +219,31 @@ def test_joined_rows_are_judged_as_the_keyed_read_they_send(schema: SchemaCatalo
     """Flips if a joined read by a non-key column passes, or one by the key fails."""
     assert _judged('read_joined(c, rows, "results", on={"state": "s", "geo": "g"}, columns=cols)', schema) == [[]]
     assert _judged('read_joined(c, rows, "results", on={"geo": "g"}, columns=cols)', schema) != [[]]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # a bounded probe of a table's first rows: at most its bound, bound as a parameter
+        'count_at_most(c, "results", at_most=50)',
+        # a cache's trim by SQLite's rowid, the key its b-tree is stored by
+        'delete_oldest(c, "results", count=n)',
+        # several relations counted in one statement, one of them derived and judged on its own text
+        'counts_by_relations(c, {"a": "results", "b": Derived("SELECT state, geo FROM results WHERE state = \'TX\'")}, '
+        'column="geo", values=AnyOf(v), by={"state": s})',
+        # a schema-qualified table, and a derived relation read by key
+        'read_after(c, "public.results", columns=cols, id_column="id", after=0, limit=3, by={"state": s, "geo": g})',
+        'read_keyed(c, Derived("SELECT * FROM results WHERE state = \'TX\'"), keys=KeyBatch(("state", "geo"), ks), '
+        "columns=cols)",
+    ],
+)
+def test_bounded_probes_rowid_trims_and_relations_are_keyed(code: str, schema: SchemaCatalog) -> None:
+    """Flips if a bounded probe, a rowid trim, a multi-relation count or a derived/qualified relation is refused."""
+    judged = _judged(code, schema)
+    assert judged and all(not [kind for kind, _ in findings if kind != "keyed-count"] for findings in judged), judged
+
+
+def test_a_derived_relation_reading_whole_is_named(schema: SchemaCatalog) -> None:
+    """Flips if a derived relation is trusted without its own text being judged."""
+    judged = _judged("holds_any(c, Derived(\"SELECT state FROM results WHERE kind = 'x'\"))", schema)
+    assert any(findings for findings in judged), judged

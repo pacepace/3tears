@@ -1335,7 +1335,7 @@ class CopyFollower:
             (rows,) = await read_keyed_arrow(
                 self._l3,
                 table.name,
-                keys=KeyBatch(tuple(table.key), chunk, read.casts),
+                keys=KeyBatch(table.key, chunk, read.casts),
                 types=read.types,
                 batch=len(chunk),
             )
