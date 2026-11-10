@@ -120,6 +120,7 @@ from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.kernel.numbers import (
     POINT_PLACES,
+    SCORE_PLACES,
     WHOLE_FROM,
     WRITTEN_FROM,
     MoneyForm,
@@ -1672,6 +1673,31 @@ class PageForms:
         text = f"{value:.{_READING_PLACES}f}"
         return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
 
+    def score_readings(
+        self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
+    ) -> dict[str, Printed]:
+        """A judged score's readings across an off-page table's row, one per arm, each its mean at one precision for the
+        row: a score states no interval there, so its decimals are rule 2's for a score's spread at that many cases, a
+        hundredth from :data:`_SCORE_HUNDREDTHS_FROM` cases up and a tenth below, where a hundredth is noise (plan
+        §2.3: rung 5's ``4.9`` at 7 cases, never ``4.86``).
+
+        :param reads: Each arm's mean and the cases it is over, by arm.
+        :ptype reads: Mapping[str, tuple[float, int]]
+        :param measure: The judged dimension's key.
+        :ptype measure: str
+        :param kind: Its kind.
+        :ptype kind: _MeasureKind
+        :return: Each arm's reading, by arm.
+        :rtype: dict[str, Printed]
+        """
+        fewest = min((n for _, n in reads.values()), default=0)
+        places = SCORE_PLACES if fewest >= _SCORE_HUNDREDTHS_FROM else SCORE_PLACES - 1
+        said = {}
+        for arm, (mean, _) in reads.items():
+            text = policy_figure(mean, places, bounds=())
+            said[arm] = self._issue(*_keyed(measure, kind), "reading", mean, text, text, "")
+        return said
+
     def rate_readings(
         self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
     ) -> dict[str, Printed]:
@@ -2997,6 +3023,10 @@ _CHART_LINES = frozenset({"reference", "x_reference", "price_line"})
 #: The fields a view of a page's input replaces (:meth:`PageForms.over`): a configs chart's grid. Every other field is
 #: the input's own.
 _GRID = frozenset({"factors", "configs"})
+
+#: The fewest cases a judged score with no interval reads to a hundredth at: below it a hundredth is noise, and the
+#: score reads a tenth (plan §2.3, rule 2 for a score's spread at a few cases).
+_SCORE_HUNDREDTHS_FROM = 30
 
 #: The decimals an off-page reading is stated to (:meth:`PageForms.reading`).
 _READING_PLACES = 2

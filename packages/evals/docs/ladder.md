@@ -495,13 +495,13 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 ...
 | Writer turns | 12.57 | 12.29 |
 ...
-| report_writer.first_screen (judged) | 5.00 | 5.00 |
-| report_writer.coherent_story (judged) | 5.00 | 4.86 |
-| report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
-| report_writer.sound_elision (judged) | 5.00 | 5.00 |
-| report_writer.confounds_handled (judged) | 5.00 | 5.00 |
-| report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
-| report_writer.evidence_fits_claims (judged) | 4.71 | 5.00 |
+| report_writer.first_screen (judged) | 5.0 | 5.0 |
+| report_writer.coherent_story (judged) | 5.0 | 4.9 |
+| report_writer.honest_emphasis (judged) | 5.0 | 5.0 |
+| report_writer.sound_elision (judged) | 5.0 | 5.0 |
+| report_writer.confounds_handled (judged) | 5.0 | 5.0 |
+| report_writer.actionable_next_steps (judged) | 5.0 | 5.0 |
+| report_writer.evidence_fits_claims (judged) | 4.7 | 5.0 |
 ...
 | Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|

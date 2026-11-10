@@ -695,11 +695,13 @@ class WriterResult:
         body = []
         for label, row in rows.items():
             key, kind, rate = read[label]
-            said = (
-                {arm: printed.text for arm, printed in forms.rate_readings(row, measure=key, kind=kind).items()}
-                if rate
-                else {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
-            )
+            if rate:
+                said = {arm: printed.text for arm, printed in forms.rate_readings(row, measure=key, kind=kind).items()}
+            elif kind == "judged":
+                # A judged score at the precision its cases support (one decimal at a few, plan §2.3).
+                said = {arm: printed.text for arm, printed in forms.score_readings(row, measure=key, kind=kind).items()}
+            else:
+                said = {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
             body.append(f"| {label} | " + " | ".join(said.get(arm, "-") for arm in self.arms) + " |")
         return [*head, *body] if body else ["no reading: no arm's results carry a measure"]
 

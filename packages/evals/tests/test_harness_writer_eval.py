@@ -679,7 +679,8 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
         assert summary.status == "completed" and summary.n_cases == 1
         assert summary.errors == []
         assert {dimension.name for dimension in summary.judged} == set(dims)
-    judged = f"(judged) | {JUDGED_SCORE:.2f} | {JUDGED_SCORE:.2f} |"
+    # A judged score over one case reads a tenth: a hundredth is noise below about 30 cases (plan §2.3).
+    judged = f"(judged) | {JUDGED_SCORE:.1f} | {JUDGED_SCORE:.1f} |"
     assert any(line.endswith(judged) for line in result.render().splitlines())
     assert offline == []
 
