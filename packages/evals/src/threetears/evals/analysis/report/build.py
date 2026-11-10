@@ -146,6 +146,7 @@ from threetears.evals.analysis.report.words import (
     reader_arm_labels,
     PASS_RATE,
     judged_heading,
+    judged_label,
     one_figure_each,
     reading_verb,
     reading_heading,
@@ -1569,7 +1570,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             measure_name(name, catalog[name].reader_name if name in catalog else None, declared=bundle.check_name(name))
             for name in one_figure_each(scope.exploratory_measures, read=catalog)
         ),
-        *(judged_heading(name) for name in scope.exploratory_dimensions),
+        *(judged_label(name) for name in scope.exploratory_dimensions),
     ]
     if exploratory and scope.questions_declared:
         blocks.append(_readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]))
@@ -1666,8 +1667,15 @@ def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str
     ]
 
 
+def _row_label(heading: str, reading: str) -> str:
+    """A reading's heading as a table's row names it: a judged dimension's starting with a capital, as
+    :func:`~threetears.evals.analysis.report.words.judged_label` writes it, so it reads as the measure rows around it
+    do; any other reading's as headed, a measure's reader name already a label."""
+    return heading[:1].upper() + heading[1:] if reading == "judged" else heading
+
+
 def _with_scale(heading: str, places: ContrastPlaces | None) -> str:
-    """A reading's heading with its score's scale, where it is a score: ``outcome (judged, 1–5)``."""
+    """A reading's heading with its score's scale, where it is a score: ``Outcome (judged, 1–5)``."""
     if places is None or not places.scale:
         return heading
     if heading.endswith(")"):
@@ -2118,7 +2126,7 @@ def _comparison_blocks(
             )
             shown.append(
                 {
-                    "reading": TableCell(value=_with_scale(heading, places)),
+                    "reading": TableCell(value=_row_label(_with_scale(heading, places), comparison.reading)),
                     "contrast": TableCell(value=verdict.arm),
                     "control_label": TableCell(value=verdict.control),
                     "control": _side_cell(surface, comparison, comparison.control, ruler, forms, places),
@@ -2143,7 +2151,7 @@ def _comparison_blocks(
             statistics.append(
                 {
                     "question": TableCell(value="Q1" if family.aspect is not None else "campaign-wide"),
-                    "reading": TableCell(value=heading),
+                    "reading": TableCell(value=_row_label(heading, comparison.reading)),
                     "contrast": TableCell(value=verdict.arm),
                     "control_mean": forms.ruled_level_cell(
                         ruler, comparison.control.mean, places, measure=comparison.name, kind=comparison.reading
@@ -2317,7 +2325,7 @@ def contrast_rows(bundle: AnalysisContextBundle, *, forms: PageForms | None = No
                         if family.aspect is not None and bundle.declared is not None
                         else "(campaign-wide)"
                     ),
-                    "reading": ruler.scaled(verdict.heading),
+                    "reading": _row_label(ruler.scaled(verdict.heading), verdict.reading),
                     "unit": ruler.unit,
                     "contrast": verdict.arm,
                     "control": verdict.control,
@@ -2537,7 +2545,7 @@ def _guardrail_blocks(
         interval = _interval_on_delta(check.interval, ruler, forms, form=form, measure=check.name, kind=check.reading)
         rows.append(
             {
-                "guardrail": TableCell(value=ruler.scaled(verdict.heading)),
+                "guardrail": TableCell(value=_row_label(ruler.scaled(verdict.heading), verdict.reading)),
                 "arm": TableCell(value=verdict.arm),
                 "control_mean": _at(
                     forms.ruled_level_cell(ruler, check.control.mean, measure=check.name, kind=check.reading),
@@ -2619,7 +2627,7 @@ def _bar_blocks(
             places = forms.contrast_places(verdict.name, verdict.reading)
             rows.append(
                 {
-                    "bar": TableCell(value=ruler.scaled(verdict.heading)),
+                    "bar": TableCell(value=_row_label(ruler.scaled(verdict.heading), verdict.reading)),
                     "arm": TableCell(value=verdict.arm),
                     "value": forms.of_measure(
                         _at(
@@ -2754,7 +2762,7 @@ def _readings_blocks(
             rows.append(
                 {
                     "arm": label,
-                    "reading": judged_heading(reading.dimension),
+                    "reading": judged_label(reading.dimension),
                     "value": None
                     if reading.mean is None
                     else _figure_text(
@@ -2963,9 +2971,12 @@ def _by_stratum_row(table: TableBlock) -> TableBlock:
 
 
 def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
-    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
-    :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else declared.get(name, name)
+    """A stratum as a column header, a case's row and a disclosure name it: its declared display name, else its id
+    humanized (``off lane``), the one name a written page's charts and tables print for it
+    (:func:`~threetears.evals.analysis.report.figure_keys.reader_name`), else :data:`NO_STRATUM`."""
+    if name is None:
+        return NO_STRATUM
+    return declared.get(name) or humanize("dimension", name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
@@ -3050,7 +3061,7 @@ def _judged_rows(
         ruler = rulers.of(dimension, "judged")
         row: dict[str, CellValue] = {
             "arm": arm,
-            "reading": judged_heading(dimension),
+            "reading": judged_label(dimension),
             "all": _judged_text(pooled[dimension], ruler, forms) if dimension in pooled else None,
         }
         for name in columns:

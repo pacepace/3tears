@@ -1,6 +1,6 @@
 """The charts of rates against a line: dot strips, range bars, and the frontier scatter.
 
-**dot_interval** marks each figure with a faint interval against its floor:
+**dot_interval** marks each figure with its interval against its floor:
 
 - *readings*, *contrasts*: each change as the diverging chart reads it (the one owner of how a reading or a contrast
   reads as a change, :mod:`~threetears.evals.analysis.report.parts.resolve_changes`), a dot per row, panels by

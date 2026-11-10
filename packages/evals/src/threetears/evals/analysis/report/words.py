@@ -288,6 +288,22 @@ def judged_heading(name: str) -> str:
     return f"{measure_name(name)} (judged)"
 
 
+def judged_label(name: str) -> str:
+    """A judged dimension as a table's row or header names it: :func:`judged_heading` starting with a capital, as
+    every measure's label does where it is a label rather than words in a sentence
+    (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`), so a judged row reads in the register
+    of the measure rows around it (``Persona holds character (judged)`` beside ``Lost-call rate``) and a table names a
+    dimension as the page's charts do.
+
+    :param name: The dimension, as the rubric names it.
+    :ptype name: str
+    :return: The label.
+    :rtype: str
+    """
+    named = judged_heading(name)
+    return named[:1].upper() + named[1:]
+
+
 #: The verb a counted reading's figure takes in a sentence, by its name as the page heads it: only the pass rate's
 #: trials "passed" (the glossary's "passed"); a classifier's accuracy counts the trials it was right on.
 _READING_VERBS: dict[str, str] = {PASS_RATE: "passed", "Accuracy": "was right"}
@@ -681,6 +697,7 @@ __all__ = [
     "positions",
     "PASS_RATE",
     "judged_heading",
+    "judged_label",
     "one_figure_each",
     "reading_heading",
     "reading_verb",

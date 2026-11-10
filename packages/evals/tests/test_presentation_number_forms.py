@@ -120,7 +120,7 @@ def test_a_judged_score_reads_at_two_decimals_on_its_named_scale(scaled: Campaig
     and ``[-0.06693, 0.2041]``, with no scale. Every figure of the row reads at the two decimals its narrowest interval
     sets, the change signed, each interval in its one form, an end kept off zero on its own (``-0.30 to -0.004``), and
     its name carries the scale."""
-    rows = _rows(_comparisons(scaled), "outcome (judged, 1–5)")
+    rows = _rows(_comparisons(scaled), "Outcome (judged, 1–5)")
     assert rows, [row["reading"].text for row in _comparisons(scaled).rows]
     for row in rows:
         figures = re.findall(r"[+-]?\d+(?:\.\d+)?", row["control"] + " " + row["arm"] + " " + row["change"])

@@ -41,6 +41,7 @@ from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
     judged_heading,
+    judged_label,
     reader_arm_labels,
     reading_verb,
 )
@@ -409,12 +410,12 @@ _DUNDER = re.compile(r"__[a-z_]+__")
 
 def test_no_code_written_page_prints_a_reserved_judge_axis_by_its_stored_id() -> None:
     """Each aspect's own page over Kairo's committed bundle names its judge's reserved axes as every surface does,
-    ``outcome (judged)``, never ``__outcome__``, in every line and every table's headers and readings code writes; a
+    ``Outcome (judged)`` on a table, never ``__outcome__``, in every line and every table's headers and readings code writes; a
     trial's stored error, quoted as recorded, is the run's words."""
     pages = [
         build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00+00:00") for bundle in kairo_bundle().aspects
     ]
-    assert any("outcome (judged)" in report_markdown(page) for page in pages)
+    assert any("Outcome (judged)" in report_markdown(page) for page in pages)
     for page in pages:
         said: list[str] = []
         for block in page.blocks:
@@ -446,12 +447,15 @@ def test_every_measure_reads_one_name_on_page_aspect_page_print_and_exit_line(
 
 
 def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: dict[str, _Surfaces]) -> None:
+    # One name: a table's row prints it as a label, starting with a capital as every measure's row does; the print's
+    # line, as the words open it.
     surfaces = _rendered(rungs["rung2"])
     for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
+        assert judged_label(dimension) == named[:1].upper() + named[1:]
         assert (
-            f"| {named} |" in surfaces["aspect.md"]
+            f"| {judged_label(dimension)} |" in surfaces["aspect.md"]
             and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
         )
         assert dimension not in surfaces["print"]
@@ -469,7 +473,7 @@ def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -
             elif isinstance(block, TableBlock):
                 said += [column.header for column in block.columns]
                 said += [row[key].text for row in block.rows for key in ("reading", "rate", "guardrail") if key in row]
-    assert any("persona holds character (judged)" in text for text in said)
+    assert any("Persona holds character (judged)" in text for text in said)
     assert not [text for text in said if "persona.holds_character" in _CODE.sub("", text)]
     assert "| the pass rate |" not in campaign_report_markdown(page)
 
