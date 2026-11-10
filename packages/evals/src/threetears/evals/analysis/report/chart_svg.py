@@ -510,6 +510,11 @@ def _texture(name: str, x: float, y: float, w: float, h: float, color: str, opac
     return _el("g", {"style": f"opacity:{opacity:g}" if opacity != 1 else None}, "".join(marks))
 
 
+#: How far a reference label too wide for the room a chart's head leaves it sits above the head (``kit.js``'s
+#: ``K_RAISED``): a row and its leading, so the two never touch.
+_RAISED = 17
+
+
 @dataclass(frozen=True)
 class _RefLabel:
     """A reference line's label as placed: where it starts, its anchor, its lines and its widest; and whether it sits
@@ -679,7 +684,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     level_room = w - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(line_ref.value), line_ref.label, 0, level_room, w) if line_ref and line_ref.label else None
     if label is not None:
-        mt += (len(label.lines) - 1 + label.raised) * 13
+        mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
     grouped = any(r.group is not None for r in rows)
     gaps = sum(1 for i in range(1, len(rows)) if rows[i].group != rows[i - 1].group)
     h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0)
@@ -827,7 +832,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         rx = x(line_ref.value)
         out.append(_line(rx, mt - 6, rx, h - mb, "floor"))
         if label is not None:
-            out.append(_ref_text(label, mt - 8 - 13 * label.raised, True))
+            out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     if d.level:
         out.append(_text(w, mt - 8, _level_head(d.level), anchor="end"))
     return "".join(out), h
@@ -1061,7 +1066,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(max(d0, ref.value)), ref.label, 0, level_room, w) if ref is not None and ref.label else None
     if label is not None:
-        mt += (len(label.lines) - 1 + label.raised) * 13
+        mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
     # One label form for the chart: every label whole on one line or two, else every row its short label.
     lines_of = _row_lines(rows, math.floor((ml - 14) / 6.6))
     row_h = _row_h(rows, lines_of, d.row_height or 30)
@@ -1084,7 +1089,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
         )
         out.append(_line(mx, mt - 4, mx, h - mb, "floor"))
         if label is not None:
-            out.append(_ref_text(label, mt - 8 - 13 * label.raised, True))
+            out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     tick_w = max(len(f(d0)), len(f(d1))) * 6.4 + 16
     for v in _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), f, x):
         out.append(_line(x(v), mt, x(v), h - mb, "grid"))
@@ -1478,7 +1483,7 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(ref.value), ref.label, 0, level_room, w) if ref is not None and ref.label else None
     if label is not None:
-        mt += (len(label.lines) - 1 + label.raised) * 13
+        mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
     zero_label = _zero_place(x(0), d.zero_label, w) if d.zero_label and d0 <= 0 <= d1 else None
     if zero_label is not None:
         mt += 14 + (len(zero_label.lines) - 1) * 13
@@ -1515,7 +1520,7 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         rx = x(ref.value)
         out.append(_line(rx, mt - 4, rx, h - mb, "floor"))
         if label is not None:
-            out.append(_ref_text(label, mt - 8 - 13 * label.raised, True))
+            out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     if d.level:
         out.append(_text(w - mr, mt - 8, _level_head(d.level), anchor="end"))
     out += _better(words, ml, w - mr, h - 6)
@@ -1544,7 +1549,7 @@ def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
     room = w - _text_width(_RANGE_HEAD, 12) - 8
     label = _ref_label(x(ref.value), ref.label, 0, room, w) if ref is not None and ref.label else None
     if label is not None:
-        mt += (len(label.lines) - 1 + label.raised) * 13
+        mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
     h = mt + mb + sum(band(group) for group in groups)
     out: list[str] = []
     tick_w = max(len(f(d0)), len(f(d1))) * 6.4 + 16
@@ -1580,7 +1585,7 @@ def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
         rx = x(ref.value)
         out.append(_line(rx, mt - 6, rx, h - mb, "floor"))
         if label is not None:
-            out.append(_ref_text(label, mt - 8 - 13 * label.raised, True))
+            out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     out.append(_text(w, mt - 8, _RANGE_HEAD, anchor="end"))
     return "".join(out), h
 
