@@ -1552,8 +1552,8 @@ a default and one leaving it out are one condition.
 A campaign that compares arms to make a decision asks **one question** of them, measured on one or more
 **aspects**, before its first run (`create_campaign`, or the `campaign_create` action). Each aspect is one template,
 its runs, the margin a candidate may fall below the control by there, and its design. **Code reports, the writer
-recommends, a person decides**: code reads each aspect against the control; the floors only warn; and nothing on the
-page decides for the person reading it.
+recommends, a person decides**: code reads each aspect against the control; the floors warn (a broken one also caps the
+candidate's standing in code's dominance read); and nothing on the page decides for the person reading it.
 
 ```python
 definition = {

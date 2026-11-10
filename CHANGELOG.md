@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a broken floor caps an option's standing, and an uncalibrated judge's gain raises nothing
+
+**Changed:** code's dominance read (`options_dominance`, `decision_at`, `asked_standing`) gave a candidate the standing
+`shown_better` on any improved contrast on an asked aspect, before reading its floors or its judge: an arm whose pass
+rate broke its floor across the whole interval, and that cost more, read as a tradeoff on one uncalibrated judged
+score. Now a floor read `broken` on an asked aspect caps the candidate at `not_shown_no_worse`, and its `why` names
+the floor; an `unclear` floor caps nothing, and a floor still removes no option. An `improved` contrast on a judged
+dimension whose judge the input states uncalibrated (tier and calibration undetermined or insufficient, the reading
+`judge_uncalibrated` makes) is set aside: it raises nothing, `why` names it, and `AskedStanding.set_aside` (new) lists
+it; the candidate's other improvements count as before. A floor-margin sweep reads the cap at each margin. The
+editor's `adoption` fact names a recommended candidate a broken floor caps, and an improvement set aside.
+
+**Hosts:** a stored call can read differently on regeneration: a capped candidate that costs more than the control is
+now dominated by it, so a former tradeoff reads as a decision for the control.
+
 ### evals: an MCP client reads a report from structured content alone
 
 **Fixed:** over MCP, `report_read` returned no page to a client that shows a result's structured content in place of

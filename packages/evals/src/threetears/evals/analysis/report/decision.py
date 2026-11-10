@@ -2,8 +2,8 @@
 
 A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause on one aspect:
 ``RateDrop(max_points=10)`` (no pass rate may drop by more than 10 points against the control) or ``CostLower()`` (the candidate must cost less per
-reply). **A floor only warns.** It never decides: code reports, the writer recommends and a person decides, so a broken
-floor is the first line of the page and the call that adopts the candidate anyway records it as overridden.
+reply). **A floor warns.** It never decides the page or removes an option: code reports, the writer recommends and a
+person decides, so a broken floor is the first line of the page and the call that adopts the candidate anyway records it as overridden.
 :func:`evaluate_floor` reads one floor on one candidate (:func:`read_floor` with the per-rate detail the page prints),
 and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate, which the campaign's readings compare.
 
