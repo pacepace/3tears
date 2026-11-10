@@ -1447,11 +1447,16 @@ def _filter_text(call: ast.Call) -> str | None:
         mapping = given.get(argument)
         if mapping is None or (isinstance(mapping, ast.Constant) and mapping.value is None):
             continue
-        if not isinstance(mapping, ast.Dict) or not all(
-            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in mapping.keys
-        ):
+        if not isinstance(mapping, ast.Dict):
             return None
-        parts.extend(form.format(key.value) for key in mapping.keys if isinstance(key, ast.Constant))
+        written = [key.value for key in mapping.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+        if not written:
+            return None
+        parts.extend(form.format(column) for column in written)
+        if len(written) < len(mapping.keys):
+            # sets spread in beside the written ones (``**part.filters``) only narrow: what the walk cannot see is an
+            # interpolation, unknown unless a written column keys the read
+            parts.append("{}")
     if given.get("not_null") is not None:
         parts.append("__not_null__ IS NOT NULL")
     return " AND ".join(parts) or None

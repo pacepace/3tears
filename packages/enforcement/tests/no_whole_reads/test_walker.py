@@ -1514,3 +1514,32 @@ def test_a_pager_s_start_alone_does_not_narrow_it(tmp_path: Path) -> None:
     found = _symbols(_config(tmp_path, {"cursored.py": _CURSORED}))
     assert ("from_mark", "unkeyed-pager keyset_arrow_pages") in found, found
     assert not any(function == "keyed_from_mark" for function, _ in found), found
+
+
+_SPREAD = """
+    from threetears.core.operator import source_change_read
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_runs(client, relation, run_ids, part):
+        condition, params = filter_conditions(where_in={"run_id": run_ids, **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_family(client, relation, part):
+        condition, params = filter_conditions(where_in={"family": ["race"], **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+"""
+
+
+def test_sets_spread_beside_a_bound_id_only_narrow(tmp_path: Path) -> None:
+    """Flips if where_in sets spread in beside the bound id make the read unknown, or if spread sets beside no
+    bound id or key pass."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text(
+        "async def test_runs(client):\n    assert await by_runs(client, 'r', [1], None) and await by_family(client, 'r', None)\n",
+        encoding="utf-8",
+    )
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"spread.py": _SPREAD}))
+    assert not any(function == "by_runs" for function, _ in found), found
+    assert ("by_family", "unknown-predicate {}") in found, found
