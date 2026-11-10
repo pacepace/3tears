@@ -100,9 +100,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from bisect import bisect_right
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
+from itertools import accumulate
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -143,6 +145,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RESTORE_BUDGET_RATIO",
     "NotedRows",
+    "install_change_notes",
     "noted_rows_since",
     "noted_keys_page",
     "NotedKeysCursor",
@@ -178,6 +181,58 @@ _HASH_SPACE: Final = 65536
 #: the batches' worth of notes the count that sizes an emptying's first band reads at most: past it the table is
 #: taken to hold that many, so the first band is small and the bands grow from the notes each deletes
 _BAND_COUNT_BATCHES: Final = 64
+
+
+#: the indexes of a schema's that a failed build left invalid (``$1`` the schema, ``$2`` the names asked about)
+_INVALID_INDEXES_SQL: Final = (
+    "SELECT c.relname::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE n.nspname = $1 AND c.relname::text = ANY($2::text[]) AND NOT i.indisvalid"
+)
+
+
+async def install_change_notes(conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> None:
+    """create the ring where missing (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`), every index of it
+    usable: one a failed build left invalid is dropped and built again.
+
+    An index build that fails part way leaves its index behind marked invalid (``pg_index.indisvalid``), which the
+    planner never reads and ``CREATE INDEX IF NOT EXISTS`` takes as present. YugabyteDB's docs say to drop such an
+    index (``CREATE INDEX``, "If online CREATE INDEX fails, an invalid index may be left behind"). On YugabyteDB
+    2026.1 an online build racing other DDL on the database was also seen to end that way with no error: a ring's
+    every secondary index left invalid, so each page of a commit's noted keys read its whole note table. The
+    rebuild is said at WARNING; an index still invalid after it raises, rather than leave the ring's reads scanning.
+
+    :param conn: a connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
+        online only there); the caller holds the database's DDL lock where other installs may run
+    :ptype conn: Any
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :param fence: the fence a new ring row tells the writers
+    :ptype fence: timedelta
+    :return: nothing
+    :rtype: None
+    :raises GenerationUnavailableError: when a ring index is still invalid after it was built again
+    """
+    statements = change_notes_ddl(schema, fence=fence)
+    for statement in statements:
+        await conn.execute(statement)
+    # each index's own statement, by the name it creates (CREATE INDEX IF NOT EXISTS "<name>" ON ...)
+    builds = {
+        statement.split()[5].strip('"'): statement for statement in statements if statement.startswith("CREATE INDEX ")
+    }
+    invalid = [row[0] for row in await conn.fetch(_INVALID_INDEXES_SQL, schema, list(builds))]
+    if not invalid:
+        return
+    log.warning(
+        "change-note ring indexes left invalid by a failed build; dropping and building them again",
+        extra={"extra_data": {"schema": schema, "indexes": invalid}},
+    )
+    for name in invalid:
+        await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(schema)}.{quote_identifier(name)}")
+        await conn.execute(builds[name])
+    still = [row[0] for row in await conn.fetch(_INVALID_INDEXES_SQL, schema, invalid)]
+    if still:
+        raise GenerationUnavailableError(f"change-note ring indexes in {schema} still invalid after a rebuild: {still}")
 
 
 def _status_count(status: str) -> int:
@@ -737,8 +792,7 @@ class ChangeNoteKeeper:
         :rtype: None
         """
         async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-            for statement in change_notes_ddl(self._schema, fence=self._fence):
-                await conn.execute(statement)
+            await install_change_notes(conn, self._schema, fence=self._fence)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
         """give every noted table of the keeper's own schema its note function and triggers; say which it gave.
@@ -1879,25 +1933,36 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(whole))
 
 
-def _noted_keys_sql(owner: str, slot: int) -> str:
+def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
     """one ring note table's notes of a table and tenant in a bracket, after a time, in ``noted_at`` order.
 
     Answered from the ``(table_name, noted_at)`` index, which carries ``keys``, ``key_text``, ``columns`` and
     ``tenant`` (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`): an index range scan of the table's notes
-    in the bracket, in the index's order, stopped at the limit; no sort, no other table's notes.
+    in the bracket, in the index's order, stopped at the limit; no sort, no other table's notes. A tenant's notes are
+    picked by ``tenant = $2``, which YugabyteDB filters in its storage layer (``IS NOT DISTINCT FROM`` it filters
+    only after the rows reach the query layer).
+
+    Each note's keys' bytes (:func:`_key_bytes`) are counted by the database, so the page's bound costs the caller no
+    per-key work: from ``key_text``, the keys joined by ``chr(31)``, whose length is theirs plus one less than their
+    count. A whole-table note has no ``key_text``, so its bytes are NULL. The few notes with invalidation columns
+    add theirs in the caller.
 
     :param owner: the quoted schema holding the ring
     :ptype owner: str
     :param slot: the note table's place in the ring
     :ptype slot: int
-    :return: the statement: ``$1`` table, ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or
-        one microsecond before the bracket: both ends of the range are index conditions), ``$4`` until, ``$5`` the
-        most notes (NULL for all)
+    :param all_tenants: the notes of ``_all`` (``tenant IS NULL``) rather than of the tenant ``$2`` names
+    :ptype all_tenants: bool
+    :return: the statement, answering ``noted_at``, ``keys``, ``columns``, ``bytes`` by position: ``$1`` table,
+        ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or one microsecond before the bracket:
+        both ends of the range are index conditions), ``$4`` until, ``$5`` the most notes (NULL for all)
     :rtype: str
     """
+    tenant = "tenant IS NULL AND $2::text IS NULL" if all_tenants else "tenant = $2::text"
     return (  # each interpolated piece is a fixed name this module builds
-        f"SELECT noted_at, keys, columns, key_text IS NULL AS whole FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
-        "WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND tenant IS NOT DISTINCT FROM $2 "
+        "SELECT noted_at, keys, columns, char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes "
+        f"FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
+        f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} "
         "ORDER BY noted_at LIMIT $5"
     )
 
@@ -1913,10 +1978,24 @@ _CLOCK_GRAIN: Final = timedelta(microseconds=1)
 #: connection), each page reads only its own notes. Measured on a ring of 322,000 notes and a 20,000-row commit,
 #: tables freshly written and analyzed: 212,062 rows scanned for 20,162 named (10.52x), told so 20,262 (1.005x), each
 #: page an Index Only Scan with both ``noted_at`` bounds in its Index Cond, on Postgres and YugabyteDB.
-_INDEX_ORDER: Final = "SET LOCAL enable_bitmapscan = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off"
+_INDEX_ORDER: Final = (
+    "set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), "
+    "set_config('enable_sort', 'off', true)"
+)
 
 
 def _key_bytes(keys: Sequence[str], columns: Sequence[tuple[str, str | None]] = ()) -> int:
+    """the bytes a page counts for one note: its keys and its invalidation columns, each with 8 bytes of framing.
+
+    The page's own count is the database's (:func:`_noted_keys_sql`'s ``bytes``); this is that count's definition.
+
+    :param keys: the note's key values
+    :ptype keys: Sequence[str]
+    :param columns: its invalidation columns' names and values
+    :ptype columns: Sequence[tuple[str, str | None]]
+    :return: the bytes
+    :rtype: int
+    """
     return (
         sum(len(value) for value in keys)
         + 8 * len(keys)
@@ -1975,8 +2054,6 @@ async def noted_keys_page(
     # one connection: a pool's own, or the one given
     held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
     async with held as one, one.transaction(readonly=True):
-        # the planner prices the bracket's notes too few to read in index order: it is told to (_INDEX_ORDER)
-        await one.execute(_INDEX_ORDER)
         return await _noted_keys_page(one, owner, table, tenant_token, since, until, cursor, limit, max_bytes)
 
 
@@ -1992,9 +2069,11 @@ async def _noted_keys_page(
     max_bytes: int,
 ) -> NotedKeysPage | str:
     try:
+        # the ring row, and the planner told to keep the index's order for the reads after it (_INDEX_ORDER): one
+        # round trip, on the page's own transaction
         rings = await conn.fetch(
-            f"SELECT current_ring, switch_no, previous_switched_at, wait_seconds FROM {owner}.{quote_identifier(RING_TABLE)} "  # noqa: S608
-            "WHERE id = 1"
+            f"SELECT {_INDEX_ORDER}, current_ring, switch_no, previous_switched_at, wait_seconds "  # noqa: S608
+            f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
         )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the asker is behind on the table, said and counted there
@@ -2021,47 +2100,74 @@ async def _noted_keys_page(
     def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
         return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
 
+    def take(notes: Sequence[Any]) -> None:
+        # each note by position (_noted_keys_sql's select list): noted_at, keys, columns, bytes (NULL: whole table).
+        # Whole-list comprehensions, never a loop of Python steps a note: at 20,000 notes those were the larger part
+        # of the read
+        nonlocal whole
+        keyed = [note for note in notes if note[3] is not None]
+        whole = whole or len(keyed) < len(notes)
+        keys.extend([tuple(note[1]) for note in keyed])
+        columns.extend([None if note[2] is None else dict(_columns_of(note[2])) or None for note in keyed])
+
     for slot in order[order.index(at.slot) :]:
         # where this table's read starts: the cursor's time in its own table, else the bracket's start
         start = at.after if slot == at.slot else None
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
         after = start if start is not None else since - _CLOCK_GRAIN
-        found = await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, after, until, left + 1)
+        sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None)
+        found = await conn.fetch(sql, table, tenant, after, until, left + 1)
         if not found:
             continue
         full = len(found) > left
-        taken = list(found[:left])
-        if full and all(note["noted_at"] == taken[-1]["noted_at"] for note in taken):
-            if left < limit:
-                # the page already holds the earlier table's notes: this table's first instant starts the next
-                return page(NotedKeysCursor(slot=slot, after=start))
-            # one instant's notes fill the page: read that instant whole, so continuing past it skips none
-            instant = taken[-1]["noted_at"]
-            taken = list(
-                await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, instant - _CLOCK_GRAIN, instant, None)
-            )
-        elif full:
-            # end at a whole instant: the last instant's notes go to the next page
-            taken = [note for note in taken if note["noted_at"] < taken[-1]["noted_at"]]
-        for index, note in enumerate(taken):
-            starts_instant = index == 0 or taken[index - 1]["noted_at"] < note["noted_at"]
-            if note["whole"]:
-                whole = True
-                continue
-            values = tuple(str(value) for value in note["keys"])
-            held = _columns_of(note["columns"])
-            used += _key_bytes(values, held)
-            if used > max_bytes and starts_instant and keys:
-                # past the page's bytes at an instant's first note: the page ends before it
-                return page(NotedKeysCursor(slot=slot, after=taken[index - 1]["noted_at"] if index else start))
-            keys.append(values)
-            columns.append(dict(held) if held else None)
+        taken: Sequence[Any] = found[:left] if full else found
         if full:
-            return page(NotedKeysCursor(slot=slot, after=taken[-1]["noted_at"]))
+            last = taken[-1][0]
+            if taken[0][0] == last:
+                # the notes are in noted_at order, so the first and the last at one time means every one is
+                if left < limit:
+                    # the page already holds the earlier table's notes: this table's first instant starts the next
+                    return page(NotedKeysCursor(slot=slot, after=start))
+                # one instant's notes fill the page: read that instant whole, so continuing past it skips none
+                taken = await conn.fetch(sql, table, tenant, last - _CLOCK_GRAIN, last, None)
+            else:
+                # end at a whole instant: the last instant's notes go to the next page
+                end = len(taken) - 1
+                while taken[end - 1][0] == last:
+                    end -= 1
+                taken = taken[:end]
+        # past the page's bytes, the page ends before the first keyed note that starts an instant, once it holds a
+        # key: the running count says where it passes the bound, and only the notes from there are looked at
+        counted = list(
+            accumulate(
+                [
+                    0
+                    if note[3] is None
+                    else note[3]
+                    if note[2] is None
+                    else note[3] + _key_bytes((), _columns_of(note[2]))
+                    for note in taken
+                ],
+                initial=used,
+            )
+        )
+        # counted[i + 1] is the count with note i: the first note past the bound (the first, if the page already is)
+        index = max(bisect_right(counted, max_bytes) - 1, 0)
+        first_keyed = next((at_index for at_index, note in enumerate(taken) if note[3] is not None), len(taken))
+        while index < len(taken):
+            note = taken[index]
+            if note[3] is not None and (index == 0 or taken[index - 1][0] < note[0]) and (keys or first_keyed < index):
+                take(taken[:index])
+                return page(NotedKeysCursor(slot=slot, after=taken[index - 1][0] if index else start))
+            index += 1
+        take(taken)
+        used = counted[-1]
+        if full:
+            return page(NotedKeysCursor(slot=slot, after=taken[-1][0]))
         left -= len(taken)
         if left < 1:
             # the page is full at this table's last note; the next page reads on from it
-            return page(NotedKeysCursor(slot=slot, after=taken[-1]["noted_at"]))
+            return page(NotedKeysCursor(slot=slot, after=taken[-1][0]))
     return page(None)
 
 

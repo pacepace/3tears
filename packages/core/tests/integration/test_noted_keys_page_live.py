@@ -26,8 +26,13 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, noted_keys_page
-from threetears.core.ddl.change_notes import NOTE_RING_SIZE, change_notes_ddl, note_table
+from threetears.core.collections.change_notes import (
+    NotedKeysCursor,
+    NotedKeysPage,
+    install_change_notes,
+    noted_keys_page,
+)
+from threetears.core.ddl.change_notes import NOTE_RING_SIZE, note_table
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
 from threetears.core.testing.plans import PlanRecorder, plan_problems
 
@@ -63,8 +68,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
     conn = await asyncpg.connect(db_container, command_timeout=1200)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
-        for statement in change_notes_ddl(schema):
-            await conn.execute(statement)
+        await install_change_notes(conn, schema)
         notes = f"{schema}.{note_table(0)}"
         night = datetime.now(UTC) - timedelta(hours=6)
         insert = f"INSERT INTO {notes} (table_name, keys, key_text, tenant, noted_at) "  # noqa: S608
