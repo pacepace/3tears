@@ -497,20 +497,20 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 ...
 | report_writer.first_screen (judged) | 5.0 | 5.0 |
 | report_writer.coherent_story (judged) | 5.0 | 4.9 |
-| report_writer.honest_emphasis (judged) | 5.0 | 5.0 |
-| report_writer.sound_elision (judged) | 5.0 | 5.0 |
+| report_writer.honest_emphasis (judged) | 5.0 | 4.7 |
+| report_writer.sound_elision (judged) | 4.7 | 5.0 |
 | report_writer.confounds_handled (judged) | 5.0 | 5.0 |
 | report_writer.actionable_next_steps (judged) | 5.0 | 5.0 |
-| report_writer.evidence_fits_claims (judged) | 4.7 | 5.0 |
+| report_writer.evidence_fits_claims (judged) | 4.6 | 4.7 |
 ...
 | Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 73 | 27 | 36 to 100 |
-| lead-first | both pages finished | cannot tell apart (too few cases) | 58 | 42 | 0 to 100 |
+| lead-first | every pair | cannot tell apart | 70 | 30 | 33 to 100 |
+| lead-first | both pages finished | cannot tell apart (too few cases) | 62 | 38 | 0 to 100 |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 86% (6 of 7) | -5 | 0 | 21 | $0.13 of $1.95 |
+| lead-first | 86% (6 of 7) | -2 | 0 | 33 | $0.13 of $1.95 |
 ...
 promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -522,7 +522,7 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 73% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 73%, roughly 20 cases would settle it.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 70% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 70%, roughly 30 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:

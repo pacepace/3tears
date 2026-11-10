@@ -118,7 +118,7 @@ def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_q
     # Directly under the question and the line of what the page compares (presentation chunk 4).
     assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[2] is lead
     assert said[1].text == "shipped vs lead-first · report-writing"
-    assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 73%")
+    assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 70%")
 
 
 def test_one_arm_measured_leads_on_its_pass_rate_as_a_count(rungs: dict[str, _Rung]) -> None:
