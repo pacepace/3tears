@@ -371,6 +371,9 @@ class StageMode(StrEnum):
     #: only what differs: the table's rows the stage holds other values for are replaced, its new keys inserted,
     #: rows the stage holds as they are left untouched
     DIFFERENCE = "difference"
+    #: each stage row inserted as it is: nothing deleted, a key staged again (or already held) kept twice; for a
+    #: table whose key allows it (a log of keys, each pass's rows)
+    APPEND = "append"
 
 
 @dataclass(frozen=True)
@@ -404,6 +407,8 @@ async def apply_stage(
       INTO target (cols) SELECT cols FROM stage``;
     - ``upsert``: ``INSERT ... SELECT ... FROM stage ON CONFLICT (key) DO UPDATE SET c = excluded.c`` (the key a
       unique constraint of ``target``);
+    - ``append``: ``INSERT INTO target (cols) SELECT cols FROM stage``, nothing deleted and duplicates kept (``key``
+      may be empty: no row is named by it);
     - ``difference``: as ``replace``, but only the stage rows whose values differ (``IS DISTINCT FROM``) from the
       row of their key, or whose key is new. With a scope (``by``, ``where``: one state, one partition), the
       table's rows in that scope whose key the stage does not hold are deleted too (``DELETE FROM target WHERE
@@ -425,7 +430,7 @@ async def apply_stage(
     :ptype key: Sequence[str]
     :param columns: every column written, the key's among them
     :ptype columns: Sequence[str]
-    :param mode: ``replace``, ``upsert`` or ``difference``
+    :param mode: ``replace``, ``upsert``, ``difference`` or ``append``
     :ptype mode: StageMode | str
     :param by: ``difference`` only: the scope the stage replaces whole, its columns pinned (each a value or an
         ``AnyOf``); its rows of keys the stage does not hold are deleted
@@ -439,7 +444,7 @@ async def apply_stage(
         a mode other than ``difference``
     """
     chosen = StageMode(mode)
-    if not key or any(column not in columns for column in key):
+    if (not key and chosen is not StageMode.APPEND) or any(column not in columns for column in key):
         raise ValueError(f"a stage applied to {target} names its key among the columns written, got {list(key)}")
     scoped = bool(by) or bool(where)
     if scoped and chosen is not StageMode.DIFFERENCE:
@@ -462,6 +467,9 @@ async def apply_stage(
             f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {staged} WHERE true ON CONFLICT ({conflict}) {action}"
         )
         return StageWrite(deleted=0, written=rows_affected(str(status or "")))
+    if chosen is StageMode.APPEND:
+        appended = await conn.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {staged}")
+        return StageWrite(deleted=0, written=rows_affected(str(appended or "")))
     if chosen is StageMode.REPLACE:
         deleted = await conn.execute(f"DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM {staged} AS s WHERE {on_key})")
         written = await conn.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {staged}")

@@ -92,6 +92,7 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         'count_at_most(c, "results", by={"state": s}, at_most=3, order=["state", "geo", "id"])',
         # a delete of the rows a prefix names, through the C-ordered index its reader's purpose names
         'delete_keyed(c, "fence", prefix={"signal": p}, returning=("signal",))',
+        'update_keyed(c, "fence", values={"run_id": r}, prefix={"signal": p})',
         # a bounded look: any rows up to its limit, of the table or of a key's rows
         'any_rows(c, "results", ["state", "geo"], limit=500)',
         'any_rows(c, "results", cols, limit=1, by={"state": s})',
@@ -136,6 +137,7 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ('count_at_most(c, "results", by={"kind": k}, at_most=3, order=["state", "geo", "id"])', "non-key-where"),
         # a prefix delete on a column no index ranges
         ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
+        ('update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})', "non-key-where"),
         # a bounded look filtered on a column no key leads with
         ('any_rows(c, "results", cols, limit=5, by={"kind": k})', "non-key-where"),
         # the same listing with its customers' fragment missing: every customer's rows, by no index

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from typing import Any
 from collections.abc import Iterator
 
 import duckdb
@@ -45,6 +46,38 @@ def test_a_helper_runs_in_the_caller_s_transaction_and_sees_its_relation(conn: d
     assert conn.execute("SELECT v FROM t WHERE a = 'k1' AND b IN (1, 999) ORDER BY b").fetchall() == [(-1,), (7,)]
     conn.execute("ROLLBACK")
     assert conn.execute("SELECT count(*), sum(v) FROM t").fetchall() == [(40, sum(range(40)))]
+
+
+def test_an_append_runs_inline_and_writes_what_the_insert_it_replaces_writes(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if apply_stage(mode=append) cannot run on an inline DuckDB, deletes a row, or leaves the table other than
+    the plain ``INSERT INTO t SELECT ... FROM stage`` it replaces: the stage's keys are keys each case's table holds
+    (re-staged), and some are staged twice."""
+    conn.execute("CREATE TABLE seen (a VARCHAR, b BIGINT, v INTEGER)")
+    conn.execute("CREATE TABLE stage (a VARCHAR, b BIGINT, v INTEGER)")
+    conn.execute(
+        "INSERT INTO stage SELECT 'k' || (i % 2), i, -i FROM range(60) r(i) WHERE i % 2 = 0 "
+        "UNION ALL SELECT 'k' || (i % 2), i, -i FROM range(60) r(i) WHERE i % 3 = 0"
+    )
+
+    def row(seed: Seeded) -> dict[str, object]:
+        return {"a": f"k{seed.tenant}", "b": seed.index, "v": None if seed.null else seed.tie}
+
+    async def helper(c: Any) -> Any:
+        staged = await c.fetch("SELECT a, b, v FROM stage")
+        await apply_stage(c, "seen", "stage", key=["a", "b"], columns=["a", "b", "v"], mode="append")
+        return staged
+
+    run_inline(
+        assert_same_results(
+            InlineDuckDB(conn),
+            table="seen",
+            row=row,
+            old_sql="INSERT INTO seen (a, b, v) SELECT a, b, v FROM stage RETURNING a, b, v",
+            helper=helper,
+            ordered=False,
+            state_sql="SELECT a, b, v FROM seen",
+        )
+    )
 
 
 def test_its_transaction_commits_on_a_clean_exit_and_rolls_back_on_an_error(conn: duckdb.DuckDBPyConnection) -> None:

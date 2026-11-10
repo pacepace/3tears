@@ -71,6 +71,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "delete_before",
         "delete_oldest",
         "delete_keyed",
+        "update_keyed",
         "counts_by_relations",
         "update_before",
     }
@@ -419,10 +420,13 @@ def _any_rows(call: ast.Call) -> list[str]:
     return [f"SELECT * FROM {relation} AS t{_where([*pinned, *filtered])} LIMIT ${place}", *own]
 
 
-def _delete_keyed(call: ast.Call) -> list[str]:
-    """a delete by key: judged only where it deletes by a prefix (``prefix={"signal": p}``), as the code-point range
-    it sends (``"signal" >= $n AND "signal" < $m``, judged as a page of that range); a delete by ``by``/``keys``
-    sends nothing here to judge."""
+def _keyed_write(call: ast.Call) -> list[str]:
+    """a delete or update by key (``delete_keyed`` / ``update_keyed``): judged only where it writes by a prefix
+    (``prefix={"signal": p}``), as the code-point range it sends (``"signal" >= $n AND "signal" < $m``, judged as a
+    page of that range); one by ``by``/``keys`` sends nothing here to judge. A table its caller names (a fence's,
+    ``clear_signals(conn, table)``) is the module's template (``TableSchema(name=<parameter>)``), as a generic read's
+    ``FROM {table}`` is: keyed by the template's index whose purpose names the caller, and a whole read where the
+    module declares no template."""
     node = _argument(call, "prefix", None)
     if node is None:
         return []
@@ -430,10 +434,7 @@ def _delete_keyed(call: ast.Call) -> list[str]:
     if not started:
         raise _Unseen("prefix")
     table_node = _argument(call, "table", 1)
-    if not isinstance(table_node, ast.Constant):
-        # a table its caller names (a fence's, ``clear_signals(conn, table)``): no declared index to judge it by here
-        return []
-    table, _ = _relation(table_node, "table")
+    table = _relation(table_node, "table")[0] if isinstance(table_node, ast.Constant) else '"{}"'
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     # the prefix's rows are a range read in the column's order: keyed exactly when an index ranges that column for
     # the reader (a C-ordered, ASC one), as a page of the range is
@@ -513,7 +514,8 @@ _SYNTHESIZERS: Final = {
     "read_past_marks": _read_past_marks,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
-    "delete_keyed": _delete_keyed,
+    "delete_keyed": _keyed_write,
+    "update_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
 }

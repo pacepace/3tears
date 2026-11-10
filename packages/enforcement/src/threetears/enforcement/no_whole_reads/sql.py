@@ -982,6 +982,9 @@ def _key_hit(
                 reader.schema.use_from_lead(table, name, reader.names)
             elif table is not None:
                 reader.schema.use(table, name, reader.names)
+            elif reader.template is not None:
+                # a table its module builds from a template (``FROM {table}``): the template's index is used
+                reader.schema.use(reader.template.name, name, reader.names)
             return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
