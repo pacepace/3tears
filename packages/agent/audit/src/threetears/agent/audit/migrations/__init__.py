@@ -8,11 +8,14 @@ owns one platform-scoped table, ``audit_events``.
 version history:
 
 - v001 creates ``audit_events`` and its four indexes (3tears v0.59.0).
+- v002 builds ``idx_audit_events_time_asc`` (``timestamp ASC``: range-sharded on YugabyteDB) and drops
+  ``idx_audit_events_time`` (3tears v0.95.0).
 """
 
 from __future__ import annotations
 
 from threetears.agent.audit.migrations.v001_create_audit_events import create_audit_events
+from threetears.agent.audit.migrations.v002_audit_time_range_index import range_shard_audit_time_index
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_audit"
@@ -29,8 +32,9 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     """
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=MigrationScope.PLATFORM)
     pkg.version(1)(create_audit_events)
+    pkg.version(2)(range_shard_audit_time_index)
     runner.register(pkg)
     return pkg
 
 
-__all__ = ["PACKAGE_NAME", "create_audit_events", "register"]
+__all__ = ["PACKAGE_NAME", "create_audit_events", "range_shard_audit_time_index", "register"]

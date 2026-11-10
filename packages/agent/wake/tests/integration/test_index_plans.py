@@ -30,7 +30,7 @@ from threetears.conversations.migrations import register as register_conversatio
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
-from threetears.core.testing.plans import explain_statement, explain_write, plan_uses_index
+from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 
 from .conftest import AsyncpgStore
 
@@ -189,12 +189,21 @@ async def _user_counts(captured: _Captured) -> list[tuple[str, tuple[Any, ...]]]
 
 
 async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
-    """Flips if the tick's due scan stops reading idx_wake_schedules_next_fire."""
+    """Flips if the tick's due scan stops reading idx_wake_schedules_next_fire_asc, or if on YugabyteDB a tick past
+    every active schedule stops reading only its page (a hashed ``next_fire_at`` reads and sorts every active one)."""
     captured = _Captured()
     await _collections(captured).schedules.list_due_for_tick(_NOW, limit=50)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_wake_schedules_next_fire"), plan.plan
+    assert plan_uses_index(plan, "idx_wake_schedules_next_fire_asc"), plan.plan
+    # a tick after every one of the 500 active schedules is due: the page of 50 reads about its own rows
+    late = _Captured()
+    await _collections(late).schedules.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), limit=50)
+    (sql, args), *_ = late.asked
+    page = await explain_statement(conn, sql, *args)
+    assert page.rows_returned == 50, page
+    if await on_yugabyte(conn):
+        assert page.rows_scanned <= 2 * (50 + 1), page
 
 
 async def test_wake_schedules_user(conn: asyncpg.Connection) -> None:

@@ -25,6 +25,9 @@ subclasses in ``3tears-agent-tools``):
   counted per reason and minute.
 - ``idx_wake_fires_dispatching`` (v011) -- the fires still in flight, the
   reaper's sweep.
+- ``idx_wake_schedules_next_fire_asc`` (v012) -- the tick's due scan, range-sharded
+  on YugabyteDB (``next_fire_at ASC``), built beside v001's
+  ``idx_wake_schedules_next_fire``, which it drops.
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -115,6 +118,9 @@ from threetears.agent.wake.migrations.v010_create_webhook_refusals import (
 from threetears.agent.wake.migrations.v011_dispatching_fires_index import (
     add_dispatching_fires_index,
 )
+from threetears.agent.wake.migrations.v012_next_fire_range_index import (
+    range_shard_next_fire_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -153,6 +159,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(9)(add_fire_source_and_manual_fires)
     pkg.version(10)(create_webhook_refusals)
     pkg.version(11)(add_dispatching_fires_index)
+    pkg.version(12)(range_shard_next_fire_index)
     runner.register(pkg)
     return pkg
 
@@ -171,5 +178,6 @@ __all__ = [
     "create_webhook_refusals",
     "create_webhook_subscriptions",
     "open_verification_scheme_check",
+    "range_shard_next_fire_index",
     "register",
 ]
