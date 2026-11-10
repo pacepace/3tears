@@ -329,7 +329,7 @@ def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
     assert kinds == {"rate", "money"}
 
 
-# The number policy on the code and aspect pages, row by row against the plan's before and after (section 2.5).
+# The number policy on the code and aspect pages, row by row against design.md's "What the policy changed" table.
 
 
 @functools.cache
@@ -339,7 +339,7 @@ def _scaled_markdown() -> str:
 
 def test_the_p95_time_reads_at_the_places_its_interval_sets_with_each_interval_in_one_form() -> None:
     """A 2.4 s p95 with a ±0.07 s interval reads to the hundredth, its level, its change and both intervals alike, each
-    interval ``low to high``, the unit on the figure it follows (``2.42 s (2.35 to 2.49)``, section 2.5): never
+    interval ``low to high``, the unit on the figure it follows (``2.42 s (2.35 to 2.49)``): never
     ``2.4 [2.4, 2.5] s`` beside ``+0.028 s [-0.131, 0.187] s``."""
     assert (
         "| 95th-percentile extraction time | candidate-a | 2.39 s | 2.42 s (2.35 to 2.49) | +0.03 s | -0.13 to +0.19 s |"
@@ -574,7 +574,7 @@ def test_a_pooled_figure_never_sets_a_measure_s_digits() -> None:
 def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
     """One form per measure across the campaign: Kairo's written page reads the pass rate at the places its aspect's
     page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points: whole
-    points (§2.5), never the tenth the code page's pooled change (±2.86 points) would set."""
+    points (as design.md's table reads it), never the tenth the code page's pooled change (±2.86 points) would set."""
     held = report_input(kairo_bundle())
     assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 0
     assert _kairo_pass_rate_places(kairo_bundle().readings) == 0

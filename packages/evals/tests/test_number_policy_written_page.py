@@ -1,10 +1,10 @@
-"""The number policy on a written page: Kairo's page, as the plan's before-and-after table states it, row by row.
+"""The number policy on a written page: Kairo's page, as design.md's before-and-after table states it, row by row.
 
-Each test holds one row of the plan's Kairo table (``number-forms-plan.md`` §2.5, under the owner's rulings for C5b)
-to the text the page prints, read off its Markdown, so a reader's view of one measure is held where the reader meets it:
-every measure at one precision on the whole page, read from its uncertainty (rule 2); an interval in its one form, the
-unit once (rule 3); the fixed forms of a p, a margin and an exact zero (rule 4); and every heading stating the joint
-guarantee a corrected family holds at, the per-interval level left to Method.
+Each test holds one Kairo row of the table under "What the policy changed" (``packages/evals/docs/design.md``, The
+number policy) to the text the page prints, read off its Markdown, so a reader's view of one measure is held where
+the reader meets it: every measure at one precision on the whole page, read from its uncertainty (rule 2); an
+interval in its one form, the unit once (rule 3); the fixed forms of a p, a margin and an exact zero (rule 4); and
+every heading stating the joint guarantee a corrected family holds at, the per-interval level left to Method.
 """
 
 from __future__ import annotations

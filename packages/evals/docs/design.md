@@ -242,8 +242,9 @@ The policy accepts two costs:
 - A level and its change are rounded independently, so at whole points two levels' difference can miss the printed
   change by one in the last digit. Forcing the arithmetic to close would print past the noise; journals round the
   same way.
-- A judged score at a handful of cases reads one decimal (rung 5's `4.7` at seven cases), because a hundredth is
-  noise there.
+- A judged score below 30 cases reads one decimal (rung 5's `4.7` at seven cases), because a hundredth is noise
+  there: a judged score's spread across cases is typically half a point to a point on a 1 to 5 scale, so below about
+  30 cases its 95% half-width is about 0.3 or wider, which rule 2 reads at a tenth.
 
 What the policy changed, on Kairo's written page and the scaled campaign's code page:
 

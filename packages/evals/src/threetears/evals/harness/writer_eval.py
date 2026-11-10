@@ -698,7 +698,7 @@ class WriterResult:
             if rate:
                 said = {arm: printed.text for arm, printed in forms.rate_readings(row, measure=key, kind=kind).items()}
             elif kind == "judged":
-                # A judged score at the precision its cases support (one decimal at a few, plan §2.3).
+                # A judged score at the precision its cases support: a tenth below about 30 cases, where a hundredth is noise.
                 said = {arm: printed.text for arm, printed in forms.score_readings(row, measure=key, kind=kind).items()}
             else:
                 said = {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}

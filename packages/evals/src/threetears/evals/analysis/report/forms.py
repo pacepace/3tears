@@ -1667,8 +1667,8 @@ class PageForms:
     ) -> dict[str, Printed]:
         """A judged score's readings across an off-page table's row, one per arm, each its mean at one precision for the
         row: a score states no interval there, so its decimals are rule 2's for a score's spread at that many cases, a
-        hundredth from :data:`_SCORE_HUNDREDTHS_FROM` cases up and a tenth below, where a hundredth is noise (plan
-        §2.3: rung 5's ``4.9`` at 7 cases, never ``4.86``).
+        hundredth from :data:`_SCORE_HUNDREDTHS_FROM` cases up and a tenth below, where a hundredth is noise (rung
+        5's ``4.9`` at 7 cases, never ``4.86``).
 
         :param reads: Each arm's mean and the cases it is over, by arm.
         :ptype reads: Mapping[str, tuple[float, int]]
@@ -3035,8 +3035,9 @@ _CHART_LINES = frozenset({"reference", "x_reference", "price_line"})
 #: the input's own.
 _GRID = frozenset({"factors", "configs"})
 
-#: The fewest cases a judged score with no interval reads to a hundredth at: below it a hundredth is noise, and the
-#: score reads a tenth (plan §2.3, rule 2 for a score's spread at a few cases).
+#: The fewest cases a judged score with no interval reads to a hundredth at; below it the score reads a tenth. A judged
+#: score's spread across cases is typically half a point to a point on a 1 to 5 scale, so below about 30 cases its 95%
+#: half-width is about 0.3 or wider, which rule 2 reads at a tenth: a hundredth there is noise.
 _SCORE_HUNDREDTHS_FROM = 30
 
 #: The decimals an off-page reading is stated to (:meth:`PageForms.reading`).
