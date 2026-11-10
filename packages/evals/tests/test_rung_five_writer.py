@@ -143,7 +143,7 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     # The recording's date and the head it was made at; and when the judge's calls were recorded again, naming the
     # commit whose pages the judge read, which is the one a replay of its keys must stand on.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme
-    assert "2026-11-10, over the C5b pages after the interval-join fix (`b23852e2c`)" in readme
+    assert "2026-11-10, over the C5c pages (`7601153ed`)" in readme
     # What it cost: the judge's dollars are what judge.jsonl recorded, and the total is the writer's and the judge's.
     judged = sum(
         json.loads(line)["result"]["cost_usd"]
@@ -170,10 +170,10 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # the share scale, which the evidence cannot tell from even at 7 cases (the glossary's words, owner ruling Q2), a
     # row with columns; its two orders agreed on 6 of 7 cases, so the pass gives the held-out cases that would settle
     # it at the share it read, and its spend in the money form.
-    # Re-pinned 2026-11-10, the judge recorded again over the C5b pages and once more after the interval-join fix:
-    # from 52 · 48 · 15 to 89, a lean of 9 points and 3,115 cases to settle.
-    assert "| lead-first | every pair | cannot tell apart | 70 | 30 | 33 to 100 |" in lines
-    assert "| lead-first | 86% (6 of 7) | -2 | 0 | 33 | $0.13 of $1.95 |" in lines
+    # Re-pinned 2026-11-10, the judge recorded again over the C5c pages (number forms and layout): from 70 · 30 · 33
+    # to 100, a lean of -2 points and 33 cases to settle.
+    assert "| lead-first | every pair | cannot tell apart | 61 | 39 | 28 to 96 |" in lines
+    assert "| lead-first | 86% (6 of 7) | 7 | 0 | 120 | $0.13 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
@@ -194,8 +194,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # What the page compares and on what is the line under the question (presentation chunk 4), then the answer.
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
-        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 70% of its preference over "
-        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 70%, roughly 30 "
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 61%, roughly 100 "
         "cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
