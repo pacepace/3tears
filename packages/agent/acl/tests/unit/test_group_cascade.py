@@ -30,7 +30,9 @@ class _Pool:
         self.assignments = assignments
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        if sql.startswith("SELECT member_type, member_id, id FROM group_members WHERE group_id = $1"):
+        if sql.startswith('SELECT member_type, member_id, id FROM group_members WHERE "group_id" = $1'):
+            # the group's own key range, a page at a time in id order: one page holds every member here
+            assert 'ORDER BY "id" LIMIT' in sql, sql
             return list(self.members)
         # the group's assignments by group, through the read the grant load shares
         assert sql == ASSIGNMENTS_OF_GROUPS_SQL, sql

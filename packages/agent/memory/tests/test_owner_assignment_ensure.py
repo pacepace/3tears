@@ -18,6 +18,8 @@ with.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
@@ -65,7 +67,7 @@ class _StubNamespace:
 class _BuiltinRoleCollection:
     """role collection stand-in serving one builtin role.
 
-    only :meth:`list_builtin` participates in the ensure path; the rest of
+    only :meth:`find_platform_by_name` participates in the ensure path; the rest of
     :class:`~threetears.agent.acl.collections.RoleCollection`'s surface is
     inherited from :class:`~threetears.core.collections.base.BaseCollection`
     and is not reached here.
@@ -81,13 +83,22 @@ class _BuiltinRoleCollection:
         """
         self._role = role
 
-    async def list_builtin(self) -> tuple[Role, ...]:
-        """return the one builtin role.
+    async def find_platform_by_name(self, name: str) -> SimpleNamespace | None:
+        """the platform role named ``name``, as :meth:`RoleCollection.find_platform_by_name` answers it.
 
-        :return: single-element tuple carrying the builtin role
-        :rtype: tuple[Role, ...]
+        :param name: the role's name
+        :ptype name: str
+        :return: the role, carrying ``id``, ``name`` and ``is_builtin``; None when none is named so
+        :rtype: SimpleNamespace | None
         """
-        return (self._role,)
+        return next(
+            (
+                SimpleNamespace(id=role.id, name=role.name, is_builtin=role.is_built_in)
+                for role in (self._role,)
+                if role.name == name
+            ),
+            None,
+        )
 
 
 def _pool() -> AsyncMock:

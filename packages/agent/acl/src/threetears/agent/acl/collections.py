@@ -49,6 +49,8 @@ from uuid import UUID, uuid7
 
 from threetears.core.collections import DeleteCascade
 from threetears.core.collections.scan_cache import ScanCacheKey
+from threetears.core import keyed as k
+from threetears.core.keyset import keyset_pages
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -62,7 +64,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.namespaces import namespace_contains
+from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.observe import get_logger
 
 from threetears.agent.acl.entities import (
@@ -110,19 +112,113 @@ ASSIGNMENTS_OF_GROUPS_SQL: Final[str] = (
     " scope_customer_id, scope_namespace_name FROM role_assignments WHERE group_id = ANY($1::uuid[])"
 )
 
+#: a group's grant by its natural key (row scope, group, role, scope), the oldest first:
+#: ``idx_role_assignments_group_scope`` (group_id, scope_type)
+GRANT_OF_GROUP_SQL: Final[str] = (
+    "SELECT assignment_id FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND role_id = $3"
+    " AND scope_type = $4 AND scope_namespace_id IS NOT DISTINCT FROM $5 ORDER BY assignment_id ASC LIMIT 1"
+)
+
+#: the grant a concurrent ensure won, in either scope (the natural-key index that absorbed the loser spans both):
+#: ``idx_role_assignments_group_scope`` (group_id, scope_type)
+GRANT_WINNER_OF_GROUP_SQL: Final[str] = (
+    "SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1"
+    " AND row_scope IN ('platform', 'customer') AND role_id = $2 AND scope_type = $3"
+    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND managed_by = $5"
+    " ORDER BY date_granted ASC, assignment_id ASC LIMIT 1"
+)
+
+#: a group's grants on one scope (``$5`` NULL: of any provenance): ``idx_role_assignments_group_scope``
+#: (group_id, scope_type)
+GRANTS_OF_GROUP_SCOPE_SQL: Final[str] = (
+    "SELECT assignment_id FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND scope_type = $3"
+    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND ($5::text IS NULL OR managed_by = $5)"
+)
+
+#: the same grants, deleted: ``idx_role_assignments_group_scope`` (group_id, scope_type)
+DELETE_GRANTS_OF_GROUP_SCOPE_SQL: Final[str] = (
+    "DELETE FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND scope_type = $3"
+    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND ($5::text IS NULL OR managed_by = $5)"
+    " RETURNING assignment_id"
+)
+
 #: every membership naming one of a set of members of one type: ``idx_group_members_reverse`` (member_type, member_id)
 MEMBERS_NAMING_SQL: Final[str] = (
     "SELECT group_id, member_type, member_id, customer_id FROM group_members"
     " WHERE member_type = $1 AND member_id = ANY($2::uuid[])"
 )
 
+#: rows a listing's page keeps unless its caller asks for fewer
+LISTING_PAGE: Final[int] = 200
+
+#: rows a group delete's cascade read takes a statement, its members a page at a time
+_CASCADE_PAGE: Final[int] = 1000
+
 #: the namespace named so: ``idx_namespaces_name`` (name)
 NAMESPACE_BY_NAME_SQL: Final[str] = "SELECT * FROM namespaces WHERE name = $1"
+
+#: every namespace at or beneath a node: the node itself by ``idx_namespaces_name``, and the names under it as the
+#: byte range ``[node + ".", node + "/")`` by ``idx_namespaces_name_c`` (name COLLATE "C"). The range is byte-ordered
+#: on purpose: under a linguistic collation ``.`` and ``-`` sort as ignorable, so the range would neither hold every
+#: name under the node nor only them
+NAMESPACE_IDS_UNDER_NAME_SQL: Final[str] = (
+    "SELECT namespace_id, name FROM namespaces WHERE row_scope IN ('platform', 'customer')"
+    ' AND (name = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3))'
+)
+
+#: the character just past the separator: the exclusive end of the range of names beneath a node
+_PAST_SEPARATOR: Final[str] = chr(ord(NAMESPACE_NAME_SEPARATOR) + 1)
+
+#: an agent's own namespace of a type: ``idx_namespaces_owner_agent_id`` (owner_agent_id)
+NAMESPACE_OF_AGENT_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope = 'customer' AND owner_agent_id = $1 AND namespace_type = $2"
+)
+
+#: the first namespace of a type an agent owns, in one row scope and customer: ``idx_namespaces_owner_agent_id``
+NAMESPACE_OF_OWNER_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope = $1 AND namespace_type = $2 AND owner_agent_id = $3"
+    " AND customer_id IS NOT DISTINCT FROM $4 ORDER BY namespace_id ASC LIMIT 1"
+)
+
+#: a customer's first ownerless namespace of a type: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
+OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id = $2 AND namespace_type = $3"
+    " AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1"
+)
+
+#: the first ownerless platform namespace of a type: ``idx_namespaces_customer_type`` (its NULL customer)
+OWNERLESS_PLATFORM_NAMESPACE_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id IS NULL AND namespace_type = $2"
+    " AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1"
+)
+
+#: a customer's namespaces of a type: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
+NAMESPACES_OF_CUSTOMER_TYPE_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2"
+)
+
+#: the ids of the same: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
+NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL: Final[str] = (
+    "SELECT namespace_id FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2"
+)
+
+#: the namespaces an owner owns, but itself, both row scopes: ``idx_namespaces_owner_namespace`` (owner_namespace)
+NAMESPACES_OWNED_BY_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND owner_namespace = $1 AND name <> $1"
+    " ORDER BY namespace_id"
+)
+
+#: whether any namespace, of either row scope, names a schema: ``idx_namespaces_schema_name`` (schema_name)
+SCHEMA_IN_USE_SQL: Final[str] = (
+    "SELECT EXISTS (SELECT 1 FROM namespaces WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)"
+)
 
 #: a platform role by name: ``uq_roles_platform_name`` (name) WHERE customer_id IS NULL
 ROLE_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM roles WHERE name = $1 AND customer_id IS NULL"
 
 __all__ = [
+    "LISTING_PAGE",
+    "EntityPage",
     "GroupCascade",
     "GroupCollection",
     "GroupMemberCollection",
@@ -197,6 +293,20 @@ def _coerce_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
 
 
 @dataclass(frozen=True)
+class EntityPage[EntityT]:
+    """one page of a listing: its entities in the listing's order, and the cursor of the page after it.
+
+    :param entities: the page's entities
+    :ptype entities: list[EntityT]
+    :param next_cursor: what the next page is asked with; None on the last page
+    :ptype next_cursor: str | None
+    """
+
+    entities: list[EntityT]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True)
 class GroupCascade:
     """the rows deleting a group cascades away in the database, read before the delete.
 
@@ -220,7 +330,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     about to remove and announces them afterwards through those tables'
     collections (:meth:`read_cascade`, :meth:`announce_cascade`). CRUD comes from the
     declarative :class:`TableSchema`; the evaluator-loader / introspection
-    helpers (``list_by_customer`` / ``list_all`` / ``get_many`` /
+    helpers (``page_by_customer`` / ``page_all`` / ``get_many`` /
     ``get_by_name``) stay on the canonical class because every
     rbac-consuming app needs them.
 
@@ -260,8 +370,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
     partition_exempt_methods = frozenset(
         {
-            "list_by_customer",
-            "list_all",
+            "page_by_customer",
+            "page_all",
             "get_many",
             "get_by_name",
             "delete_from_store",
@@ -398,10 +508,16 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         members: list[Any] = []
         assignments: list[Any] = []
         if self.l3_pool is not None:
-            # cache-bypass: the rows a cascade is about to remove, by group across both partitions
-            members = await self.l3_pool.fetch(
-                "SELECT member_type, member_id, id FROM group_members WHERE group_id = $1", group_id
-            )
+            # cache-bypass: the rows a cascade is about to remove, the group's own key range a page at a time
+            # (group_members' key is (group_id, id)): every one is announced, so every one is read
+            async for page in keyset_pages(
+                self.l3_pool,
+                "SELECT member_type, member_id, id FROM group_members",
+                ("id",),
+                where={"group_id": group_id},
+                page_size=_CASCADE_PAGE,
+            ):
+                members.extend(page)
             # cache-bypass: the same cascade's assignments, by group across both partitions
             assignments = [
                 {"row_scope": row["row_scope"], "assignment_id": row["assignment_id"]}
@@ -525,40 +641,87 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
-    async def list_by_customer(
+    async def page_by_customer(
         self,
         customer_id: UUID,
-    ) -> list[GroupEntity]:
-        """list every ``groups`` row owned by ``customer_id``.
+        *,
+        limit: int = LISTING_PAGE,
+        cursor: str | None = None,
+    ) -> EntityPage[GroupEntity]:
+        """one page of the groups ``customer_id`` owns, by name, through ``uq_groups_customer_name``.
 
-        rows are promoted into L1/L2 caches for subsequent ``get(id)``
-        lookups. returns an empty list (never ``None``) when the
-        customer has no groups so callers can iterate unconditionally.
+        rows are promoted into L1/L2 caches for subsequent ``get(id)`` lookups.
 
         :param customer_id: owning customer UUID
         :ptype customer_id: UUID
-        :return: list of group entities ordered by ``date_created``
-            ascending
-        :rtype: list[GroupEntity]
+        :param limit: groups a page keeps
+        :ptype limit: int
+        :param cursor: the previous page's ``next_cursor``; the first page when None
+        :ptype cursor: str | None
+        :return: the page; empty without an L3 pool
+        :rtype: EntityPage[GroupEntity]
         """
         read_ticket = self.scan_ticket()  # before the first await
-        result: list[GroupEntity] = []
+        page = EntityPage[GroupEntity]([], None)
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT * FROM groups
-                 WHERE row_scope = 'customer'
-                   AND customer_id = $1
-                 ORDER BY date_created ASC
-                """,
-                customer_id,
+            answered = await k.keyset_page(
+                self.l3_pool,
+                "groups",
+                columns=tuple(column.name for column in self.schema.columns),
+                by={"row_scope": "customer", "customer_id": customer_id},
+                order=[k.Sort("name")],
+                limit=limit,
+                cursor=cursor,
             )
-            for row in rows:
-                data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
+            page = EntityPage(self._promoted(answered.rows, read_ticket), answered.next_cursor)
+        return page
+
+    async def page_all(
+        self,
+        *,
+        limit: int = LISTING_PAGE,
+        cursor: str | None = None,
+    ) -> EntityPage[GroupEntity]:
+        """one page of every group, platform and customer, by id through ``uq_groups_group_id``: a platform admin's
+        listing.
+
+        :param limit: groups a page keeps
+        :ptype limit: int
+        :param cursor: the previous page's ``next_cursor``; the first page when None
+        :ptype cursor: str | None
+        :return: the page; empty without an L3 pool
+        :rtype: EntityPage[GroupEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        page = EntityPage[GroupEntity]([], None)
+        if self.l3_pool is not None:
+            answered = await k.keyset_page(
+                self.l3_pool,
+                "groups",
+                columns=tuple(column.name for column in self.schema.columns),
+                by={},
+                order=[k.Sort("group_id", cast="uuid")],
+                limit=limit,
+                cursor=cursor,
+            )
+            page = EntityPage(self._promoted(answered.rows, read_ticket), answered.next_cursor)
+        return page
+
+    def _promoted(self, rows: Sequence[dict[str, Any]], read_ticket: Any) -> list[GroupEntity]:
+        """a page's rows as entities, each promoted into L1/L2 under the read's ticket.
+
+        :param rows: the rows
+        :ptype rows: Sequence[dict[str, Any]]
+        :param read_ticket: the ticket taken before the read
+        :ptype read_ticket: Any
+        :return: the entities
+        :rtype: list[GroupEntity]
+        """
+        result: list[GroupEntity] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            self.write_to_cache_sync(data, read_since=read_ticket)
+            result.append(self.entity_class(data, is_new=False, collection=self))
         return result
 
     async def get_many(
@@ -608,53 +771,6 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 )
         return result
 
-    async def list_all(
-        self,
-        customer_id: UUID | None = None,
-    ) -> list[GroupEntity]:
-        """list every ``groups`` row, optionally filtered by customer.
-
-        platform admins may list every group (``customer_id=None``) or
-        scope to a specific customer; customer admins pass their own
-        ``customer_id``. rows are ordered by ``date_created`` ascending
-        and promoted into L1/L2 caches.
-
-        :param customer_id: optional customer scope; ``None`` returns
-            every row
-        :ptype customer_id: UUID | None
-        :return: list of group entities ordered by ``date_created``
-            ascending
-        :rtype: list[GroupEntity]
-        """
-        read_ticket = self.scan_ticket()  # before the first await
-        result: list[GroupEntity] = []
-        if self.l3_pool is not None:
-            if customer_id is None:
-                rows = await self.l3_pool.fetch(
-                    """
-                    SELECT * FROM groups
-                     WHERE row_scope IN ('platform', 'customer')
-                     ORDER BY date_created ASC
-                    """,
-                )
-            else:
-                rows = await self.l3_pool.fetch(
-                    """
-                    SELECT * FROM groups
-                     WHERE row_scope = 'customer'
-                       AND customer_id = $1
-                     ORDER BY date_created ASC
-                    """,
-                    customer_id,
-                )
-            for row in rows:
-                data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
-        return result
-
 
 # ---------------------------------------------------------------------------
 # GroupMemberCollection
@@ -666,7 +782,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
 
     CRUD comes from the declarative :class:`TableSchema`;
     evaluator-loader queries (``load_for_user`` / ``load_for_agent`` /
-    ``list_by_group`` / ``find_by_group_and_id``) stay on the canonical
+    ``page_by_group`` / ``find_by_group_and_id``) stay on the canonical
     class.
     """
 
@@ -841,9 +957,11 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         """true when adding ``member_group_id`` into ``group_id`` closes a cycle.
 
         a group inside itself is refused outright; beyond that, the
-        check asks whether ``group_id`` is already reachable from
-        ``member_group_id`` by walking group edges DOWNWARD (children of
-        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` hops.
+        check asks whether ``member_group_id`` already sits above
+        ``group_id``, walking group edges UPWARD (the parents of its
+        parents) out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` hops: the same
+        question as whether ``group_id`` is reachable downward from
+        ``member_group_id``, asked by the members' key.
         cheap by construction: the cap bounds the walk, and writers are
         expected to call this BEFORE inserting a ``member_type='group'``
         row -- an admin surface that skips it can still write a cycle,
@@ -860,59 +978,59 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         """
         cycles = group_id == member_group_id
         if not cycles and self.l3_pool is not None:
-            frontier: set[UUID] = {member_group_id}
+            # walked UP from the parent, by the memberships naming each level (idx_group_members_reverse): the
+            # parent lies below the candidate exactly when the candidate lies above the parent, at the same hop
+            # count, and a walk up reads each level by its members' key where a walk down reads whole groups
+            frontier: set[UUID] = {group_id}
             for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH):
                 if not frontier:
                     break
-                rows = await self.l3_pool.fetch(
-                    """
-                    SELECT member_id
-                      FROM group_members
-                     WHERE member_type = 'group'
-                       AND group_id = ANY($1::uuid[])
-                    """,
-                    list(frontier),
-                )
-                children = {child for row in rows if (child := _coerce_uuid(row["member_id"])) is not None}
-                if group_id in children:
+                parents = {row.group_id for row in await self._load_naming("group", list(frontier))}
+                if member_group_id in parents:
                     cycles = True
                     break
-                frontier = children
+                frontier = parents
         return cycles
 
-    async def list_by_group(
+    async def page_by_group(
         self,
         group_id: UUID,
-    ) -> list[GroupMemberEntity]:
-        """list every membership row for ``group_id`` ordered by ``date_added``.
+        *,
+        limit: int = LISTING_PAGE,
+        cursor: str | None = None,
+    ) -> EntityPage[GroupMemberEntity]:
+        """one page of ``group_id``'s memberships, in the key's order (``id``, a uuid7: the order they were added).
 
-        rows are promoted into L1/L2 caches so subsequent ``get(id)``
-        calls hit L1.
+        rows are promoted into L1/L2 caches so subsequent ``get(id)`` calls hit L1.
 
         :param group_id: owning group UUID
         :ptype group_id: UUID
-        :return: list of membership entities ordered by ``date_added``
-            ascending
-        :rtype: list[GroupMemberEntity]
+        :param limit: memberships a page keeps
+        :ptype limit: int
+        :param cursor: the previous page's ``next_cursor``; the first page when None
+        :ptype cursor: str | None
+        :return: the page; empty without an L3 pool
+        :rtype: EntityPage[GroupMemberEntity]
         """
         read_ticket = self.scan_ticket()  # before the first await
-        result: list[GroupMemberEntity] = []
+        page = EntityPage[GroupMemberEntity]([], None)
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT * FROM group_members
-                 WHERE group_id = $1
-                 ORDER BY date_added ASC
-                """,
-                group_id,
+            answered = await k.keyset_page(
+                self.l3_pool,
+                "group_members",
+                columns=tuple(column.name for column in self.schema.columns),
+                by={"group_id": group_id},
+                order=[k.Sort("id", cast="uuid")],
+                limit=limit,
+                cursor=cursor,
             )
-            for row in rows:
+            entities: list[GroupMemberEntity] = []
+            for row in answered.rows:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
-        return result
+                entities.append(self.entity_class(data, is_new=False, collection=self))
+            page = EntityPage(entities, answered.next_cursor)
+        return page
 
     async def find_by_group_and_id(
         self,
@@ -957,7 +1075,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     deleting builtins or any role that is referenced by an assignment
     (the ``role_assignments.role_id`` FK is ``ON DELETE RESTRICT``).
     CRUD comes from the declarative :class:`TableSchema`;
-    evaluator-loader queries (``list_all`` / ``list_builtin`` /
+    evaluator-loader queries (``find_platform_by_name`` /
     ``get_many``) stay on the canonical class.
     """
 
@@ -1046,34 +1164,6 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
-        return result
-
-    async def list_builtin(self) -> list[RoleEntity]:
-        """list every platform-shipped builtin role.
-
-        rows are promoted into L1/L2 caches so subsequent ``get(id)``
-        calls hit L1.
-
-        :return: list of builtin role entities ordered by ``name``
-            ascending
-        :rtype: list[RoleEntity]
-        """
-        read_ticket = self.scan_ticket()  # before the first await
-        result: list[RoleEntity] = []
-        if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT * FROM roles
-                 WHERE is_builtin = TRUE
-                 ORDER BY name ASC
-                """,
-            )
-            for row in rows:
-                data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
         return result
 
     async def get_many(
@@ -1433,16 +1523,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
 
         row_scope = "platform" if scope_type == "all" else "customer"
         existing_row = await self.l3_pool.fetchrow(
-            """
-            SELECT assignment_id FROM role_assignments
-             WHERE row_scope = $1
-               AND group_id = $2
-               AND role_id = $3
-               AND scope_type = $4
-               AND scope_namespace_id IS NOT DISTINCT FROM $5
-             ORDER BY assignment_id ASC
-             LIMIT 1
-            """,
+            GRANT_OF_GROUP_SQL,
             row_scope,
             group_id,
             role_id,
@@ -1487,18 +1568,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 # a concurrent ensure inserted the same grant between the lookup and
                 # this insert, and the deploying app's natural-key index absorbed ours
                 winner_row = await self.l3_pool.fetchrow(
-                    """
-                    SELECT row_scope, assignment_id FROM role_assignments
-                     WHERE group_id = $1
-                       -- either scope: the natural-key index that absorbed the insert spans both
-                       AND row_scope IN ('platform', 'customer')
-                       AND role_id = $2
-                       AND scope_type = $3
-                       AND scope_namespace_id IS NOT DISTINCT FROM $4
-                       AND managed_by = $5
-                     ORDER BY date_granted ASC, assignment_id ASC
-                     LIMIT 1
-                    """,
+                    GRANT_WINNER_OF_GROUP_SQL,
                     group_id,
                     role_id,
                     scope_type,
@@ -1599,26 +1669,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         if self.l3_pool is not None:
             # one predicate for both statements; ``managed_by IS NULL`` as the parameter means no
             # provenance filter
-            predicate = """
-                     WHERE row_scope = $1
-                       AND group_id = $2
-                       AND scope_type = $3
-                       AND scope_namespace_id IS NOT DISTINCT FROM $4
-                       AND ($5::text IS NULL OR managed_by = $5)
-            """
             params = (row_scope, group_id, scope_type, scope_id, managed_by)
             # the rows first, so a revocation that matches nothing issues no DELETE: through the L3
             # broker a DELETE advances the table's write generation whether it removed a row or
             # not, and an advance with no row heard for it drops the table on every follower.
-            matching = await self.l3_pool.fetch(
-                "SELECT assignment_id FROM role_assignments" + predicate,
-                *params,
-            )
+            matching = await self.l3_pool.fetch(GRANTS_OF_GROUP_SCOPE_SQL, *params)
             if matching:
-                deleted = await self.l3_pool.fetch(
-                    "DELETE FROM role_assignments" + predicate + " RETURNING assignment_id",
-                    *params,
-                )
+                deleted = await self.l3_pool.fetch(DELETE_GRANTS_OF_GROUP_SCOPE_SQL, *params)
                 result = len(deleted)
                 keys = dict.fromkeys(
                     [(row_scope, row["assignment_id"]) for row in matching]
@@ -1703,7 +1760,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     CRUD comes from the declarative :class:`TableSchema`; canonical
     lookup helpers (``find_by_id`` / ``get_by_name`` /
     ``find_by_type_and_customer`` / ``get_by_owner_and_customer`` /
-    ``list_ids_by_customer_and_type`` / ``list_all_ids``) stay here
+    ``list_ids_by_customer_and_type`` / ``page_ids``) stay here
     because every rbac-consuming app needs to resolve namespace rows
     by these shapes during evaluator hydration / audit-snapshot
     composition. discovery JOINs that span app-specific tables live on
@@ -1729,7 +1786,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "create",
             "find_by_type_and_customer",
             "list_ids_by_customer_and_type",
-            "list_all_ids",
+            "page_ids",
             "list_ids_under_name",
             # an owner's rows sit in both partitions (a customer-scoped channel
             # beside a platform-scoped tool), so the by-owner walk names both.
@@ -2293,9 +2350,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # partition: every agent belongs to one customer and the
             # namespace inherits that customer's row_scope.
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM namespaces "
-                "WHERE row_scope = 'customer' "
-                "  AND owner_agent_id = $1 AND namespace_type = $2",
+                NAMESPACE_OF_AGENT_SQL,
                 agent_id,
                 namespace_type,
             )
@@ -2342,21 +2397,18 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         row_scope = row_scope_for_customer(customer_id)
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                """
-                SELECT * FROM namespaces
-                 WHERE row_scope = $1
-                   AND namespace_type = $2
-                   AND owner_agent_id IS NOT DISTINCT FROM $3
-                   AND customer_id IS NOT DISTINCT FROM $4
-                 ORDER BY namespace_id ASC
-                 LIMIT 1
-                """,
-                row_scope,
-                namespace_type,
-                owner_agent_id,
-                customer_id,
-            )
+            # one literal statement per shape, each through its index: an owned row by its agent, an ownerless
+            # one by its customer and type (``IS NOT DISTINCT FROM`` on a NULL owner reads no index)
+            if owner_agent_id is not None:
+                row = await self.l3_pool.fetchrow(
+                    NAMESPACE_OF_OWNER_SQL, row_scope, namespace_type, owner_agent_id, customer_id
+                )
+            elif customer_id is not None:
+                row = await self.l3_pool.fetchrow(
+                    OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL, row_scope, customer_id, namespace_type
+                )
+            else:
+                row = await self.l3_pool.fetchrow(OWNERLESS_PLATFORM_NAMESPACE_SQL, row_scope, namespace_type)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -2391,11 +2443,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """
         result: list[NamespaceEntity] = []
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                "SELECT * FROM namespaces WHERE row_scope = 'customer'   AND namespace_type = $1 AND customer_id = $2",
-                namespace_type,
-                customer_id,
-            )
+            rows = await self.l3_pool.fetch(NAMESPACES_OF_CUSTOMER_TYPE_SQL, customer_id, namespace_type)
             result = [
                 self.entity_class(
                     self._coerce_row(dict(row)),
@@ -2426,49 +2474,57 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """
         result: list[UUID] = []
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                "SELECT namespace_id FROM namespaces WHERE row_scope = 'customer'   AND customer_id = $1 AND namespace_type = $2",
-                customer_id,
-                namespace_type,
-            )
+            rows = await self.l3_pool.fetch(NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL, customer_id, namespace_type)
             result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
 
-    async def list_all_ids(self) -> list[UUID]:
-        """return every namespace id in the table.
+    async def page_ids(
+        self,
+        *,
+        limit: int = LISTING_PAGE,
+        cursor: str | None = None,
+    ) -> tuple[list[UUID], str | None]:
+        """one page of every namespace's id, both row scopes, by id through ``uq_namespaces_namespace_id``: what an
+        ``all`` grant covers, for an audit snapshot.
 
-        used by audit-snapshot paths for ``scope='all'`` assignments.
-        returning ids only mirrors :meth:`list_ids_by_customer_and_type`
-        so the caller composes a single id set regardless of scope.
-
-        :return: list of every namespace UUID
-        :rtype: list[UUID]
+        :param limit: ids a page keeps
+        :ptype limit: int
+        :param cursor: the previous page's cursor; the first page when None
+        :ptype cursor: str | None
+        :return: the page's ids, and the cursor of the page after it (None on the last)
+        :rtype: tuple[list[UUID], str | None]
         """
-        result: list[UUID] = []
+        ids: list[UUID] = []
+        following: str | None = None
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                "SELECT namespace_id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
+            answered = await k.keyset_page(
+                self.l3_pool,
+                "namespaces",
+                columns=("namespace_id",),
+                by={},
+                order=[k.Sort("namespace_id", cast="uuid")],
+                limit=limit,
+                cursor=cursor,
             )
-            result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
-        return result
+            ids = [row["namespace_id"] for row in answered.rows]
+            following = answered.next_cursor
+        return ids, following
 
     async def list_ids_under_name(self, node: str) -> list[UUID]:
         """return every namespace id at or beneath the name ``node``.
 
         the expansion of a :attr:`~threetears.agent.acl.types.ScopeType.SUBTREE`
         assignment into the concrete id set an audit snapshot needs,
-        mirroring :meth:`list_all_ids` and
+        mirroring :meth:`page_ids` and
         :meth:`list_ids_by_customer_and_type` so the caller composes one
         id set regardless of scope shape.
 
-        membership is decided in python by
-        :func:`threetears.core.namespaces.namespace_contains` rather
-        than by a SQL ``LIKE`` pattern. two reasons, and both matter: a
-        second containment rule expressed in SQL is a second place the
-        segment boundary can be got wrong, and a namespace name legally
-        carries ``_`` (``sanitize_segment`` maps only ``.``), which is a
-        ``LIKE`` wildcard -- so the pattern would need escaping that
-        nothing else in this codebase performs.
+        the read is keyed (:data:`NAMESPACE_IDS_UNDER_NAME_SQL`): the
+        node by name, and the names beneath it as a byte range, never a
+        ``LIKE`` pattern (a name legally carries ``_``, a ``LIKE``
+        wildcard). membership is still decided in python by
+        :func:`threetears.core.namespaces.namespace_contains`, the one
+        containment rule, so the range only narrows what is read.
 
         :param node: subtree root name; an empty node expands to
             nothing, never to everything
@@ -2478,9 +2534,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """
         result: list[UUID] = []
         if node and self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                "SELECT namespace_id, name FROM namespaces WHERE row_scope IN ('platform', 'customer')",
-            )
+            below = node + NAMESPACE_NAME_SEPARATOR
+            rows = await self.l3_pool.fetch(NAMESPACE_IDS_UNDER_NAME_SQL, node, below, node + _PAST_SEPARATOR)
             result = [
                 row["namespace_id"]
                 for row in rows
@@ -2523,13 +2578,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
         result: list[NamespaceEntity] = []
         if owner_name:
-            rows = await self.l3_pool.fetch(
-                "SELECT * FROM namespaces"
-                " WHERE row_scope IN ('platform', 'customer')"
-                "   AND owner_namespace = $1 AND name <> $1"
-                " ORDER BY namespace_id",
-                owner_name,
-            )
+            rows = await self.l3_pool.fetch(NAMESPACES_OWNED_BY_SQL, owner_name)
             result = [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
         return result
 
@@ -2560,13 +2609,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
         result = False
         if schema_name:
-            result = bool(
-                await self.l3_pool.fetchval(
-                    "SELECT EXISTS (SELECT 1 FROM namespaces"
-                    " WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)",
-                    schema_name,
-                )
-            )
+            result = bool(await self.l3_pool.fetchval(SCHEMA_IN_USE_SQL, schema_name))
         return result
 
     async def list_tool_namespaces_for_actor(

@@ -18,6 +18,8 @@ they pass the authorizer.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -333,17 +335,26 @@ class _NoopRoleCollection:
     """duck-typed :class:`RoleCollection` returning no builtin roles.
 
     permissive-authorizer tests never exercise the ensure path, so
-    :meth:`list_builtin` returns an empty tuple — the ensure helper
+    :meth:`find_platform_by_name` finds no role — the ensure helper
     short-circuits on the missing ``MemoryOwner`` role.
     """
 
-    async def list_builtin(self) -> tuple[Any, ...]:
-        """return an empty tuple (no builtin roles wired in tests).
+    async def find_platform_by_name(self, name: str) -> SimpleNamespace | None:
+        """the platform role named ``name``, as :meth:`RoleCollection.find_platform_by_name` answers it.
 
-        :return: empty tuple
-        :rtype: tuple[Any, ...]
+        :param name: the role's name
+        :ptype name: str
+        :return: the role, carrying ``id``, ``name`` and ``is_builtin``; None when none is named so
+        :rtype: SimpleNamespace | None
         """
-        return ()
+        return next(
+            (
+                SimpleNamespace(id=role.id, name=role.name, is_builtin=role.is_built_in)
+                for role in ()
+                if role.name == name
+            ),
+            None,
+        )
 
     async def get(self, entity_id: UUID) -> None:
         """permissive fixture never caches roles.

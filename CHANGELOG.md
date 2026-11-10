@@ -8,6 +8,20 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### agent/acl: listings page by key; the whole listings are removed (BREAKING)
+
+- Removed: `GroupCollection.list_by_customer` and `list_all`, `GroupMemberCollection.list_by_group`,
+  `RoleCollection.list_builtin`, `NamespaceCollection.list_all_ids`. Each read its table whole.
+- Added, each a keyset page with a cursor (`EntityPage`, `LISTING_PAGE` rows by default):
+  `GroupCollection.page_by_customer` (ordered by **name** through `uq_groups_customer_name`, no longer by
+  `date_created`), `GroupCollection.page_all` (by `group_id`), `GroupMemberCollection.page_by_group` (by `id`, the
+  order members were added), `NamespaceCollection.page_ids` (by `namespace_id`, returns `(ids, cursor)`).
+- A built-in role is found by name: `RoleCollection.find_platform_by_name`. agent-memory and conversations call it
+  only; a role collection without it is no longer supported.
+- `membership_would_cycle` walks up through the members index; a group delete reads its members a page at a time.
+- v003: `idx_namespaces_owner_agent_id`, `idx_namespaces_customer_type`, `idx_namespaces_owner_namespace`,
+  `idx_namespaces_schema_name`, each serving the namespace lookup that read the table whole.
+
 ### agent/memory: every read names its key; `find_by_scope` reads one user
 
 - **Migrating: `MemoriesCollection.find_by_scope` requires `user_id` (contract change).** It reads one user's
