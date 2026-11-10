@@ -257,7 +257,7 @@ def money_ruler(
     mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars, each
     amount to two significant figures (``$0.0030 per 1,000,000 replies``). A total (``per`` 0: a run's cost, a month's)
     counts nothing and is never scaled: it reads in plain dollars, to two significant figures under a dollar
-    (``$0.0041``) and to cents from a dollar up, whatever its size (``$1,208.00``, owner ruling Q3); a rate reads in
+    (``$0.0041``) and to cents from a dollar up, whatever its size (``$1,208.00``, owner ruling); a rate reads in
     whole dollars from $10 (``$75``). Either way an interval never reads its two ends alike where its stored ends
     differ: the interval takes one figure more where it is spelled
     (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`).

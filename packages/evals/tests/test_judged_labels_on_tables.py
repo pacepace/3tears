@@ -1,6 +1,6 @@
 """A judged dimension's row on every table reads its measure's display name, marked judged.
 
-Discodon's C5b re-shoot (2026-11-10, item 4): the Character v2 page's Contrasts, corrected-comparison statistics and
+Discodon's re-shoot (2026-11-10, item 4): the Character v2 page's Contrasts, corrected-comparison statistics and
 per-stratum tables, and a SearXNG page's All cases table, printed a judged row in lowercase ("persona holds character
 (judged)", "research answers facets (judged)") beside measure rows that start with a capital ("Lost-call rate"), while
 the page's charts and kit tables named the same dimension "Persona holds character". A row on a table is a label, and

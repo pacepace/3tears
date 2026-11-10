@@ -436,7 +436,7 @@ def _figure_faults(input_key: str, spec: ChartSpec, data: Any, keys: Sequence[st
             elif spec.kind in _FORMATTED_AS_ITS_MEASURE:
                 # Money's format follows every amount the chart draws of the measures sharing this axis, on every
                 # panel (#993: one form per chart); its ticks are written to the largest amount's decimals (owner
-                # ruling Q3, 2026-11-07), so the expectation reads every amount of every money measure on the axis.
+                # ruling, 2026-11-07), so the expectation reads every amount of every money measure on the axis.
                 # Any other axis names the decimals its measure reads at on the page (number rule 1); one drawing
                 # several measures alike (a share beside a percent) names one of theirs, each figure carrying its own
                 # text at its own.

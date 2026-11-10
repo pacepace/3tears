@@ -210,7 +210,7 @@ def test_a_table_spells_each_value_by_the_number_rule_not_the_axis_s_rounding() 
         }
     )
     # Money in a table reads to its own two significant figures and cents at least, whatever digits the axis rounds
-    # its ticks to (owner ruling Q3, 2026-11-07).
+    # its ticks to (owner ruling, 2026-11-07).
     assert stacked.values_table() == (["Row", "Value", "Parts"], [["arm", "$4.00", "calls $3.00 · retries $1.00"]])
 
 
@@ -243,7 +243,7 @@ def test_markdown_prints_every_chart_s_values_table() -> None:
     )
     markdown = report_markdown(report)
     assert "**Spend**\n\n| Row | Value |\n" in markdown and "| a | 2 |" in markdown
-    assert "| Panel |  | x |" in markdown and "| P | r | 50% (n = 1200) |" in markdown
+    assert "| Panel |  | x |" in markdown and "| P | r | 50% (n = 1,200) |" in markdown
 
 
 def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_data() -> None:

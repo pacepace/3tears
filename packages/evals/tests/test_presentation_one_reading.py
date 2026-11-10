@@ -479,7 +479,7 @@ def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -
 
 
 def test_kairo_s_leads_name_every_arm_by_the_name_its_pages_print() -> None:
-    # The campaign page's lead and the stored analysis's listed lead name each arm as chunk 6's namer reads it at
+    # The campaign page's lead and the stored analysis's listed lead name each arm as the one arm namer reads it at
     # render time (the page by its charts' tags, the listing by its document's), never by its variant's own levels.
     bundle = kairo_bundle()
     page_names = reader_arm_labels(bundle, campaign_arm_tags(bundle.aspects, bundle.readings.control))

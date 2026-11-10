@@ -534,7 +534,7 @@ def _resolves(key: str, report_input: ReportInput) -> bool:
 
 
 def test_a_settle_table_never_prints_which_side_of_its_line_today_s_estimate_is_on_by_the_enum_s_word() -> None:
-    # The settle table holds four columns (chunk 7: `Arm`, `Against` and its two sizes) and no `Settles` column, so
+    # The settle table holds four columns (`Arm`, `Against` and its two sizes) and no `Settles` column, so
     # no cell of it prints `clears`, `misses` or `on_the_line`.
     name = "prototype5/r2-with-one-gate"
     record = _record(name)

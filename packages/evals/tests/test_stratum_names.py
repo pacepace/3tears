@@ -272,7 +272,7 @@ class TestADeclaredNameReachesThePage:
         assert "edge case" in self._headers({}, ("edge_case",))
 
     def test_an_undeclared_stratum_column_is_headed_by_its_reader_name(self) -> None:
-        # The name a written page's charts print for it (Discodon's C5b re-shoot found "off lane" in a chart and
+        # The name a written page's charts print for it (Discodon's re-shoot found "off lane" in a chart and
         # "off_lane" in the table beside it): one display form, its id humanized, never the id itself.
         headers = self._headers({})
         assert "off lane" in headers and "off_lane" not in headers and NO_STRATUM not in headers

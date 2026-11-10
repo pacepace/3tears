@@ -498,14 +498,14 @@ def _readout(
 
 def _row(verdict: Verdict, role: str, forms: PageForms) -> list[str]:
     """One verdict's row of the readout, its figures as ``forms`` states them."""
-    interval, level = verdict.interval, verdict.interval_level
+    interval = verdict.interval
     return [
         verdict.heading,
         role,
         _reads(verdict),
         "" if verdict.delta is None else forms.lone(verdict.delta).text,
         "" if interval is None else f"{forms.lone(interval[0]).text} to {forms.lone(interval[1]).text}",
-        "" if level is None or interval is None else forms.lone(level).text,
+        "" if verdict.interval_level is None or interval is None else forms.lone(verdict.interval_level).text,
     ]
 
 

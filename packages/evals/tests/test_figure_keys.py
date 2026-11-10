@@ -337,7 +337,7 @@ class TestFilters:
 
     def test_a_price_per_million_states_its_ruler_in_what_its_label_counts(self):
         counted = _counted("r3", "cost_per_1m")
-        # One form for the family (#993): two significant figures, a rate in whole dollars from $10 (owner ruling Q3).
+        # One form for the family (#993): two significant figures, a rate in whole dollars from $10 (owner ruling).
         assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == f"$40 per 1,000,000 {counted}"
         assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == f"$610 per 1,000,000 {counted}"
 

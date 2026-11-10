@@ -780,7 +780,7 @@ async def test_a_floor_naming_one_reading_reads_that_rate_alone() -> None:
 
 
 async def test_a_question_that_declares_no_floor_has_no_floor_block() -> None:
-    """The page says what it holds, never what it lacks (presentation build, chunk 1): a question with no floor
+    """The page says what it holds, never what it lacks: a question with no floor
     declared prints no Floors section and no line saying none was declared."""
     bundle, _, _ = await _ruled([3] * 7, [2] * 7, floors=())
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00:00+00:00", campaign_name="no floors")

@@ -137,8 +137,8 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     # One arm's matrix is turned, a row per measure (visual pass V2); its folded rows name the arm.
     matrix = [line for line in above if line.startswith("| emails |") and not line.startswith("| emails | triage |")]
     rows = [line for line in above if line.startswith("| emails | triage |")]
-    # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
-    # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8), each at its measure's precision
+    # The pass rate carries the count it is computed over beside it, and every other rate
+    # reads in percent with its count beside it too (never 0.9 beside 77.8), each at its measure's precision
     # from its intervals (number rule 2), its interval in the one form (rule 3).
     assert matrix[:3] == [
         "| emails | Pass rate | 78% (70 of 90 trials, 30 cases) | 60 to 89% | 30 |",

@@ -56,11 +56,13 @@ arms, on sources whose rows are of no one arm too.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 
 from threetears.evals.analysis.quantities import MONEY, is_money
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
+from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.forms import ColumnMoney
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
@@ -115,7 +117,6 @@ from threetears.evals.analysis.report.parts.words import (
     TABLE_ORDER,
 )
 from threetears.evals.analysis.style import humanize
-from threetears.evals.kernel.numbers import MoneyForm
 
 __all__ = ["RESOLVERS"]
 
@@ -134,6 +135,9 @@ _MEASURE_COLUMN = "measure:"
 
 #: The suffix an interval column is keyed by, after the key of the column whose figures it spells.
 _INTERVAL_COLUMN = ":interval"
+
+#: The count a price per point's own unit (``usd_per_1k``) is per, which its column's head names.
+_PRICE_PER = 1000
 
 
 def _arm(context: ChartContext, arm: str) -> TableCell:
@@ -595,28 +599,32 @@ def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         }
 
 
-def _prices_drawn(context: ChartContext) -> Quantity:
-    """How a prices table's prices are drawn: by the one owner of money's scale over every price and open end it
-    holds, a month's price (a total) never scaled, a price per point per 1,000 moved per 1,000,000 where one is under a
-    cent."""
+def _prices_ruler(context: ChartContext) -> tuple[MoneyRuler | None, int]:
+    """How a prices table's prices are drawn, by the page's forms over every price and open end it holds (the one owner
+    of money's scale): a month's price (a total) never scaled, a price per point per 1,000 moved per 1,000,000 where
+    one is under a cent. The ruler, None for a table that holds no price, and the count a price's own unit is per (0
+    for a month's, 1,000 for a price per point), which its head's words replace."""
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
-    monthly = any(step.monthly for step, _ in steps)
+    own = 0 if any(step.monthly for step, _ in steps) else _PRICE_PER
     amounts = [
         value
         for step, interval in steps
         for value in (step.value, *(interval or ()), *((step.open_from,) if step.open_from is not None else ()))
     ]
-    return quantity_of("dollars" if monthly else "usd_per_1k", amounts)
+    if not amounts:
+        return None, own
+    return context.forms.money_ruler_of([value for value in amounts if math.isfinite(value)], per=own, start=own), own
 
 
 def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
     # One form for the column, its open ends included (#993): each price to two significant figures, cents at least.
-    drawn = _prices_drawn(context)
-    form = drawn.money or MoneyForm()
+    ruler, _own = _prices_ruler(context)
+    if ruler is None:
+        return
 
     def dollars(value: float) -> float:
-        return value * drawn.factor
+        return value * ruler.scale
 
     def name(arm: str) -> str:
         return context.look.arm(arm).name if arm in context.look.arms else arm
@@ -625,11 +633,11 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         ends = (dollars(interval[0]), dollars(interval[1])) if interval is not None else None
         row: _Row = {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
-            "per_point": context.forms.money_cell(form, dollars(step.value), ends),
+            "per_point": context.forms.money_cell(ruler.form, dollars(step.value), ends),
         }
         if step.open_from is not None and context.level:
             # An interval open above has one end, which no cell's two ends hold: its interval cell is laid out here.
-            low = context.forms.money_in(form, dollars(step.open_from)).text
+            low = context.forms.money_in(ruler.form, dollars(step.open_from)).text
             row[f"per_point{_INTERVAL_COLUMN}"] = _words(OPEN_ABOVE.format(low=low))
         yield row
 
@@ -726,7 +734,9 @@ def _table(context: ChartContext) -> Drawn:
             header = TABLE_HEADERS[key]
             if key == "per_point" and context.query.source == "prices":
                 # The prices' head names what they are drawn per where the ruler moved (the one owner's words).
-                header = _prices_drawn(context).label(header, cost_basis(context.report_input).noun)
+                ruler, own = _prices_ruler(context)
+                if ruler is not None:
+                    header = ruler.label(header, cost_basis(context.report_input).noun, own)
             columns.append(TableColumn(key=key, header=header))
     # Each money column's head names the count it is drawn per, so no amount carries the mark beside it.
     report_input = context.report_input

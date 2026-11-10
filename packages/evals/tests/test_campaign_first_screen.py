@@ -65,7 +65,7 @@ _CHANGE_LEAD = (
 )
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call
-#: recorded the warning closes it (presentation build, chunk 1: the page says what it is, never what it lacks).
+#: recorded the warning closes it (the page says what it is, never what it lacks).
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
     ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),

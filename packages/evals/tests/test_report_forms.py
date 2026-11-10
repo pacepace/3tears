@@ -1,4 +1,4 @@
-"""The decided-figure model (number forms C2): one form per measure per page, reproducing what the page prints today.
+"""The decided-figure model: one form per measure per page, reproducing what the page prints today.
 
 ``analysis/report/forms.py`` is where every figure's form is to be decided once per page, by its measure. Until the
 policy flip it must hand out exactly the text each surface prints now, so routing a surface through it moves no golden.

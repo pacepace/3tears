@@ -1,4 +1,4 @@
-"""A campaign's first screen says what the page is, never what it is not (presentation build, chunk 1).
+"""A campaign's first screen says what the page is, never what it is not.
 
 The owner's readings of 2026-11-06 (pages B and D) and the review's A2 and A6 hold the first screen to five things,
 each held here on the ladder's replayed pages, rungs 0 to 4, and the G2 fixtures (rung 5's writer eval page, whose
@@ -115,7 +115,7 @@ def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_q
 ) -> None:
     said = _said(writer_page.blocks)
     (lead,) = [block for block in said if block.source == "verdict"]
-    # Directly under the question and the line of what the page compares (presentation chunk 4).
+    # Directly under the question and the line of what the page compares.
     assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[2] is lead
     assert said[1].text == "shipped vs lead-first · report-writing"
     assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61%")

@@ -324,7 +324,7 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
         ("Request settings not confirmed", _SETTINGS, "every aspect"),
     ]
     # After them, the report-wide disclosures this change does not touch: s3's unlabelled judge, and the cost's
-    # routing, a row here and never a first-screen line (presentation build, chunk 1).
+    # routing, a row here and never a first-screen line.
     assert [row[0] for row in rows[2:]] == [*(["Judge scores directional"] if name == "s3" else []), "Cost as routed"]
     for rendered in (campaign_report_markdown(page), campaign_report_html(page)):
         # Each stated once, in Design & provenance; no fold says them again.
@@ -341,7 +341,7 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     said = [block for block in own.blocks if isinstance(block, DisclosureBlock)]
     lines = [b for b in said if b.text.startswith(("Latency read while", "Request settings on"))]
     assert [(b.section, b.anchor) for b in lines] == [("header", "caveat-latency"), ("header", "caveat-settings")]
-    # The cost's routing is one more methods line, never a first-screen one (presentation build, chunk 1).
+    # The cost's routing is one more methods line, never a first-screen one.
     assert [b.text for b in said if b.section == "methods" and b.anchor is not None] == [
         _SETTINGS,
         COST_ROUTING_CAVEAT,

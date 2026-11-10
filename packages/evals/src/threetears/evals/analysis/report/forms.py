@@ -2,7 +2,7 @@
 
 A figure's form is its digits, sign, unit and interval as printed. Spelling one number is the leaf's
 (:mod:`threetears.evals.kernel.numbers`); deciding which figures form a set, and how many digits the set reads at, is
-this module's. A set is the measure across the whole page (owner ruling, 2026-11-08, Q2), so every figure of one
+this module's. A set is the measure across the whole page (owner ruling, 2026-11-08), so every figure of one
 measure is decided by one :class:`MeasureForm`, never by the surface that prints it.
 
 - :class:`PageForms` is built once per page, before any part is assembled: :meth:`PageForms.of` for a written page
@@ -33,7 +33,7 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
 prints now, so routing a surface through this module moves no golden. Where the page decides a measure's form, that
 decision lives here and its old module calls it: the Full results' quantities and decimals (a measure's levels, its
 changes, how far a change reaches, a change's interval's ends) and the scorecard's column of measured figures'
-decimals. A surface that calls one of these free functions still decides there, so the ratchet counts each such call
+decimals. A surface that calls one of these free functions still decides there, so the rule's test counts each such call
 as a site (``tests/test_one_owner_of_number_forms.py``); only :class:`PageForms`, asked by measure and role, is the
 migrated route. What a measure is (a rate, money on a ruler, shown at all) is
 :mod:`~threetears.evals.analysis.report.campaign.measure_kinds`'s, and where a decision is a public function of
@@ -2624,6 +2624,23 @@ class PageForms:
         """
         return self._money(amount, form.spell(amount), "", None)
 
+    def money_ruler_of(self, amounts: Iterable[float | None], *, per: int, start: int = 0) -> MoneyRuler:
+        """The ruler a table's column of money is stated on (a price per point, every price and open end of the column
+        together), by the one owner of money's scale (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`):
+        its one form, the scale its amounts are drawn at, and the count its head names. Its amounts print through
+        :meth:`money_cell` and :meth:`money_in` in the ruler's form.
+
+        :param amounts: Every amount the column holds, as stored; None for an absent one.
+        :ptype amounts: Iterable[float | None]
+        :param per: How many of what it counts one stored amount is per: 1,000 for a price per 1,000; 0 for a total.
+        :ptype per: int
+        :param start: The least count to state it per.
+        :ptype start: int
+        :return: The ruler.
+        :rtype: MoneyRuler
+        """
+        return money_ruler(amounts, per=per, start=start)
+
     @staticmethod
     def unit_on(digits: str, unit: str) -> str:
         """A bare figure's decided digits with its unit, where no head names it (a rate's ``95`` in a column of ``(%)``
@@ -3079,7 +3096,7 @@ class PageForms:
     ) -> str:
         """An interval as a key prints it: each end spelled by the filter the key chose (``spelled``, the grammar's,
         which refuses a filter that does not suit), one significant figure more for an interval whose two differing ends
-        would read alike (owner ruling Q3), both ends at one precision where the spelling sets one (plain, points), and
+        would read alike (owner ruling), both ends at one precision where the spelling sets one (plain, points), and
         the two joined: one figure where they read alike, ``low to high`` where a count is said once after them (money
         per what it counts, the count after), each end's own unit where the two differ, else the one interval form,
         its unit once after the high end, signed or not (``-13 to -2 pts``, ``27 to 28%``; number rule 3).
@@ -3822,7 +3839,7 @@ def _written_stated(
         stated: str | None = None if kind == "measure" else kind
         levels = _level_quantity(report_input, key, kind=stated)
         if levels.unit == MONEY:
-            # Money keeps its own ruled form, chosen over its amounts (owner ruling Q3), which no half-width reaches.
+            # Money keeps its own ruled form, chosen over its amounts (owner ruling), which no half-width reaches.
             continue
         changes = quantity(figure_unit(report_input, key, kind=kind), change=True)
         set_key = _set_key(key, _measure_kind(_set_kind(report_input, key, kind)))

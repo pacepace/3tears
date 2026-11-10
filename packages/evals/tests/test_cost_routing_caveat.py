@@ -1,6 +1,6 @@
 """A cost is what its runs' provider routing charged, not the model's alone (owner, 2026-10-25), and the page says so
 once, at report level, wherever it presents a cost figure: one step down, never on its first screen, where to a
-business reader the cost is what it costs (owner reading, 2026-11-06, H13; presentation build Q6).
+business reader the cost is what it costs (owner reading, 2026-11-06).
 
 - **The page** carries one Design & provenance row (``cost as routed`` in the test-setup table) on every shape that
   prints a cost, in HTML and in Markdown, naming the aspects it holds on; no first-screen line, fold, figure or chart
