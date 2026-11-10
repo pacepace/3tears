@@ -77,12 +77,14 @@ from threetears.evals.analysis.lenses.export import (
     export_projection,
 )
 from threetears.evals.analysis.significance import cross_subject_disclosure
+from threetears.evals.analysis.style import check_held
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor
 from threetears.evals.kernel.scoring import (
     capability_scores,
     compute_composite_summary,
@@ -92,6 +94,7 @@ from threetears.evals.kernel.scoring import (
     compute_latency_summary,
     compute_pass_hat_k,
     compute_per_case_composites,
+    measure_catalog_of,
     pass_hat_k_at,
 )
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
@@ -1885,7 +1888,9 @@ def run_summary(
     # Read a page at a time, the results kept without their verbatim fields, which no figure here reads.
     results = results_without_payloads(storage, run_id, scope_id)
 
-    pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
+    pass_hat = compute_pass_hat_k(
+        results, catalog=measure_catalog_of(results, profile.measures), rubric_threshold=rubric_threshold
+    )
     latency = compute_latency_summary(results)
     deliveries = compute_async_delivery_summary(results)
     cost = compute_cost_summary(results)
@@ -2088,6 +2093,7 @@ def compare_two_runs(
     load_template: Callable[[str], EvalTemplate],
     subject_detail: Callable[[EvalRun], dict[str, dict[str, Any]]],
     rubric_threshold: int = 3,
+    profile: HostProfile | None = None,
 ) -> dict[str, Any]:
     """Diff two runs into the side-by-side compare view.
 
@@ -2134,6 +2140,10 @@ def compare_two_runs(
     :ptype subject_detail: Callable[[EvalRun], dict[str, dict[str, Any]]]
     :param rubric_threshold: Minimum rubric score counted as a pass^k pass.
     :ptype rubric_threshold: int
+    :param profile: The host whose measure declarations say which measures a result carries are checks its pass^k
+        attempts must pass (:func:`~threetears.evals.kernel.scoring.failed_checks`); None where no host is in reach,
+        so only the engine's own checks (goal checks and the label) are read.
+    :ptype profile: HostProfile | None
     :return: ``{"run_id_a", "run_id_b", "comparison_basis",
         "composite_comparability", "rubric_threshold", "comparison": {"arm": {...},
         "per_template": [...]}, "subject_detail_a",
@@ -2150,7 +2160,8 @@ def compare_two_runs(
         case both runs scored), ``n_pairs`` (how many; None when nothing was paired),
         ``composite_untested_reason`` (why no composite test ran, None when one did), ``pass_hat_k_n_cases_{a,b}``
         (the cases each pass^k averaged at ``k``), ``pass_criteria_{a,b}`` (what each run's attempts were held to,
-        as :data:`~threetears.evals.kernel.host.PassCriterion` names),
+        as :data:`~threetears.evals.kernel.host.PassCriterion` names), ``pass_checks_{a,b}`` (each other check they
+        were held to, as the pass rule names it, ``Never topped up is false``),
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
         ``composite_{a,b}`` and the delta are over the cases the test read —
@@ -2166,8 +2177,11 @@ def compare_two_runs(
     results_a = results_without_payloads(storage, run_a_id, scope_id)
     results_b = results_without_payloads(storage, run_b_id, scope_id)
 
-    pass_a = compute_pass_hat_k(results_a, rubric_threshold=rubric_threshold)
-    pass_b = compute_pass_hat_k(results_b, rubric_threshold=rubric_threshold)
+    measures = profile.measures if profile is not None else None
+    catalog_a = measure_catalog_of(results_a, measures)
+    catalog_b = measure_catalog_of(results_b, measures)
+    pass_a = compute_pass_hat_k(results_a, catalog=catalog_a, rubric_threshold=rubric_threshold)
+    pass_b = compute_pass_hat_k(results_b, catalog=catalog_b, rubric_threshold=rubric_threshold)
     comp_a = compute_composite_summary(results_a)
     comp_b = compute_composite_summary(results_b)
     per_case_a = compute_per_case_composites(results_a)
@@ -2291,6 +2305,9 @@ def compare_two_runs(
         # What each run's attempts were held to (`PassCriterion`s): goal checks, a judge's criteria, or both.
         "pass_criteria_a": _pass_criteria(results_a),
         "pass_criteria_b": _pass_criteria(results_b),
+        # Each other check each run's attempts were held to, as the pass rule names it ('Never topped up is false').
+        "pass_checks_a": _pass_checks(catalog_a),
+        "pass_checks_b": _pass_checks(catalog_b),
         # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
         "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
         "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
@@ -2367,6 +2384,16 @@ def _pass_criteria(results: Sequence[EvalResult]) -> list[PassCriterion]:
     if judged:
         criteria.append("rubric")
     return criteria
+
+
+def _pass_checks(catalog: Mapping[str, MetricDescriptor]) -> list[str]:
+    """Each check a run's attempts were held to beside goal checks and a judge, as a pass rule names it
+    (:func:`~threetears.evals.analysis.style.check_held`): the label and every measure its descriptor calls a check."""
+    return [
+        check_held(name, descriptor)
+        for name, descriptor in sorted(catalog.items())
+        if name == MATCH_MEASURE or descriptor.is_check
+    ]
 
 
 def _composite_untested_reason(*, scored_a: int, scored_b: int, tested: bool, shared: bool) -> str | None:

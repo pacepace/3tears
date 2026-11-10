@@ -400,7 +400,13 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
         return {snapshot.subject_id: snapshot.model_dump(mode="json", include={"subject_label", "components"})}
 
     comparison = compare_two_runs(
-        storage, baseline_run_id, candidate_run_id, scope_id, load_template=template, subject_detail=subject_detail
+        storage,
+        baseline_run_id,
+        candidate_run_id,
+        scope_id,
+        load_template=template,
+        subject_detail=subject_detail,
+        profile=host.profile,
     )
     runs, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
     return RunsCompared(
@@ -1689,8 +1695,12 @@ def runs_compared_text(compared: RunsCompared) -> str:
     arm: Mapping[str, Any] = view.get("comparison", {}).get("arm", {})
     paired = bool(arm.get("paired"))
     criteria = {*arm.get("pass_criteria_a", []), *arm.get("pass_criteria_b", [])}
+    checks = {*arm.get("pass_checks_a", []), *arm.get("pass_checks_b", [])}
     label = pass_threshold_label(
-        arm.get("k"), view.get("rubric_threshold", DEFAULT_PASS_THRESHOLD), criteria=sorted(criteria)
+        arm.get("k"),
+        view.get("rubric_threshold", DEFAULT_PASS_THRESHOLD),
+        criteria=sorted(criteria),
+        checks=sorted(checks),
     )
     untested = arm.get("composite_untested_reason")
     if untested is not None:

@@ -571,7 +571,7 @@ def _cannot_tell_disclosure(result: ResultView) -> str | None:
             )
         return (
             f"{said} This result is left out of pass^k and the composite, which need every rubric dimension, "
-            "unless in pass^k a scored dimension below the bar already fails it."
+            "unless in pass^k a failed check or a scored dimension below the bar already fails it."
         )
     return said
 

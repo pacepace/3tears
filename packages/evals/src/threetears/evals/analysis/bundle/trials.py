@@ -56,13 +56,13 @@ from threetears.evals.analysis.bundle.schema import (
     TrialState,
 )
 from threetears.evals.kernel.errors import ConflictError
-from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_measure
+from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
     delivered_a_turn,
     trial_exclusion,
 )
-from threetears.evals.kernel.scoring import capability_scores, has_pass_criterion
+from threetears.evals.kernel.scoring import capability_scores, failed_checks, has_pass_criterion
 from threetears.evals.kernel.usage_capture import (
     count_substituted_deliveries,
     production_replicating_cost,
@@ -149,31 +149,17 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
 
 
 def _failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
-    """Every check the trial failed: each goal check, then a wrong label and each check measure on its wrong side
-    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`: a boolean, or a scorer graded 0 or 1)."""
-    failed = [
-        TrialCheck(name=_reader_name(goal_check_measure(check.expression), catalog), expression=check.expression)
-        for check in result.goal_state_outcomes
-        if not check.passed
+    """Every check the trial failed, as pass^k reads them (:func:`~threetears.evals.kernel.scoring.failed_checks`),
+    each by its reader name."""
+    return [
+        TrialCheck(name=_reader_name(check.measure, catalog), expression=check.expression)
+        for check in failed_checks(result, catalog)
     ]
-    for name, value in sorted(result.host_measures.items()):
-        descriptor = catalog.get(name)
-        if name == MATCH_MEASURE:
-            if value is False:
-                failed.append(TrialCheck(name=_reader_name(name, catalog), expression=f"{name} == expected label"))
-            continue
-        if descriptor is not None and descriptor.check_failed(value):
-            # A pass/fail scorer lands 0 or 1: named by the side it fell on, as a boolean's is.
-            fell = value if isinstance(value, bool) else not descriptor.higher_is_better
-            failed.append(TrialCheck(name=_reader_name(name, catalog), expression=f"{name} is {fell}"))
-    return failed
 
 
 def _has_criterion(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
     """Whether anything could have failed the trial: a goal check, a judge, a label, or a pass/fail scorer."""
-    if has_pass_criterion(result) or MATCH_MEASURE in result.host_measures:
-        return True
-    return any((descriptor := catalog.get(name)) is not None and descriptor.is_check for name in result.host_measures)
+    return has_pass_criterion(result, catalog=catalog) or MATCH_MEASURE in result.host_measures
 
 
 def _reader_name(name: str, catalog: Mapping[str, MetricDescriptor]) -> str:

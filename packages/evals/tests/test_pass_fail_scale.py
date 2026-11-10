@@ -252,7 +252,7 @@ class TestAggregation:
             ],
         )
 
-        [row] = compute_pass_hat_k([passed, failed], rubric_threshold=5).values()
+        [row] = compute_pass_hat_k([passed, failed], rubric_threshold=5, catalog={}).values()
 
         assert row["n_test_cases"] == 2 and row["pass_hat_k"] == 0.5
 

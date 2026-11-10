@@ -80,9 +80,9 @@ def _arms(seed: int):
 
 def test_no_attempt_has_a_criterion_so_the_run_has_no_pass_k_and_says_why() -> None:
     classifier, judged, results = _arms(688)
-    assert not any(has_pass_criterion(r) for r in results[classifier.id])
+    assert not any(has_pass_criterion(r, catalog={}) for r in results[classifier.id])
 
-    rows = compute_pass_hat_k([*results[classifier.id], *results[judged.id]])
+    rows = compute_pass_hat_k([*results[classifier.id], *results[judged.id]], catalog={})
     unmeasured = rows[("classifier-model", classifier.id)]
     assert unmeasured["pass_hat_k"] is None, "the old 0.0 read as failing criteria the arm never had"
     assert unmeasured["pass_hat_k_curve"] == [] and unmeasured["n_test_cases"] == 0

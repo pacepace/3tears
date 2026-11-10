@@ -88,7 +88,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
             RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
             RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
         )
-        (summary,) = compute_pass_hat_k([result]).values()
+        (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0
 
     def test_a_cannot_tell_on_a_boundary_dim_neither_drops_the_composite_nor_pass_k(self):
@@ -101,7 +101,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
             judge_cannot_tell_boundary=[BOUNDARY],
         )
         assert result_composite(result) == 1.0
-        (summary,) = compute_pass_hat_k([result]).values()
+        (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0 and summary["n_cannot_tell_excluded"] == 0
 
     def test_a_catalog_boundary_dim_copied_into_a_template_stays_boundary(self):

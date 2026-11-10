@@ -219,7 +219,9 @@ async def test_a_lost_interleaved_sweep_taken_up_again_ends_as_an_uninterrupted_
         assert control_id is not None
         control_rows = _rows(control, control_id)
         assert _cells(rows) == _cells(control_rows) and len(rows) == len(control_rows) == 3 * K, label
-        assert list(compute_pass_hat_k(rows).values()) == list(compute_pass_hat_k(control_rows).values()), label
+        assert list(compute_pass_hat_k(rows, catalog={}).values()) == list(
+            compute_pass_hat_k(control_rows, catalog={}).values()
+        ), label
         run = _run(holder, run_id)
         assert run.status == _run(control, control_id).status == "completed"
         assert run.launch_group_id == group_id and len(run.lifetimes) == 2

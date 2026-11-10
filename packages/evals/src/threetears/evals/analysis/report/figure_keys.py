@@ -6359,9 +6359,8 @@ _FAMILIES: tuple[_Family, ...] = (
         "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
         "figure for them somewhere: neither passed nor removed; `pairs` how many pairs of arms its pair readings read "
         "apart, `arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as "
-        "examples, `failures` the failed trials the run holds, which they were kept from, a failure counted as the "
-        "examples count one, not as the scoreboard's `failed` (refused where the snapshot does not count them: not "
-        "known)",
+        "examples, `failures` every trial the pass rule failed, for any cause, the scoreboard's `failed` (refused "
+        "where the snapshot does not count them: not known)",
         resolve=_campaign_count,
         derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
@@ -7670,7 +7669,7 @@ def _example_input() -> ReportInput:
     """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
     asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell, criteria, a
     numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, a monthly
-    volume, a frozen example with the failed trials it was kept from, and the cases the two aspects share."""
+    volume, a frozen example beside the trials the pass rule failed, and the cases the two aspects share."""
     rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
@@ -8067,7 +8066,7 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     (
         "counts",
         "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses, "
-        "the examples kept and the failures they were kept from",
+        "the examples kept and the trials the pass rule failed",
         frozenset({"count"}),
     ),
 )

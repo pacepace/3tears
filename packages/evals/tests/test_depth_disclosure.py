@@ -104,7 +104,7 @@ def test_a_pass_hat_k_entry_counts_the_cases_short_of_k() -> None:
         make_scored_result(test_case_id="tc2", k=1, goal_passes=(True,)),
     ]
 
-    entry = compute_pass_hat_k(results, k=2)[("m1", "r1")]
+    entry = compute_pass_hat_k(results, k=2, catalog={})[("m1", "r1")]
 
     assert (entry["n_cases_at_k"], entry["n_cases_short_of_k"], entry["n_test_cases"]) == (1, 1, 2)
     assert entry["pass_hat_k"] == 1.0

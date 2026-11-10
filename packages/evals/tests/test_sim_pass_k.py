@@ -86,7 +86,7 @@ def test_the_estimator_is_unbiased_at_the_issues_mixed_depths_and_the_old_one_wa
     old: list[float] = []
     for _ in range(_REPLICATES):
         attempts = _attempts(rng, _ISSUE_DEPTHS)
-        curve = compute_pass_hat_k(_rows(attempts), k=_DEEPEST)[("m1", "r1")]["pass_hat_k_curve"]
+        curve = compute_pass_hat_k(_rows(attempts), k=_DEEPEST, catalog={})[("m1", "r1")]["pass_hat_k_curve"]
         for k, values in estimates.items():
             point = pass_hat_k_at(curve, k)
             # The depth multiset is fixed, so the number of cases measured at least k deep is too.
@@ -110,7 +110,7 @@ def test_at_uniform_depth_the_estimator_is_the_all_pass_indicator():
     rng = random.Random(_SEED)
     for _ in range(200):
         attempts = _attempts(rng, (_DEEPEST,) * len(_P))
-        entry = compute_pass_hat_k(_rows(attempts), k=_DEEPEST)[("m1", "r1")]
+        entry = compute_pass_hat_k(_rows(attempts), k=_DEEPEST, catalog={})[("m1", "r1")]
         assert entry["pass_hat_k"] == pytest.approx(_all_pass_indicator(attempts))
 
 
@@ -125,8 +125,9 @@ def test_pooling_two_runs_of_one_cell_matches_one_run_of_the_combined_depth():
             _rows(first, run_id="r1") + _rows(second, run_id="r2"),
             cell_of_run={"r1": "cell", "r2": "cell"},
             k=_DEEPEST,
+            catalog={},
         )
-        one_run = compute_pass_hat_k(_rows(combined), k=_DEEPEST)[("m1", "r1")]
+        one_run = compute_pass_hat_k(_rows(combined), k=_DEEPEST, catalog={})[("m1", "r1")]
 
         assert pooled["pass_hat_k_curve"] == one_run["pass_hat_k_curve"]
         assert pooled["n_test_cases"] == one_run["n_test_cases"] == len(_P)

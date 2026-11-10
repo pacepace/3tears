@@ -17,8 +17,8 @@ slice, every slice's first before any slice's second, a slice's other cases befo
 the judge's reason quotes that the text holds, else the text's end, where the reply ends.
 
 **Counted.** An analyst's input (``counted``) also carries tallies of the bundle's trials, never statistics: each
-slice's failed trials (aspect, arm and stratum, a failure as the examples count one), so a page of examples can say
-how many it was kept from; each example's case input and every judged dimension's reason (``Example.reasons``),
+slice's failed trials (aspect, arm and stratum: every trial its pass rule failed, for any cause, as the scoreboard's
+``failed`` counts them), so a page can say how many trials failed beside the examples it shows; each example's case input and every judged dimension's reason (``Example.reasons``),
 where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
 one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
 capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
@@ -111,7 +111,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import declared_check_name, measure_name
+from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -427,7 +427,7 @@ class _Builder:
             for name, descriptor in aspect.measure_catalog.items()
             if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
         )
-        named = [_check_held(name, aspect.measure_catalog[name]) for name in checks if goal_check_of(name) is None]
+        named = [check_held(name, aspect.measure_catalog[name]) for name in checks if goal_check_of(name) is None]
         criteria: list[PassCriterion] = []
         if any(goal_check_of(name) is not None for name in checks):
             criteria.append("goal_checks")
@@ -1095,19 +1095,6 @@ def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
 def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
     """Judged where a rubric dimension counts toward a pass, checked where checks alone do, else neither."""
     return "judged" if rule.dimensions else "checked" if rule.checks else None
-
-
-def _check_held(name: str, descriptor: MetricDescriptor) -> str:
-    """A check that is no goal check, as its aspect's pass rule names it everywhere the rule is stated: the measure by
-    the name the page gives it and the value it must hold for the trial to pass, ``Never topped up is false``. The
-    other value fails the trial (:meth:`~threetears.evals.kernel.metrics.MetricDescriptor.check_failed`): a label
-    match fails on false, a pass/fail scorer on its worse end."""
-    passes = name == MATCH_MEASURE or descriptor.higher_is_better is not False
-    if name == MATCH_MEASURE or descriptor.data_type == "boolean":
-        held = "true" if passes else "false"
-    else:
-        held = "1" if passes else "0"
-    return f"{measure_name(name, descriptor.reader_name)} is {held}"
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:

@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: pass^k fails a trial on every check the census fails it on
+
+**Fixed:** pass^k read only goal checks, the judged capability dimensions and candidate failures, while the
+scoreboard also failed a trial on a host's check (a boolean measure with a better end, a pass/fail scorer, a label
+that did not match), so an arm that passed 2 of 180 trials on the scoreboard could read a high pass^k beside it, under
+a label naming the check. Both now read one list of what a trial failed, `kernel.scoring.failed_checks` (new): pass^k
+on the frontier, in a run's summary and in two runs compared fails the attempt the census fails. A host's check is
+also a pass^k criterion (`has_pass_criterion`), so an arm held by such a check alone has a measured pass^k where it
+read unmeasured. A measure with no better end, or a numeric one that is no pass/fail scorer, still fails nothing.
+`compute_pass_hat_k`, `pool_pass_hat_k`, `pool_pass_hat_k_attempts` and `has_pass_criterion` take a required
+`catalog`, the descriptors of the measures the results carry, which `kernel.scoring.measure_catalog_of` (new) builds
+from a host's measure registry. `compare_two_runs` takes the host's `profile`, and its arm row names each such check
+(`pass_checks_{a,b}`, new), as the compared label now does. `analysis.style.check_held` (new) is the one wording of
+such a check: the pass rule names the value that passes (`Never topped up is false`), and a trial's Why cell now the
+value that failed it (`check: Never topped up is true`) where it printed the raw expression (`` `top_up_never is True`
+``). A judge's can't-tell disclosure says a failed check, not only a sub-bar dimension, can still fail the trial in
+pass^k. The `count.failures` key and the counts family now describe every trial the pass rule failed.
+
+**Hosts:** a pass^k figure on an arm held to such a check moves down to the scoreboard's pass rate; a stored report or
+verdict that cited the old figure misstates it. A host calling the pass^k functions passes `catalog=`
+(`measure_catalog_of(results, profile.measures)`). An attempt whose only criterion is a label match is still left out
+of pass^k as having no criterion, while the scoreboard counts it.
+
 ### evals: the pass rule names every check that fails a trial, and count.failures counts failed trials
 
 **Fixed:** an aspect held to a host's check (a boolean measure with a better end, a pass/fail scorer or a label match)
