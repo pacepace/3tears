@@ -128,7 +128,8 @@ class TestReadKeyed:
         assert len(rows) == 25
         assert [len(params[0]) for _, params in reader.statements] == [10, 10, 5]
         for sql, _ in reader.statements:
-            assert "JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]) AS k1) AS k" in sql
+            assert "JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k" in sql
+            assert "CAST(" not in sql
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by`` is dropped (the read answers rows of every group) or bound to the wrong placeholder."""

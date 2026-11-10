@@ -1,13 +1,16 @@
 """keyed reads: the rows a batch of keys (or key prefixes) names, a bounded batch a statement.
 
-The one spelling of the keyed batch read, built on :func:`~threetears.core.sql_fragments.unnest_key_join` (the join a
-copy follower and a checkpoint name their keys by too). The keys are bound as one text array a key column and joined to the
-table, each cast back to its column's type::
+The one spelling of the keyed batch read. Each key column's values are bound as one text array, the array cast as a
+whole to the column's type, so the column is compared with values of its own type and its index is read by them::
+
+    SELECT <columns> FROM <table> AS t WHERE t."id" = ANY($1::text[]::uuid[]) AND t."tenant" = $2
 
     SELECT <columns> FROM <table> AS t
-      JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]) AS k1) AS k
-        ON t."a" = CAST(k.k0 AS text) AND t."b" = CAST(k.k1 AS bigint)
-     WHERE t."tenant" = $3
+      JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k
+        ON t."a" = k.k0 AND t."b" = k.k1
+
+Never a cast per element in the join (``t."id" = CAST(k.k0 AS uuid)``): Postgres plans that as an index scan with no
+index condition, reading every row of the index for a handful of keys.
 
 With the key columns a leading part of the table's primary key (or of an index declared for the caller's read),
 PostgreSQL, YugabyteDB and DuckDB each answer it by the key: a lookup whose cost is the keys', whatever the table
@@ -33,7 +36,7 @@ from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.keyed._filters import Derived, Lock, by_conditions, relation
-from threetears.core.sql_fragments import quote_identifier, unnest_key_join
+from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
 
@@ -139,12 +142,26 @@ class _Statement:
             conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
             where = " AND ".join([named, *conditions])
             return self._locked(f"{head} WHERE {where}"), (*(value for key in chunk for value in key), *pinned)
-        casts = [self.keys.cast(index) for index in range(width)]
-        unnested, joined = unnest_key_join(self.keys.columns, casts, alias="t", null_safe=self.keys.null_safe)
-        conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        # each key column's values bound as one text array, the ARRAY cast to the column's type: the column is
+        # compared with values of its own type, never wrapped or compared element by element through a cast, so the
+        # planner reads the key's index by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
+        typed = [self._typed_array(index + 1) for index in range(width)]
         arrays = tuple([_text(key[index]) for key in chunk] for index in range(width))
+        conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
+        columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
+        if width == 1 and not self.keys.null_safe:
+            where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions])
+            return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned)
+        unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
+        match = "IS NOT DISTINCT FROM" if self.keys.null_safe else "="
+        joined = " AND ".join(f"{column} {match} k.k{index}" for index, column in enumerate(columns))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
+
+    def _typed_array(self, place: int) -> str:
+        """placeholder ``place``'s text array, cast as a whole to its key column's type."""
+        cast = self.keys.cast(place - 1)
+        return f"${place}::text[]" if cast.lower() in {"text", "varchar"} else f"${place}::text[]::{cast}[]"
 
 
 def _statement(

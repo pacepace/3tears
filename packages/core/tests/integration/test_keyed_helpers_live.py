@@ -36,7 +36,7 @@ from threetears.core.keyed import (
     read_past_marks,
 )
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
-from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
+from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems, plan_uses_index
 
 pytestmark = pytest.mark.integration
 
@@ -265,3 +265,66 @@ class TestDeleteBefore:
         assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"})
         problem = budget_problem("delete_before of 3,000 rows in pages of 500", took, baseline)
         assert problem is None, problem
+
+
+_RATES = "credit_rates"
+_MODELS = 300
+_RATES_A_MODEL = 10
+
+
+@pytest.fixture
+async def rates(db_container: str) -> AsyncIterator[_Seeded]:
+    """a rates table found by its model through a declared index (the gateway's credit rates), 3,000 rows."""
+    schema = f"keyed_rates_{uuid.uuid4().hex[:8]}"
+    conn = await asyncpg.connect(db_container)
+    try:
+        await conn.execute(f"CREATE SCHEMA {schema}")
+        await conn.execute(f"SET search_path = {schema}")
+        await conn.execute(
+            f"CREATE TABLE {_RATES} (id UUID PRIMARY KEY, model_id UUID NOT NULL, kind TEXT NOT NULL, "
+            "effective_from TIMESTAMPTZ NOT NULL)"
+        )
+        await conn.execute(f"CREATE INDEX credit_rates_by_model ON {_RATES} (model_id ASC, kind ASC)")
+        await conn.execute(
+            f"""INSERT INTO {_RATES}
+            SELECT md5('r' || m || '-' || r)::uuid, md5('m' || m)::uuid, 'k' || r, now()
+            FROM generate_series(1, {_MODELS}) m, generate_series(1, {_RATES_A_MODEL}) r"""
+        )
+        await conn.execute(f"ANALYZE {_RATES}")
+        yield _Seeded(conn=conn, yugabyte=await on_yugabyte(conn))
+    finally:
+        await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await conn.close()
+
+
+class TestAKeyedReadIsAnIndexCondition:
+    async def test_a_batch_of_one_key_column_reads_its_index_by_the_keys(self, rates: _Seeded) -> None:
+        """Flips if the keys reach the index through a per-element cast in a join (an index scan with no index
+        condition: every row of the index read for three keys), as the first read_keyed did."""
+        models = [
+            str(row["model_id"])
+            for row in await rates.conn.fetch(f"SELECT DISTINCT model_id FROM {_RATES} ORDER BY model_id LIMIT 3")
+        ]
+        recorder = PlanRecorder(rates.conn)
+        rows = await read_keyed(
+            recorder, _RATES, keys=KeyBatch(("model_id",), [(m,) for m in models], ("uuid",)), columns=["id", "kind"]
+        )
+        assert len(rows) == len(models) * _RATES_A_MODEL
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(models) * _RATES_A_MODEL, plan
+
+    async def test_a_batch_of_two_key_columns_reads_its_index_by_the_keys(self, rates: _Seeded) -> None:
+        """Flips if a composite batch reads every row of the index, rather than the keys' own."""
+        named = await rates.conn.fetch(f"SELECT model_id, kind FROM {_RATES} ORDER BY id LIMIT 5")
+        recorder = PlanRecorder(rates.conn)
+        rows = await read_keyed(
+            recorder,
+            _RATES,
+            keys=KeyBatch(("model_id", "kind"), [(str(r["model_id"]), r["kind"]) for r in named], ("uuid", "text")),
+            columns=["id"],
+        )
+        assert len(rows) == len(named)
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(named) + 1, plan
