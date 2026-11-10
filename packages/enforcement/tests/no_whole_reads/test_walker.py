@@ -1642,3 +1642,46 @@ def test_a_keyset_pager_s_purposed_index_is_recorded_as_used(tmp_path: Path) -> 
     )
     findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": other}))
     assert any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_MARKED_COLUMNS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    CONSOLIDATIONS = TableSchema(
+        name="memory_consolidations",
+        primary_key=("agent_id", "consolidated_memory_id", "source_memory_id"),
+        columns=[],
+        indexes=(Index("by_source", "agent_id", "source_memory_id", purpose="src/memory.py::_MARK_COLUMNS"),),
+    )
+    OPERATIONS = TableSchema(
+        name="backup_operations",
+        primary_key="operation_id",
+        columns=[],
+        indexes=(Index("recent", "date_started", purpose="src/memory.py::newest"),),
+    )
+    _MARK_COLUMNS = (
+        "(SELECT c.consolidated_memory_id FROM memory_consolidations c "
+        "WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id LIMIT 1) AS corrected_by"
+    )
+    _NEWEST_FIRST = (Sort("date_started", descending=True), Sort("operation_id", descending=True))
+
+    async def by_ids(pool, agent_id, ids):
+        return await pool.fetch(f"SELECT memory_id, {_MARK_COLUMNS} FROM memories WHERE agent_id = $1 AND memory_id = ANY($2)", agent_id, ids)
+
+    async def for_user(pool, agent_id, user_id):
+        return await pool.fetch(f"SELECT memory_id, {_MARK_COLUMNS} FROM memories WHERE agent_id = $1 AND user_id = $2", agent_id, user_id)
+
+    async def newest(pool, cols):
+        return await keyset_page(pool, "backup_operations", columns=cols, by={}, order=_NEWEST_FIRST, limit=10)
+"""
+
+
+def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_and_credited(tmp_path: Path) -> None:
+    """Flips if a subquery written once in a module constant can't key through the index whose purpose names that
+    constant, or if a helper's order given as a module constant is unread (its purposed index unused)."""
+    found = _symbols(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
+    assert not any("memory_consolidations" in symbol for _, symbol in found), found
+    assert not any(function == "newest" for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings

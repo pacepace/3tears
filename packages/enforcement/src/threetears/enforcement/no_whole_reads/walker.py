@@ -661,6 +661,20 @@ class _ModuleWalk(ast.NodeVisitor):
         self._sort_mappings: dict[str, list[ast.Call]] = _sort_mappings(tree)
         #: each module function onto the vocabularies it, or a function it calls, uses
         self._mapping_users: dict[str, set[str]] = _mapping_users(tree, set(self._sort_mappings))
+        #: each top-level name's value, for a helper argument that is a module constant of its shape
+        self._module_values: dict[str, ast.expr] = {
+            statement.targets[0].id: statement.value
+            for statement in tree.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        } | {
+            statement.target.id: statement.value
+            for statement in tree.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.value is not None
+        }
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))
         self._bind(tree.body, self._envs[0])
@@ -940,6 +954,16 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: Reader
         """
         names = {f"{self.path}::{self._function}"}
+        # a statement interpolating a module constant (``{_MEMORY_MARK_COLUMNS}``) is written in it too, so an index's
+        # purpose may name that constant once rather than every function placing it
+        if isinstance(node, ast.JoinedStr):
+            names.update(
+                f"{self.path}::{part.value.id}"
+                for part in node.values
+                if isinstance(part, ast.FormattedValue)
+                and isinstance(part.value, ast.Name)
+                and part.value.id in self._module_values
+            )
         parent = self._parents.get(node)
         targets = (
             parent.targets
@@ -1303,7 +1327,14 @@ class _ModuleWalk(ast.NodeVisitor):
 
         def literal(value: ast.expr) -> ast.expr:
             text = _constant_text(value, self._envs[-1])
-            return ast.Constant(text) if text is not None and not isinstance(value, ast.Constant) else value
+            if text is not None and not isinstance(value, ast.Constant):
+                return ast.Constant(text)
+            # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
+            if isinstance(value, ast.Name) and isinstance(
+                self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
+            ):
+                return self._module_values[value.id]
+            return value
 
         return ast.Call(
             func=node.func,
