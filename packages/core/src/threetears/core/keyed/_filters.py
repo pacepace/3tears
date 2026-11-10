@@ -16,7 +16,17 @@ from typing import Any, Final
 
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["AnyOf", "Derived", "Fragment", "Lock", "by_conditions", "quoted_table", "relation", "renumbered"]
+__all__ = [
+    "AnyOf",
+    "Derived",
+    "Fragment",
+    "Lock",
+    "batched_join_hint",
+    "by_conditions",
+    "quoted_table",
+    "relation",
+    "renumbered",
+]
 
 #: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
@@ -77,6 +87,26 @@ def relation(table: str | Derived, alias: str) -> str:
     if isinstance(table, Derived):
         return f"({table.sql}) AS {alias}"
     return f"{quoted_table(table)} AS {alias}"
+
+
+#: the name PostgreSQL (and so pg_hint_plan) gives the relation of an ``IN (SELECT ...)`` it joins as a semi-join
+IN_SUBQUERY: Final = "ANY_subquery"
+
+
+def batched_join_hint(outer: str, inner: str) -> str:
+    """the hint every keyed join carries, as the statement's first words: YugabyteDB joins ``outer`` (the keys) to
+    ``inner`` (the table) by a batched nested loop, one storage request for up to ``yb_bnl_batch_size`` keys, where
+    its planner would otherwise pick a plain nested loop (one request a key: 600 keys, 600 requests). PostgreSQL reads
+    it as a comment; its own planner already nests a loop over the key's index.
+
+    :param outer: the alias of the keys' relation (:data:`IN_SUBQUERY` for an ``IN (SELECT ...)``)
+    :ptype outer: str
+    :param inner: the alias of the table read by the keys
+    :ptype inner: str
+    :return: the hint and a space
+    :rtype: str
+    """
+    return f"/*+ YbBatchedNL({outer} {inner}) */ "
 
 
 def quoted_table(table: str) -> str:

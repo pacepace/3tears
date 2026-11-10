@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from threetears.core.keyed._filters import by_conditions, quoted_table
+from threetears.core.keyed._filters import IN_SUBQUERY, batched_join_hint, by_conditions, quoted_table
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
@@ -117,15 +117,19 @@ async def _paged(
     """run a paged write until a page touches fewer rows than it asked for, each page inside the collection's
     ``bypassing_write`` so the keys it returned are settled in every cache."""
     named = ", ".join(quote_identifier(part) for part in write.key)
+    written = ", ".join(f"t.{quote_identifier(part)}" for part in write.key)
     table = quoted_table(write.table)
+    # the page's keys joined back to the table by its key, batched on YugabyteDB (batched_join_hint): one storage
+    # request a page, not one a row
+    hint = batched_join_hint(IN_SUBQUERY, "t")
     rows_of = (
-        f"({named}) IN (SELECT {named} FROM {table} WHERE {' AND '.join(write.conditions)} "
-        f"ORDER BY {quote_identifier(write.column)} LIMIT {write.page}) RETURNING {named}"
+        f"({written}) IN (SELECT {named} FROM {table} WHERE {' AND '.join(write.conditions)} "
+        f"ORDER BY {quote_identifier(write.column)} LIMIT {write.page}) RETURNING {written}"
     )
     if write.assignments:
-        sql = f"UPDATE {table} SET {', '.join(write.assignments)} WHERE {rows_of}"
+        sql = f"{hint}UPDATE {table} AS t SET {', '.join(write.assignments)} WHERE {rows_of}"
     else:
-        sql = f"DELETE FROM {table} WHERE {rows_of}"
+        sql = f"{hint}DELETE FROM {table} AS t WHERE {rows_of}"
     if conn is not None:
         reader = conn
     elif collection is not None:

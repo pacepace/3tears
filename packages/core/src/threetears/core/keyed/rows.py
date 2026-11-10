@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.keyed._filters import Derived, Lock, by_conditions, relation
+from threetears.core.keyed._filters import IN_SUBQUERY, Derived, Lock, batched_join_hint, by_conditions, relation
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
@@ -160,13 +160,13 @@ class _Statement:
             joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
             where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
             return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
-        # each column = ANY its values is an index condition whatever join the planner picks for the rest (a hash
-        # join of the keys alone would scan the table): the index is read for the values' cross product at most, and
-        # the row comparison then keeps exactly the keys named
+        # the keys joined to the table as rows: a nested loop over the key's index, each key one lookup. Never a
+        # column = ANY its values beside it: those name the values' cross product (600 keys over 50 states, 200
+        # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch
+        # the loop (batched_join_hint): one storage request for the batch, not one a key
         named = f"({', '.join(columns)}) IN (SELECT {unnested})"
-        bounds = [f"{column} = ANY({array})" for column, array in zip(columns, typed, strict=True)]
-        where = " AND ".join([*bounds, named, *conditions])
-        return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned)
+        where = " AND ".join([named, *conditions])
+        return self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}"), (*arrays, *pinned)
 
     def _typed_array(self, place: int) -> str:
         """placeholder ``place``'s text array, cast as a whole to its key column's type."""

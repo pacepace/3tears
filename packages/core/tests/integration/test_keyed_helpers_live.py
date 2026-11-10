@@ -42,7 +42,14 @@ from threetears.core.keyed import (
     update_before,
 )
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
-from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems, plan_uses_index
+from threetears.core.testing.plans import (
+    PlanRecorder,
+    StatementPlan,
+    explain_write,
+    on_yugabyte,
+    plan_problems,
+    plan_uses_index,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -108,6 +115,18 @@ async def _baseline(conn: asyncpg.Connection, rows_sql: str, *args: Any) -> floa
     """the bare read of the same rows: one statement over a plain table holding only them."""
     async with plain_copies(conn, {"rows": (rows_sql, args)}) as plain:
         return await best_seconds(lambda: conn.fetch(f"SELECT * FROM {plain['rows']}"))  # noqa: S608
+
+
+class _WritePlans:
+    """a connection whose every write is planned (EXPLAIN, never run: :func:`explain_write`) before it runs."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+        self.plans: list[StatementPlan] = []
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        self.plans.append(await explain_write(self._conn, sql, *args))
+        return await self._conn.fetch(sql, *args)
 
 
 def _plans_ok(recorder: PlanRecorder, seeded: _Seeded, *, scan_ratio: float | None = 1.1) -> None:
@@ -284,11 +303,11 @@ class TestUpdateBefore:
             began = time.perf_counter()
             await seeded.conn.execute(f"UPDATE {plain['rows']} SET stamp = $2 WHERE stamp < $1", before, moved)  # noqa: S608
             baseline = time.perf_counter() - began
-        recorder = PlanRecorder(seeded.conn)
+        planned = _WritePlans(seeded.conn)
         reaped = await update_before(
             _TABLE,
             collection=None,
-            conn=recorder,
+            conn=planned,
             key=["state", "geo", "id"],
             column="stamp",
             before=before,
@@ -297,7 +316,12 @@ class TestUpdateBefore:
             most_pages=1,
         )
         assert reaped.deleted == 500
-        _plans_ok(recorder, seeded)
+        # a write's plan is its estimates (never run): no looped sequential scan, its page found by the stamp index and
+        # its rows by the key
+        (plan,) = planned.plans
+        assert not plan_problems(planned.plans, scan_ratio=None), planned.plans
+        assert plan_uses_index(plan, "results_by_stamp"), plan.plan
+        assert plan_uses_index(plan, "results_pkey"), plan.plan
         began = time.perf_counter()
         swept = await update_before(
             _TABLE,
@@ -377,7 +401,8 @@ class TestDeleteOldest:
                 "INSERT INTO cached VALUES (?, ?, ?, ?)",
                 ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
             )
-            local.execute("CREATE TABLE plain AS SELECT * FROM cached WHERE rowid <= 3000")
+            # the bare operation: the same 3,000 oldest rows deleted by their rowids from a table of the same size
+            local.execute("CREATE TABLE plain AS SELECT * FROM cached")
             local.commit()
             plan = " ".join(
                 str(row[-1])
@@ -388,7 +413,7 @@ class TestDeleteOldest:
             )
             assert "USE TEMP B-TREE" not in plan, plan
             began = time.perf_counter()
-            local.execute("DELETE FROM plain")
+            local.execute("DELETE FROM plain WHERE rowid <= 3000")
             baseline = time.perf_counter() - began
             began = time.perf_counter()
             deleted = await delete_oldest(ThreadedSQLite(local), "cached", count=3000)
