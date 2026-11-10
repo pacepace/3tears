@@ -13,9 +13,13 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["AUDIT_EVENTS_V001_DDL", "create_audit_events"]
+__all__ = ["AUDIT_EVENTS_V001_DDL", "AUDIT_EVENTS_V001_TIME_INDEX", "create_audit_events"]
 
 log = get_logger(__name__)
+
+#: retention's index as this version built it: ``timestamp`` hashed on YugabyteDB, so the prune's range read every
+#: row. v002 builds ``idx_audit_events_time_asc`` beside it and drops it; a consumer's own ensure skips it.
+AUDIT_EVENTS_V001_TIME_INDEX = "CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events (timestamp)"
 
 #: The statements, frozen with this version. Idempotent (``IF NOT EXISTS``).
 AUDIT_EVENTS_V001_DDL: tuple[str, ...] = (
@@ -54,10 +58,7 @@ AUDIT_EVENTS_V001_DDL: tuple[str, ...] = (
             "ip_address TEXT",
         )
     ),
-    "-- purpose: packages/agent/audit/src/threetears/agent/audit/persist.py::prune_audit_events\n"
-    "-- plan_test: packages/agent/audit/tests/integration/test_index_plans.py::test_audit_events_time\n"
-    "-- reason: audit_events carries four indexes: retention's prune, an erasure by actor, and two the hub's views read\n"
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events (timestamp)",
+    AUDIT_EVENTS_V001_TIME_INDEX,
     "CREATE INDEX IF NOT EXISTS idx_audit_events_customer_time ON audit_events (customer_id, timestamp DESC)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events (event_type)",
     "-- purpose: packages/agent/audit/src/threetears/agent/audit/persist.py::anonymize_audit_rows\n"

@@ -180,7 +180,7 @@ class TestSchemaShape:
             store = AsyncpgStore(conn)
             await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
             for index_name in (
-                "idx_wake_schedules_next_fire",
+                "idx_wake_schedules_next_fire_asc",
                 "idx_wake_schedules_conv_status",
                 "idx_wake_schedules_user",
                 "idx_wake_schedules_context_from",

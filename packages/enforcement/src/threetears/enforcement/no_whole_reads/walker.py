@@ -1187,6 +1187,7 @@ class _ModuleWalk(ast.NodeVisitor):
             schema=self._schema,
             names=frozenset(names),
             view_keys=self._view_producers.get(self._function, ()),
+            local=_run_locally(self._parents.get(node)),
             transient=self._transient_table,
             ctes=(self._ctes[-1] if self._ctes else frozenset())
             | frozenset(
@@ -2540,6 +2541,21 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
                         (site, literal is not None and literal.lower() in ctes)
                     )
     return found
+
+
+#: the calls that run their statement on a local backend (DuckDB, SQLite): nothing they read is hashed
+_LOCAL_EXEC_CALLS: Final[frozenset[str]] = frozenset({"execute_query", "execute_arrow"})
+
+
+def _run_locally(parent: ast.AST | None) -> bool:
+    """whether a statement is the argument of a call that runs it on a local backend (``l1.execute_query(sql)``).
+
+    :param parent: the statement's parent node
+    :ptype parent: ast.AST | None
+    :return: whether it is
+    :rtype: bool
+    """
+    return isinstance(parent, ast.Call) and _final(parent) in _LOCAL_EXEC_CALLS
 
 
 def _on_an_attribute(call: ast.Call) -> bool:
