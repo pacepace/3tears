@@ -146,7 +146,11 @@ async def test_a_reloaded_tables_first_read_of_some_geographies_plans_by_its_ind
     await pool.execute("TRUNCATE results")
 
     written = await collection.load_files(
-        _files(served), columns=["office_key", "candidate", _GEO, _STATE, "votes"], rows_per_transaction=20_000
+        _files(served),
+        columns=["office_key", "candidate", _GEO, _STATE, "votes"],
+        rows_per_transaction=20_000,
+        # a load of many races names each office's key prefix: its epoch reaches those, never the table
+        prefixes=[{"office_key": f"o{o}"} for o in range(1, 34)],
     )
 
     assert written == 356_928
