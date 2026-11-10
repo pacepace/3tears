@@ -1495,3 +1495,22 @@ def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are
         "typed",
     }, found
     assert any(function == "filtered_unknown" for function, _ in found), found
+
+
+_CURSORED = """
+    from threetears.core.keyset import keyset_arrow_pages
+
+    async def from_mark(l3, mark):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark)
+
+    async def keyed_from_mark(l3, mark, scope):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark, where={"scope": scope})
+"""
+
+
+def test_a_pager_s_start_alone_does_not_narrow_it(tmp_path: Path) -> None:
+    """Flips if a pager given only where to start (after=, since=) passes as narrowed, or one given a where beside it
+    is named."""
+    found = _symbols(_config(tmp_path, {"cursored.py": _CURSORED}))
+    assert ("from_mark", "unkeyed-pager keyset_arrow_pages") in found, found
+    assert not any(function == "keyed_from_mark" for function, _ in found), found
