@@ -421,7 +421,7 @@ def observed(driver_type: str) -> Callable[[F], F]:
 TransactionFetchHook: TypeAlias = Callable[[str, tuple[Any, ...], "int | None"], Awaitable[list[dict[str, Any]]]]
 
 #: signature of the driver-supplied execute hook.
-TransactionExecuteHook: TypeAlias = Callable[[str, tuple[Any, ...], "int | None"], Awaitable[None]]
+TransactionExecuteHook: TypeAlias = Callable[[str, tuple[Any, ...], "int | None"], Awaitable["int | None"]]
 
 #: signature of the driver-supplied finish hook. the bool is True for
 #: commit, False for rollback. the hook owns ending the backend
@@ -473,7 +473,7 @@ class Transaction(ABC):
         """
 
     @abstractmethod
-    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run a DML / DDL statement on this transaction's pinned session.
 
         :param sql: SQL text with ``$1``-style placeholders
@@ -484,8 +484,9 @@ class Transaction(ABC):
             seconds; transaction-local. None leaves the connection's
             configured ceiling in force
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement reported writing (``INSERT``, ``UPDATE``, ``DELETE``, ``CREATE TABLE AS``),
+            the warehouse's own record of the statement; ``None`` when it reports none (a DDL statement)
+        :rtype: int | None
         :raises RuntimeError: if the transaction already finished
         """
 
@@ -579,7 +580,7 @@ class CallbackTransaction(Transaction):
         self._reject_when_finished()
         return await self._on_fetch(sql, params, timeout_seconds)
 
-    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run a DML / DDL statement on the pinned session.
 
         :param sql: SQL text with ``$1``-style placeholders
@@ -588,12 +589,13 @@ class CallbackTransaction(Transaction):
         :ptype params: Any
         :param timeout_seconds: transaction-local timeout override
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement reported writing (``INSERT``, ``UPDATE``, ``DELETE``, ``CREATE TABLE AS``),
+            the warehouse's own record of the statement; ``None`` when it reports none (a DDL statement)
+        :rtype: int | None
         :raises RuntimeError: if the transaction already finished
         """
         self._reject_when_finished()
-        await self._on_execute(sql, params, timeout_seconds)
+        return await self._on_execute(sql, params, timeout_seconds)
 
     async def commit(self) -> None:
         """commit and release the pinned session.
@@ -938,7 +940,7 @@ class Driver(ABC):
         return rows[:max_rows]
 
     @abstractmethod
-    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run an arbitrary DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
@@ -949,8 +951,9 @@ class Driver(ABC):
             seconds; see :meth:`fetch`. None leaves the connection's
             configured ceiling in force
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement reported writing (``INSERT``, ``UPDATE``, ``DELETE``, ``CREATE TABLE AS``),
+            the warehouse's own record of the statement; ``None`` when it reports none (a DDL statement)
+        :rtype: int | None
         :raises asyncio.CancelledError: propagated after best-effort
             backend cancellation
         :raises RuntimeError: if the driver was previously closed

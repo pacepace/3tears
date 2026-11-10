@@ -32,6 +32,25 @@ columns in an index", 2026.1.0.0-b118), and a primary key is an index. `IndexDef
 primary key and `threetears.core.data.schema.IndexDef` now refuse more than `MAX_INDEX_COLUMNS` (32) when declared, so a
 covering index over a wide table fails in the author's tests rather than mid-upgrade on the database.
 
+### enforcement, core: no load path reads a whole table (`no_whole_reads`), statically and at run time
+
+**Added (enforcement):** `threetears.enforcement.no_whole_reads`, the gate the epoch-discipline rules did not hold:
+on election night whole reads went through keyset pagers (`keyset_arrow_pages` over a bare `SELECT ... FROM t`),
+`read_l3_rows` with no `where`, SQL built in helpers and run by a datasource client, and calls into functions that
+did one -- none of them a `fetch` of literal SQL, and several allowlisted. The new walk judges every SQL statement
+where it is written (no `WHERE` with a bound key, a whole `COUNT`/`GROUP BY`/`DISTINCT`/fingerprint, `TRUNCATE`,
+`DELETE`/`UPDATE` without `WHERE`, `ANALYZE`), every pager or fingerprint helper called without a narrowing keyword
+(or narrowed only by a loop over every key of a constant set), every flag or set that sends a table to be read
+whole, every whole/rebuild/warm call whose target reaches one through the call graph, and every call into a
+function that reads whole. In the code a repo names as load code, even one key's count or fingerprint is a
+verification scan. There is no allowlist of violations: the one way out is `_no_whole_reads_exemptions.txt`, a
+true cold start or schema change with the test proving it is reached only then. 3tears runs it
+(`tests/enforcement/test_no_whole_reads.py`), red until the paths it names are fixed.
+
+**Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
+test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,
+an index scan with no condition), a `TRUNCATE`, or keyed pages adding up to most of a table fails it.
+
 ### core, epoch, nats: load paths that grew with the table now grow with the change
 
 Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large

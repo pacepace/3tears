@@ -154,6 +154,29 @@ class TestRemoveGrant:
         coll.delete.assert_not_called()
 
 
+class TestListGrantsPage:
+    """``list_grants_page`` reads one bounded page by ``grant_id``, never the whole table."""
+
+    @pytest.mark.asyncio
+    async def test_a_page_is_read_by_key_after_the_last_with_a_bound(self) -> None:
+        """Flips if an operator's listing reads every grant rather than one page after the last ``grant_id``."""
+        coll, pool = _make_collection()
+        pool.fetch = AsyncMock(return_value=[])
+        after = uuid4()
+        await coll.list_grants_page(after=after, limit=50)
+        sql, *args = pool.fetch.await_args.args
+        assert "WHERE grant_id > $1 ORDER BY grant_id LIMIT $2" in sql
+        assert args == [after, 50]
+
+    @pytest.mark.asyncio
+    async def test_the_first_page_starts_below_every_key(self) -> None:
+        """Flips if the first page (no ``after``) passes no lower bound."""
+        coll, pool = _make_collection()
+        pool.fetch = AsyncMock(return_value=[])
+        await coll.list_grants_page()
+        assert pool.fetch.await_args.args[1:] == (UUID(int=0), 100)
+
+
 class TestLoadAllGrants:
     """``load_all_grants`` reads via l3_pool; surfaces RuntimeError when pool absent."""
 

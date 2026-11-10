@@ -1,0 +1,11 @@
+# The no-whole-reads gate's one way out (threetears.enforcement.no_whole_reads). One line per function that is a
+# TRUE cold start (an empty copy filled once, with nothing in L2 to load) or a SCHEMA CHANGE, never anything else:
+#
+#   <path> :: <function> :: <hits> :: <cold-start|schema-change> :: <tests/...py::proving_test> :: <tests/...py::speed_test> :: <reason>
+#
+# <hits> pins the function's hit count exactly. The proving test must show the function is reached ONLY on that
+# cold start or schema change -- never on a steady-state load, a retry, a recovery or a lost L2 -- and must name it.
+# The speed test runs the function at real size and holds it to a multiple of the bare operation timed on the same
+# database (threetears.core.testing.calibrate.budget_problem); it must name the function and call budget_problem.
+# "It's small", "it's admin", "it's being fixed" and "pre-existing" are not reasons: those are violations, fixed.
+packages/mcp/src/threetears/mcp/rbac.py :: McpToolGrantCollection.load_all_grants :: 1 :: cold-start :: packages/mcp/tests/integration/test_multi_pod_rbac.py::test_load_all_grants_is_reached_only_at_the_cold_start_and_an_operator_reset :: packages/mcp/tests/integration/test_multi_pod_rbac.py::test_load_all_grants_speed_at_real_size :: LocalGrantAuthorizer fills its empty grant cache once at start, and again only when the rbac epoch counter is replaced (the operator reset): every bump is applied by reading its grant by key

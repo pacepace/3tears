@@ -208,6 +208,30 @@ class TestHappyPath:
             await driver.close()
 
     @pytest.mark.asyncio
+    async def test_a_create_table_as_answers_the_rows_it_wrote(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Flips if a CREATE TABLE AS, an INSERT or a DDL statement is answered other than the rows Postgres' own
+        command tag reports, against the real container (in a transaction too)."""
+        db_url, schema = seeded_schema
+        config = _make_config_for_container(db_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        try:
+            built = await driver.execute(f'CREATE TABLE "{schema}"."copied" AS SELECT * FROM "{schema}"."widgets"')
+            held = await driver.fetch(f'SELECT count(*) AS n FROM "{schema}"."copied"')
+            assert built == held[0]["n"] and built > 0
+            assert await driver.execute(f'CREATE TABLE "{schema}"."plain" (a int)') is None
+            transaction = await driver.begin()
+            try:
+                assert await transaction.execute(f'INSERT INTO "{schema}"."plain" SELECT generate_series(1, 3)') == 3
+            finally:
+                await transaction.rollback()
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
     async def test_list_tables_discovers_seed(
         self,
         seeded_schema: tuple[str, str],

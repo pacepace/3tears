@@ -14,6 +14,7 @@ from threetears.mcp.auth import (
     Identity,
     LocalGrantAuthorizer,
 )
+from threetears.nats import Subjects
 
 
 # ---------------------------------------------------------------------
@@ -79,7 +80,47 @@ def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any], list[Any]
 
     fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
     fake_listener.catch_up = AsyncMock(return_value=0)
+    fake_listener.last_seen = MagicMock(return_value=0)
     return fake_client, fake_listener, captured, captured_resets
+
+
+def _row(principal_id: UUID | str, permission: str, grant_id: UUID | str | None = None) -> dict[str, Any]:
+    """one ``mcp_tool_grants`` row as the loader and the reader return it.
+
+    :param principal_id: the principal the grant gives to
+    :ptype principal_id: UUID | str
+    :param permission: what it gives
+    :ptype permission: str
+    :param grant_id: its key; a fresh one when omitted
+    :ptype grant_id: UUID | str | None
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    return {"grant_id": grant_id or uuid4(), "principal_id": principal_id, "permission": permission}
+
+
+async def _no_grant(_grant_id: UUID) -> dict[str, Any] | None:
+    """a grant reader that finds no grant: every key it is asked for was revoked.
+
+    :param _grant_id: the key
+    :ptype _grant_id: UUID
+    :return: ``None``
+    :rtype: dict[str, Any] | None
+    """
+    return None
+
+
+def _named(grant_id: UUID, action: str = "create") -> dict[str, Any]:
+    """the payload the hub's grant endpoints bump with.
+
+    :param grant_id: the grant written
+    :ptype grant_id: UUID
+    :param action: ``"create"`` or ``"delete"``
+    :ptype action: str
+    :return: the payload
+    :rtype: dict[str, Any]
+    """
+    return {"grant_id": str(grant_id), "action": action}
 
 
 _CATCHUP_TASK_NAME = "mcp-rbac-catchup-loop"
@@ -97,6 +138,7 @@ def _running_catchup_loops() -> list[asyncio.Task[Any]]:
 async def _build_started_authorizer(
     *,
     loader: AsyncMock,
+    reader: AsyncMock | None = None,
     admin_principal_ids: set[UUID] | None = None,
 ) -> tuple[LocalGrantAuthorizer, list[Any]]:
     """construct + start a LocalGrantAuthorizer; return (authz, captured_callbacks).
@@ -109,6 +151,7 @@ async def _build_started_authorizer(
     client, listener, captured, captured_resets = _make_listener_capturing_subscribe()
     authz = LocalGrantAuthorizer(
         grant_loader=loader,
+        grant_reader=reader if reader is not None else AsyncMock(side_effect=_no_grant),
         epoch_client=client,
         epoch_listener=listener,
         admin_principal_ids=admin_principal_ids,
@@ -222,7 +265,7 @@ class TestLocalGrantAuthorizer:
         principal_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": principal_id, "permission": "product.conv.read"},
+                _row(principal_id, "product.conv.read"),
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
@@ -239,7 +282,7 @@ class TestLocalGrantAuthorizer:
         group_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": group_id, "permission": "audit.records.read"},
+                _row(group_id, "audit.records.read"),
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
@@ -259,7 +302,7 @@ class TestLocalGrantAuthorizer:
         role_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": role_id, "permission": "audit.records.read"},
+                _row(role_id, "audit.records.read"),
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
@@ -280,6 +323,7 @@ class TestLocalGrantAuthorizer:
         client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -295,15 +339,13 @@ class TestLocalGrantAuthorizer:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_start_primes_listener_to_epoch_read_before_cache_load(self) -> None:
-        """start() reads current() BEFORE reloading, primes to that epoch.
+    async def test_start_subscribes_before_it_fills_and_primes_to_the_epoch_read_first(self) -> None:
+        """the counter is read, the listener primed to it and subscribed, and only then the cache filled.
 
-        guards the permanent-staleness race: if the listener primed
-        last-seen via current()-at-subscribe (AFTER the cache load), a
-        bump landing in the load->subscribe window would pin last-seen
-        PAST the loaded grants and the catch-up tick (current ==
-        last_seen) would never recover. priming to the epoch read
-        BEFORE the load keeps last-seen <= the cache's epoch.
+        a bump landing during the fill is then heard and applied by key; one subscribing after the
+        fill would miss its broadcast, and the grant it changed could only be found by reading every
+        grant again. the fill reads the counter once more before its rows, so a bump at or below that
+        needs no read of its own.
         """
         order: list[str] = []
 
@@ -312,113 +354,233 @@ class TestLocalGrantAuthorizer:
             return 5
 
         async def _loader() -> list[dict[str, Any]]:
-            order.append("reload")
+            order.append("fill")
             return []
 
         client, listener, _, _ = _make_listener_capturing_subscribe()
         client.current = AsyncMock(side_effect=_current)
+        subscribe = listener.subscribe.side_effect
+
+        async def _subscribe(*args: Any, **kwargs: Any) -> None:
+            order.append("subscribe")
+            await subscribe(*args, **kwargs)
+
+        listener.subscribe = AsyncMock(side_effect=_subscribe)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=_loader),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
         )
         await authz.start()
         try:
-            # epoch read happened strictly before the cache load
-            assert order == ["current", "reload"]
-            # listener primed to the epoch the loaded cache reflects
+            assert order == ["current", "subscribe", "current", "fill"]
             assert listener.subscribe.await_args.kwargs["primed_epoch"] == 5
         finally:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_epoch_bump_reloads_cache(self) -> None:
-        """on rbac bump, reload pulls current grants and replaces cache."""
+    async def test_a_bump_applies_the_grant_it_names_by_key_and_never_reads_every_grant(self) -> None:
+        """the grant the bump names is read by its key and put in the cache; the loader is not called again."""
         principal_id = uuid4()
-        loader = AsyncMock(
-            side_effect=[
-                [],
-                [{"principal_id": principal_id, "permission": "product.conv.read"}],
-            ]
-        )
-        authz, captured = await _build_started_authorizer(loader=loader)
+        grant_id = uuid4()
+        loader = AsyncMock(return_value=[])
+        reader = AsyncMock(return_value=_row(principal_id, "product.conv.read", grant_id))
+        authz, captured = await _build_started_authorizer(loader=loader, reader=reader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
             assert await authz.allows(identity, "product.conv.read") is False
-            await captured[0](7, {"hint": "added grant"})
+            await captured[0](1, _named(grant_id))
             assert await authz.allows(identity, "product.conv.read") is True
+            reader.assert_awaited_once_with(grant_id)
+            assert loader.await_count == 1, "a bump read every grant again"
         finally:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_failed_reload_refuses_instead_of_serving_the_prior_cache(self) -> None:
-        """the bump may have been a revocation, so a grant in the prior cache is not trusted.
-
-        it used to stay allowed: the failed load kept the prior cache and answered from it.
-        """
+    async def test_a_bump_for_a_revoked_grant_takes_it_out_of_the_cache(self) -> None:
         principal_id = uuid4()
-        loader = AsyncMock(
-            side_effect=[
-                [{"principal_id": principal_id, "permission": "audit.records.read"}],
-                RuntimeError("L3 down"),
-            ]
-        )
-        authz, captured = await _build_started_authorizer(loader=loader)
+        grant_id = uuid4()
+        loader = AsyncMock(return_value=[_row(principal_id, "audit.records.read", grant_id)])
+        authz, captured = await _build_started_authorizer(loader=loader, reader=AsyncMock(return_value=None))
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
             assert await authz.allows(identity, "audit.records.read") is True
-            await captured[0](2, None)
+            await captured[0](1, _named(grant_id, "delete"))
+            assert await authz.allows(identity, "audit.records.read") is False
+            assert loader.await_count == 1
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_revoking_one_of_two_grants_of_a_permission_keeps_the_permission(self) -> None:
+        """two grants (two tools) can give one permission; revoking one leaves the other's."""
+        principal_id = uuid4()
+        first, second = uuid4(), uuid4()
+        loader = AsyncMock(return_value=[_row(principal_id, "p.read", first), _row(principal_id, "p.read", second)])
+        authz, captured = await _build_started_authorizer(loader=loader, reader=AsyncMock(return_value=None))
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            await captured[0](1, _named(first, "delete"))
+            assert await authz.allows(identity, "p.read") is True
+            await captured[0](2, _named(second, "delete"))
+            assert await authz.allows(identity, "p.read") is False
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_bump_that_names_no_grant_refuses_and_never_reads_every_grant(self) -> None:
+        """its grant is unknown: the cache may hold a revoked grant, and no whole reload stands in for it."""
+        principal_id = uuid4()
+        loader = AsyncMock(return_value=[_row(principal_id, "audit.records.read")])
+        reader = AsyncMock(side_effect=_no_grant)
+        authz, captured = await _build_started_authorizer(loader=loader, reader=reader)
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            await captured[0](1, {"hint": "something changed"})
+            with pytest.raises(GrantCacheUnavailableError, match="unheard"):
+                await authz.allows(identity, "audit.records.read")
+            admin = Identity(principal_type="user", principal_id=uuid4(), is_admin=True)
+            assert await authz.allows(admin, "audit.records.read") is True, "admins never read the cache"
+            assert loader.await_count == 1, "a bump with no grant read every grant again"
+            reader.assert_not_awaited()
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_epoch_refuses_but_the_named_grant_is_still_applied(self) -> None:
+        """epoch 1 went unheard and epoch 2 names its grant: 2 is applied, 1's grant is unknown."""
+        principal_id = uuid4()
+        grant_id = uuid4()
+        loader = AsyncMock(return_value=[])
+        reader = AsyncMock(return_value=_row(principal_id, "p.read", grant_id))
+        authz, captured = await _build_started_authorizer(loader=loader, reader=reader)
+        try:
+            await captured[0](2, _named(grant_id))
+            reader.assert_awaited_once_with(grant_id)
+            with pytest.raises(GrantCacheUnavailableError, match="unheard"):
+                await authz.allows(Identity(principal_type="user", principal_id=principal_id), "p.read")
+            assert loader.await_count == 1
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_bump_the_fill_already_holds_reads_nothing(self) -> None:
+        """the fill read the counter at 3 before its rows, so bumps up to 3 are in them."""
+        client, listener, captured, _ = _make_listener_capturing_subscribe()
+        client.current = AsyncMock(side_effect=[1, 3])
+        reader = AsyncMock(side_effect=_no_grant)
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(return_value=[]),
+            grant_reader=reader,
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            await captured[0](2, _named(uuid4()))
+            await captured[0](3, _named(uuid4()))
+            reader.assert_not_awaited()
+            assert await authz.allows(Identity(principal_type="user", principal_id=uuid4()), "p.read") is False
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_keyed_read_refuses_instead_of_serving_the_prior_cache(self) -> None:
+        """the bump may have been a revocation, so a grant in the cache is not trusted until its read lands."""
+        principal_id = uuid4()
+        grant_id = uuid4()
+        loader = AsyncMock(return_value=[_row(principal_id, "audit.records.read", grant_id)])
+        authz, captured = await _build_started_authorizer(
+            loader=loader, reader=AsyncMock(side_effect=RuntimeError("L3 down"))
+        )
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "audit.records.read") is True
+            with pytest.raises(RuntimeError, match="L3 down"):
+                await captured[0](1, _named(grant_id, "delete"))
             with pytest.raises(GrantCacheUnavailableError, match="not current"):
                 await authz.allows(identity, "audit.records.read")
             admin = Identity(principal_type="user", principal_id=uuid4(), is_admin=True)
             assert await authz.allows(admin, "audit.records.read") is True, "admins never read the cache"
+            assert loader.await_count == 1, "a failed keyed read fell back to reading every grant"
         finally:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_row_that_will_not_decode_fails_the_reload_too(self) -> None:
-        """a bad row used to escape the reload with the prior cache still answering."""
+    async def test_a_row_that_will_not_decode_fails_the_keyed_read_too(self) -> None:
         principal_id = uuid4()
-        loader = AsyncMock(
-            side_effect=[
-                [{"principal_id": principal_id, "permission": "audit.records.read"}],
-                [{"principal_id": "not-a-uuid", "permission": "audit.records.read"}],
-            ]
-        )
-        authz, captured = await _build_started_authorizer(loader=loader)
+        grant_id = uuid4()
+        loader = AsyncMock(return_value=[_row(principal_id, "audit.records.read", grant_id)])
+        reader = AsyncMock(return_value=_row("not-a-uuid", "audit.records.read", grant_id))
+        authz, captured = await _build_started_authorizer(loader=loader, reader=reader)
         try:
-            await captured[0](2, None)
+            with pytest.raises(ValueError):
+                await captured[0](1, _named(grant_id))
             with pytest.raises(GrantCacheUnavailableError):
                 await authz.allows(Identity(principal_type="user", principal_id=principal_id), "audit.records.read")
         finally:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_slow_reload_that_started_before_a_failing_one_does_not_clear_what_is_owed(self) -> None:
-        """bump 2 starts a slow load of the old rows; bump 3 (a revocation) fails at once; bump 2
-        then finishes. without ordering, its success cleared the owed flag and the revoked grant
-        was allowed again from rows read before the revocation."""
+    async def test_a_slow_read_cannot_put_back_a_grant_a_later_read_revoked(self) -> None:
+        """bump 1 starts a slow read of the grant; bump 2 (its revocation) reads it gone at once; bump 1
+        then lands with the row it read before the revocation. it must not put the grant back."""
         principal_id = uuid4()
-        grant = [{"principal_id": principal_id, "permission": "audit.records.read"}]
+        grant_id = uuid4()
         release = asyncio.Event()
         calls = 0
 
-        async def _loader() -> list[dict[str, Any]]:
+        async def _reader(_key: UUID) -> dict[str, Any] | None:
             nonlocal calls
             calls += 1
             if calls == 1:
-                return grant
-            if calls == 2:
                 await release.wait()
-                return grant
+                return _row(principal_id, "audit.records.read", grant_id)
+            return None
+
+        authz, captured = await _build_started_authorizer(
+            loader=AsyncMock(return_value=[]), reader=AsyncMock(side_effect=_reader)
+        )
+        try:
+            slow = asyncio.create_task(captured[0](1, _named(grant_id)))
+            await asyncio.sleep(0)
+            await captured[0](2, _named(grant_id, "delete"))
+            release.set()
+            await slow
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "audit.records.read") is False
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_slow_read_that_started_before_a_failing_one_does_not_clear_what_is_owed(self) -> None:
+        """bump 1 starts a slow read of the old row; bump 2 (a revocation) fails at once; bump 1 then
+        finishes. without ordering, its success cleared what was owed and the revoked grant was
+        allowed again from a row read before the revocation."""
+        principal_id = uuid4()
+        grant_id = uuid4()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _reader(_key: UUID) -> dict[str, Any] | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await release.wait()
+                return _row(principal_id, "audit.records.read", grant_id)
             raise RuntimeError("L3 down")
 
-        authz, captured = await _build_started_authorizer(loader=AsyncMock(side_effect=_loader))
+        authz, captured = await _build_started_authorizer(
+            loader=AsyncMock(return_value=[]), reader=AsyncMock(side_effect=_reader)
+        )
         try:
-            slow = asyncio.create_task(captured[0](2, None))
+            slow = asyncio.create_task(captured[0](1, _named(grant_id)))
             await asyncio.sleep(0)
-            await captured[0](3, None)
+            with pytest.raises(RuntimeError):
+                await captured[0](2, _named(grant_id, "delete"))
             release.set()
             await slow
             with pytest.raises(GrantCacheUnavailableError):
@@ -427,46 +589,106 @@ class TestLocalGrantAuthorizer:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_failure_that_started_before_a_landed_reload_owes_nothing(self) -> None:
+    async def test_a_failure_that_started_before_a_landed_read_owes_nothing(self) -> None:
         principal_id = uuid4()
-        grant = [{"principal_id": principal_id, "permission": "audit.records.read"}]
+        grant_id = uuid4()
         release = asyncio.Event()
         calls = 0
 
-        async def _loader() -> list[dict[str, Any]]:
+        async def _reader(_key: UUID) -> dict[str, Any] | None:
             nonlocal calls
             calls += 1
-            if calls == 2:
+            if calls == 1:
                 await release.wait()
                 raise RuntimeError("L3 was down")
-            return grant
+            return _row(principal_id, "audit.records.read", grant_id)
 
-        authz, captured = await _build_started_authorizer(loader=AsyncMock(side_effect=_loader))
+        authz, captured = await _build_started_authorizer(
+            loader=AsyncMock(return_value=[]), reader=AsyncMock(side_effect=_reader)
+        )
         try:
-            slow = asyncio.create_task(captured[0](2, None))
+            slow = asyncio.create_task(captured[0](1, _named(grant_id)))
             await asyncio.sleep(0)
-            await captured[0](3, None)
+            await captured[0](2, _named(grant_id))
             release.set()
-            await slow
+            with pytest.raises(RuntimeError):
+                await slow
             assert await authz.allows(Identity(principal_type="user", principal_id=principal_id), "audit.records.read")
         finally:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_reload_that_lands_after_a_failure_answers_again(self) -> None:
+    async def test_a_read_that_lands_after_a_failure_answers_again(self) -> None:
         principal_id = uuid4()
-        loader = AsyncMock(
-            side_effect=[
-                [],
-                RuntimeError("L3 down"),
-                [{"principal_id": principal_id, "permission": "audit.records.read"}],
-            ]
-        )
-        authz, captured = await _build_started_authorizer(loader=loader)
+        grant_id = uuid4()
+        reader = AsyncMock(side_effect=[RuntimeError("L3 down"), _row(principal_id, "audit.records.read", grant_id)])
+        authz, captured = await _build_started_authorizer(loader=AsyncMock(return_value=[]), reader=reader)
         try:
-            await captured[0](2, None)
-            await captured[0](3, None)
+            with pytest.raises(RuntimeError):
+                await captured[0](1, _named(grant_id))
+            await captured[0](2, _named(grant_id))
             assert await authz.allows(Identity(principal_type="user", principal_id=principal_id), "audit.records.read")
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_keyed_read_that_started_during_a_fill_outlives_it(self) -> None:
+        """a reset's fill reads every row slowly; a revocation's keyed read starts after it and lands
+        first. the fill's rows were read before the revocation, so the grant stays revoked."""
+        principal_id = uuid4()
+        grant_id = uuid4()
+        release = asyncio.Event()
+        fills = 0
+
+        async def _loader() -> list[dict[str, Any]]:
+            nonlocal fills
+            fills += 1
+            if fills == 2:
+                await release.wait()
+            return [_row(principal_id, "audit.records.read", grant_id)]
+
+        client, listener, captured, captured_resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=_loader),
+            grant_reader=AsyncMock(return_value=None),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            reset = asyncio.create_task(captured_resets[0]())
+            await asyncio.sleep(0)
+            await captured[0](1, _named(grant_id, "delete"))
+            release.set()
+            await reset
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "audit.records.read") is False
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_fills_again_and_clears_unheard_epochs(self) -> None:
+        """the operator reset is the one fill after the cold start, and what makes unheard epochs known."""
+        principal_id = uuid4()
+        loader = AsyncMock(side_effect=[[], [_row(principal_id, "p.read")]])
+        client, listener, captured, captured_resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            await captured[0](1, None)
+            with pytest.raises(GrantCacheUnavailableError):
+                await authz.allows(identity, "p.read")
+            await captured_resets[0]()
+            assert loader.await_count == 2
+            assert await authz.allows(identity, "p.read") is True
         finally:
             await authz.stop()
 
@@ -474,11 +696,7 @@ class TestLocalGrantAuthorizer:
     async def test_uuid_string_in_loader_row_is_normalised(self) -> None:
         """rows with stringified UUIDs (e.g. asyncpg .Record edge) match."""
         principal_id = uuid4()
-        loader = AsyncMock(
-            return_value=[
-                {"principal_id": str(principal_id), "permission": "product.conv.read"},
-            ]
-        )
+        loader = AsyncMock(return_value=[_row(str(principal_id), "product.conv.read", str(uuid4()))])
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
@@ -493,6 +711,7 @@ class TestLocalGrantAuthorizer:
         client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -536,6 +755,7 @@ class TestLocalGrantAuthorizerCatchupTick:
         listener.catch_up, ticked = _counting_catch_up(2)
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=0.01,  # 10ms -- fires almost immediately
@@ -567,6 +787,7 @@ class TestLocalGrantAuthorizerCatchupTick:
         listener.catch_up, survived = _counting_catch_up(2, first_raises=RuntimeError("transient"))
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=0.01,
@@ -580,27 +801,28 @@ class TestLocalGrantAuthorizerCatchupTick:
             await authz.stop()
 
     @pytest.mark.asyncio
-    async def test_a_reload_that_failed_on_a_bump_is_retried_by_the_next_catch_up_tick(self) -> None:
-        """the bump is already counted as seen, so only the owed reload can withdraw a revoked grant."""
+    async def test_a_keyed_read_that_failed_on_a_bump_is_retried_by_key_on_the_next_tick(self) -> None:
+        """the bump is already counted as seen, so only the owed read can withdraw a revoked grant --
+        and it is read again by its key, never by reading every grant."""
         principal_id = uuid4()
-        reloaded = asyncio.Event()
-        answers: list[Any] = [
-            [{"principal_id": principal_id, "permission": "audit.records.read"}],
-            RuntimeError("L3 down"),
-            [],  # the grant was revoked; this is the load the retry must land
-        ]
+        grant_id = uuid4()
+        retried = asyncio.Event()
+        answers: list[Any] = [RuntimeError("L3 down"), None]  # the grant was revoked; the retry must land that
 
-        async def _loader() -> list[dict[str, Any]]:
+        async def _reader(_key: UUID) -> dict[str, Any] | None:
             answer = answers.pop(0)
             if not answers:
-                reloaded.set()
+                retried.set()
             if isinstance(answer, BaseException):
                 raise answer
             return answer
 
+        loader = AsyncMock(return_value=[_row(principal_id, "audit.records.read", grant_id)])
+        reader = AsyncMock(side_effect=_reader)
         client, listener, captured, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
-            grant_loader=AsyncMock(side_effect=_loader),
+            grant_loader=loader,
+            grant_reader=reader,
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=0.01,
@@ -608,10 +830,13 @@ class TestLocalGrantAuthorizerCatchupTick:
         await authz.start()
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
-            await captured[0](2, None)
-            await asyncio.wait_for(reloaded.wait(), timeout=_TICK_DEADLINE_SECONDS)
+            with pytest.raises(RuntimeError):
+                await captured[0](1, _named(grant_id, "delete"))
+            await asyncio.wait_for(retried.wait(), timeout=_TICK_DEADLINE_SECONDS)
             await asyncio.sleep(0)
             assert await authz.allows(identity, "audit.records.read") is False
+            assert [call.args[0] for call in reader.await_args_list] == [grant_id, grant_id]
+            assert loader.await_count == 1, "the retry read every grant"
         finally:
             await authz.stop()
 
@@ -623,29 +848,135 @@ class TestLocalGrantAuthorizerCatchupTick:
         retried_twice = asyncio.Event()
         calls = 0
 
-        async def _loader() -> list[dict[str, Any]]:
+        async def _reader(_key: UUID) -> dict[str, Any] | None:
             nonlocal calls
             calls += 1
-            if calls == 1:
-                return []
-            if calls >= 4:  # the bump's load, then two retries by the tick
+            if calls >= 3:  # the bump's read, then two retries by the tick
                 retried_twice.set()
             raise RuntimeError("L3 down")
 
+        loader = AsyncMock(return_value=[])
         client, listener, captured, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
-            grant_loader=AsyncMock(side_effect=_loader),
+            grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_reader),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=0.01,
         )
         await authz.start()
         try:
-            await captured[0](2, None)
+            with pytest.raises(RuntimeError):
+                await captured[0](1, _named(uuid4()))
             await asyncio.wait_for(retried_twice.wait(), timeout=_TICK_DEADLINE_SECONDS)
             with pytest.raises(GrantCacheUnavailableError):
                 await authz.allows(Identity(principal_type="user", principal_id=uuid4()), "p.read")
-            assert "still failing" in caplog.text
+            assert "catch-up tick errored" in caplog.text
+            assert loader.await_count == 1
+        finally:
+            await authz.stop()
+
+
+def _real_listener_over(current: list[int]) -> tuple[Any, Any, Any]:
+    """a real EpochListener over a stubbed NATS client and an epoch client whose counter reads ``current[0]``.
+
+    :param current: the counter; the test moves it by setting ``current[0]``
+    :ptype current: list[int]
+    :return: the listener, the epoch client, and the NATS stub (whose ``subscribe_typed`` call holds the
+        typed callback a broadcast reaches)
+    :rtype: tuple[Any, Any, Any]
+    """
+    from threetears.epoch import EpochListener
+
+    nats = MagicMock()
+    nats.subscribe_typed = AsyncMock()
+    epoch_client = MagicMock()
+
+    async def _current(_subject: Any) -> int:
+        return current[0]
+
+    epoch_client.current = AsyncMock(side_effect=_current)
+    epoch_client.bucket_identity = AsyncMock(return_value="bucket-1")
+    return EpochListener(nats, epoch_client), epoch_client, nats
+
+
+async def _until(check: Any) -> None:
+    """wait, bounded by :data:`_TICK_DEADLINE_SECONDS`, until ``check()`` is true.
+
+    :param check: the condition
+    :ptype check: Any
+    :return: nothing
+    :rtype: None
+    """
+
+    async def _poll() -> None:
+        while not check():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(_poll(), timeout=_TICK_DEADLINE_SECONDS)
+
+
+class TestTheCatchUpTickFindsLostBroadcasts:
+    """a broadcast the listener never heard: given one interval, then its grant is unknown -- never a whole reload."""
+
+    @pytest.mark.asyncio
+    async def test_a_lost_broadcast_refuses_and_never_reads_every_grant(self) -> None:
+        current = [0]
+        listener, epoch_client, _nats = _real_listener_over(current)
+        loader = AsyncMock(return_value=[])
+        reader = AsyncMock(side_effect=_no_grant)
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            grant_reader=reader,
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=0.01,
+        )
+        await authz.start()
+        try:
+            current[0] = 1  # a grant was written and bumped; its broadcast never arrives
+            identity = Identity(principal_type="user", principal_id=uuid4())
+
+            await _until(lambda: listener.last_seen(Subjects.mcp_rbac_epoch()) == 1)
+            with pytest.raises(GrantCacheUnavailableError, match="unheard"):
+                await authz.allows(identity, "p.read")
+            assert loader.await_count == 1, "a lost broadcast read every grant again"
+            reader.assert_not_awaited()
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_broadcast_that_lands_after_the_tick_saw_its_epoch_is_still_applied_by_key(self) -> None:
+        """the tick saw the counter at 1 before the listener heard 1. advancing the listener at once
+        would make it drop the broadcast when it lands, payload and all, and the grant would be unknown."""
+        from threetears.epoch import EpochBumpMessage
+
+        current = [0]
+        listener, epoch_client, nats = _real_listener_over(current)
+        principal_id = uuid4()
+        grant_id = uuid4()
+        reader = AsyncMock(return_value=_row(principal_id, "p.read", grant_id))
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(return_value=[]),
+            grant_reader=reader,
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=0.2,
+        )
+        await authz.start()
+        try:
+            reads_at_start = epoch_client.current.await_count
+            current[0] = 1
+            # the tick reads the counter ahead of what the listener heard
+            await _until(lambda: epoch_client.current.await_count > reads_at_start)
+            broadcast = nats.subscribe_typed.await_args.kwargs["cb"]
+            await broadcast(
+                EpochBumpMessage(subject_path=Subjects.mcp_rbac_epoch().path, epoch=1, payload=_named(grant_id))
+            )
+            await _until(lambda: epoch_client.current.await_count > reads_at_start + 2)
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "p.read") is True
+            reader.assert_awaited_once_with(grant_id)
         finally:
             await authz.stop()
 
@@ -716,11 +1047,12 @@ class TestLocalGrantAuthorizerOptionalEpoch:
                 raise RuntimeError("L3 down")
             await gate.wait()
             landed.set()
-            return [{"principal_id": principal_id, "permission": "p.read"}]
+            return [_row(principal_id, "p.read")]
 
         client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=_loader),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=0.01,
@@ -768,6 +1100,12 @@ class TestLocalGrantAuthorizerOptionalEpoch:
                 # epoch_client intentionally omitted
             )
 
+    def test_constructor_rejects_an_epoch_listener_without_a_grant_reader(self) -> None:
+        """a bump is applied by reading its grant by key; without a reader the only way left is a whole reload."""
+        client, listener, _captured, _ = _make_listener_capturing_subscribe()
+        with pytest.raises(ValueError, match="grant_reader"):
+            LocalGrantAuthorizer(grant_loader=AsyncMock(return_value=[]), epoch_client=client, epoch_listener=listener)
+
 
 class TestLocalGrantAuthorizerReceivesResets:
     """A detected counter replacement must reload this pod's grant cache.
@@ -783,6 +1121,7 @@ class TestLocalGrantAuthorizerReceivesResets:
         client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(return_value=[]),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -804,6 +1143,7 @@ class TestLocalGrantAuthorizerReceivesResets:
         client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=_counting_loader),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -826,6 +1166,7 @@ class TestLocalGrantAuthorizerReceivesResets:
         client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(return_value=[]),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -852,6 +1193,7 @@ class TestStopDeregistersFromTheListener:
         client, listener, _captured, _resets = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(return_value=[]),
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -903,6 +1245,7 @@ class TestStopReallyRemovesTheRegistration:
         loader = AsyncMock(return_value=[])
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=epoch_client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -929,6 +1272,7 @@ class TestStopReallyRemovesTheRegistration:
         loader = AsyncMock(return_value=[])
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
             epoch_client=epoch_client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -989,5 +1333,9 @@ def test_a_non_positive_catchup_interval_is_refused_before_anything_is_primed() 
     client, listener, _captured, _ = _make_listener_capturing_subscribe()
     with pytest.raises(ValueError, match="catchup_interval_seconds must be positive"):
         LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener, catchup_interval_seconds=0
+            grant_loader=loader,
+            grant_reader=AsyncMock(side_effect=_no_grant),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=0,
         )

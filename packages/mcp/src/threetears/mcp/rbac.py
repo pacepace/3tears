@@ -15,12 +15,14 @@ mutation discipline:
   symmetry with task-02 Chunks B and C).
 - :meth:`remove_grant` same shape.
 - :class:`~threetears.mcp.auth.LocalGrantAuthorizer` subscribes to the
-  rbac epoch via :class:`~threetears.epoch.EpochListener`; on bump the
-  authorizer reloads its in-memory cache from this collection.
+  rbac epoch via :class:`~threetears.epoch.EpochListener`; a bump names the
+  grant it changed (``{"grant_id": ..., "action": ...}``) and the authorizer
+  reads that one grant by key (:meth:`McpToolGrantCollection.read_grant`).
 
 cross-pod coherence is therefore: write -> bump -> broadcast -> sibling
-authorizers reload. missed broadcasts recover via the periodic catch-up
-tick the authorizer wires in :meth:`LocalGrantAuthorizer.start`.
+authorizers read the named grant. the whole table is read only to fill an
+empty cache at start, or after an operator reset of the epoch
+(:meth:`McpToolGrantCollection.load_all_grants`).
 """
 
 from __future__ import annotations
@@ -89,8 +91,9 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
     """three-tier collection for ``mcp_tool_grants``.
 
     CRUD comes from :class:`SchemaBackedCollection`; the domain
-    methods are :meth:`add_grant`, :meth:`remove_grant`, and
-    :meth:`load_all_grants` (the loader the authorizer cache calls).
+    methods are :meth:`add_grant`, :meth:`remove_grant`, :meth:`read_grant`
+    (the keyed read the authorizer applies a bump with) and
+    :meth:`load_all_grants` (its cold-start fill).
 
     instances do NOT publish epoch bumps themselves -- callers (REST
     admin endpoints) own the bump-after-commit pattern so the row
@@ -215,13 +218,65 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             return False
         return await self.delete(grant_id)
 
+    async def read_grant(self, grant_id: UUID) -> dict[str, Any] | None:
+        """one grant row by its key, straight from L3: what an rbac bump naming it changed.
+
+        :param grant_id: the grant the bump named
+        :ptype grant_id: UUID
+        :return: the row with keys ``(grant_id, principal_type, principal_id, tool_name, permission,
+            date_created)``, or ``None`` when no grant has that key (it was revoked)
+        :rtype: dict[str, Any] | None
+        :raises RuntimeError: when the L3 pool is not configured on this collection's registry
+        """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "McpToolGrantCollection L3 pool is not configured; "
+                "wire CollectionRegistry.configure(l3_pool=...) before "
+                "calling read_grant",
+            )
+        row = await self.l3_pool.fetchrow(
+            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
+            "WHERE grant_id = $1",
+            grant_id,
+        )
+        return None if row is None else dict(row)
+
+    async def list_grants_page(self, *, after: UUID | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """one page of the grant rows by ``grant_id``, after ``after``: an operator's listing, never the whole table.
+
+        :param after: the ``grant_id`` the page before ended at; ``None`` for the first page
+        :ptype after: UUID | None
+        :param limit: the most rows the page holds
+        :ptype limit: int
+        :return: dict rows with keys ``(grant_id, principal_type, principal_id, tool_name, permission,
+            date_created)``, by ``grant_id``
+        :rtype: list[dict[str, Any]]
+        :raises RuntimeError: when the L3 pool is not configured on this collection's registry
+        """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "McpToolGrantCollection L3 pool is not configured; "
+                "wire CollectionRegistry.configure(l3_pool=...) before "
+                "calling list_grants_page",
+            )
+        rows = await self.l3_pool.fetch(
+            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
+            "WHERE grant_id > $1 ORDER BY grant_id LIMIT $2",
+            after or UUID(int=0),
+            limit,
+        )
+        return [dict(row) for row in rows]
+
     async def load_all_grants(self) -> list[dict[str, Any]]:
-        """return every grant row as a dict suitable for cache rebuild.
+        """return every grant row: the cold-start fill of an empty grant cache.
 
         the framework's :class:`~threetears.mcp.auth.LocalGrantAuthorizer`
-        calls this on cold start and on every ``mcp.rbac`` epoch bump.
-        rows go straight from L3 (no caching here -- the authorizer
-        owns the in-memory cache).
+        calls this only to fill its empty cache at start, and after an
+        operator reset of the rbac epoch (the counter was replaced, so no
+        bump says what changed). an ``mcp.rbac`` bump never reaches it: the
+        bump names its grant and :meth:`read_grant` reads that one. rows go
+        straight from L3 (no caching here -- the authorizer owns the
+        in-memory cache).
 
         uses the public :attr:`l3_pool` extension seam (matches every
         other peer collection) and fails closed when the registry

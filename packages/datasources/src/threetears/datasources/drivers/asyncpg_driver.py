@@ -169,6 +169,7 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
+from threetears.datasources.drivers.statement_rows import rows_from_command_tag
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_equality_filter,
@@ -1196,7 +1197,7 @@ class AsyncpgDriver(Driver):
 
     @traced
     @observed(driver_type="asyncpg")
-    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run a DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
@@ -1206,8 +1207,9 @@ class AsyncpgDriver(Driver):
         :param timeout_seconds: per-statement timeout override in
             seconds; see :meth:`fetch`
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement's command tag reports (``INSERT 0 5``, ``SELECT 120`` for a ``CREATE TABLE
+            AS``), or ``None`` for one that reports none
+        :rtype: int | None
         :raises asyncio.CancelledError: propagated to the caller. the
             backend statement is NOT guaranteed to have stopped
         :raises RuntimeError: if the driver was previously closed
@@ -1218,10 +1220,11 @@ class AsyncpgDriver(Driver):
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
         translated = translate_placeholders(sql, "asyncpg")
-        await self._acquire_and_run(
+        status = await self._acquire_and_run(
             lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
+        return rows_from_command_tag(status)
 
     # -------------------------------------------------------------------
     # Driver ABC: transaction surface (DSD-01-01 / DSD-01-02)
@@ -1309,7 +1312,7 @@ class AsyncpgDriver(Driver):
         sql: str,
         params: tuple[Any, ...],
         timeout_seconds: int | None,
-    ) -> None:
+    ) -> int | None:
         """run a DML / DDL statement on the transaction's pinned connection.
 
         :param checkout: the pinned checkout
@@ -1320,20 +1323,21 @@ class AsyncpgDriver(Driver):
         :ptype params: tuple[Any, ...]
         :param timeout_seconds: per-statement override, or None
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement's command tag reports, or ``None``
+        :rtype: int | None
         :raises asyncio.CancelledError: propagated to the caller. the
             backend statement is NOT guaranteed to have stopped
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
-        await self._with_cancellation(
+        status = await self._with_cancellation(
             lambda: _bound_as_declared(
                 checkout.conn, translated, params, lambda bound: checkout.conn.execute(translated, *bound)
             ),
             cancel_callback=self._observe_cancellation,
         )
+        return rows_from_command_tag(status)
 
     async def _apply_transaction_timeout(
         self,

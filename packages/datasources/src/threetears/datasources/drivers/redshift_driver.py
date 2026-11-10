@@ -170,6 +170,8 @@ from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
+from threetears.datasources.drivers.statement_rows import LAST_QUERY_INSERTED_SQL as _LAST_QUERY_INSERTED_SQL
+from threetears.datasources.drivers.statement_rows import writes_rows
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_filter,
@@ -1916,8 +1918,12 @@ class RedshiftDriver(Driver):
         timeout_seconds: int | None,
         *,
         commit: bool,
-    ) -> None:
-        """run one DML / DDL statement on ``conn`` (sync).
+    ) -> int | None:
+        """run one DML / DDL statement on ``conn`` (sync), answering the rows it wrote.
+
+        The rows are the warehouse's own record of the statement: the cursor's ``rowcount`` where the driver reports
+        one, else, for a statement that writes rows (``INSERT``, ``CREATE TABLE AS``), Redshift's ``stl_insert`` log
+        of this session's last query, read on the same session before anything else runs on it.
 
         shared by :meth:`execute` and the transaction handle. the
         transaction handle passes ``commit=False`` -- committing per
@@ -1934,8 +1940,8 @@ class RedshiftDriver(Driver):
         :ptype timeout_seconds: int | None
         :param commit: whether to commit after the statement
         :ptype commit: bool
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement wrote, or ``None`` when neither record names any
+        :rtype: int | None
         """
         cursor = conn.cursor()
         try:
@@ -1944,12 +1950,18 @@ class RedshiftDriver(Driver):
                 cursor.execute(sql, params)
             else:
                 cursor.execute(sql)
+            rows: int | None = cursor.rowcount if isinstance(cursor.rowcount, int) and cursor.rowcount >= 0 else None
+            if rows is None and writes_rows(sql):
+                cursor.execute(_LAST_QUERY_INSERTED_SQL)
+                logged = cursor.fetchone()
+                rows = int(logged[0]) if logged is not None and logged[0] is not None else None
             if commit:
                 # DDL/DML doesn't always autocommit in DB-API; commit
                 # explicitly so callers see the change.
                 conn.commit()
         finally:
             cursor.close()
+        return rows
 
     @traced
     @observed(driver_type="redshift")
@@ -2048,7 +2060,7 @@ class RedshiftDriver(Driver):
 
     @traced
     @observed(driver_type="redshift")
-    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run a DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
@@ -2058,8 +2070,8 @@ class RedshiftDriver(Driver):
         :param timeout_seconds: per-statement timeout override in
             seconds; see :meth:`fetch`
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement wrote (:meth:`_execute_sync`), or ``None``
+        :rtype: int | None
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
@@ -2076,7 +2088,8 @@ class RedshiftDriver(Driver):
                 cancel_cb=_closer(conn),
             )
 
-        await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        rows: int | None = await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        return rows
 
     # -------------------------------------------------------------------
     # Driver ABC: transaction surface (DSD-01-01 / DSD-01-02)
@@ -2162,7 +2175,7 @@ class RedshiftDriver(Driver):
         sql: str,
         params: tuple[Any, ...],
         timeout_seconds: int | None,
-    ) -> None:
+    ) -> int | None:
         """run a DML / DDL statement on the transaction's pinned session.
 
         does NOT commit -- the whole point of the transaction API is
@@ -2176,8 +2189,8 @@ class RedshiftDriver(Driver):
         :ptype params: tuple[Any, ...]
         :param timeout_seconds: per-statement override, or None
         :ptype timeout_seconds: int | None
-        :return: nothing
-        :rtype: None
+        :return: the rows the statement wrote (:meth:`_execute_sync`), or ``None``
+        :rtype: int | None
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
@@ -2185,7 +2198,7 @@ class RedshiftDriver(Driver):
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
             checkout.timeout_overridden = True
-        await self._with_cancellation(
+        rows: int | None = await self._with_cancellation(
             lambda: self._bridge.to_thread_with_cancel(
                 functools.partial(
                     self._execute_sync,
@@ -2199,6 +2212,7 @@ class RedshiftDriver(Driver):
             ),
             cancel_callback=lambda: self._cancel_checkout(checkout),
         )
+        return rows
 
     async def _transaction_finish(self, checkout: _Checkout, commit: bool) -> None:
         """end the transaction and return its pinned connection.
