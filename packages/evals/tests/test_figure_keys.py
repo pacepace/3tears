@@ -145,7 +145,7 @@ class TestTheKairoPlanResolves:
             resolve(parse_key(key).path, report_input)
 
     def test_the_headline_prints_the_uplift_range_the_page_prints(self):
-        assert "Both candidates cost 27–28% more per reply" in _rendered(_plan()["headline"])
+        assert "Both candidates cost 27 to 28% more per reply" in _rendered(_plan()["headline"])
 
     def test_the_lede_prints_the_drop_by_its_interval_ends_in_two_sentences(self):
         lede = _rendered(_plan()["lede"])
@@ -391,7 +391,8 @@ class TestFilters:
         assert ci.startswith("$1.7") and ci.endswith(" per 1,000 replies to $2.03 per 1,000 replies")
 
     def test_an_unsigned_range_writes_its_unit_once(self):
-        assert _figure("cost.uplift_range", "pct") == "27–28%"
+        # The one interval form, unsigned too (number rule 3), never "27–28%".
+        assert _figure("cost.uplift_range", "pct") == "27 to 28%"
 
     def test_text_reads_as_written(self):
         assert _figure("judge.model") == "openai/gpt-6-luna"

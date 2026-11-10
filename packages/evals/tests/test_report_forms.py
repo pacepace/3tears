@@ -1415,7 +1415,7 @@ def _kairo_rate() -> str:
 #: change in points.
 _MEASURED_KEYS = [
     ("measure.{rate}.September.mean", ("{rate}", "measure"), "level", "99.7%", ["99.7"]),
-    ("measure.{rate}.September.ci", ("{rate}", "measure"), "interval", "98.6–99.9%", ["98.6", "99.9"]),
+    ("measure.{rate}.September.ci", ("{rate}", "measure"), "interval", "98.6 to 99.9%", ["98.6", "99.9"]),
     (
         "measure.production_replicating_cost.September.mean",
         ("production_replicating_cost", "measure"),

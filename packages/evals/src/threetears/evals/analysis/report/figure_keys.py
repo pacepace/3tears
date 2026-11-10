@@ -234,7 +234,6 @@ _WHOLE_DOLLARS_FROM = 10.0
 #: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here; the
 #: phrase a cost's count reads in is :func:`~threetears.evals.analysis.report.cost_unit.per_count`'s.
 INTERVAL_TEMPLATE = "{low} to {high}"
-RANGE_TEMPLATE = "{low}–{high}"
 ARM_TEMPLATE = "{name} ({tag})"
 
 
@@ -7391,8 +7390,8 @@ def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageFor
     """Spell a figure for a sentence, by its filters or, without one, by its scale.
 
     A rate reads as a percent (one decimal; a descriptive ratio in whole percents), a change in points, money in
-    dollars, a count whole. An interval reads ``low to high`` when an end carries a sign, and ``low–high`` with its
-    unit once otherwise (``27–28%``). A plain figure of a measure the page's tables print, and an interval's two ends,
+    dollars, a count whole. An interval reads ``low to high``, its unit once after the high end, signed or not
+    (``-13 to -2 pts``, ``27 to 28%``; number rule 3). A plain figure of a measure the page's tables print, and an interval's two ends,
     read at the precision the page's forms decide for it. Every number it prints, and how an interval's ends read
     together and are joined, is the forms' (each ``PageForms.key_*``), each recorded in their ledger: this chooses the
     spelling the filters name and refuses one that does not suit. A figure said in words prints its number between

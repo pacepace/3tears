@@ -84,7 +84,6 @@ from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRule
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
     MULTIPLE_UNIT,
-    RANGE_TEMPLATE,
     RUBRIC_SCALE,
     Figure,
     criterion_ruler,
@@ -2687,9 +2686,8 @@ class PageForms:
         which refuses a filter that does not suit), one significant figure more for an interval whose two differing ends
         would read alike (owner ruling Q3), both ends at one precision where the spelling sets one (plain, points), and
         the two joined: one figure where they read alike, ``low to high`` where a count is said once after them (money
-        per what it counts, the count after), where an end carries a sign or the key asks for ``interval``, its unit
-        once after the high end (``-13 to -2 pts``), each end's own where the two differ, else ``low–high`` with the
-        unit once (``27–28%``).
+        per what it counts, the count after), each end's own unit where the two differ, else the one interval form,
+        its unit once after the high end, signed or not (``-13 to -2 pts``, ``27 to 28%``; number rule 3).
 
         :param figure: What the key resolved to.
         :ptype figure: Figure
@@ -2727,13 +2725,11 @@ class PageForms:
             return first + first_unit
         if first_unit == second_unit and first_unit.startswith(" per "):
             return INTERVAL_TEMPLATE.format(low=first, high=second) + first_unit
-        signed = spelling == "pts" or figure.change or low < 0 or high < 0
         if first_unit != second_unit:
             return INTERVAL_TEMPLATE.format(low=first + first_unit, high=second + second_unit)
-        if joined or signed:
-            # The one interval form: its unit written once, after the high end (``-13 to -2 pts``).
-            return INTERVAL_TEMPLATE.format(low=first, high=second) + second_unit
-        return RANGE_TEMPLATE.format(low=first, high=second) + second_unit
+        # The one interval form, signed or not (number rule 3): its unit written once, after the high end (``-13 to -2
+        # pts``, ``27 to 28%``).
+        return INTERVAL_TEMPLATE.format(low=first, high=second) + second_unit
 
     def key_ends(self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str]) -> tuple[str, str]:
         """An interval's two ends as a key prints them, once both are decided, each recorded apart under the measure

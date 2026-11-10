@@ -149,7 +149,7 @@ def test_a_derived_interval_on_a_rate_reads_its_ends_as_the_cells_table_reads_a_
     cells table prints each cell's rate (``94%``)."""
     held = _held("prototype4/r3-without-its-configs")
     assert _cell(_table(held, "cells"), "arm:atlas-m.zero", cells="Simple × Science") == "94%"
-    assert _said("overall_interval.balanced_accuracy.atlas-m.zero.interval", held) == "89–90%"
+    assert _said("overall_interval.balanced_accuracy.atlas-m.zero.interval", held) == "89 to 90%"
 
 
 def test_a_pooled_interval_on_a_score_reads_its_ends_at_a_score_s_two_decimals(kairo: ReportInput) -> None:
