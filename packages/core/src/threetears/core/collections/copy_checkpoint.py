@@ -70,8 +70,6 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a checkpoint sa
 __all__ = [
     "COLD_START",
     "SCHEMA_CHANGE",
-    "WHOLE_TOUCH",
-    "WHOLE_WRITE_WHYS",
     "Checkpoint",
     "CheckpointTable",
     "CopyCheckpoints",
@@ -103,13 +101,13 @@ SCHEMA_CHANGE: Final = "schema_change"
 #: why a write read a table whole from the copy: the follower read it whole from L3 (a cold start, reset or schema
 #: change, ``copy_follower_whole_reads_total``), or a change named no tables (:meth:`CopyCheckpoints.applied` with
 #: ``touched=None``)
-WHOLE_TOUCH: Final = "whole_touch"
+_WHOLE_TOUCH: Final = "whole_touch"
 
 #: every why ``copy_checkpoint_whole_writes_total`` counts; nothing else reads a table whole from the copy
-WHOLE_WRITE_WHYS: Final[Mapping[str, str]] = {
+_WHOLE_WRITE_WHYS: Final[Mapping[str, str]] = {
     COLD_START: "no checkpoint holds the table (the first, or one whose parts did not read back): its cold start",
     SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
-    WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
+    _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
     "named no tables",
 }
 
@@ -131,7 +129,7 @@ def _whole_writes() -> Any:
     return counter(
         "copy_checkpoint_whole_writes_total",
         description="tables a checkpoint write read whole from the copy, by table and why ("
-        + "; ".join(f"{why}: {what}" for why, what in WHOLE_WRITE_WHYS.items())
+        + "; ".join(f"{why}: {what}" for why, what in _WHOLE_WRITE_WHYS.items())
         + "); every other write reads only the touched scopes and keys",
         label_names=("table", "why"),
     )
@@ -382,7 +380,7 @@ class _Plan:
     :ivar prior: the entry this replica's copy of it last matched, its objects still named; None when written whole
     :ivar scopes: a scoped table's scopes to read again from the copy (empty: every part named again)
     :ivar keys: a table with no scope: the keys to patch its part by (empty: its part named again)
-    :ivar why: a :data:`WHOLE_WRITE_WHYS` key when the table is read whole from the copy; None otherwise
+    :ivar why: a :data:`_WHOLE_WRITE_WHYS` key when the table is read whole from the copy; None otherwise
     """
 
     table: FollowedTable
@@ -794,7 +792,7 @@ class CopyCheckpoints:
         if self._derived(name):
             return self._plan_derived(table, taken, prior)
         if taken.everything or (name in taken.touched and taken.touched[name] is None):
-            return _Plan(table, None, why=WHOLE_TOUCH)
+            return _Plan(table, None, why=_WHOLE_TOUCH)
         if name not in taken.touched:
             return _Plan(table, prior)
         if table.scope is None:
@@ -810,11 +808,11 @@ class CopyCheckpoints:
         """
         followed = {name: scopes for name, scopes in taken.touched.items() if not self._derived(name)}
         if taken.everything or any(scopes is None for scopes in followed.values()):
-            return _Plan(table, None, why=WHOLE_TOUCH)
+            return _Plan(table, None, why=_WHOLE_TOUCH)
         by_name = {t.name: t for t in self._tables}
         if any(name in by_name and by_name[name].scope is None for name in followed):
             # a change of a followed table with no scope may reach every scope of what is derived from it
-            return _Plan(table, None, why=WHOLE_TOUCH)
+            return _Plan(table, None, why=_WHOLE_TOUCH)
         return _Plan(table, prior, scopes=frozenset(s for scopes in followed.values() for s in scopes or ()))
 
     async def _write_locked(self, read: Callable[[], Any], lock: str) -> Checkpoint | None:

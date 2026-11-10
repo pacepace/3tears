@@ -30,12 +30,10 @@ pytest.importorskip("duckdb")
 
 from prometheus_client import REGISTRY  # noqa: E402
 
-from threetears.core.collections import copy_checkpoint  # noqa: E402
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     COLD_START,
     SCHEMA_CHANGE,
-    WHOLE_TOUCH,
     CopyCheckpoints,
     StagedCheckpoint,
 )
@@ -48,6 +46,8 @@ _NEEDLES = "needles"
 _TOTALS = "totals"
 _VOTES_KEY = ("state", "geo_id")
 _RACES_KEY = ("race_id",)
+#: a whole read because the follower read the table whole (copy_checkpoint_whole_writes_total's why)
+_WHOLE_TOUCH = "whole_touch"
 _KEYS = {_VOTES: _VOTES_KEY, _RACES: _RACES_KEY, _NEEDLES: _VOTES_KEY, _TOTALS: _RACES_KEY}
 
 
@@ -567,10 +567,10 @@ async def test_a_whole_read_is_counted_by_why_and_only_cold_start_schema_change_
     # the follower read votes whole (a reset, say): written whole, counted so
     copy.put(_VOTES, _votes(_state("VA", 3)), "v2", 2)
     checkpoints.applied(3, {_VOTES: None})
-    touched = _whole_writes(_VOTES, WHOLE_TOUCH)
+    touched = _whole_writes(_VOTES, _WHOLE_TOUCH)
     copy.statements.clear()
     assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_VOTES, WHOLE_TOUCH) == touched + 1
+    assert _whole_writes(_VOTES, _WHOLE_TOUCH) == touched + 1
     assert _whole_reads(copy, _VOTES) and not _whole_reads(copy, _RACES)
     # a keyed change after it reads nothing whole
     copy.put(_VOTES, _votes(_state("VA", 3) + _state("OH", 1)), "v3", 3)
@@ -681,18 +681,18 @@ async def test_a_derived_table_is_read_whole_when_a_followed_table_was() -> None
     copy.put(_VOTES, _votes(_state("VA", 5)), "v2", 2)
     _derive(copy, _state("VA", 5))
     checkpoints.applied(5, {_VOTES: None})
-    before = _whole_writes(_NEEDLES, WHOLE_TOUCH)
+    before = _whole_writes(_NEEDLES, _WHOLE_TOUCH)
     assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_NEEDLES, WHOLE_TOUCH) == before + 1
+    assert _whole_writes(_NEEDLES, _WHOLE_TOUCH) == before + 1
 
 
 async def test_a_derived_table_is_read_whole_when_a_followed_table_with_no_scope_changed() -> None:
     copy, checkpoints, _, _ = await _derived_world(_needles())
     copy.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
     checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
-    before = _whole_writes(_NEEDLES, WHOLE_TOUCH)
+    before = _whole_writes(_NEEDLES, _WHOLE_TOUCH)
     assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_NEEDLES, WHOLE_TOUCH) == before + 1
+    assert _whole_writes(_NEEDLES, _WHOLE_TOUCH) == before + 1
 
 
 async def test_a_derived_table_with_no_scope_is_refused_by_name() -> None:
@@ -712,30 +712,25 @@ async def test_a_table_with_no_scope_over_one_part_is_refused_by_name() -> None:
     assert not pointers.entries and not store.objects
 
 
-def _spy_batches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """every table ``copy_checkpoint._batches`` (a write's one whole read of a table in the copy) is reached for."""
-    tables: list[str] = []
-    real = copy_checkpoint._batches  # noqa: SLF001 - the one whole read, spied on
-
-    def batches(cursor: Any, table: str, rows: int) -> Any:
-        tables.append(table)
-        return real(cursor, table, rows)
-
-    monkeypatch.setattr(copy_checkpoint, "_batches", batches)
-    return tables
-
-
-async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read() -> None:
     """the proving test of _batches' ledger line: a write reads a table whole from the copy only when no checkpoint
     holds it (the first write), its schema changed, or the follower read it whole from L3; every steady-state write
     (scopes, a patch by key, a replica writing on the previous checkpoint's parts, a stale replica, a derived table's
-    scopes) reads none."""
-    reached = _spy_batches(monkeypatch)
-    copy, checkpoints, store, pointers = await _derived_world(_needles())
-    assert sorted(reached) == sorted([_VOTES, _RACES, _NEEDLES])  # the first checkpoint: every table's cold start
-    reached.clear()
+    scopes) reads none. A whole read is a statement on the read's cursor reading a table with no filter, the one
+    _batches runs."""
+    store, pointers = _Store(), _Pointers()
+    copy = _Copy()
+    copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10)), "v1", 1)
+    copy.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r1", 1)
+    copy.put(_NEEDLES, _votes(_state("VA", 50) + _state("IL", 10)), "n", 1)
+    checkpoints = _derived_checkpoints(copy, store, pointers, "a", _needles())
+    assert await checkpoints.write(copy.read) is not None
+
+    def reached() -> list[str]:
+        return sorted(table for table in (_VOTES, _RACES, _NEEDLES) if _whole_reads(copy, table))
+
+    assert reached() == sorted([_NEEDLES, _RACES, _VOTES])  # the first checkpoint: every table's cold start
+    copy.statements.clear()
     other = _Copy()
     late = _derived_checkpoints(other, store, pointers, "b", _needles())
     other.load(await late.stage())
@@ -745,19 +740,20 @@ async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whol
     copy.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
     checkpoints.applied(11, {_VOTES: frozenset({"state:IL"})})
     assert await checkpoints.write(copy.read) is not None
+    assert reached() == []
     checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
     # a change of a table with no scope reaches every derived scope: the derived table alone is read whole
     assert await checkpoints.write(copy.read) is not None
-    assert reached == [_NEEDLES]
-    reached.clear()
+    assert reached() == [_NEEDLES]
+    copy.statements.clear()
     # the second replica writes on the previous checkpoint's parts, then goes stale
     other.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10) + _state("OH", 1)), "v9", 9)
     late.applied(1, {_VOTES: frozenset({"state:OH"})})
     assert await late.write(other.read) is None  # the newest no longer names its parts of every table: stale
-    assert reached == []
+    assert not other.statements
     # the follower read votes whole (a reset): that table alone, and what derives from it
     copy.put(_VOTES, _votes(_state("VA", 4)), "v3", 3)
     _derive(copy, _state("VA", 4))
     checkpoints.applied(4, {_VOTES: None})
     assert await checkpoints.write(copy.read) is not None
-    assert sorted(reached) == [_NEEDLES, _VOTES]
+    assert reached() == [_NEEDLES, _VOTES]
