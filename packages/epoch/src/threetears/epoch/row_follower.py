@@ -30,7 +30,8 @@ log = get_logger(__name__)
 class RowFollower:
     """follows tables' rows for a derived cache: each changed row's key goes to that table's keyed read.
 
-    :param reads: per table, the keyed read of one changed row, given the row's primary key (``message.ids[0]``)
+    :param reads: per table, the keyed read of one changed row, given its primary key's first column
+        (``message.ids[0]``): a single-column key, or a table read by its key's lead
     :ptype reads: Mapping[str, Callable[[str], Coroutine[Any, Any, None]]]
     :param on_table_dropped: what a table dropped whole (an operator's reset) does; never a whole re-read
     :ptype on_table_dropped: Callable[[], None]
@@ -39,6 +40,10 @@ class RowFollower:
     :param partition_reads: per table, the keyed read of a load's reach (its key prefix, column -> value), in place
         of dropping the cache; a table without one drops it (``on_table_dropped``)
     :ptype partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]] | None
+    :param key_reads: per table, the keyed read of one changed row given its WHOLE primary key, every column in the
+        key's declared order (``tuple(message.ids)``): a composite-key table whose cache applies a row by its full key
+        (a tenant's row by ``(customer_id, id)``), never its tenant's rows. A table is in ``reads`` or here, not both
+    :ptype key_reads: Mapping[str, Callable[[tuple[str, ...]], Coroutine[Any, Any, None]]] | None
     """
 
     def __init__(
@@ -48,19 +53,27 @@ class RowFollower:
         *,
         name: str,
         partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]] | None = None,
+        key_reads: Mapping[str, Callable[[tuple[str, ...]], Coroutine[Any, Any, None]]] | None = None,
     ) -> None:
         """bind the reads; no I/O.
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when no table is read, or a partition read names a table with no row read
+        :raises ValueError: when no table is read, a table is given both a lead read and a whole-key read, or a
+            partition read names a table with no row read
         """
-        if not reads:
+        whole_keys = dict(key_reads or {})
+        if not reads and not whole_keys:
             raise ValueError(f"{name}: a row follower reads at least one table's rows")
-        unknown = sorted(set(partition_reads or {}) - set(reads))
+        both = sorted(set(reads) & set(whole_keys))
+        if both:
+            raise ValueError(f"{name}: {both} each take one row read, by its key's lead or by its whole key")
+        unknown = sorted(set(partition_reads or {}) - set(reads) - set(whole_keys))
         if unknown:
             raise ValueError(f"{name}: partition reads of {unknown} name tables it does not follow")
         self._reads_by_table = dict(reads)
+        self._key_reads_by_table = whole_keys
+        self._tables = (*self._reads_by_table, *self._key_reads_by_table)
         self._partition_reads = dict(partition_reads or {})
         self._on_table_dropped = on_table_dropped
         self._name = name
@@ -78,7 +91,12 @@ class RowFollower:
         :return: nothing
         :rtype: None
         """
-        if message.ids:
+        if not message.ids:
+            return
+        whole_key = self._key_reads_by_table.get(table)
+        if whole_key is not None:
+            self.spawn(whole_key(tuple(message.ids)), f"{self._name}-{table}-read")
+        else:
             self.spawn(self._reads_by_table[table](message.ids[0]), f"{self._name}-{table}-read")
 
     def on_partition(self, table: str, reach: Mapping[str, str]) -> None:
@@ -147,10 +165,10 @@ class RowFollower:
                 on_table_dropped=self._on_table_dropped,
                 on_partition=self._partition_of(table) if table in self._partition_reads else None,
             )
-            for table in self._reads_by_table
+            for table in self._tables
         ]
-        self._follower = follow_tables(registry, reader, tuple(self._reads_by_table))
-        log.info("following tables by key: cache=%s tables=%s", self._name, sorted(self._reads_by_table))
+        self._follower = follow_tables(registry, reader, self._tables)
+        log.info("following tables by key: cache=%s tables=%s", self._name, sorted(self._tables))
 
     async def stop(self) -> None:
         """stop following, unregister, and cancel any read still running. Idempotent.
