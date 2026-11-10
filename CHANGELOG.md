@@ -8,6 +8,17 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core: a copy's rows cross the L3 rail as Arrow
+
+- **`l3.tx.copy` as Arrow (core).** To a hub whose `tx.begin` reply says `copy_arrow`, `copy_records_to_table`
+  sends the rows as one Arrow IPC stream behind the request's JSON envelope (`threetears.core.backends.arrow_copy`:
+  the magic `L3COPYA1`, the envelope's length, the envelope, the stream). Text, 64-bit integers, floats and booleans
+  are laid out by Arrow; a UUID, datetime, Decimal or bytes column is converted as the JSON request converts it
+  and sent as text; any other column (arrays, objects, mixed kinds, integers past 64 bits) as each value's JSON
+  text. The envelope names the stream's SHA-256 (`rows_sha256`), so a proof over the envelope covers the rows.
+  Built on a thread. A 12 MB copy's rows: 210 ms of JSON -> 40 ms of Arrow. A hub that does not announce it,
+  rows that as Arrow pass the request's budget, and a process without pyarrow are sent JSON as before.
+
 ### core, epoch, nats: load paths that grew with the table now grow with the change
 
 Each fix ships a plan check (`threetears.core.testing.plans`: rows scanned against rows returned, and large
