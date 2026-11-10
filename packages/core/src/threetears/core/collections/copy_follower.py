@@ -52,6 +52,7 @@ from threetears.observe.metrics import counter
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.registry import CacheInvalidationMessage
+from threetears.core.collections.scope_epochs import ScopeEpochs
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
@@ -83,6 +84,8 @@ __all__ = [
     "WHOLE_READ_WHYS",
     "CopyFollower",
     "HubCapabilityMissingError",
+    "NEVER_HOLDS",
+    "NeverHolds",
     "FollowedTable",
     "FollowerBackend",
     "FollowerPhase",
@@ -395,6 +398,45 @@ class _KeyedRead:
         return cls(casts=tuple(table.key_cast(column) for column in table.key), types=rail_arrow_types(table.columns))
 
 
+class NeverHolds(StrEnum):
+    """a writer that never holds a scope while it writes (``CopyFollower(stamp_table=NEVER_HOLDS)``): its stamp is a
+    seqlock that only says settled or not, so no key heard waits on another replica's commit."""
+
+    NEVER_HOLDS = "never_holds"
+
+
+#: ``CopyFollower(stamp_table=NEVER_HOLDS)``: the writer never holds a scope, so no stamp table is heard
+NEVER_HOLDS: Final = NeverHolds.NEVER_HOLDS
+
+
+def _stamp_table_of(
+    stamp_table: str | NeverHolds | None,
+    settled: Callable[[], Awaitable[Any]],
+    tables: Sequence[FollowedTable],
+) -> str | None:
+    """the table the writer's stamp is kept in, whose row messages wake the follower; None for a writer that never
+    holds a scope. Derived from ``settled`` when it is a ``ScopeEpochs.settled``, else the caller names it.
+
+    :raises ValueError: when it is neither given nor derivable, or ``NEVER_HOLDS`` is given for a scoped table
+    """
+    if stamp_table is NEVER_HOLDS:
+        scoped = sorted(table.name for table in tables if table.scope is not None)
+        if scoped:
+            raise ValueError(
+                f"{scoped} have a scope a write may hold: name the writer's stamp table (stamp_table=), not NEVER_HOLDS"
+            )
+        return None
+    if stamp_table is not None:
+        return str(stamp_table)
+    epochs = getattr(settled, "__self__", None)
+    if isinstance(epochs, ScopeEpochs):
+        return epochs.table_name
+    raise ValueError(
+        "name the table the writer's stamp is kept in (stamp_table=, ScopeEpochs' own), or NEVER_HOLDS for a writer "
+        "that never holds a scope: without it a follower holding a write's keys never hears another replica commit it"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PartialStamp:
     """what a copy holds while a write is in progress: every scope the write does not hold at its committed epoch, and
@@ -537,6 +579,12 @@ class CopyFollower:
     :param checkpoints: where the copy's checkpoints are kept (:mod:`~threetears.core.collections.copy_checkpoint`);
         None keeps none, and every start reads L3 whole
     :ptype checkpoints: CopyCheckpoints | None
+    :param stamp_table: the table the writer's stamp is kept in (``ScopeEpochs``' own), whose row messages the
+        registry hears from every replica: each one asks a pass, so keys a write held are applied once another
+        replica's commit moves its scopes, with nothing else heard. None derives it from ``settled`` when that is a
+        ``ScopeEpochs.settled``; :data:`NEVER_HOLDS` for a writer that never holds a scope (no table has one)
+    :ptype stamp_table: str | NeverHolds | None
+    :raises ValueError: when ``stamp_table`` is neither given nor derivable, or is ``NEVER_HOLDS`` beside a scoped table
     """
 
     def __init__(
@@ -551,11 +599,13 @@ class CopyFollower:
         changes: EpochChangeReader | None,
         page_size: int = DEFAULT_PAGE_SIZE,
         checkpoints: CopyCheckpoints | None = None,
+        stamp_table: str | NeverHolds | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
         if page_size < 1:
             raise ValueError("page_size must be at least 1")
+        self._stamp_table = _stamp_table_of(stamp_table, settled, tables)
         self._registry = registry
         self._tables: dict[str, FollowedTable] = {table.name: table for table in tables}
         self._reads = {table.name: _KeyedRead.of(table) for table in tables}
@@ -694,6 +744,9 @@ class CopyFollower:
     def _on_caught_up(self) -> None:
         self._poked.set()
 
+    def _on_stamp_moved(self, message: CacheInvalidationMessage) -> None:
+        self._poked.set()
+
     # --- start -----------------------------------------------------------------------------------
 
     def register(self) -> None:
@@ -723,6 +776,14 @@ class CopyFollower:
                     on_caught_up=self._on_caught_up,
                     on_partition=self._on_partition(name),
                     on_table_reset=self._on_reset(name),
+                )
+            )
+        if self._stamp_table is not None:
+            # the writer's stamp moved (a write begun, a commit on any replica): a pass reads it; nothing of the stamp
+            # table itself is read or kept
+            self._removers.append(
+                self._registry.register_derived_cache(
+                    self._stamp_table, on_row=self._on_stamp_moved, on_table_dropped=self.poke
                 )
             )
 
