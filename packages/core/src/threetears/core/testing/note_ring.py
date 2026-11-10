@@ -25,13 +25,36 @@ class _OneConnection:
         self._conn = conn
 
     async def fetch(self, query: str, *args: Any) -> Any:
+        """the rows of ``query`` on the connection.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its arguments
+        :ptype args: Any
+        :return: the rows
+        :rtype: Any
+        """
         return await self._conn.fetch(query, *args)
 
     async def execute(self, query: str, *args: Any) -> Any:
+        """run ``query`` on the connection.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its arguments
+        :ptype args: Any
+        :return: its status
+        :rtype: Any
+        """
         return await self._conn.execute(query, *args)
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:
+        """the connection, as a pool's acquire hands one out.
+
+        :return: the connection
+        :rtype: AsyncIterator[Any]
+        """
         yield self._conn
 
 
