@@ -1,6 +1,6 @@
 """A table's cell of figures takes a class no other rule of the page reads.
 
-A cell of a column of figures (``4.5 (3.8 to 5.0)``) is classed so the stylesheet holds its line whole. The page's
+A cell of a column of figures (``4.5 (3.8 to 5.0)``) is classed so the stylesheet keeps its figure and its bracket each whole. The page's
 stylesheet is the report's own rules and the kit's together, and the kit already styles its figure cards by class
 (a surface, a border, padding); a cell sharing a card's class would draw as a card inside its table, every cell of a
 column of figures padded and boxed, the table wider than its frame. So every rule of every stylesheet a page can carry

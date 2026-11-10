@@ -6,9 +6,10 @@ analysis.
   ``Failed: check`` (its legend and tooltips keep the segments' words).
 - **Held cells, by structure.** A table's cells of figures and of intervals are found from what the table declares of
   its columns (a figure's or an interval's glossary term, an interval column's key), never by matching their text: a
-  figure with its interval beside it (``4.5 (3.8 to 5.0)``) holds its whole line (``figs``), and an interval in any
-  form the page prints, a duration's among them (``340ms to 1.2s``), sets its ends in the ``iv`` span ``check.py``
-  finds them by. A column that declares neither is left as it was, whatever its text.
+  figure with its interval beside it (``4.5 (3.8 to 5.0)``) is classed ``figs`` and breaks only between its figure
+  (a ``pt`` span) and its interval, parentheses and all (an ``iv`` span), and an interval in any form the page prints,
+  a duration's among them (``340ms to 1.2s``), sets its ends in the ``iv`` span ``check.py`` finds them by. A
+  column that declares neither is left as it was, whatever its text.
 - **A written report's evidence record** names the report as its analysis (``IN_THE_WRITTEN_REPORT``), never
   ``none written yet``; the code-only page still says none was written.
 - **A result's line** names its stratum as the summary's stratum lines do: two ids that would print alike each print
@@ -113,11 +114,11 @@ def _against() -> TableBlock:
     )  # fmt: skip
 
 
-def test_a_figure_cell_holds_its_line_and_sets_its_interval_in_the_span_check_py_finds() -> None:
+def test_a_figure_cell_holds_its_figure_and_its_interval_each_in_the_span_check_py_finds() -> None:
     written = table_html(_against())
-    assert '<td class="figs">4.5 (<span class="iv">3.8 to 5.0</span>)</td>' in written
-    assert '<td class="figs">4.1 (<span class="iv">3.6 to 4.7</span>)</td>' in written
-    assert '<td class="figs">420ms</td>' in written
+    assert '<td class="figs"><span class="pt">4.5</span> <span class="iv">(3.8 to 5.0)</span></td>' in written
+    assert '<td class="figs"><span class="pt">4.1</span> <span class="iv">(3.6 to 4.7)</span></td>' in written
+    assert '<td class="figs"><span class="pt">420ms</span></td>' in written
 
 
 def test_an_interval_cell_in_any_form_sets_its_ends_in_one_span() -> None:
@@ -133,9 +134,9 @@ def test_a_cell_stating_no_figure_and_a_column_declaring_neither_are_left_as_the
     assert '<td class="figs">—</td>' not in written, "an absent figure is a dash, held nowhere"
 
 
-def test_the_stylesheet_holds_a_figure_cell_on_one_line() -> None:
+def test_the_stylesheet_holds_a_figure_cells_figure_and_its_bracket_each_on_one_line() -> None:
     page = report_html(report_of([_against()]))
-    assert "td .iv, td.num.split .aside, td.figs { white-space: nowrap; }" in page
+    assert "td .iv, td .pt, td .aside { white-space: nowrap; }" in page
 
 
 # --- a written report's evidence record --------------------------------------------------------------------------------

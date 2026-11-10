@@ -107,10 +107,13 @@ td, tbody th { vertical-align: top; }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.num { white-space: nowrap; }
 /* an interval's two ends and the word between them read as one figure, never broken across lines; a unit word after it
-   may take the next line. A cell of a column of figures (an arm's level, a change) holds its line whole (4.5 (3.8 to
-   5.0)). A figure with its count after it (95% (38 of 40 trials, 20 cases)) may set its count on the next line, held
-   whole, so a column of such figures gives an interval column beside it the room to hold its line */
-td .iv, td.num.split .aside, td.figs { white-space: nowrap; }
+   may take the next line. A cell of a column of figures (an arm's level, a change) breaks only between its figure and
+   the bracket after it: the figure with its unit (.pt) and the bracket with its parentheses (.iv for an interval, .aside
+   for a count) each hold one line, so 4.5 (3.8 to 5.0) may set (3.8 to 5.0) under 4.5 and a narrow column never
+   scrolls its table, yet never reads "4.5 (3.8" above "to 5.0)". A figure with its count after it (95% (38 of 40
+   trials, 20 cases)) likewise may set its count on the next line, held whole, so a column of such figures gives an
+   interval column beside it the room to hold its line */
+td .iv, td .pt, td .aside { white-space: nowrap; }
 td.num.split { white-space: normal; }
 td.key { font-weight: 600; }
 [data-table="scoreboard"] table { font-size: var(--t-base); }
@@ -814,24 +817,54 @@ _COUNTED_FIGURE = re.compile(r"([^\s<>]+) (\([^<>]+\))")
 
 
 def _held_figures(text: str, css: str) -> tuple[str, str]:
-    """A cell's markup and class with its figures held whole: in a cell of figures (``figs``) or of an interval, an
-    interval's ends and the word between them in one ``iv`` span, which never breaks, a unit word after it left free to
-    take the next line (``-0.007 to +0.002`` / ``notices``), and a cell of figures held on one line whole
-    (``4.5 (3.8 to 5.0)``); in a column of numbers, a figure with its count after it classed ``split``, the count in an
-    ``aside`` span held whole, so the figure may set its count on the next line rather than hold the column at its
-    full width and squeeze an interval beside it onto two lines ("0 to" above "43%" beside a Value column with
-    room)."""
-    if css in (' class="interval"', ' class="figs"'):
+    """A cell's markup and class with its figures held whole: in a cell of an interval, the interval's ends and the word
+    between them in one ``iv`` span, which never breaks, a unit word after it left free to take the next line
+    (``-0.007 to +0.002`` / ``notices``); in a cell of figures (``figs``), :func:`_held_figure_cell`; in a column of
+    numbers, a figure with its count after it classed ``split``, the count in an ``aside`` span held whole, so the
+    figure may set its count on the next line rather than hold the column at its full width and squeeze an interval
+    beside it onto two lines ("0 to" above "43%" beside a Value column with room)."""
+    if css == ' class="figs"':
+        return _held_figure_cell(text), css
+    if css == ' class="interval"':
         return re.sub(_HELD_INTERVAL, r'<span class="iv">\1</span>', text, count=1), css
     if css.startswith(' class="num') and (counted := _COUNTED_FIGURE.fullmatch(text)) is not None:
         return f'{counted[1]} <span class="aside">{counted[2]}</span>', css[:-1] + ' split"'
     return text, css
 
 
+#: A cell of figures' markup: the tags that open it (a finding's link), its text, the tags that close it.
+_FIGURE_MARKUP = re.compile(r"(?P<open>(?:<[^>]*>)*)(?P<text>[^<>]*)(?P<close>(?:<[^>]*>)*)")
+
+#: A cell of figures' text as a figure with a bracket after it: the figure with its unit (``4.5``, ``2.42 s``,
+#: ``$1.90``), one space, and the bracket, its parentheses with it (``(3.8 to 5.0)``, ``(38 of 40 trials, 20 cases)``).
+_FIGURE_AND_BRACKET = re.compile(r"(?P<point>[^\s()][^()]*?) (?P<bracket>\([^()]+\))")
+
+
+def _held_figure_cell(markup: str) -> str:
+    """A cell of figures' markup set so its one place to break is the space between its figure and the bracket after
+    it: the figure with its unit in a ``pt`` span, the bracket with its parentheses in an ``iv`` span where it is an
+    interval (``<span class="pt">4.5</span> <span class="iv">(3.8 to 5.0)</span>``), else an ``aside`` span (a count),
+    each of which never breaks, so a narrow column sets the bracket under its figure, never breaks inside either, and
+    never leaves a ``(`` at a line's end. A lone figure (``420ms``, ``2.42 s``), and any other text, is one ``pt`` span,
+    held whole. Markup with a tag inside its text (a chip, a pill) is left as it is."""
+    found = _FIGURE_MARKUP.fullmatch(markup)
+    if found is None or not found["text"].strip():
+        return markup
+    text = found["text"]
+    if (pair := _FIGURE_AND_BRACKET.fullmatch(text)) is not None:
+        bracket = pair["bracket"]
+        span = "iv" if " to " in bracket else "aside"
+        text = f'<span class="pt">{pair["point"]}</span> <span class="{span}">{bracket}</span>'
+    else:
+        text = f'<span class="pt">{text}</span>'
+    return f"{found['open']}{text}{found['close']}"
+
+
 def _words_class(text: str, held: _Held | None) -> str:
     """The class attribute a cell of words takes: ``wrap`` for prose, which wraps as a paragraph does; in a column of
     intervals, ``interval`` for one (``0 to 43%``, ``$25 to $34``), whose ends hold one line, so a narrow frame never
-    reads ``0 to`` above ``43%``; in a column of figures, ``figs`` for one, held on one line whole; none for any other
+    reads ``0 to`` above ``43%``; in a column of figures, ``figs`` for one, broken only between its figure and its
+    bracket (:func:`_held_figure_cell`); none for any other
     (a dash, words stating no figure)."""
     if len(text) >= _PROSE_CELL:
         return ' class="wrap"'

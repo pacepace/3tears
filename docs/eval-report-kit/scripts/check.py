@@ -17,8 +17,9 @@ mark (an interval's line) under 3:1 (WCAG 1.4.3 and 1.4.11), computed from the c
 chart's text against the mark under it where one is, else the nearest painted background. A font size off the
 page's five-step scale (12, 14, 16, 20 and 28 px). A table drawn in a box or under a filled header row, or with no
 rule under its header: a table is ruled with hairlines, never boxed or tinted. An interval in a table's cell ("0
-to 43%", set in its .iv span) or a cell of figures (.figs) broken across lines, named with its table's caption,
-heading or name. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440
+to 43%", set in its .iv span), or a cell of figures (.figs) broken anywhere but between its figure and the bracket
+after it: its figure (.pt) and its bracket with the parentheses (.iv, or .aside for a count) each hold one line, named
+with its table's caption, heading or name. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440
 and a 1024 px window). Writes a full-page PNG per run. Exit code 1 when any check fails.
 """
 
@@ -221,8 +222,10 @@ PROBE = r"""async () => {
   window.scrollTo(0, 0);
   // an interval in a cell ("0 to 43%", "$25 to $34") holds its ends and the word between them on one line: the
   // package's page sets them in a span (.iv), found from the table's columns rather than the cell's text, a unit word
-  // after it free to take the next line; a cell of a column of figures (.figs) holds its whole line. Each cell is
-  // measured once (a .figs cell whole, its .iv span with it) and named with its table (tableName).
+  // after it free to take the next line. A cell of a column of figures (.figs) breaks only between its figure and the
+  // bracket after it: its figure with its unit (.pt) and its bracket, parentheses and all (.iv, or .aside for a
+  // count), each hold one line, so "4.5" over "(3.8 to 5.0)" passes and "4.5 (3.8" over "to 5.0)" does not. Each
+  // span is measured once and named with its table (tableName).
   // a table named by what the page heads it with: its caption, its block's heading or summary, its block's name
   // (data-table), else its place among the page's tables
   const frames = [...document.querySelectorAll('.tbl')];
@@ -232,7 +235,7 @@ PROBE = r"""async () => {
     return head ? `table "${head}"` : block?.dataset?.table ? `table ${block.dataset.table}` : `table ${frames.indexOf(f) + 1}`;
   };
   const wrapped = [];
-  for (const held of document.querySelectorAll('.tbl td:not(.figs) .iv, .tbl td.figs')) {
+  for (const held of document.querySelectorAll('.tbl td .iv, .tbl td.figs .pt, .tbl td.figs .aside')) {
     const cell = held.closest('td');
     if (!drawn(cell)) continue;
     const range = document.createRange(); range.selectNodeContents(held);
