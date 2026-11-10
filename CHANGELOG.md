@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### enforcement: use-the-helper, every data table read and written through 3tears' helpers
+
+**Added:** `threetears.enforcement.no_whole_reads.use_the_helper_findings(config)`, the `use-the-helper` rule: every
+SQL statement a module writes as text (`SELECT`, `WITH ... SELECT`, `UPDATE`, `DELETE`, `MERGE`, `INSERT ... SELECT`)
+against a data table (a declared one, or one named at run time) outside the helper modules (`threetears.core.keyed`,
+`core.keyset`, `epoch.row_follower`, the migration and DDL runners, plus a repo's reviewed
+`NoWholeReadsConfig.helper_modules`) is a finding, named with its shape (`point`, `list`, `count`, `join`, `write`).
+The one way out is `_use_the_helper_exemptions.txt` (`<path> :: <function> :: <statements> :: <reason>`, the count
+pinned). `use_the_helper_counts(config)` gives the backlog by shape. 3tears' own gate is
+`tests/enforcement/test_use_the_helper.py`, red until each statement goes through a helper; the hub, the SDK and
+reports run it with their no-whole-reads configs.
+
 ### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
 
 **Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed

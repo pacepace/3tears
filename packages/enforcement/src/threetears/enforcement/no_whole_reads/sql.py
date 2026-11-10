@@ -70,8 +70,10 @@ __all__ = [
     "condition_shape",
     "KEYED_COUNT",
     "Reader",
+    "data_relations",
     "is_sql",
     "judge_sql",
+    "statement_shape",
 ]
 
 #: the kind a bare ``SELECT ... FROM <table>`` is given: judged where it runs
@@ -1490,3 +1492,93 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     else:
         missing = sorted(column for key in keys for column in key if column not in passed)
     return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []
+
+
+#: a relation a statement names: after ``FROM``, ``JOIN``, ``UPDATE`` or ``INTO``
+_NAMED_RELATION: Final[re.Pattern[str]] = re.compile(
+    rf"\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:ONLY\s+|LATERAL\s+)?{_NAME}(\s*\()?", re.IGNORECASE
+)
+#: a statement's verb, after any ``WITH`` list
+_WRITE_VERB: Final[re.Pattern[str]] = re.compile(r"^\s*(UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+_INSERT_SELECT: Final[re.Pattern[str]] = re.compile(r"^\s*INSERT\b.*\bSELECT\b", re.IGNORECASE | re.DOTALL)
+_DATA_WRITE: Final[re.Pattern[str]] = re.compile(r"\)\s*(UPDATE|DELETE|INSERT)\b", re.IGNORECASE)
+_JOINED: Final[re.Pattern[str]] = re.compile(r"\bJOIN\b", re.IGNORECASE)
+_COUNTED: Final[re.Pattern[str]] = re.compile(r"\b(?:count|exists|bool_or|bool_and|sum)\s*\(", re.IGNORECASE)
+_LIMIT_ONE_ROW: Final[re.Pattern[str]] = re.compile(r"\bLIMIT\s+1\b", re.IGNORECASE)
+
+
+def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
+    """the relations a statement reads or writes, as written: every name after ``FROM``, ``JOIN``, ``UPDATE`` or
+    ``INTO`` that is not a CTE of the statement, a catalog, a function (``unnest($1)``), a subquery or a transient
+    relation the reader names.
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :param reader: what decides a relation is transient; None for none
+    :ptype reader: Reader | None
+    :return: the names, in text order, each once
+    :rtype: list[str]
+    """
+    reader = reader if reader is not None else Reader()
+    text = _clean(sql)
+    ctes = {match.group(1).strip('"').lower() for match in _CTE.finditer(text)}
+    found: list[str] = []
+    for match in _NAMED_RELATION.finditer(text):
+        name, call = match.group(1), match.group(2)
+        bare = name.strip('"')
+        if call is not None or bare.lower() in ctes or _CATALOG.match(name) is not None or reader.transient(bare):
+            continue
+        if bare not in found:
+            found.append(bare)
+    return found
+
+
+def statement_shape(sql: str) -> str | None:
+    """the shape of a statement written as text: ``write`` (an ``UPDATE``, a ``DELETE``, a ``MERGE``, an ``INSERT ...
+    SELECT``), ``join`` (a read joining relations), ``count`` (a count, an existence or a sum), ``list`` (a read of
+    many rows: ordered, limited past one row, or with no ``WHERE``) or ``point`` (a read of the rows a ``WHERE``
+    names); None for any other statement (a plain ``INSERT ... VALUES``, DDL, a view).
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :return: the shape, or None
+    :rtype: str | None
+    """
+    text = _clean(sql)
+    masked = _mask(text)
+    head = text.lstrip()[:16].upper()
+    shape: str | None = None
+    if (
+        _WRITE_VERB.match(text)
+        or _INSERT_SELECT.match(text)
+        or (head.startswith("WITH") and _DATA_WRITE.search(masked))
+    ):
+        shape = "write"
+    elif not (head.startswith("SELECT") or head.startswith("WITH")):
+        shape = None
+    elif _JOINED.search(masked) or "," in _from_list(masked):
+        shape = "join"
+    elif _COUNTED.search(masked) or _AGGREGATE.search(masked):
+        shape = "count"
+    elif _ORDER_BY.search(masked) or (_LIMITED.search(masked) and not _LIMIT_ONE_ROW.search(masked)):
+        shape = "list"
+    elif _WHERE.search(masked) is None:
+        shape = "list"
+    else:
+        shape = "point"
+    return shape
+
+
+def _from_list(masked: str) -> str:
+    """the outer ``FROM`` list: from its ``FROM`` to its ``WHERE``, ``GROUP BY``, ``ORDER BY``, ``LIMIT``, or the end.
+
+    :param masked: the statement with deeper levels blanked
+    :ptype masked: str
+    :return: the list, empty when the statement has no outer ``FROM``
+    :rtype: str
+    """
+    opening = _FROM.search(masked)
+    if opening is None:
+        return ""
+    end = _FROM_END.search(masked, opening.end())
+    return masked[opening.end() : end.start() if end is not None else len(masked)]

@@ -74,6 +74,7 @@ __all__ = [
     "OperatorMark",
     "WholeReadHit",
     "WholeReadScan",
+    "WrittenStatement",
     "scan_whole_reads",
 ]
 
@@ -358,6 +359,24 @@ class _CallSite:
     receiver_class: str = ""
 
 
+@dataclass(frozen=True)
+class WrittenStatement:
+    """one SQL statement a module writes as text, where it writes it.
+
+    :ivar path: repo-relative posix path of the module
+    :ivar line: line of the string
+    :ivar function: qualified name of the enclosing function, or ``<module>``
+    :ivar text: the statement, each unknown interpolation as ``{}``
+    :ivar reader: what the walk judged it against (the schema, the code's names, its transient relations)
+    """
+
+    path: str
+    line: int
+    function: str
+    text: str
+    reader: Reader
+
+
 @dataclass
 class WholeReadScan:
     """everything one walk found.
@@ -372,6 +391,7 @@ class WholeReadScan:
     :ivar constants: ``<path>::<qualified name>`` of every module or class constant bound to a string, which an
         index's ``purpose`` may name when the SQL is written there
     :ivar schema: the declared keys and indexes every statement was judged against
+    :ivar statements: every SQL statement the walked modules write as text
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
@@ -382,6 +402,7 @@ class WholeReadScan:
     operator_callers: list[str] = field(default_factory=list)
     constants: set[str] = field(default_factory=set)
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
+    statements: list[WrittenStatement] = field(default_factory=list)
 
 
 #: callees that only quote the name they are given: checked before a template function, since a quoter returning
@@ -693,6 +714,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._tuples = tuples or {}
         self.source = source
         self.hits: list[WholeReadHit] = []
+        #: every SQL statement the module writes as text, as the walk reads it
+        self.statements: list[WrittenStatement] = []
         self.calls: list[_CallSite] = []
         self.definitions: set[str] = set()
         self.module_functions: set[str] = set()
@@ -1183,6 +1206,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
+        self._record_statement(node)
         if isinstance(node, ast.JoinedStr) and self._maximal_string(node) and self._keyset_listing(node):
             return
         # a placeholder resolves to a module constant, or to a string the enclosing function binds once; a parameter
@@ -1197,6 +1221,25 @@ class _ModuleWalk(ast.NodeVisitor):
             env = {**scope, **{name: f"__cte_{name}" for name in cte_params}} if cte_params else scope
             text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
             self._judge_text(node, text, judged)
+
+    def _record_statement(self, node: ast.expr) -> None:
+        """record the SQL statement a maximal string expression writes, as the function's own scope reads it (the
+        first branch scope when it has them), for the rule that statements are written by the helpers
+        (:mod:`~threetears.enforcement.no_whole_reads.use_the_helper`).
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: nothing
+        :rtype: None
+        """
+        if not self._maximal_string(node):
+            return
+        scope = (self._branch_scopes[-1] or [self._envs[-1]])[0]
+        text = _string_text(node, scope, self._produced_by)
+        if text is not None and is_sql(text):
+            self.statements.append(
+                WrittenStatement(self.path, getattr(node, "lineno", 0), self._function, text, self._reader(node))
+            )
 
     def _judge_text(self, node: ast.expr, text: str | None, judged: set[tuple[str, str]]) -> None:
         """record the findings of ``node``'s statement as one scope reads it, each finding once.
@@ -3138,6 +3181,7 @@ def scan_whole_reads(
         walk.visit(tree)
         stubs.update(walk.stubs)
         scan.hits.extend(walk.hits)
+        scan.statements.extend(walk.statements)
         scan.definitions.update(walk.definitions)
         scan.constants.update(walk.constants)
         calls.extend(walk.calls)
