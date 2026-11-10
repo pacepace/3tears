@@ -4501,6 +4501,11 @@ def _contrast_places(
     # A reading the page states no contrast of (a bar's, a guardrail's, a per-label statistic's) still has its set: from
     # its half-widths, else from every arm's figure of it.
     held: dict[tuple[str, str], list[float]] = {(width.name, width.reading): [] for width in _bundle_stated(bundle)}
+    # The page states every arm's pass rate (its outcome bar's note) whether or not it compares one: where the campaign
+    # holds intervals on the rate (a choice's pairs, a change's readings), the note reads at their places, as the
+    # campaign's scorecard prints the same passes, never at its ruler's own one decimal beside them.
+    if _set_widths(campaign, _aspect_page(bundle.aspect), TRIAL_PASS_NAME, "trial"):
+        held.setdefault((TRIAL_PASS_NAME, "trial"), [])
     for cell in surface.cells:
         for summary in cell.measures.measures:
             figure = summary.rate if summary.rate is not None else summary.mean
