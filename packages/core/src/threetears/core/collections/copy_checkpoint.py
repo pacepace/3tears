@@ -105,18 +105,12 @@ SCHEMA_CHANGE: Final = "schema_change"
 #: ``touched=None``)
 WHOLE_TOUCH: Final = "whole_touch"
 
-#: a table that declares no scope and is derived, or outgrew one part: the stopgap until each declares one
-UNSCOPED: Final = "unscoped"
-
 #: every why ``copy_checkpoint_whole_writes_total`` counts; nothing else reads a table whole from the copy
 WHOLE_WRITE_WHYS: Final[Mapping[str, str]] = {
     COLD_START: "no checkpoint holds the table (the first, or one whose parts did not read back): its cold start",
     SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
     WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
     "named no tables",
-    # TODO(fix/follower-scope-required): gone once every table a part cannot hold, and every derived table, declares
-    # a scope; until then counted, and read by _unscoped_batches alone
-    UNSCOPED: "a derived table, or a table over one part, that declares no scope: rewritten whole at every change",
 }
 
 #: the stage a part read back is patched in: a change set being applied, never a data table
@@ -445,7 +439,7 @@ class CopyCheckpoints:
     :ptype decode_stamp: Callable[[Any], Any]
     :param ratio: how much of the checkpoint's rows applied since make the next one due
     :ptype ratio: float
-    :param part_rows: the most rows one part holds; a table with no scope is patched by key only while it fits one
+    :param part_rows: the most rows one part holds; a table with no scope must fit in one, patched by key
     :ptype part_rows: int
     """
 
@@ -516,20 +510,20 @@ class CopyCheckpoints:
         A derived table's rows of a scope are derived from the followed tables' rows of that scope alone: a write
         rewrites a derived table's scopes the followed tables' changes touched since, reads it whole only when a
         followed table was read whole, and patches a derived table with no scope by nothing finer than a whole read,
-        so every derived table should declare a scope (one that does not is rewritten whole, counted
-        ``why="unscoped"``).
+        so every derived table declares a scope.
 
         :param names: the followed tables
         :ptype names: Iterable[str]
         :return: nothing
         :rtype: None
+        :raises ValueError: when a derived table declares no scope
         """
         followed = frozenset(names)
         unscoped = sorted(t.name for t in self._tables if t.name not in followed and t.scope is None)
         if unscoped:
-            log.warning(
-                "derived tables declare no scope: every checkpoint after a change rewrites them whole",
-                extra={"extra_data": {"base": self.base, "tables": unscoped}},
+            raise ValueError(
+                f"derived tables {unscoped} declare no scope: a checkpoint could rewrite them only whole; give each "
+                "the scope its rows are derived by (FollowedTable.scope)"
             )
         self._followed = followed
 
@@ -804,8 +798,6 @@ class CopyCheckpoints:
         if name not in taken.touched:
             return _Plan(table, prior)
         if table.scope is None:
-            if len(prior.parts) > 1:
-                return _Plan(table, None, why=UNSCOPED)
             return _Plan(table, prior, keys=frozenset(taken.keys.get(name, set())))
         return _Plan(table, prior, scopes=frozenset(taken.touched[name] or ()))
 
@@ -823,8 +815,6 @@ class CopyCheckpoints:
         if any(name in by_name and by_name[name].scope is None for name in followed):
             # a change of a followed table with no scope may reach every scope of what is derived from it
             return _Plan(table, None, why=WHOLE_TOUCH)
-        if table.scope is None:
-            return _Plan(table, None, why=UNSCOPED) if followed else _Plan(table, prior)
         return _Plan(table, prior, scopes=frozenset(s for scopes in followed.values() for s in scopes or ()))
 
     async def _write_locked(self, read: Callable[[], Any], lock: str) -> Checkpoint | None:
@@ -956,17 +946,21 @@ class CopyCheckpoints:
 
         :return: the parts, in order
         :rtype: tuple[tuple[str, str | None, int], ...]
+        :raises ValueError: when a table with no scope holds more than one part's rows
         """
         table, prior = plan.table, plan.prior
         if prior is None:
-            whole = _unscoped_batches if plan.why == UNSCOPED else _batches
-            reader = await asyncio.to_thread(whole, cursor, table.name, self._part_rows)
-            return tuple(await self._put_parts(_split_by_scope(reader, table), table.name, seq, written, keys))
+            reader = await asyncio.to_thread(_batches, cursor, table.name, self._part_rows)
+            parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, written, keys)
+            self._refuse_unscoped(table, parts)
+            return tuple(parts)
         if table.scope is None:
             if not plan.keys:
                 return prior.parts
             patched = await self._patch(cursor, table, prior, sorted(plan.keys))
-            return tuple(await self._put_parts(iter([(None, patched)]), table.name, seq, written, keys))
+            parts = await self._put_parts(iter([(None, patched)]), table.name, seq, written, keys)
+            self._refuse_unscoped(table, parts)
+            return tuple(parts)
         kept = [part for part in prior.parts if part[1] not in plan.scopes]
         if not plan.scopes:
             return prior.parts
@@ -980,6 +974,17 @@ class CopyCheckpoints:
             fresh.extend(await self._put_parts(batches, table.name, seq, written, keys))
         order = sorted({part[1] or "" for part in [*kept, *fresh]})
         return tuple(part for scope in order for part in [*kept, *fresh] if (part[1] or "") == scope)
+
+    def _refuse_unscoped(self, table: FollowedTable, parts: Sequence[tuple[str, str | None, int]]) -> None:
+        """a table with no scope must fit one part, which a write patches by key.
+
+        :raises ValueError: when it does not
+        """
+        if table.scope is None and len(parts) > 1:
+            raise ValueError(
+                f"{table.name} holds {sum(p[2] for p in parts)} rows, over the {self._part_rows} one part holds, and "
+                "declares no scope: give it the scope its rows belong to (FollowedTable.scope)"
+            )
 
     async def _patch(
         self, cursor: Any, table: FollowedTable, prior: CheckpointTable, keys: Sequence[tuple[str, ...]]
@@ -1082,24 +1087,6 @@ def _batches(cursor: Any, table: str, rows: int) -> Any:
     """a table's rows on a read's cursor, as a reader of Arrow batches of at most ``rows`` rows: the one whole read of a
     table in the copy, for a write that finds no checkpoint holding it (its cold start), its schema changed, or the
     follower read it whole from L3 (``copy_checkpoint_whole_writes_total``).
-
-    :param cursor: the read's cursor
-    :ptype cursor: duckdb.DuckDBPyConnection
-    :param table: the table, a trusted identifier
-    :ptype table: str
-    :param rows: the most rows a batch holds
-    :ptype rows: int
-    :return: the reader
-    :rtype: pyarrow.RecordBatchReader
-    """
-    return cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows)  # noqa: S608
-
-
-def _unscoped_batches(cursor: Any, table: str, rows: int) -> Any:
-    """a table's rows on a read's cursor, as a reader of Arrow batches of at most ``rows`` rows: the stopgap whole
-    read of a derived table, or a table over one part, that declares no scope (``why="unscoped"``).
-
-    TODO(fix/follower-scope-required): deleted there; every such table declares a scope.
 
     :param cursor: the read's cursor
     :ptype cursor: duckdb.DuckDBPyConnection

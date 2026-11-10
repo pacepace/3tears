@@ -35,7 +35,6 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChan
 from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     COLD_START,
     SCHEMA_CHANGE,
-    UNSCOPED,
     WHOLE_TOUCH,
     CopyCheckpoints,
     StagedCheckpoint,
@@ -696,28 +695,21 @@ async def test_a_derived_table_is_read_whole_when_a_followed_table_with_no_scope
     assert _whole_writes(_NEEDLES, WHOLE_TOUCH) == before + 1
 
 
-async def test_a_derived_table_with_no_scope_is_the_counted_stopgap() -> None:
-    copy, checkpoints, _, _ = await _derived_world(_totals())
-    copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10, votes=7)), "v2", 2)
-    checkpoints.applied(10, {_VOTES: frozenset({"state:IL"})})
-    before = _whole_writes(_TOTALS, UNSCOPED)
-    assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_TOTALS, UNSCOPED) == before + 1
+async def test_a_derived_table_with_no_scope_is_refused_by_name() -> None:
+    copy = _Copy()
+    with pytest.raises(ValueError, match="totals"):
+        _derived_checkpoints(copy, _Store(), _Pointers(), "a", _totals())
 
 
-async def test_a_table_with_no_scope_over_one_part_is_the_counted_stopgap() -> None:
+async def test_a_table_with_no_scope_over_one_part_is_refused_by_name() -> None:
     store, pointers = _Store(), _Pointers()
     copy = _Copy()
     copy.put(_VOTES, _votes(_state("VA", 5)), "v1", 1)
     copy.put(_RACES, _races([(i, "r") for i in range(90)]), "r1", 1)
     checkpoints = _checkpoints(copy, store, pointers, "a")
-    first = await checkpoints.write(copy.read)
-    assert first is not None and len(first.tables[_RACES].parts) == 3
-    copy.put(_RACES, _races([(i, "r") for i in range(89)]), "r2", 2)
-    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("89",)]})
-    before = _whole_writes(_RACES, UNSCOPED)
-    assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_RACES, UNSCOPED) == before + 1
+    with pytest.raises(ValueError, match="races holds 90 rows"):
+        await checkpoints.write(copy.read)
+    assert not pointers.entries and not store.objects
 
 
 def _spy_batches(monkeypatch: pytest.MonkeyPatch) -> list[str]:

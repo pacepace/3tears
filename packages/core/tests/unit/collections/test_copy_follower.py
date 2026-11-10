@@ -448,7 +448,7 @@ def _replica(
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
     backend = DuckDBBackend()
     backend.initialize(_metadata())
-    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=tables,
@@ -1227,6 +1227,7 @@ _DERIVED_TABLE = FollowedTable(
     name=_DERIVED,
     key=("state",),
     columns=(Column(name="state", column_type=STRING_TYPE), Column(name="total", column_type=BIGINT_TYPE)),
+    scope=("state", "state:"),
 )
 
 
@@ -1238,7 +1239,7 @@ def _derived_replica(
     Table(_DERIVED, metadata, SaColumn("state", String(8), primary_key=True), SaColumn("total", BigInteger))
     backend = DuckDBBackend()
     backend.initialize(metadata)
-    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=[*followed, *([_DERIVED_TABLE] if holds_derived else [])],
