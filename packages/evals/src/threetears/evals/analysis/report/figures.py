@@ -21,7 +21,13 @@ from typing import NamedTuple
 from threetears.evals.analysis.quantities import MONEY, PERCENT, display_scale, is_money
 from threetears.evals.analysis.report.cost_unit import money_ruler
 from threetears.evals.kernel.numbers import MoneyForm
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, classifier_label_of, goal_check_of
+from threetears.evals.kernel.metrics import (
+    METRIC_DESCRIPTORS,
+    MetricDescriptor,
+    classifier_label_of,
+    goal_check_of,
+    reads_as_share,
+)
 from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 
 #: What a cell where no result took a turn reads in a cost or latency column. Not a blank: a blank reads as "not
@@ -159,7 +165,7 @@ def _is_share(name: str, facts: MeasureFacts, described: MetricDescriptor | None
         return False
     descriptor = described if described is not None else METRIC_DESCRIPTORS.get(name)
     if descriptor is not None:
-        return descriptor.data_type == "boolean" or descriptor.value_range == (0.0, 1.0)
+        return reads_as_share(descriptor)
     return classifier_label_of(name) is not None or goal_check_of(name) is not None
 
 

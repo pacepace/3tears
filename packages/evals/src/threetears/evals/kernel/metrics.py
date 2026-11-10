@@ -184,6 +184,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "describe_rubric_dim",
     "list_metrics",
     "reads_as_rate",
+    "reads_as_share",
     "rule_rates",
     "strictest_class",
 ]
@@ -3167,6 +3168,22 @@ def reads_as_rate(
     return (
         goal_check_of(name) is not None or name == ACCURACY_MEASURE or (descriptor is not None and descriptor.is_check)
     )
+
+
+def reads_as_share(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure's figures are a share on 0 to 1, which every page states in percent (number rule 4: a rate
+    carries its "%"): a boolean's share held, or a figure that declares no unit and lies on 0 to 1
+    (``value_range=(0, 1)``), a host's fraction among them. The one test every page's tables read a measure's unit by,
+    so the code page, the aspect pages and the written page never read one share apart. Wider than
+    :func:`reads_as_rate`, which asks what an interval may be computed as: a fraction of deliveries is a share in
+    percent, not a count of passed trials.
+
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :return: Whether its figures are a share.
+    :rtype: bool
+    """
+    return not descriptor.unit and (descriptor.data_type == "boolean" or descriptor.value_range == _RATE_RANGE)
 
 
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:

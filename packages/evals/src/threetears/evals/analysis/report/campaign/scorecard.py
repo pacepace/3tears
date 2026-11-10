@@ -54,6 +54,7 @@ from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
 from threetears.evals.analysis.report.campaign.measure_kinds import (
+    counted_rates,
     measure_summary,
     money_rulers,
     rate_measures,
@@ -1772,7 +1773,7 @@ def _measure_matrix(
     rulers = money_rulers(readings, reports)
     surfaces: dict[str, DecisionSurface] = {}
     rates = rate_measures(readings, reports, surfaces)
-    counts = _rate_counts(readings, reports, rates, surfaces)
+    counts = _rate_counts(readings, reports, counted_rates(readings, reports, surfaces), surfaces)
     named = {key: _measure_header(key, readings, reports) for key in measures}
     # Two checks on different aspects can share a name (each aspect names its own): each column then says the aspects
     # it reads, so no two headers read alike.
@@ -2014,15 +2015,15 @@ def _money_interval(forms: PageForms, key: str, interval: tuple[float, float] | 
     return forms.interval(key, *interval).text
 
 
-def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellValue:
+def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellValue | TableCell:
     """A measure's value as the fold's table states it: a pass rate as its count, any other rate in percent, any other
-    value as measured, each by the lone figure rule at its cell's precision."""
+    value at its measure's one precision, as the matrix above states it (``0.10`` in both, never ``0.1`` here)."""
     if reading.passed is not None and reading.trials is not None:
         return _counted(reading.passed, reading.trials, reading.cases)
     if reading.value is None:
         return None
     figure = forms.level(reading.measure, reading.value)
-    return figure.text if rate else figure.held
+    return figure.text if rate else TableCell(value=figure.held, decimals=figure.decimals)
 
 
 def _measured_interval(forms: PageForms, key: str, interval: tuple[float, float] | None) -> str | None:
