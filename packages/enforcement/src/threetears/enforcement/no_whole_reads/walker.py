@@ -1406,6 +1406,14 @@ class _ModuleWalk(ast.NodeVisitor):
                     for key in value.keys
                 ]
                 return ast.Dict(keys=keys, values=value.values)
+            # a sequence of constants (``order=(STATE_COLUMN,)``): each element the string it names
+            if isinstance(value, (ast.Tuple, ast.List)):
+                elements = [literal(element) for element in value.elts]
+                return (
+                    ast.Tuple(elts=elements, ctx=ast.Load())
+                    if isinstance(value, ast.Tuple)
+                    else ast.List(elts=elements, ctx=ast.Load())
+                )
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
