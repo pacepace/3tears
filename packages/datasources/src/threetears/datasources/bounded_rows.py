@@ -80,6 +80,10 @@ class BoundedRows:
         return b"[" + b",".join(self.encoded) + b"]"
 
 
+#: the share of the rows the bytes left are expected to hold that a page sized to fit whole asks for
+_FIT_SHARE: Final[float] = 0.95
+
+
 class RowBudget:
     """the cut a byte-capped read makes: rows kept while their JSON array fits, encoded a page at a time.
 
@@ -98,7 +102,7 @@ class RowBudget:
     :ptype max_rows: int | None
     """
 
-    __slots__ = ("_encode", "_encoded", "_max_bytes", "_max_rows", "_rows", "_size", "_truncated")
+    __slots__ = ("_encode", "_encoded", "_max_bytes", "_max_rows", "_page_mean", "_rows", "_size", "_truncated")
 
     def __init__(self, max_bytes: int, encode: Callable[[list[dict[str, Any]]], bytes], max_rows: int | None) -> None:
         self._max_bytes = max_bytes
@@ -108,21 +112,36 @@ class RowBudget:
         self._encoded: list[bytes] = []
         self._size = 2
         self._truncated = False
+        # the mean encoded row of the last page kept (its comma included): the rows next are most like these
+        self._page_mean = 0.0
 
     def wanted(self, page_rows: int) -> int:
-        """how many rows the next page should read: ``page_rows``, or fewer where the row bound is near.
+        """how many rows the next page should read, sized from the bytes the rows read so far took.
 
-        One row past ``max_rows`` is read, so a result with exactly that many rows is told from a longer one.
+        The first page reads ``page_rows``, so the first rows arrive fast. After it, the bytes left are divided by the
+        mean encoded row of the last page kept (the rows next are most like it): while more than a page's rows are
+        still expected to fit, the page reads 95% of that many less half a page (rows tend to widen as a result goes
+        on), so it fits whole (encoded once) and a read takes about three pages whatever its cap;
+        once about a page is left, the page reads one row past the expected cut, so it crosses the cap, and only it
+        is measured a row at a time. One row past ``max_rows`` is read, so a result with exactly that many rows is
+        told from a longer one.
 
-        :param page_rows: the rows a page reads
+        :param page_rows: the rows the first page reads, and about the rows the crossing page reads
         :ptype page_rows: int
         :return: the rows to ask for, at least 1
         :rtype: int
         """
         wanted = page_rows
+        if self._rows:
+            expected = int(max(0, self._max_bytes - self._size) / self._page_mean)
+            if expected > page_rows:
+                # rows grow as a result goes on (wider keys, later values): a twentieth to spare, and half a page
+                wanted = int(expected * _FIT_SHARE) - page_rows // 2
+            else:
+                wanted = expected + 1
         if self._max_rows is not None:
-            wanted = max(1, min(page_rows, self._max_rows + 1 - len(self._rows)))
-        return wanted
+            wanted = min(wanted, self._max_rows + 1 - len(self._rows))
+        return max(1, wanted)
 
     def take(self, page: Iterable[dict[str, Any]]) -> bool:
         """keep the page's rows while they fit; say whether the read should go on.
@@ -162,6 +181,7 @@ class RowBudget:
         """
         self._rows.extend(rows)
         self._encoded.append(inner)
+        self._page_mean = (grown - self._size) / len(rows)
         self._size = grown
 
     def _keep_what_fits(self, rows: list[dict[str, Any]]) -> None:

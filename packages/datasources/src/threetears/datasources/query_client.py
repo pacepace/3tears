@@ -48,6 +48,7 @@ the prefix, a derivation refuses it.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -1979,19 +1980,47 @@ def _check_read(columns: Sequence[str], key: Sequence[str], page_size: int) -> N
         raise ValueError("key must not be empty: keyset paging has no cursor without one")
     if page_size < 1:
         raise ValueError(f"page_size must be positive, got {page_size}")
-    if page_size >= _HUB_ROW_CAP:
-        # The query asks for page_size + 1, so page_size must leave room for the
-        # sentinel under the hub's cap. At page_size == cap the hub would cut the
-        # result at the cap and the sentinel would be the row it dropped, turning
-        # "there are more rows" into "this was the last page" -- the exact silent
-        # short read this function exists to prevent.
-        raise ValueError(
-            f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
-            f"this function reads page_size + 1 rows and uses the extra one as a has-more "
-            f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
-            f"eat the sentinel and a short read would be returned as a complete one. "
-            f"the default is {_DEFAULT_PAGE_SIZE}."
-        )
+
+
+def _row_cap_refusal(page_size: int) -> ValueError:
+    """the refusal of a page at or over the hub's row cap, from a hub that cuts its replies by rows.
+
+    The query asks for page_size + 1, so page_size must leave room for the sentinel under the hub's cap. At
+    page_size == cap the hub would cut the result at the cap and the sentinel would be the row it dropped, turning
+    "there are more rows" into "this was the last page" -- the exact silent short read the pagers exist to prevent.
+    A hub that cuts its replies by their bytes (its replies announce ``max_reply_bytes``) applies no row cap, so a
+    larger page is refused only by a hub that answers with none.
+
+    :param page_size: the page asked for
+    :ptype page_size: int
+    :return: the refusal
+    :rtype: ValueError
+    """
+    return ValueError(
+        f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
+        f"this function reads page_size + 1 rows and uses the extra one as a has-more "
+        f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
+        f"eat the sentinel and a short read would be returned as a complete one. "
+        f"the default is {_DEFAULT_PAGE_SIZE}. (a hub with a reply byte cap, max_reply_bytes, takes larger pages.)"
+    )
+
+
+#: the share of a hub's announced reply byte cap a page is sized to fill: room for rows wider than those measured
+_CAP_FILL: Final[float] = 0.8
+
+
+def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> int:
+    """about how many rows like ``rows`` one reply cut at ``max_reply_bytes`` carries, with a margin.
+
+    :param rows: a page's rows, as the hub sent them
+    :ptype rows: list[dict[str, Any]]
+    :param max_reply_bytes: the hub's announced reply byte cap
+    :ptype max_reply_bytes: int
+    :return: the rows, at least 1
+    :rtype: int
+    """
+    per_row = len(json.dumps(rows, default=str, separators=(",", ":"))) / len(rows)
+    return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
 
 
 async def _pages(
@@ -2023,6 +2052,9 @@ async def _pages(
     previous_had_more = False
 
     size = page_size
+    # the most rows a page grows back to: the asked-for size, or, under a hub that cuts its replies by their bytes,
+    # about the rows one reply carries (so the cap's larger replies are reached through this pager)
+    ceiling = page_size
     for _ in range(max_pages):
         predicate, params = _filtered(filters, key, cursor)
         # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
@@ -2051,6 +2083,9 @@ async def _pages(
                 extra={"extra_data": {"datasource": datasource_name, "relation": relation, "page_size": size}},
             )
             continue
+
+        if page.max_reply_bytes is None and size >= _HUB_ROW_CAP:
+            raise _row_cap_refusal(size)
 
         if not page.rows:
             if previous_had_more:
@@ -2095,6 +2130,7 @@ async def _pages(
             cursor = tuple(kept[-1][column] for column in key)
             previous_had_more = True
             size = max(1, len(page.rows) - 1)
+            ceiling = max(page_size, size)
             log.info(
                 "read_all page cut by the hub's reply cap; reading on from its last whole key group",
                 extra={
@@ -2154,8 +2190,11 @@ async def _pages(
         rows.extend(kept)
         cursor = advanced
         previous_had_more = had_more
-        # back toward the asked-for size: one oversized stretch should not slow the rest
-        size = min(page_size, size * 2)
+        if page.max_reply_bytes is not None and ceiling == page_size:
+            # the hub cuts by bytes, and a whole page fitted: the next pages ask about what one reply carries
+            ceiling = max(page_size, _rows_a_reply_carries(page.rows, page.max_reply_bytes) - 1)
+        # back toward the ceiling (one oversized stretch should not slow the rest); a byte-capped hub's ceiling at once
+        size = ceiling if ceiling > page_size else min(page_size, size * 2)
 
     raise IncompleteReadError(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "

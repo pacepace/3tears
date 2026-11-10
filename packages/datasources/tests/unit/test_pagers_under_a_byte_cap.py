@@ -148,3 +148,51 @@ async def test_a_key_group_wider_than_one_reply_raises_rather_than_dropping_rows
     hub = _ByteCappedHub(60)
     with pytest.raises(IncompleteReadError, match="wider than one reply"):
         await read_all(hub, "w", columns=_COLUMNS, relation="s.results", key=["state"], page_size=50)  # type: ignore[arg-type]
+
+
+class _WideByteCappedHub(_ByteCappedHub):
+    """a byte-capped hub over 10,000 rows, counting the statements it answers."""
+
+    def __init__(self, max_bytes: int) -> None:
+        super().__init__(max_bytes)
+        self.statements = 0
+        self._db.execute("DELETE FROM s.results")
+        self._db.executemany(
+            "INSERT INTO s.results VALUES (?, ?, ?)",
+            [(_STATES[index % 3], index, "x" * 40) for index in range(10_000)],
+        )
+
+    async def query(
+        self, datasource_name: str, query: str, params: list[Any] | None = None, **kwargs: Any
+    ) -> DatasourceQueryResult:
+        self.statements += 1
+        return await super().query(datasource_name, query, params, **kwargs)
+
+
+async def test_a_byte_capped_hub_is_read_in_pages_as_large_as_its_replies() -> None:
+    """the pager sizes its pages from the announced cap: every row of 10,000, in far fewer statements than the
+    row cap's 900-row pages take (12)."""
+    hub = _WideByteCappedHub(max_bytes=400_000)
+
+    got = await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+
+    assert len(got) == 10_000
+    assert sorted(row["race"] for row in got) == list(range(10_000))
+    assert hub.statements <= 5, hub.statements
+
+
+async def test_a_page_at_the_row_cap_is_taken_by_a_byte_capped_hub() -> None:
+    hub = _WideByteCappedHub(max_bytes=400_000)
+
+    got = await read_all(  # type: ignore[arg-type]
+        hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"], page_size=2_000
+    )
+
+    assert len(got) == 10_000
+
+
+async def test_a_page_at_the_row_cap_is_still_refused_by_a_hub_with_no_byte_cap() -> None:
+    hub = _ByteCappedHub(max_bytes=None)
+
+    with pytest.raises(ValueError, match="UNDER the hub's row cap"):
+        await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["state", "race"], page_size=1_000)  # type: ignore[arg-type]
