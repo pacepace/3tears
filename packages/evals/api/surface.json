@@ -6658,7 +6658,7 @@
     },
     "threetears.evals.analysis.tier_sentence": {
       "kind": "function",
-      "signature": "tier_sentence(tier: JudgeEvidenceTier) -> str",
+      "signature": "tier_sentence(tier: JudgeEvidenceTier, forms: PageForms) -> str",
       "tier": "stable"
     },
     "threetears.evals.analysis.tiers_with_judge_profiles": {

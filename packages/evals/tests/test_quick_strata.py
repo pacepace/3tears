@@ -134,13 +134,18 @@ class TestThePrintNamesEachStratumAsThePageDoes:
         assert miss.stratum == "lookalike_ticket" and "(lookalike ticket, repeat" in miss.render()
 
     async def test_two_ids_that_would_print_alike_each_print_as_their_id(self) -> None:
-        """``edge_case`` and ``edge.case`` would both print ``edge case``; each prints as its id, so the print never
-        reads one stratum where the cases declare two."""
+        """``edge_case`` and ``edge.case`` would both print ``edge case``; each prints as its id, in the stratum lines
+        and in each result's line, so the print never reads one stratum where the cases declare two."""
         cases = [{**case, "stratum": "edge_case" if case["stratum"] == "plain" else "edge.case"} for case in CASES]
         summary = await _summary(cases, misses_lookalikes, [QUEUE])
 
         heads = [line.split(":")[0] for line in summary.stratum_lines if not line.startswith(" ")]
         assert sorted(heads) == ["edge.case", "edge_case"]
+        # A result's line names its stratum as the stratum lines do, never the name both ids would print as.
+        results = summary.results()
+        assert {result.stratum for result in results} == {"edge_case", "edge.case"}
+        for result in results:
+            assert result.render().startswith(f"case {result.case} ({result.stratum}, repeat "), result.render()
         assert stratum_names(["edge_case", "edge.case", "plain_ticket"]) == {
             "edge_case": "edge_case",
             "edge.case": "edge.case",

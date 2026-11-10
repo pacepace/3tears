@@ -136,10 +136,10 @@ def _readable_fields(term: str, text: str) -> list[ExampleField]:
     ]
 
 
-def _place(context: ChartContext, stratum: str) -> str:
-    """A stratum's or task's reader name, whichever the example's id names."""
+def _place(context: ChartContext, stratum: str, aspect: str | None) -> str:
+    """A stratum's or task's reader name, whichever the example's id names; a stratum on the example's aspect."""
     if any(held.id == stratum for held in context.report_input.strata):
-        return context.look.reader("stratum", stratum)
+        return context.look.reader("stratum", stratum, aspect=aspect)
     if any(held.id == stratum for held in context.report_input.tasks):
         return context.look.reader("task", stratum)
     return humanize("dimension", stratum)
@@ -151,7 +151,7 @@ def _card(context: ChartContext, example: Example) -> ExampleCard:
     if example.aspect and len(context.report_input.aspects) > 1:
         meta.append(ExampleMetaText(text=context.look.reader("aspect", example.aspect)))
     if example.stratum:
-        meta.append(ExampleMetaText(text=_place(context, example.stratum)))
+        meta.append(ExampleMetaText(text=_place(context, example.stratum, example.aspect)))
     if example.arm is not None and example.arm in context.look.arms:
         look = context.look.arm(example.arm)
         meta.append(ExampleMetaArm(tag=look.tag, label=look.name, color=look.token))

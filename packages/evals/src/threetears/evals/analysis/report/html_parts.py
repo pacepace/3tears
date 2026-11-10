@@ -16,6 +16,8 @@ import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import Literal
+
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from threetears.evals.analysis.report.charts import ChartStatus
@@ -105,9 +107,10 @@ td, tbody th { vertical-align: top; }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.num { white-space: nowrap; }
 /* an interval's two ends and the word between them read as one figure, never broken across lines; a unit word after it
-   may take the next line. A figure with its count after it (95% (38 of 40 trials, 20 cases)) may set its count on the
-   next line, held whole, so a column of such figures gives an interval column beside it the room to hold its line */
-td .iv, td.num.split .aside { white-space: nowrap; }
+   may take the next line. A cell of a column of figures (an arm's level, a change) holds its line whole (4.5 (3.8 to
+   5.0)). A figure with its count after it (95% (38 of 40 trials, 20 cases)) may set its count on the next line, held
+   whole, so a column of such figures gives an interval column beside it the room to hold its line */
+td .iv, td.num.split .aside, td.fig { white-space: nowrap; }
 td.num.split { white-space: normal; }
 td.key { font-weight: 600; }
 [data-table="scoreboard"] table { font-size: var(--t-base); }
@@ -287,6 +290,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
         for column in block.columns
     }
     pinned = {column.key for column in block.columns[: 2 if block.key_columns == 2 else 1]}
+    held = _held_columns(block, pinned)
     head = "".join(
         f'<th scope="col"{_pinned_class(classes[column.key], column.header, column.key in pinned)}'
         f"{'' if column.key in pinned else _head_width(column.header)}>"
@@ -324,15 +328,15 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
                 reading = "" if cell.flag is None else f' <span class="reading">{_cell_code(cell.flag)}</span>'
                 text = f'<span class="figure">{text}</span>' + _glyph(cell, column.key, scales, forms) + reading
             else:
-                css = classes[column.key] or _words_class(cell.text)
+                css = classes[column.key] or _words_class(cell.text, held.get(column.key))
                 text, css = _held_figures(text, css)
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
             pin = column.key in pinned
             tag, scope = ("th", ' scope="row"') if (block.name, column.key) in _ROW_HEADER_COLUMNS else ("td", "")
             # A cell holds a hyphenated word whole, as a pinned one does, so it wraps at its spaces alone; a prose cell
             # (wrap) wraps as a paragraph does.
-            held = held_whole(text) if pin or css != ' class="wrap"' else text
-            cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{held}</{tag}>")
+            laid = held_whole(text) if pin or css != ' class="wrap"' else text
+            cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{laid}</{tag}>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -761,16 +765,42 @@ def _pinned_class(css: str, text: str, pinned: bool) -> str:
     return css[:-1] + ' unbroken"'
 
 
-#: One end of an interval as a cell prints it: a figure, signed or money where it is (``0``, ``43%``, ``-$4.99``,
-#: ``+58``, ``1.2k``).
-_INTERVAL_END = r"[+\-\u2212]?\$?\d[\d.,]*[%\u00d7k]?"
+#: The glossary terms whose columns hold a figure the page decided, each cell a figure as printed: an arm's level, the
+#: control's, a change (``4.5 (3.8 to 5.0)``). A column's cells are found by what the table declares of the column,
+#: never by matching their printed text, so a form the page adds is held as the forms it already prints are.
+_FIGURE_TERMS = frozenset({"arm mean", "control mean", "control", "change"})
 
-#: A cell that is an interval and nothing else: its two ends, and a unit word after them where the cell names one
-#: (``-29 to +58 pts``); never words that happen to hold "to" (``Switch to B1017``).
-_INTERVAL_CELL = re.compile(rf"{_INTERVAL_END} to {_INTERVAL_END}(?: [a-z%]+)?")
+#: The glossary term an interval's column links, and the key a written page's table gives the interval column it
+#: lays beside a figure's (``<figure's key>:interval``) or alone (``interval``).
+_INTERVAL_TERM = "interval"
+_INTERVAL_KEY = "interval"
+_INTERVAL_KEY_SUFFIX = ":interval"
 
-#: An interval's ends and the word between them, where a cell's markup holds them.
-_INTERVAL_SPAN = re.compile(rf"({_INTERVAL_END} to {_INTERVAL_END})")
+#: What a column of words holds, by what its table declares of it: figures, or intervals.
+_Held = Literal["figure", "interval"]
+
+
+def _held_columns(block: TableBlock, pinned: Collection[str]) -> dict[str, _Held]:
+    """The table's columns of figures and of intervals, by key, from the columns as the table declares them (their
+    glossary term, an interval column's key): a pinned column names its row, and holds neither."""
+    held: dict[str, _Held] = {}
+    for column in block.columns:
+        if column.key in pinned:
+            continue
+        if column.term == _INTERVAL_TERM or column.key == _INTERVAL_KEY or column.key.endswith(_INTERVAL_KEY_SUFFIX):
+            held[column.key] = "interval"
+        elif column.term in _FIGURE_TERMS:
+            held[column.key] = "figure"
+    return held
+
+
+#: An interval's two ends and the word between them, in a cell its column says holds a figure or an interval: the
+#: words either side of ``to``, whatever form they print in (``-29 to +58``, ``340ms to 1.2s``, ``$16 to $25``),
+#: without the parentheses around them or a unit word after them.
+_HELD_INTERVAL = re.compile(r"([^\s()<>]+ to [^\s()<>,;]+)")
+
+#: A figure's digit: a cell of words with none states no figure (a dash, ``no variation``).
+_DIGIT = re.compile(r"\d")
 
 
 #: A cell's figure with its count after it, as markup with no tag in it: ``95% (38 of 40 trials, 20 cases)``.
@@ -778,31 +808,50 @@ _COUNTED_FIGURE = re.compile(r"([^\s<>]+) (\([^<>]+\))")
 
 
 def _held_figures(text: str, css: str) -> tuple[str, str]:
-    """A cell's markup and class with its figures held whole: an interval's ends and the word between them in one
-    ``iv`` span, which never breaks, a unit word after it left free to take the next line (``-0.007 to +0.002`` /
-    ``notices``); in a column of numbers, a figure with its count after it classed ``split``, the count in an ``aside``
-    span held whole, so the figure may set its count on the next line rather than hold the column at its full width
-    and squeeze an interval beside it onto two lines ("0 to" above "43%" beside a Value column with room)."""
-    if css == ' class="interval"':
-        return re.sub(_INTERVAL_SPAN, r'<span class="iv">\1</span>', text, count=1), css
+    """A cell's markup and class with its figures held whole: in a cell of figures (``fig``) or of an interval, an
+    interval's ends and the word between them in one ``iv`` span, which never breaks, a unit word after it left free to
+    take the next line (``-0.007 to +0.002`` / ``notices``), and a cell of figures held on one line whole
+    (``4.5 (3.8 to 5.0)``); in a column of numbers, a figure with its count after it classed ``split``, the count in an
+    ``aside`` span held whole, so the figure may set its count on the next line rather than hold the column at its
+    full width and squeeze an interval beside it onto two lines ("0 to" above "43%" beside a Value column with
+    room)."""
+    if css in (' class="interval"', ' class="fig"'):
+        return re.sub(_HELD_INTERVAL, r'<span class="iv">\1</span>', text, count=1), css
     if css.startswith(' class="num') and (counted := _COUNTED_FIGURE.fullmatch(text)) is not None:
         return f'{counted[1]} <span class="aside">{counted[2]}</span>', css[:-1] + ' split"'
     return text, css
 
 
-def _words_class(text: str) -> str:
-    """The class attribute a cell of words takes: ``interval`` for an interval (``0 to 43%``, ``$25 to $34``), which
-    holds on one line, so a narrow frame never reads ``0 to`` above ``43%``; ``wrap`` for prose, which wraps as a
-    paragraph does; none for any other."""
-    if _INTERVAL_CELL.fullmatch(text):
+def _words_class(text: str, held: _Held | None) -> str:
+    """The class attribute a cell of words takes: ``wrap`` for prose, which wraps as a paragraph does; in a column of
+    intervals, ``interval`` for one (``0 to 43%``, ``$25 to $34``), whose ends hold one line, so a narrow frame never
+    reads ``0 to`` above ``43%``; in a column of figures, ``fig`` for one, held on one line whole; none for any other
+    (a dash, words stating no figure)."""
+    if len(text) >= _PROSE_CELL:
+        return ' class="wrap"'
+    if held is None or not _DIGIT.search(text):
+        return ""
+    if held == "interval" and " to " in text:
         return ' class="interval"'
-    return ' class="wrap"' if len(text) >= _PROSE_CELL else ""
+    return ' class="fig"'
+
+
+#: One end of an interval as a chart's values table prints it: a figure, signed or money where it is (``0``, ``43%``,
+#: ``-$4.99``, ``+58``, ``1.2k``).
+_INTERVAL_END = r"[+\-\u2212]?\$?\d[\d.,]*[%\u00d7k]?"
+
+#: A chart's values-table cell that is an interval and nothing else: its two ends, and a unit word after them where
+#: the cell names one (``-29 to +58 pts``); never words that happen to hold "to" (``Switch to B1017``). A values
+#: table's rows are bare strings, with no column a table declares, so its intervals are found by their text.
+_INTERVAL_CELL = re.compile(rf"{_INTERVAL_END} to {_INTERVAL_END}(?: [a-z%]+)?")
 
 
 def _value_cell(cell: str, pinned: bool) -> str:
     """One cell of a chart's table of values: a cell of words wrapping at a measure, an interval held on one line
     (:func:`_held_figures`), any other holding its hyphenated words whole."""
-    css = _words_class(cell)
+    css = ' class="wrap"' if len(cell) >= _PROSE_CELL else ""
+    if _INTERVAL_CELL.fullmatch(cell):
+        css = ' class="interval"'
     text, css = _held_figures(escape(cell), css)
     return (
         f"<td{_pinned_class(css, cell, pinned)}>{held_whole(text) if pinned or len(cell) < _PROSE_CELL else text}</td>"

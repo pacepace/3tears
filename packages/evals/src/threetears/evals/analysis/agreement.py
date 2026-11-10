@@ -76,7 +76,6 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 
 from pydantic import Field
 
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
     KappaMoments,
     cohen_kappa,
@@ -106,6 +105,7 @@ from threetears.evals.schema.models import (
 )
 
 if TYPE_CHECKING:
+    from threetears.evals.analysis.report.forms import PageForms
     from threetears.evals.kernel.result_reading import RepeatView, ResultView, ScoreView, SecondJudgingView
     from threetears.evals.schema.models import (
         CalibrationRating,
@@ -1402,11 +1402,15 @@ def tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKe
     return weakest_judged_tier(found) if found else "undetermined"
 
 
-def tier_sentence(tier: JudgeEvidenceTier) -> str:
-    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
+def tier_sentence(tier: JudgeEvidenceTier, forms: PageForms) -> str:
+    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it,
+    every figure (a kappa, its bounds and bar, a temperature, a count of cases) printed by ``forms``.
 
     :param tier: The tier as decided.
     :ptype tier: JudgeEvidenceTier
+    :param forms: The forms of the page the sentence is printed on, which print its every figure by the lone figure
+        rule.
+    :ptype forms: PageForms
     :return: The sentence, naming the judge (its config, when one asked, its temperature and the request settings its
         calls were sent with), the tier and each criterion's
         agreement, pairs and results against its bar — and, for a tier read from a stored judge profile, the profile,
@@ -1423,21 +1427,21 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
         if temperature is None
         else ", sent no temperature"
         if temperature == MODEL_DEFAULT_TEMPERATURE
-        else f", temperature {format_number(temperature)}"
+        else f", temperature {forms.lone(temperature).text}"
     )
     judge += f", {sent_settings_phrase(tier.judge_sent_settings)}"
     measured = (
         f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
-        f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}."
+        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}."
     )
     consulted = tier.consulted_profile
     if consulted is not None:
         return (
             f"{measured} This campaign's evidence decided no tier, so it consulted the judge's stored profile "
-            f"{consulted.profile_id}, measured at {consulted.measured_at} on {format_number(consulted.cases)} frozen "
+            f"{consulted.profile_id}, measured at {consulted.measured_at} on {forms.lone(consulted.cases).text} frozen "
             f"cases (case set {consulted.case_set_fingerprint[:12]}, runs {', '.join(consulted.run_ids)}), which is "
-            f"undetermined too: agreement with the labels {_criterion_words(consulted.calibration)}; with its own "
-            f"repeats {_criterion_words(consulted.separation)}."
+            f"undetermined too: agreement with the labels {_criterion_words(consulted.calibration, forms)}; with its own "
+            f"repeats {_criterion_words(consulted.separation, forms)}."
         )
     profile = tier.from_profile
     if profile is None:
@@ -1446,17 +1450,18 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
     # the campaign's own evidence read (#628).
     return (
         f"{tier.rubric_dim} ({judge}): {tier.tier}, read from the judge's stored profile {profile.profile_id}, "
-        f"measured at {profile.measured_at} on {format_number(profile.cases)} frozen cases (case set "
+        f"measured at {profile.measured_at} on {forms.lone(profile.cases).text} frozen cases (case set "
         f"{profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)}) — agreement with the labels "
-        f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}. This "
-        f"campaign's own evidence decided no tier: agreement with people {_criterion_words(profile.own_calibration)}; "
-        f"with its own repeats {_criterion_words(profile.own_separation)}."
+        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}. This "
+        f"campaign's own evidence decided no tier: agreement with people {_criterion_words(profile.own_calibration, forms)}; "
+        f"with its own repeats {_criterion_words(profile.own_separation, forms)}."
     )
 
 
-def _criterion_words(criterion: TierCriterion) -> str:
-    """A criterion as a clause: its agreement, bounds, pairs and results against the bar, and what it still needs."""
-    bar = f"(bar {format_number(criterion.threshold)} over at least {criterion.min_results} results)"
+def _criterion_words(criterion: TierCriterion, forms: PageForms) -> str:
+    """A criterion as a clause: its agreement, bounds, pairs and results against the bar, and what it still needs,
+    each figure by the lone figure rule, in ``forms``."""
+    bar = f"(bar {forms.lone(criterion.threshold).text} over at least {criterion.min_results} results)"
     needed = criterion.results_needed
     if criterion.n == 0:
         return f"not measured {bar} — needs {criterion.min_results} results"
@@ -1468,14 +1473,14 @@ def _criterion_words(criterion: TierCriterion) -> str:
     over = f"over {criterion.n} pairs from {criterion.results} results"
     if criterion.interval is not None:
         low, high = criterion.interval
-        over = f"(bounds {format_number(low)} to {format_number(high)}) {over}"
+        over = f"(bounds {forms.lone(low).text} to {forms.lone(high).text}) {over}"
     verdict = {
         "met": "meets",
         "not_met": "misses",
         "undecided": "undecided — the bounds straddle",
         "insufficient": "too few results for" if criterion.results < criterion.min_results else "no bounds for",
     }[criterion.state]
-    clause = f"{format_number(criterion.agreement)} {over}, {verdict} {bar}"
+    clause = f"{forms.lone(criterion.agreement).text} {over}, {verdict} {bar}"
     if needed is not None and criterion.state == "insufficient":
         clause += f" — needs {needed} more results"
     elif needed is not None:

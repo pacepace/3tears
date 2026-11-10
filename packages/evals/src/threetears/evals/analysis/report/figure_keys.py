@@ -127,6 +127,9 @@ from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_TH
 from threetears.evals.analysis.report.words import (
     TOLD_APART,
     arm_tags,
+    aspect_stratum_key,
+    given_name,
+    judged_name,
     reader_arm_name,
     stratum_name,
     stratum_names,
@@ -188,7 +191,7 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import check_names, humanize, measure_name
+from threetears.evals.analysis.style import check_names, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 if TYPE_CHECKING:
@@ -848,7 +851,7 @@ _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
     if field == "name":
-        return _text(path, aspect.name or humanize("dimension", aspect.id), "the aspect's name")
+        return _text(path, given_name(aspect.id, aspect.name), "the aspect's name")
     if field == "margin":
         return _number(path, aspect.margin, "the aspect's margin", "points")
     rule = aspect.pass_rule
@@ -1710,7 +1713,7 @@ def _task_field(report_input: ReportInput, values: tuple[str, ...], path: str) -
     task_id, field = values
     task = _task(report_input, task_id)
     if field == "name":
-        return _text(path, task.name or humanize("dimension", task.id), "the task's name")
+        return _text(path, given_name(task.id, task.name), "the task's name")
     if field == "n_cases":
         return _number(path, task.n_cases, "the task's cases", "count")
     return _number(path, task.share, "the task's share of traffic", "share", whole=True)
@@ -1869,8 +1872,17 @@ _STRATUM_FIELDS = ("name", "n_cases", "share")
 _StratumRead = Callable[[ReportInput, Stratum, tuple[str, ...], str], Figure]
 
 
-def _stratum(report_input: ReportInput, stratum_id: str) -> Stratum:
-    return next(stratum for stratum in report_input.strata if stratum.id == stratum_id)
+def _stratum(report_input: ReportInput, stratum_id: str, aspect_id: str | None = None) -> Stratum:
+    """The stratum of that id (on that aspect, where one is named): the first the input holds.
+
+    :raises KeyError: The input holds no such stratum.
+    """
+    held = (s for s in _scoped_strata(report_input, aspect_id) if s.id == stratum_id)
+    found = next(held, None)
+    if found is None:
+        on = "" if aspect_id is None else f" on aspect {aspect_id}"
+        raise KeyError(f"the input holds no stratum {stratum_id}{on}")
+    return found
 
 
 def _scoped_strata(report_input: ReportInput, aspect_id: str | None) -> list[Stratum]:
@@ -3524,14 +3536,16 @@ def _measure_reader_name(key: str, report_input: ReportInput) -> str:
     return measure_name(key)
 
 
-def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> str:
+def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput, *, aspect: str | None = None) -> str:
     """The one name a reader is shown for an id: the name the input declares, else the package's reader name for it.
 
-    An aspect, stratum or task by its declared name; a measure by its label (the catalog's reader name), a judged
-    dimension by its label, a criterion by its label; each, where none is declared, as the package names it otherwise
-    (:func:`~threetears.evals.analysis.style.measure_name` for a measure, the id with its underscores and dots as
-    spaces for anything else, :func:`~threetears.evals.analysis.style.humanize`), and a criterion by its measure's
-    reader name. The ``.name`` and ``.label`` figure keys print the same name.
+    An aspect, stratum or task by its declared name, else its id with its underscores and dots as spaces
+    (:func:`~threetears.evals.analysis.report.words.given_name`); a stratum among its own aspect's strata, two that
+    would print alike each by its id (:func:`~threetears.evals.analysis.report.words.stratum_names`); a measure by its
+    label (the catalog's reader name), else as :func:`~threetears.evals.analysis.style.measure_name` names it; a judged
+    dimension by its declared label, else its name (:func:`~threetears.evals.analysis.report.words.judged_name`); a
+    criterion by its label, else its measure's reader name. The ``.name`` and ``.label`` figure keys print the same
+    name.
 
     :param kind: What the id names.
     :ptype kind: NamedKind
@@ -3539,13 +3553,17 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
     :ptype identifier: str
     :param report_input: The report input.
     :ptype report_input: ReportInput
+    :param aspect: For a stratum, the aspect whose stratum of that id is named: a stratum id held on more than one
+        aspect is a stratum on each, and each aspect may name its own differently. None names the first the input
+        holds.
+    :ptype aspect: str | None
     :return: The reader name.
     :rtype: str
-    :raises KeyError: The input holds no such id of that kind.
+    :raises KeyError: The input holds no such id of that kind (a stratum: on that aspect).
     """
     if kind == "aspect":
-        aspect = aspect_of(report_input, identifier)
-        return aspect.name or humanize("dimension", aspect.id)
+        named = aspect_of(report_input, identifier)
+        return given_name(named.id, named.name)
     if kind == "measure":
         label = report_input.measures[identifier].label
         # A goal check the input declares no display name for carries its bare expression as its label: it is named
@@ -3554,18 +3572,23 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
             return check
         return measure_name(identifier) if label is None else label
     if kind == "judged":
-        return report_input.judged[identifier].label or humanize("dimension", identifier)
+        return judged_name(identifier, report_input.judged[identifier].label)
     if kind == "stratum":
-        return _printed_stratum(report_input, _stratum(report_input, identifier))
+        return _printed_stratum(report_input, _stratum(report_input, identifier, aspect))
     if kind == "task":
         task = _task(report_input, identifier)
-        return task.name or humanize("dimension", task.id)
+        return given_name(task.id, task.name)
     criterion = _criterion(report_input, identifier)
     return criterion.label or _measure_reader_name(criterion.measure, report_input)
 
 
 def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
     """Every id's reader name (:func:`reader_name`), by kind, then id, in the input's order.
+
+    A stratum id held on more than one aspect that the aspects print differently (each declares its own name, or two
+    of one aspect's ids would print alike there) is a name for each: keyed by the stem its figure keys take on that
+    aspect (``aspects.<aspect>.strata.<id>``), so no aspect's name of it is dropped. One every aspect prints alike is
+    keyed by its id.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -3582,10 +3605,29 @@ def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
         "criterion": [criterion.id for criterion in report_input.criteria],
     }
     return {
-        kind: {identifier: reader_name(kind, identifier, report_input) for identifier in dict.fromkeys(held)}
+        kind: (
+            _strata_names(report_input)
+            if kind == "stratum"
+            else {identifier: reader_name(kind, identifier, report_input) for identifier in dict.fromkeys(held)}
+        )
         for kind, held in ids.items()
         if held
     }
+
+
+def _strata_names(report_input: ReportInput) -> dict[str, str]:
+    """Each stratum's reader name, by id, or by its aspect's stem where its aspects print one id differently."""
+    printed: dict[str, dict[str | None, str]] = {}
+    for stratum in report_input.strata:
+        printed.setdefault(stratum.id, {}).setdefault(stratum.aspect, _printed_stratum(report_input, stratum))
+    named: dict[str, str] = {}
+    for identifier, by_aspect in printed.items():
+        if len(set(by_aspect.values())) == 1:
+            named[identifier] = next(iter(by_aspect.values()))
+            continue
+        for aspect, name in by_aspect.items():
+            named[identifier if aspect is None else aspect_stratum_key(aspect, identifier)] = name
+    return named
 
 
 def page_arm_names(report_input: ReportInput) -> dict[str, str]:

@@ -57,6 +57,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import ArmLook, PageLook
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION, PageArmsKey
+from threetears.evals.analysis.report.words import given_name
 from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
@@ -357,7 +358,7 @@ def _aspect_key(family: str, aspect: Aspect) -> str:
 
 def _aspect_header(aspect: Aspect, header: str) -> str:
     """One aspect's column head: its name, then what the column holds (``Speed pass rate``)."""
-    name = aspect.name or aspect.id
+    name = given_name(aspect.id, aspect.name)
     return ASPECT_HEADER_TEMPLATE.format(aspect=name[:1].upper() + name[1:], header=header[:1].lower() + header[1:])
 
 

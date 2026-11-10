@@ -78,14 +78,14 @@ from threetears.evals.analysis.report.charts import ChartReference, KitChart, Le
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
-    NamedKind,
     figure_unit,
     held_kind,
     input_check_name,
+    reader_name,
     resolve,
 )
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
-from threetears.evals.analysis.report.words import label_case
+from threetears.evals.analysis.report.words import judged_name, label_case
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
@@ -385,7 +385,7 @@ def _reader_name(report_input: ReportInput, key: str, *, kind: str | None) -> st
             return check
         return measure_name(key) if label is None else label
     if key in report_input.judged:
-        return report_input.judged[key].label or measure_name(key)
+        return judged_name(key, report_input.judged[key].label)
     return measure_name(key)
 
 
@@ -925,7 +925,9 @@ def misses_line(value: float, line: ChartReference | None) -> bool:
 
 
 def slice_name(context: ChartContext, item: Stratum | Task) -> str:
-    """A stratum's or task's reader name.
+    """A stratum's or task's reader name (:func:`~threetears.evals.analysis.report.figure_keys.reader_name`): a
+    stratum among its own aspect's strata, so a stratum of one id on two aspects reads as each aspect names it, and
+    two that would print alike there each read as their id.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
@@ -934,8 +936,9 @@ def slice_name(context: ChartContext, item: Stratum | Task) -> str:
     :return: Its name.
     :rtype: str
     """
-    kind: NamedKind = "stratum" if isinstance(item, Stratum) else "task"
-    return item.name or context.look.reader(kind, item.id)
+    if isinstance(item, Stratum):
+        return reader_name("stratum", item.id, context.report_input, aspect=item.aspect)
+    return reader_name("task", item.id, context.report_input)
 
 
 def _held_keys(slices: Iterable[Stratum | Task | Cell]) -> list[str]:

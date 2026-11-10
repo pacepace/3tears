@@ -145,7 +145,9 @@ from threetears.evals.analysis.report.words import (
     input_arm_tags,
     reader_arm_labels,
     PASS_RATE,
+    CASES_READING,
     judged_heading,
+    judged_name,
     one_figure_each,
     stratum_name,
     stratum_names,
@@ -216,6 +218,10 @@ from threetears.evals.schema.models import (
 
 #: What the methods say of a report no analysis was written for.
 NO_ANALYSIS = "none written yet; generating an analysis writes one from this same evidence"
+
+#: What the methods say of the analysis inside a written report's evidence record: the report around it is the
+#: analysis, and its last line says how it was written.
+IN_THE_WRITTEN_REPORT = "this written report, from this same evidence"
 
 #: How a guardrail is decided, said once in the methods' disclosures.
 _GUARDRAILS_DISCLOSURE = (
@@ -2859,7 +2865,7 @@ def _strata_blocks(
         by_name = {stratum.stratum: stratum for stratum in cell.strata}
         cases: dict[str, CellValue] = {
             "arm": arm,
-            "reading": "cases",
+            "reading": CASES_READING,
             "all": _cases_text(cell.n_observations, cell.n_cases),
         }
         for name in names:
@@ -3394,7 +3400,7 @@ def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
         return said if all(name and _SAYS_CHECK.search(name) for name in named) else f"check: {said}"
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
-        return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"
+        return "judge: " + ", ".join(judged_name(dim) for dim in under) if under else "failed by the judge"
     return cause_short(trial.cause or "unknown")
 
 
@@ -3773,7 +3779,7 @@ def _method_blocks(
         if text and text.strip():
             blocks.append(DisclosureBlock(section="methods", source=source_of, text=text.strip(), fold="Disclosures"))
 
-    for index, sentence in enumerate(_judge_sentences(bundle)):
+    for index, sentence in enumerate(_judge_sentences(bundle, forms)):
         # The first judge's line links the judged score, so the glossary states its scale once.
         blocks.append(
             DisclosureBlock(
@@ -3905,16 +3911,16 @@ def _methods_table(
 _DIMS = "\x00"
 
 
-def _judge_sentences(bundle: AnalysisContextBundle) -> list[str]:
+def _judge_sentences(bundle: AnalysisContextBundle, forms: PageForms) -> list[str]:
     """Each judge's tier, one sentence per judge that reads alike: the dimensions it holds for named together, its
     settings as words, never ``key=value``, and its prompt's id left to the bundle's JSON, which names it by dimension
     (``tier_sentence`` states one dimension in full)."""
     alike: dict[str, list[str]] = {}
     for tier in bundle.judge_evidence_tiers:
-        said = tier_sentence(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}))
+        said = tier_sentence(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}), forms)
         said = said.replace(sent_settings_phrase(tier.judge_sent_settings), _sent_words(tier.judge_sent_settings))
         # The dimension by the name every other surface gives it, never its stored id.
-        if (dim := measure_name(tier.rubric_dim)) not in alike.setdefault(said, []):
+        if (dim := judged_name(tier.rubric_dim)) not in alike.setdefault(said, []):
             alike[said].append(dim)
     return ["Judge: " + said.replace(_DIMS, _listed_words(dims), 1) for said, dims in alike.items()]
 
@@ -4180,6 +4186,7 @@ __all__ = [
     "AnalysisLead",
     "aspect_verdict",
     "contrast_evidence",
+    "IN_THE_WRITTEN_REPORT",
     "NO_ANALYSIS",
     "contrast_rows",
     "report_cell_labels",

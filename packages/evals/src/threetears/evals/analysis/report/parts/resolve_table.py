@@ -397,7 +397,9 @@ def _examples(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         yield {
             "trial": _words(example.trial),
             "case": _words(example.case),
-            "stratum": _words(context.look.reader("stratum", example.stratum) if example.stratum else None),
+            "stratum": _words(
+                context.look.reader("stratum", example.stratum, aspect=example.aspect) if example.stratum else None
+            ),
             "arm": _arm(context, example.arm or ""),
             "outcome": _words(example.outcome),
             "reason": _words(example.reason),

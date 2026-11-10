@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.kernel.numbers import MoneyForm, spell_at
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
@@ -1184,7 +1185,9 @@ class ChartBlock(_Block):
             return self.data.values_table(self.unit)
         if self.chart == "outcome_bar":
             labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
-            headers = ["Arm", "ran", *labels]
+            # The headers are labels, each starting with a capital; the segments keep their words as the legend and
+            # the tooltips say them.
+            headers = ["Arm", "Ran", *(label_case(label) for label in labels)]
             body = []
             for bar in self.bars:
                 counts = {segment.label: segment.count for segment in bar.segments}
