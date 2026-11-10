@@ -2143,7 +2143,8 @@ def bar_blocks(
             {
                 "aspect": names.cell(status.aspect),
                 "arm": status.arm_label,
-                "measure": named(status.aspect, status.measure),
+                # Named with the count its ruler states it per (``, per 1,000 replies``), as its aspect's page names it.
+                "measure": ruler(status).scaled(named(status.aspect, status.measure)),
                 # Each figure of the bar's measure, which the page records the cell under.
                 "bar": forms.of_measure(
                     TableCell(

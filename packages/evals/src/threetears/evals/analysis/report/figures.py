@@ -171,9 +171,11 @@ def _is_share(name: str, facts: MeasureFacts, described: MetricDescriptor | None
 
 def _money_ruler(amounts: Iterable[float | None]) -> MeasureRuler:
     """Money's ruler over the per-reply amounts it will state, by the one owner of money's scale
-    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per reply, or per 1,000 (1,000,000)
-    replies where some amount is under a cent per reply (per 1,000), its form chosen from every amount."""
-    ruler = money_ruler(amounts, per=1, start=1)
+    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per 1,000,000
+    where some amount is under a cent per 1,000, its form chosen from every amount; the ruler the campaign's scorecard
+    and its written page state the measure on, so one measure reads on one ruler on every page (``$20``, never
+    ``$0.020`` beside it)."""
+    ruler = money_ruler(amounts, per=1, start=1000)
     per = {1000: PER_THOUSAND_REPLIES, 1_000_000: PER_MILLION_REPLIES}.get(ruler.counted, "")
     return MeasureRuler(ruler.scale, MONEY, per, ruler.form)
 
