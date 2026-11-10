@@ -55,7 +55,7 @@ SELECT n.nspname AS schema_name,
   JOIN pg_class c ON c.oid = i.indexrelid
   JOIN pg_class t ON t.oid = i.indrelid
   JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = ANY($1::text[])
+ WHERE n.nspname::text = ANY($1::text[])
    AND NOT (i.indisvalid AND i.indisready AND i.indislive)
  ORDER BY n.nspname, c.relname
 """
