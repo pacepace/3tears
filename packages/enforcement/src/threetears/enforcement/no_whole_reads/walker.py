@@ -1287,6 +1287,27 @@ class _ModuleWalk(ast.NodeVisitor):
             self._judge_helper(node)
         self.generic_visit(node)
 
+    def _resolved_call(self, node: ast.Call) -> ast.Call:
+        """the call with each argument that is a known string (a module or imported constant, a string the function
+        binds once) written as that string, so a helper's table named by a constant (``LINK_REDEMPTIONS_TABLE``)
+        reads as the literal.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: a copy with its known strings as literals
+        :rtype: ast.Call
+        """
+
+        def literal(value: ast.expr) -> ast.expr:
+            text = _constant_text(value, self._envs[-1])
+            return ast.Constant(text) if text is not None and not isinstance(value, ast.Constant) else value
+
+        return ast.Call(
+            func=node.func,
+            args=[literal(argument) for argument in node.args],
+            keywords=[ast.keyword(arg=k.arg, value=literal(k.value)) for k in node.keywords],
+        )
+
     def _judge_helper(self, node: ast.Call) -> None:
         """judge each statement a keyed helper call sends (``read_keyed``, ``keyset_page``, ...), as SQL written in the
         calling function: :mod:`~threetears.enforcement.no_whole_reads.helpers` writes it from the call's arguments.
@@ -1299,7 +1320,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if _final(node) not in KEYED_HELPER_CALLS:
             return
         statement: HelperStatement
-        for statement in helper_statements(node):
+        for statement in helper_statements(self._resolved_call(node)):
             if statement.sql is UNSEEN or statement.sql is None:
                 self._hit(node, f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
                 continue

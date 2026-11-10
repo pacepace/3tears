@@ -1568,3 +1568,31 @@ def test_a_keyed_helper_is_judged_by_the_statement_it_sends(tmp_path: Path) -> N
     assert not any(function == "by_key" for function, _ in found), found
     assert any(function == "by_kind" for function, _ in found), found
     assert any(function == "unread" and symbol.startswith("unknown-predicate read_keyed") for function, symbol in found)
+
+
+_CONSTANT_TABLE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_before
+
+    LINKS = "link_redemptions"
+    LINKS_SCHEMA = TableSchema(
+        name=LINKS,
+        primary_key="token_id",
+        columns=[],
+        indexes=(Index("links_by_expiry", "expires_at", purpose="src/links.py::prune"),),
+    )
+
+    async def prune(conn, cutoff):
+        return await delete_before(conn, LINKS, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+
+    async def prune_any(conn, table, cutoff):
+        return await delete_before(conn, table, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+"""
+
+
+def test_a_helper_s_constant_argument_reads_as_its_literal(tmp_path: Path) -> None:
+    """Flips if a helper whose table is a module constant is unknown rather than judged, or one whose table is a
+    parameter the walk cannot read passes."""
+    found = _symbols(_config(tmp_path, {"links.py": _CONSTANT_TABLE}))
+    assert not any(function == "prune" for function, _ in found), found
+    assert any(function == "prune_any" and "unknown-predicate delete_before" in s for function, s in found), found
