@@ -6,11 +6,13 @@ whole to the column's type, so the column is compared with values of its own typ
     SELECT <columns> FROM <table> AS t WHERE t."id" = ANY($1::text[]::uuid[]) AND t."tenant" = $2
 
     SELECT <columns> FROM <table> AS t
-      JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k
-        ON t."a" = k.k0 AND t."b" = k.k1
+     WHERE t."a" = ANY($1::text[]) AND t."b" = ANY($2::text[]::bigint[])
+       AND (t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)
 
-Never a cast per element in the join (``t."id" = CAST(k.k0 AS uuid)``): Postgres plans that as an index scan with no
-index condition, reading every row of the index for a handful of keys.
+Each key column is an index condition (``= ANY``), whatever join the planner picks for the rest. A join of the
+keys alone (``JOIN (SELECT unnest(...)) k ON t."id" = CAST(k.k0 AS uuid)``) is keyed only while the planner picks a
+nested loop; at other statistics it hash-joins and reads the whole table (the hub's credit rates: 3,004 rows read for
+3 keys).
 
 With the key columns a leading part of the table's primary key (or of an index declared for the caller's read),
 PostgreSQL, YugabyteDB and DuckDB each answer it by the key: a lookup whose cost is the keys', whatever the table
@@ -153,10 +155,18 @@ class _Statement:
             where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions])
             return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned)
         unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
-        match = "IS NOT DISTINCT FROM" if self.keys.null_safe else "="
-        joined = " AND ".join(f"{column} {match} k.k{index}" for index, column in enumerate(columns))
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
+        if self.keys.null_safe:
+            # a NULL bucket matches only by IS NOT DISTINCT FROM, which = ANY cannot say: joined to the keys
+            joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
+            where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (*arrays, *pinned)
+        # each column = ANY its values is an index condition whatever join the planner picks for the rest (a hash
+        # join of the keys alone would scan the table): the index is read for the values' cross product at most, and
+        # the row comparison then keeps exactly the keys named
+        named = f"({', '.join(columns)}) IN (SELECT {unnested})"
+        bounds = [f"{column} = ANY({array})" for column, array in zip(columns, typed, strict=True)]
+        where = " AND ".join([*bounds, named, *conditions])
+        return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned)
 
     def _typed_array(self, place: int) -> str:
         """placeholder ``place``'s text array, cast as a whole to its key column's type."""
