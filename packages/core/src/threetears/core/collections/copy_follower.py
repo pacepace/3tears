@@ -731,26 +731,54 @@ class CopyFollower:
             self._registry.generation_marks.adopt_generation(name, marks[name])
 
     async def start(self) -> bool:
-        """register, and fill the copy: from the newest checkpoint, whose marks the registry adopts so the next
-        :meth:`catch_up` walks the log from them; or, when there is none, by reading every table whole (:meth:`warm`).
+        """register, and fill the copy: each table from the checkpoint that holds it (the newest, else the previous),
+        whose marks the registry adopts so the next :meth:`catch_up` walks the log from them. A table no checkpoint
+        holds at its schema is read whole, alone (why ``cold_start`` or ``schema_change``); with no checkpoint at
+        all, every table is (:meth:`warm`).
 
-        :return: whether it started from a checkpoint
+        :return: whether any table started from a checkpoint
         :rtype: bool
         """
         self.register()
-        staged = None if self._checkpoints is None else await self._checkpoints.stage()
-        if staged is None:
+        if self._checkpoints is None:
             await self.warm()
             return False
-        stamp, marks, changes, rows = staged
+        staged = await self._checkpoints.stage()
+        if not staged.loaded:
+            await self._warm_tables({name: staged.missing.get(name, "cold_start") for name in self._tables})
+            return False
         self._mark += 1
-        await asyncio.to_thread(self._backend.apply_staged, changes, mark=self._mark)
-        self._stamps[self._mark] = (stamp, dict(marks))
-        self.adopt_marks(marks)
-        self._status.stamp = stamp
-        self._say(FollowerPhase.FOLLOWING, f"loaded a checkpoint of {rows} rows; catching up from its marks")
+        await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
+        # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
+        self._stamps[self._mark] = (staged.stamp, dict(staged.marks))
+        for name, mark in staged.marks.items():
+            self._registry.generation_marks.adopt_generation(name, mark)
+        self._status.stamp = staged.stamp
+        if staged.missing:
+            await self._warm_tables(dict(staged.missing))
+        self._say(
+            FollowerPhase.FOLLOWING,
+            f"loaded a checkpoint of {staged.rows} rows ({len(staged.missing)} tables read whole); catching up",
+        )
         self._poked.set()
         return True
+
+    async def _warm_tables(self, whys: Mapping[str, str]) -> None:
+        """take these tables' marks at the head and read each whole at the next apply, counted by why.
+
+        :param whys: each table and why (:data:`WHOLE_READ_WHYS`)
+        :ptype whys: Mapping[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        self._status.phase = FollowerPhase.WARMING
+        for why in sorted(set(whys.values())):
+            _warms().labels(why=why).inc()
+        for name in whys:
+            token = await self._generation(name)
+            await self._registry.catch_up_generation(name, token, changes=self._changes)
+        for name, why in whys.items():
+            self._read_whole(name, why)
 
     async def warm(self) -> None:
         """the first start: take each table's mark at the head, then read every table whole beside the copy and swap
@@ -760,13 +788,7 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        self._status.phase = FollowerPhase.WARMING
-        _warms().labels(why="cold_start").inc()
-        for name in self._tables:
-            token = await self._generation(name)
-            await self._registry.catch_up_generation(name, token, changes=self._changes)
-        for name in self._tables:
-            self._read_whole(name, "cold_start")
+        await self._warm_tables(dict.fromkeys(self._tables, "cold_start"))
 
     def marks(self) -> dict[str, str | None]:
         """each table's mark in the registry now: what a checkpoint of the copy at its stamp records.
@@ -859,6 +881,13 @@ class CopyFollower:
             # a failed apply keeps every stage: the next pass tries only the apply again, never a read
             rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
             self._stamps[mark] = (label, dict(self._staging_marks))
+            # what this apply touched, for the checkpoint's incremental parts: a table read whole is every scope
+            touched: dict[str, frozenset[str] | None] = {
+                name: None
+                if name in self._staged_whole
+                else frozenset(scope for scope in self._staged_scopes.get(name, ()) if scope is not None)
+                for name in self._staged
+            }
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
             self._staged = {}
@@ -876,20 +905,22 @@ class CopyFollower:
             )
             for listener in tuple(self._listeners):
                 listener(label)
-            self._checkpoint_when_due(rows)
+            self._checkpoint_when_due(rows, touched)
             return True
 
-    def _checkpoint_when_due(self, rows: int) -> None:
+    def _checkpoint_when_due(self, rows: int, touched: Mapping[str, frozenset[str] | None]) -> None:
         """count a change's rows toward the next checkpoint, and write one beside the follower when it is due.
 
         :param rows: the rows the change applied
         :ptype rows: int
+        :param touched: each table the change applied and the scopes it touched; None for a table read whole
+        :ptype touched: Mapping[str, frozenset[str] | None]
         :return: nothing
         :rtype: None
         """
         if self._checkpoints is None:
             return
-        self._checkpoints.applied(rows)
+        self._checkpoints.applied(rows, touched)
         if not self._checkpoints.due() or (self._checkpointing is not None and not self._checkpointing.done()):
             return
         self._checkpointing = asyncio.create_task(self._write_checkpoint())

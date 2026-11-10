@@ -55,6 +55,54 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
+        attr_name="_whole",
+        rationale=(
+            "the tables to read whole at the next apply and why (a cold start, a reset, a schema change, an older writer's record): heard from the registry, which a restart hears again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged_whole",
+        rationale=(
+            "the tables a pass staged whole and why, kept to put back if the stage is forgotten; the rows are in the copy's own DuckDB staging tables"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged_scopes",
+        rationale=(
+            "the scopes each staged change holds rows of, to judge it against a write in progress; derived from the staged rows, which a restart reads again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_current_at",
+        rationale=(
+            "when each table was last current in this process, the start of its change-notes bracket if it falls behind; a restart starts from a checkpoint or L3"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
+        class_name="CopyCheckpoints",
+        attr_name="_touched",
+        rationale=(
+            "the (table, scope) parts changed since the last checkpoint, by table: what the next write rewrites; a restart writes in full"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scope_epochs.py",
+        class_name="ScopeEpochs",
+        attr_name="_rows",
+        rationale=(
+            "the writer's seqlock rows last read, by scope: the base the next read of what changed merges into; a restart reads them whole once"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
         attr_name="_partitions_staged",
         rationale=(
             "the loads' partitions whose rows a pass staged and has not yet applied, kept to put back if the pass "

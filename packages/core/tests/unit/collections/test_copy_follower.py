@@ -506,6 +506,8 @@ async def test_a_checkpoint_written_part_way_moves_no_pointer_and_leaves_nothing
     before = dict(pointers.entries)
     kept = set(store.objects)
     store.fail_put_at = store.puts + 2
+    # nothing changed since, so an incremental write would reuse every part: changes of unknown reach write in full
+    checkpoints.applied(1)
     with pytest.raises(ConnectionError):
         await checkpoints.write(writer.reading_marked)
     # the pointer still names the old checkpoint, every part of it is there, and no claim or lock is left

@@ -33,9 +33,7 @@ _TABLE = "races"
 
 
 def _drops(why: str) -> float:
-    return (
-        REGISTRY.get_sample_value("collection_whole_table_drops_total", {"table": _TABLE, "why": why}) or 0.0
-    )
+    return REGISTRY.get_sample_value("collection_whole_table_drops_total", {"table": _TABLE, "why": why}) or 0.0
 
 
 def test_a_reach_is_named_only_on_a_whole_table_record() -> None:

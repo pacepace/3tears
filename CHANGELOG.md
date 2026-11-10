@@ -68,17 +68,35 @@ follower behind (`status().behind`); a whole-table record reads that table again
 commit with the change.
 
 **Added (core):** `CopyCheckpoints` writes the copy at a stamp to the pod's own Object Store (memory, R3) as
-immutable Arrow parts under a write claim, moves one pointer by CAS and then retires the old parts; a start loads
-it and walks the epoch log from its marks. A checkpoint is due by rows applied since the last, never a timer, and
-one is kept per schema digest, so two code versions never load each other's.
+immutable Arrow parts under a write claim, moves one pointer by CAS to a manifest, and retires only parts neither
+the new checkpoint nor the one before it names. A checkpoint is due by rows applied since the last, never a timer.
+Each table loads on its own: from the newest checkpoint whose digest of that table matches, else the previous one;
+a table neither holds is read whole alone (`StagedCheckpoint.missing`: `cold_start`, `schema_change`). A write
+rewrites only the (table, scope) parts changed since the last (`applied(rows, touched)`) and keeps the rest by name;
+a failed write gives back what it took (`copy_checkpoint_writes_total{kind,outcome}`).
 
-**Added (core, epoch):** a load from files records its partition: its whole-table record names the constants its
-rows hold (`EpochChange.partition`; `EpochGenerationSource.advance_with_change(partition=)`). A reader built before
-it reads the record as the whole table, which it still says. `CollectionRegistry.drop_partition` tells a derived
-cache registered with `on_partition=` in place of dropping the table; the collection's L1 and every other cache
-drop the table as before. The follower reads a load's partition back from L3 by every partition column
-(`FollowedTable.partition_order`, `FollowedTable.l3_kinds`, a column the copy does not hold included) as keyed
-upserts, so a key also heard by a write is read once, newest last.
+**Changed (core, epoch, nats): nothing reads more than a change.** The only whole read is a true cold start or an
+operator's reset.
+
+- A whole-table epoch names its reach: `EpochChange.prefixes` (a set of primary-key prefixes, a load's or a
+  clear's) or `EpochChange.reason="reset"` (`RESET_REASON`), carried through `advance_for_write`,
+  `advance_recording` and `advance_with_change(prefixes=, reason=)`. One prefix is also named as the older
+  `partition`; a reader built before them reads the record as the whole table.
+- `SchemaBackedCollection.truncate()` is refused on a table whose epochs are recorded; `reset()` is the operator's
+  whole-table change. `load_files(prefixes=)` names the key prefixes its rows fall in (or the one its constants
+  lead the key with) and is refused naming neither; the rail's `l3.load_files` names them (`key_prefixes`) and
+  `l3.truncate` its `reason`. `clear_partition(prefixes, conn=)` deletes key prefixes by key on a caller's
+  transaction.
+- A registry tells a derived cache each prefix (`drop_partitions`) and a reset (`on_table_reset=`), counts every
+  whole drop by why (`collection_whole_table_drops_total`), and catches a table it is behind on up from its change
+  notes since it was last current (`resolve_behind_from_notes`; a whole-table note leaves it behind, `notes_whole`).
+- `CopyFollower` applies every scope a long write does not hold (`FollowedTable.scope`, `PartialStamp`), reads key
+  prefixes as key ranges a batch of values a statement, re-reads a reset table alone, counts every whole read by why
+  (`copy_follower_whole_reads_total`; `GATED_WHOLE_READ_WHYS` are those a replay must keep at zero), and resolves
+  BEHIND from the notes, never by a warm.
+- `ScopeEpochs.settled()` reads only what changed after its first read: one statement for the writer's row, every
+  pending scope and every scope past the last version it read, merged into a cached snapshot; it reads whole again
+  only when the record cannot be trusted (`scope_epochs_whole_reads_total{table,why}`).
 
 ### core: a table switched on by its write-mark trigger alone advances, and the hub says it does
 

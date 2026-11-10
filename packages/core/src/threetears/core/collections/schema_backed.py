@@ -2467,10 +2467,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         reach = WholeReach(reason=RESET_REASON) if reset else None
         try:
-            if reset:
-                await store.truncate(self.table_name, reason=RESET_REASON)
-            else:
-                await store.truncate(self.table_name)
+            await store.truncate(self.table_name, **({"reason": RESET_REASON} if reset else {}))
         except (Exception, asyncio.CancelledError) as exc:
             # a reply lost or timed out may still have emptied the table: drop as if it had
             await self._drop_and_advance_after_failure("reset failed" if reset else "truncate failed", exc, reach=reach)
