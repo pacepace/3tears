@@ -24,6 +24,19 @@ the row comparison YugabyteDB rechecks it above storage and cannot push the page
 twice a page; with only the expansion Postgres plans a bitmap scan and sorts. A one-column key needs none
 of this: ``(k1) > ($1)`` is a plain comparison both seek by.
 
+**A hashed lead (YugabyteDB).** YugabyteDB hashes a key's first column unless its declaration says ``ASC``: the
+rows of one lead value sit in one bucket, in the order of the rest of the key, and the buckets in no order at all.
+The leading bound cannot seek a hashed column, so a page past a cursor reads every row of the table and sorts it
+(2026.1: a 200,000-row table, 50 values, every page scanned 200,000 rows; a cold start of 1,000,000 rows read the
+table a thousand times). A reader whose declaration leaves the lead hashed names its array type (``lead_array``),
+and on YugabyteDB the read walks the lead: its values from ``SELECT DISTINCT``, which YugabyteDB answers from the
+bucket heads (one read, a row a value), in the database's order; then each value's rows, ``lead = $1`` and the rest
+of the key past the cursor, which seeks inside the bucket (1,000 rows scanned for a page of 1,000). Values whose
+rows are fewer than a page go together, ``lead = ANY($1)``, as many as about fill one (:func:`_next_group`), so a
+lead of many small values costs a statement a page, not one a value. The rows come in the key's order, as the
+cursor's form reads them. Postgres, and a lead a filter pins, page by the cursor as above: there ``DISTINCT``
+reads the whole table.
+
 **How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
 ``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
 broker cuts a reply at, when it cuts by bytes. The first page asks for ``page_size`` rows; each after, for
@@ -41,9 +54,11 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.dialect import l3_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed._filters import Fragment, renumbered
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
+from threetears.observe import get_logger
 
 __all__ = ["KeysetRead", "keyset_arrow_pages", "keyset_pages", "read_keyset_pages"]
 
@@ -53,6 +68,15 @@ _BUDGET_SHARE: Final = 0.8
 
 #: the most rows a byte-sized page asks for, whatever its rows' width
 _MOST_ROWS_A_PAGE: Final = 1_000_000
+
+#: the most lead values one statement of a hashed lead's walk names (``= ANY`` the values)
+_MOST_LEADS_A_STATEMENT: Final = 1_000
+
+#: the most lead values a hashed lead's walk takes; each page of them reads every value again from the bucket
+#: heads, so past this the walk's cost grows with the square of the values, and the read goes on by the cursor
+_MOST_LEADS: Final = 20_000
+
+_logger = get_logger(__name__)
 
 
 def _next_rows(page: L3Page, rows: int, asked: int) -> int:
@@ -100,6 +124,7 @@ async def read_keyset_pages(
     mark: Callable[[str, int], str] | None = None,
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
+    lead_array: str | None = None,
 ) -> KeysetRead:
     """every row ``select_from`` names (within ``where``), in ``key`` order, ``page_size`` rows a statement.
 
@@ -135,7 +160,11 @@ async def read_keyset_pages(
     :param conditions: filters beside ``where``, each a fragment from ``$1`` (``"due_at" IS NOT NULL``, a partial
         index's own predicate; a range on a key column), so the read goes through that index
     :ptype conditions: Sequence[Fragment]
-    :return: the rows and the statement count
+    :param lead_array: the SQL array type of the key's leading column, named when its declaration leaves it hashed
+        on YugabyteDB (:func:`keyset_pages`)
+    :ptype lead_array: str | None
+    :return: the rows and the statement count (a hashed lead's walk counts the pages it read, not its reads of the
+        lead's values)
     :rtype: KeysetRead
     :raises ValueError: when ``page_size`` is under one
     """
@@ -152,6 +181,7 @@ async def read_keyset_pages(
         mark=mark,
         after=after,
         conditions=conditions,
+        lead_array=lead_array,
     ):
         statements += 1
         rows.extend(page)
@@ -170,12 +200,14 @@ async def keyset_pages(
     mark: Callable[[str, int], str] | None = None,
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
+    lead_array: str | None = None,
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """the rows ``select_from`` names (within ``where``), in ``key`` order, one page a statement as each is read.
 
     For a reader that must not hold every row at once: each page is handed over before the next is
     asked for, so what it keeps of a page is up to it. One page per statement, in order; the last
-    may be empty (the rows ended on a page boundary), and a read of no rows is one empty page.
+    may be empty (the rows ended on a page boundary), and a read of no rows is one empty page. A read
+    that walks a hashed lead (the module's "A hashed lead") hands over no empty page but that one.
 
     :param l3: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype l3: Any
@@ -199,41 +231,23 @@ async def keyset_pages(
     :param conditions: filters beside ``where``, each a fragment from ``$1`` (``"due_at" IS NOT NULL``, a partial
         index's own predicate; a range on a key column), so the read goes through that index
     :ptype conditions: Sequence[Fragment]
+    :param lead_array: the SQL array type of the key's leading column (``text[]``), named when the table's
+        declaration leaves that column hashed on YugabyteDB (its default for a key's first column): on YugabyteDB
+        the read then walks each lead value in turn (the module's "A hashed lead"); None pages by the cursor alone
+    :ptype lead_array: str | None
     :return: the pages, as they are read
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one
     """
-    statement = _KeysetStatement(
-        select_from,
-        key,
-        where=where,
-        where_any=where_any,
-        page_size=page_size,
-        quote=quote,
-        mark=mark,
-        conditions=conditions,
-    )
-    # looked up on the class: a mock's instance answers any name it is asked
-    paged = callable(getattr(type(l3), "fetch_page", None))
-    rows = page_size
-    cursor: Sequence[Any] | None = None if after is None else tuple(after)
-    more = True
-    while more:
-        if not paged:
-            page = await l3.fetch(*statement.page(cursor))
-            kept = [dict(row) for row in page[:page_size]]
-            more = len(page) > page_size and bool(kept)
-        else:
-            answered = await l3.fetch_page(*statement.page(cursor, rows=rows))
-            page = answered.rows
-            kept = [dict(row) for row in page[:rows]]
-            # a cut page is the statement's first rows in key order: more may follow its last
-            more = (answered.truncated or len(page) > rows) and bool(kept)
-            rows = _next_rows(answered, len(page), rows)
-        if more:
-            cursor = tuple(kept[-1][column] for column in key)
-        del page
-        yield kept
+    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
+    reads = _DictReads(l3, page_size)
+    walked = await _hashed_lead(l3, shape, lead_array)
+    if walked is not None:
+        async for page in _lead_walk(reads, shape, walked, after):
+            yield page
+        return
+    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+        yield page
 
 
 async def keyset_arrow_pages(
@@ -249,6 +263,7 @@ async def keyset_arrow_pages(
     mark: Callable[[str, int], str] | None = None,
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
+    lead_array: str | None = None,
 ) -> AsyncGenerator[Any, None]:
     """:func:`keyset_pages`, each page one Arrow table: the same statements, in the same order, its rows never
     Python objects.
@@ -283,41 +298,360 @@ async def keyset_arrow_pages(
     :param conditions: filters beside ``where``, each a fragment from ``$1`` (``"due_at" IS NOT NULL``, a partial
         index's own predicate; a range on a key column), so the read goes through that index
     :ptype conditions: Sequence[Fragment]
+    :param lead_array: the SQL array type of the key's leading column, as :func:`keyset_pages` takes it
+    :ptype lead_array: str | None
     :return: the pages, as they are read, each a ``pyarrow.Table``
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
     """
-    statement = _KeysetStatement(
-        select_from,
-        key,
-        where=where,
-        where_any=where_any,
-        page_size=page_size,
-        quote=quote,
-        mark=mark,
-        conditions=conditions,
-    )
-    paged = callable(getattr(type(l3), "fetch_arrow_page", None))
-    rows = page_size
-    cursor: Sequence[Any] | None = None if after is None else tuple(after)
+    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
+    reads = _ArrowReads(l3, page_size, types)
+    walked = await _hashed_lead(l3, shape, lead_array)
+    if walked is not None:
+        async for page in _lead_walk(reads, shape, walked, after):
+            yield page
+        return
+    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+        yield page
+
+
+@dataclass(frozen=True)
+class _ReadShape:
+    """what one keyset read was asked for, from which each of its statements is built."""
+
+    select_from: str
+    key: Sequence[str]
+    where: Mapping[str, Any] | None
+    where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
+    page_size: int
+    quote: Callable[[str], str]
+    mark: Callable[[str, int], str] | None
+    conditions: Sequence[Fragment]
+
+    def statement(self, *, key: Sequence[str] | None = None, conditions: Sequence[Fragment] = ()) -> _KeysetStatement:
+        """the statement paging ``key`` (the read's own when None), ``conditions`` beside the read's own.
+
+        :param key: the columns this statement pages on
+        :ptype key: Sequence[str] | None
+        :param conditions: filters beside the read's
+        :ptype conditions: Sequence[Fragment]
+        :return: the statement
+        :rtype: _KeysetStatement
+        """
+        return _KeysetStatement(
+            self.select_from,
+            self.key if key is None else key,
+            where=self.where,
+            where_any=self.where_any,
+            page_size=self.page_size,
+            quote=self.quote,
+            mark=self.mark,
+            conditions=[*self.conditions, *conditions],
+        )
+
+    def placeholder(self, column: str, number: int) -> str:
+        """the placeholder binding a value of ``column`` as ``$number``, with the write cast it needs.
+
+        :param column: the column
+        :ptype column: str
+        :param number: the parameter's number
+        :ptype number: int
+        :return: the placeholder
+        :rtype: str
+        """
+        return self.mark(column, number) if self.mark is not None else f"${number}"
+
+
+class _DictReads:
+    """one statement's page as dict rows: ``fetch_page`` on a transport that answers pages, else ``fetch``."""
+
+    def __init__(self, l3: Any, page_size: int) -> None:
+        self._l3 = l3
+        self._page_size = page_size
+        # looked up on the class: a mock's instance answers any name it is asked
+        self._paged = callable(getattr(type(l3), "fetch_page", None))
+
+    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> tuple[Any, bool, int]:
+        """the rows a page keeps, whether more may follow, and how many rows the next page asks for.
+
+        :param statement: the statement
+        :ptype statement: _KeysetStatement
+        :param cursor: the key the page starts past; the first page when None
+        :ptype cursor: Sequence[Any] | None
+        :param rows: the rows it asks for (a paged transport's)
+        :ptype rows: int
+        :return: the kept rows, whether more may follow, the next page's rows
+        :rtype: tuple[list[dict[str, Any]], bool, int]
+        """
+        if not self._paged:
+            page = await self._l3.fetch(*statement.page(cursor))
+            kept = [dict(row) for row in page[: self._page_size]]
+            return kept, len(page) > self._page_size and bool(kept), rows
+        answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
+        kept = [dict(row) for row in answered.rows[:rows]]
+        # a cut page is the statement's first rows in key order: more may follow its last
+        more = (answered.truncated or len(answered.rows) > rows) and bool(kept)
+        return kept, more, _next_rows(answered, len(answered.rows), rows)
+
+    @staticmethod
+    def count(kept: Any) -> int:
+        """how many rows ``kept`` holds."""
+        return len(kept)
+
+    @staticmethod
+    def last(kept: Any, key: Sequence[str]) -> tuple[Any, ...]:
+        """the last row's ``key``."""
+        return tuple(kept[-1][column] for column in key)
+
+    async def values(self, query: str, params: Sequence[Any], column: str) -> list[Any]:
+        """the one column ``query`` selects, row by row.
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Sequence[Any]
+        :param column: the column it selects
+        :ptype column: str
+        :return: the values
+        :rtype: list[Any]
+        """
+        return [row[column] for row in await self._l3.fetch(query, *params)]
+
+
+class _ArrowReads:
+    """one statement's page as an Arrow table: ``fetch_arrow_page`` on a transport that answers pages, else
+    :func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow`."""
+
+    def __init__(self, l3: Any, page_size: int, types: Mapping[str, Any]) -> None:
+        self._l3 = l3
+        self._page_size = page_size
+        self._types = types
+        self._paged = callable(getattr(type(l3), "fetch_arrow_page", None))
+
+    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> tuple[Any, bool, int]:
+        """the rows a page keeps, whether more may follow, and how many rows the next page asks for.
+
+        :param statement: the statement
+        :ptype statement: _KeysetStatement
+        :param cursor: the key the page starts past; the first page when None
+        :ptype cursor: Sequence[Any] | None
+        :param rows: the rows it asks for (a paged transport's)
+        :ptype rows: int
+        :return: the kept rows, whether more may follow, the next page's rows
+        :rtype: tuple[pyarrow.Table, bool, int]
+        """
+        if not self._paged:
+            page = await l3_fetch_arrow(self._l3, *statement.page(cursor), types=self._types)
+            kept = page.slice(0, self._page_size)
+            return kept, page.num_rows > self._page_size and kept.num_rows > 0, rows
+        answered = await self._l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=self._types)
+        kept = answered.rows.slice(0, rows)
+        # a cut page is the statement's first rows in key order: more may follow its last
+        more = (answered.truncated or answered.rows.num_rows > rows) and kept.num_rows > 0
+        return kept, more, _next_rows(answered, answered.rows.num_rows, rows)
+
+    @staticmethod
+    def count(kept: Any) -> int:
+        """how many rows ``kept`` holds."""
+        return int(kept.num_rows)
+
+    @staticmethod
+    def last(kept: Any, key: Sequence[str]) -> tuple[Any, ...]:
+        """the last row's ``key``, read off the table."""
+        last = kept.slice(kept.num_rows - 1, 1).select(list(key)).to_pylist()[0]
+        return tuple(last[column] for column in key)
+
+    async def values(self, query: str, params: Sequence[Any], column: str) -> list[Any]:
+        """the one column ``query`` selects, row by row (typed as the read's own column).
+
+        :param query: the SELECT
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Sequence[Any]
+        :param column: the column it selects
+        :ptype column: str
+        :return: the values
+        :rtype: list[Any]
+        """
+        answered = await l3_fetch_arrow(self._l3, query, *params, types={column: self._types[column]})
+        return list(answered.column(column).to_pylist())
+
+
+async def _cursor_pages(
+    reads: _DictReads | _ArrowReads, statement: _KeysetStatement, cursor: Sequence[Any] | None
+) -> AsyncGenerator[Any, None]:
+    """every page of one statement past ``cursor``, each handed over as it is read; the last may be empty.
+
+    :param reads: how a page is read
+    :ptype reads: _DictReads | _ArrowReads
+    :param statement: the statement
+    :ptype statement: _KeysetStatement
+    :param cursor: the key the read starts past; the first row when None
+    :ptype cursor: Sequence[Any] | None
+    :return: the pages
+    :rtype: AsyncGenerator[Any, None]
+    """
+    rows = statement.page_size
     more = True
     while more:
-        if not paged:
-            page = await l3_fetch_arrow(l3, *statement.page(cursor), types=types)
-            kept = page.slice(0, page_size)
-            more = page.num_rows > page_size and kept.num_rows > 0
-        else:
-            answered = await l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=types)
-            page = answered.rows
-            kept = page.slice(0, rows)
-            # a cut page is the statement's first rows in key order: more may follow its last
-            more = (answered.truncated or page.num_rows > rows) and kept.num_rows > 0
-            rows = _next_rows(answered, page.num_rows, rows)
+        kept, more, rows = await reads.page(statement, cursor, rows)
         if more:
-            last = kept.slice(kept.num_rows - 1, 1).select(list(key)).to_pylist()[0]
-            cursor = tuple(last[column] for column in key)
-        del page
+            cursor = reads.last(kept, statement.key)
         yield kept
+
+
+async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> str | None:
+    """the lead's array type when a read walks its lead value by value: a lead named hashed, of a key of more than one
+    column, that no filter pins, read from YugabyteDB; None when it pages by the cursor alone.
+
+    :param l3: the L3
+    :ptype l3: Any
+    :param shape: the read
+    :ptype shape: _ReadShape
+    :param lead_array: the lead's array type when its declaration leaves it hashed
+    :ptype lead_array: str | None
+    :return: the lead's array type, or None
+    :rtype: str | None
+    """
+    if lead_array is None or len(shape.key) < 2:
+        return None
+    lead = shape.key[0]
+    if lead in (shape.where or {}) or lead in (shape.where_any or {}):
+        return None
+    return lead_array if await l3_on_yugabyte(l3) else None
+
+
+async def _lead_walk(
+    reads: _DictReads | _ArrowReads, shape: _ReadShape, lead_array: str, after: Sequence[Any] | None
+) -> AsyncGenerator[Any, None]:
+    """the read's rows in key order, a lead value's rows at a time (the module's "A hashed lead").
+
+    The lead values come from ``SELECT DISTINCT`` in pages of the read's own size, in the database's order; a value
+    whose rows fill a page is read on its own, seeking the rest of the key inside its bucket; values whose rows are
+    fewer go together, as many a statement as about fill one (``= ANY`` the values, ordered by the whole key). Past
+    :data:`_MOST_LEADS` values the read goes on by the cursor alone, from the last key it took.
+
+    :param reads: how a page is read
+    :ptype reads: _DictReads | _ArrowReads
+    :param shape: the read
+    :ptype shape: _ReadShape
+    :param lead_array: the lead's SQL array type
+    :ptype lead_array: str
+    :param after: the key the read starts past; the first row when None
+    :ptype after: Sequence[Any] | None
+    :return: the pages, none empty but a read of no rows
+    :rtype: AsyncGenerator[Any, None]
+    """
+    lead, rest = shape.key[0], list(shape.key[1:])
+    quoted = shape.quote(lead)
+    leads = _LeadValues(reads, shape, after)
+    group = 1
+    walked = 0
+    last_key: tuple[Any, ...] | None = None if after is None else tuple(after)
+    handed = False
+    while True:
+        values = await leads.take(group)
+        if not values:
+            break
+        if walked >= _MOST_LEADS:
+            _logger.warning(
+                "keyset: a hashed lead's walk took %d values of %s; the rest is read by the cursor", walked, lead
+            )
+            async for page in _cursor_pages(reads, shape.statement(), last_key):
+                yield page
+            return
+        starts_past = after is not None and walked == 0 and values[0] == after[0]
+        if len(values) == 1:
+            statement = shape.statement(
+                key=rest, conditions=[Fragment(sql=f"{quoted} = {shape.placeholder(lead, 1)}", params=(values[0],))]
+            )
+            cursor: Sequence[Any] | None = tuple(after[1:]) if after is not None and starts_past else None
+        else:
+            statement = shape.statement(
+                conditions=[Fragment(sql=f"{quoted} = ANY($1::{lead_array})", params=(list(values),))]
+            )
+            cursor = tuple(after) if after is not None and starts_past else None
+        took = 0
+        async for page in _cursor_pages(reads, statement, cursor):
+            counted = reads.count(page)
+            if counted == 0:
+                continue
+            took += counted
+            last_key = (values[0], *reads.last(page, rest)) if len(values) == 1 else reads.last(page, shape.key)
+            handed = True
+            yield page
+        walked += len(values)
+        group = _next_group(len(values), took, shape.page_size)
+    if not handed:
+        # no rows: the one empty page a read of none hands over
+        async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+            yield page
+
+
+def _next_group(values: int, rows: int, page_size: int) -> int:
+    """how many lead values the next statement names: as many as fill :data:`_BUDGET_SHARE` of a page at the rows a
+    value held.
+
+    :param values: the values the last statement named
+    :ptype values: int
+    :param rows: the rows they held
+    :ptype rows: int
+    :param page_size: the rows a page keeps
+    :ptype page_size: int
+    :return: the next group's values, from one to :data:`_MOST_LEADS_A_STATEMENT`, at most four times the last
+    :rtype: int
+    """
+    if rows >= page_size:
+        return 1
+    # sized to a share of the page, as a byte-sized page is: values vary in their rows
+    fitting = int(values * page_size * _BUDGET_SHARE / max(rows, 1))
+    return max(1, min(fitting, values * 4, _MOST_LEADS_A_STATEMENT))
+
+
+class _LeadValues:
+    """a read's lead values in the database's order, read ``SELECT DISTINCT`` a page at a time as they are taken."""
+
+    def __init__(self, reads: _DictReads | _ArrowReads, shape: _ReadShape, after: Sequence[Any] | None) -> None:
+        self._reads = reads
+        self._shape = shape
+        self._held: list[Any] = []
+        self._ended = False
+        self._past: Any = None if after is None else after[0]
+        self._first = after is not None
+
+    async def take(self, count: int) -> list[Any]:
+        """the next ``count`` values (fewer at the end; none once every value is taken).
+
+        :param count: how many
+        :ptype count: int
+        :return: the values
+        :rtype: list[Any]
+        """
+        while len(self._held) < count and not self._ended:
+            await self._read()
+        taken, self._held = self._held[:count], self._held[count:]
+        return taken
+
+    async def _read(self) -> None:
+        shape = self._shape
+        lead = shape.key[0]
+        quoted = shape.quote(lead)
+        statement = shape.statement()
+        inner, params = statement.filtered()
+        clause = ""
+        if self._past is not None:
+            params.append(self._past)
+            clause = f" WHERE {quoted} {'>=' if self._first else '>'} {shape.placeholder(lead, len(params))}"
+        query = (
+            f"SELECT DISTINCT {quoted} FROM ({inner}) AS {shape.quote('_leads')}{clause} "  # noqa: S608 - trusted
+            f"ORDER BY {quoted} LIMIT {shape.page_size}"
+        )
+        values = await self._reads.values(query, params, lead)
+        self._held.extend(values)
+        self._ended = len(values) < shape.page_size
+        if values:
+            self._past = values[-1]
+            self._first = False
 
 
 class _KeysetStatement:
@@ -379,6 +713,25 @@ class _KeysetStatement:
         for column, mark in zip(reversed(self._quoted[:-1]), reversed(marks[:-1]), strict=True):
             expanded = f"{column} > {mark} OR ({column} = {mark} AND ({expanded}))"
         return f"{self._quoted[0]} >= {marks[0]} AND {row} AND ({expanded})"
+
+    @property
+    def key(self) -> list[str]:
+        """the columns this statement pages on."""
+        return self._key
+
+    @property
+    def page_size(self) -> int:
+        """the rows a page keeps."""
+        return self._page_size
+
+    def filtered(self) -> tuple[str, list[Any]]:
+        """``select_from`` within the read's filters, with no order, cursor or limit, and its parameters.
+
+        :return: the statement, then its parameters
+        :rtype: tuple[str, list[Any]]
+        """
+        where_sql = f" WHERE {self._filters}" if self._filters else ""
+        return f"{self._select_from}{where_sql}", list(self._values)
 
     def page(self, cursor: Sequence[Any] | None, *, rows: int | None = None) -> tuple[Any, ...]:
         """the statement and parameters of the page after ``cursor`` (the first page for None).

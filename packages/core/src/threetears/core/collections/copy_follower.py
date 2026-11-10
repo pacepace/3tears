@@ -59,9 +59,9 @@ from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     INT_TYPE,
     NUMERIC_TYPE,
-    UUID_TYPE,
     Column,
     TableSchema,
+    sql_cast,
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
@@ -134,16 +134,6 @@ def _warms() -> Any:
 
 #: how many applied changes' stamps are kept for readers whose snapshot is older than the newest
 _STAMPS_KEPT: Final = 256
-
-#: the SQL type a key's text is cast to before it is compared with its column, by the column's type tag
-_KEY_CASTS: Final[Mapping[str, str]] = {
-    UUID_TYPE: "uuid",
-    INT_TYPE: "bigint",
-    BIGINT_TYPE: "bigint",
-    BOOL_TYPE: "boolean",
-    NUMERIC_TYPE: "numeric",
-    DATETIMETZ_TYPE: "timestamptz",
-}
 
 
 class HubCapabilityMissingError(RuntimeError):
@@ -366,7 +356,7 @@ class FollowedTable:
         :rtype: str
         """
         kind = next(c.column_type for c in self.columns if c.name == column)
-        return _KEY_CASTS.get(kind, "text")
+        return sql_cast(kind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1502,7 +1492,7 @@ class CopyFollower:
                     where={c: _typed(table.kind(c), v) for c, v in zip(columns[:-1], lead, strict=True)} or None,
                     where_any={
                         last: (
-                            f"{_KEY_CASTS.get(table.kind(last), 'text')}[]",
+                            f"{sql_cast(table.kind(last))}[]",
                             [_typed(table.kind(last), v) for v in batch],
                         )
                     },
@@ -1569,6 +1559,8 @@ class CopyFollower:
             table.read_order,
             types=types,
             page_size=self._page_size,
+            # declared, so hashed on YugabyteDB: no declaration names a range-sharded lead
+            lead_array=f"{sql_cast(table.kind(table.read_order[0]))}[]",
         )
         scopes: set[str | None] = set()
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)

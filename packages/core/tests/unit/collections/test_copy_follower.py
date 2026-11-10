@@ -126,6 +126,9 @@ class _L3:
         result = cursor.execute(sql, list(params))
         names = [d[0] for d in result.description]
         rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        if sql.startswith("SELECT version()"):
+            # which database it is (threetears.core.backends.dialect), asked beside a whole read: no read of the table
+            return rows
         self.statements += 1
         self.rows_read += len(rows)
         return rows
