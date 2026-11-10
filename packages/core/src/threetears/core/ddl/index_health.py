@@ -56,6 +56,7 @@ SELECT n.nspname AS schema_name,
   JOIN pg_class t ON t.oid = i.indrelid
   JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname::text = ANY($1::text[])
+   AND ($2::text[] IS NULL OR c.relname::text = ANY($2::text[]))
    AND NOT (i.indisvalid AND i.indisready AND i.indislive)
  ORDER BY n.nspname, c.relname
 """
@@ -104,17 +105,21 @@ class IndexStillUnusableError(RuntimeError):
     """an index was built again and is still not valid, ready and live."""
 
 
-async def unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[UnusableIndex]:
+async def unusable_indexes(
+    conn: Any, schemas: Sequence[str], *, names: Sequence[str] | None = None
+) -> list[UnusableIndex]:
     """every index of ``schemas`` that is not valid, ready and live.
 
     :param conn: a connection to the database, or anything with ``fetch`` answering rows by column name
     :ptype conn: Any
     :param schemas: the schemas to look in
     :ptype schemas: Sequence[str]
+    :param names: only the indexes of these names (an installer's own); every index of the schemas when None
+    :ptype names: Sequence[str] | None
     :return: the indexes, by schema and name
     :rtype: list[UnusableIndex]
     """
-    rows = await conn.fetch(_UNUSABLE_SQL, list(schemas))
+    rows = await conn.fetch(_UNUSABLE_SQL, list(schemas), None if names is None else list(names))
     return [
         UnusableIndex(
             schema=row["schema_name"],
@@ -152,7 +157,9 @@ async def _duplicate_keys(conn: Any, index: UnusableIndex) -> list[tuple[tuple[A
     return [(tuple(row[f"k{i}"] for i in range(len(index.key_terms))), int(row["n"])) for row in rows]
 
 
-async def rebuild_unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[UnusableIndex]:
+async def rebuild_unusable_indexes(
+    conn: Any, schemas: Sequence[str], *, names: Sequence[str] | None = None
+) -> list[UnusableIndex]:
     """build every unusable index of ``schemas`` again from its own definition; say which were rebuilt.
 
     Every unique index is checked for duplicate keys before any index is dropped, so a refusal leaves every index as
@@ -163,12 +170,15 @@ async def rebuild_unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[Un
     :ptype conn: Any
     :param schemas: the schemas to repair
     :ptype schemas: Sequence[str]
+    :param names: only the indexes of these names (an installer's own, as the change-note ring's); every unusable index
+        of the schemas when None
+    :ptype names: Sequence[str] | None
     :return: the indexes built again
     :rtype: list[UnusableIndex]
     :raises IndexDuplicateKeysError: when a unique index's table holds duplicate keys; nothing was dropped
     :raises IndexStillUnusableError: when an index is still unusable after it was built again
     """
-    found = await unusable_indexes(conn, schemas)
+    found = await unusable_indexes(conn, schemas, names=names)
     if not found:
         return []
     for index in found:
@@ -183,7 +193,9 @@ async def rebuild_unusable_indexes(conn: Any, schemas: Sequence[str]) -> list[Un
     for index in found:
         await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(index.schema)}.{quote_identifier(index.name)}")
         await conn.execute(index.definition)
-    still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas)} & {(i.schema, i.name) for i in found}
+    still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas, names=names)} & {
+        (i.schema, i.name) for i in found
+    }
     if still:
         raise IndexStillUnusableError(f"indexes still unusable after they were built again: {sorted(still)}")
     return found

@@ -23,8 +23,9 @@ import asyncpg
 import pytest
 
 from threetears.core.collections.change_notes import NotedRows, noted_rows_since
-from threetears.core.ddl.change_notes import RING_TABLE, change_notes_ddl, note_table
+from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.calibrate import budget_problem
+from threetears.core.testing.note_ring import install_note_ring
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
 
 pytestmark = pytest.mark.integration
@@ -63,8 +64,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
     conn = await asyncpg.connect(db_container, command_timeout=1200)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
-        for statement in change_notes_ddl(schema):
-            await conn.execute(statement)
+        await install_note_ring(conn, schema)
         notes = f"{schema}.{note_table(0)}"
         night = datetime.now(UTC) - timedelta(hours=6)
         # every other table's notes, through the night
@@ -161,8 +161,7 @@ async def test_a_ring_just_switched_still_answers_from_the_previous_table(db_con
     conn = await asyncpg.connect(db_container)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
-        for statement in change_notes_ddl(schema):
-            await conn.execute(statement)
+        await install_note_ring(conn, schema)
         await conn.execute(
             f"UPDATE {schema}.{RING_TABLE} SET current_ring = 1, switch_no = 1, switched_at = now(), "
             "previous_switched_at = now() - interval '1 hour' WHERE id = 1"
