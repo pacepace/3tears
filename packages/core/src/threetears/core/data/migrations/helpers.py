@@ -45,6 +45,7 @@ from threetears.observe import get_logger, traced
 __all__ = [
     "InboundFk",
     "MigrationStore",
+    "UniqueIndexBuildFailedError",
     "add_check_constraint",
     "add_column_with_backfill",
     "add_index",
@@ -82,6 +83,38 @@ class MigrationStore(Protocol):
         :rtype: str
         """
         ...
+
+
+#: the SQLSTATE of a unique violation, which PostgreSQL gives a unique index build that meets duplicate rows
+_UNIQUE_VIOLATION = "23505"
+
+#: YugabyteDB 2026.1's SQLSTATE for that same refused build: its generic internal error, which says a unique build
+#: met duplicates only together with the index left behind not valid (probed on 2026.1.0.0-b118, 2026-11-10)
+_INTERNAL_ERROR = "XX000"
+
+
+class UniqueIndexBuildFailedError(RuntimeError):
+    """
+    a unique index build met duplicate rows, on PostgreSQL (a unique violation) or YugabyteDB (its internal error,
+    the index left behind not valid). Resolve the duplicates, then run the migration again: :func:`add_index` builds
+    an index left invalid again.
+
+    :ivar index: the index, as the migration names it (schema-qualified when it gave a schema)
+    :ivar error: the database's own error
+    """
+
+    def __init__(self, index: str, error: BaseException) -> None:
+        """
+        name the index and keep the database's error.
+
+        :param index: the index
+        :ptype index: str
+        :param error: the database's error
+        :ptype error: BaseException
+        """
+        super().__init__(f"unique index {index} could not be built: its table holds duplicate keys ({error})")
+        self.index = index
+        self.error = error
 
 
 @dataclass(frozen=True)
@@ -910,6 +943,7 @@ async def add_index(
     :ptype schema: str | None
     :return: nothing
     :rtype: None
+    :raises UniqueIndexBuildFailedError: when a unique build meets duplicate rows, on either backend
     """
     qualified = _qualify(table, schema)
     qualified_index = _qualify(name, schema)
@@ -938,4 +972,35 @@ async def add_index(
             qualified,
         )
         await store.execute(f"DROP INDEX {qualified_index}")
-    await store.execute(sql)
+    try:
+        await store.execute(sql)
+    except Exception as exc:
+        if unique and await _a_unique_build_met_duplicates(store, exc, invalid_probe_sql):
+            raise UniqueIndexBuildFailedError(qualified_index, exc) from exc
+        raise
+
+
+async def _a_unique_build_met_duplicates(store: MigrationStore, error: Exception, invalid_probe_sql: str) -> bool:
+    """
+    whether a unique build's failure is the build meeting duplicate rows, by its SQLSTATE: a unique violation
+    (PostgreSQL), or YugabyteDB's internal error with the index left behind not valid. Any other error is not.
+
+    :param store: migration-time store
+    :ptype store: MigrationStore
+    :param error: what the build raised
+    :ptype error: Exception
+    :param invalid_probe_sql: the probe that finds the index left not valid
+    :ptype invalid_probe_sql: str
+    :return: whether the build met duplicates
+    :rtype: bool
+    """
+    sqlstate = getattr(error, "sqlstate", None)
+    if sqlstate == _UNIQUE_VIOLATION:
+        return True
+    if sqlstate != _INTERNAL_ERROR:
+        return False
+    try:
+        return parse_rowcount(await store.execute(invalid_probe_sql)) > 0
+    except Exception:  # noqa: BLE001 - the build's own error is the one raised
+        # NOSILENT: a probe that cannot answer leaves the build's error to be raised as it came
+        return False
