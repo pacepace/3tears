@@ -241,19 +241,31 @@ async def _boundaries(
     # the part column leads the read's key: every row read is one of the named parts'
     part_key = partition_by
     placeholders = ", ".join(f"${index + 1}" for index in range(len(parts)))
-    sql = (
-        f"SELECT part__, {keys} FROM (SELECT {part_key} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
-        f"ROW_NUMBER() OVER (PARTITION BY {part_key} ORDER BY {keys}) AS row__ "
-        f"FROM {relation} WHERE {part_key} IN ({placeholders})) AS paged "
-        f"WHERE MOD(row__ - 1, {int(page_size)}) = 0 ORDER BY part__, {keys}"
-    )
-    result = await client.query(datasource_name, sql, params=list(parts))
-    if result.truncated:
-        raise IncompleteReadError(f"{datasource_name}: {relation}'s page starts were cut at the hub's row cap")
     starts: dict[str, list[tuple[Any, ...]]] = {part: [] for part in parts}
-    for row in result.rows:
-        starts[str(row["part__"])].append(tuple(row[column] for column in key))
-    return starts
+    # a reply the hub cut (its row cap or its bytes) holds the first starts: the read goes on past the last one it
+    # holds (each start is its own row, so none is split), until a reply comes back whole
+    after: tuple[Any, ...] | None = None
+    while True:
+        past, more = (
+            ("", [])
+            if after is None
+            else keyset_condition(["part__", *key], after, earlier=">", last=">", first=len(parts) + 1)
+        )
+        sql = (
+            f"SELECT part__, {keys} FROM (SELECT {part_key} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
+            f"ROW_NUMBER() OVER (PARTITION BY {part_key} ORDER BY {keys}) AS row__ "
+            f"FROM {relation} WHERE {part_key} IN ({placeholders})) AS paged "
+            f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
+        )
+        result = await client.query(datasource_name, sql, params=[*parts, *more])
+        for row in result.rows:
+            starts[str(row["part__"])].append(tuple(row[column] for column in key))
+        if not result.truncated:
+            return starts
+        if not result.rows:
+            raise IncompleteReadError(f"{datasource_name}: {relation}'s page starts came back cut and empty")
+        last = result.rows[-1]
+        after = (last["part__"], *(last[column] for column in key))
 
 
 async def _read_pages(
@@ -278,23 +290,55 @@ async def _read_pages(
 
     def one(index: int) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
         async def page() -> list[dict[str, Any]]:
-            lower, params = _bound(key, starts[index], below=False, first=2)
-            conditions = [f"{partition_by} = $1", lower]
-            if index + 1 < len(starts):
-                upper, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
-                conditions.append(upper)
-                params += more
-            sql = (
-                f"SELECT {selected} FROM {relation} WHERE {' AND '.join(conditions)} "  # noqa: S608 - trusted identifiers
-                f"ORDER BY {ordering} LIMIT {int(page_size) + 1}"
-            )
-            rows = (await client.query(datasource_name, sql, params=[part, *params])).rows
-            if len(rows) > page_size:
-                raise IncompleteReadError(
-                    f"{datasource_name}: {relation} {partition_by}={part}: a page held more than {page_size} rows; "
-                    "rows were written during the read, or the key is not unique"
+            # a reply the hub cut (its bytes) holds a prefix of the page: the page reads on past the cut reply's
+            # last whole key group until a reply comes back whole
+            collected: list[dict[str, Any]] = []
+            after: tuple[Any, ...] | None = None
+            while True:
+                if after is None:
+                    lower, params = _bound(key, starts[index], below=False, first=2)
+                else:
+                    past, params = keyset_condition(key, after, earlier=">", last=">", first=2)
+                    lower = f"({past})"
+                conditions = [f"{partition_by} = $1", lower]
+                if index + 1 < len(starts):
+                    upper, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
+                    conditions.append(upper)
+                    params += more
+                sql = (
+                    f"SELECT {selected} FROM {relation} WHERE {' AND '.join(conditions)} "  # noqa: S608 - trusted identifiers
+                    f"ORDER BY {ordering} LIMIT {int(page_size) + 1}"
                 )
-            return rows
+                result = await client.query(datasource_name, sql, params=[part, *params])
+                rows = result.rows
+                if len(collected) + len(rows) > page_size:
+                    raise IncompleteReadError(
+                        f"{datasource_name}: {relation} {partition_by}={part}: a page held more than {page_size} "
+                        "rows; rows were written during the read, or the key is not unique"
+                    )
+                if not result.truncated:
+                    return collected + rows
+                kept = list(rows)
+                cut_key = tuple(kept[-1][column] for column in key) if kept else None
+                while kept and tuple(kept[-1][column] for column in key) == cut_key:
+                    kept.pop()
+                if not kept and cut_key is not None:
+                    # one key a reply (wide rows): whole when the part holds no more rows of it, one keyed count says
+                    same = " AND ".join(f"{column} = ${index}" for index, column in enumerate(key, 2))
+                    counted = await client.query(
+                        datasource_name,
+                        f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}",  # noqa: S608
+                        params=[part, *cut_key],
+                    )
+                    if counted.rows and int(counted.rows[0]["n"]) == len(rows):
+                        kept = list(rows)
+                if not kept:
+                    raise IncompleteReadError(
+                        f"{datasource_name}: {relation} {partition_by}={part}: the hub cut a page within one value of "
+                        f"{tuple(key)}: one key group is wider than one reply, so the page cannot be read whole"
+                    )
+                collected.extend(kept)
+                after = tuple(kept[-1][column] for column in key)
 
         return page
 
