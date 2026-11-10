@@ -1810,15 +1810,15 @@ _TABLE_PARAMETER = """
 
 
     async def _held(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def _by_state(conn, table, state):
-        return await holds_any(conn, table, by={"state": state})
+        return await holds_any(conn, table, order=("state",), by={"state": state})
 
 
     async def _loose(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def callers(conn, named):
@@ -1952,10 +1952,10 @@ _LOOPED = """
 
     class Store:
         async def holds_state(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
         async def holds_run(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
 
     class Pull:
@@ -1971,7 +1971,7 @@ _LOOPED = """
 
         async def by_name(self, state):
             for name in NAMES:
-                await holds_any(self._conn, name, by={"state": state})
+                await holds_any(self._conn, name, order=("state",), by={"state": state})
 
         async def with_runs(self, state):
             for table in WITH_RUNS:
@@ -2025,7 +2025,7 @@ _SPLICED = """
 
     class Store:
         async def holds_state(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
 
     class Pull:
@@ -2060,7 +2060,7 @@ _SAME_NAMED = """
 
     class Store:
         async def holds_any(self, table, state):
-            return await keyed.holds_any(self._conn, table, by={STATE: state})
+            return await keyed.holds_any(self._conn, table, order=(STATE,), by={STATE: state})
 
 
     class Pull:
