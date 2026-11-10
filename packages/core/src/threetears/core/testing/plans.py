@@ -36,7 +36,7 @@ import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from threetears.core.keyed._filters import binds_native_arrays
 
@@ -351,12 +351,26 @@ _DEFAULT_WHOLE_ROWS = 1_000
 _DEFAULT_PAGED_SHARE = 0.5
 
 
-def _whole_scans(plan: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
-    """each relation ``plan`` reads whole: a sequential scan (with or without a filter), or an index scan with no
-    index condition (every entry of the index, in its order).
+#: rows past its ``Limit``'s an index walk under it may read and still be a page: the one a pager reads to learn a
+#: next page follows, and a row or two the walk passes at its edge
+_LIMIT_SLACK_ROWS: Final = 2
 
-    :param plan: a plan node, as ``EXPLAIN (VERBOSE, FORMAT JSON)`` gives it (actuals not needed)
+#: an index walk with no index condition, which reads the index whole unless a ``Limit`` stops it
+_INDEX_WALK = "with no index condition"
+
+
+def _whole_scans(plan: Mapping[str, Any], limit: int | None = None) -> Iterator[tuple[str, str]]:
+    """each relation ``plan`` reads whole: a sequential scan (with or without a filter), or an index scan with no
+    index condition (every entry of the index, in its order) -- unless, in an analysed plan, a ``Limit`` above it
+    stopped the walk: it read at most the rows the ``Limit`` answered plus :data:`_LIMIT_SLACK_ROWS` (a keyset
+    listing's first page). A walk whose filter made it read far past its ``Limit`` stays whole.
+
+    :param plan: a plan node, as ``EXPLAIN (VERBOSE, FORMAT JSON)`` gives it; with ``ANALYZE``, a walk under a
+        ``Limit`` is judged by the rows it read
     :ptype plan: Mapping[str, Any]
+    :param limit: the rows the nearest ``Limit`` above answered (analysed), over its loops; None when none is above or
+        the plan has no actuals
+    :ptype limit: int | None
     :return: ``(schema-qualified relation, how)`` for each
     :rtype: Iterator[tuple[str, str]]
     """
@@ -367,9 +381,29 @@ def _whole_scans(plan: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
         if node == "Seq Scan":
             yield qualified, "sequential scan" + (" with a filter" if "Filter" in plan else "")
         elif node in {"Index Scan", "Index Only Scan", "Index Scan Backward"} and "Index Cond" not in plan:
-            yield qualified, f"{node.lower()} with no index condition"
+            read = int(plan.get("Actual Loops", 1) or 1) * _read_a_loop(plan)
+            if limit is None or read > limit + _LIMIT_SLACK_ROWS:
+                yield qualified, f"{node.lower()} {_INDEX_WALK}"
+    if node == "Limit":
+        limit = int(plan["Actual Rows"]) * int(plan.get("Actual Loops", 1) or 1) if "Actual Rows" in plan else None
     for child in plan.get("Plans", ()):
-        yield from _whole_scans(child)
+        yield from _whole_scans(child, limit)
+
+
+def _under_a_limit(plan: Mapping[str, Any], limited: bool = False) -> bool:
+    """whether an index walk with no index condition lies under a ``Limit``: the plan to analyse before judging it.
+
+    :param plan: a plan node
+    :ptype plan: Mapping[str, Any]
+    :param limited: whether a ``Limit`` is above it
+    :ptype limited: bool
+    :return: whether one does
+    :rtype: bool
+    """
+    node = plan.get("Node Type", "")
+    if limited and node in {"Index Scan", "Index Only Scan", "Index Scan Backward"} and "Index Cond" not in plan:
+        return True
+    return any(_under_a_limit(child, limited or node == "Limit") for child in plan.get("Plans", ()))
 
 
 def plan_uses_index(plan: StatementPlan | Mapping[str, Any] | Sequence[Any], index: str) -> bool:
@@ -440,10 +474,12 @@ class WholeScanGuard:
     under test in place of the connection, run a steady-state load (or a follower's catch-up, a cache's refresh),
     and call :meth:`check`, or use it as ``async with WholeScanGuard(conn) as guarded:``. Every statement through
     ``fetch``, ``fetchrow``, ``fetchval``, ``execute`` and ``executemany`` is ``EXPLAIN (VERBOSE, FORMAT JSON)``-ed
-    first (never ``ANALYZE``: nothing runs twice, and a write is planned, not done), then run as asked. It fails on:
+    first (a write is planned, never done), then run as asked. It fails on:
 
     - a plan that scans a table of ``threshold_rows`` or more whole: a sequential scan, or an index scan with no
-      index condition (the table counted once, by the guard, per relation);
+      index condition (the table counted once, by the guard, per relation). A read whose index walk lies under a
+      ``Limit`` (a keyset listing's first page) is analysed too, in a transaction rolled back: the walk is a page
+      when it read at most the rows the ``Limit`` answered plus two, whole when its filter read far past them;
     - a ``TRUNCATE``;
     - reads by key that, page after page, return ``paged_share`` or more of such a table: a whole read through a
       keyset pager, whose every page alone looks keyed.
@@ -468,6 +504,7 @@ class WholeScanGuard:
         self._sizes: dict[str, int] = {}
         self._returned: dict[str, int] = {}
         self._problems: list[str] = []
+        self._yugabyte: bool | None = None
         #: every statement seen, in order
         self.statements: list[str] = []
 
@@ -535,7 +572,14 @@ class WholeScanGuard:
             explained = await self._conn.fetchval(f"EXPLAIN (VERBOSE, FORMAT JSON) {sql}", *args)
             document = json.loads(explained) if isinstance(explained, str) else explained
             plan = document[0]["Plan"]
-            for relation, how in _whole_scans(plan):
+            judged = plan
+            if _under_a_limit(plan) and not _writes(sql):
+                # an index walk a Limit may stop: a read is analysed (rolled back) to see how far the walk went. A
+                # write is never run to learn it, so its walk stays whole
+                if self._yugabyte is None:
+                    self._yugabyte = await on_yugabyte(self._conn)
+                judged = (await explain_statement(self._conn, sql, *args, yugabyte=self._yugabyte)).plan
+            for relation, how in _whole_scans(judged):
                 size = await self._size(relation)
                 if size >= self._threshold:
                     self._problems.append(

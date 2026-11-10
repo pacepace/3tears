@@ -2275,8 +2275,13 @@ class SharedArrowStore:
         return HandedTables(root=str(self._root), handoff_id=handoff_id, tables=tuple(tables), nbytes=written)
 
     def release(self, handed: HandedTables) -> None:
-        """the worker is done with a hand-off (its job returned or raised, or its worker died): it goes now, or at
-        the first sweep after no worker maps it. Harmless twice.
+        """the worker is done with a hand-off (its job returned or raised, or its worker died): it goes now, or as soon
+        as no worker maps it. Harmless twice.
+
+        A worker that still maps it holds its shared lock: a reader finishing, or a worker that died and whose exit
+        has not yet closed its descriptors (the pool hears of a death as its pipe closes, which can come first). Then
+        a thread of the store's waits on the lock and sweeps once it is free, so the hand-off never waits for some
+        later, unrelated sweep to go.
 
         :param handed: the hand-off
         :ptype handed: HandedTables
@@ -2286,6 +2291,35 @@ class SharedArrowStore:
         with self._state:
             self._handed.discard(handed.handoff_id)
         self.sweep()
+        entry = self._handoffs / handed.handoff_id
+        if entry.exists():
+            waiter = threading.Thread(
+                target=self._sweep_when_let_go, args=(entry,), name="shared-arrow-handoff-wait", daemon=True
+            )
+            waiter.start()
+
+    def _sweep_when_let_go(self, entry: Path) -> None:
+        """wait until no reader holds ``entry``'s lock, then sweep: a released hand-off's last mapping let go.
+
+        :param entry: the hand-off's directory
+        :ptype entry: Path
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            descriptor = os.open(entry / _LOCK_FILE, os.O_RDONLY)
+        except FileNotFoundError:
+            # NOSILENT: already swept away
+            return
+        try:
+            # blocks until every shared holder is gone: its readers closed, or its dead worker's exit closed them
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        finally:
+            os.close(descriptor)
+        try:
+            self.sweep()
+        except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
+            contain(exc, log=log, what="a released shared Arrow hand-off could not be swept once let go")
 
     @contextlib.contextmanager
     def handing(self, tables: Mapping[str, Any], *, max_bytes: int | None = None) -> Iterator[HandedTables]:

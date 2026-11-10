@@ -12,9 +12,14 @@ built on the saver genuinely stores, reloads and resumes across the rewrite.
 
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
+import os
 import re
 import sqlite3
-from typing import Annotated, Any, TypedDict
+import time
+from concurrent.futures.process import BrokenProcessPool
+from typing import Annotated, Any, ClassVar, TypedDict
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,7 +28,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
+from threetears.core.testing.calibrate import bare_loop_lateness, budget_problem
 from threetears.observe.erasure import ANONYMIZED_MARKER
+from threetears.langgraph import anonymize_workers
 from threetears.langgraph import (
     IDENTIFYING_METADATA_KEYS,
     KEPT_METADATA_KEYS,
@@ -43,6 +50,7 @@ from threetears.langgraph import (
     metadata_key_classification,
     unclassified_metadata_keys,
 )
+from threetears.langgraph.anonymize_workers import ANONYMIZE_WORKERS, anonymize_blobs, close_anonymize_workers
 from threetears.langgraph.serde import UUIDSafeSerializer
 
 _UNSCOPED = CheckpointScope.unscoped(reason="tests drive a single-tenant saver")
@@ -780,6 +788,50 @@ class _RetaggingEncoder(UUIDSafeSerializer):
         return "retagged", blob
 
 
+class _FaultingRule(UUIDSafeSerializer):
+    """the saver's serializer, made in a worker, which breaks one step of the rule there: a fault in the rule,
+    raised in the worker the way a bug in it would be."""
+
+    rule: ClassVar[str]
+    fault: ClassVar[Exception]
+
+    def __init__(self) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__()
+        if multiprocessing.parent_process() is None:
+            return  # made by the test, to hand the saver its class: the rule breaks only where the worker makes it
+        fault = self.fault
+
+        def broken(*args: object, **kwargs: object) -> object:
+            raise fault
+
+        setattr(anonymize_workers, self.rule, broken)
+
+
+class _FaultInTheMask(_FaultingRule):
+    """the rule's anonymizing walk raises an ``AttributeError``."""
+
+    rule = "anonymize_checkpoint_value"
+    fault = AttributeError("'NoneType' object has no attribute 'model_copy'")
+
+
+class _FaultInTheMessageWalk(_FaultingRule):
+    """the rule's anonymizing walk raises a ``TypeError``."""
+
+    rule = "anonymize_checkpoint_value"
+    fault = TypeError("unhashable type: 'list'")
+
+
+class _FaultInTheKeyReport(_FaultingRule):
+    """the rule's unclassified-key report raises a ``KeyError``."""
+
+    rule = "unclassified_metadata_keys"
+    fault = KeyError("metadata")
+
+
 class TestAFailedErasureCanBeFound:
     """an erasure over many threads that fails must say where, and a row that can never be
     rewritten must not stop every row after it."""
@@ -892,23 +944,43 @@ class TestAFailedErasureCanBeFound:
             ("unclassified_metadata_keys", KeyError("metadata")),
         ],
     )
-    async def test_a_fault_in_the_rule_raises_instead_of_reporting_the_row(
+    def test_a_fault_in_the_rule_raises_out_of_the_job_instead_of_reporting_the_blob(
         self, executor: SqliteQueryExecutor, monkeypatch: pytest.MonkeyPatch, rule: str, fault: Exception
     ) -> None:
         """a bug in the rule is not an unreadable blob: reporting it would name every row as unreadable
-        and hide the bug behind a per-row report."""
-        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
-        await _graph(saver).ainvoke(_turn(), _config())
+        and hide the bug behind a per-row report. The job a worker runs, run here, raises the rule's own fault."""
+        serde = UUIDSafeSerializer()
+        blob = serde.dumps_typed({"messages": [HumanMessage(content=_CONTENT, name=_NAME)]})
 
         def broken(*args: object, **kwargs: object) -> object:
             raise fault
 
-        monkeypatch.setattr(f"threetears.langgraph.checkpoint.{rule}", broken)
+        monkeypatch.setattr(f"threetears.langgraph.anonymize_workers.{rule}", broken)
+        classification = metadata_key_classification()
 
         with pytest.raises(type(fault)) as raised:
-            await saver.aanonymize_threads([_THREAD])
+            anonymize_blobs(UUIDSafeSerializer, classification.identifying, classification.kept, [(*blob, False)])
 
         assert raised.value is fault
+
+    @pytest.mark.parametrize("serde", [_FaultInTheMask, _FaultInTheMessageWalk, _FaultInTheKeyReport])
+    async def test_a_fault_in_the_rule_raises_instead_of_reporting_the_row(
+        self, executor: SqliteQueryExecutor, serde: type[_FaultingRule]
+    ) -> None:
+        """the same, through the saver: the fault raised in the worker reaches the caller, noted with the thread and
+        stage, and no row of the page is written."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        saver.serde = serde()
+
+        try:
+            with pytest.raises(type(serde.fault)) as raised:
+                await saver.aanonymize_threads([_THREAD])
+        finally:
+            # the serializer broke the rule in the workers it was made in: start the next test on fresh ones
+            await close_anonymize_workers()
+
+        assert raised.value.args == serde.fault.args
         notes = "\n".join(getattr(raised.value, "__notes__", []))
         assert repr(_THREAD) in notes and "(checkpoints)" in notes
         assert _leaks(executor), "nothing was rewritten"
@@ -1044,3 +1116,303 @@ class TestDeclaredClassification:
         assert not any(b"Pacific/Chatham" in blob for blob in executor.blobs())
         assert any(b"scope-routing-7" in blob for blob in executor.blobs()), "a kept value survives"
         assert not _leaks(executor)
+
+
+class _PidTaggingEncoder(UUIDSafeSerializer):
+    """the saver's serializer, but one that tags a rewrite with the process that encoded it."""
+
+    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        """
+        :param obj: the value
+        :ptype obj: Any
+        :return: the default encoding under the tag ``pid-<the encoding process>``
+        :rtype: tuple[str, bytes]
+        """
+        _type, blob = super().dumps_typed(obj)
+        return f"pid-{os.getpid()}", blob
+
+
+class _DyingDecoder(UUIDSafeSerializer):
+    """the saver's serializer, but one whose decoder ends its process, as a worker killed mid-job would."""
+
+    def loads_typed(self, data: tuple[str, bytes]) -> Any:
+        """
+        :param data: the stored type tag and bytes
+        :ptype data: tuple[str, bytes]
+        :return: never
+        :rtype: Any
+        """
+        os._exit(1)
+
+
+class TestTheWorkRunsInWorkerProcesses:
+    """the event loop does the database I/O; decoding, the rule and encoding run in worker processes."""
+
+    async def test_blobs_are_encoded_in_another_process(
+        self, executor: SqliteQueryExecutor, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the serializer is re-made in a worker and encodes there, never in the serving process."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        saver.serde = _PidTaggingEncoder()
+
+        with caplog.at_level("ERROR", logger="threetears.langgraph.checkpoint"):
+            result = await saver.aanonymize_threads([_THREAD])
+
+        logged = [record for record in caplog.records if "change its serde type" in record.getMessage()]
+        assert logged and len(logged) == len(result.unreadable), "every rewrite was retagged by its encoder"
+        encoders = {record.__dict__["rewritten_type"] for record in logged}
+        assert f"pid-{os.getpid()}" not in encoders, "a blob was encoded in the serving process"
+        assert len(encoders) <= ANONYMIZE_WORKERS
+
+    async def test_a_dead_worker_fails_the_run_and_the_next_run_gets_fresh_workers(
+        self, executor: SqliteQueryExecutor
+    ) -> None:
+        """a worker that dies fails the erasure it served, noted with the thread; rerunning it is the remedy."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        saver.serde = _DyingDecoder()
+
+        with pytest.raises(BrokenProcessPool) as raised:
+            await saver.aanonymize_threads([_THREAD])
+
+        assert repr(_THREAD) in "\n".join(getattr(raised.value, "__notes__", []))
+        assert _leaks(executor)
+        saver.serde = UUIDSafeSerializer()
+        result = await saver.aanonymize_threads([_THREAD])
+        assert result.checkpoints_rewritten > 0 and not _leaks(executor)
+
+    async def test_closed_workers_are_started_again_by_the_next_run(self, executor: SqliteQueryExecutor) -> None:
+        """closing the workers ends nothing for good: the next anonymization starts its own."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        await close_anonymize_workers()
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.checkpoints_rewritten > 0 and not _leaks(executor)
+
+
+class _YieldingExecutor(SqliteQueryExecutor):
+    """the SQLite executor, but yielding to the loop on every statement as a network driver's I/O does."""
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        """
+        :param query: SQL
+        :ptype query: str
+        :param args: parameters
+        :ptype args: object
+        :return: every row, as dicts
+        :rtype: list[dict[str, Any]]
+        """
+        await asyncio.sleep(0)
+        return await super().fetch(query, *args)
+
+    async def execute(self, query: str, *args: object) -> str:
+        """
+        :param query: SQL
+        :ptype query: str
+        :param args: parameters
+        :ptype args: object
+        :return: an asyncpg-shaped status tag
+        :rtype: str
+        """
+        await asyncio.sleep(0)
+        return await super().execute(query, *args)
+
+
+#: the realistic thread an erasure meets: threads, checkpoints in each, messages in each checkpoint
+_REAL_THREADS = 4
+_REAL_CHECKPOINTS = 50
+_REAL_MESSAGES = 50
+
+#: the most the event loop may run later, while an anonymization runs, than it runs beside as many threads that never
+#: take the interpreter lock (:func:`bare_loop_lateness`: the runner's own scheduling delay)
+_LOOP_MAY_BE_LATE = 0.020
+
+#: the most CPU the loop's thread may spend on two runs (its I/O and bookkeeping), as a share of ONE bare
+#: decode+encode of the same blobs. Two runs decode every blob twice, so a loop that decoded them would spend at least
+#: twice it; measured with the work in the workers, about half of it (the in-memory database's reads and writes, which
+#: this test runs on the loop's thread)
+_LOOP_CPU_SHARE = 1.0
+
+
+def _real_rows(executor: SqliteQueryExecutor) -> list[tuple[str, bytes, bool]]:
+    """store a realistic set of threads: each checkpoint holds its whole conversation, as a graph's does, with a
+    pending metadata write beside it.
+
+    :param executor: the database
+    :ptype executor: SqliteQueryExecutor
+    :return: every stored blob, as the workers are handed them
+    :rtype: list[tuple[str, bytes, bool]]
+    """
+    serde = UUIDSafeSerializer()
+    metadata = _turn()["metadata"]
+    blobs: list[tuple[str, bytes, bool]] = []
+    for thread in range(_REAL_THREADS):
+        thread_id = f"thread-real-{thread}"
+        for index in range(_REAL_CHECKPOINTS):
+            messages = [
+                HumanMessage(content=f"{_CONTENT} -- turn {turn}, " + "detail " * 30, name=_NAME, id=f"h{turn}")
+                if turn % 2 == 0
+                else AIMessage(content=f"noted: turn {turn}, " + "answer " * 40, id=f"a{turn}")
+                for turn in range(_REAL_MESSAGES)
+            ]
+            checkpoint = {
+                "v": 4,
+                "id": f"{index:08d}",
+                "ts": "2026-11-09T00:00:00+00:00",
+                "channel_values": {"messages": messages, "metadata": metadata},
+                "channel_versions": {"messages": index, "metadata": index},
+                "versions_seen": {},
+            }
+            cp_type, cp_blob = serde.dumps_typed(checkpoint)
+            _md_type, md_blob = serde.dumps_typed({"source": "loop", "step": index, "metadata": metadata})
+            w_type, w_blob = serde.dumps_typed(metadata)
+            executor.db.execute(
+                "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, metadata_) "
+                "VALUES (?, '', ?, ?, ?, ?)",
+                (thread_id, f"{index:08d}", cp_type, cp_blob, md_blob),
+            )
+            executor.db.execute(
+                "INSERT INTO checkpoint_writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, "
+                "blob) VALUES (?, '', ?, 'task', 0, ?, ?, ?)",
+                (thread_id, f"{index:08d}", METADATA_CHANNEL, w_type, w_blob),
+            )
+            blobs += [(cp_type, cp_blob, False), (cp_type, md_blob, False), (w_type, w_blob, True)]
+    executor.db.commit()
+    return blobs
+
+
+def _restore(executor: SqliteQueryExecutor, snapshot: list[tuple[Any, ...]], writes: list[tuple[Any, ...]]) -> None:
+    """put the stored blobs back as they were before a run.
+
+    :param executor: the database
+    :ptype executor: SqliteQueryExecutor
+    :param snapshot: the checkpoint rows' keys and blobs
+    :ptype snapshot: list[tuple[Any, ...]]
+    :param writes: the pending writes' keys and blobs
+    :ptype writes: list[tuple[Any, ...]]
+    :return: nothing
+    :rtype: None
+    """
+    executor.db.executemany(
+        "UPDATE checkpoints SET checkpoint = ?, metadata_ = ? WHERE thread_id = ? AND checkpoint_id = ?", snapshot
+    )
+    executor.db.executemany("UPDATE checkpoint_writes SET blob = ? WHERE thread_id = ? AND checkpoint_id = ?", writes)
+    executor.db.commit()
+
+
+@pytest.mark.loop_timing
+class TestARealSizedErasure:
+    """at an erasure's real size: as fast as decoding and encoding the blobs, and the loop keeps running."""
+
+    async def test_the_workers_take_at_most_twice_the_bare_decode_and_encode(self) -> None:
+        executor = _YieldingExecutor()
+        blobs = _real_rows(executor)
+        snapshot = [
+            tuple(row)
+            for row in executor.db.execute("SELECT checkpoint, metadata_, thread_id, checkpoint_id FROM checkpoints")
+        ]
+        writes = [
+            tuple(row) for row in executor.db.execute("SELECT blob, thread_id, checkpoint_id FROM checkpoint_writes")
+        ]
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        threads = [f"thread-real-{thread}" for thread in range(_REAL_THREADS)]
+        serde = UUIDSafeSerializer()
+
+        def bare() -> None:
+            for type_tag, blob, _is_metadata in blobs:
+                serde.dumps_typed(serde.loads_typed((type_tag, blob)))
+
+        baseline = min(_timed(bare) for _ in range(3))
+        classification = metadata_key_classification()
+        in_process = min(
+            _timed(lambda: anonymize_blobs(UUIDSafeSerializer, classification.identifying, classification.kept, blobs))
+            for _ in range(3)
+        )
+        await close_anonymize_workers()
+        began = time.perf_counter()
+        first = await saver.aanonymize_threads(threads)
+        cold = time.perf_counter() - began
+        assert first.checkpoints_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS
+        assert first.writes_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS and not _leaks(executor)
+        took = float("inf")
+        for _ in range(3):
+            _restore(executor, snapshot, writes)
+            began = time.perf_counter()
+            await saver.aanonymize_threads(threads)
+            took = min(took, time.perf_counter() - began)
+
+        print(
+            f"{len(blobs)} blobs, {sum(len(blob) for _t, blob, _m in blobs) / 1e6:.1f} MB: bare decode+encode "
+            f"{baseline * 1000:.0f} ms, in-process anonymize {in_process * 1000:.0f} ms, workers {took * 1000:.0f} ms "
+            f"({took / baseline:.2f}x bare), cold (spawning the workers) {cold * 1000:.0f} ms"
+        )
+        problem = budget_problem("anonymizing in the workers", took, baseline)
+        assert problem is None, problem
+
+    async def test_the_loop_is_never_late_while_the_workers_anonymize(self) -> None:
+        """a first run (every row rewritten) and a rerun (every row read, none written: a page passes without one
+        write to yield on) leave the loop running, and its thread does the I/O, never the decoding."""
+        executor = _YieldingExecutor()
+        blobs = _real_rows(executor)
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        threads = [f"thread-real-{thread}" for thread in range(_REAL_THREADS)]
+        serde = UUIDSafeSerializer()
+        began_cpu = time.thread_time()
+        for type_tag, blob, _is_metadata in blobs:
+            serde.dumps_typed(serde.loads_typed((type_tag, blob)))
+        bare_cpu = time.thread_time() - began_cpu
+        # warm: the workers spawn at the first run, on a thread; this measures the runs, not the spawn
+        await _graph(saver).ainvoke(_turn(), _config("thread-warm"))
+        await saver.aanonymize_threads(["thread-warm"])
+
+        late = 0.0
+        ticking = True
+
+        async def tick() -> None:
+            nonlocal late
+            while ticking:
+                start = time.perf_counter()
+                await asyncio.sleep(0.002)
+                late = max(late, time.perf_counter() - start - 0.002)
+
+        ticker = asyncio.create_task(tick())
+        await asyncio.sleep(0.05)
+        began, began_cpu = time.perf_counter(), time.thread_time()
+        result = await saver.aanonymize_threads(threads)
+        again = await saver.aanonymize_threads(threads)
+        ran, loop_cpu = time.perf_counter() - began, time.thread_time() - began_cpu
+        await asyncio.sleep(0.05)
+        ticking = False
+        await ticker
+        bare = await bare_loop_lateness(ANONYMIZE_WORKERS, max(ran, 0.5))
+
+        assert result.checkpoints_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS and not _leaks(executor)
+        assert (again.checkpoints_rewritten, again.writes_rewritten) == (0, 0)
+        print(
+            f"two runs {ran * 1000:.0f} ms, loop late {late * 1000:.1f} ms, bare {bare * 1000:.1f} ms; loop thread CPU "
+            f"{loop_cpu * 1000:.0f} ms against one bare decode+encode's {bare_cpu * 1000:.0f} ms"
+        )
+        assert late < bare + _LOOP_MAY_BE_LATE, (
+            f"the loop ran {late * 1000:.1f} ms late while the workers anonymized, "
+            f"{bare * 1000:.1f} ms beside threads holding no lock"
+        )
+        # two runs decode every blob twice: in the serving thread that is twice bare_cpu, in the workers none of it
+        assert loop_cpu < _LOOP_CPU_SHARE * bare_cpu, (
+            f"the loop's thread spent {loop_cpu * 1000:.0f} ms of CPU over two runs, past {_LOOP_CPU_SHARE} of one "
+            f"bare decode+encode ({bare_cpu * 1000:.0f} ms): the decoding ran on it"
+        )
+
+
+def _timed(run: Any) -> float:
+    """
+    :param run: the work
+    :ptype run: Callable[[], object]
+    :return: its seconds
+    :rtype: float
+    """
+    began = time.perf_counter()
+    run()
+    return time.perf_counter() - began

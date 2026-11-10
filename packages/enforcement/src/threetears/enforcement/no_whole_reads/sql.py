@@ -216,6 +216,8 @@ class Reader:
         set reads the ids the source's runs record named
     :ivar source_unit: whether the mark says ``unit="table"``: such a relation is a small static input read whole
         when the source's inputs record moved
+    :ivar view_keys: the keys every view the code the statement is written in builds declares, when that code is a
+        declared view producer (``NoWholeReadsConfig.view_producers``): a ``CREATE VIEW`` there is judged by them
     :ivar ctes: the CTE names the code the statement is written in defines in its other statements (a fragment
         ``FROM stage0{}`` reads a CTE the function writes as ``WITH stage0 AS``), never a table the catalog knows
     """
@@ -228,6 +230,7 @@ class Reader:
     template: _DeclaredTable | None = None
     source_ids: frozenset[str] = frozenset()
     source_unit: bool = False
+    view_keys: tuple[tuple[str, ...], ...] = ()
 
 
 def _interpolation(match: re.Match[str]) -> str:
@@ -1413,8 +1416,10 @@ _VIEW_NAME: Final[re.Pattern[str]] = re.compile(
 
 
 def _passed_through(body: str) -> set[str] | None:
-    """the columns a view's body passes through unchanged: each select-list item that is a column (``x``, ``t.x``,
-    ``x AS x``); None when it passes every column (``*``).
+    """the columns a view's body passes through unchanged: each select-list item that is a plain column, under its
+    own name or another (``x``, ``t.x``, ``x AS x``, ``p.race AS office_key``: a read binding ``office_key`` on the
+    view binds ``p.race`` beneath it); never one it computes (a ``CASE``, ``||``, a function); None when it passes
+    every column (``*``).
 
     :param body: the view's ``SELECT``, cleaned
     :ptype body: str
@@ -1434,7 +1439,7 @@ def _passed_through(body: str) -> set[str] | None:
         aliased = re.fullmatch(r"(.+?)\s+(?:AS\s+)?(\"?\w+\"?)", bare, re.IGNORECASE)
         column = _column(aliased.group(1) if aliased else bare)
         name = aliased.group(2).strip('"').lower() if aliased else (column[1] if column else "")
-        if column is not None and column[1] == name:
+        if column is not None and name:
             passed.add(name)
     return passed
 
@@ -1459,13 +1464,13 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     if reader.transient(name.strip('"')):
         return []
     declared = reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
-    if declared is None:
+    keys = (
+        [*declared.primary_keys, *declared.unique_keys]
+        if declared is not None
+        else [tuple(column.lower() for column in key) for key in reader.view_keys]
+    )
+    if declared is None and not reader.view_keys:
         return [_SqlFinding("undeclared-view", name)]
     passed = _passed_through(text[match.end() :])
-    missing = sorted(
-        column
-        for key in [*declared.primary_keys, *declared.unique_keys]
-        for column in key
-        if passed is not None and column not in passed
-    )
+    missing = sorted(column for key in keys for column in key if passed is not None and column not in passed)
     return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []

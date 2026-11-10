@@ -52,15 +52,16 @@ from threetears.observe.metrics import counter
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.registry import CacheInvalidationMessage
+from threetears.core.collections.scope_epochs import ScopeEpochs
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
     NUMERIC_TYPE,
-    UUID_TYPE,
     Column,
     TableSchema,
+    sql_cast,
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
@@ -133,16 +134,6 @@ def _warms() -> Any:
 
 #: how many applied changes' stamps are kept for readers whose snapshot is older than the newest
 _STAMPS_KEPT: Final = 256
-
-#: the SQL type a key's text is cast to before it is compared with its column, by the column's type tag
-_KEY_CASTS: Final[Mapping[str, str]] = {
-    UUID_TYPE: "uuid",
-    INT_TYPE: "bigint",
-    BIGINT_TYPE: "bigint",
-    BOOL_TYPE: "boolean",
-    NUMERIC_TYPE: "numeric",
-    DATETIMETZ_TYPE: "timestamptz",
-}
 
 
 class HubCapabilityMissingError(RuntimeError):
@@ -365,7 +356,7 @@ class FollowedTable:
         :rtype: str
         """
         kind = next(c.column_type for c in self.columns if c.name == column)
-        return _KEY_CASTS.get(kind, "text")
+        return sql_cast(kind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +384,32 @@ class _KeyedRead:
         :rtype: _KeyedRead
         """
         return cls(casts=tuple(table.key_cast(column) for column in table.key), types=rail_arrow_types(table.columns))
+
+
+def _stamp_table_of(
+    stamp_table: str | None,
+    settled: Callable[[], Awaitable[Any]],
+    tables: Sequence[FollowedTable],
+) -> str | None:
+    """the table the writer's stamp is kept in, whose row messages wake the follower: the one named, else derived from
+    ``settled`` when it is a ``ScopeEpochs.settled``; None for a follower none of whose tables has a scope, whose keys
+    no write can hold.
+
+    :raises ValueError: when a table has a scope and the stamp table is neither named nor derivable
+    """
+    if stamp_table is not None:
+        return stamp_table
+    epochs = getattr(settled, "__self__", None)
+    if isinstance(epochs, ScopeEpochs):
+        return epochs.table_name
+    scoped = sorted(table.name for table in tables if table.scope is not None)
+    if not scoped:
+        return None
+    raise ValueError(
+        f"{scoped} have a scope a write may hold: pass stamp_table=, the table the writer's stamp is kept in "
+        "(ScopeEpochs' own, ScopeEpochs.table_name), or settled=ScopeEpochs.settled to derive it; without it a "
+        "follower holding a write's keys never hears another replica commit it"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,6 +554,12 @@ class CopyFollower:
     :param checkpoints: where the copy's checkpoints are kept (:mod:`~threetears.core.collections.copy_checkpoint`);
         None keeps none, and every start reads L3 whole
     :ptype checkpoints: CopyCheckpoints | None
+    :param stamp_table: the table the writer's stamp is kept in (``ScopeEpochs``' own), whose row messages the
+        registry hears from every replica: each one asks a pass, so keys a write held are applied once another
+        replica's commit moves its scopes, with nothing else heard. None derives it from ``settled`` when that is a
+        ``ScopeEpochs.settled``, and hears none when no table has a scope (no write can hold its keys)
+    :ptype stamp_table: str | None
+    :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable
     """
 
     def __init__(
@@ -551,11 +574,13 @@ class CopyFollower:
         changes: EpochChangeReader | None,
         page_size: int = DEFAULT_PAGE_SIZE,
         checkpoints: CopyCheckpoints | None = None,
+        stamp_table: str | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
         if page_size < 1:
             raise ValueError("page_size must be at least 1")
+        self._stamp_table = _stamp_table_of(stamp_table, settled, tables)
         self._registry = registry
         self._tables: dict[str, FollowedTable] = {table.name: table for table in tables}
         self._reads = {table.name: _KeyedRead.of(table) for table in tables}
@@ -596,6 +621,10 @@ class CopyFollower:
         self._stamps: dict[int, tuple[Any, Mapping[str, str | None]]] = {}
         #: each table's mark when the keys being staged were taken: what the next change applied holds
         self._staging_marks: dict[str, str | None] = {}
+        #: each table's mark the copy holds every key of, at or below it: what a checkpoint of the copy records. A table
+        #: whose keys a write in progress holds (left pending) keeps the mark it was last current at, so a start from
+        #: that checkpoint walks the log from there and hears those keys again
+        self._current_marks: dict[str, str | None] = {}
         self._checkpoints = checkpoints
         if checkpoints is not None:
             # every other table the checkpoint holds is derived by the follower's owner: loaded with these, never warmed
@@ -690,6 +719,9 @@ class CopyFollower:
     def _on_caught_up(self) -> None:
         self._poked.set()
 
+    def _on_stamp_moved(self, message: CacheInvalidationMessage) -> None:
+        self._poked.set()
+
     # --- start -----------------------------------------------------------------------------------
 
     def register(self) -> None:
@@ -719,6 +751,14 @@ class CopyFollower:
                     on_caught_up=self._on_caught_up,
                     on_partition=self._on_partition(name),
                     on_table_reset=self._on_reset(name),
+                )
+            )
+        if self._stamp_table is not None:
+            # the writer's stamp moved (a write begun, a commit on any replica): a pass reads it; nothing of the stamp
+            # table itself is read or kept
+            self._removers.append(
+                self._registry.register_derived_cache(
+                    self._stamp_table, on_row=self._on_stamp_moved, on_table_dropped=self.poke
                 )
             )
 
@@ -766,6 +806,7 @@ class CopyFollower:
         await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
         # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
         self._stamps[self._mark] = (staged.stamp, dict(staged.marks))
+        self._current_marks = dict(staged.marks)
         for name, mark in staged.marks.items():
             self._registry.generation_marks.adopt_generation(name, mark)
         self._status.stamp = staged.stamp
@@ -896,7 +937,12 @@ class CopyFollower:
             mark = self._mark
             # a failed apply keeps every stage: the next pass tries only the apply again, never a read
             rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
-            self._stamps[mark] = (label, dict(self._staging_marks))
+            # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
+            # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
+            for name in self._tables:
+                if not self._pending[name] and name not in self._whole and not self._partitions[name]:
+                    self._current_marks[name] = self._staging_marks.get(name)
+            self._stamps[mark] = (label, dict(self._current_marks))
             # what this apply touched, for the checkpoint's incremental parts: a table read whole is every scope
             touched: dict[str, frozenset[str] | None] = {
                 name: None
@@ -1446,7 +1492,7 @@ class CopyFollower:
                     where={c: _typed(table.kind(c), v) for c, v in zip(columns[:-1], lead, strict=True)} or None,
                     where_any={
                         last: (
-                            f"{_KEY_CASTS.get(table.kind(last), 'text')}[]",
+                            f"{sql_cast(table.kind(last))}[]",
                             [_typed(table.kind(last), v) for v in batch],
                         )
                     },
@@ -1513,6 +1559,8 @@ class CopyFollower:
             table.read_order,
             types=types,
             page_size=self._page_size,
+            # declared, so hashed on YugabyteDB: no declaration names a range-sharded lead
+            lead_array=f"{sql_cast(table.kind(table.read_order[0]))}[]",
         )
         scopes: set[str | None] = set()
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)
