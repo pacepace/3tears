@@ -788,13 +788,17 @@ class DatasourceQueryResult(BaseModel):
     :ptype rows: list[dict[str, Any]]
     :param row_count: how many rows ``rows`` carries
     :ptype row_count: int
-    :param truncated: whether the hub cut the result at its row cap, so
-        ``rows`` is a prefix of what the query produced. a caller deriving
-        state from a full read must refuse a truncated one rather than treat
-        the missing rows as absent upstream
+    :param truncated: whether the hub cut the result (at its row cap, or at
+        ``max_reply_bytes``), so ``rows`` is a prefix of what the query
+        produced. a caller deriving state from a full read must refuse a
+        truncated one, or read on past its last whole key group, rather than
+        treat the missing rows as absent upstream
     :ptype truncated: bool
     :param correlation_id: the request's id, echoed by the hub
     :ptype correlation_id: UUID
+    :param max_reply_bytes: the bytes the hub cut this reply's rows at; ``None``
+        while it cuts at its row cap
+    :ptype max_reply_bytes: int | None
     """
 
     model_config = ConfigDict(frozen=True)
@@ -803,6 +807,7 @@ class DatasourceQueryResult(BaseModel):
     row_count: int
     truncated: bool
     correlation_id: UUID
+    max_reply_bytes: int | None = None
 
 
 class DatasourceQueryError(RuntimeError):
@@ -1524,12 +1529,13 @@ class DatasourceQueryClient:
                 # the flag is the failure this warns about, and the hub's own
                 # line is on the other side of the bus.
                 log.warning(
-                    "datasource query result was cut at the hub's row cap; rows is a prefix",
+                    "datasource query result was cut by the hub (its row cap or its reply's bytes); rows is a prefix",
                     extra={
                         "extra_data": {
                             "datasource": datasource_name,
                             "correlation_id": f"{request.correlation_id}",
                             "row_count": response.row_count,
+                            "max_reply_bytes": response.max_reply_bytes,
                         }
                     },
                 )
@@ -1540,6 +1546,7 @@ class DatasourceQueryClient:
                 correlation_id=response.correlation_id
                 if response.correlation_id is not None
                 else request.correlation_id,
+                max_reply_bytes=response.max_reply_bytes,
             )
         else:
             error_code = response.error_code or "UNKNOWN"
@@ -1730,11 +1737,12 @@ async def read_all(
     rows that existed a moment ago are gone -- a concurrent delete, and an
     incomplete read either way.
 
-    ``DatasourceQueryResult.truncated`` is NOT part of any of this. The hub
-    computes it as ``total > cap`` over what a query returned, so under any
-    ``LIMIT n <= cap`` it is permanently false. It answers "did the hub cut an
-    UNBOUNDED result", which is a different question from "are there more rows";
-    reading it as the latter is what shipped three releases with a dead guard.
+    ``DatasourceQueryResult.truncated`` is NOT the has-more signal: under its row cap the hub computes it
+    as ``total > cap`` over what a query returned, so under any ``LIMIT n <= cap`` it is false, and the
+    sentinel decides. But a hub that cuts replies by their bytes (``max_reply_bytes``) cuts a page short
+    of its sentinel, and then ``truncated`` is the only word that more rows follow: such a page is never
+    the end. Its rows up to its last whole key group are kept, and the next page reads on from there,
+    asking for about as many rows as the cut reply carried.
 
     ``OFFSET`` is not offered. It looks correct in testing and silently drops a
     row when anything is deleted between pages, which is the failure mode this
@@ -2054,6 +2062,51 @@ async def _pages(
                     f"are NOT the whole relation."
                 )
             return rows
+
+        if page.truncated and len(page.rows) <= size:
+            # THE HUB CUT THE REPLY (its bytes, or its row cap): the rows are a prefix of the page, so more rows
+            # follow and this is never the end. The last row's key group may be cut short too, so it is dropped
+            # and re-read at the head of the next page, as the sentinel's group is; the next page asks for about
+            # as many rows as this reply could carry.
+            kept = list(page.rows)
+            cut_key = tuple(kept[-1][column] for column in key)
+            while kept and tuple(kept[-1][column] for column in key) == cut_key:
+                kept.pop()
+            if not kept:
+                # every row of the reply shares one key (one row a reply, when rows are wide): it is whole when the
+                # part holds no more rows of that key, which one keyed count says
+                conditions, values = filters.conditions()
+                same = " AND ".join(f"{column} = ${len(values) + index}" for index, column in enumerate(key, 1))
+                where_sql = f"({conditions}) AND {same}" if conditions else same
+                counted = await client.query(
+                    datasource_name,
+                    f"SELECT count(*) AS n FROM {relation} WHERE {where_sql}",  # noqa: S608 - trusted identifiers
+                    params=[*values, *cut_key],
+                )
+                if not counted.rows or int(counted.rows[0]["n"]) != len(page.rows):
+                    raise IncompleteReadError(
+                        f"{datasource_name}: the hub cut a page of {relation} at {page.max_reply_bytes or 'its'} "
+                        f"reply bytes within one value of {tuple(key)}, so paging cannot step past it without "
+                        f"dropping rows: one key group is wider than one reply. {len(rows)} rows were read and they "
+                        "are NOT the whole relation."
+                    )
+                kept = list(page.rows)
+            rows.extend(kept)
+            cursor = tuple(kept[-1][column] for column in key)
+            previous_had_more = True
+            size = max(1, len(page.rows) - 1)
+            log.info(
+                "read_all page cut by the hub's reply cap; reading on from its last whole key group",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "relation": relation,
+                        "page_size": size,
+                        "max_reply_bytes": page.max_reply_bytes,
+                    }
+                },
+            )
+            continue
 
         had_more = len(page.rows) > size
         if not had_more:

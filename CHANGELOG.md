@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### datasources: a reply the hub cut by its bytes never ends a read
+
+**Fixed (P0, missing data):** with the hub's byte cap on, a page sized past it came back cut (`truncated`, short of
+its sentinel), and `read_all`, `read_counted`, `read_parts` and `read_partitions` took it as the relation's end and
+returned a prefix as the whole. Every keyset pager now reads a cut reply as "more rows follow": it keeps the rows up
+to the reply's last whole key group and reads on from there (a reply of one key group is kept when one keyed count
+says the part holds no more of it, else the read raises `IncompleteReadError`); `read_partitions`' page starts and
+each of its pages read on the same way. `DatasourceQueryResult` carries `max_reply_bytes` from the reply.
+
 ### core, enforcement: an index that serves a range or an order from its first column is declared range-sharded
 
 **Added (core):** `IndexDef.asc` / `Index(..., asc="expires_at")`: the column rendered `ASC` in so many words.
