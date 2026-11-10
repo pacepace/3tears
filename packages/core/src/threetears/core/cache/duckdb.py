@@ -190,6 +190,26 @@ def fetch_arrow(result: Any, rows: int) -> Any:
     return fetch(min(max(int(rows), 1), _ARROW_BATCH_ROWS))
 
 
+#: the rows one piece of :func:`_fetch_arrow_pieces` asks DuckDB for: its vector size, so a piece's buffers hold at
+#: most one vector's rows more than the result has
+_ARROW_PIECE_ROWS: Final = 2048
+
+
+def _fetch_arrow_pieces(result: Any) -> Any:
+    """a DuckDB result as one Arrow table read a vector's rows a piece, for a result whose size is not known.
+
+    :func:`fetch_arrow` sizes each batch for the rows it is told the result holds, which a caller would have to count
+    first; asked for one vector a piece, DuckDB's buffers never hold more than a piece's spare rows past the result.
+
+    :param result: an executed DuckDB statement (a connection or cursor after ``execute``)
+    :ptype result: duckdb.DuckDBPyConnection
+    :return: the rows
+    :rtype: pyarrow.Table
+    """
+    reader = result.fetch_record_batch(_ARROW_PIECE_ROWS)
+    return pa.Table.from_batches(list(reader), schema=reader.schema)
+
+
 #: the field metadata key :meth:`DuckDBBackend.execute_arrow` names each column's DuckDB type under
 _DUCKDB_TYPE_KEY: Final = b"duckdb_type"
 
@@ -590,8 +610,8 @@ class DuckDBBackend:
     index's, so a keyed table whose rows are deleted as often as they are written grows by every row it
     ever held, and the primary-key index itself is neither compressed nor freed. A table named in
     ``keyless`` is created with no primary key (its key columns still ``NOT NULL``), and this backend keeps
-    its key instead: every write replaces the rows of the keys it names (:meth:`upsert_many`,
-    :meth:`replace_all`, a replacement's ``rows``), and rows added as Arrow (:meth:`replace_partitions`)
+    its key instead: every write replaces the rows of the keys it names (:meth:`upsert_many`, a
+    replacement's ``rows``), and rows added as Arrow (:meth:`replace_partitions`)
     are refused when they name a key the table holds, or one key twice, as the key would refuse them.
     Once checkpointed, such a table gives back what was deleted and holds what is kept compressed.
     :meth:`load_parquet` refuses one (DuckDB's ``INSERT OR REPLACE`` needs the key).
@@ -985,97 +1005,52 @@ class DuckDBBackend:
         quoted = quote_identifier(table)
         position = {name: index for index, name in enumerate(columns)}
         arrow = _as_arrow(quoted, lists)
-        source = "_bulk_rows"
-        bound: list[Any] = []
-        if arrow is None:
-            # values Arrow cannot type as one column: each list bound and unnested
-            source = "(SELECT " + ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists))) + ")"
-            bound = list(lists)
         joined = " AND ".join(f"held.{quote_identifier(k)} = given.c{position[k]}" for k in self._keyless[table])
         names = ", ".join(quote_identifier(c) for c in columns)
         given = ", ".join(f"c{index}" for index in range(len(columns)))
-        if arrow is not None:
-            connection.register(source, arrow)
+        if arrow is None:
+            # values Arrow cannot type as one column: each list bound and unnested, twice (once a statement)
+            unnested = ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists)))
+            bound = list(lists)
+            connection.execute(
+                f"DELETE FROM {quoted} AS held USING (SELECT {unnested}) AS given WHERE {joined}",  # noqa: S608
+                bound,
+            )
+            connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM (SELECT {unnested})", bound)  # noqa: S608
+            return
+        connection.register("_bulk_rows", arrow)
         try:
-            connection.execute(f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {joined}", bound)  # noqa: S608
-            connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM {source}", bound)  # noqa: S608
+            connection.execute(f"DELETE FROM {quoted} AS held USING _bulk_rows AS given WHERE {joined}")  # noqa: S608
+            connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM _bulk_rows")  # noqa: S608
         finally:
-            if arrow is not None:
-                connection.unregister(source)
+            connection.unregister("_bulk_rows")
 
-    def _refuse_held_keys(self, table: str, chunk: str) -> None:
-        """refuse rows about to be added to a key-less table (registered as ``chunk``) that name a key the table
-        holds, or one key twice, as the table's key would; the caller holds the lock.
+    def _refuse_held_keys(self, table: str) -> None:
+        """refuse rows about to be added to a key-less table (registered as ``_partition_chunk``) that name a key the
+        table holds, or one key twice, as the table's key would; the caller holds the lock.
+
+        Each is a probe for one such row, read by the rows' own keys: nothing is counted.
 
         :param table: a key-less table this backend created
         :ptype table: str
-        :param chunk: the registered name of the rows
-        :ptype chunk: str
         :return: nothing
         :rtype: None
-        :raises duckdb.ConstraintException: naming the table and how many rows repeat a key
+        :raises duckdb.ConstraintException: naming the table and which way a row repeats a key
         """
         key = self._keyless[table]
         keys = ", ".join(quote_identifier(k) for k in key)
         joined = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
         held = self._db.execute(
-            f"SELECT count(*) FROM {quote_identifier(table)} AS held JOIN {chunk} AS given ON {joined}"  # noqa: S608
-        ).fetchone()[0]
-        repeated = self._db.execute(f"SELECT count(*) - count(DISTINCT ({keys})) FROM {chunk}").fetchone()[0]  # noqa: S608
-        if held or repeated:
+            f"SELECT 1 FROM {quote_identifier(table)} AS held JOIN _partition_chunk AS given ON {joined} LIMIT 1"  # noqa: S608
+        ).fetchone()
+        repeated = self._db.execute(
+            f"SELECT 1 FROM _partition_chunk GROUP BY {keys} HAVING count(*) > 1 LIMIT 1"  # noqa: S608
+        ).fetchone()
+        if held is not None or repeated is not None:
             raise duckdb.ConstraintException(
-                f"Duplicate key in key-less table {table!r}: {held} row(s) name a key it holds, "
-                f"{repeated} repeat a key among themselves"
+                f"Duplicate key in key-less table {table!r}: "
+                + ("the rows name a key it holds" if held is not None else "the rows repeat a key among themselves")
             )
-
-    def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
-        """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
-
-        For an L1 that is a whole copy of its table (:mod:`threetears.core.collections.complete_copy`):
-        a row the source no longer holds must leave the copy, which an upsert never does. A
-        failure rolls back, so the table keeps what it held. Rows repeating a key keep the last.
-
-        :param table: a table this backend created
-        :ptype table: str
-        :param rows: every row the table is to hold, each keyed by column name
-        :ptype rows: Sequence[Mapping[str, Any]]
-        :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
-        :return: how many rows were given
-        :rtype: int
-        :raises ValueError: when the table is not one this backend created
-        """
-        if table not in self._schema_info:
-            raise ValueError(f"unknown table {table!r}: replace_all fills tables this backend created")
-        with self._db_lock:
-            committed = False
-            self._db.execute("BEGIN TRANSACTION")
-            try:
-                self._db.execute(f"DELETE FROM {quote_identifier(table)}")
-                self._insert_rows(self._db, table, rows, primary_key)
-                self._db.execute("COMMIT")
-                committed = True
-            finally:
-                if not committed:
-                    self._db.execute("ROLLBACK")
-        self.request_checkpoint()
-        log.info("replaced an L1 table whole", extra={"extra_data": {"table": table, "rows": len(rows)}})
-        return len(rows)
-
-    def stored_keys(self, table: str, key: Sequence[str]) -> list[tuple[Any, ...]]:
-        """every row's key as this backend stores it: the form :meth:`serialize_value` writes.
-
-        :param table: the table
-        :ptype table: str
-        :param key: the key's columns, in order
-        :ptype key: Sequence[str]
-        :return: one tuple of stored values per row, in no particular order
-        :rtype: list[tuple[Any, ...]]
-        """
-        columns = ", ".join(quote_identifier(column) for column in key)
-        with self._db_lock:
-            rows = self._db.execute(f"SELECT {columns} FROM {quote_identifier(table)}").fetchall()
-        return [tuple(row) for row in rows]
 
     def load_parquet(self, table: str, path: str | Path, *, row_number_column: str | None = None) -> int:
         """load a Parquet file into a table this backend created, in one statement.
@@ -1167,12 +1142,12 @@ class DuckDBBackend:
         """
         condition, params = self._partition_filter(table, column, value)
         order = ", ".join(quote_identifier(c) for c in order_by)
-        relation = f"{quote_identifier(table)} WHERE {condition}"
-        sql = f"SELECT * FROM {relation}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
+        sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition}"  # noqa: S608
+        if order:
+            sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition} ORDER BY {order}"  # noqa: S608
         with self._db_lock:
-            # counted first so the export's buffers are sized for the scope (:func:`fetch_arrow`)
-            held = self._db.execute(f"SELECT count(*) FROM {relation}", params).fetchone()[0]  # noqa: S608
-            return fetch_arrow(self._db.execute(sql, params), held)
+            # read a piece at a time, so the export's buffers fit the scope without counting it first
+            return _fetch_arrow_pieces(self._db.execute(sql, params))
 
     def storage_arrow(self, table: str, rows: Any, primary_key: str | tuple[str, ...]) -> tuple[list[str], Any]:
         """an Arrow table's rows in ``table``'s storage forms, the last row of each key kept: what
@@ -1326,28 +1301,26 @@ class DuckDBBackend:
             f"CAST({given.get(name, 'NULL')} AS {_ddl_type(code)}) AS {quote_identifier(name)}"
             for name, code in schema.items()
         )
-        source = "_export_rows"
         bound: list[Any] = []
+        ordered = f" ORDER BY {order}" if order else ""
         if not rows:
             # the table's own columns and types, and no row
-            source = f"(SELECT * FROM {quote_identifier(table)} LIMIT 0)"  # noqa: S608
-            typed = "*"
+            sql = f"SELECT * FROM {quote_identifier(table)} WHERE FALSE"  # noqa: S608
         elif arrow is None:
             # values Arrow cannot type as one column: each list bound and unnested
-            source = "(SELECT " + ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists))) + ")"
+            unnested = ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists)))
             bound = list(lists)
-        sql = (
-            f"SELECT * FROM (SELECT {typed} FROM {source}) WHERE {condition}"  # noqa: S608
-            + (f" ORDER BY {order}" if order else "")
-        )
+            sql = f"SELECT * FROM (SELECT {typed} FROM (SELECT {unnested})) WHERE {condition}{ordered}"  # noqa: S608
+        else:
+            sql = f"SELECT * FROM (SELECT {typed} FROM _export_rows) WHERE {condition}{ordered}"  # noqa: S608
         with self._db_lock:
             if arrow is not None:
-                self._db.register(source, arrow)
+                self._db.register("_export_rows", arrow)
             try:
-                exported = fetch_arrow(self._db.execute(sql, [*bound, *params]), len(rows))
+                exported = fetch_arrow(self._db.execute(sql, [*bound, *params] if rows else []), len(rows))
             finally:
                 if arrow is not None:
-                    self._db.unregister(source)
+                    self._db.unregister("_export_rows")
         return exported
 
     def held_keys(self, table: str, column: str, value: Any, arrow: Any, *, key: Sequence[str]) -> int:
@@ -1415,7 +1388,7 @@ class DuckDBBackend:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
                             if replacement.table in self._keyless:
-                                self._refuse_held_keys(replacement.table, "_partition_chunk")
+                                self._refuse_held_keys(replacement.table)
                             self._db.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _partition_chunk")  # noqa: S608
                         finally:
                             self._db.unregister("_partition_chunk")
@@ -1444,6 +1417,19 @@ class DuckDBBackend:
             raise ValueError(f"a staging table's name begins with {STAGE_PREFIX!r}, not {stage!r}")
         return quote_identifier(stage)
 
+    def _stage_rest(self, stage: str) -> str:
+        """the part of a staging table's name after :data:`STAGE_PREFIX`, escaped to sit inside a quoted name: a
+        statement reading a stage spells it ``"{STAGE_PREFIX}{rest}"``, so its text names a stage, never a table.
+
+        :param stage: the name
+        :ptype stage: str
+        :return: the rest of the name, any double quote doubled
+        :rtype: str
+        :raises ValueError: when it does not begin with :data:`STAGE_PREFIX`
+        """
+        self._stage_name(stage)
+        return stage[len(STAGE_PREFIX) :].replace('"', '""')
+
     def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
         """add rows to the staging table ``stage``, shaped as ``table`` and made on first use: rows no reader of
         ``table`` sees until :meth:`apply_staged` moves them in.
@@ -1470,12 +1456,14 @@ class DuckDBBackend:
         if rows.num_rows == 0:
             with self._db_lock:
                 self._db.execute(
-                    f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} LIMIT 0"
+                    f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} WHERE FALSE"
                 )  # noqa: S608
             return 0
         _, stored = self.storage_arrow(table, rows, tuple(key))
         with self._db_lock:
-            self._db.execute(f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} LIMIT 0")  # noqa: S608
+            self._db.execute(
+                f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} WHERE FALSE"
+            )  # noqa: S608
             self._db.register("_staged_chunk", stored)
             try:
                 self._db.execute(f"INSERT INTO {quoted} BY NAME SELECT * FROM _staged_chunk")  # noqa: S608
@@ -1514,10 +1502,10 @@ class DuckDBBackend:
         source = quote_identifier(table)
         chunk = self._stage_name(f"{stage}__chunk")
         with self._db_lock:
-            self._db.execute(f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT {names} FROM {source} LIMIT 0")  # noqa: S608
+            self._db.execute(f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT {names} FROM {source} WHERE FALSE")  # noqa: S608
             if keys.num_rows == 0:
                 return 0
-            self._db.execute(f"CREATE OR REPLACE TABLE {chunk} AS SELECT {names} FROM {source} LIMIT 0")  # noqa: S608
+            self._db.execute(f"CREATE OR REPLACE TABLE {chunk} AS SELECT {names} FROM {source} WHERE FALSE")  # noqa: S608
             # an instant's key named in any ISO spelling is staged in the one its row is stored in
             codes = self._schema_info[table]
             staged = pa.table(
@@ -1531,15 +1519,16 @@ class DuckDBBackend:
             self._db.register("_staged_keys", staged)
             try:
                 self._db.execute(f"INSERT INTO {chunk} BY NAME SELECT * FROM _staged_keys")  # noqa: S608
+                # the keys given, typed by the stage's own columns as they were by the chunk's
+                self._db.execute(f"INSERT INTO {quoted} BY NAME SELECT * FROM _staged_keys")  # noqa: S608
             finally:
                 self._db.unregister("_staged_keys")
             if rows_quoted is not None:
-                self._db.execute(f"CREATE TABLE IF NOT EXISTS {rows_quoted} AS SELECT * FROM {source} LIMIT 0")  # noqa: S608
+                self._db.execute(f"CREATE TABLE IF NOT EXISTS {rows_quoted} AS SELECT * FROM {source} WHERE FALSE")  # noqa: S608
                 joined = " AND ".join(
                     f"{rows_quoted}.{quote_identifier(c)} = {chunk}.{quote_identifier(c)}" for c in key
                 )
                 self._db.execute(f"DELETE FROM {rows_quoted} USING {chunk} WHERE {joined}")  # noqa: S608
-            self._db.execute(f"INSERT INTO {quoted} SELECT * FROM {chunk}")  # noqa: S608
             self._db.execute(f"DROP TABLE {chunk}")
         return int(keys.num_rows)
 
@@ -1606,13 +1595,13 @@ class DuckDBBackend:
                 statements.append(f"DELETE FROM {table} USING {keys} WHERE {joined}")  # noqa: S608
                 stages.append(change.keys)
             if change.rows is not None:
-                statements.append(f"INSERT INTO {table} BY NAME SELECT * FROM {self._stage_name(change.rows)}")  # noqa: S608
+                rest = self._stage_rest(change.rows)
+                statements.append(f'INSERT INTO {table} BY NAME SELECT * FROM "{STAGE_PREFIX}{rest}"')  # noqa: S608
                 stages.append(change.rows)
         written = 0
-        marked = quote_identifier(_STAGE_MARK_TABLE)
         with self._db_lock:
             if mark is not None:
-                self._db.execute(f"CREATE TABLE IF NOT EXISTS {marked} (mark BIGINT)")
+                self._db.execute(f"CREATE TABLE IF NOT EXISTS {quote_identifier(_STAGE_MARK_TABLE)} (mark BIGINT)")
             committed = False
             self._db.execute("BEGIN TRANSACTION")
             try:
@@ -1621,8 +1610,8 @@ class DuckDBBackend:
                     if statement.startswith("INSERT"):
                         written += int(result.fetchone()[0])
                 if mark is not None:
-                    self._db.execute(f"DELETE FROM {marked}")  # noqa: S608
-                    self._db.execute(f"INSERT INTO {marked} VALUES (?)", [int(mark)])  # noqa: S608
+                    self._db.execute(f"DELETE FROM {quote_identifier(_STAGE_MARK_TABLE)}")  # noqa: S608
+                    self._db.execute(f"INSERT INTO {quote_identifier(_STAGE_MARK_TABLE)} VALUES (?)", [int(mark)])  # noqa: S608
                 self._db.execute("COMMIT")
                 committed = True
             finally:
