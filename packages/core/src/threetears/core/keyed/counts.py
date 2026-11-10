@@ -130,11 +130,28 @@ def _where(by: Mapping[str, Any]) -> tuple[str, list[Any]]:
     return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
 
 
+def _ordered(table: str | Derived, order: Sequence[str]) -> str:
+    """the ``ORDER BY`` a probe walks its rows in: the table's key (or a declared index's columns) after ``by``, so the
+    bound is a walk of that index, never a scan stopped early. A scan the planner stops at a LIMIT reads every row
+    before the ones it keeps: a key whose rows lie at the end of the heap is a whole read.
+
+    :raises ValueError: when ``order`` names no column
+    """
+    if not order:
+        raise ValueError(f"a probe of {table} names the key it walks (order=)")
+    return " ORDER BY " + ", ".join(f"r.{quote_identifier(column)}" for column in order)
+
+
 async def count_at_most(
-    conn: Any, table: str | Derived, *, at_most: int, by: Mapping[str, Any] | None = None
+    conn: Any,
+    table: str | Derived,
+    *,
+    at_most: int,
+    order: Sequence[str],
+    by: Mapping[str, Any] | None = None,
 ) -> BoundedCount:
     """how many of the rows ``by`` names ``table`` holds (any of its rows when None), counting at most
-    ``at_most + 1`` of them: ``SELECT count(*) FROM (SELECT 1 FROM t WHERE <by> LIMIT $n)``.
+    ``at_most + 1`` of them: ``SELECT count(*) FROM (SELECT 1 FROM t WHERE <by> ORDER BY <order> LIMIT $n)``.
 
     Unkeyed, it is a bounded probe of the table's first rows, never more than the bound: the size class of a table no
     estimate is kept for (an L1 cache, a table never analysed).
@@ -145,6 +162,9 @@ async def count_at_most(
     :ptype table: str | Derived
     :param at_most: the bound
     :ptype at_most: int
+    :param order: the key the probe walks (the table's key, or a declared index's columns): ``by``'s columns and those
+        after them
+    :ptype order: Sequence[str]
     :param by: the rows to count: a leading part of the key, each a value or an :class:`~threetears.core.keyed.AnyOf`;
         any rows when None
     :ptype by: Mapping[str, Any] | None
@@ -155,26 +175,36 @@ async def count_at_most(
     if at_most < 0:
         raise ValueError(f"a bounded count counts at least none, got {at_most}")
     where, values = _where(by or {})
-    sql = f"SELECT count(*) AS held FROM (SELECT 1 FROM {relation(table, 'r')}{where} LIMIT ${len(values) + 1}) AS held"
+    ordered = _ordered(table, order)
+    sql = (
+        f"SELECT count(*) AS held FROM (SELECT 1 FROM {relation(table, 'r')}{where}{ordered} "
+        f"LIMIT ${len(values) + 1}) AS held"
+    )
     rows = await conn.fetch(sql, *values, at_most + 1)
     held = int(rows[0]["held"])
     return BoundedCount(count=min(held, at_most), more=held > at_most)
 
 
-async def holds_any(conn: Any, table: str | Derived, *, by: Mapping[str, Any] | None = None) -> bool:
+async def holds_any(
+    conn: Any, table: str | Derived, *, order: Sequence[str], by: Mapping[str, Any] | None = None
+) -> bool:
     """whether ``table`` holds any row ``by`` names (any row at all when None): one row read, at most.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
     :param table: the table, a TRUSTED identifier
     :ptype table: str
+    :param order: the key the probe walks (the table's key, or a declared index's columns)
+    :ptype order: Sequence[str]
     :param by: the rows asked about, a leading part of the key; None asks whether the table is empty
     :ptype by: Mapping[str, Any] | None
     :return: whether a row is held
     :rtype: bool
     """
     where, values = _where(by or {})
-    rows = await conn.fetch(f"SELECT 1 AS held FROM {relation(table, 'r')}{where} LIMIT 1", *values)
+    rows = await conn.fetch(
+        f"SELECT 1 AS held FROM {relation(table, 'r')}{where}{_ordered(table, order)} LIMIT 1", *values
+    )
     return bool(rows)
 
 
