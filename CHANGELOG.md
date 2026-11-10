@@ -159,7 +159,8 @@ operator's reset.
   in progress holds keeps the mark it was last current at, so a start from that checkpoint hears those keys again.
 - `CopyFollower(stamp_table=)` names the table the writer's stamp is kept in (derived from `settled` when that is a
   `ScopeEpochs.settled`; `ScopeEpochs.table_name`), whose row messages ask a pass: another replica's commit of a held
-  write wakes the follower; construction refuses a follower whose stamp table is neither named nor derivable.
+  write wakes the follower. A follower none of whose tables has a scope hears none; one with a scoped table and
+  no stamp table named or derivable is refused at construction.
 - `ScopeEpochs.settled()` reads only what changed after its first read: one statement for the writer's row, every
   pending scope and every scope past the last version it read, merged into a cached snapshot; it reads whole again
   only when the record cannot be trusted (`scope_epochs_whole_reads_total{table,why}`).

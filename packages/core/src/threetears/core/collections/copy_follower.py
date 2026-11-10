@@ -396,42 +396,29 @@ class _KeyedRead:
         return cls(casts=tuple(table.key_cast(column) for column in table.key), types=rail_arrow_types(table.columns))
 
 
-class _NeverHolds(StrEnum):
-    """a writer that never holds a scope while it writes (``CopyFollower(stamp_table=_NEVER_HOLDS)``): its stamp is a
-    seqlock that only says settled or not, so no key heard waits on another replica's commit."""
-
-    NEVER_HOLDS = "never_holds"
-
-
-#: ``CopyFollower(stamp_table=_NEVER_HOLDS)``: the writer never holds a scope, so no stamp table is heard
-_NEVER_HOLDS: Final = _NeverHolds.NEVER_HOLDS
-
-
 def _stamp_table_of(
-    stamp_table: str | _NeverHolds | None,
+    stamp_table: str | None,
     settled: Callable[[], Awaitable[Any]],
     tables: Sequence[FollowedTable],
 ) -> str | None:
-    """the table the writer's stamp is kept in, whose row messages wake the follower; None for a writer that never
-    holds a scope. Derived from ``settled`` when it is a ``ScopeEpochs.settled``, else the caller names it.
+    """the table the writer's stamp is kept in, whose row messages wake the follower: the one named, else derived from
+    ``settled`` when it is a ``ScopeEpochs.settled``; None for a follower none of whose tables has a scope, whose keys
+    no write can hold.
 
-    :raises ValueError: when it is neither given nor derivable, or ``_NEVER_HOLDS`` is given for a scoped table
+    :raises ValueError: when a table has a scope and the stamp table is neither named nor derivable
     """
-    if stamp_table is _NEVER_HOLDS:
-        scoped = sorted(table.name for table in tables if table.scope is not None)
-        if scoped:
-            raise ValueError(
-                f"{scoped} have a scope a write may hold: name the writer's stamp table (stamp_table=), not _NEVER_HOLDS"
-            )
-        return None
     if stamp_table is not None:
-        return str(stamp_table)
+        return stamp_table
     epochs = getattr(settled, "__self__", None)
     if isinstance(epochs, ScopeEpochs):
         return epochs.table_name
+    scoped = sorted(table.name for table in tables if table.scope is not None)
+    if not scoped:
+        return None
     raise ValueError(
-        "name the table the writer's stamp is kept in (stamp_table=, ScopeEpochs' own), or _NEVER_HOLDS for a writer "
-        "that never holds a scope: without it a follower holding a write's keys never hears another replica commit it"
+        f"{scoped} have a scope a write may hold: pass stamp_table=, the table the writer's stamp is kept in "
+        "(ScopeEpochs' own, ScopeEpochs.table_name), or settled=ScopeEpochs.settled to derive it; without it a "
+        "follower holding a write's keys never hears another replica commit it"
     )
 
 
@@ -580,9 +567,9 @@ class CopyFollower:
     :param stamp_table: the table the writer's stamp is kept in (``ScopeEpochs``' own), whose row messages the
         registry hears from every replica: each one asks a pass, so keys a write held are applied once another
         replica's commit moves its scopes, with nothing else heard. None derives it from ``settled`` when that is a
-        ``ScopeEpochs.settled``; :data:`_NEVER_HOLDS` for a writer that never holds a scope (no table has one)
-    :ptype stamp_table: str | _NeverHolds | None
-    :raises ValueError: when ``stamp_table`` is neither given nor derivable, or is ``_NEVER_HOLDS`` beside a scoped table
+        ``ScopeEpochs.settled``, and hears none when no table has a scope (no write can hold its keys)
+    :ptype stamp_table: str | None
+    :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable
     """
 
     def __init__(
@@ -597,7 +584,7 @@ class CopyFollower:
         changes: EpochChangeReader | None,
         page_size: int = DEFAULT_PAGE_SIZE,
         checkpoints: CopyCheckpoints | None = None,
-        stamp_table: str | _NeverHolds | None = None,
+        stamp_table: str | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
