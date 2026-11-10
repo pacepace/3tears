@@ -418,22 +418,34 @@ def _announce(scan: WholeReadScan) -> list[str]:
     return lines
 
 
-def _marked(hit: WholeReadHit, marks: list[OperatorMark]) -> bool:
-    """whether a hit sits in a function (or one nested in it) whose operator mark lets its kind through.
+def _marked(hit: WholeReadHit, marks: list[OperatorMark], schema: SchemaCatalog | None = None) -> bool:
+    """whether a hit sits in a function (or one nested in it) whose operator mark lets its kind through. A source
+    change read of a whole static input (``unit="table"``) lets through its whole reads and pagers of relations no
+    declaration names, never of an L3 or catalog table.
 
     :param hit: the hit
     :ptype hit: WholeReadHit
     :param marks: the operator marks
     :ptype marks: list[OperatorMark]
+    :param schema: the declared tables, which a static input's mark never covers
+    :ptype schema: SchemaCatalog | None
     :return: whether it does
     :rtype: bool
     """
+    relation = hit.symbol.split(" ", 1)[1] if " " in hit.symbol else ""
+    declared = schema is not None and hit.kind == "whole-select" and schema.table(relation) is not None
     return any(
         hit.path == mark.path
         and (hit.function == mark.function or hit.function.startswith(f"{mark.function}."))
-        and hit.kind in mark.kinds
+        and (hit.kind in mark.kinds or (mark.unit == "table" and hit.kind in _STATIC_UNIT_KINDS and not declared))
         for mark in marks
     )
+
+
+#: the whole reads a source change read of a static input (``unit="table"``) is: a whole select, a pager over it
+_STATIC_UNIT_KINDS: Final[frozenset[str]] = frozenset(
+    {"whole-select", "whole-aggregate", "unkeyed-pager", "may-read-whole", "whole-read", "calls-whole-read"}
+)
 
 
 def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
@@ -479,7 +491,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             warnings.warn(line, _WholeReadAccepted, stacklevel=2)
     findings.extend(index_findings(scan.schema, config.repo_root, scan.definitions | scan.constants))
     for hit in hits:
-        if _marked(hit, scan.operators):
+        if _marked(hit, scan.operators, scan.schema):
             continue
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")

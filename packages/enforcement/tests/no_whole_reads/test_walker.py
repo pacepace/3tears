@@ -1440,3 +1440,58 @@ def test_a_source_gap_names_its_gap_and_is_announced(tmp_path: Path) -> None:
     unnamed = _ledger(kind="source-gap")
     findings = no_whole_reads_findings(_config(tmp_path, {"follower.py": _COLD}, ledger=unnamed))
     assert any("names its gap id" in finding for finding in findings), findings
+
+
+_STATIC = """
+    from threetears.core.operator import source_change_read
+
+    class Warehouse:
+        @source_change_read(unit="table", proof="tests/test_source.py::test_static")
+        async def static_records(self, relation):
+            rows = await read_all(self._client, f"SELECT * FROM {relation}")
+            heads = await self._client.query(f"SELECT name FROM {relation}")
+            return rows, heads
+
+        async def load(self, relation):
+            return await self.static_records(relation)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def grouped_by(client, relation, run_ids, required):
+        condition, params = filter_conditions(where_in={"run_id": run_ids, "family": ["race"]}, not_null=required)
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition} GROUP BY office_key", params)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def filtered_unknown(client, relation, filters):
+        condition, params = filter_conditions(where_in=filters)
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+
+    def typed(connection, rows, typed_columns):
+        connection.register("raw", rows)
+        connection.execute(f"CREATE TEMP VIEW typed AS SELECT {typed_columns}, raw.{ORDER} FROM raw")
+        return connection.execute("SELECT * FROM typed")
+"""
+
+_STATIC_TESTS = """
+    async def test_static(warehouse):
+        assert await warehouse.static_records("r")
+
+    async def test_runs(client):
+        assert await grouped_by(client, "r", [1], ()) and await filtered_unknown(client, "r", {})
+"""
+
+
+def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are_judged_right(tmp_path: Path) -> None:
+    """Flips if a static input read whole (a pager, a bare head) inside its mark, or its caller, is a finding; if a
+    read by ids built through filter_conditions is unknown; if one whose columns are not written out passes; or if a
+    temp view over registered rows, built in an f-string, is undeclared or its reads are named."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text(textwrap.dedent(_STATIC_TESTS), encoding="utf-8")
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"warehouse.py": _STATIC}))
+    assert not {function for function, _ in found} & {
+        "Warehouse.static_records",
+        "Warehouse.load",
+        "grouped_by",
+        "typed",
+    }, found
+    assert any(function == "filtered_unknown" for function, _ in found), found

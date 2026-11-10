@@ -709,6 +709,24 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
                 stores[node.target.id] = stores.get(node.target.id, 0) + 2
         for node in _own_nodes(body):
+            # ``condition, params = filter_conditions(where_in={"run_id": ...}, not_null=...)``: the condition is the
+            # columns it binds and the filters it adds
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Tuple)
+                and node.targets[0].elts
+                and isinstance(node.targets[0].elts[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and _final(node.value) in _FILTER_BUILDERS
+            ):
+                built = _filter_text(node.value)
+                name = node.targets[0].elts[0].id
+                if built is not None and stores.get(name, 0) == 1:
+                    env[name] = built
+                else:
+                    env.pop(name, None)
+                continue
             target: ast.expr | None = None
             value: ast.expr | None = None
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -1405,6 +1423,36 @@ def _keyed_exists(condition: str, table: str, reader: Reader) -> bool:
     return not judge_sql(probe, reader)
 
 
+#: 3tears' filter builders (``threetears.core.sql_fragments``), whose condition the walk renders from their arguments
+_FILTER_BUILDERS: Final[frozenset[str]] = frozenset({"filter_conditions", "equality_conditions"})
+
+
+def _filter_text(call: ast.Call) -> str | None:
+    """the condition a 3tears filter builder returns, from its arguments: ``where`` columns as equalities, ``where_in``
+    columns as ``IN`` a bound set, ``not_null`` as a filter on no key.
+
+    :param call: the ``filter_conditions(...)`` / ``equality_conditions(...)`` call
+    :ptype call: ast.Call
+    :return: the condition, or None when a mapping of columns is not written out (its columns are unknown)
+    :rtype: str | None
+    """
+    positions = ("where", "where_in", "not_null")
+    given = dict(zip(positions, call.args, strict=False)) | {k.arg: k.value for k in call.keywords if k.arg}
+    parts: list[str] = []
+    for argument, form in (("where", "{} = $9"), ("where_in", "{} IN ($9)")):
+        mapping = given.get(argument)
+        if mapping is None or (isinstance(mapping, ast.Constant) and mapping.value is None):
+            continue
+        if not isinstance(mapping, ast.Dict) or not all(
+            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in mapping.keys
+        ):
+            return None
+        parts.extend(form.format(key.value) for key in mapping.keys if isinstance(key, ast.Constant))
+    if given.get("not_null") is not None:
+        parts.append("__not_null__ IS NOT NULL")
+    return " AND ".join(parts) or None
+
+
 def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
     """a call's keyword argument.
 
@@ -1517,7 +1565,8 @@ def _transient_views(tree: ast.Module, registered: set[str], transient: re.Patte
         text = _string_text(node, {}) if isinstance(node, (ast.Constant, ast.JoinedStr)) else None
         match = _TEMP_VIEW.search(text) if isinstance(text, str) else None
         if match is not None:
-            views[match.group(1)] = _READS_FROM.findall(match.group(2))
+            # an f-string's own fragments match too, reading nothing: merge, never overwrite
+            views.setdefault(match.group(1), []).extend(_READS_FROM.findall(match.group(2)))
     found: set[str] = set()
     grew = True
     while grew:
@@ -1714,7 +1763,11 @@ def _resolve(
         path, _, qualified = entry.partition("::")
         by_name.setdefault(qualified.rsplit(".", 1)[-1], []).append((path, qualified))
     # a security backstop's pass is accepted where it is marked: its caller (the loop running it) reads nothing whole
-    backstops = {(mark.path, mark.function) for mark in operators or [] if mark.mark == "security_backstop"}
+    backstops = {
+        (mark.path, mark.function)
+        for mark in operators or []
+        if mark.mark == "security_backstop" or (mark.mark == "source_change_read" and mark.unit == "table")
+    }
     readers: dict[tuple[str, str], WholeReadHit] = {}
     for hit in hits:
         if hit.kind in _READ_KINDS and (hit.path, hit.function) not in backstops:
