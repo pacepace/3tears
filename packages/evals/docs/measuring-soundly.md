@@ -275,9 +275,10 @@ Before you rely on it, check two things:
 - **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
   every arm of one comparison runs under the comparison's subject (its name), so its models and its named arms
   rank on one frontier. On your own host, run every arm under the subject it measures.
-- **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
-  a field grader, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
-  is decided on it. Read such an arm from the contrasts.
+- **pass^k needs something to pass.** A goal check, a label, a check the host declares or a judge each is one: a
+  classifier scored only by a field grader has a pass^k, the share of its cases labelled right on every repeat. An
+  arm graded by none of them has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and
+  no bar is decided on it. Read such an arm from the contrasts.
 
 The same frontier is the `scope_frontier` action and the `frontier` command
 ([Serving](serving.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a

@@ -86,8 +86,8 @@ emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: do
     ...
   total spend: $0.0019, the results' cost
 top misses (5 of 20 failed trials):
-  case double-charge (repeat ...): urgent gave 0
-  case refund-after-cancel (repeat ...): urgent gave 0
+  case double-charge (repeat ...): Urgent score is 0
+  case refund-after-cancel (repeat ...): Urgent score is 0
   ...
 stored in .evals/evals.sqlite, scope 'emails'
 report: .evals/reports/emails/report.html

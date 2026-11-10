@@ -18,20 +18,21 @@ the judge's reason quotes that the text holds, else the text's end, where the re
 
 **Counted.** An analyst's input (``counted``) also carries tallies of the bundle's trials, never statistics: each
 slice's failed trials (aspect, arm and stratum: every trial its pass rule failed, for any cause, as the scoreboard's
-``failed`` counts them), so a page can say how many trials failed beside the examples it shows; each example's case input and every judged dimension's reason (``Example.reasons``),
-where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
-one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
-capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
-counted, never as none. Each aspect also states how a trial on it passes (``Aspect.pass_rule``, with ``graded_by``
-and ``description`` read from it), and each contrast what its test counted, copied off its comparison: the cases each
-side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
-cases". An uncounted input (the retired report planner's) carries none of them, so a snapshot frozen without them
-digests as it did.
+``failed`` counts them), so a page can say how many trials failed beside the examples it shows; each example's case
+input and every judged dimension's reason (``Example.reasons``), where an example's ``reason`` is the primary
+dimension's alone; and, for each two aspects, the cases both ran and those only one ran, by stored case id. A tally is
+left out where the bundle's trials cannot give it whole: an aspect the bundle capped before every failure was kept, a
+pair of aspects either of which left trials out. Left out reads as not counted, never as none. Each aspect also states
+how a trial on it passes (``Aspect.pass_rule``, with ``graded_by`` and ``description`` read from it), and each contrast
+what its test counted, copied off its comparison: the cases each side read, whether it paired them and the arms'
+correlation across them, so an analyst can say "paired over 60 cases". An uncounted input (the retired report planner's)
+carries none of them, so a snapshot frozen without them digests as it did.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
-everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
-the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
-read the lead aspect (the first asked, else the first) and every other aspect's figures sit beside them.
+everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair
+readings sit on their aspect, a measurement's readings on its measures, and a contrast the pipeline could not test is
+carried with its reason rather than dropped. On more than one aspect the by-arm maps read the lead aspect (the first
+asked, else the first) and every other aspect's figures sit beside them.
 
 **A measure's grade is what one observation of it is** (``Measure.grade``), read off what the measure is, never off
 what kind of eval the campaign is. ``pass_fail``: each observation passes or fails and the measure is the share that
@@ -152,7 +153,8 @@ _QUOTE_TRIM = " \t\n,.;:!?—–-'"
 #: What marks an excerpt's cut end.
 _CUT = "…"
 
-#: The rubric scale a judged measure's frozen measure scale stands for: ``ratio`` a pass rate, ``interval`` a 1 to 5 score.
+#: The rubric scale a judged measure's frozen measure scale stands for: ``ratio`` a pass rate, ``interval`` a 1 to 5
+#: score.
 _RUBRIC_SCALE_OF: dict[str, Literal["ordinal", "pass_fail"]] = {"ratio": "pass_fail", "interval": "ordinal"}
 
 #: What a measure's definition is cut to, as the writer's view cuts it.
@@ -293,7 +295,8 @@ class _Builder:
         bundle = self.bundle
         entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
         described = writer_arms(list(entries.values()))
-        listed: list[dict[str, Any]] = described["arms"]  # type: ignore[assignment]  # writer_arms types its values as object
+        # writer_arms types its values as object
+        listed: list[dict[str, Any]] = described["arms"]  # type: ignore[assignment]
         differing = {arm["variant_key"]: dict(arm["levels"]) for arm in listed}
         served = self.served_models()
         ratios = self.reasoning_ratios()

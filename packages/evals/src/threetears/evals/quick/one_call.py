@@ -50,8 +50,8 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.scoring import measure_catalog_of
 from threetears.evals.schema.logs import contain, get_logger
-from threetears.evals.kernel.metrics import describe_reported_measure
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
@@ -1989,18 +1989,9 @@ def _with_case_results(
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
     strata = {test_case.id: test_case.stratum for test_case in test_cases}
-    # Every measure's direction, guardrail or not: a caller's own lower-is-better measure misses above 0, not at it.
-    directions = {
-        name: descriptor.higher_is_better
-        for name in host.profile.measures.names
-        if (descriptor := host.profile.measures.get(name)) is not None
-    }
-    # Each result's state is read as the page reads its trials: the measures described as the host declares them, so
-    # the console's count of cases passed is the page's.
-    catalog = {
-        name: describe_reported_measure(name, host.profile.measures)
-        for name in sorted({name for result in stored for name in result.host_measures})
-    }
+    # Each result's state and its misses are read as the page reads its trials: the measures described as the host
+    # declares them, so the console's count of cases passed is the page's.
+    catalog = measure_catalog_of(stored, host.profile.measures)
     threshold = host.profile.bars.pass_threshold(behavior)
     case_results = []
     for result in stored:
@@ -2014,7 +2005,6 @@ def _with_case_results(
                 given=payload.get(_CASE_KEY),
                 expected=payload.get(_EXPECTED_KEY),
                 answer=_stored_answer(trace.trace if trace is not None else []),
-                higher_is_better=directions,
                 stratum=strata.get(result.test_case_id),
                 catalog=catalog,
                 rubric_threshold=threshold,

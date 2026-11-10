@@ -441,7 +441,7 @@ def _result_passes(result: ResultView, *, rubric_threshold: int, catalog: Mappin
     if candidate_failure_cause(result) is not None:
         return False
     scores = capability_scores(result)
-    if not result.goal_state_outcomes and not scores and not _carries_a_host_check(result, catalog):
+    if not result.goal_state_outcomes and not scores and not _carries_a_check(result, catalog):
         return False
     if failed_checks(result, catalog):
         return False
@@ -532,23 +532,24 @@ def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
 
 #: Why a pass^k has no value when every attempt behind it had nothing to pass (#688).
 NO_PASS_CRITERION_REASON = (
-    "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to "
-    "conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead"
+    "no attempt carried a pass criterion — no goal-state check, no label, no declared check and no judge — so there is "
+    "nothing for pass^k to conjoin: it is unmeasured, not 0; read the arm's own measures instead"
 )
 
 
 def has_pass_criterion(result: ResultView, *, catalog: Mapping[str, MetricDescriptor]) -> bool:
-    """Whether pass^k has anything to conjoin on this result: a goal-state check, a check a host declares, a
+    """Whether pass^k has anything to conjoin on this result: a goal-state check, a label, a check a host declares, a
     capability criterion, or a judge.
 
-    A check a host declares is a measure the result carries that its descriptor calls a check
-    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`), so an arm held by such a check alone has a
-    measured pass^k, as the census counts its trials. The label
-    (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) is not one here: a classifier scored only against its
-    expected label is left out of pass^k (#688), and its grade is its accuracy. A result with no criterion is not a
-    failed attempt: pass^k cannot ask it anything, so it is left out rather than read as failing every criterion it
-    never had. A result whose run pinned a judge (``judge_model``) is in, scored or not: its criteria were asked, so
-    a judged arm whose candidate failed before the judge ran still fails.
+    The one answer pass^k and the census both read, so an attempt pass^k leaves out for having no criterion is a trial
+    the census counts apart (``no_criterion``). A label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) is a
+    criterion, so a classifier scored only against its expected label has a measured pass^k: the share of its cases it
+    labelled right on every repeat. So is a measure the result carries that its descriptor calls a check
+    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`), so an arm held by such a check alone has one
+    too. A result with no criterion is not a failed attempt: pass^k cannot ask it anything, so it is left out (#688)
+    rather than read as failing every criterion it never had, which read 0.0. A result whose run pinned a judge
+    (``judge_model``) is in, scored or not: its criteria were asked, so a judged arm whose candidate failed before
+    the judge ran still fails.
 
     :param result: The eval result.
     :ptype result: ResultView
@@ -560,17 +561,18 @@ def has_pass_criterion(result: ResultView, *, catalog: Mapping[str, MetricDescri
     capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
     return bool(
         result.goal_state_outcomes
-        or _carries_a_host_check(result, catalog)
+        or _carries_a_check(result, catalog)
         or capability_scores(result)
         or capability_cannot_tell
         or result.judge_model is not None
     )
 
 
-def _carries_a_host_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
-    """Whether the result carries a measure its host declares as a check, the label aside."""
+def _carries_a_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
+    """Whether the result carries a label or a measure its host declares as a check: what :func:`failed_checks` reads
+    beside goal checks."""
     return any(
-        name != MATCH_MEASURE and (descriptor := catalog.get(name)) is not None and descriptor.is_check
+        name == MATCH_MEASURE or ((descriptor := catalog.get(name)) is not None and descriptor.is_check)
         for name in result.host_measures
     )
 
@@ -632,7 +634,7 @@ def _pass_hat_k_entry(
         # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
         # that is not a fault, so it is counted on its own rather than vanishing.
         "n_cannot_tell_excluded": n_cannot_tell,
-        # Attempts with nothing for pass^k to conjoin — no goal check, no judge (#688): left out, never failed.
+        # Attempts with nothing for pass^k to conjoin — no check, no label, no judge (#688): left out, never failed.
         "n_no_criterion_excluded": n_no_criterion,
         # Why pass^k has no value at all, where the reason is that nothing had a criterion; None otherwise.
         "pass_hat_k_unmeasured_reason": NO_PASS_CRITERION_REASON if n_no_criterion and not scored else None,
@@ -684,17 +686,17 @@ def compute_pass_hat_k(
         "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
         "pass_hat_k_unmeasured_reason": str | None}}``.
 
-        An attempt with nothing to conjoin — no goal-state check, no host check and no judge (:func:`has_pass_criterion`)
-        — is left out and counted in ``n_no_criterion_excluded``, never read as a fail (#688); where no
-        attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
+        An attempt with nothing to conjoin — no goal-state check, no label, no declared check and no judge
+        (:func:`has_pass_criterion`) — is left out and counted in ``n_no_criterion_excluded``, never read as a fail
+        (#688); where no attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
 
         ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
         ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
         not a pass rate of zero. ``n_cases_short_of_k`` counts the scored cases left out for being
-        measured fewer than ``k`` times, so ``n_cases_at_k + n_cases_short_of_k == n_test_cases``. The curve runs from 1 to the deepest scored case and is empty
-        when nothing was scored. ``n_test_cases`` counts the cases with at least one scored
-        attempt. A ``(model, run)`` whose every result was excluded still appears, with zero
-        cases, rather than vanishing.
+        measured fewer than ``k`` times, so ``n_cases_at_k + n_cases_short_of_k == n_test_cases``. The curve runs
+        from 1 to the deepest scored case and is empty when nothing was scored. ``n_test_cases`` counts the cases
+        with at least one scored attempt. A ``(model, run)`` whose every result was excluded still appears, with
+        zero cases, rather than vanishing.
 
         The default ``k`` counts infra-excluded attempts, so it is the deepest iteration
         *attempted*, and it is per ``(model, run)``: pooling the run's models would let one

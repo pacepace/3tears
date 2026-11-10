@@ -516,8 +516,8 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
-    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check and no judge — left
-    #: out of pass^k and its curve rather than read as failures (#688).
+    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check, no label, no declared
+    #: check and no judge — left out of pass^k and its curve rather than read as failures (#688).
     n_pass_no_criterion: int = 0
     #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
     #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.

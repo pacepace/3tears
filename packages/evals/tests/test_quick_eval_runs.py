@@ -718,7 +718,11 @@ async def test_a_field_with_a_margin_grades_a_case_expecting_null_and_its_miss_s
     result = await Eval(cases, extract, ["label", grader("total", margin=0.05)], k=1).run(store=MEMORY, scope=SCOPE)
 
     (miss,) = result.misses()
-    assert (miss.case, miss.answer, miss.missed_because) == ("none", {"label": "a", "total": 12.5}, ["total gave 0"])
+    assert (miss.case, miss.answer, miss.missed_because) == (
+        "none",
+        {"label": "a", "total": 12.5},
+        ["Total score is 0"],
+    )
 
 
 @pytest.mark.parametrize(

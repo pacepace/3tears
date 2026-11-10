@@ -126,7 +126,7 @@ async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_n
 
     summary = await _summary(CASES, hasty, [short, picky])
     by_case = {result.case: result for result in summary.results()}
-    assert by_case["refund"].missed_because == ["short gave 0"]
+    assert by_case["refund"].missed_because == ["Short score is 0"], "the check, as its pass rule words it failing"
     assert by_case["1"].outcome == "excluded" and not by_case["1"].missed
     assert by_case["1"].errors == ["the scorer picky raised ValueError: cannot grade crashes"]
     assert [result.case for result in summary.misses()] == ["refund"]

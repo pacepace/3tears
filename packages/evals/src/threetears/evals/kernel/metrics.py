@@ -1334,8 +1334,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         unit="iterations",
         description=(
-            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check "
-            "and no judge, as a classifier scored only against its expected label. Unmeasured, never a fail; "
+            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check, "
+            "no label, no declared check and no judge. Unmeasured, never a fail; "
             "where every iteration is one, pass_hat_k is null and pass_hat_k_unmeasured_reason says why."
         ),
     ),

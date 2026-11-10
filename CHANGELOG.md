@@ -12,9 +12,11 @@ packages (bumped in lock-step).
 scoreboard also failed a trial on a host's check (a boolean measure with a better end, a pass/fail scorer, a label
 that did not match), so an arm that passed 2 of 180 trials on the scoreboard could read a high pass^k beside it, under
 a label naming the check. Both now read one list of what a trial failed, `kernel.scoring.failed_checks` (new): pass^k
-on the frontier, in a run's summary and in two runs compared fails the attempt the census fails. A host's check is
-also a pass^k criterion (`has_pass_criterion`), so an arm held by such a check alone has a measured pass^k where it
-read unmeasured. A measure with no better end, or a numeric one that is no pass/fail scorer, still fails nothing.
+on the frontier, in a run's summary and in two runs compared fails the attempt the census fails. A label and a host's
+check are each a pass^k criterion (`has_pass_criterion`, which the census's `no_criterion` reads too), so a classifier
+graded on its label alone, or an arm held by such a check alone, has a measured pass^k where it read unmeasured: the
+share of its cases right on every repeat, its pass^1 its pass rate. An arm with nothing to check still reads
+unmeasured, never 0. A measure with no better end, or a numeric one that is no pass/fail scorer, still fails nothing.
 `compute_pass_hat_k`, `pool_pass_hat_k`, `pool_pass_hat_k_attempts` and `has_pass_criterion` take a required
 `catalog`, the descriptors of the measures the results carry, which `kernel.scoring.measure_catalog_of` (new) builds
 from a host's measure registry. `compare_two_runs` takes the host's `profile`, and its arm row names each such check
@@ -23,11 +25,15 @@ such a check: the pass rule names the value that passes (`Never topped up is fal
 value that failed it (`check: Never topped up is true`) where it printed the raw expression (`` `top_up_never is True`
 ``). A judge's can't-tell disclosure says a failed check, not only a sub-bar dimension, can still fail the trial in
 pass^k. The `count.failures` key and the counts family now describe every trial the pass rule failed.
+`CaseResult.missed_because` (and `EvalSummary.misses`) reads the trial's state: a miss is a trial the pass rule failed,
+its reasons the candidate's failure, else each failed check in its pass rule's words and each judged dimension under
+the bar. It listed a passed trial whose directed scorer read 0 and left out a 1–5 judged score under the bar.
 
 **Hosts:** a pass^k figure on an arm held to such a check moves down to the scoreboard's pass rate; a stored report or
 verdict that cited the old figure misstates it. A host calling the pass^k functions passes `catalog=`
-(`measure_catalog_of(results, profile.measures)`). An attempt whose only criterion is a label match is still left out
-of pass^k as having no criterion, while the scoreboard counts it.
+(`measure_catalog_of(results, profile.measures)`). A classifier arm's pass^k, unmeasured before, is now a figure.
+`CaseResult.of` drops `higher_is_better`: the catalog says which measures are checks. A miss reason on a host check
+reads `Short score is 0` where it read `short gave 0`.
 
 ### evals: the pass rule names every check that fails a trial, and count.failures counts failed trials
 

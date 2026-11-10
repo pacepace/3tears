@@ -31,6 +31,7 @@ from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_und
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.analysis.style import check_held
 from threetears.evals.analysis.summary import CaseResult
 from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
@@ -262,26 +263,44 @@ class TestARefusedGuardrail:
             await _compare(graders=[guarded])
 
 
-class TestAMissIsTheWrongSideOfZeroForEveryDirection:
-    """A miss is a scorer on the wrong side of 0 for its direction, guardrail or not (``CaseResult.of``)."""
+class TestAMissIsACheckOnItsWrongSideForEveryDirection:
+    """A miss is a trial a check failed, on the wrong side for its direction, guardrail or not (``CaseResult.of``)."""
 
-    def _reasons(self, values: dict[str, float], directions: dict[str, bool | None] | None) -> list[str]:
+    @staticmethod
+    def _check(name: str, higher_is_better: bool | None) -> MetricDescriptor:
+        return MetricDescriptor(
+            name=name,
+            data_type="numeric",
+            family="mechanical",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description=f"Whether the answer held {name}.",
+            higher_is_better=higher_is_better,
+            value_range=(0.0, 1.0),
+            pass_fail=higher_is_better is not None,
+        )
+
+    def _reasons(self, values: dict[str, float], directions: dict[str, bool | None]) -> list[str]:
+        catalog = {name: self._check(name, direction) for name, direction in directions.items()}
         result = make_eval_result(goal_state_outcomes=[], rubric_scores=[], host_measures=values)
-        read = CaseResult.of(result, case="c", given=None, expected=None, answer=None, higher_is_better=directions)
+        read = CaseResult.of(result, case="c", given=None, expected=None, answer=None, catalog=catalog)
         return read.missed_because
 
     def test_lower_is_better_misses_above_zero_and_not_at_zero_guardrail_or_not(self) -> None:
-        directions = {"errors": False, "correct": True}
+        directions: dict[str, bool | None] = {"errors": False, "correct": True}
         assert self._reasons({"errors": 0.0, "correct": 1.0}, directions) == []
-        assert self._reasons({"errors": 2.0, "correct": 1.0}, directions) == ["errors gave 2"]
+        assert self._reasons({"errors": 1.0, "correct": 1.0}, directions) == [
+            check_held("errors", self._check("errors", False), failed=True)
+        ]
 
-    def test_higher_is_better_misses_at_zero_or_below(self) -> None:
-        assert self._reasons({"correct": 0.0}, {"correct": True}) == ["correct gave 0"]
-        assert self._reasons({"correct": 0.0}, None) == ["correct gave 0"], "a scorer's default is higher-is-better"
+    def test_higher_is_better_misses_at_zero(self) -> None:
+        assert self._reasons({"correct": 0.0}, {"correct": True}) == [
+            check_held("correct", self._check("correct", True), failed=True)
+        ]
 
     def test_a_measure_with_no_direction_never_misses(self) -> None:
         assert self._reasons({"length": 0.0}, {"length": None}) == []
-        assert self._reasons({"length": 7.0}, {"length": None}) == []
+        assert self._reasons({"length": 1.0}, {"length": None}) == []
 
     async def test_a_caller_s_own_lower_is_better_measure_lists_its_zeros_as_no_miss(self) -> None:
         """Before, only a lower-is-better *guardrail* missed above 0; a caller's own such measure missed at 0."""
@@ -298,7 +317,9 @@ class TestAMissIsTheWrongSideOfZeroForEveryDirection:
         result = await Eval(CASES, ARMS["leaky"], [correct, leaked], k=1).run(host=host, scope="own-measure")
         summary = result.summary
         reasons = [reason for miss in summary.misses() for reason in miss.missed_because]
-        assert reasons == ["leaked gave 1"] * 20, "a leak is the miss, and a clean answer is not"
+        (described,) = [descriptor for descriptor in own if descriptor.name == "leaked"]
+        leak = check_held("leaked", described, failed=True)
+        assert reasons == [leak] * 20, "a leak is the miss, and a clean answer is not"
 
 
 class TestTheSingleRunSummary:

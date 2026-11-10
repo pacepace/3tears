@@ -56,7 +56,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialState,
 )
 from threetears.evals.kernel.errors import ConflictError
-from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
     delivered_a_turn,
@@ -145,7 +145,7 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
         return TrialReading(state="failed", cause=cause, failed_checks=tuple(checks))
     if decided is not None:
         return TrialReading(state="failed", cause=decided, failed_checks=tuple(checks))
-    return TrialReading(state="passed", cause=None, no_criterion=not _has_criterion(result, catalog))
+    return TrialReading(state="passed", cause=None, no_criterion=not has_pass_criterion(result, catalog=catalog))
 
 
 def _failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
@@ -155,11 +155,6 @@ def _failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) 
         TrialCheck(name=_reader_name(check.measure, catalog), expression=check.expression)
         for check in failed_checks(result, catalog)
     ]
-
-
-def _has_criterion(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
-    """Whether anything could have failed the trial: a goal check, a judge, a label, or a pass/fail scorer."""
-    return has_pass_criterion(result, catalog=catalog) or MATCH_MEASURE in result.host_measures
 
 
 def _reader_name(name: str, catalog: Mapping[str, MetricDescriptor]) -> str:
