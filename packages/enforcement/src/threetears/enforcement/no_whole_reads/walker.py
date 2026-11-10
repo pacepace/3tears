@@ -89,6 +89,9 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
     }
 )
 
+#: keywords that place a pager's start, never narrow its rows: a ``where``/``where_any``/``keys`` is needed beside them
+_CURSOR_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
+
 #: helpers that read a whole table whatever they are passed
 _ALWAYS_WHOLE_CALLS: Final[frozenset[str]] = frozenset({"copy_table"})
 
@@ -1279,7 +1282,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         segments = _segments(node)
-        narrowing = [k for k in node.keywords if k.arg in self._narrowing]
+        # ``after=`` / ``since=`` say where a page starts, not which rows: alone they read on to the table's end
+        narrowing = [k for k in node.keywords if k.arg in self._narrowing and k.arg not in _CURSOR_KEYWORDS]
         narrowed = any(not _maybe_none(k.value) for k in narrowing) or any(
             _PAGER_FILTER.search((dotted(value) or "").rsplit(".", 1)[-1]) is not None for value in node.args[1:]
         )
