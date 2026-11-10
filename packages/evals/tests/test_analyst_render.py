@@ -703,7 +703,7 @@ def _matrix_costs(costs: Sequence[float], fmt: str, unit: str | None = None) -> 
 
 def test_a_matrixs_costs_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
     assert _matrix_costs([94.0, 96.4], "num") == ["94.0", "96.4"]
-    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-07).
+    # Money is never padded: each amount reads to its own two significant figures (owner ruling, 2026-11-07).
     assert _matrix_costs([0.000616, 1], "usd") == ["$0.000616", "$1"]
     assert _matrix_costs([0.000616, 1], "num") == ["0.000616", "1"], "past three decimals, nothing is padded"
 
@@ -746,7 +746,7 @@ def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to
 
 def test_a_tables_paired_figures_read_at_one_precision() -> None:
     """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure.
-    Money reads by one rule of figures instead (owner ruling Q3, 2026-11-07): each amount under a dollar to two
+    Money reads by one rule of figures instead (owner ruling, 2026-11-07): each amount under a dollar to two
     significant figures, or three where it reconciles with its month, and every amount from a dollar up to cents."""
     name, held, keys = next(
         (name, held, keys)
@@ -760,7 +760,7 @@ def test_a_tables_paired_figures_read_at_one_precision() -> None:
             amounts = [cell.split(" ")[0].lstrip("+-").removeprefix("$").replace(",", "") for cell in cells]
             assert all(len(a.partition(".")[2]) in (0, 2) for a in amounts if float(a) >= 1), (name, cells)
             assert all(len(a.partition(".")[2]) == 2 for a in amounts if 1 <= float(a) < 10), (name, cells)
-            # Two figures, three only where a cost per 1,000 reconciles with its month beside it (Q3).
+            # Two figures, three only where a cost per 1,000 reconciles with its month beside it (owner ruling, 2026-11-07).
             figures = {len(a.partition(".")[2].lstrip("0")) for a in amounts if 0 < float(a) < 1}
             assert figures <= {2, 3}, (name, drawn.columns[column], cells)
             continue

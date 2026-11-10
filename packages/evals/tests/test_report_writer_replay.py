@@ -11,7 +11,7 @@ whatever failed live, so it would pass for the wrong cause.
 
 **Drift is a red that names its cause, and nothing is recorded again.** A replay that asks a turn the recording does
 not hold ends ``failed`` with the recording's refusal (the session and the turn) as its reason; one that leaves turns
-unasked names each session. The fix is to the code, or to the recorded reply as data (plan §4.7).
+unasked names each session. The fix is to the code, or to the recorded reply as data, never a recording made again to hide the drift.
 
 The recordings replayed are each directory under ``fixtures/report_writer/`` (hand-scripted, made through the
 recorder from scripted replies) and under ``fixtures/report_docs/prototype5/`` (the acceptance runs,

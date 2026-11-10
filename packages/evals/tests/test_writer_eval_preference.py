@@ -2,7 +2,7 @@
 beside the control's, against even (50%), so a reader sees at once which page is preferred over which, by how much,
 against what, and whether it is settled.
 
-Rung 5's replay, from its recordings (the judge's recorded again on 2026-11-10, over the C5c pages), with no key: the
+Rung 5's replay, from its recordings (the judge's recorded again on 2026-11-10, over the pages built at ``7601153ed``), with no key: the
 judge gave lead-first 61% of its preference over shipped, so shipped has 39%, and the 95% interval on lead-first's share
 runs 28% to 96% (it is printed on the share, never on the difference of the two shares); its two orders agreed on 6
 of 7 cases. The judge does not read this page, so its recording keys stand.

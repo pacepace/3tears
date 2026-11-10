@@ -195,10 +195,7 @@ threetears/evals/analysis/report/doc_page/html.py | doc_page_html | _claim() | 1
 threetears/evals/analysis/report/doc_page/html.py | doc_page_html | _explore() | 1
 threetears/evals/analysis/report/doc_page/html.py | doc_page_html | grid_html() | 1
 threetears/evals/analysis/report/figure_keys.py | _assumed_cases | round() | 2
-threetears/evals/analysis/report/figure_keys.py | _scale_of | held_means() | 1
 threetears/evals/analysis/report/figure_keys.py | _unanswered_figure | group_thousands() | 1
-threetears/evals/analysis/report/figure_keys.py | figure_unit | held_means() | 2
-threetears/evals/analysis/report/figure_keys.py | rubric_score | held_means() | 1
 threetears/evals/analysis/report/html_parts.py | _frame_widths | _id_rem() | 1
 threetears/evals/analysis/report/html_parts.py | _frame_widths | _key_rem() | 1
 threetears/evals/analysis/report/html_parts.py | _frame_widths | _lines_rem() | 1
@@ -209,29 +206,11 @@ threetears/evals/analysis/report/html_parts.py | _lines_rem | round() | 1
 threetears/evals/analysis/report/html_parts.py | grid_html | _frame_widths() | 1
 threetears/evals/analysis/report/html_parts.py | grid_html | _head_width() | 1
 threetears/evals/analysis/report/html_parts.py | table_html | grid_html() | 1
-threetears/evals/analysis/report/kit/kit.js | kBars | namedFmt | 2
 threetears/evals/analysis/report/kit/kit.js | kConfusion | namedFmt | 1
 threetears/evals/analysis/report/kit/kit.js | kDiffHeatmap | Math.round() | 2
-threetears/evals/analysis/report/kit/kit.js | kDiffHeatmap | namedFmt | 2
-threetears/evals/analysis/report/kit/kit.js | kDotInterval | kTickFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kDotInterval | kTickLabels | 1
-threetears/evals/analysis/report/kit/kit.js | kDotInterval | namedFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kForest | namedFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kGateMatrix | namedFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kHeatmap | namedFmt | 2
 threetears/evals/analysis/report/kit/kit.js | kHeatmap | toLocaleString() | 1
-threetears/evals/analysis/report/kit/kit.js | kLattice | namedFmt | 3
-threetears/evals/analysis/report/kit/kit.js | kLines | namedFmt | 1
 threetears/evals/analysis/report/kit/kit.js | kLogTicks | toPrecision() | 1
-threetears/evals/analysis/report/kit/kit.js | kRangeBars | namedFmt | 1
 threetears/evals/analysis/report/kit/kit.js | kScatter | Math.round() | 1
-threetears/evals/analysis/report/kit/kit.js | kScatter | namedFmt | 2
-threetears/evals/analysis/report/kit/kit.js | kShort | toFixed() | 2
-threetears/evals/analysis/report/kit/kit.js | kTickFmt | namedFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kTickLabels | Math.round() | 1
-threetears/evals/analysis/report/kit/kit.js | kTickLabels | kTickFmt | 1
-threetears/evals/analysis/report/kit/kit.js | kTickLabels | namedFmt | 1
-threetears/evals/analysis/report/kit/kit.js | namedFmt | K_FMTS | 3
 threetears/evals/analysis/report/kit/kit.js | ticksRaw | toFixed() | 1
 threetears/evals/analysis/report/parts/charting.py | contrast_unit | quantity() | 2
 threetears/evals/analysis/report/parts/charting.py | contrast_unit_of | quantity() | 2
@@ -255,7 +234,6 @@ threetears/evals/analysis/report/parts/look.py | quantity_of | quantity() | 2
 threetears/evals/analysis/report/parts/resolve_magnitudes.py | _bar_spans | log_domain() | 1
 threetears/evals/analysis/report/parts/resolve_rates.py | _scatter | log_domain() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _bar_reads | quantity_of() | 1
-threetears/evals/analysis/report/parts/resolve_table.py | _changes_drawn | held_means() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _changes_drawn | quantity() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _changes_drawn | quantity_of() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _column_quantity | quantity_of() | 1
@@ -352,9 +330,7 @@ threetears/evals/run/judge_temperature.py | JudgeTemperatureEstimate.render | f-
 threetears/evals/run/judge_temperature.py | _ask | f-string spec | 1
 threetears/evals/run/launch.py | _judged | _largest_call_over_cap() | 1
 threetears/evals/run/launch.py | _judged | f-string spec | 3
-threetears/evals/run/launch.py | _judged | format_number() | 2
 threetears/evals/run/launch.py | _largest_call_over_cap | f-string spec | 11
-threetears/evals/run/launch.py | _largest_call_over_cap | format_number() | 1
 threetears/evals/run/launch.py | _refuse_cell_timeout | f-string spec | 3
 threetears/evals/run/lifecycle.py | _dollars | f-string spec | 1
 threetears/evals/run/lifecycle.py | rejudge_result | _dollars() | 2
