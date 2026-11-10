@@ -214,8 +214,9 @@ def _reader(backend: DuckDBBackend) -> Any:
 
 
 async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
-    """CopyFollower._stage_whole (the one whole read of a table from L3, which CopyFollower._stage calls) within 2x a
-    bare keyset read of the same pages."""
+    """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): CopyFollower._stage_whole's
+    whole read of the table from L3, which CopyFollower._stage stages, and the one apply, within 2x a bare keyset
+    read of the same pages."""
     types = rail_arrow_types(_COLUMNS)
     selected = ", ".join(types)
 
@@ -225,26 +226,27 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
         ):
             pass
 
-    backend = _backend()
-    follower = CopyFollower(
-        CollectionRegistry(),
-        [_TABLE_DEF],
-        backend,
-        db.pool,
-        settled=lambda: asyncio.sleep(0, 1),
-        generation=_Log().current,
-        changes=_Log(),
-    )
-    stage = f"{STAGE_PREFIX}{_TABLE}__rows"
-
-    async def whole() -> None:
-        await asyncio.to_thread(backend.drop_stage, stage)
-        await follower._stage_whole(_TABLE_DEF, stage, "cold_start", frozenset())  # noqa: SLF001 - the path timed
+    async def cold_start() -> None:
+        registry = CollectionRegistry()
+        registry.follow_generation(_TABLE)
+        log = _Log()
+        follower = CopyFollower(
+            registry,
+            [_TABLE_DEF],
+            _backend(),
+            db.pool,
+            settled=lambda: asyncio.sleep(0, 1),
+            generation=log.current,
+            changes=log,
+        )
+        follower.register()
+        await follower.warm()
+        assert await follower.catch_up()
 
     baseline = await best_seconds(bare)
-    took = await best_seconds(whole)
-    print(f"_stage_whole of {_ROWS} rows {took:.2f} s, bare keyset read {baseline:.2f} s, {took / baseline:.2f}x")
-    problem = budget_problem(f"_stage_whole of {_ROWS} rows", took, baseline)
+    took = await best_seconds(cold_start)
+    print(f"cold start of {_ROWS} rows {took:.2f} s, bare keyset read {baseline:.2f} s, {took / baseline:.2f}x")
+    problem = budget_problem(f"a cold start (_stage_whole) of {_ROWS} rows", took, baseline)
     assert problem is None, problem
 
 
