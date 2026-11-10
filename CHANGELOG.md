@@ -51,6 +51,18 @@ UTF-8 bytes, as the broker's `reply_rows` measures), filling 95% of the cap (was
 on a client the hub has answered under its cap sizes its FIRST page from what one reply carried, not the asked-for
 size (a hub that has since dropped the cap is read again at the asked size).
 
+### core.keyed: apply_stage appends
+**Added:** `apply_stage(mode=StageMode.APPEND)`: `INSERT INTO target (cols) SELECT cols FROM stage`, nothing deleted,
+duplicates kept (a key staged again, or already held, is written again); `key=` may be empty. PostgreSQL, DuckDB,
+SQLite and `InlineDuckDB`.
+
+### enforcement: no_whole_reads judges a prefix write on a table its caller names
+`delete_keyed(prefix=)` and now `update_keyed(prefix=)` on a table the caller names (a fence's, `clear_signals(conn,
+table)`) are judged against the module's template (`TableSchema(name=<parameter>)`), as a generic `FROM {table}` read
+is, where they passed unjudged; with no template they are judged against no key (a finding). An index a template names
+from its table (`f"{name}_by_signal_c"`) is the template's, and each of its purposes must name a read that uses it
+(`index-purpose-unused`), where it was skipped.
+
 ### core.keyed: a direct connection reads its keys in one statement
 **Fixed (speed):** `read_keyed`, `read_keyed_arrow` and `read_joined` name `key_batch_for(conn)` keys a statement when
 the caller gives no `batch=`: `DIRECT_KEY_BATCH` (10,000) on a connection that binds arrays natively (asyncpg's, to

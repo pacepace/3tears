@@ -392,6 +392,24 @@ class TestApplyStage:
             await apply_stage(ThreadedDuckDB(db), "t", "t", key=["z"], columns=["a"])
 
 
+class TestApplyStageAppend:
+    @pytest.mark.parametrize("engine", ["duckdb", "sqlite"])
+    async def test_append_inserts_every_stage_row_deleting_nothing_and_keeping_duplicates(self, engine: str) -> None:
+        """Flips if append deletes a held row, drops a stage row whose key is held or staged twice, or counts other
+        than the rows it inserted, on DuckDB or SQLite; and if it takes no key."""
+        conn: Any = duckdb.connect() if engine == "duckdb" else sqlite3.connect(":memory:", check_same_thread=False)
+        conn.execute("CREATE TABLE seen (k INTEGER, v VARCHAR)")
+        conn.execute("INSERT INTO seen VALUES (1, 'a'), (2, 'b')")
+        conn.execute("CREATE TABLE stg (k INTEGER, v VARCHAR)")
+        conn.execute("INSERT INTO stg VALUES (2, 'b'), (3, 'c'), (3, 'c')")
+        reader = ThreadedDuckDB(conn) if engine == "duckdb" else ThreadedSQLite(conn)
+        applied = await apply_stage(reader, "seen", "stg", key=[], columns=["k", "v"], mode=StageMode.APPEND)
+        assert (applied.deleted, applied.written) == (0, 3)
+        held = sorted(tuple(row) for row in conn.execute("SELECT k, v FROM seen").fetchall())
+        assert held == [(1, "a"), (2, "b"), (2, "b"), (3, "c"), (3, "c")]
+        conn.close()
+
+
 class TestApplyStageDifferenceScope:
     async def test_a_scoped_difference_leaves_the_scope_holding_exactly_the_stage(
         self, db: duckdb.DuckDBPyConnection

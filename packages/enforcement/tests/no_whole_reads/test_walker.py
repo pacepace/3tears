@@ -1257,6 +1257,64 @@ def test_factories_templates_format_ddl_and_whole_records_are_judged_where_they_
     assert not {function for function, _ in found} & {"Epochs.one", "named", "kind_by_id", "record"}, found
 
 
+_FENCE_TEMPLATE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_keyed, update_keyed
+
+    def fence_schema(name: str = "fence"):
+        return TableSchema(
+            name=name,
+            primary_key="signal",
+            columns=[],
+            indexes=(
+                Index(
+                    f"{name}_by_signal_c",
+                    "signal",
+                    asc="signal",
+                    collate={"signal": "C"},
+                    purpose=("src/fence.py::clear_signals", "src/fence.py::restamp"),
+                    plan_test="tests/test_fence.py::test_plan",
+                ),
+            ),
+        )
+
+    async def clear_signals(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"signal": prefix})
+
+    async def restamp(conn, table, prefix, run_id):
+        return await update_keyed(conn, table, values={"run_id": run_id}, prefix={"signal": prefix})
+
+    async def elsewhere(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"owner": prefix})
+"""
+
+_NO_TEMPLATE = """
+    from threetears.core.keyed import delete_keyed
+
+    async def clear_signals(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"signal": prefix})
+"""
+
+
+def test_a_prefix_write_on_a_table_its_caller_names_is_judged_by_its_module_s_template(tmp_path: Path) -> None:
+    """Flips if a prefix delete or update on a table the caller names passes unjudged: keyed through the template's
+    C-ordered index (named from the table) whose purpose names the writer, with that purpose found used; a whole
+    read on a column the template keys by nothing, and where the module declares no template to judge it by; and
+    flagged unused when the purpose names a writer that never reads through the index."""
+    findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _FENCE_TEMPLATE}))
+    found = _symbols(_config(tmp_path, {"fence.py": _FENCE_TEMPLATE}))
+    assert not {function for function, _ in found} & {"clear_signals", "restamp"}, found
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    assert any(function == "elsewhere" for function, _ in found), found
+    bare = _symbols(_config(tmp_path / "bare", {"fence.py": _NO_TEMPLATE}))
+    assert any(function == "clear_signals" for function, _ in bare), bare
+    unused = _FENCE_TEMPLATE.replace('prefix={"signal": prefix}, returning', "returning").replace(
+        'values={"run_id": run_id}, prefix={"signal": prefix}', 'values={"run_id": run_id}, by={"signal": prefix}'
+    )
+    stale = no_whole_reads_findings(_config(tmp_path / "stale", {"fence.py": unused}))
+    assert any("index-purpose-unused -- src/fence.py::restamp" in finding for finding in stale), stale
+
+
 _HELPER = """
     from threetears.core.collections.schema_backed import TableSchema
 

@@ -299,7 +299,10 @@ class SchemaCatalog:
         :return: nothing
         :rtype: None
         """
-        entry = self.tables.get(table)
+        # a template's own name (``{}@<path>``) names its template: a table its module builds at run time
+        entry = self.tables.get(table) or next(
+            (template for template in self.templates.values() if template.name == table), None
+        )
         declared = entry.indexes.get(index) if entry is not None else None
         for purpose in purposes(declared.purpose) if declared is not None else ():
             if purpose in readers:
@@ -960,7 +963,8 @@ def _declare_template(
     for element in values.elements(_keyword(call, "indexes")):
         if isinstance(element, ast.Call):
             index = _index_from_call(element, values, "", f"{relative}:{element.lineno}", local=local)
-            if index is not None and not index.pattern:
+            # an index named from the table (``f"{name}_by_signal_c"``) is the template's as much as a literal one
+            if index is not None:
                 template.indexes.setdefault(index.name, index)
     template.origins.append(origin)
     return template
@@ -1553,6 +1557,36 @@ def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str
         plan_test = site.plan_test or (merged.plan_test if merged is not None else "")
         reason = site.reason or (merged.reason if merged is not None else "")
         findings.extend(_index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason)))
+    findings.extend(_template_index_findings(catalog, definitions))
+    return findings
+
+
+def _template_index_findings(catalog: SchemaCatalog, definitions: set[str]) -> list[str]:
+    """each purpose of an index a template names from its table (``f"{name}_by_signal_c"``) that no read in it uses.
+
+    Such an index is no site of its own (its name is made at run time), so its purpose is held to the reads of the
+    tables its module builds from the template, judged against the template (``FROM {table}``, a keyed write on a
+    table its caller names).
+
+    :param catalog: the catalog, after the walk
+    :ptype catalog: SchemaCatalog
+    :param definitions: ``<path>::<qualified name>`` of every function the walk found
+    :ptype definitions: set[str]
+    :return: findings
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    for template in catalog.templates.values():
+        for index in template.indexes.values():
+            if not (index.pattern and index.local and index.purpose):
+                continue
+            for entry in purposes(index.purpose):
+                if entry in definitions and (template.name, index.name, entry) not in catalog.used:
+                    findings.append(
+                        f"{index.origin} index {index.name}: index-purpose-unused -- {entry} holds no read of the "
+                        f"tables its module builds keyed by its leading column "
+                        f"{index.columns[0] if index.columns else '?'}: each purpose names a read that uses it"
+                    )
     return findings
 
 
