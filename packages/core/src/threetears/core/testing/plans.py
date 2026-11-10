@@ -43,6 +43,7 @@ __all__ = [
     "explain_write",
     "on_yugabyte",
     "plan_problems",
+    "plan_uses_index",
 ]
 
 #: the rows a sequential scan reads, per loop, from which it counts as a scan of a large table
@@ -356,6 +357,26 @@ def _whole_scans(plan: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
             yield qualified, f"{node.lower()} with no index condition"
     for child in plan.get("Plans", ()):
         yield from _whole_scans(child)
+
+
+def plan_uses_index(plan: StatementPlan | Mapping[str, Any], index: str) -> bool:
+    """whether a statement's plan finds its rows through ``index``, by an index condition (an index read with none
+    walks every entry, which is no keyed read).
+
+    The plan test an index's ``plan_test`` names (:class:`threetears.core.collections.schema_backed.IndexDef`) calls
+    this on the plan of the read its ``purpose`` names, seeded past a size where the planner would rather scan.
+
+    :param plan: the statement's plan (:func:`explain_statement`), or its root node
+    :ptype plan: StatementPlan | Mapping[str, Any]
+    :param index: the index name
+    :ptype index: str
+    :return: whether some scan or bitmap index scan of the plan reads ``index`` by an index condition
+    :rtype: bool
+    """
+    node = plan.plan if isinstance(plan, StatementPlan) else plan
+    if node.get("Index Name") == index and "Index Cond" in node:
+        return True
+    return any(plan_uses_index(child, index) for child in node.get("Plans", ()))
 
 
 def _relations(plan: Mapping[str, Any]) -> Iterator[str]:

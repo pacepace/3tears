@@ -9,9 +9,14 @@ an empty copy, and a schema change that rewrites the table.
 **The rule, statically** (:func:`~threetears.enforcement.no_whole_reads.walker.scan_whole_reads`, AST plus the SQL
 the code writes, judged by :func:`~threetears.enforcement.no_whole_reads.sql.judge_sql`):
 
-- every SQL statement against a data table carries a key, partition or scope predicate, or is one ``LIMIT``-ed
-  statement: no ``SELECT ... FROM <table>`` without ``WHERE`` (``whole-select``), no ``WHERE`` without a bound
-  value (``unbound-where``);
+- every SQL statement against a data table reads it **by key** (:mod:`~threetears.enforcement.no_whole_reads.sql`):
+  its bound equality or ``= ANY`` predicates cover a leading prefix of the table's primary key, or the leading
+  column of an index whose ``purpose`` names the function, or it is a keyset page (an ordered key range and a
+  ``LIMIT``). No ``SELECT ... FROM <table>`` without ``WHERE`` (``whole-select``), no ``WHERE`` without a bound value
+  (``unbound-where``), no filter on anything but the key (a status, a kind, a flag: ``non-key-where``), no predicate
+  on a table whose key is declared nowhere (``unknown-schema``). Keys and indexes are read from the repo's
+  declarations (:mod:`~threetears.enforcement.no_whole_reads.schema`: ``TableSchema``, SQLAlchemy ``Table``, the
+  migrations' DDL, ``tables.yaml``) and from 3tears' own;
 - no ``COUNT``, ``GROUP BY``, ``DISTINCT``, sum or fingerprint over a whole table (``whole-aggregate``);
 - no ``TRUNCATE``, no ``DELETE`` / ``UPDATE`` without ``WHERE``, no ``ANALYZE`` / ``VACUUM`` of a table, no
   backend ``truncate()``;
@@ -20,7 +25,11 @@ the code writes, judged by :func:`~threetears.enforcement.no_whole_reads.sql.jud
 - no call whose name says whole, rebuild, warm, reload or resync (``whole-call``), no flag asking for one
   (``whole-flag``), no table put in a set of tables to read whole (``marks-whole``);
 - no call into a function of the repo that does any of the reads above (``calls-whole-read``), so the caller is
-  named, not only the helper.
+  named, not only the helper;
+- every index the repo declares names its ``purpose`` (the function whose keyed read uses it) and a ``plan_test``
+  proving that read uses it, and a wide index (``INCLUDE``) or one of more than three on a table gives its
+  ``reason`` (:func:`~threetears.enforcement.no_whole_reads.schema.index_findings`); an index no read can name is a
+  candidate for removal.
 
 **An operator's own command is marked where it is written** (:mod:`threetears.core.operator`), never listed:
 
@@ -66,7 +75,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+import threetears
+
 from threetears.enforcement.common import dotted
+from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema, index_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
@@ -115,6 +127,10 @@ class NoWholeReadsConfig:
         fingerprint even of one key's rows is a verification scan (``verify-aggregate``): the epoch and the source's
         own change records say what changed, so nothing counts rows to find out
     :ivar minimum_files_scanned: the walk must reach at least this many modules
+    :ivar schema_roots: more trees to read table declarations from (migrations kept outside the source trees)
+    :ivar table_lists: YAML table lists to read; None finds every ``tables.yaml`` / ``agent.yaml`` in the repo
+    :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
+        consumer reads) key reads too; its indexes are never the repo's to give a purpose
     """
 
     repo_root: Path
@@ -126,6 +142,9 @@ class NoWholeReadsConfig:
     transient_relations: str = ""
     verify_prefixes: tuple[str, ...] = ()
     minimum_files_scanned: int = 1
+    schema_roots: tuple[Path, ...] = ()
+    table_lists: tuple[Path, ...] | None = None
+    dependency_schema: bool = True
 
 
 @dataclass(frozen=True)
@@ -234,6 +253,37 @@ def _proving_test_defect(
     return defect
 
 
+def _dependency_roots(repo_root: Path) -> tuple[Path, ...]:
+    """the source trees of the installed 3tears packages outside the repo, read for their table declarations.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :return: the trees
+    :rtype: tuple[Path, ...]
+    """
+    root = repo_root.resolve()
+    return tuple(
+        Path(entry) for entry in getattr(threetears, "__path__", []) if not Path(entry).resolve().is_relative_to(root)
+    )
+
+
+def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
+    """every table key and index the repo (and the 3tears it reads) declares.
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :return: the catalog
+    :rtype: SchemaCatalog
+    """
+    return collect_schema(
+        config.repo_root,
+        (*config.src_roots, *config.schema_roots),
+        dependency_roots=_dependency_roots(config.repo_root) if config.dependency_schema else (),
+        excluded_prefixes=config.excluded_prefixes,
+        table_lists=config.table_lists,
+    )
+
+
 def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan]:
     """every hit of the walk, ledger ignored: the repo's list of whole reads.
 
@@ -250,6 +300,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         narrowing=DEFAULT_NARROWING_KEYWORDS | config.extra_narrowing,
         transient=config.transient_relations,
         verify_prefixes=config.verify_prefixes,
+        schema=_schema_of(config),
     )
     return scan.hits, scan
 
@@ -344,6 +395,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         if speed is not None:
             findings.append(f"{where}: the speed test {speed}")
     findings.extend(_operator_mark_findings(config, scan))
+    findings.extend(index_findings(scan.schema, config.repo_root, scan.definitions | scan.constants))
     for hit in hits:
         if _marked(hit, scan.operators):
             continue

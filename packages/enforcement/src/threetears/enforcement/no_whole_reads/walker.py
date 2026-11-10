@@ -46,7 +46,8 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
-from threetears.enforcement.no_whole_reads.sql import HEAD, KEYED_COUNT, is_sql, judge_sql
+from threetears.enforcement.no_whole_reads.schema import SchemaCatalog
+from threetears.enforcement.no_whole_reads.sql import HEAD, KEYED_COUNT, PK_TOKEN, Reader, is_sql, judge_sql
 
 __all__ = [
     "DEFAULT_NARROWING_KEYWORDS",
@@ -112,6 +113,8 @@ _READ_KINDS: Final[frozenset[str]] = frozenset(
         "whole-select",
         "whole-aggregate",
         "unbound-where",
+        "non-key-where",
+        "unknown-schema",
         "unkeyed-pager",
         "may-read-whole",
         "whole-read",
@@ -294,6 +297,9 @@ class WholeReadScan:
     :ivar operators: every function marked as an operator's own command
     :ivar operator_callers: each call in the repo that reaches a marked function, one line each: a marked function
         is reachable only from its own entry, so any caller is a finding
+    :ivar constants: ``<path>::<qualified name>`` of every module or class constant bound to a string, which an
+        index's ``purpose`` may name when the SQL is written there
+    :ivar schema: the declared keys and indexes every statement was judged against
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
@@ -302,14 +308,23 @@ class WholeReadScan:
     unmatched_exclusions: list[str] = field(default_factory=list)
     operators: list[OperatorMark] = field(default_factory=list)
     operator_callers: list[str] = field(default_factory=list)
+    constants: set[str] = field(default_factory=set)
+    schema: SchemaCatalog = field(default_factory=SchemaCatalog)
 
 
 #: callees that only quote the name they are given
 _QUOTERS: Final[frozenset[str]] = frozenset({"quote_identifier", "_quote_ident", "quote_ident", "_quoted", "quoted"})
 
 
+#: a name in a placeholder that says it is the key column(s): the statement reads by the table's key, whatever table
+_KEY_NAME: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?:^|_)(?:pk\w*|primary_keys?|keys?|key_?col\w*|key_?columns?|key_?names?|id_?col\w*)$"
+)
+
+
 def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
-    """what an f-string placeholder reads as: a module constant's text (``{_MARK_TABLE}``, or quoted), else ``{}``.
+    """what an f-string placeholder reads as: a module constant's text (``{_MARK_TABLE}``, or quoted), ``{pk}`` when
+    a name in it says it is the key (``{pk}``, ``{self._key_column}``, ``{", ".join(pk_cols)}``), else ``{}``.
 
     :param value: the placeholder's expression
     :ptype value: ast.expr
@@ -321,7 +336,14 @@ def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
     name = value
     if isinstance(value, ast.Call) and len(value.args) == 1 and _final(value) in _QUOTERS:
         name = value.args[0]
-    return constants.get(name.id, "{}") if isinstance(name, ast.Name) else "{}"
+    if isinstance(name, ast.Name) and name.id in constants:
+        return constants[name.id]
+    names = [
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in ast.walk(value)
+        if isinstance(node, (ast.Name, ast.Attribute))
+    ]
+    return PK_TOKEN if any(_KEY_NAME.search(found) for found in names) else "{}"
 
 
 def _string_text(node: ast.expr, env: dict[str, str]) -> str | None:
@@ -431,6 +453,7 @@ class _ModuleWalk(ast.NodeVisitor):
         narrowing: frozenset[str],
         transient: re.Pattern[str] | None,
         verify: bool,
+        schema: SchemaCatalog | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -451,6 +474,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :param verify: whether the module is load code, where a count or fingerprint even of one key's rows is a
             verification scan
         :ptype verify: bool
+        :param schema: every table's declared key and indexes, the statements are judged against
+        :ptype schema: SchemaCatalog | None
         :return: nothing
         :rtype: None
         """
@@ -472,6 +497,9 @@ class _ModuleWalk(ast.NodeVisitor):
         self._narrowing = narrowing
         self._transient = transient
         self._verify = verify
+        self._schema = schema if schema is not None else SchemaCatalog()
+        #: module and class constants bound to strings, ``<path>::<qualified name>``
+        self.constants: set[str] = set()
         self._loops: list[set[str]] = []
         self.stubs: set[str] = set()
         self._stack: list[str] = []
@@ -507,6 +535,32 @@ class _ModuleWalk(ast.NodeVisitor):
             and isinstance(node.args[0].value, str)
         }
         self._bind(tree.body, self._envs[0])
+        self._constants_of(tree.body, "")
+
+    def _constants_of(self, body: list[ast.stmt], scope: str) -> None:
+        """record the module's and its classes' names bound to a string (an index's purpose may name one).
+
+        :param body: a module or class body
+        :ptype body: list[ast.stmt]
+        :param scope: the class's qualified name and a dot, empty for the module
+        :ptype scope: str
+        :return: nothing
+        :rtype: None
+        """
+        for statement in body:
+            if isinstance(statement, ast.ClassDef):
+                self._constants_of(statement.body, f"{scope}{statement.name}.")
+                continue
+            target = (
+                statement.targets[0]
+                if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                else (
+                    statement.target if isinstance(statement, ast.AnnAssign) and statement.value is not None else None
+                )
+            )
+            value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+            if isinstance(target, ast.Name) and value is not None and _string_text(value, {}) is not None:
+                self.constants.add(f"{self.path}::{scope}{target.id}")
 
     @property
     def _function(self) -> str:
@@ -665,6 +719,30 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         return not piece and not prose
 
+    def _reader(self, node: ast.AST) -> Reader:
+        """what a statement at ``node`` is judged against: the schema, and the names of the code it is written in
+        (its function, and the constant it is bound to).
+
+        :param node: the statement's expression
+        :ptype node: ast.AST
+        :return: the reader
+        :rtype: Reader
+        """
+        names = {f"{self.path}::{self._function}"}
+        parent = self._parents.get(node)
+        targets = (
+            parent.targets
+            if isinstance(parent, ast.Assign)
+            else [parent.target]
+            if isinstance(parent, ast.AnnAssign)
+            else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                scope = "" if self._function == "<module>" else f"{self._function}."
+                names.add(f"{self.path}::{scope}{target.id}")
+        return Reader(self._schema, frozenset(names), self._transient_table)
+
     def _judge_string(self, node: ast.expr) -> None:
         """judge a string expression that is SQL.
 
@@ -674,7 +752,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         text = _string_text(node, self._envs[0]) if self._maximal_string(node) else None
-        for finding in judge_sql(text) if text is not None and is_sql(text) else []:
+        for finding in judge_sql(text, self._reader(node)) if text is not None and is_sql(text) else []:
             if self._transient_table(finding.table):
                 continue
             parent = self._parents.get(node)
@@ -899,7 +977,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if isinstance(argument, ast.Name) and argument.id in self._envs[-1]:
             text = self._envs[-1][argument.id]
             if is_sql(text):
-                for finding in judge_sql(text):
+                for finding in judge_sql(text, self._reader(node)):
                     if finding.kind == HEAD and not self._transient_table(finding.table):
                         self._hit(node, f"whole-select {finding.table}", text)
 
@@ -1163,6 +1241,7 @@ def scan_whole_reads(
     transient: str = "",
     schema_change_dirs: tuple[str, ...] = ("migrations",),
     verify_prefixes: tuple[str, ...] = (),
+    schema: SchemaCatalog | None = None,
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -1187,10 +1266,13 @@ def scan_whole_reads(
     :param verify_prefixes: repo-relative prefixes of load code, where a count or fingerprint even of one key's rows
         is a verification scan (``verify-aggregate``)
     :ptype verify_prefixes: tuple[str, ...]
+    :param schema: every table's declared key and indexes; None judges against none, so every predicate on a table
+        is ``unknown-schema``
+    :ptype schema: SchemaCatalog | None
     :return: the walk
     :rtype: WholeReadScan
     """
-    scan = WholeReadScan()
+    scan = WholeReadScan(schema=schema if schema is not None else SchemaCatalog())
     used: set[str] = set()
     calls: list[_CallSite] = []
     module_functions: dict[str, set[str]] = {}
@@ -1215,11 +1297,13 @@ def scan_whole_reads(
                 narrowing=narrowing,
                 transient=pattern,
                 verify=any(relative.startswith(prefix) for prefix in verify_prefixes),
+                schema=scan.schema,
             )
             walk.visit(tree)
             stubs.update(walk.stubs)
             scan.hits.extend(walk.hits)
             scan.definitions.update(walk.definitions)
+            scan.constants.update(walk.constants)
             calls.extend(walk.calls)
             module_functions[relative] = walk.module_functions
             module_classes[relative] = walk.module_classes
