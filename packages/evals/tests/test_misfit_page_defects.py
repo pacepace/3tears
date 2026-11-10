@@ -79,8 +79,9 @@ def test_a_note_restating_its_rows_value_is_not_printed_beside_it_and_one_that_s
     assert headers == ["Row", "Value", "95% interval"]
     assert rows == [["Billing", "+2", "+0.4444 to +3.556"], ["Troubleshooting", "+5", "+2.737 to +7.263"]]
 
+    # Read in points under a head that names no unit, the value writes it (number rule 3), so its note restates it.
     with_unit = BarsChart(rows=[BarRow(label="Overall", value=0.8, note="+0.8 pts")], domain=(-1, 2), fmt="+num")
-    assert with_unit.table([], read_at="pts") == (["Row", "Value"], [["Overall", "+0.8"]])
+    assert with_unit.table([], read_at="pts") == (["Row", "Value"], [["Overall", "+0.8 pts"]])
 
     saying_more = ForestChart(
         rows=[

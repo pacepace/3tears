@@ -380,7 +380,8 @@ class TestTheReportCarriesStrata:
                 )
         storage, campaign = _store([_case(case, "plain") for case in _PLAIN], arms)
         table = _strata_table(_code_only(assemble_context_bundle(campaign, storage=storage, profile=profile)))
-        assert _row(table, "sonnet", "Turn cost")["all"] == "$55 ± $11 (n=12)"
+        # On the one ruler money per reply reads on across the campaign, per 1,000 replies, which its heading names.
+        assert _row(table, "sonnet", "Turn cost, per 1,000 replies")["all"] == "$55,000 ± $11,000 (n=12)"
 
     def test_a_stratum_below_the_floor_is_disclosed_by_name_and_count(self) -> None:
         report = _code_only(_bundle(*_mixed()))
