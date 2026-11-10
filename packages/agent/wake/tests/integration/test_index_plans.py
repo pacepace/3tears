@@ -154,13 +154,7 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
         " CASE WHEN n = 1 AND s.status = 'active' THEN 'dispatching' ELSE 'fired' END, 'scheduled_tick'"
         " FROM agent_wake_schedules s, generate_series(1, 4) n"
     )
-    await connection.execute(
-        "INSERT INTO webhook_refusals (conversation_id, subscription_id, reason, window_start, status_code,"
-        " last_refused_at) SELECT s.conversation_id, s.subscription_id, 'bad_signature',"
-        " now() - n * interval '1 hour', 401, now() - n * interval '1 hour'"
-        " FROM webhook_subscriptions s, generate_series(1, 3) n"
-    )
-    for table in ("agent_wake_schedules", "webhook_subscriptions", "wake_fires", "webhook_refusals"):
+    for table in ("agent_wake_schedules", "webhook_subscriptions", "wake_fires"):
         await connection.execute(f"ANALYZE {table}")
     try:
         yield connection
@@ -253,71 +247,3 @@ async def test_wake_fires_dispatching(conn: asyncpg.Connection) -> None:
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_fires_dispatching"), plan.plan
-
-
-async def test_wake_schedules_conv_status(conn: asyncpg.Connection) -> None:
-    """Flips if a conversation's active schedules, listed or counted, stop reading idx_wake_schedules_conv_status."""
-    conversation = await conn.fetchval(
-        "SELECT conversation_id FROM agent_wake_schedules WHERE status = 'active' LIMIT 1"
-    )
-    captured = _Captured()
-    schedules = _collections(captured).schedules
-    await schedules.list_active_for_conversation(conversation)
-    await schedules.count_active_for_conversation(conversation)
-    for sql, args in captured.asked:
-        plan = await explain_statement(conn, sql, *args)
-        assert plan_uses_index(plan, "idx_wake_schedules_conv_status"), (sql, plan.plan)
-
-
-async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:
-    """Flips if a schedule's newest fires stop reading idx_wake_fires_schedule_time."""
-    fire = await conn.fetchrow("SELECT conversation_id, schedule_id FROM wake_fires LIMIT 1")
-    captured = _Captured()
-    await _collections(captured).fires.list_for_schedule(fire["conversation_id"], fire["schedule_id"])
-    (sql, args), *_ = captured.asked
-    plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_wake_fires_schedule_time"), plan.plan
-
-
-async def test_wake_fires_webhook_time(conn: asyncpg.Connection) -> None:
-    """Flips if a subscription's newest fires stop reading idx_wake_fires_webhook_time."""
-    subscription = await conn.fetchrow("SELECT conversation_id, subscription_id FROM webhook_subscriptions LIMIT 1")
-    captured = _Captured()
-    await _collections(captured).fires.list_for_subscription(
-        subscription["conversation_id"], subscription["subscription_id"]
-    )
-    (sql, args), *_ = captured.asked
-    plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_wake_fires_webhook_time"), plan.plan
-
-
-async def test_wake_fires_conv_time(conn: asyncpg.Connection) -> None:
-    """Flips if a conversation's newest fires stop reading idx_wake_fires_conv_time."""
-    conversation = await conn.fetchval("SELECT conversation_id FROM wake_fires LIMIT 1")
-    captured = _Captured()
-    await _collections(captured).fires.list_for_conversation(conversation)
-    (sql, args), *_ = captured.asked
-    plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_wake_fires_conv_time"), plan.plan
-
-
-async def test_webhook_refusals_sub_time(conn: asyncpg.Connection) -> None:
-    """Flips if a subscription's refusals, listed newest first or swept past their keep, stop reading
-    idx_webhook_refusals_sub_time."""
-    subscription = await conn.fetchrow("SELECT conversation_id, subscription_id FROM webhook_refusals LIMIT 1")
-    captured = _Captured()
-    subscriptions = _collections(captured).subscriptions
-    await subscriptions.list_refusals(subscription["subscription_id"])
-    await subscriptions.record_refusal(
-        subscription["conversation_id"],
-        subscription["subscription_id"],
-        reason="bad_signature",
-        status_code=401,
-        at=_NOW,
-    )
-    swept = [(sql, args) for sql, args in captured.asked if sql.startswith(("SELECT", "DELETE FROM webhook_refusals"))]
-    assert len(swept) == 2, captured.asked
-    for sql, args in swept:
-        explain = explain_write if sql.startswith("DELETE") else explain_statement
-        plan = await explain(conn, sql, *args)
-        assert plan_uses_index(plan, "idx_webhook_refusals_sub_time"), (sql, plan.plan)

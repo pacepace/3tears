@@ -246,11 +246,6 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "idx_wake_schedules_conv_status",
             "conversation_id",
             "status",
-            info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_active_for_conversation; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.count_active_for_conversation",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_conv_status",
-                "reason": "agent_wake_schedules carries five indexes: a conversation's active schedules are listed and counted by status",
-            },
         ),
         Index(
             "idx_wake_schedules_user",
@@ -395,32 +390,17 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "schedule_id",
             sa_text("actual_fired_at DESC"),
             postgresql_where=sa_text("schedule_id IS NOT NULL"),
-            info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_schedule",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_schedule_time",
-                "reason": "wake_fires carries five indexes: a schedule's newest fires are read first, by fire time",
-            },
         ),
         Index(
             "idx_wake_fires_webhook_time",
             "webhook_subscription_id",
             sa_text("actual_fired_at DESC"),
             postgresql_where=sa_text("webhook_subscription_id IS NOT NULL"),
-            info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_subscription",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_webhook_time",
-                "reason": "wake_fires carries five indexes: a subscription's newest fires are read first, by fire time",
-            },
         ),
         Index(
             "idx_wake_fires_conv_time",
             "conversation_id",
             sa_text("actual_fired_at DESC"),
-            info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_conversation",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_conv_time",
-                "reason": "wake_fires carries five indexes: a conversation's newest fires are read first, by fire time",
-            },
         ),
         Index(
             "idx_wake_fires_started_conversation",
@@ -618,9 +598,5 @@ def webhook_refusals_table(metadata: MetaData) -> Table:
             "idx_webhook_refusals_sub_time",
             "subscription_id",
             sa_text("last_refused_at DESC"),
-            info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.list_refusals; packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.record_refusal",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_refusals_sub_time",
-            },
         ),
     )
