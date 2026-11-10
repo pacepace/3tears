@@ -242,9 +242,9 @@ _FILTER_MEANS: dict[str, str] = {
 #: The least amount :data:`Filter` ``usd_whole`` reads: under it, whole dollars round away too much of the figure.
 _WHOLE_DOLLARS_FROM = 10.0
 
-#: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here; the
-#: phrase a cost's count reads in is :func:`~threetears.evals.analysis.report.cost_unit.per_count`'s.
-INTERVAL_TEMPLATE = "{low} to {high}"
+#: The phrases a rendered figure is joined with, one template each, so a translation replaces them here; an interval's
+#: two ends are joined by :func:`~threetears.evals.analysis.report.unit_once.interval_beside`, and the phrase a cost's
+#: count reads in is :func:`~threetears.evals.analysis.report.cost_unit.per_count`'s.
 ARM_TEMPLATE = "{name} ({tag})"
 
 

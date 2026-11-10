@@ -50,12 +50,17 @@ from threetears.evals.analysis.quantities import (
     MONEY,
     PERCENT,
     POINTS,
-    UNSPACED_UNITS,
     number_in,
     signed_with_unit,
     with_unit,
 )
-from threetears.evals.analysis.report.unit_once import ends_beside, interval_alone, unit_after, unit_written
+from threetears.evals.analysis.report.unit_once import (
+    ends_beside,
+    interval_alone,
+    unit_after,
+    unit_spaced,
+    unit_written,
+)
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A colour as the kit takes one: the name of one of its tokens, never a literal colour.
@@ -616,7 +621,7 @@ def _restates(note: str | None, value: float | None, said: str, spec: str, read_
     spellings = {said}
     for unit in {read_at, _FORMAT_UNITS.get(match[2], "")} - {"", MONEY}:
         spellings.add(signed_with_unit(value, unit) if match[1] else with_unit(value, unit))
-        spellings.add(f"{said}{unit}" if unit in UNSPACED_UNITS else f"{said} {unit}")
+        spellings.add(unit_spaced(said, unit))
     return note in spellings
 
 

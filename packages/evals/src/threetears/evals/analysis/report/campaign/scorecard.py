@@ -94,6 +94,7 @@ from threetears.evals.analysis.report.verdict import interval_words, passed_clau
 from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, judged_name, reason_words
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -355,7 +356,7 @@ def _cases(counts: Sequence[int]) -> CellValue:
     held = sorted(set(counts))
     if not held:
         return None
-    return held[0] if len(held) == 1 else f"{held[0]} to {held[-1]}"
+    return held[0] if len(held) == 1 else interval_beside(str(held[0]), str(held[-1]))
 
 
 def _declared_cell(forms: PageForms, value: float) -> TableCell:
@@ -958,7 +959,7 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings, forms: Pag
             read_at = (
                 _level_text(forms, low)
                 if _told_apart(forms, low) == _told_apart(forms, high)
-                else f"{_level_text(forms, low)} to {_level_text(forms, high)}"
+                else interval_beside(_level_text(forms, low), _level_text(forms, high))
             )
             lines.append(f"So each interval is read at {read_at}, not {_level_text(forms, INTERVAL_LEVEL)}.")
     half = _level_text(forms, readings.alpha / 2)

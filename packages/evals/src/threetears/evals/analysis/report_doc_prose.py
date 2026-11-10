@@ -24,7 +24,6 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.report.figure_keys import (
-    INTERVAL_TEMPLATE,
     PERCENTILE_NAMES,
     Figure,
     FigureKey,
@@ -38,6 +37,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
 )
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report_input import ReportInput
 
 __all__ = [
@@ -97,7 +97,7 @@ _KEPT_BESIDE_A_SPELLING = frozenset({"abs", "interval"})
 #: after a key that prints it doubles the unit, even where it names another noun.
 _PER_COUNT = re.compile(r"^per [\d,]+")
 #: What joins an interval's two ends where code spells each with its unit (``1.2 s to 3.4 s``).
-_INTERVAL_JOIN = INTERVAL_TEMPLATE.format(low="", high="")
+_INTERVAL_JOIN = interval_beside("", "")
 #: A figure's number as code spells it, at the start of its spelling: a bound, a sign, money's sign, the digits, and a
 #: range's second end (``< 0.000001``, ``-$0.01``, ``27 to 28``). What follows it is the unit the figure prints.
 _SPELLED_NUMBER = re.compile(r"^[<>]?\s?[+\-−]?\$?\d[\d.,]*(?:(?:–| to )[+\-−]?\$?\d[\d.,]*)?")

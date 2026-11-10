@@ -59,13 +59,15 @@ def _pass_hat_k_text(
     of cases passed was observed.
     """
     if n_cases < MIN_CASES:
-        return f"pass^{k} over {n_cases} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
+        return (
+            f"pass^{k} over {forms.count(n_cases).text} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
+        )
     interval = (
         f" ({interval_beside(_pass_k(low, forms).digits, _pass_k(high, forms).digits)})"
         if low is not None and high is not None
         else ""
     )
-    return f"pass^{k} {_pass_k(value, forms).text}{interval} over {n_cases} case(s)"
+    return f"pass^{k} {_pass_k(value, forms).text}{interval} over {forms.count(n_cases).text} case(s)"
 
 
 def _pass_k(value: float | None, forms: PageForms) -> Printed:
@@ -98,14 +100,16 @@ def _point_depth(point: FrontierPoint, subject: SubjectFrontier, forms: PageForm
     figures as ``forms`` states them."""
     if point.depth is None:
         return None
-    said = POINT_DEPTH.format(times=times(point.depth), cases=point.depth.cases)
+    said = POINT_DEPTH.format(times=times(point.depth), cases=forms.count(point.depth.cases).text)
     if point.n_cases_short_of_k:
-        said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
+        said += POINT_SHORT.format(short=forms.count(point.n_cases_short_of_k).text, k=subject.k)
     if (model := point.model_pass_hat_k) is not None:
         said += POINT_MODEL.format(k=model.k, value=_pass_k(model.pass_hat_k, forms).text, assumes=model.assumes)
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
         said += POINT_COMMON.format(
-            k=subject.common_depth, value=_pass_k(point.common_pass_hat_k, forms).text, cases=point.n_common_cases
+            k=subject.common_depth,
+            value=_pass_k(point.common_pass_hat_k, forms).text,
+            cases=forms.count(point.n_common_cases).text,
         )
     return said
 

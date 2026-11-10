@@ -137,6 +137,7 @@ from threetears.evals.analysis.report.verdict import (
     VerdictLine,
     verdict_line,
 )
+from threetears.evals.analysis.report.unit_once import interval_beside, unit_spaced
 from threetears.evals.analysis.report.words import (
     disclosure_words,
     BAR_DECISION_WORDS,
@@ -175,7 +176,6 @@ from threetears.evals.analysis.style import (
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import (
     PERCENT,
-    UNSPACED_UNITS,
     delta_unit,
     is_money,
 )
@@ -1339,14 +1339,14 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
     case_words = (
         f"{cases[0]} case{'' if cases[0] == 1 else 's'}"
         if len(cases) == 1
-        else f"{cases[0]} to {cases[-1]} cases per arm"
+        else f"{interval_beside(str(cases[0]), str(cases[-1]))} cases per arm"
     )
     if not repeats:
         return case_words
     repeat_words = (
         f"{repeats[0]} repeat{'' if repeats[0] == 1 else 's'}"
         if len(repeats) == 1
-        else f"{repeats[0]} to {repeats[-1]} repeats"
+        else f"{interval_beside(str(repeats[0]), str(repeats[-1]))} repeats"
     )
     if len(cases) == 1 and len(repeats) == 1:
         return f"{case_words} × {repeat_words}"
@@ -2937,7 +2937,9 @@ def _strata_blocks(
     blocks: list[ReportBlock] = [_by_stratum_row(table) if len(names) > _STRATA_COLUMNS else table]
     if all_thin:
         low, high = min(sizes), max(sizes)
-        span = f"{low} case{'' if low == 1 else 's'}" if low == high else f"{low} to {high} cases"
+        span = (
+            f"{low} case{'' if low == 1 else 's'}" if low == high else f"{interval_beside(str(low), str(high))} cases"
+        )
         blocks.insert(
             0,
             DisclosureBlock(
@@ -3153,7 +3155,7 @@ def _unit_on(text: str, ruler: MeasureRuler) -> str:
     writes it; a percent and money carry theirs already, a bare figure none, an absent one none."""
     if not ruler.unit or ruler.unit == PERCENT or is_money(ruler.unit) or text == ABSENT:
         return text
-    return f"{text}{ruler.unit}" if ruler.unit in UNSPACED_UNITS else f"{text} {ruler.unit}"
+    return unit_spaced(text, ruler.unit)
 
 
 def _judged_text(reading: JudgedReading, ruler: MeasureRuler, forms: PageForms) -> str:

@@ -62,6 +62,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import tenth_px
+from threetears.evals.analysis.report.unit_once import interval_beside
 
 #: The widths every chart is drawn at, in the kit's px, each with its class: the narrow one under every narrow rule
 #: the kit has (480 px for bars, 560 px for a scatter's labels), as a phone draws it, then the kit's desktop measure
@@ -810,7 +811,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
             fade = ";opacity:.45" if r.muted else ""
             marks += _dot_row(x, d0, d1, r, value, cy, color, "circle", r.lo is None, w - mr + 8, mr - 10, strong, fade)
             spread = (
-                f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
+                f" ({interval_beside(_as(r.lo_text, f, r.lo), _as(r.hi_text, f, r.hi))})"
                 if r.lo is not None and r.hi is not None
                 else ""
             )
@@ -901,7 +902,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         elif open_above:
             spread = f" (from {_as(r.lo_text, f, r.lo)} up, no upper bound)"
         else:
-            spread = f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, _need(r.hi, 'hi'))})"
+            spread = f" ({interval_beside(_as(r.lo_text, f, r.lo), _as(r.hi_text, f, _need(r.hi, 'hi')))})"
         said = _as(r.value_text, f, value)
         out.append(_titled(_tip_or(r.tip, r.label, said + spread), "".join(marks), (0, cy - row_h / 2, w, row_h)))
     if line_ref is not None:
@@ -1301,7 +1302,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
             ),
             _lines_text(w - mr + 8, cy + 4 - 6 * (len(lines) - 1), lines, "lbl-strong" if strong else "tick"),
         ]
-        said = f"{_as(r.value_text, f, r.value)} ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
+        said = f"{_as(r.value_text, f, r.value)} ({interval_beside(_as(r.lo_text, f, r.lo), _as(r.hi_text, f, r.hi))})"
         tip = _tip_or(r.tip, r.label, said)
         out.append(_titled(tip, "".join(marks), (0, cy - row_h / 2, w, row_h)))
     return "".join(out), h
@@ -1352,7 +1353,7 @@ def _lines(d: LinesChart, w: float) -> _Drawn:
         for i, v in enumerate(se.values):
             low = se.lo_text[i] if se.lo_text else None
             high = se.hi_text[i] if se.hi_text else None
-            spread = f" ({_as(low, f, se.lo[i])} to {_as(high, f, se.hi[i])})" if se.lo and se.hi else ""
+            spread = f" ({interval_beside(_as(low, f, se.lo[i]), _as(high, f, se.hi[i]))})" if se.lo and se.hi else ""
             dot = _el(
                 "circle",
                 {
@@ -1697,7 +1698,7 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         marks = [_label_text(lines_of(r), ml - 8, cy, strong)]
         marks += _dot_row(x, d0, d1, r, r.value, cy, color, r.shape, r.hollow, w - mr + 8, mr - 10, strong)
         spread = (
-            f" ({_as(r.lo_text, f, r.lo)} to {_as(r.hi_text, f, r.hi)})"
+            f" ({interval_beside(_as(r.lo_text, f, r.lo), _as(r.hi_text, f, r.hi))})"
             if r.lo is not None and r.hi is not None
             else ""
         )
@@ -1767,7 +1768,7 @@ def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
                 )
                 + _mark(r.shape, x(_clamp(r.to, d0, d1)), cy, 4, color, r.hollow)
             )
-            said = f"{_as(r.from_text, f, r.from_)} to {_as(r.to_text, f, r.to)}"
+            said = interval_beside(_as(r.from_text, f, r.from_), _as(r.to_text, f, r.to))
             tip = _tip_or(r.tip, f"{r.label} · {group.label}", said)
             out.append(_titled(tip, marks, (0, cy - row_h / 2, w, row_h)))
     if ref is not None:

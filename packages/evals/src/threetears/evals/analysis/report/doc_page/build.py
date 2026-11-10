@@ -93,6 +93,7 @@ from threetears.evals.analysis.report.figure_keys import (
     written_arm,
 )
 from threetears.evals.analysis.report.md_parts import one_line
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
@@ -483,7 +484,7 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
         level=spec.level,
         unit=spec.unit,
         # The axis's ends are what the chart declares it drawn over, each as the page prints a declared value.
-        domain=" to ".join(reader.forms.declared(end).text for end in spec.domain),
+        domain=interval_beside(*(reader.forms.declared(end).text for end in spec.domain)) if spec.domain else "",
         reference=_reference(spec, reader.forms),
         degraded=degraded,
     )

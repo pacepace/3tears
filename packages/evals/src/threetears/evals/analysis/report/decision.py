@@ -71,6 +71,7 @@ from threetears.evals.analysis.stats import (
     difference_interval,
 )
 from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report.words import judged_name
 from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -1244,14 +1245,18 @@ def projection_note(
         beyond = any(need.kind == "beyond" for need in needs)
         caps = sorted({need.cases for need in needs if need.kind == "beyond"})
         if not beyond:
-            span = f"about {counted[0]}" if counted[0] == counted[-1] else f"about {counted[0]} to {counted[-1]}"
+            span = (
+                f"about {counted[0]}"
+                if counted[0] == counted[-1]
+                else f"about {interval_beside(str(counted[0]), str(counted[-1]))}"
+            )
         elif caps[0] >= counted[-1]:
             span = f"about {counted[0]} to more than {forms.count_alone(caps[-1]).text}"
         else:
             # A search stopped at a cap below a count another row reached: that row needs more than its cap, which
             # may be fewer or more than the counts, so the range is the counts' and the cap is said apart.
             low, high = counted[0], counted[-1]
-            counts = f"about {low}" if low == high else f"about {low} to {high}"
+            counts = f"about {low}" if low == high else f"about {interval_beside(str(low), str(high))}"
             span = f"{counts}, or more than {forms.count_alone(caps[0]).text} where a search stopped there"
         said.append(f"This run used {run_cases} cases; showing the floors hold needs {span}, more than it ran.")
     return " ".join(said)

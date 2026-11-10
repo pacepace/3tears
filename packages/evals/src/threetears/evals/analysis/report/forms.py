@@ -83,7 +83,6 @@ from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.figure_keys import (
-    INTERVAL_TEMPLATE,
     MULTIPLE_UNIT,
     RUBRIC_SCALE,
     Figure,
@@ -3120,12 +3119,12 @@ class PageForms:
         if ends[0] == ends[1]:
             return first + first_unit
         if first_unit == second_unit and first_unit.startswith(" per "):
-            return INTERVAL_TEMPLATE.format(low=first, high=second) + first_unit
+            return interval_beside(first, second) + first_unit
         if first_unit != second_unit:
-            return INTERVAL_TEMPLATE.format(low=first + first_unit, high=second + second_unit)
+            return interval_beside(first + first_unit, second + second_unit)
         # The one interval form, signed or not (number rule 3): its unit written once, after the high end (``-13 to -2
         # pts``, ``27 to 28%``).
-        return INTERVAL_TEMPLATE.format(low=first, high=second) + second_unit
+        return interval_beside(first, second) + second_unit
 
     def key_ends(self, figure: Figure, values: tuple[float, float], numbers: tuple[str, str]) -> tuple[str, str]:
         """An interval's two ends as a key prints them, once both are decided, each recorded apart under the measure
