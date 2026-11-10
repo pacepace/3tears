@@ -18,6 +18,7 @@ _PLATFORM = "src/hub/namespaces.py::platform_rows"
 _LOWER = "src/hub/namespaces.py::by_lower_kind"
 _BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
 _PAGED = "src/hub/grants.py::page_by_state"
+_NEWEST = "src/hub/results.py::newest_in_state"
 
 #: the tables these statements read, each with the key its declaration gives it
 _DDL = f"""
@@ -38,6 +39,8 @@ CREATE TABLE api_keys (customer_id UUID, id UUID, key_hash TEXT UNIQUE, PRIMARY 
 CREATE TABLE grants (customer_id UUID, id UUID, name TEXT, state TEXT, PRIMARY KEY (customer_id, id),
     CONSTRAINT grants_name_uq UNIQUE (customer_id, name));
 CREATE UNIQUE INDEX grants_live ON grants (state) WHERE state = 'live';
+-- purpose: {_NEWEST}
+CREATE INDEX results_by_state_votes ON results (state, winner);
 -- purpose: {_PAGED}
 CREATE INDEX grants_by_state ON grants (customer_id, state);
 ALTER TABLE gateway_providers ADD CONSTRAINT gateway_providers_name_uq UNIQUE (provider_name);
@@ -420,3 +423,12 @@ def test_a_dollar_interpolation_is_a_bind_placeholder(schema: SchemaCatalog) -> 
     assert _kinds("SELECT a FROM t WHERE k = ${n}", schema) == []
     assert _kinds("SELECT a FROM t WHERE flag = ${n}", schema) == [("non-key-where", "t")]
     assert _kinds("SELECT a FROM t WHERE {x}", schema) == [("unknown-predicate", "t")]
+
+
+def test_a_purposed_index_serving_a_key_read_is_recorded_as_used(schema: SchemaCatalog) -> None:
+    """Flips if a read keyed by the key's lead (a) does not record the purposed index whose leading columns are that
+    lead then the column it orders by, or records it for a read ordered by another column."""
+    _kinds("SELECT a FROM results WHERE state = $1 ORDER BY votes LIMIT 5", schema, _NEWEST)
+    assert ("results", "results_by_state_votes", _NEWEST) not in schema.used
+    assert _kinds("SELECT a FROM results WHERE state = $1 ORDER BY winner LIMIT 5", schema, _NEWEST) == []
+    assert ("results", "results_by_state_votes", _NEWEST) in schema.used

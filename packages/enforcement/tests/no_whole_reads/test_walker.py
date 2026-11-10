@@ -1596,3 +1596,49 @@ def test_a_helper_s_constant_argument_reads_as_its_literal(tmp_path: Path) -> No
     found = _symbols(_config(tmp_path, {"links.py": _CONSTANT_TABLE}))
     assert not any(function == "prune" for function, _ in found), found
     assert any(function == "prune_any" and "unknown-predicate delete_before" in s for function, s in found), found
+
+
+_DRAIN = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyset import keyset_pages
+
+    RUNS = TableSchema(
+        name="dataset_runs",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index(
+                "dataset_runs_live",
+                "status",
+                "date_last_progress",
+                "id",
+                purpose="src/runs.py::live_run_ids",
+                plan_test="tests/test_plans.py::test_live",
+            ),
+        ),
+    )
+
+    async def live_run_ids(pool, status, cutoff):
+        async for page in keyset_pages(
+            pool,
+            "SELECT id, date_last_progress FROM dataset_runs",
+            ["date_last_progress", "id"],
+            where={"status": status},
+            conditions=[Fragment('"date_last_progress" < $1', (cutoff,))],
+            page_size=10,
+        ):
+            return page
+"""
+
+
+def test_a_keyset_pager_s_purposed_index_is_recorded_as_used(tmp_path: Path) -> None:
+    """Flips if a drain through keyset_pages does not record the purposed index its pages read through (so the index
+    reports its purpose unused), or records one whose purpose names another function."""
+    _plans(tmp_path, "def test_live(plan):\n    assert plan_uses_index(plan, 'dataset_runs_live')\n")
+    findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": _DRAIN}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    other = _DRAIN.replace('purpose="src/runs.py::live_run_ids"', 'purpose="src/runs.py::other"').replace(
+        "async def live_run_ids", "async def other(pool):\n        return pool\n\n    async def live_run_ids"
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": other}))
+    assert any("index-purpose-unused" in finding for finding in findings), findings

@@ -930,9 +930,20 @@ def _key_hit(
         eq = eq | {column for key in primary for column in key if column in contained}
     covering = [key for key in primary if _covers(key, eq, tenants)]
     if covering:
-        # a unique index keying the read is used by it, when its purpose names the reader
+        # the key keys the read; a purposed index serving it still records its use: a unique index that is the key,
+        # or one whose leading columns are the bound prefix then the column the read orders or ranges by
         for name, columns in purposed:
-            if columns in covering and table is not None:
+            prefix = 0
+            while prefix < len(columns) and columns[prefix] in eq | contained:
+                prefix += 1
+            following = columns[prefix] if prefix < len(columns) else None
+            serves = (
+                columns in covering
+                or (prefix > 0 and following is None)
+                or (prefix > 0 and following in ranged)
+                or (level.order is not None and following == level.order[1])
+            )
+            if serves and table is not None:
                 reader.schema.use(table, name, reader.names)
         return True
     for name, columns in purposed:
