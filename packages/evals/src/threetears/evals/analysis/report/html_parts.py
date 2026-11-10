@@ -354,20 +354,20 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
 class _Scale:
     """One glyph scale: the data's ends, which the line under the table states; the track's, the data's own but run a
     little past a declared margin so its ticks sit inside the track (the glyph's inset keeps a mark off the edge); the
-    unit its spans are read in (a cell's own, else the one its column's header names); and a cell of the scale, which
-    spells a number as the column's cells do (its money form), as the forms read it
-    (:meth:`~threetears.evals.analysis.report.forms.PageForms.scale_span`,
-    :meth:`~threetears.evals.analysis.report.forms.PageForms.glyph_said`)."""
+    unit its spans are read in (a cell's own, else the one its column's header names); its column's first cell; and
+    every cell drawn on it, whose decided texts the line's ends are read from
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.scale_span`)."""
 
     low: float
     high: float
     unit: str
     cell: TableCell
     track: tuple[float, float]
+    cells: tuple[TableCell, ...] = ()
 
     def span(self, forms: PageForms) -> str:
         """The scale's ends, its unit once, as the line under the table states them."""
-        return forms.scale_span(self.cell, self.unit, self.low, self.high).text
+        return forms.scale_span(self.cells, self.unit, self.low, self.high).text
 
 
 #: The unit a column's header names in its closing parentheses (``v2 (pts)``, ``Pass rate (%)``), which a cell
@@ -432,6 +432,11 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
     by_scale: dict[tuple[str, str], list[float]] = {}
     margin_of: dict[tuple[str, str], float] = {}
     signed: set[tuple[str, str]] = set()
+    drawn: dict[tuple[str, str], list[TableCell]] = {}
+    for row in block.rows:
+        for key, cell in row.items():
+            if (key, cell.unit) in ends and cell.low is not None and cell.high is not None and cell.is_number:
+                drawn.setdefault(pooled((key, cell.unit)), []).append(cell)
     for group, figures in ends.items():
         by_scale.setdefault(pooled(group), []).extend(figures)
         margin_of[pooled(group)] = max(margin_of.get(pooled(group), 0.0), margins.get(group, 0.0))
@@ -454,19 +459,20 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
         # A declared margin's ends sit inside the track, so its ticks and its band never fill it edge to edge.
         margin = margin_of.get(pooled(group), 0.0) * _PAST_MARGIN
         track = (min(low, -margin), max(high, margin))
-        scales[group] = _Scale(low=low, high=high, unit=units[group], cell=first[group], track=track)
+        scales[group] = _Scale(
+            low=low, high=high, unit=units[group], cell=first[group], track=track, cells=tuple(drawn[pooled(group)])
+        )
     return scales
 
 
 def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], _Scale], forms: PageForms) -> str:
     """A cell's interval glyph on its column's scale, or a blank of the same width where the cell has none, so the
-    column's figures stay aligned. Its title states its figures as the scale's cells write them; its whisker is drawn
+    column's figures stay aligned. Its title states its cell's figures as their builder decided them; its whisker is drawn
     inside the track, where a scale that holds its measure's floor (a rate at 0 to 100, money at 0) ends it."""
     if cell.low is None or cell.high is None or not cell.is_number:
         return '<span class="no-glyph"></span>'
     scale = scales[(key, cell.unit)]
-    value = float(cell.value)  # type: ignore[arg-type]
-    said = forms.glyph_said(scale.cell, scale.unit, value, cell.low, cell.high, margin=cell.margin).text
+    said = forms.glyph_said(cell, scale.unit).text
     first, last = scale.track
     return interval_glyph_svg(
         float(cell.value),  # type: ignore[arg-type]

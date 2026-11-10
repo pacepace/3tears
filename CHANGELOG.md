@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a table cell holding a number carries its decided text
+
+**Changed:**
+- `TableCell` loses `decimals`, `signed` and `per_thousand`. A cell holding a number carries the text its page's forms
+  decided (`value_text`), and a cell with an interval carries its ends' (`low_text`, `high_text`, new); a cell built
+  without them is refused, naming the cell. A glyph's title and the line under its table print those texts, so a
+  glyph states its own cell's precision (`-1.0 pts, interval -3.6 to +1.6`, where a column's first row set it) and
+  the line its interval once (`Each column drawn from 24 to 84%`, where it read `23.8% to 84%`).
+- An outcome bar's note prints the share that passed in the pass rate's one form (`85% passed · 765 of 897`, where it
+  read `85.3%` beside the scorecard's `85%`; `OutcomeBar.passed_text`, new).
+- Money writes `$` on each end of an interval (`$20 ($16 to $25)`): the one stated exception to writing a unit once
+  (docs/design.md, number policy rule 3).
+
+**Hosts:** a report's JSON no longer carries `decimals`, `signed` or `per_thousand` on a cell, and every number cell
+carries `value_text`; print it, as before. A host that builds a `TableCell` with a number passes its `value_text`. A
+cell with a `level` also carries `level_text`, which its `value_text` opens with (`23.0% · +2.5 pts`). A `TableCell` is
+frozen: change one with `model_copy`, carrying the new texts.
+A stratum id two aspects name differently prints by each aspect's own name (a collision is keyed per aspect), and a
+declared `Judged.label` wins on every surface.
+
 ### evals: a take-up never compares the host's disclosure or the engine's build
 
 **Fixed:** `job_resume` no longer refuses a take-up when a run's disclosure moved. `EvalRun.run_disclosure` is printed

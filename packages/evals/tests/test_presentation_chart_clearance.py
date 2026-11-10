@@ -134,7 +134,7 @@ def _scorecard() -> TableBlock:
             "measure": TableCell(value=measure),
             "value": TableCell(value=value, value_text=text),
             "interval": TableCell(value=interval),
-            "cases": TableCell(value=5),
+            "cases": TableCell(value=5, value_text="5"),
         }
         for measure, value, text, interval in SCORECARD
     ]
@@ -341,7 +341,7 @@ def test_an_interval_cell_holds_on_one_line_and_words_holding_to_do_not() -> Non
                         "measure": TableCell(value=measure),
                         "value": TableCell(value=0.1, value_text="10"),
                         "interval": TableCell(value=interval),
-                        "cases": TableCell(value=5),
+                        "cases": TableCell(value=5, value_text="5"),
                     }
                     for measure, interval in (
                         ("Switch to B1017", "-29 to +58 pts"),

@@ -20,6 +20,7 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     DisclosureBlock,
@@ -191,7 +192,8 @@ def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_acros
     page = s4_change().page()
 
     def cell(value: float, low: float, high: float) -> TableCell:
-        return TableCell(value=value, low=low, high=high, zero_line=True)
+        # As the page's forms decide a change's cell where no set decides it, no figure's text of its own.
+        return PageForms.off_page().unit_cell(value, "", (low, high)).model_copy(update={"zero_line": True})
 
     columns = [
         TableColumn(key="aspect", header="Aspect"),

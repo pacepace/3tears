@@ -46,6 +46,7 @@ from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.figures import SHARE, UNITLESS
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
@@ -60,7 +61,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle
-from threetears.evals.kernel.numbers import money_form
+from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals import Answer, Eval
 from threetears.evals.quick.files import load_evals
@@ -149,7 +150,7 @@ def _decimals(text: str) -> set[int]:
 
 
 def _money_cells(block: TableBlock) -> list[TableCell]:
-    return [cell for row in block.rows for cell in row.values() if cell.decimals is not None and cell.is_number]
+    return [cell for row in block.rows for cell in row.values() if cell.is_number and cell.unit == "usd"]
 
 
 #: The page's one script, the kit's, whose own comments name the retired mark it still reads.
@@ -188,7 +189,7 @@ def test_every_grid_table_s_scale_line_spells_its_money_and_its_ends_as_its_cell
         money = _money_cells(block)
         if "$" in line:
             checked += 1
-            assert _decimals(line) <= {cell.decimals for cell in money}, (block.name, line)
+            assert _decimals(line) <= {places for cell in money for places in _decimals(cell.text)}, (block.name, line)
             assert "/1000" not in line
         for span in re.findall(r"drawn from (.*?)(?= and from | · |$)", line):
             low, _, high = span.partition(" to ")
@@ -237,7 +238,7 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
             for key, cell in row.items():
                 # A money measure's cell in a scorecard table reads per 1,000 replies, as its header says, or in one
                 # arm's turned matrix, as its row's measure says.
-                if cell.decimals is not None and cell.unit == "usd" and block.name == "scorecard":
+                if cell.is_number and cell.unit == "usd" and block.name == "scorecard":
                     named = row["measure"].text if "measure" in row else heads[key]
                     assert named.endswith(", per 1,000 replies"), named
     markdown = campaign_report_markdown(rung.page)
@@ -369,7 +370,7 @@ def test_a_margin_s_ticks_sit_strictly_inside_the_glyph_s_track() -> None:
         rows=[
             {
                 "aspect": TableCell(value="character"),
-                "arm:b": TableCell(value=-7.6, low=-10.8, high=1.1, margin=15.0, zero_line=True),
+                "arm:b": _FORMS.ruled_change_cell(SHARE, -0.076, interval=(-0.108, 0.011), margin=0.15, places=1),
             }
         ],
         total_rows=1,
@@ -382,8 +383,9 @@ def test_a_margin_s_ticks_sit_strictly_inside_the_glyph_s_track() -> None:
     assert all(start < tick < end for tick in ticks), (start, ticks, end)
     (zero,) = [float(x) for x in re.findall(r'class="viz-zero" x1="([\d.]+)"', drawn)]
     assert ticks[0] < zero < ticks[1]
-    # The scale's ends, the margin's among them, read at the column's tenth, signed as a change's ends are.
-    assert '<p class="axis">Each column drawn from -15.0 to +15.0 pts</p>' in drawn
+    # The scale's ends, the margin's among them, signed as a change's ends are; a margin is declared, so its ends read
+    # as declared (number rule 4), as the glyph's title reads it (``margin ±15 pts``).
+    assert '<p class="axis">Each column drawn from -15 to +15 pts</p>' in drawn
 
 
 def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> None:
@@ -391,10 +393,10 @@ def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> 
     its line said "Each column drawn from 47.2% to 100% and from 973 to 1029", leaving a reader to guess which column
     is which range. Each range names its columns; "Each column" stays only where one range is every glyph column's."""
     columns = [
-        ("pass", "Pass rate (%)", TableCell(value=70.0, low=47.2, high=86.0)),
-        ("check", "Reply cites policy check (%)", TableCell(value=100.0, low=94.0, high=100.0)),
-        ("turn", "Turn time", TableCell(value=1001.0, low=973.0, high=1029.0)),
-        ("spend", "Measuring spend", TableCell(value=2.7, low=2.57, high=2.83, unit="usd")),
+        ("pass", "Pass rate (%)", _FORMS.unit_cell(70.0, "", (47.2, 86.0))),
+        ("check", "Reply cites policy check (%)", _FORMS.unit_cell(100.0, "", (94.0, 100.0))),
+        ("turn", "Turn time", _FORMS.unit_cell(1001.0, "", (973.0, 1029.0))),
+        ("spend", "Measuring spend", _FORMS.unit_cell(2.7, "usd", (2.57, 2.83))),
     ]
     block = TableBlock(
         section="scorecard",
@@ -417,6 +419,10 @@ def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> 
     assert ranges[0].startswith("Pass rate (%) and Reply cites policy check (%) drawn from "), ranges
     assert any(part.startswith("Turn time drawn from 973 to 1") for part in ranges), ranges
     assert any(part.startswith("Measuring spend drawn from $") for part in ranges), ranges
+
+
+#: Forms of no page, which decide a cell's figure the way a page's do where no set holds the measure.
+_FORMS = PageForms.off_page()
 
 
 def _quality_scorecard(*cells: tuple[str, str, TableCell]) -> TableBlock:
@@ -452,25 +458,27 @@ def test_a_scale_of_levels_never_runs_below_zero_where_its_measure_cannot() -> N
     still reads either side of zero, and a level whose own interval reaches below zero (a measure not declared
     non-negative) is drawn where it reaches."""
     zeros = _quality_scorecard(
-        ("pass", "Pass rate (%)", TableCell(value=0.0, low=0.0, high=20.4)),
+        ("pass", "Pass rate (%)", _FORMS.unit_cell(0.0, "", (0.0, 20.4))),
         *(
-            (key, header, TableCell(value=0.0, low=0.0, high=0.0))
+            (key, header, _FORMS.unit_cell(0.0, "", (0.0, 0.0)))
             for key, header in (("items", "Items delivered"), ("notices", "Failed-reply notices"))
         ),
     )
     (line,) = _AXIS.findall(grid_html(zeros))
     assert html.unescape(line).split(" · ")[1] == "Items delivered and Failed-reply notices drawn from 0 to 1", line
-    money = _quality_scorecard(("spend", "Spend", TableCell(value=0.4, low=-0.2, high=1.0, unit="usd", decimals=1)))
+    money = _quality_scorecard(("spend", "Spend", _FORMS.money_cell(MoneyForm(decimals=1), 0.4, (-0.2, 1.0))))
     drawn = grid_html(money)
     (line,) = _AXIS.findall(drawn)
     assert html.unescape(line).startswith("Spend drawn from $0 to "), line
     ((start, _),) = _track(drawn)
     whisker = re.search(r'class="viz-whisker" x1="([\d.]+)"', drawn)
     assert whisker is not None and float(whisker.group(1)) >= start, "the whisker stops at the track's floor"
-    change = _quality_scorecard(("change", "Change (pts)", TableCell(value=0.0, low=0.0, high=0.0, zero_line=True)))
+    change = _quality_scorecard(
+        ("change", "Change (pts)", _FORMS.ruled_change_cell(UNITLESS, 0.0, interval=(0.0, 0.0)))
+    )
     (line,) = _AXIS.findall(grid_html(change))
     assert html.unescape(line) == "Each column drawn from -1.0 to +1.0 pts", line
-    signed = _quality_scorecard(("fields", "Stripped fields per delivery", TableCell(value=4.5, low=-4.9, high=13.9)))
+    signed = _quality_scorecard(("fields", "Stripped fields per delivery", _FORMS.unit_cell(4.5, "", (-4.9, 13.9))))
     (line,) = _AXIS.findall(grid_html(signed))
     assert html.unescape(line) == "Each column drawn from -4.9 to 13.9", line
 
@@ -768,7 +776,7 @@ def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:
         rows=[
             {
                 "aspect": TableCell(value="classify"),
-                "arm:v2": TableCell(value=16.7, low=-7.83, high=35.41, margin=5.0, zero_line=True),
+                "arm:v2": _FORMS.ruled_change_cell(SHARE, 0.167, interval=(-0.0783, 0.3541), margin=0.05, places=1),
             }
         ],
         total_rows=1,

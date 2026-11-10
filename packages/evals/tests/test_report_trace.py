@@ -352,19 +352,23 @@ def _with_cells(report: Report, *cells: TableCell) -> Report:
 async def test_a_report_refuses_a_link_to_a_place_it_does_not_hold() -> None:
     _, _, page = await toy_report()
     with pytest.raises(ValueError, match="which nothing on the page carries"):
-        _with_cells(page, TableCell(value=1, ref="r-000000000000"))
-    assert _with_cells(page, TableCell(value=1, ref="r-1"), TableCell(value=2, anchor="r-1"))
+        _with_cells(page, TableCell(value=1, value_text="1", ref="r-000000000000"))
+    assert _with_cells(
+        page, TableCell(value=1, value_text="1", ref="r-1"), TableCell(value=2, value_text="2", anchor="r-1")
+    )
 
 
 async def test_a_report_refuses_one_id_on_two_cells() -> None:
     _, _, page = await toy_report()
     with pytest.raises(ValueError, match="more than once"):
-        _with_cells(page, TableCell(value=1, anchor="r-1"), TableCell(value=2, anchor="r-1"))
+        _with_cells(
+            page, TableCell(value=1, value_text="1", anchor="r-1"), TableCell(value=2, value_text="2", anchor="r-1")
+        )
     # A block's id counts too: the closed bars table carries its fold's.
     (bars,) = _tables(page.blocks, "bars")
     assert bars.anchor is not None
     with pytest.raises(ValueError, match="more than once"):
-        _with_cells(page, TableCell(value=1, anchor=bars.anchor))
+        _with_cells(page, TableCell(value=1, value_text="1", anchor=bars.anchor))
 
 
 async def test_a_campaign_page_refuses_a_link_anywhere_but_a_fold() -> None:
@@ -376,7 +380,7 @@ async def test_a_campaign_page_refuses_a_link_anywhere_but_a_fold() -> None:
         name="stray",
         title="Stray",
         columns=[TableColumn(key="value", header="Value")],
-        rows=[{"value": TableCell(value=1, ref=place)}],
+        rows=[{"value": TableCell(value=1, value_text="1", ref=place)}],
         order="as given",
         total_rows=1,
     )

@@ -49,6 +49,7 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
 )
 from threetears.evals.analysis.style import ArmName, humanize
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.numbers import spell_stored_counts
 
@@ -423,7 +424,7 @@ def _settings_in_words(sentence: str) -> str:
 
 
 def provenance_blocks(
-    bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str], *, names: AspectNames
+    bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str], *, names: AspectNames, forms: PageForms
 ) -> list[ReportBlock]:
     """A campaign's Design & provenance section: each criterion set after its readings were visible, with when and on
     which aspects, then each report-wide disclosure in full with the aspects it holds on (results with no ordered
@@ -435,6 +436,8 @@ def provenance_blocks(
     :ptype labels: Mapping[str, str]
     :param names: What the page calls each aspect, and where each one's fold is, which a cell of one aspect links.
     :ptype names: AspectNames
+    :param forms: The page's forms, which decide a count a detail states (results with no ordered time).
+    :ptype forms: PageForms
     :return: The tables, each only where it has a row.
     :rtype: list[ReportBlock]
     """
@@ -456,7 +459,7 @@ def provenance_blocks(
     if setup:
         # A disclosure's name is its row's label, so it starts with a capital as every row label does.
         rows = [
-            {"setup": TableCell(value=_label(what)), "detail": TableCell(value=detail), "aspects": aspects(held)}
+            {"setup": TableCell(value=_label(what)), "detail": forms.count_cell(detail), "aspects": aspects(held)}
             for (what, detail), held in setup.items()
         ]
         blocks.append(

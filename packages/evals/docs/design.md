@@ -211,6 +211,8 @@ figure against any other.
    level's do not. The unit is written once (`-13 to -2 pts`), and not at all under a header that names it. An
    interval whose ends would print alike takes one more decimal, in that interval alone. The kit and the static page
    join an interval the same way.
+   - Money is the one exception: `$` is a prefix, so each end carries it (`$20 ($16 to $25)`). `$16 to 25` would read
+     as a bare 25, and style guides write `$16–$25`.
 4. **A heading states the joint guarantee.** A chart's head reads `95% intervals (adjusted for 16 comparisons)`, a
    column's header `95% interval (adjusted for 16 comparisons)`, and either plain `95%` where nothing is adjusted.
    The package's own words print the per-interval level a correction implies (99.69%) only in Method and the
@@ -226,7 +228,9 @@ figure against any other.
    - An exact zero reads whole with its unit (`0 notices`), and a rate always carries its `%`: `0%`, never a bare `0`.
 6. **Every figure is printed from its decided text.** `analysis/report/forms.py` decides; HTML, Markdown, the static
    SVG, `kit.js`, the prose keys and the CLI print what it decided and never format a float. Rounding is
-   half-to-even, through one function.
+   half-to-even, through one function. A table cell holding a number carries its text (`value_text`, and
+   `low_text` and `high_text` for its interval), and a cell without it is refused when it is built: a cell that
+   spelled its own number would be a second owner of its form.
 
 The scope of a set is decided in one place, `campaign_set` in `forms.py`, so a later ruling that each page decides
 its own forms changes one line there (`_SET_SCOPE`).

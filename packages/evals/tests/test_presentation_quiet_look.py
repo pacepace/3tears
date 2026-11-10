@@ -447,7 +447,7 @@ def _cases_table(name: str) -> str:
                 TableColumn(key="arm", header="Arm"),
                 TableColumn(key="cases", header="Cases", term="cases"),
             ],
-            rows=[{"arm": TableCell(value="v1"), "cases": TableCell(value=12)}],
+            rows=[{"arm": TableCell(value="v1"), "cases": TableCell(value=12, value_text="12")}],
             order="as read",
             total_rows=1,
         )

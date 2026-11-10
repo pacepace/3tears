@@ -58,9 +58,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
 
-from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.quantities import MONEY, is_money
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
+from threetears.evals.analysis.report.forms import ColumnMoney
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
@@ -119,8 +120,11 @@ from threetears.evals.kernel.numbers import MoneyForm
 __all__ = ["RESOLVERS"]
 
 
-#: One table row's cells, by column key.
-_Row = dict[str, TableCell]
+#: One table row's cells, by column key, as its reader built them: each money amount left to its column's one form.
+_Row = dict[str, TableCell | ColumnMoney]
+
+#: One table row's cells, laid out: every money amount in its column's form.
+_LaidRow = dict[str, TableCell]
 
 #: A column a reader lays out beyond its source's fixed ones: its key and its header.
 _Laid = list[tuple[str, str]]
@@ -139,11 +143,17 @@ def _arm(context: ChartContext, arm: str) -> TableCell:
     return TableCell(value=arm or None)
 
 
-def _number(value: float | None, unit: str, interval: tuple[float, float] | None = None) -> TableCell:
+def _number(
+    context: ChartContext, value: float | None, unit: str, interval: tuple[float, float] | None = None
+) -> TableCell | ColumnMoney:
+    """A figure no measure's form decides here, in its unit: money an amount its column's one form spells
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.money_columns`), any other at its unit's own precision."""
     if value is None:
         return TableCell(value=None)
-    low, high = interval if interval is not None else (None, None)
-    return TableCell(value=value, unit=unit, low=low, high=high)
+    if is_money(unit):
+        low, high = interval if interval is not None else (None, None)
+        return ColumnMoney(value=value, low=low, high=high)
+    return context.forms.unit_cell(value, unit, interval)
 
 
 def _decided(
@@ -186,7 +196,7 @@ def _kept_arms(context: ChartContext, held: Iterator[str]) -> list[str]:
 
 def _figure_cell(
     context: ChartContext, key: str, stat: Stat | None, drawn: Quantity, arm: str = ""
-) -> tuple[TableCell, TableCell | None, str]:
+) -> tuple[TableCell | ColumnMoney, TableCell | None, str]:
     """A figure's cell, drawn as its column's quantity (``drawn``: every figure the column holds, so its money reads in
     one form), and its measure's name as the table writes it (per 1,000 replies for money per reply drawn so); an
     arm's overall figure carries the interval code computes where the table's level is computed here. A measure the
@@ -206,7 +216,7 @@ def _figure_cell(
     if drawn.unit != MONEY and (decided := _decided(context, key, kind, read[0], interval, change=False)):
         return decided[0], decided[1], name
     shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
-    return _number(read[0] * drawn.factor, drawn.unit, shown), None, name
+    return _number(context, read[0] * drawn.factor, drawn.unit, shown), None, name
 
 
 def _column_quantity(context: ChartContext, key: str, stats: Iterable[Stat | None]) -> Quantity:
@@ -280,6 +290,7 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
                     )
                 ),
                 "change": _number(
+                    context,
                     float(contrast.delta) * drawn.factor if contrast.delta is not None else None,
                     drawn.unit,
                     (float(interval[0]) * drawn.factor, float(interval[1]) * drawn.factor)
@@ -336,7 +347,7 @@ def _figures(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     rows = context.rows()
     figures = {(row.key, row.arm): row.item for row in rows if isinstance(row.item, Stat)}
     arms = context.arm_order(arm for (_, arm) in figures)
-    places = [
+    places: list[tuple[_Row, dict[str, Stat]]] = [
         ({"arm": _arm(context, arm)}, {key: stat for (key, on), stat in figures.items() if on == arm}) for arm in arms
     ]
     yield from _wide(context, places, laid, arms)
@@ -358,7 +369,7 @@ def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             yield {
                 "arm": _arm(context, arm),
                 "figure": _words(label_case(named)),
-                "value": TableCell(value=value),
+                "value": context.forms.count_cell(value),
             }
 
 
@@ -371,15 +382,17 @@ def _floors(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "floor": _words(humanize("dimension", floor.floor)),
             "arm": _arm(context, floor.arm),
             "status": _words(floor.status),
-            "worst_drop": _number(float(floor.worst_drop) if floor.worst_drop is not None else None, points.unit),
-            "margin": _number(float(floor.margin) if floor.margin is not None else None, points.unit),
+            "worst_drop": _number(
+                context, float(floor.worst_drop) if floor.worst_drop is not None else None, points.unit
+            ),
+            "margin": _number(context, float(floor.margin) if floor.margin is not None else None, points.unit),
         }
 
 
 def _slices(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     slices = [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)]
     named = set(context.query.measures)
-    places = [
+    places: list[tuple[_Row, dict[str, Stat]]] = [
         (
             {"slice": _words(slice_name(context, item)), "arm": _arm(context, arm)},
             {key: stat for key, stat in item.per_arm[arm].items() if not named or key in named},
@@ -420,7 +433,7 @@ def _cells(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
         place = CELL_TEMPLATE.format(row=names.get(cell.row, cell.row), column=names.get(cell.column, cell.column))
         places += [
             (
-                {"cell": _words(place), "arm": _arm(context, arm), "cases": TableCell(value=cell.n_cases)},
+                {"cell": _words(place), "arm": _arm(context, arm), "cases": context.forms.count_cell(cell.n_cases)},
                 {key: stat for key, stat in cell.per_arm[arm].items() if not named or key in named},
             )
             for arm in _kept_arms(context, iter(cell.per_arm))
@@ -450,7 +463,7 @@ def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
                         "arm": _arm(context, arm),
                         "expected": _words(names.get(expected, expected)),
                         "predicted": _words(names.get(predicted, predicted)),
-                        "value": _number(float(share), unit),
+                        "value": _number(context, float(share), unit),
                     }
 
 
@@ -460,7 +473,7 @@ def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         assert isinstance(preference, PreferenceRow)
         yield {
             "slice": _words(preference.name or preference.id),
-            "prefers_control": _number(float(preference.prefers_control), "%", row.interval),
+            "prefers_control": _number(context, float(preference.prefers_control), "%", row.interval),
         }
 
 
@@ -487,13 +500,14 @@ def _bar_reads(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "measure": _words(money_words(context.report_input, read.measure, drawn)),
             "arm": _arm(context, read.arm),
             "value": _number(
+                context,
                 float(read.value) * drawn.factor if read.value is not None else None,
                 drawn.unit,
                 (float(interval[0]) * drawn.factor, float(interval[1]) * drawn.factor)
                 if interval is not None
                 else None,
             ),
-            "bar": _number(float(read.bar) * drawn.factor, drawn.unit),
+            "bar": _number(context, float(read.bar) * drawn.factor, drawn.unit),
             "status": _words(read.status),
         }
 
@@ -607,16 +621,13 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 
     for step, interval in steps:
         ends = (dollars(interval[0]), dollars(interval[1])) if interval is not None else None
-        places = form.places_of([dollars(step.value), *(ends or ())], ends=ends)
-        row = {
+        row: _Row = {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
-            "per_point": _number(dollars(step.value), drawn.unit, ends).model_copy(
-                update={"decimals": places, "per_thousand": form.per_thousand}
-            ),
+            "per_point": context.forms.money_cell(form, dollars(step.value), ends),
         }
         if step.open_from is not None and context.level:
             # An interval open above has one end, which no cell's two ends hold: its interval cell is laid out here.
-            low = form.spell(dollars(step.open_from))
+            low = context.forms.money_in(form, dollars(step.open_from)).text
             row[f"per_point{_INTERVAL_COLUMN}"] = _words(OPEN_ABOVE.format(low=low))
         yield row
 
@@ -645,14 +656,17 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
 }
 
 
-def _interval_text(cell: TableCell) -> TableCell:
-    """A figure's interval as its own cell, its two ends in the figure's unit; a dash where it carries none."""
+def _interval_text(context: ChartContext, cell: TableCell) -> TableCell:
+    """A figure's interval as its own cell, its two ends as the figure's cell decided them, the unit once; a dash where
+    it carries none."""
     if cell.low is None or cell.high is None:
         return TableCell(value=None)
-    return TableCell(value=f"{cell.amount(cell.low)} to {cell.amount(cell.high)}")
+    return TableCell(value=context.forms.interval_alone(cell).text)
 
 
-def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) -> tuple[list[TableColumn], list[_Row]]:
+def _with_intervals(
+    context: ChartContext, columns: list[TableColumn], rows: list[_LaidRow], level: str
+) -> tuple[list[TableColumn], list[_LaidRow]]:
     """The columns, each one whose figures carry an interval followed by its interval column, and the rows with it: a
     row's own interval cell where its reader laid one out (an interval open above, which no cell's two ends hold),
     else its figure's two ends."""
@@ -670,7 +684,7 @@ def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) ->
             **row,
             **{
                 f"{key}{_INTERVAL_COLUMN}": row.get(f"{key}{_INTERVAL_COLUMN}")
-                or (_interval_text(row[key]) if key in row else TableCell(value=None))
+                or (_interval_text(context, row[key]) if key in row else TableCell(value=None))
                 for key in spelled
             },
         }
@@ -683,7 +697,9 @@ def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) ->
 _AS_KEYED = frozenset({"compare", "settle", "levers"})
 
 
-def _filled(columns: list[TableColumn], rows: list[_Row], *, keep: set[str]) -> tuple[list[TableColumn], list[_Row]]:
+def _filled(
+    columns: list[TableColumn], rows: list[_LaidRow], *, keep: set[str]
+) -> tuple[list[TableColumn], list[_LaidRow]]:
     """The columns some row fills (a value that is not absent), the first, the row's label, and those in ``keep`` (the
     measures a query names) always among them; the rows with only those (this module's columns no row fills)."""
     kept = [
@@ -719,8 +735,8 @@ def _table(context: ChartContext) -> Drawn:
     # Every rate prints its measure's decided text, so no column respells it: a table of what an analysis computes
     # prints each figure as its key reads it (this module's docstring), and every other is recorded as it prints.
     laid = money if context.query.source in _AS_KEYED else context.forms.as_printed(money, bare=bare_columns(columns))
-    columns, rows = _with_intervals(columns, laid, context.spec.level)
-    columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
+    columns, filled = _with_intervals(context, columns, laid, context.spec.level)
+    columns, filled = _filled(columns, filled, keep={on for on, _header in measured})
     notes = (
         price_notes(context)
         if context.query.source == "prices"
@@ -735,9 +751,9 @@ def _table(context: ChartContext) -> Drawn:
         name=context.query.source,
         title=context.title,
         columns=columns,
-        rows=rows,
+        rows=filled,
         order=TABLE_ORDER,
-        total_rows=len(rows),
+        total_rows=len(filled),
     )
     return Drawn(table, notes)
 

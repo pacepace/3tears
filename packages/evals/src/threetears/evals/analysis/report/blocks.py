@@ -15,13 +15,11 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
 from threetears.evals.analysis.quantities import (
     PERCENT,
-    POINTS,
-    UNSPACED_UNITS,
     is_money,
     number_in,
     render_cell,
@@ -43,8 +41,8 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
-from threetears.evals.kernel.numbers import MoneyForm, spell_at
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.unit_once import ends_beside, interval_beside
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
@@ -387,11 +385,17 @@ class TableColumn(EvalDocumentModel):
 class TableCell(EvalDocumentModel):
     """One cell of a report table: its value, and the text a reader is shown for it.
 
-    The value is what a program sorts by; the text is what every serializer prints: the text the cell's page decided
-    for its number (``value_text``) where it holds one, else spelled by the one number rule
-    (:func:`~threetears.evals.analysis.quantities.render_cell`: an absent value is a dash, never a zero; a
-    boolean is yes or no).
+    The value is what a program sorts by; the text is what every serializer prints. A number's text is the one its
+    page decided (``value_text``), which every number cell carries: a cell is refused without it, since a figure
+    spelled anywhere but its page's forms is a second owner of its form. Anything else prints as it is (an absent
+    value is a dash, never a zero; a boolean is yes or no).
+
+    A cell is frozen, so its text never outlives what it was decided from: a changed cell is a copy, which carries the
+    texts decided for what changed (:meth:`model_copy`). ``model_construct`` skips every check, as pydantic documents
+    it, so a cell built that way is the builder's to keep whole.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     value: CellValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
     unit: str = Field(
@@ -451,39 +455,22 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
-    decimals: int | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description=(
-            "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
-            "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); for a "
-            "percentage, the decimals its column reads at (0, or 1 where whole percents would print two of its values "
-            "alike), which a builder that sets them keeps; for points, the decimals the change reads at (`-7.6 pts`, "
-            "never `-8 pts`, and `0.0 pts` for a zero change); for any other number, the decimals its set reads at "
-            "(a judged score's two, a count's `1.4`); None for none, and the number rule spells the number."
-        ),
-    )
-    signed: bool = Field(
-        default=False,
-        exclude_if=lambda value: not value,
-        description=(
-            "Whether the number is written with its sign, as a change is (`+2.5 pts`, `-7.4 pts`): its direction is "
-            "half the fact. False for a level."
-        ),
-    )
     level: float | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description=(
-            "For a change from a baseline, the level the arm reads at, in percent, which every serializer writes "
-            "before the change at one decimal (`23.0% · +2.5 pts`), so a change is never read without where it "
-            "lands. None for none."
+            "For a change from a baseline, the level the arm reads at, in percent, so a program reads where the change "
+            "lands; the cell's decided text states it before the change (`23.0% · +2.5 pts`). None for none."
         ),
     )
-    per_thousand: bool = Field(
-        default=False,
-        exclude_if=lambda value: not value,
-        description="For a money number with `decimals`, whether its column reads per 1,000 (`$8.00/1000`).",
+    level_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level as its page decided it (`23.0%`), which `value_text` opens with before the change: set with "
+            "`level`, and absent with it."
+        ),
     )
     value_text: str | None = Field(
         default=None,
@@ -491,13 +478,26 @@ class TableCell(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "The number as its page decided it, the text every serializer prints for `value` (without `flag`): set "
-            "on each number cell whose form the page decided (a rate's or money's, read at its column's or its set's "
-            "precision, and on an aspect's own page each level and change its measure's ruler decides), so a reader "
-            "of the JSON prints the page's text and never spells `value` again. A copy that changes what the number "
-            "is spelled from (its value, unit, decimals, sign, level or money's thousands) drops it, so the page "
-            "decides the copy's text afresh; a field set in place keeps it, so a cell is changed by copying it. "
-            "Absent where no form was decided, and `value` reads by the number rule, in `unit`."
+            "on every number cell, so a reader of the JSON prints the page's text and never spells `value` again. A "
+            "copy that changes what the number is spelled from (its value, its unit or its level) carries its new "
+            "text, decided afresh. Absent on a cell of words, a boolean or nothing, which prints as it is."
         ),
+    )
+    low_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The interval's low end as its page decided it, as it is written beside the figure, which carries the "
+            "unit (`80` of `85% (80 to 89)`; money's ends each keep their `$`): what the glyph's title and the line "
+            "under the table print. Set with `low`, and absent with it."
+        ),
+    )
+    high_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="The interval's high end as its page decided it, written as `low_text` is; set with `high`.",
     )
     status: ChartStatus | None = Field(
         default=None,
@@ -544,48 +544,65 @@ class TableCell(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
-    def _a_level_and_a_sign_qualify_a_number(self) -> Self:
-        """Refuse a level or a sign on anything but a number.
+    def _a_level_qualifies_a_number(self) -> Self:
+        """Refuse a level on anything but a number, and one without the text its cell opens with.
 
-        :raises ValueError: ``level`` or ``signed`` is set and ``value`` is not a number.
+        :raises ValueError: ``level`` is set and ``value`` is not a number, ``level`` and ``level_text`` are not set
+            together, or the cell's text does not open with the level's (``23.0% · +2.5 pts``).
         """
-        if (self.level is not None or self.signed) and not self.is_number:
-            raise ValueError(f"a cell's level and sign qualify a change, and this cell holds {self.value!r}")
+        if self.level is not None and not self.is_number:
+            raise ValueError(f"a cell's level qualifies a change, and this cell holds {self.value!r}")
+        if (self.level is None) != (self.level_text is None):
+            raise ValueError(f"{_cell_named(self.value, self.unit)} sets its level and the level's text apart")
+        if self.level_text is not None and not (self.value_text or "").startswith(f"{self.level_text}{LANDS_AT}"):
+            raise ValueError(f"{_cell_named(self.value, self.unit)} does not open with the level it lands at")
         return self
 
     @model_validator(mode="after")
-    def _a_decided_text_states_a_number(self) -> Self:
-        """Refuse a decided text on anything but a number: words print as they are written.
+    def _a_number_carries_its_decided_text(self) -> Self:
+        """Refuse a number without the text its page decided for it, and a decided text on anything but a number:
+        one owner decides every figure's form, so a cell never spells its own number, and words print as written.
 
-        :raises ValueError: ``value_text`` is set and ``value`` is not a number.
+        :raises ValueError: ``value`` is a number and ``value_text`` is absent, or ``value_text`` is set and ``value``
+            is not a number.
         """
+        if self.is_number and self.value_text is None:
+            raise ValueError(
+                f"{_cell_named(self.value, self.unit)} holds a number with no decided text: its page's forms print it"
+            )
         if self.value_text is not None and not self.is_number:
             raise ValueError(f"a cell's decided text states a number, and this cell holds {self.value!r}")
         return self
 
     @model_validator(mode="after")
     def _an_interval_brackets_a_number(self) -> Self:
-        """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
+        """Refuse an interval with one end, on anything but a number, running backwards, or without its ends' decided
+        texts, and a margin alone.
 
         :raises ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
-            above ``high``, or ``margin`` is set with no interval.
+            above ``high``, an end's text is set without the interval or absent with it, or ``margin`` is set with no
+            interval.
         """
         if (self.low is None) != (self.high is None):
             raise ValueError("a cell's interval has two ends, and this cell sets one")
         if self.low is None:
             if self.margin is not None:
                 raise ValueError("a cell's margin is drawn beside its interval, and this cell has none")
+            if self.low_text is not None or self.high_text is not None:
+                raise ValueError(f"{_cell_named(self.value, self.unit)} carries an interval's text with no interval")
             return self
         if not self.is_number:
             raise ValueError(f"a cell's interval brackets a number, and this cell holds {self.value!r}")
         if self.high is not None and self.low > self.high:
             raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
+        if self.low_text is None or self.high_text is None:
+            raise ValueError(f"{_cell_named(self.value, self.unit)} has an interval with no decided text for its ends")
         return self
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        """A copy, as every model makes one, except that a change to what the number is spelled from (its value, unit,
-        decimals, sign, level, or money's thousands) drops the text decided from the old ones: a copy never prints a
-        figure its value no longer states, and the page's forms decide the copy's text afresh.
+        """A copy, as every model makes one, except that a change to what the number is spelled from (its value, unit
+        or level) or to its interval's ends must carry the text decided for the new ones: a copy never prints a figure
+        its value no longer states, and nothing but the page's forms decides the new text.
 
         :param update: The fields to change on the copy.
         :ptype update: Mapping[str, Any] | None
@@ -593,48 +610,27 @@ class TableCell(EvalDocumentModel):
         :ptype deep: bool
         :return: The copy.
         :rtype: Self
+        :raises ValueError: The update changes what a number or its interval is spelled from without its new text.
         """
         if update and "value_text" not in update and not _SPELLED_FROM.isdisjoint(update):
             update = {**update, "value_text": None}
-        return super().model_copy(update=update, deep=deep)
-
-    def _money_form(self) -> MoneyForm | None:
-        """The one form a money number in this cell is written in, its column's (``decimals``, ``per_thousand``);
-        None where the cell holds no money number, or no form was given, so the number rule spells it."""
-        if self.decimals is None or not self.is_number or not is_money(self.unit):
-            return None
-        return MoneyForm(per_thousand=self.per_thousand, decimals=self.decimals)
-
-    def amount(self, number: float) -> str:
-        """A number of this cell's (its value, or an end of its interval) as the cell writes it: in its money form where
-        it holds one, else in its unit by the number rule.
-
-        :param number: The number, in the cell's unit.
-        :ptype number: float
-        :return: Its text.
-        :rtype: str
-        """
-        form = self._money_form()
-        if form is not None:
-            return form.spell(number)
-        if self.decimals is not None and self.is_number and self.unit == PERCENT:
-            # An exact zero reads whole, ``0%``, which states no precision.
-            return "0%" if number == 0 else f"{spell_at(number, self.decimals)}%"
-        if self.decimals is not None and self.is_number and not self.unit:
-            # A bare figure under a (%) or (pts) head, at its column's one precision; a level's zero reads ``0``, a
-            # change's at the precision.
-            return "0" if number == 0 and not self.signed else spell_at(number, self.decimals)
-        if self.decimals is not None and self.is_number and self.unit == POINTS:
-            # A change at its unit's precision: a whole one keeps its decimal beside its siblings (`10.0 pts`), and so
-            # does a zero (`0.0 pts` beside `-5.0 pts`).
-            return f"{spell_at(number, self.decimals)} {POINTS}"
-        if self.decimals is not None and self.is_number and self.unit:
-            # Any other unit at its set's one precision (a count's `1.4 notices`, a time's `0.028 s`).
-            # A level of exactly zero reads `0 notices`, as a level does wherever it is printed; a change keeps its
-            # set's decimals.
-            shown = "0" if number == 0 and not self.signed else spell_at(number, self.decimals)
-            return f"{shown}{self.unit}" if self.unit in UNSPACED_UNITS else f"{shown} {self.unit}"
-        return with_unit(number, self.unit)
+        if update and "level" in update and "level_text" not in update:
+            update = {**update, "level_text": None}
+        ends_changed = bool(update) and not _ENDS.isdisjoint(update or {})
+        if ends_changed and not _ENDS_TEXT <= set(update or {}):
+            # An interval's ends are decided together, so a copy that moves either carries both ends' texts.
+            update = {**(update or {}), "low_text": None, "high_text": None}
+        copied = super().model_copy(update=update, deep=deep)
+        named = _cell_named(copied.value, copied.unit)
+        if copied.is_number and copied.value_text is None:
+            raise ValueError(f"{named} is copied with no decided text: its page's forms print the copy's")
+        if copied.low is not None and (copied.low_text is None or copied.high_text is None):
+            raise ValueError(f"{named} is copied with an interval but no decided text for both its ends")
+        if copied.level is not None and copied.level_text is None:
+            raise ValueError(f"{named} is copied with a level but no decided text for it")
+        if copied.level_text is not None and not (copied.value_text or "").startswith(f"{copied.level_text}{LANDS_AT}"):
+            raise ValueError(f"{named} is copied and does not open with the level it lands at")
+        return copied
 
     @property
     def is_number(self) -> bool:
@@ -650,25 +646,26 @@ class TableCell(EvalDocumentModel):
 
     @property
     def figure(self) -> str:
-        """``value`` as every serializer prints it, without its ``flag``: signed where the cell is a change
-        (``signed``), after the level it lands at where it carries one (``23.0% · +2.5 pts``); the text its page
-        decided where it holds one (``value_text``)."""
-        if self.value_text is not None:
-            return self.value_text
-        if (self.unit or self.decimals is not None) and self.is_number and isinstance(self.value, int | float):
-            said = self.amount(float(self.value))
-        else:
-            said = render_cell(self.value)
-        # A change that reads as zero at its precision (`0.0 pts`) shows no direction, so it carries no `+`.
-        shown = re.search(r"[1-9]", said) is not None
-        if self.signed and self.is_number and float(self.value) > 0 and shown and not said.startswith(("+", "<", ">")):  # type: ignore[arg-type]
-            said = f"+{said}"
-        return said if self.level is None else f"{spell_at(self.level, 1)}% · {said}"
+        """``value`` as every serializer prints it, without its ``flag``: a number's decided text (``value_text``),
+        anything else as it is."""
+        return self.value_text if self.value_text is not None else render_cell(self.value)
 
 
-#: The fields a cell's number is spelled from: a copy that changes one drops the text decided from the old ones
+def _cell_named(value: CellValue, unit: str) -> str:
+    """A cell, named by what it holds, as a refusal names it."""
+    return f"the cell holding {value!r}" + (f" in {unit!r}" if unit else "")
+
+
+#: The fields a cell's number is spelled from: a copy that changes one carries the text decided for the new ones
 #: (:meth:`TableCell.model_copy`).
-_SPELLED_FROM = frozenset({"value", "unit", "decimals", "signed", "level", "per_thousand"})
+_SPELLED_FROM = frozenset({"value", "unit", "level"})
+
+#: What joins a change's level to the change in a cell's decided text (``78% · -8 pts``).
+LANDS_AT = " · "
+
+#: A cell's interval's ends, and their decided texts, which a copy changes together.
+_ENDS = frozenset({"low", "high"})
+_ENDS_TEXT = frozenset({"low_text", "high_text"})
 
 
 #: The ends of a column head that names its cells' unit, so the cells state bare figures (``Pass rate (%)``,
@@ -843,6 +840,16 @@ class OutcomeBar(EvalDocumentModel):
         description=(
             "The arm's short name, drawn where `arm` does not fit: its given label, else what differs from the "
             "control (GENERATOR.md §6.1). None to cut `arm`."
+        ),
+    )
+    passed_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The share of the arm's trials that passed as its page decided it, with its `%` (`84%`): what the bar's "
+            "note prints, in the pass rate's one form on the page, so the note and the scorecard read one rate alike. "
+            "None for a bar no page decided (a host's own), whose note spells the share by the number rule."
         ),
     )
 
@@ -1063,7 +1070,9 @@ class ChartBlock(_Block):
                     for segment in bar.segments
                 ],
                 note=_OUTCOME_NOTE.format(
-                    share=with_unit(passed(bar) / bar.total * 100, PERCENT), passed=passed(bar), trials=bar.total
+                    share=bar.passed_text or with_unit(passed(bar) / bar.total * 100, PERCENT),
+                    passed=passed(bar),
+                    trials=bar.total,
                 )
                 if bar.total
                 else f"{bar.total} trials",
@@ -1138,12 +1147,16 @@ class ChartBlock(_Block):
                 # page decided it where it did.
                 tip=[
                     point.arm,
-                    f"{cost(point.cost)} ({cost(point.cost_low)} to {cost(point.cost_high)}) {per}",
+                    f"{cost(point.cost)} ({interval_beside(cost(point.cost_low), cost(point.cost_high))}) {per}",
                     f"pass rate {point.pass_rate_text or with_unit(point.pass_rate, PERCENT).removesuffix(PERCENT)}% ("
                     + (
                         point.pass_rate_interval_text
-                        or f"{with_unit(point.pass_rate_low, PERCENT).removesuffix(PERCENT)} to "
-                        f"{with_unit(point.pass_rate_high, PERCENT).removesuffix(PERCENT)}"
+                        or interval_beside(
+                            *ends_beside(
+                                (with_unit(point.pass_rate_low, PERCENT), with_unit(point.pass_rate_high, PERCENT)),
+                                PERCENT,
+                            )
+                        )
                     )
                     + ")",
                 ],
@@ -1454,6 +1467,7 @@ __all__ = [
     "FLAGGED_CAVEATS",
     "FOLD_SECTION_TITLES",
     "FOLDED_SECTIONS",
+    "LANDS_AT",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",

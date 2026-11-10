@@ -22,6 +22,8 @@ from html import escape
 
 import pytest
 
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.analysis import (
     build_code_only_report,
     campaign_report,
@@ -369,8 +371,8 @@ def test_no_glossary_term_is_linked_inside_a_measure_s_name_wherever_a_line_prin
         rows=[
             {
                 "aspect": TableCell(value="Research quality"),
-                "budget": TableCell(value=0.0, low=0.0, high=0.0),
-                "spend": TableCell(value=2.7, low=2.5, high=3.0, unit="usd", decimals=1),
+                "budget": PageForms.off_page().unit_cell(0.0, "", (0.0, 0.0)),
+                "spend": PageForms.off_page().money_cell(MoneyForm(decimals=1), 2.7, (2.5, 3.0)),
             }
         ],
         order="aspect by aspect",
@@ -381,7 +383,7 @@ def test_no_glossary_term_is_linked_inside_a_measure_s_name_wherever_a_line_prin
         name="runs",
         title="Runs",
         columns=[TableColumn(key="arm", header="Arm"), TableColumn(key="ran", header="Ran")],
-        rows=[{"arm": TableCell(value="solo"), "ran": TableCell(value=60)}],
+        rows=[{"arm": TableCell(value="solo"), "ran": PageForms.off_page().count_cell(60)}],
         order="as run",
         total_rows=1,
     )
@@ -556,7 +558,7 @@ def test_a_hyphenated_check_name_links_its_entry_as_a_row_s_label_and_as_a_colum
             TableColumn(key="first", header=_HYPHENATED_CHECK),
             TableColumn(key="rate", header=f"{_HYPHENATED_CHECK} (%)"),
         ],
-        rows=[{"first": TableCell(value="All cases"), "rate": TableCell(value=80.0)}],
+        rows=[{"first": TableCell(value="All cases"), "rate": PageForms.off_page().unit_cell(80.0, "")}],
         order="as built",
         total_rows=1,
     )

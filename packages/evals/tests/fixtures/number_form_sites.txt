@@ -81,15 +81,7 @@ threetears/evals/analysis/report/blocks.py | ChartBlock._values_table | interval
 threetears/evals/analysis/report/blocks.py | ChartBlock._values_table | said() | 3
 threetears/evals/analysis/report/blocks.py | ChartBlock._values_table.said | number_in() | 1
 threetears/evals/analysis/report/blocks.py | ChartBlock.values_table | _values_table() | 1
-threetears/evals/analysis/report/blocks.py | TableCell._money_form | MoneyForm() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.amount | _money_form() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.amount | spell() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.amount | spell_at() | 4
-threetears/evals/analysis/report/blocks.py | TableCell.amount | with_unit() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.figure | amount() | 1
 threetears/evals/analysis/report/blocks.py | TableCell.figure | render_cell() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.figure | said() | 1
-threetears/evals/analysis/report/blocks.py | TableCell.figure | spell_at() | 1
 threetears/evals/analysis/report/blocks.py | TableCell.text | figure() | 1
 threetears/evals/analysis/report/blocks.py | interval_text | number_in() | 2
 threetears/evals/analysis/report/blocks.py | interval_value_text | number_in() | 1
@@ -261,11 +253,8 @@ threetears/evals/analysis/report/parts/resolve_table.py | _changes_drawn | quant
 threetears/evals/analysis/report/parts/resolve_table.py | _column_quantity | quantity_of() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _contrasts | _changes_drawn() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _floors | quantity() | 1
-threetears/evals/analysis/report/parts/resolve_table.py | _interval_text | amount() | 2
 threetears/evals/analysis/report/parts/resolve_table.py | _prices | MoneyForm() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _prices | _prices_drawn() | 1
-threetears/evals/analysis/report/parts/resolve_table.py | _prices | places_of() | 1
-threetears/evals/analysis/report/parts/resolve_table.py | _prices | spell() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _prices_drawn | quantity_of() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _table | _prices_drawn() | 1
 threetears/evals/analysis/report/parts/resolve_table.py | _wide | _column_quantity() | 1

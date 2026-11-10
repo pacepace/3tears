@@ -8,7 +8,7 @@ no word says one arm is better.
 
 Two seams, each with one caller:
 
-- :func:`equal_weight_cells` is each arm's figure across every aspect, which the scorecard
+- :func:`equal_weight_figures` is each arm's figure across every aspect, which the scorecard
   (:mod:`~threetears.evals.analysis.report.campaign.scorecard`) places in its :data:`EQUAL_WEIGHT_ROW`: in a change,
   the control's pass rate and each candidate's change against it; in a choice, each arm's pass rate. Given only where
   two or more aspects hold a matrix; one aspect's row would repeat it.
@@ -42,12 +42,11 @@ from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
     ReportBlock,
-    TableCell,
 )
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
 
-__all__ = ["EQUAL_WEIGHT_ROW", "aggregate_blocks", "equal_weight_cells"]
+__all__ = ["EQUAL_WEIGHT_ROW", "WITHHELD", "aggregate_blocks", "equal_weight_figures"]
 
 #: What a figure across every aspect, each aspect weighed alike, is headed by.
 _ACROSS = "all aspects (equal weight)"
@@ -64,15 +63,15 @@ _WEIGHTING_LINES: dict[tuple[str, str], str] = {
 }
 
 #: The marker a withheld cell carries, the line under the matrix naming the aspects that lack its figure.
-_WITHHELD = "withheld"
+WITHHELD = "withheld"
 
 
-def equal_weight_cells(
+def equal_weight_figures(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
-) -> dict[str, TableCell]:
-    """Each arm's cell in the scorecard's :data:`EQUAL_WEIGHT_ROW`, by its variant key: the figure, its interval drawn
-    beside it, in its column's unit, as read (the scorecard holds it as the page's forms hold the matrix's own cells);
-    a withheld figure is a dash marked as withheld.
+) -> dict[str, tuple[AggregateFigure, str]]:
+    """Each arm's figure in the scorecard's :data:`EQUAL_WEIGHT_ROW`, by its variant key, with its unit: a
+    candidate's change in points, else the pass rate in percent, as read; the scorecard decides each figure's text
+    where its cell prints it. A withheld figure holds no value.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -80,18 +79,14 @@ def equal_weight_cells(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
-    :return: One cell per arm the matrix holds a column for; none on one aspect, for a measurement, or where no matrix
-        is laid out.
-    :rtype: dict[str, TableCell]
+    :return: One figure per arm the matrix holds a column for; none on one aspect, for a measurement, or where no
+        matrix is laid out.
+    :rtype: dict[str, tuple[AggregateFigure, str]]
     """
     aggregate = _row_aggregate(readings)
     if aggregate is None:
         return {}
-    cells = {}
-    for arm in aggregate.arms:
-        figure, unit = _row_figure(arm)
-        cells[arm.arm] = _cell(figure, unit)
-    return cells
+    return {arm.arm: _row_figure(arm) for arm in aggregate.arms}
 
 
 def aggregate_blocks(
@@ -187,15 +182,6 @@ def _row_figure(arm: ArmAggregate) -> tuple[AggregateFigure, str]:
     """The figure an arm's column prints in the equal-weight row, and its unit: a candidate's change in points, else
     the pass rate in percent."""
     return (arm.change, POINTS) if arm.change is not None else (arm.pass_rate, PERCENT)
-
-
-def _cell(figure: AggregateFigure, unit: str) -> TableCell:
-    """One figure as the row's cell, as read: its interval drawn beside it, a change against zero; a withheld one a dash
-    marked as withheld."""
-    if figure.value is None or figure.interval is None:
-        return TableCell(value=None, flag=_WITHHELD)
-    low, high = figure.interval
-    return TableCell(value=figure.value, unit=unit, low=low, high=high, zero_line=unit == POINTS)
 
 
 def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:

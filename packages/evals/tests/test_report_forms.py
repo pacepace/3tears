@@ -58,7 +58,7 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.forms import MeasureForm, PageForms, Printed
+from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms, Printed
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.parts.full_results import every_table
@@ -75,6 +75,7 @@ from threetears.evals.kernel.chart_query import PlannedChart
 from threetears.evals.harness import read_writer_cases
 from threetears.evals.kernel.numbers import (
     ABSENT,
+    MoneyForm,
     format_number,
     format_signed,
     spell_count,
@@ -665,7 +666,7 @@ def test_a_change_its_half_width_and_its_sized_ends_read_at_the_pass_rate_s_plac
     would print as zero, which takes just the digits that keep it off zero."""
     forms = _code_forms()
     change = forms.change("passed", 2.46, kind="trial")
-    assert (change.held, change.decimals, change.text) == (2.0, 0, "+2 pts")
+    assert (change.held, change.text) == (2.0, "+2 pts")
     width = forms.half_width("passed", 3.04, kind="trial")
     assert (width.held, width.text, width.unit) == (3.0, "3 pts", "pts")
     assert [entry.role for entry in forms.ledger] == ["change", "half_width"]
@@ -692,7 +693,7 @@ def test_a_level_drawn_in_percent_reads_half_to_even_in_a_cell_and_in_words_alik
     )
     forms = PageForms("code", {("passed", "trial"): form})
     level = forms.drawn_level("passed", 6.25, kind="trial")
-    assert (level.held, level.decimals, level.text, level.unit) == (6.2, 1, "6.2%", "%")
+    assert (level.held, level.text, level.unit) == (6.2, "6.2%", "%")
     assert forms.drawn_level("passed", None, kind="trial").held is None
 
 
@@ -726,11 +727,12 @@ def test_a_money_level_bracketed_by_its_interval_reads_both_in_one_form() -> Non
     level, interval = forms.bracketed(reading.measure, reading.value, *reading.interval)
     form = forms.measure(reading.measure)
     assert form.ruler is not None
-    cell = TableCell(value=level.held, unit=level.unit, decimals=level.decimals)
-    assert level.text == cell.figure and level.held == form.ruler.drawn(reading.value)
-    assert interval.text == (
-        f"{cell.amount(form.ruler.drawn(reading.interval[0]))} to {cell.amount(form.ruler.drawn(reading.interval[1]))}"
-    )
+    # One form for all three: the level's decimals write both ends.
+    found = re.search(r"\.(\d+)$", level.text)
+    money = MoneyForm(decimals=len(found.group(1)) if found is not None else 0)
+    assert level.text == money.spell(level.held) and level.held == form.ruler.drawn(reading.value)
+    low, high = (form.ruler.drawn(end) for end in reading.interval)
+    assert interval.text == f"{money.spell(low)} to {money.spell(high)}"
     assert "$" not in interval.digits
 
 
@@ -1271,8 +1273,7 @@ def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -
     recorded under another measure than its row's is unheld, on a table of one cell and on a real page's first
     contrast, whose cells read as unheld once the row is said to state another measure's figures."""
     forms = PageForms.off_page()
-    cell = forms.of_measure(TableCell(value=0.11, unit="usd"), measure="latency", kind="measure")
-    (row,) = forms.money_columns([{"rate": cell}])
+    (row,) = forms.money_columns([{"rate": ColumnMoney(value=0.11, measure="latency", kind="measure")}])
     table = TableBlock(
         section="contrasts",
         name="t",
@@ -1299,8 +1300,8 @@ def test_a_column_rule_records_a_cell_under_the_measure_its_builder_named_and_th
     the rule prints (``$0.0080`` of ``0.008``), and carries that text as its decided text; a cell named of none is
     recorded under none, as before, and carries its text too."""
     forms = PageForms.off_page()
-    named = forms.of_measure(TableCell(value=0.008, unit="usd"), measure="cost_usd", kind="measure")
-    laid = forms.money_columns([{"cost": named}, {"cost": TableCell(value=0.11, unit="usd")}])
+    named = ColumnMoney(value=0.008, measure="cost_usd", kind="measure")
+    laid = forms.money_columns([{"cost": named}, {"cost": ColumnMoney(value=0.11)}])
     assert [row["cost"].value_text for row in laid] == ["$0.0080", "$0.11"]
     assert [(entry.measure, entry.kind, entry.role, entry.text) for entry in forms.ledger] == [
         ("cost_usd", "measure", "column", "$0.0080"),
@@ -1338,8 +1339,8 @@ def test_the_money_columns_record_each_amount_as_its_column_s_form_prints_it() -
     forms = PageForms.off_page()
     laid = forms.money_columns(
         [
-            {"arm": TableCell(value="A"), "cost": TableCell(value=0.008, unit="usd")},
-            {"arm": TableCell(value="B"), "cost": TableCell(value=0.11, unit="usd")},
+            {"arm": TableCell(value="A"), "cost": ColumnMoney(value=0.008)},
+            {"arm": TableCell(value="B"), "cost": ColumnMoney(value=0.11)},
         ]
     )
     assert [row["cost"].figure for row in laid] == ["$0.0080", "$0.11"]

@@ -92,11 +92,11 @@ def depth_blocks(
             {
                 "aspect": names.cell(depth.aspect),
                 "arm": arm,
-                "cases": held.cases,
-                "trials": held.trials,
-                "fewest": held.repeats_min,
-                "median": held.repeats_median,
-                "most": held.repeats_max,
+                "cases": forms.count_cell(held.cases),
+                "trials": forms.count_cell(held.trials),
+                "fewest": forms.count_cell(held.repeats_min),
+                "median": forms.count_cell(held.repeats_median),
+                "most": forms.count_cell(held.repeats_max),
             }
         )
         for _, depth in depths
@@ -189,11 +189,11 @@ def _pass_k_depth_blocks(
                             {
                                 "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
                                 "arm": name(point.variant_key),
-                                "planned": subject.k,
-                                "short": point.n_cases_short_of_k,
-                                "common": subject.common_depth,
+                                "planned": forms.count_cell(subject.k),
+                                "short": forms.count_cell(point.n_cases_short_of_k),
+                                "common": forms.count_cell(subject.common_depth),
                                 "reading": _pass_k_cell(forms, point.common_pass_hat_k),
-                                "left_out": point.n_cases_left_out,
+                                "left_out": forms.count_cell(point.n_cases_left_out),
                             }
                         ),
                         ("reading",),
@@ -250,7 +250,7 @@ def _model_blocks(
                 {
                     "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
                     "arm": _label_of(bundle, labels)(point.variant_key),
-                    "depth": point.model_pass_hat_k.k,
+                    "depth": forms.count_cell(point.model_pass_hat_k.k),
                     "model": _pass_k_cell(forms, point.model_pass_hat_k.pass_hat_k),
                 }
             ),
@@ -315,7 +315,7 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, forms: Pag
                         "limited_by": named(precision.limited_by) if precision.limited_by else None,
                         "between": None
                         if precision.between_share is None
-                        else forms.share(precision.between_share).held,
+                        else _share_cell(forms, precision.between_share),
                     }
                 ),
                 ("half_width", "first", "second"),
@@ -375,11 +375,20 @@ def _pass_k_cell(forms: PageForms, value: float | None) -> TableCell:
     """A pass^k as its depth table's cell holds it, bare under the column's ``(%)``, at the places the page's forms
     read it at."""
     printed = forms.pass_k(TRIAL_PASS_NAME, value, kind="trial")
-    return TableCell(value=printed.held, decimals=printed.decimals)
+    return (
+        TableCell(value=printed.held, value_text=printed.digits) if printed.held is not None else TableCell(value=None)
+    )
 
 
 def _half_width_cell(forms: PageForms, value: float) -> TableCell:
     """An interval's half-width as the precision table's cell holds it, bare under the column's ``(pts)``, at the
     places the page's forms read the pass rate's changes at."""
     printed = forms.half_width(TRIAL_PASS_NAME, value, kind="trial")
-    return TableCell(value=printed.held, decimals=printed.decimals)
+    return TableCell(value=printed.held, value_text=printed.digits)
+
+
+def _share_cell(forms: PageForms, share: float) -> TableCell:
+    """A between-case share as the precision table's cell holds it, bare under the column's ``(%)``, in whole
+    percent."""
+    printed = forms.share(share)
+    return TableCell(value=printed.held, value_text=printed.digits)

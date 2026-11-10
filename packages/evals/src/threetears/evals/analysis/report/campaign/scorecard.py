@@ -24,7 +24,7 @@ counted in trials, in the fold under the matrix. How the intervals were read is 
 scorecard.
 
 A change's or a choice's matrix carries one more row where
-:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives it each arm's figure across every
+:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_figures` gives it each arm's figure across every
 aspect (:data:`~threetears.evals.analysis.report.campaign.aggregate.EQUAL_WEIGHT_ROW`), each cell in its column's
 unit, which the cell states (``TableCell.unit``) and the matrix checks: in a change, the control's mean pass rate in
 percent and each candidate's mean change against it in points; in a choice, each arm's mean pass rate in percent. A
@@ -44,6 +44,7 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import (
+    AggregateFigure,
     AspectReading,
     BarStatus,
     CampaignReadings,
@@ -356,6 +357,11 @@ def _cases(counts: Sequence[int]) -> CellValue:
     return held[0] if len(held) == 1 else f"{held[0]} to {held[-1]}"
 
 
+def _declared_cell(forms: PageForms, value: float) -> TableCell:
+    """A declared figure as a table's cell holds it (a margin under a head naming its unit): as declared."""
+    return TableCell(value=value, value_text=forms.declared(value).text)
+
+
 def _arm_column(key: str) -> str:
     """The column an arm's cells sit in, by its variant key: never a column's own key (``aspect``, ``cases``)."""
     return f"arm:{key}"
@@ -372,7 +378,7 @@ def _with_equal_weight_row(
     forms: PageForms,
 ) -> list[dict[str, TableCell]]:
     """The row across every aspect, each aspect weighed alike, with each arm's cell
-    (:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells`) in that arm's column; no row
+    (:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_figures`) in that arm's column; no row
     where no cell is given. ``arms`` is each arm's column and the unit it holds, by variant key. A figure states its
     unit, which must be its column's; it is placed without it where the column's header names it (``alpha (%)``),
     else with it at the unit's one decimal, a change signed, each held as the page's forms hold the matrix's own cells.
@@ -388,7 +394,7 @@ def _with_equal_weight_row(
     :raises ValueError: A cell names an arm the matrix has no column for, holds words, or states a unit other than its
         column's: the matrix would drop it or print it under the wrong unit.
     """
-    across = aggregate.equal_weight_cells(campaign, readings, reports)
+    across = aggregate.equal_weight_figures(campaign, readings, reports)
     if not across:
         return []
     if stray := sorted(set(across) - set(arms)):
@@ -400,43 +406,71 @@ def _with_equal_weight_row(
     row["aspect"] = TableCell(value=aggregate.EQUAL_WEIGHT_ROW)
     bare = bare_columns(columns)
     held = levels or {}
-    for key, cell in across.items():
+    for key, (figure, stated) in across.items():
         column, unit = arms[key]
-        if cell.value is not None and (not cell.is_number or cell.unit != unit):
-            stated = repr(cell.unit) if cell.is_number else f"the words {cell.value!r}"
+        if figure.value is not None and stated != unit:
             raise ValueError(
-                f"the {aggregate.EQUAL_WEIGHT_ROW!r} cell for arm {key} states {stated}, and its column holds {unit!r}"
+                f"the {aggregate.EQUAL_WEIGHT_ROW!r} cell for arm {key} states {stated!r}, and its column holds {unit!r}"
             )
-        if column in bare:
-            placed: dict[str, object] = {"unit": ""}
-            if cell.value is not None:
-                across_figure = _across(forms, float(cell.value), unit)
-                placed |= {"value": across_figure.held, "decimals": across_figure.decimals}
-            row[column] = cell.model_copy(update=placed)
-        elif cell.value is not None:
-            # A head that names no unit leaves it on each figure, at the unit's one decimal as the column's cells are:
-            # a candidate's change signed, after its level across the aspects, as every change cell reads. A control
-            # with its level across the aspects prints that level in place of its own figure.
-            level, said = held.get(key, (None, None))
-            figure = _across(forms, float(cell.value), unit) if level is None or unit == POINTS else None
-            update: dict[str, object] = {"signed": unit == POINTS}
-            if figure is not None:
-                update |= {"value": figure.held, "decimals": figure.decimals}
-            if level is not None:
-                shown = _rate_level(forms, level)
-                if unit == POINTS and figure is not None:
-                    # Where the change lands, then the change, each in the pass rate's one form.
-                    update |= {"level": shown.held, "value_text": f"{shown.text} · {figure.text}"}
-                else:
-                    update |= {"value": shown.held, "decimals": shown.decimals, "low": None, "high": None}
-                if said is not None:
-                    update["flag"] = said
-            row[column] = cell.model_copy(update=update)
-        else:
-            row[column] = cell
-        # A figure of the pass rate across the aspects, which the page's column rules record the cell under.
-        row[column] = forms.of_measure(row[column], measure=TRIAL_PASS_NAME, kind="trial")
+        row[column] = forms.of_measure(
+            _equal_weight_cell(figure, unit, held.get(key, (None, None)), forms, bare=column in bare),
+            measure=TRIAL_PASS_NAME,
+            kind="trial",
+        )
     return [row]
+
+
+def _equal_weight_cell(
+    figure: AggregateFigure,
+    unit: str,
+    level: tuple[float | None, str | None],
+    forms: PageForms,
+    *,
+    bare: bool,
+) -> TableCell:
+    """One arm's cell in the row across every aspect, each text decided once, where it prints: a withheld figure a dash
+    marked as withheld; under a head that names its unit, the figure bare beside its interval's glyph; else the figure
+    with its unit at the column's precision, a candidate's change after its level across the aspects
+    (``23.4% · +1.9 pts``), and a control with its level across the aspects that level in place of its own figure,
+    with no interval, which the aggregate gives on its pooled rate."""
+    if figure.value is None or figure.interval is None:
+        return TableCell(value=None, flag=aggregate.WITHHELD)
+    shown, said = level
+    change = unit == POINTS
+    if shown is not None and not change and not bare:
+        # The control's level on its changes' basis, said so, in place of the pooled figure.
+        stated = _rate_level(forms, shown)
+        return TableCell(value=stated.held, unit=unit, value_text=stated.text, flag=said)
+    printed = _across(forms, figure.value, unit)
+    low, high = figure.interval
+    low_text, high_text = forms.interval(
+        TRIAL_PASS_NAME, low, high, kind="trial", change=change, drawn=True
+    ).ends_beside
+    if bare:
+        return TableCell(
+            value=printed.held,
+            value_text=printed.digits,
+            low=low,
+            high=high,
+            low_text=low_text,
+            high_text=high_text,
+            zero_line=change,
+        )
+    lands = _rate_level(forms, shown) if shown is not None else None
+    return TableCell(
+        value=printed.held,
+        unit=unit,
+        # Where the change lands, then the change, each in the pass rate's one form.
+        level=None if lands is None else lands.held,
+        level_text=None if lands is None else lands.text,
+        value_text=printed.text if lands is None else forms.lands_at(lands, printed),
+        flag=None if lands is None else said,
+        low=low,
+        high=high,
+        low_text=low_text,
+        high_text=high_text,
+        zero_line=change,
+    )
 
 
 def _across(forms: PageForms, value: float, unit: str) -> Printed:
@@ -450,9 +484,9 @@ def _no_equal_weight_row(
 ) -> None:
     """Refuse a figure across every aspect where no matrix is laid out to hold it, rather than drop it.
 
-    :raises ValueError: :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives a cell.
+    :raises ValueError: :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_figures` gives a figure.
     """
-    if across := aggregate.equal_weight_cells(campaign, readings, reports):
+    if across := aggregate.equal_weight_figures(campaign, readings, reports):
         raise ValueError(
             f"the {aggregate.EQUAL_WEIGHT_ROW!r} row names arm(s) {', '.join(sorted(across))}, and the scorecard lays "
             f"out no matrix to hold it: {why}"
@@ -574,7 +608,7 @@ def _change_matrix(
             stated.setdefault(arm, []).append(level)
         cells = {
             "aspect": names.cell(aspect.label),
-            "cases": TableCell(value=_cases([min(row.control_cases, row.arm_cases) for row in on.values()])),
+            "cases": forms.count_cell(_cases([min(row.control_cases, row.arm_cases) for row in on.values()])),
             _arm_column(control): shown,
         }
         for arm in candidates:
@@ -745,7 +779,7 @@ def _control_cell(
         if cases is not None and shown != _rate_held(forms, pooled):
             count = f"mean of {cases} cases"
     printed = _rate_level(forms, level)
-    cell = TableCell(value=printed.held, unit=printed.unit, decimals=printed.decimals, flag=_marks(count, *marks))
+    cell = TableCell(value=printed.held, unit=printed.unit, value_text=printed.text, flag=_marks(count, *marks))
     # A figure of the pass rate, which the page's column rules record the cell under.
     return forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial")
 
@@ -774,17 +808,25 @@ def _change_cell(
     change = TableCell(
         value=figure.held,
         unit=figure.unit,
-        decimals=figure.decimals,
-        signed=True,
         level=level.held,
+        level_text=level.text,
         # Where the change lands, then the change, each in the pass rate's one form.
-        value_text=f"{level.text} · {figure.text}",
+        value_text=forms.lands_at(level, figure),
         flag="; ".join(marks),
     )
     interval, _ = _shown_interval(row)
     if interval is not None and min(row.control_cases, row.arm_cases) >= 2:
+        # The glyph's ends read as the fold's interval column prints them, beside the figure that carries the unit.
+        low_text, high_text = forms.interval(TRIAL_PASS_NAME, *interval, kind="trial", change=True).ends_beside
         change = change.model_copy(
-            update={"low": interval[0], "high": interval[1], "margin": row.margin, "zero_line": True}
+            update={
+                "low": interval[0],
+                "high": interval[1],
+                "low_text": low_text,
+                "high_text": high_text,
+                "margin": row.margin,
+                "zero_line": True,
+            }
         )
     # A figure of the pass rate, which the page's column rules record the cell under.
     return forms.of_measure(change, measure=TRIAL_PASS_NAME, kind="trial")
@@ -833,12 +875,12 @@ def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForm
                 {
                     "aspect": names.cell(row.aspect),
                     "arm": row.arm_label,
-                    "cases": min(row.control_cases, row.arm_cases),
+                    "cases": forms.count_cell(min(row.control_cases, row.arm_cases)),
                     "control": _counted(row.control_passed, row.control_trials, row.control_cases),
                     "passed": _counted(row.arm_passed, row.arm_trials, row.arm_cases),
-                    # Signed and in points at one decimal, as the matrix cell reads it.
+                    # Signed and in points, as the matrix cell reads it.
                     "change": forms.of_measure(
-                        TableCell(value=change.held, unit=change.unit, decimals=change.decimals, signed=True),
+                        TableCell(value=change.held, unit=change.unit, value_text=change.text),
                         measure=TRIAL_PASS_NAME,
                         kind="trial",
                     ),
@@ -854,7 +896,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForm
                         measure=TRIAL_PASS_NAME,
                         kind="trial",
                     ),
-                    "margin": row.margin,
+                    "margin": None if row.margin is None else _declared_cell(forms, row.margin),
                     "reading": _reading_words(row),
                 }
             )
@@ -1459,30 +1501,31 @@ def pair_blocks(
                 "aspect": names.cell(pair.aspect),
                 "first": pair.first_label,
                 "second": pair.second_label,
-                "cases": min(pair.first_cases, pair.second_cases),
+                "cases": forms.count_cell(min(pair.first_cases, pair.second_cases)),
                 "first_passed": _counted(pair.first_passed, pair.first_trials, pair.first_cases),
                 "second_passed": _counted(pair.second_passed, pair.second_trials, pair.second_cases),
-                "change": change.held,
+                "change": None,
                 "interval": None
                 if pair.interval is None
                 else forms.interval(TRIAL_PASS_NAME, *pair.interval, kind="trial", change=True).digits,
                 "ahead": ahead if pair.confirmatory else f"{ahead}, a lead",
             }
         )
-        # Signed at a point's one decimal, as every other change on the page reads: a pair is direction-free, so an
-        # unsigned 5.0 would read as a magnitude.
-        cells["change"] = (
-            TableCell(value=change.held, decimals=change.decimals, signed=True)
-            if pair.interval is None
-            else TableCell(
+        # Signed, as every other change on the page reads: a pair is direction-free, so an unsigned 5.0 would read as a
+        # magnitude. Bare under the column's ``(pts)``, its glyph's ends as the interval column prints them.
+        if pair.interval is None:
+            cells["change"] = TableCell(value=change.held, value_text=change.digits)
+        else:
+            low_text, high_text = forms.interval(TRIAL_PASS_NAME, *pair.interval, kind="trial", change=True).ends_beside
+            cells["change"] = TableCell(
                 value=change.held,
+                value_text=change.digits,
                 low=pair.interval[0],
                 high=pair.interval[1],
+                low_text=low_text,
+                high_text=high_text,
                 zero_line=True,
-                decimals=change.decimals,
-                signed=True,
             )
-        )
         rows.append(cells)
     blocks: list[ReportBlock] = []
     if readings.pairs:
@@ -1543,7 +1586,7 @@ def _choice_matrix(
         boards = {board.variant_key: board for board in reports[aspect.label].bundle.scoreboard}
         cells = {
             "aspect": names.cell(aspect.label),
-            "cases": TableCell(value=_cases([boards[arm].usable_cases for arm in arms if arm in boards])),
+            "cases": forms.count_cell(_cases([boards[arm].usable_cases for arm in arms if arm in boards])),
         }
         for arm in arms:
             board = boards.get(arm)
@@ -1551,9 +1594,10 @@ def _choice_matrix(
                 cells[_arm_column(arm)] = TableCell(value=None, flag=_ahead_marks(arm, pairs))
                 continue
             count = _rate_count(board.passed, board.usable, board.usable_cases)
+            # Bare under the column's ``(%)``.
+            level = _rate_level(forms, 100 * board.passed / board.usable)
             cells[_arm_column(arm)] = TableCell(
-                value=_rate_level(forms, 100 * board.passed / board.usable).held,
-                flag=_marks(count, _ahead_marks(arm, pairs)),
+                value=level.held, value_text=level.digits, flag=_marks(count, _ahead_marks(arm, pairs))
             )
         rows.append(cells)
     rows += _with_equal_weight_row(
@@ -1702,7 +1746,7 @@ def measure_blocks(
             "interval": _measured_interval(forms, reading.measure, reading.interval)
             if ruler is None
             else _money_interval(forms, reading.measure, reading.interval),
-            "cases": reading.cases,
+            "cases": forms.count_cell(reading.cases),
         }
         if by_rig:
             values["setup"] = "every setup" if reading.rig is None else short_digest(reading.rig)
@@ -1862,7 +1906,8 @@ def _turned_matrix(
                 continue
             cell = row[f"measure:{key}"]
             if key in rates and cell.is_number:
-                cell = cell.model_copy(update={"unit": PERCENT})
+                # A rate states its percent on the figure here, where no head names it.
+                cell = cell.model_copy(update={"unit": PERCENT, "value_text": forms.unit_on(cell.figure, PERCENT)})
             interval = (
                 None
                 if cell.low is None or reading.interval is None
@@ -1878,7 +1923,7 @@ def _turned_matrix(
                         cell.model_copy(update={"low": None, "high": None}), measure=key, kind="measure"
                     ),
                     "interval": forms.of_measure(TableCell(value=interval), measure=key, kind="measure"),
-                    "cases": TableCell(value=reading.cases if setups[aspect.label, key] == 1 else None),
+                    "cases": forms.count_cell(reading.cases if setups[aspect.label, key] == 1 else None),
                 }
             )
     return TableBlock(
@@ -1924,15 +1969,19 @@ def _measure_cell(
         if reading.passed is not None and reading.trials is not None
         else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
+    # Bare: a rate's head names its percent, and any other measure's head its name.
     if reading.interval is None:
-        cell = TableCell(value=figure.held, decimals=figure.decimals, flag=count)
+        cell = TableCell(value=figure.held, value_text=figure.digits, flag=count)
     else:
         factor = forms.measure(reading.measure).factor
+        low_text, high_text = forms.interval(reading.measure, *reading.interval).ends_beside
         cell = TableCell(
             value=figure.held,
-            decimals=figure.decimals,
+            value_text=figure.digits,
             low=factor * reading.interval[0],
             high=factor * reading.interval[1],
+            low_text=low_text,
+            high_text=high_text,
             flag=count,
         )
     # A figure of its measure, which the page's column rules record the cell under.
@@ -1993,16 +2042,19 @@ def _money_cell(forms: PageForms, key: str, value: float | None, interval: tuple
         return TableCell(value=None)
     if interval is None:
         figure = forms.level(key, value)
-        cell = TableCell(value=figure.held, unit=figure.unit, decimals=figure.decimals)
+        cell = TableCell(value=figure.held, unit=figure.unit, value_text=figure.text)
     else:
-        figure, _ = forms.bracketed(key, value, *interval)
+        figure, ends = forms.bracketed(key, value, *interval)
         factor = forms.measure(key).factor
+        low_text, high_text = ends.ends_beside
         cell = TableCell(
             value=figure.held,
             unit=figure.unit,
-            decimals=figure.decimals,
+            value_text=figure.text,
             low=factor * interval[0],
             high=factor * interval[1],
+            low_text=low_text,
+            high_text=high_text,
         )
     # A figure of its measure, which the page's column rules record the cell under.
     return forms.of_measure(cell, measure=key, kind="measure")
@@ -2023,7 +2075,7 @@ def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellV
     if reading.value is None:
         return None
     figure = forms.level(reading.measure, reading.value)
-    return figure.text if rate else TableCell(value=figure.held, decimals=figure.decimals)
+    return figure.text if rate else TableCell(value=figure.held, value_text=figure.digits)
 
 
 def _measured_interval(forms: PageForms, key: str, interval: tuple[float, float] | None) -> str | None:

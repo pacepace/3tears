@@ -255,7 +255,7 @@ def build_campaign_report_in_aspect_forms(
     blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
     # Design & provenance: the design and when each criterion was set, then what depth says once. What each check's
     # name stands for is the glossary's (``CampaignReport.glossary``).
-    blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
+    blocks += provenance_blocks(bundles, readings.arm_labels(), names=names, forms=forms)
     blocks += depth_provenance_blocks(readings)
     folds = [
         CampaignAspectFold(
