@@ -1,13 +1,18 @@
-"""A floor's sentence with its figures held as numbers: words, and each figure as its value and what it is.
+"""A sentence read before any page exists, with its figures held as numbers: words, and each figure as its value and
+what it is.
 
-A floor is read, and a campaign's rows are read, before any page exists, so the sentences that say why cannot be
-spelled where they are read: the form a figure prints in is its page's (one form per measure,
-:class:`~threetears.evals.analysis.report.forms.PageForms`). So the reading says its sentence as a :class:`Said`: the
-words, and each figure in its place as a :class:`SaidFigure` (its value, its role, and the rate it is of), and the page
-spells it (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`).
+Three readings say sentences no page has spelled yet: a floor's statement and its reason
+(:func:`~threetears.evals.analysis.report.decision.read_floor`), a campaign row's reason
+(:func:`~threetears.evals.analysis.campaign_readings.reading_reason`), and the line a frontier point's pass^k cell
+reads with (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`). The form a figure prints in is
+its page's (one form per measure, :class:`~threetears.evals.analysis.report.forms.PageForms`), so each says its sentence
+as a :class:`Said`: the words, and each figure in its place as a :class:`SaidFigure` (its value, its role, and the
+measure it is of), and the surface printing it spells it
+(:meth:`~threetears.evals.analysis.report.forms.PageForms.said`, an off-page surface through its off-page forms).
 
 The campaign's readings freeze their reasons as text, which the campaign's fingerprint reads, so those are spelled once
-as they were frozen (:meth:`Said.stored`), and no page decides them.
+as they were frozen (:meth:`Said.stored`), and no page decides them: a page states a row's reason by reading it again
+as a :class:`Said`, from the same evidence.
 """
 
 from __future__ import annotations
@@ -30,9 +35,10 @@ class SaidFigure:
         rate's drop reaches, in points, unsigned (``at most 8``, ``at least 12.3``). ``change``: a rate's drop in
         points, positive for a drop and negative for a gain, said in words (``a drop of 92.7``, ``a gain of 35.5``,
         ``no change``). ``level``: an interval's level, as a share (``95%``). ``count``: a count of passes, trials or
-        cases, whole. ``lone``: a figure stated by itself by the lone figure rule (a frontier cell's own pass^k).
-    :ivar measure: For ``points`` and ``change``, the key of the measure the rate is compared on; None for the trials'
-        own pass rate. Unread for ``margin``, ``level`` and ``lone``, which are of no measure.
+        cases, whole. ``pass_k``: a frontier cell's own pass^k, as a share.
+    :ivar measure: For ``points`` and ``change``, the key of the measure the rate is compared on, and for ``pass_k``
+        the measure it is a pass^k of; None for the trials' own pass rate. Unread for ``margin`` and ``level``, which
+        are of no measure.
     :ivar bound: For ``points``, the bound the sentence's words state the figure as: ``lower`` (``at least``), which a
         page rounds down at its places, ``upper`` (``at most``, ``as much as``), which it rounds up, so a bound never
         reads past itself; None for a figure stated as itself, rounded to the nearest.
@@ -41,7 +47,7 @@ class SaidFigure:
     """
 
     value: float
-    role: Literal["margin", "points", "change", "level", "count", "lone"]
+    role: Literal["margin", "points", "change", "level", "count", "pass_k"]
     measure: str | None = None
     bound: Literal["lower", "upper"] | None = None
     margin: float | None = None
@@ -148,7 +154,9 @@ def _stored_figure(figure: SaidFigure) -> str:
     """One figure as a campaign's readings froze it, which the campaign's fingerprint reads, so it never moves."""
     if figure.role == "count":
         return str(int(figure.value))
-    if figure.role in ("margin", "lone"):
+    if figure.role == "pass_k":
+        raise ValueError("a pass^k is printed by a page's forms (PageForms.pass_k), and no stored reason holds one")
+    if figure.role == "margin":
         return format_number(figure.value)
     if figure.role == "level":
         return format_number(round(100 * figure.value, 2)) + "%"

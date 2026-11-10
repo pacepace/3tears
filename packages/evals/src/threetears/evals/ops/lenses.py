@@ -1716,9 +1716,9 @@ def runs_compared_text(compared: RunsCompared) -> str:
     lines = [
         f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
         f"({arm.get('model_b')})",
-        f"{label}: {forms.lone(arm.get('pass_hat_k_a'), measure=_PASS_HAT_K, kind='trial').text} vs "
-        f"{forms.lone(arm.get('pass_hat_k_b'), measure=_PASS_HAT_K, kind='trial').text} "
-        f"(delta {forms.lone(arm.get('pass_hat_k_delta'), signed=True, measure=_PASS_HAT_K, kind='trial').text}; "
+        f"{label}: {forms.pass_k(_PASS_HAT_K, arm.get('pass_hat_k_a'), kind='trial').text} vs "
+        f"{forms.pass_k(_PASS_HAT_K, arm.get('pass_hat_k_b'), kind='trial').text} "
+        f"(delta {forms.pass_k_change(_PASS_HAT_K, arm.get('pass_hat_k_delta'), kind='trial').text}; "
         f"{arm.get('pass_hat_k_n_cases_a')} vs {arm.get('pass_hat_k_n_cases_b')} case(s))",
         composite,
     ]

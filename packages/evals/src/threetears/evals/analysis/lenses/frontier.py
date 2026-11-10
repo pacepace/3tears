@@ -449,7 +449,7 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[Said]:
     return [
         Said.of(
             re.sub(r"\s+", " ", kept + "its own pass^k "),
-            SaidFigure(reading.pass_hat_k, "lone"),
+            SaidFigure(reading.pass_hat_k, "pass_k"),
             f" over {reading.n_cases_at_k} case(s)",
         )
     ]

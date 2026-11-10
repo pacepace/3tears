@@ -74,7 +74,6 @@ from threetears.evals.analysis.quantities import (
     MONEY,
     PERCENT,
     POINTS,
-    UNSPACED_UNITS,
     delta_unit,
     is_money,
     number_in,
@@ -107,7 +106,7 @@ from threetears.evals.analysis.report.charts import (
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.said import Said, SaidFigure
-from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after
+from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after, unit_spaced
 from threetears.evals.analysis.report_input import (
     Contrast,
     ContrastFamily,
@@ -911,7 +910,7 @@ class PageForms:
         if places is not None and places.level is not None:
             text = _ruled_level_text(ruler, drawn, places)
             if ruler.unit and ruler.unit != PERCENT:
-                text = _joined(text, ruler.unit)
+                text = unit_spaced(text, ruler.unit)
             return self._ruled_cell(measure, kind, "level", value, drawn, ruler.unit, text)
         return self._ruled_cell(measure, kind, "level", value, drawn, ruler.unit, with_unit(drawn, ruler.unit))
 
@@ -981,7 +980,7 @@ class PageForms:
             text = _signed_text(with_unit(drawn, unit), drawn)
         else:
             digits = policy_figure(drawn, places, bounds=_ZERO_BOUND if ruler.unit == PERCENT else (), signed=True)
-            text = _joined(digits, unit)
+            text = unit_spaced(digits, unit)
         if ends is None:
             return self._ruled_cell(measure, kind, "change", delta, drawn, unit, text)
         decimals = None if form is not None else (POINT_PLACES if set_places is None and unit == POINTS else set_places)
@@ -1133,7 +1132,7 @@ class PageForms:
             unit=unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=f"{low_digits} to {high_digits}",
+            digits=interval_beside(low_digits, high_digits),
         )
 
     def _ruled_cell(
@@ -1318,7 +1317,7 @@ class PageForms:
         held = _code_change_held(form, value)
         unit = form.change_unit
         decimals = _code_change_places(form, value)
-        text = _joined(policy_figure(value * form.change_factor, decimals, bounds=()), unit)
+        text = unit_spaced(policy_figure(value * form.change_factor, decimals, bounds=()), unit)
         return self._issue(form.key, form.kind, "half_width", value, text, _digits_of(text, unit), unit, held=held)
 
     def interval(
@@ -1370,7 +1369,7 @@ class PageForms:
             unit=unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(low_digits, high_digits),
+            digits=interval_beside(low_digits, high_digits),
         )
 
     def bracketed(
@@ -1406,7 +1405,7 @@ class PageForms:
         text = money.spell(drawn)
         level = self._issue(form.key, form.kind, "level", value, text, _digits_of(text, MONEY), MONEY, held=drawn)
         low_text, high_text = money.spell(drawn_low), money.spell(drawn_high)
-        joined = f"{low_text} to {high_text}"
+        joined = interval_beside(low_text, high_text)
         self._issued.append(_Issued(form.key, form.kind, "interval", (low, high), joined))
         low_digits, high_digits = _digits_of(low_text, MONEY), _digits_of(high_text, MONEY)
         interval = _PrintedInterval(
@@ -1418,7 +1417,7 @@ class PageForms:
             unit=MONEY,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(low_digits, high_digits),
+            digits=interval_beside(low_digits, high_digits),
         )
         return level, interval
 
@@ -1447,7 +1446,7 @@ class PageForms:
         low_text, high_text = (
             policy_figure(abs(end), _code_places(form), bounds=_ZERO_BOUND) for end in (scaled_low, scaled_high)
         )
-        text = f"{low_text} to {high_text}"
+        text = interval_beside(low_text, high_text)
         # A sentence states each end's size apart (``between 3.5 and 7.9 points worse``), never the two joined, so
         # each is issued apart: the interval, by its ends, and the text the sentence prints of each.
         self._issued += [
@@ -1498,7 +1497,7 @@ class PageForms:
             unit=form.unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(low_digits, high_digits),
+            digits=interval_beside(low_digits, high_digits),
         )
 
     # --- decisions that print nothing --------------------------------------------------------------------------------
@@ -1629,7 +1628,7 @@ class PageForms:
         digits = policy_declared(value)
         if signed and value is not None and math.isfinite(value):
             digits = plus_signed(digits, value)
-        text = _joined(digits, unit) if value is not None and math.isfinite(value) else digits
+        text = unit_spaced(digits, unit) if value is not None and math.isfinite(value) else digits
         return self._issue("", "", "declared", value, text, digits, unit if text != digits else "")
 
     def share(self, value: float | None) -> Printed:
@@ -1672,8 +1671,30 @@ class PageForms:
             text = policy_rate(100 * value, _code_places(form))
             return self._issue(key, measure, "pass_k", value, text, _digits_of(text, PERCENT), PERCENT, held=held)
         held = round(100 * value, POINT_PLACES)
-        text = _joined(format_number(held), PERCENT)
+        text = unit_spaced(format_number(held), PERCENT)
         return self._issue(key, measure, "pass_k", value, text, _digits_of(text, PERCENT), PERCENT, held=held)
+
+    def pass_k_change(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
+        """A change of a pass^k (one run's less another's, as a share), signed, in points, as :meth:`pass_k` states its
+        levels: on a code page that holds the measure's form, as that page states the measure's changes
+        (:meth:`change`); elsewhere to a decimal by the lone figure rule. It is recorded under its measure.
+
+        :param key: The measure's key.
+        :ptype key: str
+        :param value: The change, as a share; None for none.
+        :ptype value: float | None
+        :param kind: The measure's kind.
+        :ptype kind: _MeasureKind
+        :return: The change.
+        :rtype: Printed
+        """
+        measure = _measure_kind(kind)
+        if value is None or not math.isfinite(value):
+            return self._issue(key, measure, "change", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
+        if self.page == "code" and (key, measure) in self._measures:
+            return self.change(key, value, kind=kind)
+        text = unit_spaced(format_signed(round(100 * value, POINT_PLACES)), POINTS)
+        return self._issue(key, measure, "change", value, text, _digits_of(text, POINTS), POINTS)
 
     def multiple(self, ratio: float) -> Printed:
         """A ratio read as a multiple (:func:`~threetears.evals.kernel.numbers.spell_multiple`); the unit word is the
@@ -1698,20 +1719,21 @@ class PageForms:
         text = spell_dollars(amount)
         return self._issue("", "", "money_total", amount, text, _digits_of(text, MONEY), MONEY)
 
-    # --- a floor's sentences, read before any page's forms exist ----------------------------------------------------
+    # --- sentences read before any page's forms exist: floors', campaign rows', frontier cells' --------------------
 
     def said(self, said: Said) -> str:
-        """A sentence a floor or a campaign's row was read with (a floor's statement, a rate's or a floor's reason), as
-        this page says it, each figure it holds in its form: a margin as declared (:meth:`declared`), a level as
-        :meth:`confidence_share` states one, a count as :meth:`count` states one (``1,200``), a lone figure as
-        :meth:`lone` states one, and how far a rate's drop reaches, in points, unsigned, at the places this page reads
-        that rate's changes at, kept off zero: its own form of the rate (a code page's pass rate), else the rate's set
-        on an aspect page. A rate the page states no change of reads to a decimal, a whole number whole, as the
-        campaign's readings freeze it (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words
-        state as a bound never reads past itself: a lower bound (``at least``) rounds down at those places, an upper one
-        (``at most``) up, and where that would cross the margin the sentence compares it with, or zero, it takes a
-        decimal more until it does not (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point
-        figure is recorded under its rate's measure as a change.
+        """A sentence read before this page existed (a floor's statement and its reason, a rate's, a campaign row's
+        reason read again from its evidence, a frontier pass^k cell's line), as this page says it, each figure it holds
+        in its form: a margin as declared (:meth:`declared`), a level as :meth:`confidence_share` states one, a count as
+        :meth:`count` states one (``1,200``), a pass^k as :meth:`pass_k` states one, and how far a rate's drop reaches,
+        in points, unsigned, at the places this page reads that rate's changes at, kept off zero: its own form of the
+        rate (a code page's pass rate), else the rate's set on an aspect page. A rate the page states no change of reads
+        to a decimal, a whole number whole, as the campaign's readings freeze it
+        (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words state as a bound never reads
+        past itself: a lower bound (``at least``) rounds down at those places, an upper one (``at most``) up, and where
+        that would cross the margin the sentence compares it with, or zero, it takes a decimal more until it does not
+        (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point figure is recorded under its rate's
+        measure as a change.
 
         :param said: The sentence, as read.
         :ptype said: Said
@@ -1721,15 +1743,17 @@ class PageForms:
         return said.words(self._said_figure)
 
     def _said_figure(self, figure: SaidFigure) -> str:
-        """One figure of a floor's sentence (:meth:`said`); a change reaches here as its size, in points."""
+        """One figure of a sentence read before the page (:meth:`said`); a change reaches here as its size, in points."""
         if figure.role == "margin":
             return self.declared(figure.value).text
         if figure.role == "level":
             return self.confidence_share(figure.value).text
         if figure.role == "count":
             return self.count(int(figure.value)).text
-        if figure.role == "lone":
-            return self.lone(figure.value).text
+        if figure.role == "pass_k":
+            if figure.measure is None:
+                return self.pass_k(TRIAL_PASS_NAME, figure.value, kind="trial").text
+            return self.pass_k(figure.measure, figure.value).text
         key, kinds = (
             (TRIAL_PASS_NAME, ("trial",)) if figure.measure is None else (figure.measure, ("measure", "judged"))
         )
@@ -2110,12 +2134,12 @@ class PageForms:
             raise ValueError(f"a glyph is drawn for a cell's interval, and the cell holding {cell.value!r} has none")
         # A change's cell states the level it lands at before it (``78% · -8 pts``); its glyph draws the change alone.
         own = cell.figure.removeprefix(f"{cell.level_text}{LANDS_AT}") if cell.level_text is not None else cell.figure
-        figure = own if cell.unit or not unit else _joined(own, unit)
+        figure = own if cell.unit or not unit else unit_spaced(own, unit)
         value = float(cell.value)  # type: ignore[arg-type]
         # A difference's figure carries its sign, as its cell does (``+0.2``); its unit is on the figure alone, the
         # interval beside it written bare (number rule 3: ``+10 pts, interval -45 to +60``).
         signed = plus_signed(figure, value) if cell.zero_line else figure
-        said = f"{signed}, interval {_interval_join(cell.low_text, cell.high_text)}"
+        said = f"{signed}, interval {interval_beside(cell.low_text, cell.high_text)}"
         if cell.margin is not None:
             # A margin is declared, not measured: it reads as declared (``±15 pts``), never at the cells' decimals.
             said += f", margin ±{with_unit(cell.margin, unit)}"
@@ -2434,7 +2458,7 @@ class PageForms:
             low_digits, high_digits, text = policy_interval(
                 low, high, places, change=drawn.change, bounds=bounds, unit=drawn.unit
             )
-            low_text, high_text = low_digits, _joined(high_digits, drawn.unit)
+            low_text, high_text = low_digits, unit_spaced(high_digits, drawn.unit)
         self._issued.append(_Issued(*_keyed(measure, kind), "interval", (low, high), text))
         low_digits, high_digits = _digits_of(low_text, drawn.unit), _digits_of(high_text, drawn.unit)
         return _PrintedInterval(
@@ -2446,7 +2470,7 @@ class PageForms:
             unit=drawn.unit,
             low_digits=low_digits,
             high_digits=high_digits,
-            digits=_interval_join(low_digits, high_digits),
+            digits=interval_beside(low_digits, high_digits),
         )
 
     def _chart_places(self, drawn: Quantity, measure: str, kind: _MeasureKind) -> int | None:
@@ -3432,13 +3456,6 @@ def _decimals_in(text: str) -> int:
     return len(found[1]) if found is not None else 0
 
 
-def _joined(digits: str, unit: str) -> str:
-    """Digits and their unit, spaced as the package writes the unit."""
-    if not unit:
-        return digits
-    return f"{digits}{unit}" if unit in UNSPACED_UNITS else f"{digits} {unit}"
-
-
 def _digits_of(text: str, unit: str) -> str:
     """A figure's text without its unit: money's ``$`` taken from inside its sign or bound (``-$0.30``, ``< $0.000001``),
     any other unit from its end."""
@@ -3447,11 +3464,6 @@ def _digits_of(text: str, unit: str) -> str:
     if not unit:
         return text
     return text.removesuffix(unit).rstrip() if text.endswith(unit) else text
-
-
-def _interval_join(low: str, high: str) -> str:
-    """Two ends joined as every page joins an interval: ``low to high``."""
-    return f"{low} to {high}"
 
 
 def _keyed(measure: str, kind: _MeasureKind) -> tuple[str, str]:
@@ -3529,7 +3541,7 @@ def _amount(number: float, unit: str, places: int | None, money: MoneyForm | Non
         # A change at its unit's precision: a whole one keeps its decimal beside its siblings (``10.0 pts``).
         return f"{spell_at(number, places)} {POINTS}"
     shown = "0" if number == 0 and not change else spell_at(number, places)
-    return _joined(shown, unit)
+    return unit_spaced(shown, unit)
 
 
 def _glyph_ends(
@@ -3691,7 +3703,7 @@ def _interval_words(low: float, high: float, drawn: Quantity) -> str:
     :return: The words (``-10.8 to -3.4``).
     :rtype: str
     """
-    return f"{figure_text(low, drawn)} to {figure_text(high, drawn)}"
+    return interval_beside(figure_text(low, drawn), figure_text(high, drawn))
 
 
 def _count_text(count: float) -> str:
@@ -3995,10 +4007,10 @@ def _written_level(form: MeasureForm, value: float) -> str:
         return figure_text(scaled, drawn)
     if not math.isfinite(scaled):
         # A figure that is no number reads as the dash in its unit (``— items``), as the number rule spells it.
-        return _joined(_ABSENT_TEXT, drawn.unit)
+        return unit_spaced(_ABSENT_TEXT, drawn.unit)
     if form.reads_as == "rate":
         return policy_rate(scaled, form.places)
-    return _joined(policy_figure(scaled, form.places, bounds=()), drawn.unit)
+    return unit_spaced(policy_figure(scaled, form.places, bounds=()), drawn.unit)
 
 
 def _written_change(form: MeasureForm, value: float) -> str:
@@ -4010,9 +4022,9 @@ def _written_change(form: MeasureForm, value: float) -> str:
     if form.places is None:
         return figure_text(scaled, drawn)
     if not math.isfinite(scaled):
-        return _joined(_ABSENT_TEXT, drawn.unit)
+        return unit_spaced(_ABSENT_TEXT, drawn.unit)
     bounds = _ZERO_BOUND if drawn.unit == POINTS else ()
-    return _joined(policy_figure(scaled, form.places, bounds=bounds, signed=True), drawn.unit)
+    return unit_spaced(policy_figure(scaled, form.places, bounds=bounds, signed=True), drawn.unit)
 
 
 def _written_interval(
@@ -4034,7 +4046,7 @@ def _written_interval(
     low_digits, high_digits, text = policy_interval(
         scaled[0], scaled[1], form.places, change=change, bounds=bounds, unit=drawn.unit
     )
-    return low_digits, _joined(high_digits, drawn.unit), text
+    return low_digits, unit_spaced(high_digits, drawn.unit), text
 
 
 def _placed_text(value: float, drawn: Quantity, places: int, *, change: bool) -> str:
@@ -4044,10 +4056,10 @@ def _placed_text(value: float, drawn: Quantity, places: int, *, change: bool) ->
         return figure_text(value, drawn)
     if change:
         bounds = _ZERO_BOUND if drawn.unit == POINTS else ()
-        return _joined(policy_figure(value, places, bounds=bounds, signed=True), drawn.unit)
+        return unit_spaced(policy_figure(value, places, bounds=bounds, signed=True), drawn.unit)
     if drawn.unit == PERCENT:
         return policy_rate(value, places)
-    return _joined(policy_figure(value, places, bounds=()), drawn.unit)
+    return unit_spaced(policy_figure(value, places, bounds=()), drawn.unit)
 
 
 # --- which figures share a measure's set: the campaign's ----------------------------------------------------------
@@ -4330,7 +4342,7 @@ def _code_cell_text(form: MeasureForm, scaled: float) -> str:
     measure's places in its unit, an exact zero whole."""
     if form.reads_as == "rate":
         return policy_rate(scaled, _code_places(form))
-    return _joined(policy_figure(scaled, _code_places(form), bounds=()), form.unit)
+    return unit_spaced(policy_figure(scaled, _code_places(form), bounds=()), form.unit)
 
 
 def _code_change_places(form: MeasureForm, value: float) -> int:
@@ -4349,7 +4361,7 @@ def _code_change(form: MeasureForm, value: float) -> str:
     digits = policy_figure(
         value * form.change_factor, _code_places(form), bounds=_code_bounds(form, change=True), signed=True
     )
-    return _joined(digits, form.change_unit)
+    return unit_spaced(digits, form.change_unit)
 
 
 def _said_held(figure: SaidFigure, places: int) -> tuple[float, int]:
@@ -4397,7 +4409,7 @@ def _code_interval(
     given as drawn (``drawn``: a rate already in percent) are not scaled again."""
     if form.ruler is not None and not change:
         low_text, high_text = form.ruler.spell_ends(low, high)
-        return low_text, high_text, f"{low_text} to {high_text}"
+        return low_text, high_text, interval_beside(low_text, high_text)
     factor = 1.0 if drawn else form.change_factor if change else form.factor
     ends = [low * factor, high * factor]
     if form.span is not None:
@@ -4406,7 +4418,7 @@ def _code_interval(
     unit = form.change_unit if change else form.unit
     bounds = _RATE_BOUNDS if form.reads_as == "rate" and not change else ()
     low_text, high_text, _ = policy_interval(ends[0], ends[1], _code_places(form), change=change, bounds=bounds)
-    return _joined(low_text, unit), _joined(high_text, unit), interval_alone(low_text, high_text, unit)
+    return unit_spaced(low_text, unit), unit_spaced(high_text, unit), interval_alone(low_text, high_text, unit)
 
 
 # --- an aspect page's contrasts: one set per reading -----------------------------------------------------------------
@@ -4560,7 +4572,7 @@ def _ends_at(
         # Money's ``$`` is a prefix, on every end (``-$0.01 to +$0.02``).
         return _money_ends((_dollars_on(low_text), _dollars_on(high_text)), low, high, change=False)
     on = _on_the_figure(unit)
-    return _joined(low_text, on), _joined(high_text, on), interval_alone(low_text, high_text, unit)
+    return unit_spaced(low_text, on), unit_spaced(high_text, on), interval_alone(low_text, high_text, unit)
 
 
 def _dollars_on(digits: str) -> str:
@@ -4581,7 +4593,7 @@ def _ends_in(low: float, high: float, unit: str, *, change: bool) -> tuple[str, 
     if change:
         ends = [plus_signed(end, value) for end, value in zip(ends, (low, high), strict=True)]
     on = _on_the_figure(unit)
-    return _joined(ends[0], on), _joined(ends[1], on), interval_alone(ends[0], ends[1], unit)
+    return unit_spaced(ends[0], on), unit_spaced(ends[1], on), interval_alone(ends[0], ends[1], unit)
 
 
 def _money_ends(texts: tuple[str, str], low: float, high: float, *, change: bool) -> tuple[str, str, str]:
@@ -4590,7 +4602,7 @@ def _money_ends(texts: tuple[str, str], low: float, high: float, *, change: bool
     low_text, high_text = texts
     if change:
         low_text, high_text = plus_signed(low_text, low), plus_signed(high_text, high)
-    return low_text, high_text, f"{low_text} to {high_text}"
+    return low_text, high_text, interval_beside(low_text, high_text)
 
 
 # === The number policy's primitives ===================================================================================
@@ -4828,7 +4840,7 @@ def policy_declared(value: float | None, unit: str = "") -> str:
         return _ABSENT_TEXT
     number = float(value)
     digits = str(int(number)) if number.is_integer() else format(decimal.Decimal(repr(number)), "f")
-    return _joined(digits, unit)
+    return unit_spaced(digits, unit)
 
 
 # === End of the number policy's primitives ============================================================================

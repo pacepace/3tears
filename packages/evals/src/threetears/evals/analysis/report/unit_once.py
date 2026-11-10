@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from threetears.evals.analysis.quantities import UNSPACED_UNITS, is_money
 
-__all__ = ["ends_beside", "interval_alone", "interval_beside", "unit_after", "unit_written"]
+__all__ = ["ends_beside", "interval_alone", "interval_beside", "unit_after", "unit_spaced", "unit_written"]
 
 
 def unit_written(unit: str) -> str:
@@ -28,6 +28,22 @@ def unit_written(unit: str) -> str:
     :rtype: str
     """
     return "" if is_money(unit) else unit
+
+
+def unit_spaced(digits: str, unit: str) -> str:
+    """Digits and their unit, spaced as the package writes the unit (``85%``, ``12 pts``), the unit written as given;
+    the digits alone with no unit. :func:`unit_after` is the guarded form, which writes no unit twice and none on money.
+
+    :param digits: The figure's digits.
+    :ptype digits: str
+    :param unit: The unit; empty for none.
+    :ptype unit: str
+    :return: The digits with their unit.
+    :rtype: str
+    """
+    if not unit:
+        return digits
+    return f"{digits}{unit}" if unit in UNSPACED_UNITS else f"{digits} {unit}"
 
 
 def unit_after(text: str, unit: str) -> str:
@@ -44,7 +60,7 @@ def unit_after(text: str, unit: str) -> str:
     unit = unit_written(unit)
     if not unit or not text or text.endswith(unit) or not any(char.isdigit() for char in text):
         return text
-    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
+    return unit_spaced(text, unit)
 
 
 def interval_alone(low: str, high: str, unit: str) -> str:

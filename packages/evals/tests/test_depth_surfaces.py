@@ -185,8 +185,8 @@ def test_the_frontier_text_states_each_contestant_s_depth_and_the_common_depth()
     text = frontier_text(TwoArms(TWICE, ONCE, k_a=2, k_b=2).bundle.frontier)
 
     assert common_depth_sentence("subject Test subject", 1, left_out=0) in text
-    assert "ran each case twice over 4 case(s); pass^1 0.625 over 4 case(s) at the common depth" in text
-    assert "ran each case once over 4 case(s), 4 short of k=2; pass^1 0.75 over 4 case(s) at the common depth" in text
+    assert "ran each case twice over 4 case(s); pass^1 62.5% over 4 case(s) at the common depth" in text
+    assert "ran each case once over 4 case(s), 4 short of k=2; pass^1 75% over 4 case(s) at the common depth" in text
     assert "On subject Test subject, pass^2 is unmeasured for haiku" in text
 
 

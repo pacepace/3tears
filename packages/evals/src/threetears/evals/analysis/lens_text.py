@@ -17,7 +17,9 @@ from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
-from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
@@ -58,8 +60,18 @@ def _pass_hat_k_text(
     """
     if n_cases < MIN_CASES:
         return f"pass^{k} over {n_cases} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
-    interval = f" [{forms.lone(low).text}, {forms.lone(high).text}]" if low is not None and high is not None else ""
-    return f"pass^{k} {forms.lone(value).text}{interval} over {n_cases} case(s)"
+    interval = (
+        f" ({interval_beside(_pass_k(low, forms).digits, _pass_k(high, forms).digits)})"
+        if low is not None and high is not None
+        else ""
+    )
+    return f"pass^{k} {_pass_k(value, forms).text}{interval} over {n_cases} case(s)"
+
+
+def _pass_k(value: float | None, forms: PageForms) -> Printed:
+    """A pass^k of the trials' pass, as every surface prints one (:meth:`PageForms.pass_k`): a point's, its interval's
+    ends, its model's, its reading at the common depth, a cell's own and the bar it is read against alike."""
+    return forms.pass_k(TRIAL_PASS_NAME, value, kind="trial")
 
 
 #: The frontier text's depth lines, each one template: a subject's place, a contestant's delivered depth, the cases it
@@ -90,10 +102,10 @@ def _point_depth(point: FrontierPoint, subject: SubjectFrontier, forms: PageForm
     if point.n_cases_short_of_k:
         said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
     if (model := point.model_pass_hat_k) is not None:
-        said += POINT_MODEL.format(k=model.k, value=forms.lone(model.pass_hat_k).text, assumes=model.assumes)
+        said += POINT_MODEL.format(k=model.k, value=_pass_k(model.pass_hat_k, forms).text, assumes=model.assumes)
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
         said += POINT_COMMON.format(
-            k=subject.common_depth, value=forms.lone(point.common_pass_hat_k).text, cases=point.n_common_cases
+            k=subject.common_depth, value=_pass_k(point.common_pass_hat_k, forms).text, cases=point.n_common_cases
         )
     return said
 
@@ -101,7 +113,7 @@ def _point_depth(point: FrontierPoint, subject: SubjectFrontier, forms: PageForm
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
     forms = PageForms.off_page()
-    bar = "no bar, so no verdict" if result.bar is None else f"bar {forms.lone(result.bar).text} on pass^k"
+    bar = "no bar, so no verdict" if result.bar is None else f"bar {_pass_k(result.bar, forms).text} on pass^k"
     lines = [
         f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
         f"{result.n_filtered_out} filtered out",

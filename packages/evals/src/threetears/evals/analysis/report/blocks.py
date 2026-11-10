@@ -15,7 +15,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import ConfigDict, Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, ModelWrapValidatorHandler, ValidationError, model_validator
 
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
 from threetears.evals.analysis.quantities import (
@@ -741,6 +741,32 @@ class TableBlock(_Block):
         ),
     )
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _a_refused_cell_names_its_table(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        """Name the table, row and column of each cell refused while a table is read from data (a stored page, a
+        host's), which a cell's own refusal cannot know, so a host can find it. A cell built on its own is refused by
+        what it holds (its value and unit).
+
+        :raises ValueError: Every refusal is a cell's; each is named in the table.
+        """
+        try:
+            return handler(data)
+        except ValidationError as error:
+            name = data.get("name") if isinstance(data, Mapping) else None
+            refused = error.errors()
+            if not isinstance(name, str) or not all(
+                len(found["loc"]) >= 3 and found["loc"][0] == "rows" for found in refused
+            ):
+                raise
+            raise ValueError(
+                "; ".join(
+                    f"table {name!r}, row {found['loc'][1]}, column {found['loc'][2]!r}: "
+                    f"{found.get('ctx', {}).get('error', found['msg'])}"
+                    for found in refused
+                )
+            ) from error
+
     @model_validator(mode="after")
     def _rows_fit_the_table(self) -> Self:
         """Refuse a table showing more rows than it has, or a row keying other columns than the table's.
@@ -1224,7 +1250,7 @@ class ChartBlock(_Block):
                 [
                     point.arm,
                     said(point.cost),
-                    f"{said(point.cost_low)} to {said(point.cost_high)}",
+                    interval_beside(said(point.cost_low), said(point.cost_high)),
                     point.pass_rate_text or interval_value_text(point.pass_rate, PERCENT),
                     point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
@@ -1288,7 +1314,7 @@ def interval_text(low: float, high: float, unit: str = "") -> str:
     :return: The text.
     :rtype: str
     """
-    return f"{number_in(low, unit)} to {number_in(high, unit)}"
+    return interval_beside(number_in(low, unit), number_in(high, unit))
 
 
 class TrialBlock(_Block):

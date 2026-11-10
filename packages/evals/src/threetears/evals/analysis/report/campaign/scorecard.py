@@ -50,6 +50,7 @@ from threetears.evals.analysis.campaign_readings import (
     CampaignReadings,
     MeasureReading,
     PairReading,
+    reading_reason,
 )
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
@@ -92,9 +93,9 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
 from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
-from threetears.evals.analysis.report.words import PASS_RATE, reason_words
+from threetears.evals.analysis.report.words import PASS_RATE, judged_name, reason_words
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, humanize
+from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
 
@@ -1074,7 +1075,7 @@ def _reconciled(
     if comparison.reading == "trial":
         reading = "the pass rate"
     elif comparison.reading == "judged":
-        reading = humanize("dimension", comparison.name)
+        reading = judged_name(comparison.name)
     else:
         reading = measure_name_of(bundle, comparison.name)
     # Each interval by what it guarantees, never its own adjusted level (owner ruling, level in headings): the row's at
@@ -1217,20 +1218,23 @@ def _sizings(
     its arm, each counted as the aspect's own page counts it."""
     found: list[_Sizing] = []
     own: _Sizing | None = None
+    bundle = reports[row.aspect].bundle
     if row.reading == "unclear" and row.margin is not None:
+        # The reason read again with its figures as numbers, so it reads in this page's forms as the floors' rows
+        # below do; the frozen text the readings carry is the fingerprint's, not the page's.
+        why = forms.said(reading_reason(row, bundle, control_label=readings.control_label))
         own = _Sizing(
             aspect=row.aspect,
             arm=row.arm_label,
             shows=f"no worse than the {forms.declared(row.margin).text}-point margin",
             decided_by=PASS_RATE,
-            why=reason_words(row.reason) or "",
+            why=reason_words(why) or "",
             projection=row.projection,
         )
         found.append(own)
     control = readings.control
     if control is None:
         return found
-    bundle = reports[row.aspect].bundle
     figures = floor_readings(bundle, control, row.arm, check_names=bundle.named_checks())
     per_case = case_cost_usd(bundle)
     for status in readings.floors:

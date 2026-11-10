@@ -115,6 +115,7 @@ __all__ = [
     "campaign_aggregate",
     "campaign_kind",
     "campaign_readings",
+    "reading_reason",
 ]
 
 #: The fields of the readings that hold an arm's label, which :meth:`CampaignReadings.relabelled` prints by a name.
@@ -758,7 +759,8 @@ class _Row:
     margin: float | None
     control_key: str
     control_label: str
-    arm: CampaignArm
+    arm_key: str
+    arm_label: str
     base: FloorReadings
     rate: RateReading
     confirmatory: bool
@@ -830,7 +832,7 @@ class _Row:
             rate = self.at(confidence)
             readings = replace(self.base, rates=(rate,), confidence=confidence)
             floor = Floor(aspect=self.aspect, clause=RateDrop(max_points=self.margin))
-            verdict = read_floor(floor, readings, control=self.control_label, candidate=self.arm.label)
+            verdict = read_floor(floor, readings, control=self.control_label, candidate=self.arm_label)
             self.drops[confidence] = (verdict.outcome, verdict.reason)
         return self.drops[confidence]
 
@@ -903,7 +905,7 @@ def _families(rows: Sequence[_Row], keep: Callable[[_Row], bool]) -> list[list[i
     by_arm: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
         if keep(row):
-            by_arm.setdefault(row.arm.variant_key, []).append(index)
+            by_arm.setdefault(row.arm_key, []).append(index)
     return list(by_arm.values())
 
 
@@ -1007,6 +1009,65 @@ def _level(level: float) -> SaidFigure:
     return SaidFigure(level, "level")
 
 
+def _row_reason(row: _Row, reading: ShownReading, gain_level: float | None, drop_level: float | None) -> Said:
+    """Why ``row`` reads as ``reading``, its gains and its drops read at the levels their families read them at (None
+    where a family holds no such row): :func:`_reason` on the floor's own readings at those levels."""
+    within_reason = row.drop_verdict(INTERVAL_LEVEL)[1] if row.drop_tested() else Said()
+    drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else Said()
+    return _reason(
+        row,
+        reading,
+        gain_level or row.rate.confidence or INTERVAL_LEVEL,
+        drop_level or INTERVAL_LEVEL,
+        drop_reason,
+        within_reason,
+    )
+
+
+def reading_reason(reading: AspectReading, bundle: AnalysisContextBundle, *, control_label: str) -> Said:
+    """Why one row reads as it does, read again from its aspect's evidence with its figures held as numbers, so a page
+    states it in its own forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`) where the readings
+    freeze it as text (:attr:`AspectReading.reason`, which the campaign's fingerprint reads). The same sentence the
+    readings froze, from the same evidence, at the levels the row records, each arm named as ``reading`` and
+    ``control_label`` name it (a page's relabelled readings name each by its printed name).
+
+    :param reading: The row, as read (relabelled for print or not).
+    :ptype reading: AspectReading
+    :param bundle: The evidence of the row's aspect, the bundle the row was read from.
+    :ptype bundle: AnalysisContextBundle
+    :param control_label: What the sentence calls the control.
+    :ptype control_label: str
+    :return: The reason.
+    :rtype: Said
+    :raises ValueError: The bundle reads another aspect, its control did not run, or it holds no pass rate for the
+        row's two arms: no row was read from it.
+    """
+    control_key = _bundle_control(bundle)
+    if bundle.aspect != reading.aspect or control_key is None:
+        raise ValueError(f"the bundle of aspect {bundle.aspect!r} holds no row of aspect {reading.aspect!r}")
+    base = floor_readings(bundle, control_key, reading.arm)
+    rate = next((rate for rate in base.rates if rate.measure is None), None)
+    if rate is None:
+        raise ValueError(f"the bundle of aspect {bundle.aspect!r} holds no pass rate for {reading.arm_label}")
+    row = _Row(
+        aspect=reading.aspect,
+        margin=reading.margin,
+        control_key=control_key,
+        control_label=control_label,
+        arm_key=reading.arm,
+        arm_label=reading.arm_label,
+        base=base,
+        rate=rate,
+        confirmatory=reading.confirmatory,
+        per_case_usd=case_cost_usd(bundle),
+        rigs=_shared_rigs(bundle, control_key, reading.arm),
+        levels={},
+        drops={},
+        depths=_depths(bundle),
+    )
+    return _row_reason(row, reading.reading, reading.gain_confidence, reading.drop_confidence)
+
+
 def _reason(
     row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: Said, within_reason: Said
 ) -> Said:
@@ -1015,7 +1076,7 @@ def _reason(
     whose interval reaches both sides, the floor's reason for what keeps the drop from being shown within it. Its
     figures are held as numbers; the readings freeze it as text (:meth:`~threetears.evals.analysis.report.said.Said.
     stored`)."""
-    arm, control = row.arm.label, row.control_label
+    arm, control = row.arm_label, row.control_label
     if reading == "better":
         return Said.of(f"{arm}'s gain over {control} is shown: its whole interval is above zero")
     if reading == "worse":
@@ -1170,7 +1231,8 @@ def campaign_readings(
                     margin=aspect.margin,
                     control_key=control_key,
                     control_label=control.label,
-                    arm=arm,
+                    arm_key=arm.variant_key,
+                    arm_label=arm.label,
                     base=memo.readings(bundle, control_key, arm.variant_key),
                     rate=rate,
                     confirmatory=bundle.question_declared,
@@ -1197,7 +1259,7 @@ def campaign_readings(
         gain, drop = gains.get(index), drops.get(index)
         gained, dropped = gain is not None and gain.shown, drop is not None and drop.shown
         # The nominal level's reading is the floor's own: held is the drop shown within the margin, uncorrected.
-        within, within_reason = row.drop_verdict(INTERVAL_LEVEL) if drop_kept(row) else ("unclear", Said())
+        within = row.drop_verdict(INTERVAL_LEVEL)[0] if drop_kept(row) else "unclear"
         # A gain and a drop past the margin on one estimate's two intervals would contradict each other; should the
         # two ever both be shown, neither is claimed.
         reading: ShownReading
@@ -1209,7 +1271,6 @@ def campaign_readings(
             reading = "unclear"
         gain_level = gain.level if gain is not None else None
         drop_level = drop.level if drop is not None else None
-        drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else Said()
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
         within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
@@ -1222,8 +1283,8 @@ def campaign_readings(
         readings.append(
             AspectReading(
                 aspect=row.aspect,
-                arm=row.arm.variant_key,
-                arm_label=row.arm.label,
+                arm=row.arm_key,
+                arm_label=row.arm_label,
                 change=_change(row.rate),
                 rig=_rig_read(row.rate, row.rigs),
                 gain_interval=_points(gain_rate),
@@ -1244,23 +1305,16 @@ def campaign_readings(
                 arm_passed=row.rate.candidate_passed,
                 arm_trials=row.rate.candidate_n,
                 projection=projection,
-                reason=_reason(
-                    row,
-                    reading,
-                    gain_level or row.rate.confidence or INTERVAL_LEVEL,
-                    drop_level or INTERVAL_LEVEL,
-                    drop_reason,
-                    within_reason,
-                ).stored(),
+                reason=_row_reason(row, reading, gain_level, drop_level).stored(),
                 confirmatory=row.confirmatory,
                 control_depth=row.depths.get(row.control_key),
-                arm_depth=row.depths.get(row.arm.variant_key),
+                arm_depth=row.depths.get(row.arm_key),
                 depth_differs=_depth_differs(row.rate),
-                precision=_precision(row.rate, (row.control_key, row.arm.variant_key)),
+                precision=_precision(row.rate, (row.control_key, row.arm_key)),
             )
         )
     floors = [
-        evaluate_floor(floor, row.base, arm=row.arm.variant_key, arm_label=row.arm.label, control_label=control.label)
+        evaluate_floor(floor, row.base, arm=row.arm_key, arm_label=row.arm_label, control_label=control.label)
         for floor in campaign.floors
         for row in rows
         if row.aspect == floor.aspect
