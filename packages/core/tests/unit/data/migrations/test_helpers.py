@@ -33,6 +33,7 @@ from threetears.core.data.migrations.helpers import (
     InboundFk,
     add_check_constraint,
     add_column_with_backfill,
+    UniqueIndexBuildFailedError,
     add_index,
     add_partition_column,
     create_policy_if_not_exists,
@@ -450,6 +451,83 @@ class TestAddIndex:
         sql = store.executed[-1][0]
         assert "WHERE" in sql
         assert "status = 'active'" in sql
+
+
+class _RefusedBuild(Exception):
+    """a driver's error carrying a SQLSTATE, as asyncpg's do."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"refused ({sqlstate})")
+        self.sqlstate = sqlstate
+
+
+class _RefusingBuildStore(FakeDataStore):
+    """store whose CREATE raises ``error``; its invalid-index probe finds one row once the build has failed when
+    ``left_invalid``, as YugabyteDB's online build leaves the index behind."""
+
+    def __init__(self, error: _RefusedBuild, *, left_invalid: bool) -> None:
+        super().__init__()
+        self._error = error
+        self._left_invalid = left_invalid
+        self._built = False
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """
+        refuse the create; answer the probe by whether the failed build left the index invalid.
+
+        :param sql: SQL statement text
+        :ptype sql: str
+        :param params: positional statement parameters
+        :ptype params: Any
+        :return: status tag
+        :rtype: str
+        """
+        result = await super().execute(sql, *params)
+        if sql.startswith("CREATE "):
+            self._built = True
+            raise self._error
+        if "NOT i.indisvalid" in sql and self._built and self._left_invalid:
+            result = "SELECT 1"
+        return result
+
+
+class TestAUniqueBuildThatMeetsDuplicatesFailsByName:
+    """a unique build refused for duplicate rows raises one named error on PostgreSQL and YugabyteDB alike."""
+
+    async def test_a_unique_violation_is_named(self) -> None:
+        refused = _RefusedBuild("23505")
+        with pytest.raises(UniqueIndexBuildFailedError, match="s.ux_t_c") as failed:
+            await add_index(
+                _RefusingBuildStore(refused, left_invalid=False),
+                table="t",
+                name="ux_t_c",
+                columns=("c",),
+                unique=True,
+                schema="s",
+            )
+        assert failed.value.index == "s.ux_t_c"
+        assert failed.value.error is refused and failed.value.__cause__ is refused
+
+    async def test_yugabytes_internal_error_that_leaves_the_index_invalid_is_named(self) -> None:
+        refused = _RefusedBuild("XX000")
+        with pytest.raises(UniqueIndexBuildFailedError) as failed:
+            await add_index(
+                _RefusingBuildStore(refused, left_invalid=True), table="t", name="ux_t_c", columns=("c",), unique=True
+            )
+        assert failed.value.index == "ux_t_c" and failed.value.error is refused
+
+    async def test_any_other_internal_error_is_raised_untouched(self) -> None:
+        refused = _RefusedBuild("XX000")
+        with pytest.raises(_RefusedBuild) as raised:
+            await add_index(
+                _RefusingBuildStore(refused, left_invalid=False), table="t", name="ux_t_c", columns=("c",), unique=True
+            )
+        assert raised.value is refused
+
+    async def test_a_non_unique_build_s_failure_is_raised_untouched(self) -> None:
+        refused = _RefusedBuild("XX000")
+        with pytest.raises(_RefusedBuild):
+            await add_index(_RefusingBuildStore(refused, left_invalid=True), table="t", name="ix_t_c", columns=("c",))
 
 
 # ---------------------------------------------------------------------------

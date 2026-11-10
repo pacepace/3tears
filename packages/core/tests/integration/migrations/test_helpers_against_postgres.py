@@ -29,6 +29,7 @@ import asyncpg
 import pytest
 from threetears.core.data.migrations.helpers import (
     InboundFk,
+    UniqueIndexBuildFailedError,
     add_check_constraint,
     add_column_with_backfill,
     add_index,
@@ -479,15 +480,24 @@ async def test_add_index_rebuilds_an_invalid_index_a_failed_build_left(
     """
     await pg_conn.execute("CREATE TABLE u (id INT PRIMARY KEY, c INT)")
     await pg_conn.execute("INSERT INTO u VALUES (1, 7), (2, 7)")
-    with pytest.raises(asyncpg.UniqueViolationError):
+    # the leftover a failed online build leaves: PostgreSQL refuses the build with a unique violation (23505),
+    # YugabyteDB 2026.1 with its generic internal error (XX000); either way the index stays, not valid
+    with pytest.raises(asyncpg.PostgresError) as leftover:
         await pg_conn.execute("CREATE UNIQUE INDEX CONCURRENTLY ux_u_c ON u (c)")
+    assert leftover.value.sqlstate in ("23505", "XX000")
     assert await _index_validity(pg_conn, "ux_u_c") is False
 
-    await pg_conn.execute("DELETE FROM u WHERE id = 2")
     store = _AsyncpgStore(pg_conn)
+    # while the duplicates stand, the rebuild fails by name on either backend
+    with pytest.raises(UniqueIndexBuildFailedError, match="ux_u_c") as failed:
+        await add_index(store, table="u", name="ux_u_c", columns=("c",), unique=True)
+    assert isinstance(failed.value.error, asyncpg.PostgresError)
+
+    await pg_conn.execute("DELETE FROM u WHERE id = 2")
     await add_index(store, table="u", name="ux_u_c", columns=("c",), unique=True)
 
     assert await _index_validity(pg_conn, "ux_u_c") is True
+    # an ordinary duplicate insert is a unique violation (23505) on both backends
     with pytest.raises(asyncpg.UniqueViolationError):
         await pg_conn.execute("INSERT INTO u VALUES (3, 7)")
 

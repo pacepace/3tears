@@ -27,6 +27,7 @@ from collections.abc import Sequence
 from typing import Any, Final
 
 from threetears.core.process_workers import ProcessWorkers
+from threetears.observe import BuildOnce, contain, get_logger
 from threetears.langgraph.anonymize import (
     MetadataKeyClassification,
     anonymize_checkpoint_value,
@@ -48,8 +49,17 @@ type StoredBlob = tuple[str, bytes, bool]
 #: it would not)
 type BlobOutcome = tuple[bytes | None, str, str]
 
-#: each worker's serializers, made once per class
-_serdes: dict[type[Any], Any] = {}
+#: each worker's serializers, made once per class, keyed by its qualified name (a class is no Hashable to the type
+#: checker)
+_serdes: BuildOnce[str, Any] = BuildOnce()
+
+#: what a worker logs for a blob its serializer could not decode or re-encode; the caller reports the row
+_SERDE_FAILED: Final = (
+    "a stored checkpoint blob's serializer failed in an anonymize worker; the blob is answered as failed and the "
+    "calling process reports its row"
+)
+
+log = get_logger(__name__)
 
 #: the processes every saver in this process shares (:class:`~threetears.core.process_workers.ProcessWorkers`)
 _workers = ProcessWorkers(workers=ANONYMIZE_WORKERS, name="checkpoint-anonymize")
@@ -77,9 +87,7 @@ def anonymize_blobs(
     :return: each blob's outcome, in order, and every turn-metadata key the classification does not name
     :rtype: tuple[list[BlobOutcome], frozenset[str]]
     """
-    serde = _serdes.get(serde_type)
-    if serde is None:
-        serde = _serdes[serde_type] = serde_type()
+    serde = _serdes.get(f"{serde_type.__module__}.{serde_type.__qualname__}", serde_type)
     classification = MetadataKeyClassification(identifying=identifying, kept=kept)
     outcomes: list[BlobOutcome] = []
     unclassified: set[str] = set()
@@ -87,6 +95,7 @@ def anonymize_blobs(
         try:
             decoded = serde.loads_typed((type_tag, blob))
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the serde protocol has no error contract; answered as this blob's failure and reported by the caller, never silent
+            contain(exc, log=log, what=_SERDE_FAILED)
             outcomes.append((None, type(exc).__name__, ""))
             continue
         unclassified |= unclassified_metadata_keys(decoded, is_metadata=is_metadata, classification=classification)
@@ -97,6 +106,7 @@ def anonymize_blobs(
         try:
             new_type, new_blob = serde.dumps_typed(rewritten)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the serde protocol has no error contract; answered as this blob's failure and reported by the caller, never silent
+            contain(exc, log=log, what=_SERDE_FAILED)
             outcomes.append((None, type(exc).__name__, ""))
             continue
         # rewriting it under another tag would leave a row the graph reads with the wrong decoder

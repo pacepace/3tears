@@ -251,6 +251,7 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
             settled=lambda: asyncio.sleep(0, 1),
             generation=log.current,
             changes=log,
+            stamp_table="scope_epochs",
         )
         follower.register()
         await follower.warm()
