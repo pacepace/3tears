@@ -50,6 +50,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.base import UnsupportedL1ColumnError  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement  # noqa: E402
+from threetears.core.testing.duckdb_fill import fill_table  # noqa: E402
 from threetears.core.utils.cpu_quota import effective_cpu_count  # noqa: E402
 
 
@@ -887,11 +888,11 @@ class TestKeylessTables:
             {"county": "c2", "state": "TX", "votes": 6},
         ]
 
-    def test_replace_all_and_a_replacement_of_rows_hold_exactly_what_they_give(self) -> None:
+    def test_a_fill_and_a_replacement_of_rows_hold_exactly_what_they_give(self) -> None:
         from threetears.core.cache.duckdb import PartitionReplacement
 
         backend = _keyless_backend()
-        backend.replace_all("results", [_result("r1", "c1", "TX", 1), _result("r1", "c1", "TX", 2)], _KEY)
+        fill_table(backend, "results", [_result("r1", "c1", "TX", 1), _result("r1", "c1", "TX", 2)], _KEY)
         assert backend.execute_query("SELECT votes FROM results") == [{"votes": 2}]
         backend.replace_partitions(
             [
@@ -921,7 +922,7 @@ class TestKeylessTables:
         source = _partitioned_backend()
         source.upsert_many("results", [_result("r1", "c1", "TX", 10), _result("r2", "c1", "TX", 20)], _KEY)
         chunk = source.export_partition("results", "state", "TX", order_by=_KEY)
-        source.replace_all("results", [_result("r3", "c3", "TX", 30)], _KEY)
+        fill_table(source, "results", [_result("r3", "c3", "TX", 30)], _KEY)
         piece = source.export_partition("results", "state", "TX", order_by=_KEY)
 
         backend = _keyless_backend()

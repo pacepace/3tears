@@ -1,5 +1,5 @@
-"""The parts a complete-copy L1 is built from: the key fingerprint, DuckDB's whole-table replace,
-the stored keys a copy is checked by, and a collection telling its listeners a row left its L1."""
+"""The parts an L1 copy is built from: the key fingerprint, a test's whole-table fill (``fill_table``), the keys
+as DuckDB stores them, and a collection telling its listeners a row left its L1."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from threetears.core.fingerprint import key_fingerprint, postgres_fingerprint_sq
 duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.testing.duckdb_fill import fill_table  # noqa: E402
 
 
 def _metadata() -> MetaData:
@@ -67,12 +68,15 @@ class TestKeyFingerprint:
             relation_key_expression([])
 
 
-class TestReplaceAll:
+class TestFillTable:
     def test_the_table_holds_exactly_the_rows_given(self, backend: Any) -> None:
         at = datetime(2026, 11, 4, 3, 57, 11, tzinfo=UTC)
         backend.upsert_many("results", [{"race": "old", "at": at, "votes": 1}], ("race", "at"))
-        written = backend.replace_all(
-            "results", [{"race": "VA", "at": at, "votes": 5}, {"race": "MD", "at": at, "votes": 7}], ("race", "at")
+        written = fill_table(
+            backend,
+            "results",
+            [{"race": "VA", "at": at, "votes": 5}, {"race": "MD", "at": at, "votes": 7}],
+            ("race", "at"),
         )
         held = backend.execute_query("SELECT race, votes FROM results ORDER BY race")
         assert written == 2
@@ -81,18 +85,18 @@ class TestReplaceAll:
     def test_no_rows_empties_the_table(self, backend: Any) -> None:
         at = datetime(2026, 11, 4, tzinfo=UTC)
         backend.upsert_many("results", [{"race": "old", "at": at, "votes": 1}], ("race", "at"))
-        backend.replace_all("results", [], ("race", "at"))
+        fill_table(backend, "results", [], ("race", "at"))
         assert backend.execute_query("SELECT COUNT(*) AS n FROM results") == [{"n": 0}]
 
     def test_an_unknown_table_is_refused(self, backend: Any) -> None:
         with pytest.raises(ValueError, match="unknown table"):
-            backend.replace_all("nope", [], ("id",))
+            fill_table(backend, "nope", [], ("id",))
 
     def test_a_failing_insert_leaves_the_rows_held_before(self, backend: Any) -> None:
         at = datetime(2026, 11, 4, tzinfo=UTC)
         backend.upsert_many("results", [{"race": "old", "at": at, "votes": 1}], ("race", "at"))
         with pytest.raises(duckdb.Error):
-            backend.replace_all("results", [{"race": "VA", "at": at, "votes": "not a number"}], ("race", "at"))
+            fill_table(backend, "results", [{"race": "VA", "at": at, "votes": "not a number"}], ("race", "at"))
         assert backend.execute_query("SELECT race FROM results") == [{"race": "old"}]
 
 
@@ -100,7 +104,7 @@ class TestStoredKeys:
     def test_keys_come_back_as_stored_and_match_the_values_serialized(self, backend: Any) -> None:
         at = datetime(2026, 11, 4, 3, 57, 11, tzinfo=UTC)
         backend.upsert_many("results", [{"race": "VA", "at": at, "votes": 5}], ("race", "at"))
-        stored = backend.stored_keys("results", ("race", "at"))
+        stored = [tuple(row.values()) for row in backend.execute_arrow("SELECT race, at FROM results").to_pylist()]
         assert stored == [("VA", backend.serialize_value(at, "VARCHAR_DATETIME"))]
         # in the spelling a change record names the key in (key_text), so an eviction by that text finds the row
         assert key_fingerprint(stored) == key_fingerprint([("VA", key_text(at))])
