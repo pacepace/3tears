@@ -24,9 +24,10 @@ _SWEEP = "src/app.py::sweep"
 _DDL = f"""
 CREATE TABLE results (state TEXT, geo TEXT, id BIGINT, stamp TIMESTAMPTZ, kind TEXT, PRIMARY KEY (state, geo, id));
 CREATE TABLE leases (purpose TEXT, key TEXT, expires_at TIMESTAMPTZ, PRIMARY KEY (purpose, key));
+CREATE TABLE tenant_leases (customer_id UUID, key TEXT, expires_at TIMESTAMPTZ, PRIMARY KEY (customer_id, key));
 -- purpose: {_SWEEP}
 -- plan_test: tests/test_app.py::test_sweep_plan
-CREATE INDEX leases_by_expiry ON leases (purpose, expires_at);
+CREATE INDEX tenant_leases_by_expiry ON tenant_leases (customer_id, expires_at);
 CREATE TABLE grants (who TEXT, state TEXT, PRIMARY KEY (who, state));
 """
 
@@ -80,10 +81,19 @@ def test_a_helper_naming_a_key_is_keyed(code: str, schema: SchemaCatalog) -> Non
     assert judged and all(findings == [] for findings in judged), judged
 
 
-def test_a_sweep_is_keyed_through_the_index_naming_its_caller(schema: SchemaCatalog) -> None:
-    """Flips if a sweep passes without its purposed index, or fails with it."""
+def test_a_sweep_of_a_key_prefix_is_keyed_anywhere(schema: SchemaCatalog) -> None:
+    """Flips if a sweep binding a key prefix (purpose leads leases' key) is refused outside a purposed index."""
     code = (
         'delete_before(c, "leases", key=["purpose", "key"], column="expires_at", before=t, page=5, by={"purpose": p})'
+    )
+    assert _judged(code, schema, "src/app.py::elsewhere") == [[]]
+
+
+def test_a_tenant_sweep_is_keyed_only_through_the_index_naming_its_caller(schema: SchemaCatalog) -> None:
+    """Flips if a sweep bound only by its tenant passes without its purposed index, or fails with it."""
+    code = (
+        'delete_before(c, "tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, page=5, '
+        'by={"customer_id": p})'
     )
     assert _judged(code, schema, _SWEEP) == [[]]
     assert _judged(code, schema, "src/app.py::elsewhere") != [[]]
