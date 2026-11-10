@@ -330,7 +330,7 @@ class CheckpointAnonymization:
     unclassified_metadata_keys: tuple[str, ...] = ()
 
 
-def anonymize_checkpoint_value(value: Any) -> Any:
+def anonymize_checkpoint_value(value: Any, *, classification: MetadataKeyClassification | None = None) -> Any:
     """a stored checkpoint value with every identifying field anonymized.
 
     walks mappings, lists, tuples and langchain messages. keeps every key, every id,
@@ -339,14 +339,18 @@ def anonymize_checkpoint_value(value: Any) -> Any:
     equality. pure: the input is never mutated. idempotent: the marker is replaced by
     itself.
 
-    the identifying keys are :func:`metadata_key_classification`'s, read once per call.
+    the identifying keys are ``classification``'s when one is given -- a worker process applying
+    the classification its caller took (declarations are per process) -- else
+    :func:`metadata_key_classification`'s, read once per call.
 
     :param value: a deserialized checkpoint, checkpoint metadata, or pending-write value
     :ptype value: Any
+    :param classification: the classification to apply; None for this process's
+    :ptype classification: MetadataKeyClassification | None
     :return: the value with every identifying field set to the marker
     :rtype: Any
     """
-    return _anonymized(value, metadata_key_classification().identifying)
+    return _anonymized(value, (classification or metadata_key_classification()).identifying)
 
 
 def _anonymized(value: Any, identifying: frozenset[str]) -> Any:
@@ -376,7 +380,9 @@ def _anonymized(value: Any, identifying: frozenset[str]) -> Any:
     return result
 
 
-def unclassified_metadata_keys(value: Any, *, is_metadata: bool = False) -> frozenset[str]:
+def unclassified_metadata_keys(
+    value: Any, *, is_metadata: bool = False, classification: MetadataKeyClassification | None = None
+) -> frozenset[str]:
     """every turn-metadata key in a stored value that no classification names.
 
     turn metadata is a mapping stored under the :data:`METADATA_CHANNEL` key, at any depth --
@@ -388,17 +394,20 @@ def unclassified_metadata_keys(value: Any, *, is_metadata: bool = False) -> froz
     mapping stored under a ``metadata`` key that is not turn metadata has its keys reported
     too, which costs a line in a report rather than a key missed.
 
-    a key is classified when :func:`metadata_key_classification` names it, read once per call:
-    the built-in sets plus every declaration this process has made.
+    a key is classified when ``classification`` names it, when one is given, else when
+    :func:`metadata_key_classification` does, read once per call: the built-in sets plus every
+    declaration this process has made.
 
     :param value: a deserialized checkpoint, checkpoint metadata, or pending-write value
     :ptype value: Any
     :param is_metadata: whether *value* itself is the metadata channel's value
     :ptype is_metadata: bool
+    :param classification: the classification to apply; None for this process's
+    :ptype classification: MetadataKeyClassification | None
     :return: the keys no classification names
     :rtype: frozenset[str]
     """
-    return _unclassified(value, metadata_key_classification(), is_metadata=is_metadata)
+    return _unclassified(value, classification or metadata_key_classification(), is_metadata=is_metadata)
 
 
 def _unclassified(value: Any, classification: MetadataKeyClassification, *, is_metadata: bool) -> frozenset[str]:
