@@ -141,7 +141,7 @@ def cite(key: str, report_input: ReportInput, *, forms: PageForms | None = None)
     )
 
 
-def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
+def cite_if(key: str, report_input: ReportInput, *, forms: PageForms | None = None) -> CitedFigure | None:
     """The figure a key names, or ``None`` when the input leaves that figure unstated.
 
     For a tool listing what an input holds, where a figure one arm or aspect lacks (an interval the pipeline did not
@@ -152,12 +152,15 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
     :ptype key: str
     :param report_input: The frozen report input the tool reads.
     :ptype report_input: ReportInput
+    :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints (:func:`cite`);
+        None for the input's own, built for this figure alone.
+    :ptype forms: PageForms | None
     :return: The figure, or ``None`` when the input does not state it.
     :rtype: CitedFigure | None
     :raises UnresolvableReference: The key names nothing the input holds, or reads two ways.
     """
     try:
-        return cite(key, report_input)
+        return cite(key, report_input, forms=forms)
     except UnstatedFigure:
         # NOSILENT: an unstated figure is an expected condition, the input's shape and not a fault: a listing shows the
         # figure as absent, which is what None says to its caller. Every other refusal is raised.
