@@ -158,6 +158,8 @@ class SourceTokenFence:
     def __init__(self, transaction: Transaction, *, table: str, signal: str) -> None:
         self._transaction = transaction
         self._table = f'"{table}"'
+        #: the table's key (:func:`source_tokens_schema`): a fence's row is read by it
+        self._key_column = _SIGNAL
         self._signal = signal
 
     @asynccontextmanager
@@ -220,7 +222,7 @@ class SourceTokenFence:
         :rtype: SourceToken | None
         """
         row = await conn.fetchrow(
-            f"SELECT {_RUN_ID}, {_AS_OF} FROM {self._table} WHERE {_SIGNAL} = $1",  # noqa: S608 - the owner's own table
+            f"SELECT {_RUN_ID}, {_AS_OF} FROM {self._table} WHERE {self._key_column} = $1",  # noqa: S608 - the owner's own table
             self._signal,
         )
         return None if row is None else SourceToken(run_id=int(row[_RUN_ID]), as_of=_as_datetime(row[_AS_OF]))
