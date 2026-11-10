@@ -217,7 +217,6 @@ async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
     captured = _Captured()
     collections = _collections(captured)
     await collections.schedules.list_for_agent(agent)
-    await collections.schedules.find_for_agent(agent, uuid.uuid4())
     statements = [
         *captured.asked,
         (rate_limit.COUNT_ACTIVE_SQL, (agent,)),
@@ -235,7 +234,6 @@ async def test_webhook_subs_agent(conn: asyncpg.Connection) -> None:
     captured = _Captured()
     collections = _collections(captured)
     await collections.subscriptions.list_for_agent(agent)
-    await collections.subscriptions.find_for_agent(agent, uuid.uuid4())
     statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)

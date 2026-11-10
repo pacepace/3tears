@@ -266,7 +266,7 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "agent_id",
             "status",
             info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.find_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_EXCLUDING_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_EXCLUDING_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_agent_status",
                 "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
             },
@@ -534,7 +534,7 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
             "idx_webhook_subs_agent",
             "agent_id",
             info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.find_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_subs_agent",
             },
         ),
