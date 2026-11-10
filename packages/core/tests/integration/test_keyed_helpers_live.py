@@ -228,14 +228,6 @@ class TestReadKeyed:
         _plans_ok(recorder, seeded)
 
 
-def _node_types(node: Any) -> set[str]:
-    """every node type of a plan (``EXPLAIN (FORMAT JSON)``'s root)."""
-    found = {str(node.get("Node Type"))}
-    for child in node.get("Plans", ()):
-        found |= _node_types(child)
-    return found
-
-
 class TestKeysetPage:
     async def test_a_page_reads_about_its_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a page reads the prefix whole (a sort of every row), PostgreSQL pages past the cursor other than
@@ -269,13 +261,14 @@ class TestKeysetPage:
         (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
         if seeded.yugabyte:
             # a hashed bucket is sought by the leading bound; a row comparison there reads it from its start
-            assert '(t."geo", t."id") >' not in plan.sql, plan.sql
+            assert ', t."id") >' not in plan.sql, plan.sql
         else:
             # PostgreSQL seeks the key's index by the row comparison: an index range in the page's order, never a
             # bitmap scan of every row past the lead and a sort of them
-            assert '(t."geo", t."id") > (' in plan.sql, plan.sql
+            # the pinned state leads the comparison: one range of the key's index
+            assert '(t."state", t."geo", t."id") > ($1, ' in plan.sql, plan.sql
             assert plan_uses_index(plan, "results_pkey"), plan.plan
-            nodes = _node_types(plan.plan)
+            nodes = set(_node_types(plan))
             assert not nodes & {"Sort", "Bitmap Heap Scan", "Bitmap Index Scan", "Incremental Sort"}, nodes
         last = first.rows[-1]
         baseline = await _bare(
@@ -298,6 +291,46 @@ class TestKeysetPage:
         )
         problem = _budget("keyset_page of 200 rows", took, baseline)
         assert problem is None, problem
+
+    async def test_a_pinned_column_leads_the_page_s_range_of_its_index(self, seeded: _Seeded) -> None:
+        """Flips if a page whose by= pins the column leading an index (kind, of a 50/50 split) reads by an index of
+        the sort's columns alone and filters (PostgreSQL picked the unique id index: 43 rows read for 21), rather
+        than one range of the composite index, reading at most a page and one row."""
+        await seeded.conn.execute(
+            "CREATE TABLE listed (kind TEXT NOT NULL, name TEXT NOT NULL, id BIGINT NOT NULL, PRIMARY KEY (id))"
+        )
+        await seeded.conn.execute("CREATE INDEX listed_by_kind_name ON listed (kind ASC, name ASC, id ASC)")
+        await seeded.conn.execute(
+            "INSERT INTO listed SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END, 'n' || lpad((i % 997)::text, 4, '0'), "
+            "i FROM generate_series(1, 20000) i"
+        )
+        await seeded.conn.execute("ANALYZE listed")
+        order = [Sort("name"), Sort("id", "bigint")]
+        first = await keyset_page(
+            seeded.conn, "listed", columns=["name", "id"], by={"kind": "a"}, order=order, limit=20
+        )
+        recorder = PlanRecorder(seeded.conn)
+        page = await keyset_page(
+            recorder,
+            "listed",
+            columns=["name", "id"],
+            by={"kind": "a"},
+            order=order,
+            limit=20,
+            cursor=first.next_cursor,
+        )
+        expected = await seeded.conn.fetch(
+            "SELECT name, id FROM listed WHERE kind = 'a' ORDER BY name, id OFFSET 20 LIMIT 20"
+        )
+        assert [(r["name"], r["id"]) for r in page.rows] == [(r["name"], r["id"]) for r in expected]
+        (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
+        assert plan_uses_index(plan, "listed_by_kind_name"), plan.plan
+        # PostgreSQL: one range, a page and one row. YugabyteDB seeks by the leading bound and filters the
+        # expansion in storage (threetears.core.keyset): it may read the cursor's name group again, never more
+        group = await seeded.conn.fetchval(
+            "SELECT max(n) FROM (SELECT count(*) AS n FROM listed WHERE kind = 'a' GROUP BY name) AS g"
+        )
+        assert plan.rows_scanned <= 21 + (group if seeded.yugabyte else 0), (plan, group)
 
 
 class TestCounts:

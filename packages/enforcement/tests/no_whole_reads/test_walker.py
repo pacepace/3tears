@@ -1043,6 +1043,18 @@ def test_a_purpose_may_name_several_reads_each_of_which_uses_the_index(tmp_path:
     assert not any("index-purpose-unused -- src/grants.py::one" in finding for finding in findings), findings
 
 
+def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:
+    """Flips if purpose=("<path>::<fn>", ...) is not read as the reads it names: both found and using the index
+    pass; neither using it is named, each one."""
+    _plans(tmp_path, "def test_both(plan):\n    assert plan_uses_index(plan, 'grants_by_agent')\n")
+    both = _TWO_READERS.replace("PURPOSE", '("src/grants.py::one", "src/grants.py::two")')
+    assert not [f for f in no_whole_reads_findings(_config(tmp_path, {"grants.py": both})) if ": index-" in f]
+    neither = _TWO_READERS.replace("PURPOSE", '("src/grants.py::neither", "src/grants.py::absent")')
+    findings = no_whole_reads_findings(_config(tmp_path, {"grants.py": neither}))
+    assert any("index-purpose-unused -- src/grants.py::neither" in finding for finding in findings), findings
+    assert any("index-purpose-unknown -- purpose 'src/grants.py::absent'" in finding for finding in findings), findings
+
+
 def test_a_second_declaration_of_an_index_carries_the_first_one_s_notes(tmp_path: Path) -> None:
     """Flips if a migration's CREATE INDEX of an index a TableSchema declares with its purpose is refused for having
     none, or if neither declaration names one and it passes."""

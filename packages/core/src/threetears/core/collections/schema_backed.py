@@ -32,6 +32,8 @@ CAS.
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import inspect
 import json
@@ -355,6 +357,10 @@ class IndexDef:
         range (``expires_at < $1``) or in order (``ORDER BY expires_at LIMIT``) with nothing bound before that column
         reads every row. Such an index names its first column here. Each name must also be in ``columns``, and in
         neither ``desc`` nor ``ops``.
+    :cvar collate: per-column collations, as ``(column_name, collation)`` pairs (``(("signal", "C"),)``): the
+        column is indexed ``COLLATE "C"``, so a range by byte order (a prefix read, ``signal >= $1 AND signal < $2
+        COLLATE "C"``) seeks it whatever the database's own collation; with ``asc`` it is range-sharded on
+        YugabyteDB. Each name must be in ``columns`` and carry no operator class; each collation a plain name.
     :cvar nulls_not_distinct: when ``True`` (a ``unique`` index only), two
         rows whose covered columns are both NULL collide, as
         ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
@@ -364,8 +370,8 @@ class IndexDef:
         the index alone. On YugabyteDB a read through an index that does
         not carry a column visits the table for each row, several times the
         index read's cost. none may also be in ``columns``.
-    :cvar purpose: ``<path>::<qualified function>`` of the one keyed read
-        that uses this index; the no-whole-reads rule
+    :cvar purpose: ``<path>::<qualified function>`` of the keyed read
+        that uses this index, or a tuple of them when it serves several; the no-whole-reads rule
         (:mod:`threetears.enforcement.no_whole_reads`) counts a read through
         it as keyed only in that function, and refuses an index with none.
         Not part of the DDL, so it never makes two indexes differ.
@@ -389,7 +395,8 @@ class IndexDef:
     nulls_not_distinct: bool = False
     include: tuple[str, ...] = ()
     asc: tuple[str, ...] = ()
-    purpose: str = field(default="", compare=False)
+    collate: tuple[tuple[str, str], ...] = ()
+    purpose: str | tuple[str, ...] = field(default="", compare=False)
     plan_test: str = field(default="", compare=False)
     reason: str = field(default="", compare=False)
 
@@ -438,6 +445,16 @@ class IndexDef:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): {both!r} carry both an operator class and desc, which "
                 "to_sqlalchemy_table cannot emit (SQLAlchemy drops the operator class of a descending column)",
+            )
+        collated = [
+            col
+            for col, collation in self.collate
+            if col not in self.columns or col in dict(self.ops or ()) or not re.fullmatch(r"\w+", collation)
+        ]
+        if collated:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): collate names {collated!r}, each of which must be one of its columns "
+                f"{self.columns!r}, carry no operator class, and name a plain collation",
             )
 
 
@@ -503,10 +520,11 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     desc: str | Sequence[str] = (),
     nulls_not_distinct: bool = False,
     include: Sequence[str] = (),
-    purpose: str = "",
+    purpose: str | Sequence[str] = "",
     plan_test: str = "",
     reason: str = "",
     asc: str | Sequence[str] = (),
+    collate: Mapping[str, str] | Sequence[tuple[str, str]] = (),
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -570,8 +588,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         ``postgresql_include`` dialect kwarg
     :ptype include: Sequence[str]
     :param purpose: ``<path>::<qualified function>`` of the keyed read
-        that uses the index (:attr:`IndexDef.purpose`)
-    :ptype purpose: str
+        that uses the index, or several (:attr:`IndexDef.purpose`)
+    :ptype purpose: str | Sequence[str]
     :param plan_test: ``<test file>::<test function>`` proving that read
         uses it (:attr:`IndexDef.plan_test`)
     :ptype plan_test: str
@@ -581,6 +599,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     :param asc: the covered column(s) declared ``ASC`` in so many words, so YugabyteDB range-shards an index led by
         one (:attr:`IndexDef.asc`); a bare ``str`` names one
     :ptype asc: str | Sequence[str]
+    :param collate: per-column collations (``{"signal": "C"}``, :attr:`IndexDef.collate`)
+    :ptype collate: Mapping[str, str] | Sequence[tuple[str, str]]
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -608,7 +628,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         nulls_not_distinct=nulls_not_distinct,
         include=tuple(include),
         asc=(asc,) if isinstance(asc, str) else tuple(asc),
-        purpose=purpose,
+        collate=tuple(collate.items()) if isinstance(collate, Mapping) else tuple(tuple(pair) for pair in collate),  # type: ignore[misc]
+        purpose=purpose if isinstance(purpose, str) else tuple(purpose),
         plan_test=plan_test,
         reason=reason,
     )
@@ -1504,14 +1525,13 @@ class TableSchema:
                 idx_kwargs["postgresql_nulls_not_distinct"] = True
             if idx.include:
                 idx_kwargs["postgresql_include"] = list(idx.include)
-            sa.Index(
-                idx.name,
-                *(
-                    table.c[col].desc() if col in idx.desc else table.c[col].asc() if col in idx.asc else table.c[col]
-                    for col in idx.columns
-                ),
-                **idx_kwargs,
-            )
+            collations = dict(idx.collate)
+
+            def _item(col: str) -> Any:
+                item = table.c[col].collate(collations[col]) if col in collations else table.c[col]
+                return item.desc() if col in idx.desc else item.asc() if col in idx.asc else item
+
+            sa.Index(idx.name, *(_item(col) for col in idx.columns), **idx_kwargs)
 
         return table
 

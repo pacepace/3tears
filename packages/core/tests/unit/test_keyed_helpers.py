@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 import sqlite3
 from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import Any
+from typing import cast, Any
 
 import duckdb
 import pytest
@@ -426,7 +426,9 @@ class TestDeleteBefore:
         """Flips if the sweep deletes everything in one statement, or stops before the rows past its bound are gone."""
         reader = _Recording(db)
         collection = _Collection(reader)
-        swept = await delete_before("t", collection=collection, key=["a", "b"], column="b", before=30, page=7)
+        swept = await delete_before(
+            "t", collection=cast(Any, collection), key=["a", "b"], column="b", before=30, page=7
+        )
         assert (swept.deleted, swept.statements) == (30, 5)
         assert sorted(collection.settled) == sorted((f"k{i % 10}", i) for i in range(30)) and collection.writes == 5
         assert _plain(db, "SELECT count(*) FROM t WHERE b < 30") == [(0,)]
@@ -491,7 +493,7 @@ class TestUpdateBefore:
         collection = _Collection(reader)
         reaped = await update_before(
             "t",
-            collection=collection,
+            collection=cast(Any, collection),
             key=["a", "b"],
             column="b",
             before=30,
@@ -509,7 +511,7 @@ class TestUpdateBefore:
         with pytest.raises(ValueError, match="move its rows out"):
             await update_before(
                 "t",
-                collection=_Collection(ThreadedDuckDB(db)),
+                collection=cast(Any, _Collection(ThreadedDuckDB(db))),
                 key=["a", "b"],
                 column="b",
                 before=30,
@@ -564,7 +566,9 @@ class TestWithoutArrays:
             if cursor is None:
                 break
         assert seen == list(range(3, 100, 10))
-        swept = await delete_before("t", collection=_Collection(conn), key=["a", "b"], column="b", before=20, page=6)
+        swept = await delete_before(
+            "t", collection=cast(Any, _Collection(conn)), key=["a", "b"], column="b", before=20, page=6
+        )
         assert (swept.deleted, swept.statements) == (20, 4)
         assert await count_at_most(conn, "t", order=["a", "b"], at_most=50) == BoundedCount(count=50, more=True)
         assert await delete_oldest(conn, "t", count=30) == 30
@@ -658,7 +662,11 @@ class TestFiltersLocksAndJoins:
     async def test_joined_rows_are_read_by_the_values_the_page_holds(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a page's joined rows are read whole, or matched to the wrong page row."""
         reader = _Recording(db)
-        page = [{"who": "x", "group": "k1"}, {"who": "y", "group": "k3"}, {"who": "z", "group": None}]
+        page: list[dict[str, Any]] = [
+            {"who": "x", "group": "k1"},
+            {"who": "y", "group": "k3"},
+            {"who": "z", "group": None},
+        ]
         joined = await read_joined(reader, page, "grants", on={"a": "group"}, columns=["who", "a"])
         assert joined == {("k1",): [{"who": "ann", "a": "k1"}], ("k3",): [{"who": "bob", "a": "k3"}]}
         assert len(reader.statements) == 1 and reader.statements[0][1][0] == ["k1", "k3"]

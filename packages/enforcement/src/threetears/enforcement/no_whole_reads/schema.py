@@ -1067,7 +1067,10 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
         written.lower() if written is not None else ast.unparse(name_node),
         tuple(column.lower() for column in columns),
         tuple(column.lower() for column in (values.texts(_keyword(call, "include")) or ())),
-        values.text(_keyword(call, "purpose")) or _info(call, values, "purpose"),
+        values.text(_keyword(call, "purpose"))
+        # several reads an index serves: purpose=("<path>::<fn>", "<path>::<fn>"), held as one "; "-joined purpose
+        or "; ".join(values.texts(_keyword(call, "purpose")) or ())
+        or _info(call, values, "purpose"),
         values.text(_keyword(call, "plan_test")) or _info(call, values, "plan_test"),
         values.text(_keyword(call, "reason")) or _info(call, values, "reason"),
         origin,

@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, Final, overload
 
 from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, renumbered
 from threetears.core.sql_fragments import quote_identifier
@@ -32,6 +32,7 @@ from threetears.core.sql_fragments import quote_identifier
 __all__ = [
     "BoundedCount",
     "Dialect",
+    "MarkedCount",
     "count_at_most",
     "counts_by",
     "counts_by_relations",
@@ -329,6 +330,34 @@ async def _counts_paged(
     return counted
 
 
+#: the stamp a side with no mark yet is held past: earlier than any stamp, so every stamped row is past it
+NO_MARK_FLOOR: Final = "0001-01-01 00:00:00"
+
+
+@dataclass(frozen=True)
+class MarkedCount:
+    """one group of a relation's rows past its marks (:func:`counts_by_relations` with ``since``).
+
+    :param value: the value of ``column`` (text when packed)
+    :ptype value: Any
+    :param group: the value of the relation's ``group`` column, as text; None for a NULL group or no group column
+    :ptype group: str | None
+    :param rows: the group's rows past the marks
+    :ptype rows: int
+    :param newest: each ``max_of`` column -> its newest value among those rows, as text (None when every one is NULL)
+    :ptype newest: dict[str, str | None]
+    :param fresh: whether a row of the group is past the ``fresh`` stamp's mark
+    :ptype fresh: bool
+    """
+
+    value: Any
+    group: str | None
+    rows: int
+    newest: dict[str, str | None]
+    fresh: bool
+
+
+@overload
 async def counts_by_relations(
     conn: Any,
     tables: Mapping[str, str | Derived],
@@ -340,7 +369,51 @@ async def counts_by_relations(
     batch: int = 999,
     packed_rows: int | None = None,
     groups: int | None = None,
-) -> dict[str, dict[Any, int]]:
+    packed_as: str = "packed",
+    since: None = None,
+    group: Mapping[str, str] | None = None,
+    max_of: Sequence[str] = (),
+    fresh: str | None = None,
+) -> dict[str, dict[Any, int]]: ...
+
+
+@overload
+async def counts_by_relations(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    *,
+    column: str,
+    values: AnyOf | None = None,
+    where: Sequence[Fragment] = (),
+    by: Mapping[str, Any] | None = None,
+    batch: int = 999,
+    packed_rows: int | None = None,
+    groups: int | None = None,
+    packed_as: str = "packed",
+    since: Mapping[str, Mapping[str, str | None]],
+    group: Mapping[str, str] | None = None,
+    max_of: Sequence[str] = (),
+    fresh: str | None = None,
+) -> dict[str, list[MarkedCount]]: ...
+
+
+async def counts_by_relations(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    *,
+    column: str,
+    values: AnyOf | None = None,
+    where: Sequence[Fragment] = (),
+    by: Mapping[str, Any] | None = None,
+    batch: int = 999,
+    packed_rows: int | None = None,
+    groups: int | None = None,
+    packed_as: str = "packed",
+    since: Mapping[str, Mapping[str, str | None]] | None = None,
+    group: Mapping[str, str] | None = None,
+    max_of: Sequence[str] = (),
+    fresh: str | None = None,
+) -> dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]:
     """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
     keyed count, so a warehouse answers every relation in the statements one relation took.
 
@@ -352,7 +425,22 @@ async def counts_by_relations(
     count, joined by ``CHR(31)``), the texts numbered and set side by side, as many to a row as keep the answer at or
     under ``packed_rows`` rows, by SQL every engine the platform admits spells alike (``ROW_NUMBER``, ``CASE``,
     ``MAX``). A value comes back as the one ``values`` named whose text it is; counted by ``where`` alone, as its
-    text.
+    text. ``packed_as`` names the packed text's column (a caller's own name for it).
+
+    With ``since`` (a source's change record: each relation's rows past its saved marks), each relation's rows past
+    any of its marks are grouped by ``column`` and, where ``group`` names one, the relation's own second column, in
+    ONE statement, a ``UNION ALL`` tagged by relation (packed with ``packed_rows`` as above)::
+
+        SELECT <relation>, column, CAST(<group> AS VARCHAR), count(*), CAST(max(<max_of>) AS VARCHAR) ...,
+               max(CASE WHEN CAST(<fresh> AS TIMESTAMP) > CAST($m AS TIMESTAMP) THEN 1 ELSE 0 END)
+          FROM <relation> WHERE <by> AND <where>
+           AND (CAST(<stamp> AS TIMESTAMP) > CAST($n AS TIMESTAMP) OR ...)
+         GROUP BY column, <group>
+
+    Each stamp is compared as a timestamp whatever its column's type (a warehouse's text stamp too); a stamp with no
+    mark yet is past :data:`NO_MARK_FLOOR`, which every stamp is, and a NULL stamp is past nothing. Each relation
+    reads only its rows past the marks through its stamp's index: a relation with nothing past them answers none.
+    The answer is :class:`MarkedCount` groups, per label.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
@@ -371,14 +459,47 @@ async def counts_by_relations(
     :ptype batch: int
     :param packed_rows: the most rows the one packed statement may answer; unpacked when None
     :ptype packed_rows: int | None
-    :param groups: packed with no ``values``, the most groups ``where`` can name over every relation together (its
-        packing is taken from it)
+    :param groups: packed with no ``values``, the most groups ``where`` (or ``since``) can name over every relation
+        together (its packing is taken from it)
     :ptype groups: int | None
-    :return: label -> value -> its rows; every label present
-    :rtype: dict[str, dict[Any, int]]
+    :param packed_as: the packed text's column name, a TRUSTED identifier
+    :ptype packed_as: str
+    :param since: label -> its marks: each stamp column -> the mark its rows are past (None: no mark yet, the floor);
+        every label named, each with at least one stamp
+    :ptype since: Mapping[str, Mapping[str, str | None]] | None
+    :param group: with ``since``, label -> the relation's second group column, TRUSTED; a label absent groups by
+        ``column`` alone
+    :ptype group: Mapping[str, str] | None
+    :param max_of: with ``since``, the columns (in every relation) whose newest value each group answers, as text
+    :ptype max_of: Sequence[str]
+    :param fresh: with ``since``, the stamp (among each relation's marks) past whose mark a group is :attr:`fresh
+        <MarkedCount.fresh>`
+    :ptype fresh: str | None
+    :return: label -> value -> its rows; every label present. With ``since``: label -> its groups past the marks
+    :rtype: dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]
     :raises ValueError: as :func:`counts_by`, when no relation is named, or packed with neither ``values`` nor
-        ``groups``, or ``packed_rows`` under one
+        ``groups``, or ``packed_rows`` under one; with ``since``, when a label has no marks, ``values`` is given, or
+        ``fresh`` is not a stamp of every relation's marks; ``group``, ``max_of`` or ``fresh`` without ``since``
     """
+    quote_identifier(packed_as)
+    if since is not None:
+        return await _counts_since(
+            conn,
+            tables,
+            column,
+            since,
+            group or {},
+            max_of,
+            fresh,
+            where,
+            dict(by or {}),
+            values,
+            packed_rows,
+            groups,
+            packed_as,
+        )
+    if group or max_of or fresh is not None:
+        raise ValueError("group=, max_of= and fresh= group the rows past a relation's marks: they need since=")
     if batch < 1:
         raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
     if not tables:
@@ -392,7 +513,7 @@ async def counts_by_relations(
     counted: dict[str, dict[Any, int]] = {label: {} for label in labels}
     quoted = quote_identifier(column)
     if packed_rows is not None:
-        await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups)
+        await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups, packed_as)
         return counted
     if values is None:
         chunks: list[dict[str, Any]] = [{}]
@@ -433,6 +554,7 @@ async def _counts_packed(
     pinned: Mapping[str, Any],
     packed_rows: int,
     groups: int | None,
+    packed_as: str = "packed",
 ) -> None:
     """every group of every relation counted in one statement, its texts packed several to a row (into ``counted``).
 
@@ -460,20 +582,150 @@ async def _counts_packed(
         params += list(fragment.params)
     clause = " AND ".join(conditions)
     quoted = quote_identifier(column)
+    alias = quote_identifier(packed_as)
     texts = " UNION ALL ".join(
-        f"SELECT '{index}' || CHR(31) || CAST({quoted} AS VARCHAR) || CHR(31) || CAST(count(*) AS VARCHAR) AS packed "
+        f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS VARCHAR) AS {alias} "
         f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
+    for fields in await _packed_rows(conn, texts, params, items, packed_rows, alias):
+        place, value, held = fields
+        text = _unpacked_text(value)
+        counted[labels[int(place)]][named.get(text, text) if named and text is not None else text] = int(held)
+
+
+def _nullable_text(expression: str) -> str:
+    """a packed field's text: ``v`` and the value's text, or empty for NULL, so a NULL never nulls the whole text."""
+    return f"COALESCE('v' || CAST({expression} AS VARCHAR), '')"
+
+
+def _unpacked_text(field: str) -> str | None:
+    return field[1:] if field else None
+
+
+async def _packed_rows(
+    conn: Any, texts: str, params: Sequence[Any], items: int, packed_rows: int, alias: str
+) -> list[list[str]]:
+    """the fields of each packed text ``texts`` answers, packed several to a row so at most ``packed_rows`` come."""
     width = max(1, -(-items // packed_rows))
-    cells = ", ".join(f"MAX(CASE WHEN n % {width} = {cell} THEN packed END) AS c{cell}" for cell in range(width))
+    cells = ", ".join(f"MAX(CASE WHEN n % {width} = {cell} THEN {alias} END) AS c{cell}" for cell in range(width))
     sql = (
-        f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY packed) AS n, packed FROM ({texts}) AS texts) "
+        f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY {alias}) AS n, {alias} FROM ({texts}) AS texts) "
         f"AS numbered GROUP BY n - n % {width}"
     )
+    return [
+        str(text).split(_PACKED_SEPARATOR)
+        for row in await conn.fetch(sql, *params)
+        for text in dict(row).values()
+        if text is not None
+    ]
+
+
+def _past_marks(marks: Mapping[str, str | None], first: int) -> tuple[str, list[Any], dict[str, str]]:
+    """rows past any of ``marks``, each stamp a timestamp; the condition, its parameters from ``first``, and each
+    stamp's comparison (for the fresh flag)."""
+    compared: dict[str, str] = {}
+    params: list[Any] = []
+    for stamp, mark in marks.items():
+        params.append(NO_MARK_FLOOR if mark is None else mark)
+        compared[stamp] = (
+            f"CAST({quote_identifier(stamp)} AS TIMESTAMP) > CAST(${first + len(params) - 1} AS TIMESTAMP)"
+        )
+    return f"({' OR '.join(compared.values())})", params, compared
+
+
+async def _counts_since(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    column: str,
+    since: Mapping[str, Mapping[str, str | None]],
+    group: Mapping[str, str],
+    max_of: Sequence[str],
+    fresh: str | None,
+    where: Sequence[Fragment],
+    pinned: dict[str, Any],
+    values: AnyOf | None,
+    packed_rows: int | None,
+    groups: int | None,
+    packed_as: str,
+) -> dict[str, list[MarkedCount]]:
+    """every relation's groups past its marks, one statement (:func:`counts_by_relations` with ``since``).
+
+    :raises ValueError: as :func:`counts_by_relations` says for ``since``
+    """
+    if not tables:
+        raise ValueError("a keyed count names at least one relation")
+    if values is not None:
+        raise ValueError("a count past marks counts the groups its marks name: values= is not given with since=")
+    if column in pinned:
+        raise ValueError(f"{column} is counted by, so it is not also pinned")
+    labels = list(tables)
+    unmarked = [label for label in labels if not since.get(label)]
+    if unmarked:
+        raise ValueError(f"a count past marks names each relation's marks; none for {unmarked}")
+    if fresh is not None and any(fresh not in since[label] for label in labels):
+        raise ValueError(f"fresh={fresh!r} is a stamp each relation's marks name")
+    unknown = set(group) - set(labels)
+    if unknown:
+        raise ValueError(f"group= names relations not counted: {sorted(unknown)}")
+    answer: dict[str, list[MarkedCount]] = {label: [] for label in labels}
+    conditions, params = by_conditions(pinned)
+    for fragment in where:
+        conditions.append(renumbered(fragment, len(params)))
+        params += list(fragment.params)
+    quoted = quote_identifier(column)
+    newest = [f"CAST(max({quote_identifier(name)}) AS VARCHAR)" for name in max_of]
+    parts: list[tuple[int, str, str, str, str]] = []
+    for index, label in enumerate(labels):
+        past, marks, compared = _past_marks(since[label], len(params) + 1)
+        params += marks
+        grouped = group.get(label)
+        group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
+        flag = "0" if fresh is None else f"max(CASE WHEN {compared[fresh]} THEN 1 ELSE 0 END)"
+        clause = " AND ".join([*conditions, past])
+        tail = f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
+        parts.append((index, group_text, flag, tail, "" if grouped is None else f", {quote_identifier(grouped)}"))
+    if packed_rows is not None:
+        if packed_rows < 1:
+            raise ValueError(f"a packed count answers at least one row, got {packed_rows}")
+        if groups is None:
+            raise ValueError("a packed count past marks names the most groups its marks can name (groups=)")
+        if groups == 0:
+            return answer
+        alias = quote_identifier(packed_as)
+        texts = " UNION ALL ".join(
+            f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || "
+            f"COALESCE('v' || {group_text}, '') || CHR(31) || CAST(count(*) AS VARCHAR) || CHR(31) || "
+            + "".join(f"COALESCE('v' || {stamp}, '') || CHR(31) || " for stamp in newest)
+            + f"CAST({flag} AS VARCHAR) AS {alias} {tail}{extra}"
+            for index, group_text, flag, tail, extra in parts
+        )
+        for fields in await _packed_rows(conn, texts, params, groups, packed_rows, alias):
+            place, value, grouped_text, held, *stamps, flagged = fields
+            answer[labels[int(place)]].append(
+                MarkedCount(
+                    value=_unpacked_text(value),
+                    group=_unpacked_text(grouped_text),
+                    rows=int(held),
+                    newest={name: _unpacked_text(stamp) for name, stamp in zip(max_of, stamps, strict=True)},
+                    fresh=bool(int(flagged)),
+                )
+            )
+        return answer
+    newest_columns = "".join(f", {stamp} AS m{at}" for at, stamp in enumerate(newest))
+    sql = " UNION ALL ".join(
+        f"SELECT {index} AS relation, {quoted} AS counted, {group_text} AS grp, count(*) AS held{newest_columns}, "
+        f"{flag} AS fresh {tail}{extra}"
+        for index, group_text, flag, tail, extra in parts
+    )
     for row in await conn.fetch(sql, *params):
-        for text in dict(row).values():
-            if text is None:
-                continue
-            place, value, held = str(text).split(_PACKED_SEPARATOR)
-            counted[labels[int(place)]][named.get(value, value) if named else value] = int(held)
+        answer[labels[int(row["relation"])]].append(
+            MarkedCount(
+                value=row["counted"],
+                group=None if row["grp"] is None else str(row["grp"]),
+                rows=int(row["held"]),
+                newest={name: None if row[f"m{at}"] is None else str(row[f"m{at}"]) for at, name in enumerate(max_of)},
+                fresh=bool(int(row["fresh"])),
+            )
+        )
+    return answer

@@ -29,6 +29,18 @@ CREATE TABLE tenant_leases (customer_id UUID, key TEXT, expires_at TIMESTAMPTZ, 
 -- plan_test: tests/test_app.py::test_sweep_plan
 CREATE INDEX tenant_leases_by_expiry ON tenant_leases (customer_id, expires_at);
 CREATE TABLE grants (who TEXT, state TEXT, PRIMARY KEY (who, state));
+CREATE TABLE fence (signal TEXT PRIMARY KEY, run_id BIGINT);
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_fence_plan
+CREATE INDEX fence_by_signal_c ON fence (signal COLLATE "C" ASC);
+CREATE TABLE unindexed (name TEXT, run_id BIGINT PRIMARY KEY);
+CREATE TABLE relations (id UUID PRIMARY KEY, customer_id UUID, name TEXT);
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_relations_plan
+CREATE INDEX relations_by_customer ON relations (customer_id, name, id);
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_relations_plan
+CREATE INDEX relations_by_lower_name ON relations (lower(name), id);
 """
 
 
@@ -69,7 +81,20 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
         "visible=[Fragment.of(caller_visible_customer_clause(user_id=u, customer_id_column=x, "
         "scope_namespace_type=n))])",
+        # the caller's visible customers as a bound set (VisibleCustomers.fragment): the page is theirs, by their index
+        'keyset_page(c, "relations", columns=cols, by={}, order=[Sort("name"), Sort("id", "uuid")], limit=5, '
+        "visible=[customers.fragment('t.\"customer_id\"', platform_rows=True)])",
+        # a sort by an expression an index holds
+        'keyset_page(c, "relations", columns=cols, by={}, '
+        'order=[Sort("name_key", expression=\'lower(t."name")\'), Sort("id", "uuid")], limit=5)',
+        # every row of a prefix, page after page
+        'keyset_rows(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id", "bigint")], page=500)',
         'count_at_most(c, "results", by={"state": s}, at_most=3, order=["state", "geo", "id"])',
+        # a delete of the rows a prefix names, through the C-ordered index its reader's purpose names
+        'delete_keyed(c, "fence", prefix={"signal": p}, returning=("signal",))',
+        # a bounded look: any rows up to its limit, of the table or of a key's rows
+        'any_rows(c, "results", ["state", "geo"], limit=500)',
+        'any_rows(c, "results", cols, limit=1, by={"state": s})',
         'holds_any(c, "results", by={"state": s}, order=["state", "geo", "id"])',
         'holds_any(c, "results", order=("state", "geo", "id"))',
         'read_after(c, "results", columns=cols, id_column="id", after=0, limit=3, by={"state": s, "geo": g})',
@@ -109,6 +134,23 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ('read_keyed(c, "results", keys=KeyBatch(("geo",), ks), columns=cols)', "whole-select"),
         ('holds_any(c, "results", by={"kind": k}, order=["state", "geo", "id"])', "non-key-where"),
         ('count_at_most(c, "results", by={"kind": k}, at_most=3, order=["state", "geo", "id"])', "non-key-where"),
+        # a prefix delete on a column no index ranges
+        ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
+        # a bounded look filtered on a column no key leads with
+        ('any_rows(c, "results", cols, limit=5, by={"kind": k})', "non-key-where"),
+        # the same listing with its customers' fragment missing: every customer's rows, by no index
+        (
+            'keyset_page(c, "relations", columns=cols, by={}, order=[Sort("name"), Sort("id", "uuid")], limit=5)',
+            "non-key-where",
+        ),
+        # a sort by an expression no index holds
+        (
+            'keyset_page(c, "relations", columns=cols, by={}, '
+            'order=[Sort("name_key", expression=\'upper(t."name")\'), Sort("id", "uuid")], limit=5)',
+            "non-key-where",
+        ),
+        # a drain ordered by no index: each page reads and sorts every row
+        ('keyset_rows(c, "results", columns=cols, by={}, order=[Sort("kind"), Sort("id")], page=500)', "non-key-where"),
     ],
 )
 def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: SchemaCatalog) -> None:
@@ -128,6 +170,11 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('keyset_page(c, "results", columns=cols, by={"state": s}, order=order, limit=5)', "order"),
         ('keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort(column)], limit=5)', "order"),
         ('keyset_page(c, "results", columns=cols, by={}, order=[Sort("geo")], limit=5, visible=[clause])', "visible"),
+        # the caller's customers passed without their fragment: no reviewed builder says what it admits
+        (
+            'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo")], limit=5, visible=[customers])',
+            "visible",
+        ),
         ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s})', "column"),
         ('holds_any(c, "results", by={**pinned}, order=["state"])', "by"),
         ('holds_any(c, "results", by={"state": s})', "order"),
@@ -135,6 +182,8 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('count_at_most(c, "results", at_most=3, order=key)', "order"),
         ('delete_before("leases", collection=c, key=key, column="expires_at", before=t, page=5)', "key"),
         ('read_past_marks(c, "rel", columns=cols, marks=marks)', "marks"),
+        # a look with no bound is no bounded look
+        ('any_rows(c, "results", cols)', "limit"),
     ],
 )
 def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argument: str) -> None:

@@ -599,6 +599,9 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("range", rcol, bound=True))
         elif lrow and _bound_value(right):
             atoms.append(_Atom("range", lrow[0], bound=True))
+        elif _bound_value(right) and re.search(r"[A-Za-z_]\w*\s*\(", left) and not _bound_value(left):
+            # a page past a sort expression's value (``lower(name) > $1``): an index on that expression ranges it
+            atoms.append(_Atom("range", ("", expression_key(left)), bound=True))
     elif op == "BETWEEN":
         lcol = _column(left)
         if lcol and all(_bound_value(part) for part in re.split(r"\bAND\b", right, flags=re.IGNORECASE)):

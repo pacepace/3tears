@@ -12,6 +12,7 @@ as keyed by construction, judged by the key it names):
   the values the page holds: :func:`read_joined`. An internal drain of
   every row a prefix names, a page a statement, from a saved place: :func:`threetears.core.keyset.keyset_pages`
   (``after=``);
+- **a bounded look**, any rows up to a cap in no order (an operator command's "any 500"): :func:`any_rows`;
 - **counts** from the statement's own rows (:func:`rows_affected`), the planner's estimate (:func:`estimated_rows`),
   a bounded probe (:func:`holds_any`, :func:`empty_tables`, :func:`count_at_most`, keyed or of a table's first rows)
   or a keyed ``GROUP BY`` (:func:`counts_by`; several relations in one statement: :func:`counts_by_relations`);
@@ -29,8 +30,9 @@ as keyed by construction, judged by the key it names):
 - **the whole reads a component may still make**, named and counted: :class:`WholeReads`.
 
 Every helper takes anything with an asyncpg-shaped ``fetch`` (and ``execute`` for a write): an L3 backend, the rail's
-proxy, a connection, DuckDB through :class:`ThreadedDuckDB`, or SQLite through :class:`ThreadedSQLite`. The SQL is
-one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no arrays (Redshift, SQLite) binds sets as a list
+proxy, a connection, DuckDB through :class:`ThreadedDuckDB`, or SQLite through :class:`ThreadedSQLite`; synchronous
+code on its own DuckDB connection, in its own transaction, through :class:`InlineDuckDB` and :func:`run_inline`. The
+SQL is one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no arrays (Redshift, SQLite) binds sets as a list
 (``AnyOf(..., as_list=True)``, ``KeyBatch(..., as_list=True)``). Each is IO only, awaited on the caller's connection; none touches a row in Python beyond its answer.
 """
 
@@ -49,13 +51,16 @@ from threetears.core.keyed.counts import (
     rows_affected,
 )
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
+from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
+    ANY_ROWS_CAP,
     DEFAULT_KEY_BATCH,
     KeyBatch,
     KeyTooWide,
+    any_rows,
     read_joined,
     read_keyed,
     read_keyed_arrow,
@@ -73,6 +78,7 @@ from threetears.core.keyed.writes import (
 )
 
 __all__ = [
+    "ANY_ROWS_CAP",
     "DEFAULT_KEY_BATCH",
     "AnyOf",
     "BoundedCount",
@@ -80,6 +86,8 @@ __all__ = [
     "Dialect",
     "Fragment",
     "Increment",
+    "InlineDuckDB",
+    "InlineTransaction",
     "KeyBatch",
     "KeyPage",
     "KeyTooWide",
@@ -95,6 +103,7 @@ __all__ = [
     "ThreadedDuckDB",
     "ThreadedSQLite",
     "WholeReads",
+    "any_rows",
     "apply_stage",
     "count_at_most",
     "counts_by",
@@ -114,6 +123,7 @@ __all__ = [
     "read_keyed_arrow",
     "read_past_marks",
     "rows_affected",
+    "run_inline",
     "update_before",
     "update_from",
     "update_keyed",

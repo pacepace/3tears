@@ -8,6 +8,20 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core.keyed: pages step by the row comparison on PostgreSQL; changes past marks, inline DuckDB, scoped differences, sort expressions, bounded looks
+
+**Fixed (speed):** `keyset_page` past its cursor and `keyset_rows` past their first page step by `(c1, c2) > ($1, $2)` on PostgreSQL for a one-direction sort with no nullable column, which it seeks its index by; the leading bound and expansion made it plan a bitmap scan and a sort (a 1,001-row page: 2.3 ms against 0.28 ms; the 6,000-row drain went from 2.43x to 1.28x its hand-written loop). YugabyteDB keeps the bound and expansion. `backends.dialect.known_on_yugabyte` tells which with no round trip for an asyncpg connection (its startup `server_version`), once for any other reader. `keyset_rows` keeps the lookahead row (each statement `page + 1` rows, all kept). Columns `by=` pins to one value lead the page's `ORDER BY` and its row comparison (`(kind, name, id) > ($1, $2, $3)`), so PostgreSQL reads one range of the index they lead, not a unique index of the sort's columns filtered (43 rows read for 21).
+**Added:** `counts_by_relations(since=, group=, max_of=, fresh=)`: each relation's rows past its saved marks (stamps compared as timestamps, a missing mark the floor `NO_MARK_FLOOR`) grouped in ONE statement, as `MarkedCount` groups; `packed_as=` names the packed column. **Fixed:** a packed count kept a NULL group (a NULL in the `||` had nulled its text, dropping the group).
+**Added:** `InlineDuckDB` / `run_inline`: the helpers' statements on the caller's own DuckDB connection, in its transaction, seeing its registered relations, with no event loop (`executemany`, `transaction()`).
+**Added:** `apply_stage(mode="difference", by=, where=)`: the scope holds exactly the stage afterwards (its held rows of keys the stage lacks are deleted); refused for other modes.
+**Added:** `Sort(expression=...)`: a page ordered by an expression (`lower(t."name")`) an expression index answers, selected under the sort's name. `any_rows(conn, table, columns, limit=, by=, where=)`: at most `limit` (1 to 1,000) rows in no order, for operator commands.
+
+### core: collated index columns; the fence's prefix clear
+**Added:** `IndexDef.collate` / `Index(..., collate={"signal": "C"})` (`signal COLLATE "C" ASC`); `IndexDef.purpose` takes a tuple of reads. `coordination.source_token.clear_signals(conn, table, signal=, prefix=)` and the fence's `<name>_by_signal_c` index it reads by (a consumer's table version picks it up).
+
+### enforcement: no_whole_reads judges keyset_rows, any_rows, prefix deletes, visible customers and sort expressions
+`keyset_rows` is judged as `keyset_page`; `any_rows` by its required `limit`; `delete_keyed(prefix=)` on a literal table as a page of its range; `visible=[customers.fragment('t."col"')]` narrows the page to `col = ANY(...)` (missing, a cross-customer listing is flagged); a sort expression is judged against an index on that expression; `purpose=("a::f", "b::g")` is read as several reads, each of which must use the index.
+
 ### enforcement: use-the-helper, every data table read and written through 3tears' helpers
 
 **Added:** `threetears.enforcement.no_whole_reads.use_the_helper_findings(config)`, the `use-the-helper` rule: every
