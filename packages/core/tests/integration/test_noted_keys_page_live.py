@@ -32,7 +32,7 @@ from threetears.core.collections.change_notes import (
     install_change_notes,
     noted_keys_page,
 )
-from threetears.core.ddl.change_notes import NOTE_RING_SIZE, note_table
+from threetears.core.ddl.change_notes import NOTE_RING_SIZE, RING_TABLE, note_table
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
 from threetears.core.testing.plans import PlanRecorder, plan_problems
 
@@ -155,6 +155,28 @@ class TestACommitsKeysAreReadBackFromItsNotes:
     async def test_the_index_order_a_page_is_read_in_is_never_left_on_its_connection(self, ring: _Ring) -> None:
         """Flips if the planner settings a page's transaction takes outlive it on the (pooled) connection."""
         await _every_page(ring.conn, ring, limit=1000, max_bytes=1 << 20)
+        for setting in ("enable_bitmapscan", "enable_seqscan", "enable_sort"):
+            assert await ring.conn.fetchval(f"SHOW {setting}") == "on", setting
+
+    async def test_a_page_the_ring_no_longer_covers_leaves_no_planner_setting_on_its_connection(
+        self, ring: _Ring
+    ) -> None:
+        """Flips if a page that answers before reading any note (the ring switched past the bracket) leaves the index
+        order it told the planner on the (pooled) connection."""
+        await ring.conn.execute(
+            f"UPDATE {ring.schema}.{RING_TABLE} SET switch_no = 2, previous_switched_at = now() WHERE id = 1"  # noqa: S608
+        )
+        page = await noted_keys_page(
+            ring.conn,
+            notes_schema=ring.schema,
+            table=_TABLE,
+            tenant_token=_TENANT,
+            noted_between=ring.bracket,
+            cursor=None,
+            limit=1000,
+            max_bytes=1 << 20,
+        )
+        assert page == "not_covered"
         for setting in ("enable_bitmapscan", "enable_seqscan", "enable_sort"):
             assert await ring.conn.fetchval(f"SHOW {setting}") == "on", setting
 

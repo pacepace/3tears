@@ -101,7 +101,7 @@ import asyncio
 import json
 import time
 from bisect import bisect_right
-from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from itertools import accumulate
@@ -1956,14 +1956,15 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
     :ptype all_tenants: bool
     :return: the statement, answering ``noted_at``, ``keys``, ``columns``, ``bytes`` by position: ``$1`` table,
         ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or one microsecond before the bracket:
-        both ends of the range are index conditions), ``$4`` until, ``$5`` the most notes (NULL for all)
+        both ends of the range are index conditions), ``$4`` until, ``$5`` the most notes (NULL for all), ``$6`` to
+        ``$8`` the planner settings to put back (:data:`_RESTORED`)
     :rtype: str
     """
     tenant = "tenant IS NULL AND $2::text IS NULL" if all_tenants else "tenant = $2::text"
     return (  # each interpolated piece is a fixed name this module builds
         "SELECT noted_at, keys, columns, char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes "
         f"FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
-        f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} "
+        f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} AND {_RESTORED} "
         "ORDER BY noted_at LIMIT $5"
     )
 
@@ -1975,13 +1976,27 @@ _CLOCK_GRAIN: Final = timedelta(microseconds=1)
 #: judges a bracket's notes from the column statistics as if a table's notes were spread over the night, so it counts
 #: too few of a large commit's (a burst of one table's notes in a second or two) to stop early at the limit, and reads
 #: the whole rest of the bracket by bitmap and sorts it: every page reads every later page's notes again. Told to keep
-#: the index's order (``LOCAL``: the page's read-only transaction only, gone at its end, never left on a pooled
-#: connection), each page reads only its own notes. Measured on a ring of 322,000 notes and a 20,000-row commit,
+#: the index's order (on the ring row's read; each notes read puts the settings back as it starts, :data:`_RESTORED`,
+#: so nothing is left on a pooled connection), each page reads only its own notes. Measured on a ring of 322,000 notes and a 20,000-row commit,
 #: tables freshly written and analyzed: 212,062 rows scanned for 20,162 named (10.52x), told so 20,262 (1.005x), each
 #: page an Index Only Scan with both ``noted_at`` bounds in its Index Cond, on Postgres and YugabyteDB.
 _INDEX_ORDER: Final = (
-    "set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), "
-    "set_config('enable_sort', 'off', true)"
+    "set_config('enable_bitmapscan', 'off', false), set_config('enable_seqscan', 'off', false), "
+    "set_config('enable_sort', 'off', false)"
+)
+
+#: the settings :data:`_INDEX_ORDER` changes, as they were, read before it in the same statement
+_SETTINGS_WERE: Final = (
+    "SELECT current_setting('enable_bitmapscan') AS bitmapscan, current_setting('enable_seqscan') AS seqscan, "
+    "current_setting('enable_sort') AS sort OFFSET 0"
+)
+
+#: a notes read's one-time condition putting the settings back (``$6`` to ``$8``, as they were): run once as the
+#: statement starts, after it was planned under :data:`_INDEX_ORDER`, so the page leaves nothing on its connection
+#: and needs no transaction of its own (a round trip each to open and end it, on every page)
+_RESTORED: Final = (
+    "(SELECT set_config('enable_bitmapscan', $6, false) || set_config('enable_seqscan', $7, false) "
+    "|| set_config('enable_sort', $8, false)) IS NOT NULL"
 )
 
 
@@ -2034,7 +2049,9 @@ async def noted_keys_page(
     which only a burst at one microsecond could make large.
 
     :param conn: a connection to the L3 database (the broker's, on the platform schema), or a pool to take one
-        from; the page is read in one read-only transaction on it
+        from; the page is read on that one connection, in two round trips (the ring row, then the notes) with no
+        transaction of its own: a page was four (its transaction's start and end besides), on Postgres a fifth of a
+        20,000-note commit's paged read
     :ptype conn: Any
     :param notes_schema: the schema holding the ring
     :ptype notes_schema: str
@@ -2060,7 +2077,7 @@ async def noted_keys_page(
     since, until = noted_between
     # one connection: a pool's own, or the one given
     held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
-    async with held as one, one.transaction(readonly=True):
+    async with held as one:
         return await _noted_keys_page(one, owner, table, tenant_token, since, until, cursor, limit, max_bytes)
 
 
@@ -2076,11 +2093,12 @@ async def _noted_keys_page(
     max_bytes: int,
 ) -> NotedKeysPage | str:
     try:
-        # the ring row, and the planner told to keep the index's order for the reads after it (_INDEX_ORDER): one
-        # round trip, on the page's own transaction
+        # the ring row, and the planner told to keep the index's order for the notes read after it (_INDEX_ORDER),
+        # the settings as they were read first: one round trip. Told only where the ring row is
         rings = await conn.fetch(
-            f"SELECT {_INDEX_ORDER}, current_ring, switch_no, previous_switched_at, wait_seconds "  # noqa: S608
-            f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
+            f"SELECT was.bitmapscan, was.seqscan, was.sort, {_INDEX_ORDER}, current_ring, switch_no, "  # noqa: S608
+            f"previous_switched_at, wait_seconds FROM ({_SETTINGS_WERE}) was "
+            f"CROSS JOIN {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
         )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the asker is behind on the table, said and counted there
@@ -2088,6 +2106,63 @@ async def _noted_keys_page(
     if not rings:
         return "notes_unavailable"
     ring = rings[0]
+    was = (ring["bitmapscan"], ring["seqscan"], ring["sort"])
+    # each notes read puts the settings back as it starts (_RESTORED); a read after another in the page tells the
+    # planner again first. A page that ends with them still told (no notes read since, or a failure) puts them back
+    told = [True]
+
+    async def notes(sql: str, *args: Any) -> Any:
+        if not told[0]:
+            await conn.execute(f"SELECT {_INDEX_ORDER}")
+            told[0] = True
+        found = await conn.fetch(sql, *args, *was)
+        # put back as the read started; a read that failed may not have, and is put back on the way out
+        told[0] = False
+        return found
+
+    try:
+        return await _noted_keys_read(notes, owner, table, tenant, since, until, cursor, limit, max_bytes, ring)
+    finally:
+        if told[0]:
+            await _put_back(conn, was)
+
+
+async def _put_back(conn: Any, was: tuple[str, str, str]) -> None:
+    """put the planner settings a page told back as they were, saying so if it cannot (the page's own error stands).
+
+    :param conn: the page's connection
+    :ptype conn: Any
+    :param was: ``enable_bitmapscan``, ``enable_seqscan``, ``enable_sort`` as they were
+    :ptype was: tuple[str, str, str]
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        await conn.execute(
+            "SELECT set_config('enable_bitmapscan', $1, false), set_config('enable_seqscan', $2, false), "
+            "set_config('enable_sort', $3, false)",
+            *was,
+        )
+    # prawduct:allow prawduct/broad-except -- a page's own failure is raised by its caller; this one is said
+    except Exception as exc:
+        log.warning(
+            "a noted keys page could not put its planner settings back on its connection",
+            extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
+        )
+
+
+async def _noted_keys_read(
+    notes: Callable[..., Awaitable[Any]],
+    owner: str,
+    table: str,
+    tenant: str | None,
+    since: datetime,
+    until: datetime,
+    cursor: NotedKeysCursor | None,
+    limit: int,
+    max_bytes: int,
+    ring: Any,
+) -> NotedKeysPage | str:
     current = int(ring["current_ring"])
     previous = (current - 1 + NOTE_RING_SIZE) % NOTE_RING_SIZE
     # a writer's cached slot may name the table it had up to half the wait after a switch (noted_rows_since's reach)
@@ -2128,7 +2203,7 @@ async def _noted_keys_page(
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
         after = start if start is not None else since - _CLOCK_GRAIN
         sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None)
-        found = await conn.fetch(sql, table, tenant, after, until, left + 1)
+        found = await notes(sql, table, tenant, after, until, left + 1)
         if not found:
             continue
         full = len(found) > left
@@ -2141,7 +2216,7 @@ async def _noted_keys_page(
                     # the page already holds the earlier table's notes: this table's first instant starts the next
                     return page(NotedKeysCursor(slot=slot, after=start))
                 # one instant's notes fill the page: read that instant whole, so continuing past it skips none
-                taken = await conn.fetch(sql, table, tenant, last - _CLOCK_GRAIN, last, None)
+                taken = await notes(sql, table, tenant, last - _CLOCK_GRAIN, last, None)
             else:
                 # end at a whole instant: the last instant's notes go to the next page
                 end = len(taken) - 1
