@@ -103,11 +103,13 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     # Each measure is printed as the page names it: the classifier's label match as the Accuracy the page reads.
     assert "Accuracy: 90%, 81 of 90 trials" in printed and "per label:" in printed
     # Each label's precision and recall count trials over cases, since k=3 answers each case three times, in percent
-    # with their intervals as the page writes a rate.
+    # with their intervals in the one form (number rule 3), each rate at its interval's precision.
     assert (
-        "    account: precision 100% (17 of 17 trials over 7 cases, [56.9%, 100%]), recall 81% (17 of 21 trials over 7"
-        " cases" in printed
+        "    account: precision 100% (17 of 17 trials over 7 cases, 57 to 100%), recall 81% (17 of 21 trials over 7"
+        " cases, 44 to 96%)" in printed
     )
+    # An end that would round onto 100% keeps the digit that holds it off (the owner's boundary rule).
+    assert "recall 92% (11 of 12 trials over 4 cases, 33 to 99.6%)" in printed
     assert "Urgent score: 83.3%, 75 of 90 trials" in printed
     assert "Escalates score: 98.9%, 89 of 90 trials" in printed
     assert "top misses (5 of 20 failed trials):" in printed
@@ -136,12 +138,12 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     matrix = [line for line in above if line.startswith("| emails |") and not line.startswith("| emails | triage |")]
     rows = [line for line in above if line.startswith("| emails | triage |")]
     # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
-    # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8), at one precision down the
-    # column, one decimal where whole would print two alike (N-4).
+    # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8), each at its measure's precision
+    # from its intervals (number rule 2), its interval in the one form (rule 3).
     assert matrix[:3] == [
-        "| emails | Pass rate | 77.8% (70 of 90 trials, 30 cases) | [60.3%, 89.0%] | 30 |",
-        "| emails | Accuracy | 90.0% (81 of 90 trials, 30 cases) | [77.3%, 96.0%] | 30 |",
-        "| emails | Precision of account | 100.0% (17 of 17 trials, 7 cases) | [56.9%, 100.0%] | 7 |",
+        "| emails | Pass rate | 78% (70 of 90 trials, 30 cases) | 60 to 89% | 30 |",
+        "| emails | Accuracy | 90% (81 of 90 trials, 30 cases) | 77 to 96% | 30 |",
+        "| emails | Precision of account | 100% (17 of 17 trials, 7 cases) | 57 to 100% | 7 |",
     ], matrix[:3]
     assert rows and len(rows) == len(matrix)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.

@@ -1928,6 +1928,30 @@ class PageForms:
             said += f", margin ±{with_unit(margin, unit)}"
         return self._issue("", "", "lone", value, said, said, "")
 
+    def lone_rate(self, level: float, interval: tuple[float, float] | None) -> tuple[Printed, Printed | None]:
+        """A rate and its interval, in percent, that no page's measure holds (a quick print's line): both at the
+        decimals the interval's own half-width gives a rate (rules 1 and 2, at most one), the level kept off 0% and
+        100% (``99.7%``, never ``100%``) unless it sits there, and the interval in its one form, ``low to high`` with
+        its ``%`` once (rule 3), each end kept off its bounds. With no interval the level reads by the number rule.
+
+        :param level: The rate, in percent.
+        :ptype level: float
+        :param interval: Its interval's ends, in percent; None for none.
+        :ptype interval: tuple[float, float] | None
+        :return: The level, and the interval or None.
+        :rtype: tuple[Printed, Printed | None]
+        """
+        if interval is None:
+            return self.in_unit(level, PERCENT, role="level"), None
+        low, high = interval
+        places = policy_places([(high - low) / 2], [low, high], capped=True)
+        said = policy_rate(level, places)
+        _, _, text = policy_interval(low, high, places, change=False, bounds=_RATE_BOUNDS, unit=PERCENT)
+        self._issued.append(_Issued("", "", "interval", (low, high), text))
+        return self._issue("", "", "level", level, said, said.removesuffix(PERCENT), PERCENT), Printed(
+            value=None, text=text, digits=text, unit=""
+        )
+
     def scale_span(self, scale: TableCell, unit: str, low: float, high: float) -> Printed:
         """A glyph scale's ends as the line under its table states them, its unit once: ``-7.8 to 35.4 pts``, ``83.9%
         to 100%``, ``$0.031 to $0.10``; a score or a count to two significant figures (``-0.31 to 0.12``, ``-0.0069 to
