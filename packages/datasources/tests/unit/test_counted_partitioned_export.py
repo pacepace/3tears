@@ -101,7 +101,7 @@ class _Client:
         return 2
 
 
-async def _counted(client: _Client, store: _Store, counts: dict[str, int]) -> CountedPartitionedExport:
+async def _counted(client: _Client, store: _Store, counts: dict[str, int] | None) -> CountedPartitionedExport:
     return await export_counted_partitions(
         client,  # type: ignore[arg-type]
         store,
@@ -232,6 +232,48 @@ async def test_files_holding_other_than_the_count_are_refused_when_the_part_is_r
     export = await _counted(_Client(row_count=3), store, {"TX": 3})
     with pytest.raises(IncompleteExportError, match="files hold 2 rows, the caller counted 3"):
         await read_counted_partition(store, export, "TX")
+
+
+@pytest.mark.asyncio
+async def test_with_no_counts_each_part_is_the_manifest_s_count_and_they_add_up_to_the_unload_s() -> None:
+    client = _Client(row_count=5)
+    store = _Store(_export({"TX": [_rows("TX", 1), _rows("TX", 2)], "DE": [_rows("DE", 2)], "WY": [[]]}))
+
+    export = await _counted(client, store, None)
+
+    assert export.rows == {"TX": 3, "DE": 2}, "a part the manifest counts none of is no part of the export"
+    assert client.deleted == []
+    assert len(await read_counted_partition(store, export, "TX")) == 3
+    assert [file.rows for file in await presigned_counted_partition(store, export, "DE")] == [2]
+
+
+@pytest.mark.parametrize(
+    ("row_count", "counted", "match"),
+    [
+        (4, True, "exported 4 rows, its manifest counts 3"),
+        (3, False, "manifest does not count every file"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_with_no_counts_a_manifest_that_is_not_the_unload_s_count_is_refused_and_deleted(
+    row_count: int, counted: bool, match: str
+) -> None:
+    client = _Client(row_count=row_count)
+    with pytest.raises(IncompleteExportError, match=match):
+        await _counted(client, _Store(_export({"TX": [_rows("TX", 3)]}, counted=counted)), None)
+    assert client.deleted == [_DESTINATION]
+
+
+@pytest.mark.asyncio
+async def test_with_no_counts_a_short_file_is_refused_when_the_part_is_read() -> None:
+    objects = _export({"TX": [_rows("TX", 3)]})
+    objects[f"{_PREFIX}join_state_code=TX/0000_part_00.parquet"] = _parquet(_rows("TX", 2))
+    store = _Store(objects)
+    export = await _counted(_Client(row_count=3), store, None)
+    with pytest.raises(IncompleteExportError, match="files hold 2 rows"):
+        await read_counted_partition(store, export, "TX")
+    with pytest.raises(IncompleteExportError, match="files hold 2 rows"):
+        await read_counted_partition_arrow(store, export, "TX")
 
 
 @pytest.mark.asyncio

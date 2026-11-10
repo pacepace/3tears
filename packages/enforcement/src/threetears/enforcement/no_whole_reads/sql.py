@@ -11,10 +11,13 @@ it aggregates. A relation is a data table unless it is a catalog, a CTE of the s
 declared key and indexes (:mod:`threetears.enforcement.no_whole_reads.schema`):
 
 - **(a) its key:** its bound equality, ``IN`` or ``= ANY`` predicates cover a leading prefix of the table's primary
-  key. A bound value is a placeholder (``$1``, ``%s``, ``%(name)s``, ``?``, ``:name``), an interpolation, a literal,
+  key (or of a declared ``UNIQUE``) that reaches past its tenant and partition columns (``row_scope``,
+  ``customer_id``, a ``partition=True`` column, a collection's ``tenant_column``), or all of it; a tenant alone is
+  every row of the tenant, keyed only as a keyset page (c). A bound value is a placeholder (``$1``, ``%s``, ``%(name)s``, ``?``, ``:name``), an interpolation, a literal,
   a subquery (judged on its own level), a column of an outer row (a correlated subquery), or a column of a relation
   that is itself keyed or bound (``JOIN unnest($1) k ON t.id = k.id``, a join to a CTE seeded by a bound key);
-- **(b) an index declared for it:** those predicates cover the leading column of an index whose ``purpose`` names
+- **(b) an index declared for it** (where ``col @> $1`` and ``col IS NULL`` count as equalities too, through the
+  index only): those predicates cover the leading column of an index whose ``purpose`` names
   the function (or SQL constant) the statement is written in;
 - **(c) a keyset page:** ordered by the next key column after a bound key prefix, its only other predicate a range
   on that column, and a ``LIMIT``.
@@ -31,14 +34,18 @@ Kinds, each the start of a finding's symbol:
 - ``unbound-where``: a ``WHERE`` that holds no bound value;
 - ``non-key-where``: a ``WHERE`` with bound values, none of them a key (a), purposed index (b) or keyset page (c);
 - ``unknown-schema``: a predicate on a table whose key the walk cannot find;
+- ``unknown-predicate``: a predicate interpolated at run time (``FROM t {where}``, ``WHERE {}``) the walk cannot
+  see, on a read nothing it can see keys: a read the rule cannot judge is never a pass;
 - ``truncate``, ``whole-delete``, ``whole-update``: a write to every row;
 - ``whole-maintenance``: ``ANALYZE`` / ``VACUUM`` of a table, which reads it whole;
 - ``whole-copy-out``: ``COPY <table> TO``.
 
 A ``SELECT ... FROM <table>`` with nothing after the table is a *head* (:data:`HEAD`): the caller adds the
 predicate (a keyset pager does), so a head is judged where it is run, not where it is written. Text interpolated
-between a table and its clauses (``FROM t {where}``), or a whole predicate that is one interpolation, may hold the
-key: the walk cannot see it, so it does not judge that read.
+between a table and its clauses (``FROM t {where}``), or a whole predicate that is one interpolation, may or may not
+hold the key: unless what the walk can see keys the read, it is ``unknown-predicate``. An interpolation the code
+names as the key (``{pk_predicate}``) binds the key; the walk resolves a placeholder to a string the function binds
+once (``where = "WHERE id = $1"``), so a predicate built that way is judged as written.
 """
 
 from __future__ import annotations
@@ -48,10 +55,19 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Final
 
-from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, bare_table
+from threetears.enforcement.no_whole_reads.schema import (
+    COPY_PREFIX,
+    TENANT_COLUMNS,
+    _DeclaredTable,
+    SchemaCatalog,
+    bare_table,
+    expression_key,
+    purposes,
+)
 
 __all__ = [
     "HEAD",
+    "condition_shape",
     "KEYED_COUNT",
     "Reader",
     "is_sql",
@@ -107,7 +123,10 @@ _AFTER_WHERE: Final[re.Pattern[str]] = re.compile(
 #: where a ``FROM`` list ends
 _FROM_END: Final[re.Pattern[str]] = re.compile(rf"\bWHERE\b|{_AFTER_WHERE.pattern}", re.IGNORECASE)
 _LIMITED: Final[re.Pattern[str]] = re.compile(r"\b(LIMIT|FETCH\s+FIRST|FETCH\s+NEXT|TOP)\b", re.IGNORECASE)
-_LIMIT_ONE: Final[re.Pattern[str]] = re.compile(r"\b(?:LIMIT\s+1|FETCH\s+(?:FIRST|NEXT)\s+1?\s*ROWS?\s+ONLY)\b", re.I)
+#: a bounded probe's limit: one row, or a bound count (``LIMIT 1``, ``LIMIT $2``)
+_LIMIT_ONE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:LIMIT\s+(?:1\b|\$\d+|%s|\?|:[A-Za-z_]\w*|\{\})|FETCH\s+(?:FIRST|NEXT)\s+1?\s*ROWS?\s+ONLY\b)", re.I
+)
 _ORDER_BY: Final[re.Pattern[str]] = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 _AGGREGATE: Final[re.Pattern[str]] = re.compile(
     r"\b(?:GROUP\s+BY|DISTINCT)\b|\b(?:count|sum|avg|min|max|string_agg|array_agg|bit_xor|bit_or|md5|sha256|"
@@ -118,6 +137,8 @@ _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\d+|%s|%\(\w+\)s|\?|(?<![:
 _INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"\{(?:pk)?\}")
 #: a predicate no row passes: a part that only types a ``UNION``'s columns
 _NO_ROWS: Final[re.Pattern[str]] = re.compile(r"WHERE\s+(?:1\s*=\s*0|FALSE)", re.IGNORECASE)
+#: a shape probe: no row is read
+_LIMIT_ZERO: Final[re.Pattern[str]] = re.compile(r"\bLIMIT\s+0\b", re.IGNORECASE)
 _CATALOG: Final[re.Pattern[str]] = re.compile(
     r"(?i)^\"?(pg_|information_schema|sqlite_|duckdb_|sys\.|svv_|stl_|stv_|svl_|pg_catalog|dual$|"
     r"generate_series|unnest|values$)"
@@ -183,11 +204,26 @@ class Reader:
         index whose ``purpose`` names one of them keys the read (b)
     :ivar transient: whether a relation is a change set being applied (a stage, rows registered from memory): it
         holds only the rows a change named, so a join on it is keyed
+    :ivar stamps: the change-record stamps a ``source_change_read`` mark names: a read of a relation no declaration
+        names, whose ``WHERE`` is exactly those stamps past bound marks, reads the source's own change record
+    :ivar template: the template table (``TableSchema(name=<parameter>)``) of the module the statement is written in:
+        a generic read there (``FROM {table}``) is judged against its keys and purposed indexes
+    :ivar source_ids: the id columns a ``source_change_read`` mark names: such a read binding one of them to a bound
+        set reads the ids the source's runs record named
+    :ivar source_unit: whether the mark says ``unit="table"``: such a relation is a small static input read whole
+        when the source's inputs record moved
+    :ivar ctes: the CTE names the code the statement is written in defines in its other statements (a fragment
+        ``FROM stage0{}`` reads a CTE the function writes as ``WITH stage0 AS``), never a table the catalog knows
     """
 
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
     names: frozenset[str] = frozenset()
     transient: Callable[[str], bool] = _never
+    ctes: frozenset[str] = frozenset()
+    stamps: frozenset[str] = frozenset()
+    template: _DeclaredTable | None = None
+    source_ids: frozenset[str] = frozenset()
+    source_unit: bool = False
 
 
 def _interpolation(match: re.Match[str]) -> str:
@@ -431,6 +467,29 @@ def _bound_value(text: str) -> bool:
     return re.search(r"[A-Za-z_]", rest) is None
 
 
+def _literal_list(parts: list[str]) -> bool:
+    """whether an ``IN`` list is two or more literals and nothing bound: a fixed set of categories, not keys.
+
+    :param parts: the list's items
+    :ptype parts: list[str]
+    :return: whether it is
+    :rtype: bool
+    """
+    return len(parts) > 1 and all(re.fullmatch(r"'_'|-?\d+(?:\.\d+)?", _strip_cast(part)) for part in parts)
+
+
+def _literal_array(operand: str) -> bool:
+    """whether ``= ANY(ARRAY['a', 'b'])`` lists literals only.
+
+    :param operand: the right side of an equality
+    :ptype operand: str
+    :return: whether it is
+    :rtype: bool
+    """
+    match = re.fullmatch(r"ANY\s*\(\s*ARRAY\s*\[(.*)\]\s*(?:::[\w\[\] ]+)?\)", operand.strip(), re.IGNORECASE)
+    return match is not None and _literal_list(_split(match.group(1), re.compile(",")))
+
+
 @dataclass(frozen=True)
 class _Atom:
     """one predicate, as the key judgement reads it.
@@ -459,7 +518,10 @@ def _atoms(predicate: str) -> list[_Atom]:
     text = _unwrap(predicate)
     bound = _PLACEHOLDER.search(text) is not None or _INTERPOLATION.search(text) is not None or "'_'" in text
     bound = bound or re.search(r"=\s*-?\d|\b(?:TRUE|FALSE)\b", text, re.IGNORECASE) is not None
-    if _INTERPOLATION.fullmatch(text) or re.fullmatch(r"(?:NOT\s+)?\{\}", text, re.IGNORECASE):
+    if text == PK_TOKEN:
+        # a predicate the code names as the key (``WHERE {pk_predicate}``): the read is by the table's key
+        return [_Atom("eq", ("", PK_TOKEN), bound=True)]
+    if _INTERPOLATION.fullmatch(text) or re.fullmatch(r"(?:NOT\s+)?\{(?:pk)?\}", text, re.IGNORECASE):
         return [_Atom("unseen")]
     masked = _mask(text)
     branches = _split(text, _OR)
@@ -483,21 +545,38 @@ def _atoms(predicate: str) -> list[_Atom]:
         lrow = _row(left)
         if lcol and rcol:
             atoms.append(_Atom("join", lcol, rcol, bound))
+        elif lcol and _literal_array(right):
+            atoms.append(_Atom("filter", bound=True))
         elif lcol and _bound_value(right):
             atoms.append(_Atom("eq", lcol, bound=True))
         elif rcol and _bound_value(left):
             atoms.append(_Atom("eq", rcol, bound=True))
         elif lrow and _bound_value(right):
             atoms.extend(_Atom("eq", column, bound=True) for column in lrow)
+        elif _bound_value(right) and re.search(r"[A-Za-z_]\w*\s*\(", left) and not _bound_value(left):
+            # an expression of the row (``replace(name, '.', '-') = ANY($1)``): an index on that expression keys it
+            atoms.append(_Atom("eq", ("", expression_key(left)), bound=True))
         elif lrow and _row(right):
             atoms.extend(_Atom("join", a, b, bound) for a, b in zip(lrow, _row(right) or [], strict=False))
     elif op == "IN":
         lcol, lrow = _column(left), _row(left)
         inner = _unwrap(right)
-        if right.strip().startswith("(") and (
-            _SELECT.match(inner) or all(_bound_value(part) for part in _split(inner, re.compile(",")))
-        ):
+        parts = _split(inner, re.compile(","))
+        if right.strip().startswith("(") and _literal_list(parts):
+            # ``row_scope IN ('platform', 'customer')``: every value of a low-cardinality column, so every row
+            atoms.append(_Atom("filter", bound=True))
+        elif right.strip().startswith("(") and (_SELECT.match(inner) or all(_bound_value(part) for part in parts)):
             atoms.extend(_Atom("eq", column, bound=True) for column in ([lcol] if lcol else lrow or []))
+    elif op == "@>":
+        lcol = _column(left)
+        if lcol and _bound_value(right):
+            # containment keys a read only through an index whose purpose names it (b), never as a key (a)
+            atoms.append(_Atom("contains", lcol, bound=True))
+    elif op == "IS":
+        lcol = _column(left)
+        if lcol and re.fullmatch(r"NULL", right.strip(), re.IGNORECASE):
+            # an index serves ``IS NULL`` as an equality: through a purposed index (b) only, never as a key (a)
+            atoms.append(_Atom("contains", lcol, bound=False))
     elif op in {">", ">=", "<", "<="}:
         lcol, rcol, lrow = _column(left), _column(right), _row(left)
         if lcol and _bound_value(right):
@@ -511,6 +590,23 @@ def _atoms(predicate: str) -> list[_Atom]:
         if lcol and all(_bound_value(part) for part in re.split(r"\bAND\b", right, flags=re.IGNORECASE)):
             atoms.append(_Atom("range", lcol, bound=True))
     return atoms or [_Atom("filter", bound=bound)]
+
+
+def condition_shape(predicate: str) -> tuple[str, str] | None:
+    """what one condition of a keyset listing binds: ``("eq", column)``, ``("range", column)``, or None for anything
+    else (a filter, an interpolation the walk cannot see, several predicates).
+
+    :param predicate: one condition, as written (placeholders as ``$n``)
+    :ptype predicate: str
+    :return: the shape
+    :rtype: tuple[str, str] | None
+    """
+    parts = _conjuncts(_clean(predicate))
+    atoms = _atoms(parts[0]) if len(parts) == 1 else []
+    found: tuple[str, str] | None = None
+    if len(atoms) == 1 and atoms[0].kind in {"eq", "range"}:
+        found = (atoms[0].kind, atoms[0].column[1])
+    return found
 
 
 @dataclass
@@ -580,6 +676,9 @@ def _relations(text: str, masked: str, ctes: set[str], bound_ctes: frozenset[str
                 kind = "source"
             elif bare in ctes or bare.lower() in ctes or _CATALOG.match(name) is not None:
                 kind = "other"
+            elif bare.removesuffix("{}").lower() in reader.ctes and reader.schema.table(bare) is None:
+                # a CTE another statement of the same function defines: its body is judged where it is written
+                kind = "other"
             elif reader.transient(bare):
                 kind = "source"
             else:
@@ -633,37 +732,57 @@ def _owner(level: _Level, qualifier: str) -> list[int]:
     :rtype: list[int]
     """
     if qualifier:
-        return [i for i, rel in enumerate(level.relations) if qualifier in {rel.alias, rel.name.strip('"').lower()}]
+        return [i for i, rel in enumerate(level.relations) if _answers(rel, qualifier)]
     data = [i for i, rel in enumerate(level.relations) if rel.kind == "data"]
     return data if data else list(range(len(level.relations)))
+
+
+def _answers(relation: _Relation, qualifier: str) -> bool:
+    """whether a column qualifier names a relation: an aliased relation answers only to its alias (``FROM memories g``:
+    ``memories.x`` there is the outer row's), an unaliased one to its name, bare or schema-qualified.
+
+    :param relation: the relation
+    :ptype relation: _Relation
+    :param qualifier: the qualifier, lower-cased
+    :ptype qualifier: str
+    :return: whether it does
+    :rtype: bool
+    """
+    written = relation.name.lower().replace('"', "")
+    if relation.alias != written:
+        return qualifier == relation.alias
+    return qualifier in {written, written.rsplit(".", 1)[-1]}
 
 
 def _known(level: _Level, qualifier: str) -> bool:
     return not qualifier or bool(_owner(level, qualifier))
 
 
-def _keys(table: str, reader: Reader) -> tuple[list[tuple[str, ...]], list[tuple[str, tuple[str, ...]]]]:
+def _keys(
+    table: str, reader: Reader
+) -> tuple[list[tuple[str, ...]], list[tuple[str, tuple[str, ...]]], frozenset[str]]:
     """the keys a read of ``table`` may use: its primary keys, and its indexes whose purpose names the reader.
 
     :param table: the relation as written
     :ptype table: str
     :param reader: the judgement's context
     :ptype reader: Reader
-    :return: ``(primary keys, [(index name, columns)])``; a table interpolated in generic code has the key the code
-        names (``{pk}``)
-    :rtype: tuple[list[tuple[str, ...]], list[tuple[str, tuple[str, ...]]]]
+    :return: ``(keys, [(index name, columns)], tenant columns)``: the primary and unique keys; a table interpolated
+        in generic code has the key the code names (``{pk}``)
+    :rtype: tuple[list[tuple[str, ...]], list[tuple[str, tuple[str, ...]]], frozenset[str]]
     """
-    if bare_table(table) is None:
-        return [(PK_TOKEN,)], []
-    declared = reader.schema.table(table)
+    declared = reader.schema.table(table) if bare_table(table) is not None else reader.template
+    if declared is None and bare_table(table) is None:
+        return [(PK_TOKEN,)], [], TENANT_COLUMNS
     if declared is None:
-        return [], []
+        return [], [], TENANT_COLUMNS
     purposed = [
         (index.name, index.columns)
         for index in declared.indexes.values()
-        if index.purpose and index.purpose in reader.names and index.columns
+        if index.columns and set(purposes(index.purpose)) & reader.names
     ]
-    return [*declared.primary_keys, *([(PK_TOKEN,)] if declared.primary_keys else [])], purposed
+    keys = [*declared.primary_keys, *declared.unique_keys]
+    return [*keys, *([(PK_TOKEN,)] if keys else [])], purposed, TENANT_COLUMNS | declared.tenant_columns
 
 
 def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
@@ -679,6 +798,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     count = len(level.relations)
     eq: list[set[str]] = [set() for _ in range(count)]
     ranged: list[set[str]] = [set() for _ in range(count)]
+    contained: list[set[str]] = [set() for _ in range(count)]
     other: list[int] = [0] * count
     joins: list[tuple[int, str, int, str]] = []
     for column in level.outer:
@@ -705,7 +825,11 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
         elif atom.kind in {"eq", "range"} and _known(level, qualifier):
             for i in _owner(level, qualifier):
                 (eq if atom.kind == "eq" else ranged)[i].add(name)
-        elif atom.kind == "filter":
+        elif atom.kind == "contains" and _known(level, qualifier):
+            for i in _owner(level, qualifier):
+                contained[i].add(name)
+                other[i] += 1
+        elif atom.kind in {"filter", "unseen"}:
             for i in _owner(level, ""):
                 other[i] += 1
     for index, relation in enumerate(level.relations):
@@ -725,21 +849,49 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
         for index, relation in enumerate(level.relations):
             if keyed[index]:
                 continue
-            primary, purposed = _keys(relation.name, reader)
-            # generic code over an interpolated table knows the key it names ({pk}), and nothing else about it
-            known[index] = bool(primary) and bare_table(relation.name) is not None
-            hit = _key_hit(primary, purposed, eq[index], ranged[index], other[index], level, index, reader, relation)
+            primary, purposed, tenants = _keys(relation.name, reader)
+            # generic code over an interpolated table knows the key it names ({pk}), and nothing else about it, unless
+            # its module builds the table from a template
+            known[index] = bool(primary) and (bare_table(relation.name) is not None or reader.template is not None)
+            hit = _key_hit(
+                primary,
+                purposed,
+                (eq[index], ranged[index], contained[index], tenants),
+                other[index],
+                level,
+                index,
+                reader,
+                relation,
+            )
             if hit:
                 keyed[index] = True
                 grew = True
     return keyed, known
 
 
+def _covers(key: tuple[str, ...], bound: set[str], tenants: frozenset[str]) -> bool:
+    """whether bound columns cover a leading prefix of ``key`` that is a key: all of it, or a prefix reaching past
+    its tenant and partition columns (a tenant alone is every row of the tenant).
+
+    :param key: the key's columns
+    :ptype key: tuple[str, ...]
+    :param bound: the columns bound by equality
+    :ptype bound: set[str]
+    :param tenants: the table's tenant and partition columns
+    :ptype tenants: frozenset[str]
+    :return: whether it does
+    :rtype: bool
+    """
+    prefix = 0
+    while prefix < len(key) and key[prefix] in bound:
+        prefix += 1
+    return prefix > 0 and (prefix == len(key) or any(column not in tenants for column in key[:prefix]))
+
+
 def _key_hit(
     primary: list[tuple[str, ...]],
     purposed: list[tuple[str, tuple[str, ...]]],
-    eq: set[str],
-    ranged: set[str],
+    bound: tuple[set[str], set[str], set[str], frozenset[str]],
     filters: int,
     level: _Level,
     index: int,
@@ -753,10 +905,8 @@ def _key_hit(
     :ptype primary: list[tuple[str, ...]]
     :param purposed: its indexes whose purpose names the reader, ``(name, columns)``
     :ptype purposed: list[tuple[str, tuple[str, ...]]]
-    :param eq: its columns bound by equality
-    :ptype eq: set[str]
-    :param ranged: its columns bound by a range
-    :ptype ranged: set[str]
+    :param bound: its columns bound by equality, by a range and by containment (``@>``), and its tenant columns
+    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str]]
     :param filters: how many other predicates may filter it
     :ptype filters: int
     :param level: the level
@@ -770,21 +920,36 @@ def _key_hit(
     :return: whether it is keyed
     :rtype: bool
     """
-    if any(key and key[0] in eq for key in primary):
+    eq, ranged, contained, tenants = bound
+    table = bare_table(relation.name)
+    if table is not None and table.startswith(COPY_PREFIX):
+        # on a local copy, a declared key column IS NULL is that key's NULL bucket: keyed
+        eq = eq | {column for key in primary for column in key if column in contained}
+    covering = [key for key in primary if _covers(key, eq, tenants)]
+    if covering:
+        # a unique index keying the read is used by it, when its purpose names the reader
+        for name, columns in purposed:
+            if columns in covering and table is not None:
+                reader.schema.use(table, name, reader.names)
         return True
     for name, columns in purposed:
-        if columns[0] in eq or (columns[0] in ranged and level.limited):
-            table = bare_table(relation.name)
+        prefix = 0
+        while prefix < len(columns) and columns[prefix] in eq | contained:
+            prefix += 1
+        ranged_next = prefix < len(columns) and columns[prefix] in ranged and level.limited
+        if _covers(columns, eq | contained, tenants) or ranged_next:
             if table is not None:
-                reader.schema.used.add((table, name))
+                reader.schema.use(table, name, reader.names)
             return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
-        for key in [*primary, *(columns for _, columns in purposed)]:
+        for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:
             prefix = 0
             while prefix < len(key) and key[prefix] in eq:
                 prefix += 1
             if prefix < len(key) and key[prefix] == order[1] and not (eq - set(key[:prefix])) and ranged <= {order[1]}:
+                if name and table is not None:
+                    reader.schema.use(table, name, reader.names)
                 return True
     return False
 
@@ -936,6 +1101,52 @@ def _outer_columns(text: str, depths: list[int], start: int, depth: int) -> set[
     return {atom.column[1] for p in _conjuncts(where) for atom in _atoms(p) if atom.kind == "eq"}
 
 
+def _source_read(level: _Level, reader: Reader) -> bool:
+    """whether a read of a relation no declaration names reads the source by its own change record, as the
+    function's ``source_change_read`` mark says: past its stamps, by the ids its runs record named, or a whole static
+    input.
+
+    :param level: the read's level
+    :ptype level: _Level
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :return: whether it does
+    :rtype: bool
+    """
+    by_ids = any(atom.kind == "eq" and atom.column[1] in reader.source_ids for atom in level.atoms)
+    unseen = any(atom.kind == "unseen" for atom in level.atoms)
+    stamped = bool(reader.stamps) and _past_stamps(level.where, reader.stamps)
+    return reader.source_unit or stamped or (by_ids and not unseen)
+
+
+def _past_stamps(where: str | None, stamps: frozenset[str]) -> bool:
+    """whether a ``WHERE`` is exactly the source's change-record stamps past bound marks: one predicate, an ``OR`` of
+    ``<stamp> > <bound>`` (``CAST(upload_timestamp AS TIMESTAMP) > CAST($1 AS TIMESTAMP)``), each on a named stamp.
+
+    :param where: the ``WHERE`` text
+    :ptype where: str | None
+    :param stamps: the stamps the mark names, lower-cased
+    :ptype stamps: frozenset[str]
+    :return: whether it is
+    :rtype: bool
+    """
+    predicates = _conjuncts(where) if where is not None else []
+    if len(predicates) != 1:
+        return False
+    for branch in _split(_unwrap(predicates[0]), _OR):
+        operator = _COMPARISON.search(_mask(branch))
+        column = _column(branch[: operator.start()]) if operator is not None else None
+        if (
+            operator is None
+            or operator.group(0) not in {">", ">="}
+            or column is None
+            or column[1] not in stamps
+            or not _bound_value(branch[operator.end() :])
+        ):
+            return False
+    return True
+
+
 def _unkeyed_kind(level: _Level, known: bool, aggregate: bool) -> str:
     """the kind of an unkeyed read.
 
@@ -998,25 +1209,28 @@ def _judge_select(
     clauses = _FROM_END.search(masked, table_end)
     between = masked[table_end : clauses.start() if clauses else len(masked)]
     # text interpolated between the table and its clauses (``FROM t {where}``, ``FROM t{filters}``), or a predicate
-    # that is one interpolation, may be the key: the walk cannot see it, so it does not judge the read
+    # that is one interpolation, may or may not be the key: the walk cannot see it, so unless what it sees keys the
+    # read, the read is unknown (``unknown-predicate``), never a pass
     unseen = (
         _INTERPOLATION.search(between) is not None
-        or (first.name.endswith("{}") and len(first.name) > 2)
+        or (
+            first.name.endswith("{}")
+            and len(first.name) > 2
+            and first.name.lower() != f"{COPY_PREFIX}{{}}"
+            and reader.schema.table(first.name) is None
+        )
         or any(atom.kind == "unseen" for atom in level.atoms)
     )
     aggregate = _AGGREGATE.search(masked[: opening.start() if opening else 0]) is not None or bool(
         re.search(r"\bGROUP\s+BY\b", masked, re.IGNORECASE)
     )
-    table = first.name.removesuffix("{}") if first.name.endswith("{}") and len(first.name) > 2 else first.name
+    table = first.name
     finding: _SqlFinding | None = None
-    if level.where is not None and _NO_ROWS.fullmatch(f"WHERE {level.where.strip()}"):
+    if (level.where is not None and _NO_ROWS.fullmatch(f"WHERE {level.where.strip()}")) or _LIMIT_ZERO.search(masked):
         return None
-    if unseen:
-        # a count or fingerprint is a verification scan whatever narrows it, so load code still names it
-        verify = _VERIFY.search(masked[: opening.start() if opening else 0]) is not None
-        return _SqlFinding(KEYED_COUNT, table) if verify else None
     if (
-        not masked[table_end:].strip()
+        not unseen
+        and not masked[table_end:].strip()
         and len(level.relations) == 1
         and start == _statement_start(text)
         and not aggregate
@@ -1033,9 +1247,13 @@ def _judge_select(
             and _LIMIT_ONE.search(masked) is not None
             and not any(atom.kind != "join" for atom in level.atoms)
         )
-        if probe and len(level.relations) == 1:
+        if probe and len(level.relations) == 1 and not unseen:
             return None
-        return _SqlFinding(_unkeyed_kind(level, known[index], aggregate), relation.name)
+        if not known[index] and _source_read(level, reader):
+            continue
+        kind = "unknown-predicate" if unseen else _unkeyed_kind(level, known[index], aggregate)
+        shown = table if relation is first else relation.name
+        return _SqlFinding(kind, (shown.removesuffix("{}") or shown) if unseen else shown)
     if _VERIFY.search(masked[: opening.start() if opening else 0]) is not None:
         finding = _SqlFinding(KEYED_COUNT, table)
     return finding
@@ -1086,13 +1304,16 @@ def _judge_write(
             unseen = (
                 table.endswith("{}")
                 and len(table) > 2
+                and table.lower() != f"{COPY_PREFIX}{{}}"
+                and reader.schema.table(table) is None
                 or (
                     _INTERPOLATION.search(masked[relative : clauses.start() if clauses else len(masked)]) is not None
                     and kind == "whole-delete"
                     and where is None
                 )
             )
-            if unseen:
+            if unseen and where is None:
+                findings.append(_SqlFinding("unknown-predicate", table.removesuffix("{}") or table))
                 continue
             if where is None:
                 findings.append(_SqlFinding(kind, table))
@@ -1111,13 +1332,15 @@ def _judge_write(
                     text[offset : offset + len(sources.group(1))], sources.group(1), ctes, bound_ctes, reader
                 )
             atoms = [atom for predicate in _conjuncts(where) for atom in _atoms(predicate)]
-            if any(atom.kind == "unseen" for atom in atoms):
-                continue
+            unseen = unseen or any(atom.kind == "unseen" for atom in atoms)
             # a write narrowed by a column of a relation it does not name reads by an outer row's key
             level = _Level([target, *others], atoms, where, None, False, correlated=True)
             keyed, known = _keyed(level, reader)
             if not keyed[0]:
-                findings.append(_SqlFinding(_unkeyed_kind(level, known[0], False), table))
+                written = table.removesuffix("{}") or table if unseen else table
+                findings.append(
+                    _SqlFinding("unknown-predicate" if unseen else _unkeyed_kind(level, known[0], False), written)
+                )
     return findings
 
 
@@ -1145,4 +1368,71 @@ def judge_sql(sql: str, reader: Reader | None = None) -> list[_SqlFinding]:
             judged = _judge_select(text, depths, match.start(), ctes, bound_ctes, reader)
             if judged is not None:
                 findings.append(judged)
+    else:
+        findings.extend(_judge_view(text, reader))
     return findings
+
+
+_VIEW_NAME: Final[re.Pattern[str]] = re.compile(
+    rf"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP\w*\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?{_NAME}\s*(?:\([^)]*\)\s*)?AS\s+",
+    re.IGNORECASE,
+)
+
+
+def _passed_through(body: str) -> set[str] | None:
+    """the columns a view's body passes through unchanged: each select-list item that is a column (``x``, ``t.x``,
+    ``x AS x``); None when it passes every column (``*``).
+
+    :param body: the view's ``SELECT``, cleaned
+    :ptype body: str
+    :return: the columns, lower-cased, or None for all
+    :rtype: set[str] | None
+    """
+    masked = _mask(body)
+    start = _SELECT.search(masked)
+    opening = _FROM.search(masked, start.end()) if start is not None else None
+    if start is None or opening is None:
+        return set()
+    passed: set[str] = set()
+    for item in _split(body[start.end() : opening.start()], re.compile(",")):
+        bare = re.sub(r"^DISTINCT\s+", "", item.strip(), flags=re.IGNORECASE)
+        if bare == "*" or bare.endswith(".*"):
+            return None
+        aliased = re.fullmatch(r"(.+?)\s+(?:AS\s+)?(\"?\w+\"?)", bare, re.IGNORECASE)
+        column = _column(aliased.group(1) if aliased else bare)
+        name = aliased.group(2).strip('"').lower() if aliased else (column[1] if column else "")
+        if column is not None and column[1] == name:
+            passed.add(name)
+    return passed
+
+
+def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
+    """a view reads nothing when it is created; it is declared instead (a copy relation, or a table of the L3
+    catalog), with keys its body passes through unchanged, so a read of it is judged by them and the database pushes
+    the predicate into the body. A temporary view over only rows being written is those rows.
+
+    :param text: the ``CREATE VIEW`` statement, cleaned
+    :ptype text: str
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :return: ``undeclared-view`` for a view declared nowhere, ``view-key-not-passed`` for a key column its body does
+        not pass through
+    :rtype: list[_SqlFinding]
+    """
+    match = _VIEW_NAME.match(text)
+    if match is None:
+        return []
+    name = match.group(1)
+    if reader.transient(name.strip('"')):
+        return []
+    declared = reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
+    if declared is None:
+        return [_SqlFinding("undeclared-view", name)]
+    passed = _passed_through(text[match.end() :])
+    missing = sorted(
+        column
+        for key in [*declared.primary_keys, *declared.unique_keys]
+        for column in key
+        if passed is not None and column not in passed
+    )
+    return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []

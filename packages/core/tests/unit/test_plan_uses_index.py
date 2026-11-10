@@ -32,6 +32,25 @@ def test_an_index_walked_with_no_condition_is_no_keyed_read() -> None:
     assert not plan_uses_index(walked, "datasources_by_kind")
 
 
+def test_a_keyset_page_walking_the_index_under_its_limit_uses_it() -> None:
+    """Flips if an ordered walk of the index that a LIMIT stops (a keyset page's first rows) is not seen as a read
+    of it."""
+    page = {
+        "Node Type": "Limit",
+        "Plans": [{"Node Type": "Index Scan", "Index Name": "turn_dedup_date_updated", "Relation Name": "turn_dedup"}],
+    }
+    assert plan_uses_index(page, "turn_dedup_date_updated")
+
+
+def test_sqlite_query_plan_rows_name_the_index_they_use() -> None:
+    """Flips if SQLite's EXPLAIN QUERY PLAN rows, as mappings or tuples, are not read, or a scan of the table is
+    taken for the index."""
+    used = [{"detail": "SCAN turn_dedup USING INDEX turn_dedup_date_updated"}]
+    assert plan_uses_index(used, "turn_dedup_date_updated")
+    assert plan_uses_index([(2, 0, 0, "SEARCH t USING COVERING INDEX t_by_k (k=?)")], "t_by_k")
+    assert not plan_uses_index([(2, 0, 0, "SCAN turn_dedup")], "turn_dedup_date_updated")
+
+
 def test_purpose_plan_test_and_reason_never_make_two_indexes_differ() -> None:
     """Flips if the no-whole-reads notes an index carries change what it is, so a declared index stops equalling
     the one its migration made."""

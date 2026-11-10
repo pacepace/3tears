@@ -32,6 +32,7 @@ Usage, around the code under test (anything that reads through ``fetch`` / ``fet
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -359,24 +360,51 @@ def _whole_scans(plan: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
         yield from _whole_scans(child)
 
 
-def plan_uses_index(plan: StatementPlan | Mapping[str, Any], index: str) -> bool:
-    """whether a statement's plan finds its rows through ``index``, by an index condition (an index read with none
-    walks every entry, which is no keyed read).
+def plan_uses_index(plan: StatementPlan | Mapping[str, Any] | Sequence[Any], index: str) -> bool:
+    """whether a statement's plan finds its rows through ``index``: by an index condition, or walking it in order
+    under a ``Limit`` (a keyset page's first rows). An index walked whole with nothing to stop it is no keyed read.
 
     The plan test an index's ``plan_test`` names (:class:`threetears.core.collections.schema_backed.IndexDef`) calls
     this on the plan of the read its ``purpose`` names, seeded past a size where the planner would rather scan.
+    Postgres and YugabyteDB give a plan (:func:`explain_statement`, or its root node); SQLite gives the rows of
+    ``EXPLAIN QUERY PLAN`` (each a mapping with ``detail``, or a tuple ending in it), where the index is read when a
+    row says ``USING INDEX <index>`` or ``USING COVERING INDEX <index>``.
 
-    :param plan: the statement's plan (:func:`explain_statement`), or its root node
-    :ptype plan: StatementPlan | Mapping[str, Any]
+    :param plan: the statement's plan, its root node, or SQLite's ``EXPLAIN QUERY PLAN`` rows
+    :ptype plan: StatementPlan | Mapping[str, Any] | Sequence[Any]
     :param index: the index name
     :ptype index: str
-    :return: whether some scan or bitmap index scan of the plan reads ``index`` by an index condition
+    :return: whether the plan reads ``index`` as a keyed read
     :rtype: bool
     """
-    node = plan.plan if isinstance(plan, StatementPlan) else plan
-    if node.get("Index Name") == index and "Index Cond" in node:
+    if isinstance(plan, StatementPlan):
+        return _reads_index(plan.plan, index, limited=False)
+    if isinstance(plan, Mapping):
+        return _reads_index(plan, index, limited=False)
+    pattern = re.compile(rf"USING (?:COVERING )?INDEX {re.escape(index)}\b")
+    details = [
+        row.get("detail", "") if isinstance(row, Mapping) else row[-1] if isinstance(row, tuple) else row
+        for row in plan
+    ]
+    return any(pattern.search(str(detail)) for detail in details)
+
+
+def _reads_index(node: Mapping[str, Any], index: str, *, limited: bool) -> bool:
+    """whether a plan node, or one under it, reads ``index`` by a condition or in order under a ``Limit``.
+
+    :param node: a plan node
+    :ptype node: Mapping[str, Any]
+    :param index: the index name
+    :ptype index: str
+    :param limited: whether a ``Limit`` node is above it
+    :ptype limited: bool
+    :return: whether it does
+    :rtype: bool
+    """
+    limited = limited or node.get("Node Type") == "Limit"
+    if node.get("Index Name") == index and ("Index Cond" in node or limited):
         return True
-    return any(plan_uses_index(child, index) for child in node.get("Plans", ()))
+    return any(_reads_index(child, index, limited=limited) for child in node.get("Plans", ()))
 
 
 def _relations(plan: Mapping[str, Any]) -> Iterator[str]:

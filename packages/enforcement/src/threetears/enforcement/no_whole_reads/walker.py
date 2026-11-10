@@ -46,8 +46,16 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
-from threetears.enforcement.no_whole_reads.schema import SchemaCatalog
-from threetears.enforcement.no_whole_reads.sql import HEAD, KEYED_COUNT, PK_TOKEN, Reader, is_sql, judge_sql
+from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, bare_table, purposes
+from threetears.enforcement.no_whole_reads.sql import (
+    HEAD,
+    KEYED_COUNT,
+    PK_TOKEN,
+    Reader,
+    condition_shape,
+    is_sql,
+    judge_sql,
+)
 
 __all__ = [
     "DEFAULT_NARROWING_KEYWORDS",
@@ -115,6 +123,8 @@ _READ_KINDS: Final[frozenset[str]] = frozenset(
         "unbound-where",
         "non-key-where",
         "unknown-schema",
+        "unknown-predicate",
+        "unkeyed-sort",
         "unkeyed-pager",
         "may-read-whole",
         "whole-read",
@@ -129,11 +139,21 @@ _OPERATOR_RESET_KINDS: Final[frozenset[str]] = frozenset({"truncate", "truncate-
 #: the kinds an operator's explicit one-off command (``@operator_command``) may hold: the reads its completeness needs
 _OPERATOR_COMMAND_KINDS: Final[frozenset[str]] = _READ_KINDS | frozenset({"calls-whole-read"})
 
-#: the operator marks, by decorator name, onto the kinds each lets through
+#: the marks, by decorator name, onto the kinds each lets through inside the marked function. A security backstop's
+#: whole pass is accepted (and printed); a source change read lets nothing through by kind: the judge passes only its
+#: reads past the source's own stamps
 _OPERATOR_MARKS: Final[dict[str, frozenset[str]]] = {
     "operator_reset": _OPERATOR_RESET_KINDS,
     "operator_command": _OPERATOR_COMMAND_KINDS,
+    "security_backstop": _OPERATOR_COMMAND_KINDS,
+    "source_change_read": frozenset(),
 }
+
+#: a function no source change read marks
+_NO_SOURCE: Final[tuple[frozenset[str], frozenset[str], bool]] = (frozenset(), frozenset(), False)
+
+#: the marks reachable only from their own entry: every caller in the repo carries the same mark
+_ENTRY_ONLY_MARKS: Final[frozenset[str]] = frozenset({"operator_reset", "operator_command"})
 
 #: calls whose first argument is SQL text that is run as written
 _EXEC_CALLS: Final[frozenset[str]] = frozenset(
@@ -152,6 +172,9 @@ _EXEC_CALLS: Final[frozenset[str]] = frozenset(
         "sql",
         "query",
         "l3_fetch_arrow",
+        # 3tears' own query backends (DuckDB, SQLite, the query clients)
+        "execute_query",
+        "execute_arrow",
     }
 )
 
@@ -238,6 +261,10 @@ class OperatorMark:
     :ivar mark: ``operator_reset`` or ``operator_command``
     :ivar reason: the mark's reason, empty when it is not a literal
     :ivar proof: the mark's ``proof=``, ``<test file>::<test function>``, empty when it is not a literal
+    :ivar speed: a security backstop's ``speed=``, its calibrated speed test
+    :ivar stamps: a source change read's ``stamps=``
+    :ivar ids: a source change read's ``ids=``
+    :ivar unit: a source change read's ``unit=``
     """
 
     path: str
@@ -246,6 +273,10 @@ class OperatorMark:
     mark: str
     reason: str
     proof: str
+    speed: str = ""
+    stamps: tuple[str, ...] = ()
+    ids: tuple[str, ...] = ()
+    unit: str = ""
 
     @property
     def kinds(self) -> frozenset[str]:
@@ -312,7 +343,8 @@ class WholeReadScan:
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
 
 
-#: callees that only quote the name they are given
+#: callees that only quote the name they are given: checked before a template function, since a quoter returning
+#: ``'"' + name + '"'`` is one too, and its template (``"{}"``) would hide the name it quotes
 _QUOTERS: Final[frozenset[str]] = frozenset({"quote_identifier", "_quote_ident", "quote_ident", "_quoted", "quoted"})
 
 
@@ -322,9 +354,55 @@ _KEY_NAME: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: a local copy's relation accessors: ``snapshot.relation(NAME)`` names the copy's own table, never the L3 one
+_COPY_CALLS: Final[frozenset[str]] = frozenset({"relation", "relation_reading"})
+
+
+#: the key under which a function returning a string template is kept beside the names bound to strings
+_TEMPLATE: Final[str] = "{}()"
+
+
+def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -> str | None:
+    """the string a placeholder argument statically is: a literal, a name bound to one (a module constant, an
+    imported one, or a string the function binds once), a call of a function returning a template
+    (``note_table(index)`` -> ``threetears_change_notes_{}``), a one-argument call on any of these
+    (``quote_identifier(NAME)``), or a sum of them.
+
+    :param value: the expression
+    :ptype value: ast.expr
+    :param constants: names onto their strings, and template functions under ``<name>()``
+    :ptype constants: dict[str, str]
+    :param depth: how deep the walk is
+    :ptype depth: int
+    :return: the string, or None
+    :rtype: str | None
+    """
+    text: str | None = None
+    if depth > 5:
+        text = None
+    elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+        text = value.value
+    elif isinstance(value, ast.Name):
+        text = constants.get(value.id)
+    elif isinstance(value, ast.Call) and len(value.args) == 1 and _final(value) in _QUOTERS:
+        text = _constant_text(value.args[0], constants, depth + 1)
+    elif isinstance(value, ast.Call) and _TEMPLATE.format(_final(value)) in constants:
+        text = constants[_TEMPLATE.format(_final(value))]
+        # a helper returning a statement is judged once where it is written, with its own module's constants; in its
+        # caller (``FROM ({helper()}) AS d``, ``x AS ({helper()})``) it is an already-judged subquery or CTE
+        text = None if is_sql(text) else text
+    elif isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        left = _constant_text(value.left, constants, depth + 1)
+        right = _constant_text(value.right, constants, depth + 1)
+        text = None if left is None or right is None else left + right
+    return text
+
+
 def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
-    """what an f-string placeholder reads as: a module constant's text (``{_MARK_TABLE}``, or quoted), ``{pk}`` when
-    a name in it says it is the key (``{pk}``, ``{self._key_column}``, ``{", ".join(pk_cols)}``), else ``{}``.
+    """what an f-string placeholder reads as: a constant's text (``{_MARK_TABLE}``, an imported one, or one handed
+    to a call: ``{quote(TABLE)}``), ``copy.<name>`` for a local copy's relation (``{snapshot.relation(GEOS)}``),
+    ``{pk}`` when a name in it says it is the key (``{pk}``, ``{self._key_column}``, ``{", ".join(pk_cols)}``), else
+    ``{}``.
 
     :param value: the placeholder's expression
     :ptype value: ast.expr
@@ -333,11 +411,18 @@ def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
     :return: the text
     :rtype: str
     """
-    name = value
-    if isinstance(value, ast.Call) and len(value.args) == 1 and _final(value) in _QUOTERS:
-        name = value.args[0]
-    if isinstance(name, ast.Name) and name.id in constants:
-        return constants[name.id]
+    known = _constant_text(value, constants)
+    if known is not None:
+        return known
+    if isinstance(value, ast.Call) and value.args:
+        # ``{quote(TABLE)}``, ``{snapshot.relation(GEOS)}``: a call on a constant reads as the constant; a local copy's
+        # relation (``.relation(NAME)``, ``.relation_reading(NAME, ...)``) as ``copy.<name>``, its own key namespace
+        argument = _constant_text(value.args[0], constants)
+        if argument is not None and (_final(value) in _COPY_CALLS or not argument.count("{")):
+            return f"{COPY_PREFIX}{argument}" if _final(value) in _COPY_CALLS else argument
+        if _final(value) in _COPY_CALLS:
+            # a copy relation named at run time: judged against the default key every copy declares
+            return f"{COPY_PREFIX}{{}}"
     names = [
         node.id if isinstance(node, ast.Name) else node.attr
         for node in ast.walk(value)
@@ -454,6 +539,9 @@ class _ModuleWalk(ast.NodeVisitor):
         transient: re.Pattern[str] | None,
         verify: bool,
         schema: SchemaCatalog | None = None,
+        imported: dict[str, str] | None = None,
+        exec_calls: frozenset[str] = frozenset(),
+        cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -476,6 +564,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype verify: bool
         :param schema: every table's declared key and indexes, the statements are judged against
         :ptype schema: SchemaCatalog | None
+        :param imported: the strings the module imports from the repo's other modules, by the name it imports them as
+        :ptype imported: dict[str, str] | None
+        :param exec_calls: the repo's own calls that run their first argument as SQL, beside :data:`_EXEC_CALLS`
+        :ptype exec_calls: frozenset[str]
+        :param cte_arguments: ``(function, parameter)`` onto each call site's argument: ``(site, whether it is a string
+            literal its calling function defines as a CTE)`` (:func:`_cte_arguments`)
+        :ptype cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None
         :return: nothing
         :rtype: None
         """
@@ -497,10 +592,17 @@ class _ModuleWalk(ast.NodeVisitor):
         self._narrowing = narrowing
         self._transient = transient
         self._verify = verify
+        self._exec_calls = _EXEC_CALLS | exec_calls
+        self._cte_arguments = cte_arguments or {}
         self._schema = schema if schema is not None else SchemaCatalog()
         #: module and class constants bound to strings, ``<path>::<qualified name>``
         self.constants: set[str] = set()
         self._loops: list[set[str]] = []
+        #: per enclosing function, the CTE names its statements define
+        self._ctes: list[frozenset[str]] = []
+        self._function_nodes: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+        #: per enclosing function, the terms a ``source_change_read`` mark names: stamps, ids, a whole static unit
+        self._source: list[tuple[frozenset[str], frozenset[str], bool]] = []
         self.stubs: set[str] = set()
         self._stack: list[str] = []
         self._classes: list[str] = []
@@ -534,6 +636,14 @@ class _ModuleWalk(ast.NodeVisitor):
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
         }
+        # a temp view over only the rows being written (``CREATE TEMP VIEW typed AS SELECT ... FROM raw``) is those rows
+        self._registered |= _transient_views(tree, self._registered, transient)
+        #: the module's sort vocabularies (``_SORT_COLUMNS: Final = {Field.NAME: SortColumn(column=..., index=...)}``)
+        self._sort_mappings: dict[str, list[ast.Call]] = _sort_mappings(tree)
+        #: each module function onto the vocabularies it, or a function it calls, uses
+        self._mapping_users: dict[str, set[str]] = _mapping_users(tree, set(self._sort_mappings))
+        self._envs[0].update(imported or {})
+        self._envs[0].update(_module_strings(tree))
         self._bind(tree.body, self._envs[0])
         self._constants_of(tree.body, "")
 
@@ -563,6 +673,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 self.constants.add(f"{self.path}::{scope}{target.id}")
 
     @property
+    def _function_node(self) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """the innermost function the walk is in.
+
+        :return: it, or None at module or class level
+        :rtype: ast.FunctionDef | ast.AsyncFunctionDef | None
+        """
+        return self._function_nodes[-1] if self._function_nodes else None
+
+    @property
     def _function(self) -> str:
         """the qualified name of the scope the walk is in.
 
@@ -572,7 +691,9 @@ class _ModuleWalk(ast.NodeVisitor):
         return ".".join(self._stack) if self._stack else "<module>"
 
     def _bind(self, body: list[ast.stmt], env: dict[str, str]) -> None:
-        """record the string each simple assignment under ``body`` binds (not in nested functions).
+        """record the string each simple assignment under ``body`` binds (not in nested functions). A name the body
+        binds more than once (``where = ""`` then ``where = "WHERE ..."``, or ``where += ...``) has no one text, so it
+        is left unbound: a statement built from it reads it as an interpolation the walk cannot see.
 
         :param body: statements
         :ptype body: list[ast.stmt]
@@ -581,6 +702,12 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
+        stores: dict[str, int] = {}
+        for node in _own_nodes(body):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                stores[node.id] = stores.get(node.id, 0) + 1
+            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                stores[node.target.id] = stores.get(node.target.id, 0) + 2
         for node in _own_nodes(body):
             target: ast.expr | None = None
             value: ast.expr | None = None
@@ -590,8 +717,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 target, value = node.target, node.value
             if isinstance(target, ast.Name) and value is not None:
                 text = _string_text(value, env)
-                if text is not None:
+                if text is not None and stores.get(target.id, 0) == 1:
                     env[target.id] = text
+                else:
+                    env.pop(target.id, None)
 
     def _hit(self, node: ast.AST, symbol: str, statement: str) -> None:
         """record one hit at ``node``.
@@ -645,17 +774,24 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         self._stack.append(node.name)
         self.definitions.add(f"{self.path}::{self._function}")
+        # a source change read's terms hold in the function and every function nested in it
+        self._source.append(self._source[-1] if self._source else _NO_SOURCE)
         self._mark_operator(node)
         if _is_stub(node):
             self.stubs.add(f"{self.path}::{self._function}")
         env = dict(self._envs[-1])
         self._bind(node.body, env)
         self._envs.append(env)
+        self._ctes.append(_function_ctes(node.body))
+        self._function_nodes.append(node)
         owner = self._classes[-1] if self._classes and self._function.startswith(f"{self._classes[-1]}.") else ""
         self._classes.append(owner)
         self.generic_visit(node)
         self._classes.pop()
         self._envs.pop()
+        self._ctes.pop()
+        self._function_nodes.pop()
+        self._source.pop()
         self._stack.pop()
 
     def _mark_operator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -670,7 +806,19 @@ class _ModuleWalk(ast.NodeVisitor):
             mark = _final(decorator) if isinstance(decorator, ast.Call) else None
             if isinstance(decorator, ast.Call) and mark in _OPERATOR_MARKS:
                 reason = decorator.args[0] if decorator.args else None
-                proof = next((k.value for k in decorator.keywords if k.arg == "proof"), None)
+                literal = {
+                    k.arg: k.value.value
+                    for k in decorator.keywords
+                    if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)
+                }
+                stamps, ids = (
+                    tuple(
+                        element.value
+                        for element in (node_.elts if isinstance(node_, (ast.Tuple, ast.List)) else [])
+                        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+                    )
+                    for node_ in (_keyword_value(decorator, "stamps"), _keyword_value(decorator, "ids"))
+                )
                 self.operators.append(
                     OperatorMark(
                         self.path,
@@ -678,9 +826,19 @@ class _ModuleWalk(ast.NodeVisitor):
                         node.lineno,
                         mark,
                         reason.value if isinstance(reason, ast.Constant) and isinstance(reason.value, str) else "",
-                        proof.value if isinstance(proof, ast.Constant) and isinstance(proof.value, str) else "",
+                        literal.get("proof", ""),
+                        literal.get("speed", ""),
+                        stamps,
+                        ids,
+                        literal.get("unit", ""),
                     )
                 )
+                if mark == "source_change_read":
+                    self._source[-1] = (
+                        frozenset(stamp.lower() for stamp in stamps),
+                        frozenset(column.lower() for column in ids),
+                        literal.get("unit", "") == "table",
+                    )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """walk a function.
@@ -719,6 +877,22 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         return not piece and not prose
 
+    def _cte_parameters(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+        """the function's parameters that every call site in the repo fills with a string literal its own statements
+        define as a CTE (``kept_runs_sql("runs")`` inside ``WITH runs AS (...)``).
+
+        :param function: the function
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+        :return: the parameter names
+        :rtype: set[str]
+        """
+        found: set[str] = set()
+        for argument in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]:
+            sites = self._cte_arguments.get((function.name, argument.arg), [])
+            if sites and all(ok for _, ok in sites):
+                found.add(argument.arg)
+        return found
+
     def _reader(self, node: ast.AST) -> Reader:
         """what a statement at ``node`` is judged against: the schema, and the names of the code it is written in
         (its function, and the constant it is bound to).
@@ -741,7 +915,20 @@ class _ModuleWalk(ast.NodeVisitor):
             if isinstance(target, ast.Name):
                 scope = "" if self._function == "<module>" else f"{self._function}."
                 names.add(f"{self.path}::{scope}{target.id}")
-        return Reader(self._schema, frozenset(names), self._transient_table)
+        stamps, ids, unit = self._source[-1] if self._source else _NO_SOURCE
+        return Reader(
+            schema=self._schema,
+            names=frozenset(names),
+            transient=self._transient_table,
+            ctes=(self._ctes[-1] if self._ctes else frozenset())
+            | frozenset(
+                f"__cte_{name}" for name in (self._cte_parameters(self._function_node) if self._function_node else ())
+            ),
+            stamps=stamps,
+            template=self._schema.templates.get(self.path),
+            source_ids=ids,
+            source_unit=unit,
+        )
 
     def _judge_string(self, node: ast.expr) -> None:
         """judge a string expression that is SQL.
@@ -751,7 +938,16 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        text = _string_text(node, self._envs[0]) if self._maximal_string(node) else None
+        if isinstance(node, ast.JoinedStr) and self._maximal_string(node) and self._keyset_listing(node):
+            return
+        # a placeholder resolves to a module constant, or to a string the enclosing function binds once; a parameter
+        # every caller fills with a CTE its own statement defines is that CTE (judged where the caller builds it)
+        env = self._envs[-1]
+        function = self._function_node
+        cte_params = self._cte_parameters(function) if function is not None else set()
+        if cte_params:
+            env = {**env, **{name: f"__cte_{name}" for name in cte_params}}
+        text = _string_text(node, env) if self._maximal_string(node) else None
         for finding in judge_sql(text, self._reader(node)) if text is not None and is_sql(text) else []:
             if self._transient_table(finding.table):
                 continue
@@ -764,15 +960,176 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(parent, ast.Call) and self._runs(parent, node):
                 self._hit(node, f"whole-select {finding.table}", text or "")
 
-    def _transient_table(self, table: str) -> bool:
-        """whether a relation is a change set (a registered relation, or one the repo names transient).
+    def _keyset_listing(self, node: ast.JoinedStr) -> bool:
+        """judge a keyset listing (``SELECT ... FROM t {where_sql(conditions)} ORDER BY {order_by_clause(spec)}
+        LIMIT $1``) once per column of its sort vocabulary: each ``SortColumn`` names an ``index`` declared on the
+        table, whose purpose is this function and whose columns are a bound equality prefix then the sort column; the
+        listing's conditions may only be that prefix, the index's partial ``WHERE``, or the page's range on the sort
+        column (``keyset_condition``). A column failing any of it is ``unkeyed-sort``.
 
-        :param table: the relation as written
+        :param node: an f-string
+        :ptype node: ast.JoinedStr
+        :return: whether it is such a listing (judged here), False to judge it as any statement
+        :rtype: bool
+        """
+        order = next(
+            (
+                part.value
+                for part in node.values
+                if isinstance(part, ast.FormattedValue)
+                and isinstance(part.value, ast.Call)
+                and _final(part.value) == "order_by_clause"
+            ),
+            None,
+        )
+        top = self._stack[0] if self._stack else ""
+        text = _string_text(node, self._envs[-1]) or ""
+        table_match = re.search(r"\bFROM\s+([\w.\"]+)", text, re.IGNORECASE)
+        if order is None or table_match is None:
+            return False
+        table = table_match.group(1)
+        declared = self._schema.table(table)
+        # the vocabularies handed to this listing; failing that, those whose sorts are indexes of its table
+        mappings = sorted(self._mapping_users.get(top, set())) or sorted(
+            name
+            for name, sorts in self._sort_mappings.items()
+            if declared is not None
+            and any(
+                (_string_text(_keyword_value(sort, "index") or ast.Constant(""), {}) or "").lower() in declared.indexes
+                for sort in sorts
+            )
+        )
+        if not mappings:
+            return False
+        conditions = self._listing_conditions(node)
+        reader = self._reader(node)
+        for mapping in mappings:
+            for sort in self._sort_mappings[mapping]:
+                column = (
+                    (_string_text(_keyword_value(sort, "column") or sort.args[0], {}) or "?")
+                    if (sort.args or _keyword_value(sort, "column"))
+                    else "?"
+                )
+                index = _string_text(_keyword_value(sort, "index") or ast.Constant(""), self._envs[0]) or ""
+                problem = self._sort_problem(table, column.rsplit(".", 1)[-1].lower(), index, conditions, reader)
+                if problem is not None:
+                    self._hit(node, f"unkeyed-sort {table}.{column}", f"{text} -- {mapping}: {problem}")
+        return True
+
+    def _listing_conditions(self, node: ast.JoinedStr) -> list[str | None]:
+        """the conditions a listing's ``WHERE`` placeholder joins: each a string (``kind = $9``), None for the page's
+        range on the sort column (``keyset_condition``), or ``{}`` for one the walk cannot see.
+
+        :param node: the listing's f-string
+        :ptype node: ast.JoinedStr
+        :return: the conditions
+        :rtype: list[str | None]
+        """
+        function = self._function_node
+        names = {
+            part.value.id
+            for part in node.values
+            if isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)
+        }
+        listed: set[str] = set()
+        for child in _own_nodes(function.body if function is not None else []):
+            if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+                value = child.value
+                if child.targets[0].id in names and isinstance(value, ast.Call) and _final(value) == "where_sql":
+                    listed.update(arg.id for arg in value.args if isinstance(arg, ast.Name))
+        found: list[str | None] = []
+        for child in _own_nodes(function.body if function is not None else []):
+            elements: list[ast.expr] = []
+            if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                target = child.targets[0] if isinstance(child, ast.Assign) else child.target
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id in listed
+                    and isinstance(child.value, (ast.List, ast.Tuple))
+                ):
+                    elements = list(child.value.elts)
+            elif isinstance(child, ast.Call) and _final(child) in {"append", "extend"}:
+                receiver = child.func.value if isinstance(child.func, ast.Attribute) else None
+                if isinstance(receiver, ast.Name) and receiver.id in listed and child.args:
+                    argument = child.args[0]
+                    elements = (
+                        list(argument.elts)
+                        if _final(child) == "extend" and isinstance(argument, (ast.List, ast.Tuple))
+                        else [argument]
+                    )
+            for element in elements:
+                if isinstance(element, ast.Call) and _final(element) == "keyset_condition":
+                    found.append(None)
+                    continue
+                written = _string_text(element, self._envs[-1])
+                found.append(re.sub(r"\$\{\}", "$9", written) if written is not None else "{}")
+        return found
+
+    def _sort_problem(
+        self, table: str, column: str, index: str, conditions: list[str | None], reader: Reader
+    ) -> str | None:
+        """what keeps one sort column of a listing from being a keyset page through its index, if anything.
+
+        :param table: the listing's table
+        :ptype table: str
+        :param column: the sort column, unqualified
+        :ptype column: str
+        :param index: the index its ``SortColumn`` names, empty for none
+        :ptype index: str
+        :param conditions: the listing's conditions (:meth:`_listing_conditions`)
+        :ptype conditions: list[str | None]
+        :param reader: the listing's reader
+        :ptype reader: Reader
+        :return: the problem, or None when every page is keyed
+        :rtype: str | None
+        """
+        declared = self._schema.table(table)
+        found = declared.indexes.get(index.lower()) if declared is not None and index else None
+        problem: str | None = None
+        if not index:
+            problem = f"sort {column} names no index"
+        elif found is None:
+            problem = f"sort {column} names index {index}, which {table} does not declare"
+        elif not set(purposes(found.purpose)) & reader.names:
+            problem = f"index {index}'s purpose is {found.purpose or 'none'}, not this listing"
+        elif column not in found.columns:
+            problem = f"index {index} does not order by {column}"
+        else:
+            partial = " ".join(found.where.lower().split())
+            prefix = found.columns[: found.columns.index(column)]
+            bound: set[str] = set()
+            for condition in conditions:
+                shape = condition_shape(condition) if condition is not None else ("range", column)
+                if condition is not None and " ".join(condition.lower().split()) == partial:
+                    continue
+                if condition is not None and _keyed_exists(condition, table, reader):
+                    # a correlated EXISTS whose own read is keyed filters each row of the page, reading no more
+                    continue
+                if shape is not None and (shape == ("range", column) or (shape[0] == "eq" and shape[1] in prefix)):
+                    bound.add(shape[1])
+                    continue
+                problem = (
+                    f"condition {condition!r} is neither {index}'s equality prefix {list(prefix)}, its partial WHERE, "
+                    f"nor the page's range on {column}"
+                )
+                break
+            if problem is None and not set(prefix) <= bound:
+                problem = f"no condition binds {sorted(set(prefix) - bound)}, the columns {index} orders {column} under"
+            bare = bare_table(table)
+            if problem is None and bare is not None:
+                self._schema.use(bare, index.lower(), reader.names)
+        return problem
+
+    def _transient_table(self, table: str) -> bool:
+        """whether a relation is a change set (a registered relation, or one the repo names transient), by its
+        resolved name (a constant's text, a local copy's relation without its ``copy.``).
+
+        :param table: the relation as written, its constants resolved
         :ptype table: str
         :return: whether it is no data table
         :rtype: bool
         """
-        bare = table.strip('"')
+        bare = table.strip('"').removeprefix(COPY_PREFIX)
         return bare in self._registered or (self._transient is not None and self._transient.search(bare) is not None)
 
     def _runs(self, call: ast.Call, argument: ast.expr) -> bool:
@@ -788,7 +1145,7 @@ class _ModuleWalk(ast.NodeVisitor):
         sql_keyword = any(k.value is argument and k.arg in {"query", "sql", "statement"} for k in call.keywords)
         first = bool(call.args) and call.args[0] is argument
         second = len(call.args) > 1 and call.args[1] is argument and _final(call) in {"l3_fetch_arrow", "query"}
-        return _final(call) in _EXEC_CALLS and (first or second or sql_keyword)
+        return _final(call) in self._exec_calls and (first or second or sql_keyword)
 
     def visit_Constant(self, node: ast.Constant) -> None:
         """judge a string literal.
@@ -934,14 +1291,22 @@ class _ModuleWalk(ast.NodeVisitor):
             self._hit(node, f"may-read-whole {name}", spelled)
         elif pager and not narrowed and not any(k.arg is None for k in node.keywords):
             self._hit(node, f"unkeyed-pager {name}", spelled)
+        # a record saying the whole table changed (``NotedChange(whole_table=True)``) is built, not read: the flag is
+        # judged where it is consumed
+        constructs = name[:1].isupper()
         for keyword in node.keywords:
-            if keyword.arg in _WHOLE_FLAGS and isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+            if (
+                not constructs
+                and keyword.arg in _WHOLE_FLAGS
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+            ):
                 self._hit(node, f"whole-flag {keyword.arg}=", spelled)
         if name in {"add", "update", "extend"} and segments and _WHOLE_SET.search(segments[-1]):
             self._hit(node, f"marks-whole {segments[-1]}", spelled)
         if name == "truncate" and segments and _STORE.search(segments[-1]):
             self._hit(node, "truncate-call truncate", spelled)
-        if name in _EXEC_CALLS:
+        if name in self._exec_calls:
             self._judge_named_sql(node)
         narrowed = narrowed or any(
             isinstance(value, ast.Dict)
@@ -1017,6 +1382,173 @@ class _ModuleWalk(ast.NodeVisitor):
                 receiver_name,
             )
         )
+
+
+def _keyed_exists(condition: str, table: str, reader: Reader) -> bool:
+    """whether a listing's condition is a correlated ``EXISTS (SELECT ... WHERE inner.k = outer.k ...)`` whose own read
+    is keyed: a per-row filter of the page (the caller-visibility clause), judged on its own.
+
+    :param condition: the condition
+    :ptype condition: str
+    :param table: the listing's table, the outer row the subquery correlates with
+    :ptype table: str
+    :param reader: the listing's reader
+    :ptype reader: Reader
+    :return: whether it is
+    :rtype: bool
+    """
+    stripped = condition.strip()
+    if re.match(r"(?:NOT\s+)?EXISTS\s*\(", stripped, re.IGNORECASE) is None:
+        return False
+    # the subquery is judged inside a statement reading the listing's table by its key, so only its own read counts
+    probe = f"SELECT 1 FROM {table} WHERE {{pk}} = $1 AND {stripped}"
+    return not judge_sql(probe, reader)
+
+
+def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
+    """a call's keyword argument.
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param name: the keyword
+    :ptype name: str
+    :return: its value, or None
+    :rtype: ast.expr | None
+    """
+    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+
+
+def _sort_mappings(tree: ast.Module) -> dict[str, list[ast.Call]]:
+    """a module's sort vocabularies: each module-level dict whose values are all ``SortColumn(...)``.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: the vocabulary's name onto its ``SortColumn`` calls
+    :rtype: dict[str, list[ast.Call]]
+    """
+    found: dict[str, list[ast.Call]] = {}
+    for statement in tree.body:
+        target = (
+            statement.targets[0]
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+            else (statement.target if isinstance(statement, ast.AnnAssign) else None)
+        )
+        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, ast.Dict)
+            and value.values
+            and all(isinstance(entry, ast.Call) and _final(entry) == "SortColumn" for entry in value.values)
+        ):
+            found[target.id] = [entry for entry in value.values if isinstance(entry, ast.Call)]
+    return found
+
+
+def _mapping_users(tree: ast.Module, mappings: set[str]) -> dict[str, set[str]]:
+    """each module function onto the sort vocabularies actually handed to it: an endpoint resolving
+    ``spec = _SORT_COLUMNS[sort]`` and passing ``spec`` (or ``_SORT_COLUMNS[sort]`` itself) to the listing, or the
+    listing resolving it itself.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param mappings: the module's vocabulary names
+    :ptype mappings: set[str]
+    :return: function name onto vocabulary names
+    :rtype: dict[str, set[str]]
+    """
+
+    def subscripted(node: ast.expr | None) -> str | None:
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in mappings:
+            return node.value.id
+        return None
+
+    users: dict[str, set[str]] = {}
+    for function in (s for s in tree.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        resolved: dict[str, str] = {}
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                mapping = subscripted(node.value)
+                if mapping is not None:
+                    resolved[node.targets[0].id] = mapping
+                    users.setdefault(function.name, set()).add(mapping)
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
+                    mapping = subscripted(argument) or (
+                        resolved.get(argument.id) if isinstance(argument, ast.Name) else None
+                    )
+                    if mapping is not None:
+                        users.setdefault(node.func.id, set()).add(mapping)
+    return users
+
+
+#: a CTE a statement defines: ``WITH name AS (``, ``, name AS (``
+_CTE_DEFINED: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*([A-Za-z_]\w*)\s*(?:\([^()]*\)\s*)?AS\s*(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
+    re.IGNORECASE,
+)
+
+
+#: a temporary view a statement creates, and its body
+_TEMP_VIEW: Final[re.Pattern[str]] = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?\"?(\w+)\"?\s+AS\s+(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: a relation a ``FROM`` or ``JOIN`` names
+_READS_FROM: Final[re.Pattern[str]] = re.compile(r"\b(?:FROM|JOIN)\s+\"?([\w{}]+)\"?", re.IGNORECASE)
+
+
+def _transient_views(tree: ast.Module, registered: set[str], transient: re.Pattern[str] | None) -> set[str]:
+    """the temporary views a module creates over only transient relations (rows registered from memory, a stage):
+    each is those rows too, never a data table.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param registered: the relations the module registers from memory
+    :ptype registered: set[str]
+    :param transient: the repo's transient relations
+    :ptype transient: re.Pattern[str] | None
+    :return: the views
+    :rtype: set[str]
+    """
+    views: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        text = _string_text(node, {}) if isinstance(node, (ast.Constant, ast.JoinedStr)) else None
+        match = _TEMP_VIEW.search(text) if isinstance(text, str) else None
+        if match is not None:
+            views[match.group(1)] = _READS_FROM.findall(match.group(2))
+    found: set[str] = set()
+    grew = True
+    while grew:
+        grew = False
+        for view, reads in views.items():
+            known = registered | found
+            if (
+                view not in found
+                and reads
+                and all(name in known or (transient is not None and transient.search(name)) for name in reads)
+            ):
+                found.add(view)
+                grew = True
+    return found
+
+
+def _function_ctes(body: list[ast.stmt]) -> frozenset[str]:
+    """the CTE names a function's own statements define, lower-cased: a fragment another of its statements reads
+    from (``FROM stage0{}``) is that CTE, not a table.
+
+    :param body: the function's statements
+    :ptype body: list[ast.stmt]
+    :return: the names
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        match.group(1).lower()
+        for node in _own_nodes(body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        for match in _CTE_DEFINED.finditer(node.value)
+    )
 
 
 def _is_stub(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -1181,9 +1713,11 @@ def _resolve(
     for entry in definitions - stubs:
         path, _, qualified = entry.partition("::")
         by_name.setdefault(qualified.rsplit(".", 1)[-1], []).append((path, qualified))
+    # a security backstop's pass is accepted where it is marked: its caller (the loop running it) reads nothing whole
+    backstops = {(mark.path, mark.function) for mark in operators or [] if mark.mark == "security_backstop"}
     readers: dict[tuple[str, str], WholeReadHit] = {}
     for hit in hits:
-        if hit.kind in _READ_KINDS:
+        if hit.kind in _READ_KINDS and (hit.path, hit.function) not in backstops:
             readers.setdefault((hit.path, hit.function), hit)
     constructors_found: set[int] = set()
     resolved: list[tuple[_CallSite, list[tuple[str, str]]]] = []
@@ -1192,7 +1726,7 @@ def _resolve(
         if targets is None:
             constructors_found.add(index)
         resolved.append((call, targets or []))
-    reaches = {(hit.path, hit.function) for hit in hits}
+    reaches = {(hit.path, hit.function) for hit in hits} - backstops
     grew = True
     while grew:
         grew = False
@@ -1202,7 +1736,7 @@ def _resolve(
                 reaches.add(caller)
                 grew = True
     found: list[WholeReadHit] = []
-    marks = {(mark.path, mark.function): mark.mark for mark in operators or []}
+    marks = {(mark.path, mark.function): mark.mark for mark in operators or [] if mark.mark in _ENTRY_ONLY_MARKS}
     callers = [
         f"{call.path}:{call.line} in {call.function}: {call.spelled} calls {target[1]}, marked @{marks[target]}: an "
         "operator's command is reached only from its own entry, so every caller carries the same mark"
@@ -1230,6 +1764,131 @@ def _resolve(
     return found, callers
 
 
+def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str], list[tuple[str, bool]]]:
+    """for every function the repo calls by name, each call site's argument per parameter: whether it is a string
+    literal its calling function's own statements define as a CTE (``WITH <name> AS``).
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :return: ``(function, parameter)`` onto ``[(site, is a CTE the caller defines)]``
+    :rtype: dict[tuple[str, str], list[tuple[str, bool]]]
+    """
+    definitions: dict[str, list[str]] = {}
+    for _, tree in modules:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definitions.setdefault(node.name, [a.arg for a in [*node.args.posonlyargs, *node.args.args]])
+    found: dict[tuple[str, str], list[tuple[str, bool]]] = {}
+    for relative, tree in modules:
+        for caller in ast.walk(tree):
+            if not isinstance(caller, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                continue
+            body = caller.body
+            ctes = _function_ctes(body) | _formatted_ctes(body)
+            for call in _own_nodes(body):
+                if not isinstance(call, ast.Call):
+                    continue
+                name = _final(call) or ""
+                parameters = definitions.get(name)
+                if parameters is None:
+                    continue
+                params = parameters[1:] if parameters[:1] in (["self"], ["cls"]) else parameters
+                passed = [*zip(params, call.args, strict=False), *((k.arg, k.value) for k in call.keywords if k.arg)]
+                for parameter, value in passed:
+                    literal = value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else None
+                    site = f"{relative}:{call.lineno}"
+                    found.setdefault((name, parameter), []).append(
+                        (site, literal is not None and literal.lower() in ctes)
+                    )
+    return found
+
+
+def _formatted_ctes(body: list[ast.stmt]) -> frozenset[str]:
+    """the CTE names a function's f-strings define (``f"WITH runs AS ({...})"``).
+
+    :param body: the function's statements
+    :ptype body: list[ast.stmt]
+    :return: the names, lower-cased
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        match.group(1).lower()
+        for node in _own_nodes(body)
+        if isinstance(node, ast.JoinedStr)
+        for match in _CTE_DEFINED.finditer(_string_text(node, {}) or "")
+    )
+
+
+def _module_strings(tree: ast.Module) -> dict[str, str]:
+    """the strings a module's top level binds once, by name: what another module importing one of them reads.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: name onto string
+    :rtype: dict[str, str]
+    """
+    found: dict[str, str] = {}
+    twice: set[str] = set()
+    for statement in tree.body:
+        if (
+            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.body
+            and isinstance(statement.body[-1], ast.Return)
+            and statement.body[-1].value is not None
+        ):
+            # a function returning a string: a name it builds at run time is its template
+            template = _string_text(statement.body[-1].value, found)
+            if template is not None:
+                found[_TEMPLATE.format(statement.name)] = template
+            continue
+        target = (
+            statement.targets[0]
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+            else (statement.target if isinstance(statement, ast.AnnAssign) and statement.value is not None else None)
+        )
+        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+        if isinstance(target, ast.Name) and value is not None:
+            text = _string_text(value, found)
+            if target.id in found:
+                twice.add(target.id)
+            if text is not None:
+                found[target.id] = text
+    return {name: text for name, text in found.items() if name not in twice}
+
+
+def _imported_strings(tree: ast.Module, strings: dict[str, dict[str, str]]) -> dict[str, str]:
+    """the strings a module imports from the repo's own modules (``from pkg.tables import GEOS``), by the name it
+    imports each as.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
+    :ptype strings: dict[str, dict[str, str]]
+    :return: name onto string
+    :rtype: dict[str, str]
+    """
+    found: dict[str, str] = {}
+    for statement in tree.body:
+        if not (isinstance(statement, ast.ImportFrom) and statement.module and not statement.level):
+            continue
+        base = statement.module.replace(".", "/")
+        source = next(
+            (
+                names
+                for path, names in strings.items()
+                if path.endswith((f"/{base}.py", f"/{base}/__init__.py"))
+                or path in {f"{base}.py", f"{base}/__init__.py"}
+            ),
+            None,
+        )
+        for alias in statement.names:
+            if source is not None and alias.name in source:
+                found[alias.asname or alias.name] = source[alias.name]
+            if source is not None and _TEMPLATE.format(alias.name) in source:
+                found[_TEMPLATE.format(alias.asname or alias.name)] = source[_TEMPLATE.format(alias.name)]
+    return found
+
+
 def scan_whole_reads(
     repo_root: Path,
     src_roots: tuple[Path, ...],
@@ -1242,6 +1901,7 @@ def scan_whole_reads(
     schema_change_dirs: tuple[str, ...] = ("migrations",),
     verify_prefixes: tuple[str, ...] = (),
     schema: SchemaCatalog | None = None,
+    exec_calls: frozenset[str] = frozenset(),
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -1269,6 +1929,8 @@ def scan_whole_reads(
     :param schema: every table's declared key and indexes; None judges against none, so every predicate on a table
         is ``unknown-schema``
     :ptype schema: SchemaCatalog | None
+    :param exec_calls: the repo's own calls that run their first argument as SQL (``Snapshot.ask``), beside 3tears'
+    :ptype exec_calls: frozenset[str]
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -1280,36 +1942,40 @@ def scan_whole_reads(
     stubs: set[str] = set()
     imports: dict[str, dict[str, str]] = {}
     pattern = re.compile(transient) if transient else None
-    for root in src_roots:
-        for path in iter_python_files(root):
-            relative = relative_posix_path(path, repo_root)
-            excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
-            used.update(excluded)
-            if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
-                continue
-            tree = parse_python_path(path)
-            walk = _ModuleWalk(
-                relative,
-                tree,
-                path.read_text(encoding="utf-8"),
-                pagers=pagers,
-                always_whole=always_whole,
-                narrowing=narrowing,
-                transient=pattern,
-                verify=any(relative.startswith(prefix) for prefix in verify_prefixes),
-                schema=scan.schema,
-            )
-            walk.visit(tree)
-            stubs.update(walk.stubs)
-            scan.hits.extend(walk.hits)
-            scan.definitions.update(walk.definitions)
-            scan.constants.update(walk.constants)
-            calls.extend(walk.calls)
-            module_functions[relative] = walk.module_functions
-            module_classes[relative] = walk.module_classes
-            scan.operators.extend(walk.operators)
-            imports[relative] = walk.imports
-            scan.files_scanned += 1
+    modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
+    strings = {relative: _module_strings(parse_python_path(path)) for relative, path in modules}
+    cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
+    for relative, path in modules:
+        excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
+        used.update(excluded)
+        if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
+            continue
+        tree = parse_python_path(path)
+        walk = _ModuleWalk(
+            relative,
+            tree,
+            path.read_text(encoding="utf-8"),
+            pagers=pagers,
+            always_whole=always_whole,
+            narrowing=narrowing,
+            transient=pattern,
+            verify=any(relative.startswith(prefix) for prefix in verify_prefixes),
+            schema=scan.schema,
+            imported=_imported_strings(tree, strings),
+            exec_calls=exec_calls,
+            cte_arguments=cte_arguments,
+        )
+        walk.visit(tree)
+        stubs.update(walk.stubs)
+        scan.hits.extend(walk.hits)
+        scan.definitions.update(walk.definitions)
+        scan.constants.update(walk.constants)
+        calls.extend(walk.calls)
+        module_functions[relative] = walk.module_functions
+        module_classes[relative] = walk.module_classes
+        scan.operators.extend(walk.operators)
+        imports[relative] = walk.imports
+        scan.files_scanned += 1
     resolved, callers = _resolve(
         calls, scan.hits, module_functions, scan.definitions, stubs, imports, module_classes, scan.operators
     )

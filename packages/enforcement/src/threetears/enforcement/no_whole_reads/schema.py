@@ -12,7 +12,10 @@ importing:
 - a table list in YAML (a tool pod's ``tables.yaml``, an ``agent.yaml`` data section): every mapping with a
   ``name``, ``columns`` and a ``primary_key`` or ``indexes``.
 
-A table declared nowhere has no known key: a read of it fails as ``unknown-schema``, never passes.
+A declared ``UNIQUE`` (a ``UniqueConstraint``, an ``Index(..., unique=True)``, ``UNIQUE (...)`` in a ``CREATE
+TABLE``, a ``CREATE UNIQUE INDEX``, ``unique: true`` in a table list) is a key as the primary key is; a partial one
+(``WHERE ...``) holds only for some rows and is not. A table declared nowhere has no known key: a read of it fails as
+``unknown-schema``, never passes.
 
 **Every declared index names its purpose** (:func:`index_findings`): the one function whose keyed read uses it
 (``purpose``, ``<path>::<qualified function>``) and a plan test proving that read uses it (``plan_test``,
@@ -40,14 +43,28 @@ from threetears.core.authored_yaml import safe_load_authored
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
 
 __all__ = [
+    "COPY_PREFIX",
+    "TENANT_COLUMNS",
     "SchemaCatalog",
     "bare_table",
+    "expression_key",
+    "purposes",
     "collect_schema",
     "index_findings",
 ]
 
+#: the namespace of a local copy's relations (``snapshot.relation(NAME)``): keyed only by the repo's declared local
+#: relations, never by the L3 table that shares the name
+COPY_PREFIX: Final[str] = "copy."
+
+#: the columns that name a tenant on every table: a key prefix of only these reads a whole tenant
+TENANT_COLUMNS: Final[frozenset[str]] = frozenset({"row_scope", "customer_id"})
+
 #: more indexes than this on one table needs a written reason on each
 MAX_PLAIN_INDEXES: Final[int] = 3
+
+#: the purpose of a unique index no read uses: it enforces a constraint, proven by a test that a duplicate is refused
+CONSTRAINT_PURPOSE: Final[str] = "constraint"
 
 #: the shortest reason the rule accepts
 _MIN_REASON: Final[int] = 30
@@ -84,10 +101,25 @@ _ADD_PK: Final[re.Pattern[str]] = re.compile(
 _RENAME_TABLE: Final[re.Pattern[str]] = re.compile(
     rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?{_QNAME}\s+RENAME\s+TO\s+{_QNAME}", re.IGNORECASE
 )
+_RENAME_COLUMN: Final[re.Pattern[str]] = re.compile(
+    rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+RENAME\s+(?:COLUMN\s+)?(?!TO\b)({_IDENT})\s+TO\s+"
+    rf"({_IDENT})",
+    re.IGNORECASE,
+)
 _RENAME_INDEX: Final[re.Pattern[str]] = re.compile(
     rf"\bALTER\s+INDEX\s+(?:IF\s+EXISTS\s+)?{_QNAME}\s+RENAME\s+TO\s+{_QNAME}", re.IGNORECASE
 )
 _PK_ITEM: Final[re.Pattern[str]] = re.compile(r"^(?:CONSTRAINT\s+\S+\s+)?PRIMARY\s+KEY\s*\(", re.IGNORECASE)
+_UNIQUE_ITEM: Final[re.Pattern[str]] = re.compile(
+    r"^(?:CONSTRAINT\s+\S+\s+)?UNIQUE\s*(?:NULLS\s+(?:NOT\s+)?DISTINCT\s*)?\(", re.IGNORECASE
+)
+_INLINE_UNIQUE: Final[re.Pattern[str]] = re.compile(r"\bUNIQUE\b", re.IGNORECASE)
+_ADD_UNIQUE: Final[re.Pattern[str]] = re.compile(
+    rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+ADD\s+(?:CONSTRAINT\s+{_IDENT}\s+)?UNIQUE\s*"
+    r"(?:NULLS\s+(?:NOT\s+)?DISTINCT\s*)?\(",
+    re.IGNORECASE,
+)
+_PARTIAL: Final[re.Pattern[str]] = re.compile(r"^\s*(?:WITH\s*\([^)]*\)\s*)?WHERE\b", re.IGNORECASE)
 _INLINE_PK: Final[re.Pattern[str]] = re.compile(r"\bPRIMARY\s+KEY\b", re.IGNORECASE)
 _NOT_A_COLUMN: Final[re.Pattern[str]] = re.compile(
     r"^(?:CONSTRAINT|UNIQUE|CHECK|FOREIGN|EXCLUDE|LIKE|PRIMARY)\b", re.IGNORECASE
@@ -97,17 +129,61 @@ _DDL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--\s*(purpose|plan_test|reas
 _DDL_HINT: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.IGNORECASE)
 
 
+def purposes(purpose: str) -> tuple[str, ...]:
+    """the reads an index's ``purpose`` names: ``<path>::<name>`` entries separated by ``; ``.
+
+    :param purpose: the purpose
+    :ptype purpose: str
+    :return: its entries
+    :rtype: tuple[str, ...]
+    """
+    return tuple(entry.strip() for entry in purpose.split(";") if entry.strip())
+
+
+def expression_key(text: str) -> str:
+    """an indexed expression as the catalog and the judge both key it: each quoted literal ``'_'``, no whitespace,
+    lower-cased, outer parentheses gone (``replace(name, '.', '-')`` -> ``replace(name,'_','_')``).
+
+    :param text: the expression
+    :ptype text: str
+    :return: its key
+    :rtype: str
+    """
+    key = re.sub(r"\s+", "", re.sub(r"'(?:[^']|'')*'", "'_'", text)).lower()
+    while key.startswith("(") and key.endswith(")") and key.count("(") == key.count(")"):
+        inner = key[1:-1]
+        depth = 0
+        balanced = True
+        for char in inner:
+            depth += {"(": 1, ")": -1}.get(char, 0)
+            if depth < 0:
+                balanced = False
+                break
+        if not balanced:
+            break
+        key = inner
+    return key
+
+
 def bare_table(name: str) -> str | None:
     """the table a relation names, as the catalog keys it: its last dotted part, unquoted, lower-cased.
 
-    :param name: the relation as written (``public."Results"``, ``{}.change_log``)
+    :param name: the relation as written (``public."Results"``, ``{}.change_log``, ``copy.geos``)
     :ptype name: str
-    :return: the bare name, or None when the table part is interpolated (``{}``, ``"{}"``)
+    :return: the bare name (a local copy's keeps its ``copy.``; one numbered at run time is its template,
+        ``threetears_change_notes_{}``), or None when the table part is only an interpolation (``{}``, ``"{}"``)
     :rtype: str | None
     """
     parts = re.findall(r"\"[^\"]+\"|[^.\"]+", name.strip())
     last = parts[-1].strip('"').strip() if parts else ""
-    return None if not last or "{" in last else last.lower()
+    copied = len(parts) > 1 and parts[-2].strip('"').strip().lower() == COPY_PREFIX.rstrip(".")
+    # a name numbered at run time (``threetears_change_notes_{}``) is its template, as its declaration is
+    template = re.sub(r"\{[^{}]*\}", "{}", last).lower()
+    literal = template.replace("{}", "").strip("_")
+    if copied and not literal:
+        # a local copy's relation named at run time: judged against the default key every copy declares
+        return f"{COPY_PREFIX}{{}}"
+    return None if not last or not literal else f"{COPY_PREFIX if copied else ''}{template}"
 
 
 @dataclass
@@ -124,6 +200,9 @@ class _DeclaredIndex:
     :ivar origin: ``<path>:<line>`` of the declaration
     :ivar local: whether the repo being judged declares it (not a dependency's source)
     :ivar pattern: for a name built at run time, a regular expression of the names it makes
+    :ivar unique: whether it is a unique index, a key of its table
+    :ivar partial: whether it covers only the rows a ``WHERE`` names (a partial unique index is no key)
+    :ivar where: a partial index's predicate, as written
     """
 
     table: str
@@ -136,6 +215,9 @@ class _DeclaredIndex:
     origin: str = ""
     local: bool = True
     pattern: str = ""
+    unique: bool = False
+    partial: bool = False
+    where: str = ""
 
 
 @dataclass
@@ -144,12 +226,17 @@ class _DeclaredTable:
 
     :ivar name: the bare table
     :ivar primary_keys: each declaration's key; a read covering a leading prefix of any is keyed
+    :ivar unique_keys: each declared ``UNIQUE``'s columns, keys as the primary key is
+    :ivar tenant_columns: its tenant and partition columns beyond :data:`TENANT_COLUMNS` (a ``Column(...,
+        partition=True)``, a collection's ``tenancy = tenant_column(...)``): a key prefix of only these is no key
     :ivar indexes: its indexes by name
     :ivar origins: ``<path>:<line>`` of each declaration
     """
 
     name: str
     primary_keys: list[tuple[str, ...]] = field(default_factory=list)
+    unique_keys: list[tuple[str, ...]] = field(default_factory=list)
+    tenant_columns: set[str] = field(default_factory=set)
     indexes: dict[str, _DeclaredIndex] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
 
@@ -160,12 +247,37 @@ class SchemaCatalog:
 
     :ivar tables: bare table name onto its declaration
     :ivar sites: every index declaration the purpose rule judges, one per site
-    :ivar used: ``(table, index)`` of each purposed index a keyed read of its purpose function used
+    :ivar used: ``(table, index, purpose entry)`` of each purposed index a keyed read named in its purpose used
+    :ivar dependency_indexes: ``(table, index)`` a dependency declares (3tears' own): a copy of one in the repo's
+        table list is the dependency's, judged by its gate
+    :ivar templates: each module's template tables (a ``TableSchema(name=<parameter>)``), merged: the keys and
+        indexes of every table built from them, which the module's generic reads (``FROM {table}``) are judged against
     """
 
     tables: dict[str, _DeclaredTable] = field(default_factory=dict)
     sites: list[_DeclaredIndex] = field(default_factory=list)
-    used: set[tuple[str, str]] = field(default_factory=set)
+    used: set[tuple[str, str, str]] = field(default_factory=set)
+    dependency_indexes: set[tuple[str, str]] = field(default_factory=set)
+    templates: dict[str, _DeclaredTable] = field(default_factory=dict)
+
+    def use(self, table: str, index: str, readers: frozenset[str]) -> None:
+        """record that a keyed read written in ``readers`` used ``index`` of ``table``, for each of its purpose entries
+        naming one of them.
+
+        :param table: the bare table
+        :ptype table: str
+        :param index: the index
+        :ptype index: str
+        :param readers: ``<path>::<name>`` of the code the read is written in
+        :ptype readers: frozenset[str]
+        :return: nothing
+        :rtype: None
+        """
+        entry = self.tables.get(table)
+        declared = entry.indexes.get(index) if entry is not None else None
+        for purpose in purposes(declared.purpose) if declared is not None else ():
+            if purpose in readers:
+                self.used.add((table, index, purpose))
 
     def table(self, name: str) -> _DeclaredTable | None:
         """a table's declaration.
@@ -176,7 +288,14 @@ class SchemaCatalog:
         :rtype: _DeclaredTable | None
         """
         bare = bare_table(name)
-        return self.tables.get(bare) if bare is not None else None
+        found = self.tables.get(bare) if bare is not None else None
+        if found is None and bare is not None and not bare.startswith(COPY_PREFIX):
+            # a view a copy declares (``local_relations``), read by its own name: no L3 table shares it
+            found = self.tables.get(f"{COPY_PREFIX}{bare}")
+        if found is None and bare is not None and bare.startswith(COPY_PREFIX):
+            # a copy the repo declares no key for has the default every copy declares (``local_relations["*"]``)
+            found = self.tables.get(f"{COPY_PREFIX}{{}}")
+        return found
 
     def _entry(self, table: str, origin: str) -> _DeclaredTable:
         entry = self.tables.setdefault(table, _DeclaredTable(table))
@@ -201,6 +320,37 @@ class SchemaCatalog:
         if key and key not in entry.primary_keys:
             entry.primary_keys.append(key)
 
+    def add_tenant(self, table: str, column: str, origin: str) -> None:
+        """record a table's tenant or partition column: a key prefix of only such columns reads a whole tenant.
+
+        :param table: the bare table
+        :ptype table: str
+        :param column: the column
+        :ptype column: str
+        :param origin: where it is declared
+        :ptype origin: str
+        :return: nothing
+        :rtype: None
+        """
+        self._entry(table, origin).tenant_columns.add(column.lower())
+
+    def add_unique(self, table: str, key: tuple[str, ...], origin: str) -> None:
+        """record a table's declared ``UNIQUE`` columns: a key of it.
+
+        :param table: the bare table
+        :ptype table: str
+        :param key: the columns, in order
+        :ptype key: tuple[str, ...]
+        :param origin: where it is declared
+        :ptype origin: str
+        :return: nothing
+        :rtype: None
+        """
+        entry = self._entry(table, origin)
+        key = tuple(column.lower() for column in key)
+        if key and "?" not in key and key not in entry.unique_keys:
+            entry.unique_keys.append(key)
+
     def add_index(self, index: _DeclaredIndex) -> None:
         """record an index of a table, merging a second declaration of the same name (the purpose of either wins).
 
@@ -210,6 +360,8 @@ class SchemaCatalog:
         :rtype: None
         """
         entry = self._entry(index.table, index.origin)
+        if index.unique and not index.partial:
+            self.add_unique(index.table, index.columns, index.origin)
         known = entry.indexes.get(index.name)
         if known is None:
             entry.indexes[index.name] = index
@@ -247,6 +399,32 @@ class SchemaCatalog:
                 index.name = new
                 entry.indexes[new] = index
 
+    def rename_column(self, table: str, old: str, new: str) -> None:
+        """follow a column a later migration renames, in the table's keys, indexes and tenant columns.
+
+        :param table: the bare table
+        :ptype table: str
+        :param old: the column's old name
+        :ptype old: str
+        :param new: its new name
+        :ptype new: str
+        :return: nothing
+        :rtype: None
+        """
+        entry = self.tables.get(table)
+        if entry is None:
+            return
+
+        def renamed(columns: tuple[str, ...]) -> tuple[str, ...]:
+            return tuple(new if column == old else column for column in columns)
+
+        entry.primary_keys = list(dict.fromkeys(renamed(key) for key in entry.primary_keys))
+        entry.unique_keys = list(dict.fromkeys(renamed(key) for key in entry.unique_keys))
+        entry.tenant_columns = {new if column == old else column for column in entry.tenant_columns}
+        for index in entry.indexes.values():
+            index.columns = renamed(index.columns)
+            index.include = renamed(index.include)
+
     def rename_table(self, old: str, new: str) -> None:
         """follow a table a later migration renames.
 
@@ -264,6 +442,7 @@ class SchemaCatalog:
                 index.table = new
             merged = self.tables.setdefault(new, _DeclaredTable(new))
             merged.primary_keys.extend(key for key in entry.primary_keys if key not in merged.primary_keys)
+            merged.unique_keys.extend(key for key in entry.unique_keys if key not in merged.unique_keys)
             merged.indexes.update(entry.indexes)
             merged.origins.extend(entry.origins)
         for site in self.sites:
@@ -335,7 +514,8 @@ def _column_of(item: str) -> str:
         stripped = stripped[1:-1].strip()
     match = re.match(r"^\(?\s*(\"[^\"]+\"|[\w{}]+)\s*\)?(?:\s|$)", stripped)
     if match is None or stripped[len(match.group(1)) :].lstrip().startswith("("):
-        return stripped.lower()
+        # an expression index's item (``(replace(name, '.', '-'))``): keyed by the expression itself
+        return expression_key(re.sub(r"\s+(?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?$", "", stripped, flags=re.I))
     return match.group(1).strip('"').lower()
 
 
@@ -357,9 +537,18 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
             if _PK_ITEM.match(item):
                 inner, _ = _paren_body(item, item.index("("))
                 key = tuple(_column_of(part) for part in _split_top(inner))
+            elif _UNIQUE_ITEM.match(item):
+                inner, _ = _paren_body(item, item.index("("))
+                unique = tuple(_column_of(part) for part in _split_top(inner))
+                events.append((match.start(), "unique", (match.group(1), unique)))
             elif _NOT_A_COLUMN.match(item) is None and _INLINE_PK.search(item):
                 key = (_column_of(item.split()[0]),)
+            elif _NOT_A_COLUMN.match(item) is None and _INLINE_UNIQUE.search(item):
+                events.append((match.start(), "unique", (match.group(1), (_column_of(item.split()[0]),))))
         events.append((match.start(), "table", (match.group(1), key)))
+    for match in _ADD_UNIQUE.finditer(text):
+        inner, _ = _paren_body(text, match.end() - 1)
+        events.append((match.start(), "unique", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
     for match in _ADD_PK.finditer(text):
         inner, _ = _paren_body(text, match.end() - 1)
         events.append((match.start(), "table", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
@@ -368,15 +557,26 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         include: tuple[str, ...] = ()
         rest = text[after:]
         if _INCLUDE.match(rest):
-            inc, _ = _paren_body(rest, rest.index("("))
+            inc, inc_end = _paren_body(rest, rest.index("("))
             include = tuple(_column_of(part) for part in _split_top(inc))
+            rest = rest[inc_end:]
+        partial_match = _PARTIAL.match(rest)
+        partial = partial_match is not None
+        where_text = _strip_comments(rest[partial_match.end() :]).split(";")[0].strip() if partial_match else ""
         notes = _notes_before(text, match.start())
         columns = tuple(_column_of(part) for part in _split_top(_strip_comments(inner)))
         events.append(
             (
                 match.start(),
                 "index",
-                (match.group(2) or "", match.group(3), columns, include, bool(match.group(1)), notes),
+                (
+                    match.group(2) or "",
+                    match.group(3),
+                    columns,
+                    include,
+                    (bool(match.group(1)), partial, where_text),
+                    notes,
+                ),
             )
         )
     for match in _DROP_INDEX.finditer(text):
@@ -386,6 +586,8 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         events.append((match.start(), "drop_table", match.group(1)))
     for match in _RENAME_TABLE.finditer(text):
         events.append((match.start(), "rename_table", (match.group(1), match.group(2))))
+    for match in _RENAME_COLUMN.finditer(text):
+        events.append((match.start(), "rename_column", (match.group(1), match.group(2), match.group(3))))
     for match in _RENAME_INDEX.finditer(text):
         events.append((match.start(), "rename_index", (match.group(1), match.group(2))))
     for _, kind, payload in sorted(events, key=lambda event: event[0]):
@@ -435,12 +637,14 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
     :rtype: None
     """
     for kind, payload in _ddl_events(text):
-        if kind == "table":
+        if kind in {"table", "unique"}:
             table = bare_table(payload[0])
-            if table is not None:
+            if table is not None and kind == "table":
                 catalog.add_key(table, payload[1], origin)
+            elif table is not None:
+                catalog.add_unique(table, payload[1], origin)
         elif kind == "index":
-            name, table_written, columns, include, _, notes = payload
+            name, table_written, columns, include, (unique, partial, where_text), notes = payload
             table = bare_table(table_written)
             index_name = bare_table(name) if name else None
             if table is None or index_name is None:
@@ -455,8 +659,13 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
                 notes.get("reason", ""),
                 origin,
                 local,
+                unique=unique,
+                partial=partial,
+                where=where_text,
             )
             catalog.add_index(index)
+            if not local:
+                catalog.dependency_indexes.add((table, index_name))
             catalog.sites = [s for s in catalog.sites if not (s.name == index_name and s.table == table)]
             catalog.sites.append(index)
         elif kind == "drop_index":
@@ -472,6 +681,10 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
             old, new = bare_table(payload[0]), bare_table(payload[1])
             if old is not None and new is not None:
                 catalog.rename_table(old, new)
+        elif kind == "rename_column":
+            table = bare_table(payload[0])
+            if table is not None:
+                catalog.rename_column(table, payload[1].strip('"').lower(), payload[2].strip('"').lower())
         elif kind == "rename_index":
             old, new = bare_table(payload[0]), bare_table(payload[1])
             if old is not None and new is not None:
@@ -486,6 +699,16 @@ class _Values:
 
     def __init__(self, tree: ast.Module) -> None:
         self.names: dict[str, ast.expr] = {}
+        #: each module function returning a string, onto that string as a template (``note_table`` ->
+        #: ``threetears_change_notes_{}``): a name it builds at run time is that template
+        self.templates: dict[str, ast.expr] = {
+            statement.name: statement.body[-1].value
+            for statement in tree.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.body
+            and isinstance(statement.body[-1], ast.Return)
+            and isinstance(statement.body[-1].value, (ast.JoinedStr, ast.Constant, ast.BinOp))
+        }
         self.index_aliases: set[str] = set(_INDEX_CALLS)
         self.table_schema_aliases: set[str] = {"TableSchema"}
         bodies: list[list[ast.stmt]] = [tree.body]
@@ -526,6 +749,25 @@ class _Values:
             return self.text(self.names[node.id], depth + 1)
         if isinstance(node, ast.Attribute) and node.attr in self.names and dotted(node.value) in {"cls", "self"}:
             return self.text(self.names[node.attr], depth + 1)
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                str(part.value)
+                if isinstance(part, ast.Constant)
+                else (self.text(part.value, depth + 1) if isinstance(part, ast.FormattedValue) else None) or "{}"
+                for part in node.values
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = self.text(node.left, depth + 1), self.text(node.right, depth + 1)
+            return None if left is None or right is None else left + right
+        if isinstance(node, ast.Call):
+            final = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+            if len(node.args) == 1 and "quote" in (final or "").lower():
+                # a quoting helper (``quote_ident(NAME)``) reads as the name it quotes, whatever template it returns
+                return self.text(node.args[0], depth + 1)
+            if final in self.templates:
+                return self.text(self.templates[final], depth + 1)
+            # ``quote_identifier(NAME)``: a call on a known string reads as it
+            return self.text(node.args[0], depth + 1) if len(node.args) == 1 else None
         return None
 
     def texts(self, node: ast.expr | None, depth: int = 0) -> tuple[str, ...] | None:
@@ -587,6 +829,139 @@ def _name_pattern(node: ast.expr) -> str:
     return "".join(re.escape(str(part.value)) if isinstance(part, ast.Constant) else r"\w+" for part in node.values)
 
 
+def _template_names(
+    tree: ast.Module, function: ast.FunctionDef | ast.AsyncFunctionDef, parameter: str, values: _Values
+) -> list[str]:
+    """the concrete tables a template function builds: its parameter's default (``name: str = SCOPE_EPOCHS_TABLE``)
+    and each constant the module's calls of it pass.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param function: the function building the template
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param parameter: the parameter naming the table
+    :ptype parameter: str
+    :param values: the module's known values
+    :ptype values: _Values
+    :return: the table names
+    :rtype: list[str]
+    """
+    arguments = [*function.args.posonlyargs, *function.args.args]
+    position = next((i for i, arg in enumerate(arguments) if arg.arg == parameter), None)
+    found: list[str] = []
+    defaults = function.args.defaults
+    if position is not None and position >= len(arguments) - len(defaults):
+        default = values.text(defaults[position - (len(arguments) - len(defaults))])
+        found.extend([default] if default is not None else [])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == function.name:
+            passed = _keyword(node, parameter) or (
+                node.args[position] if position is not None and position < len(node.args) else None
+            )
+            text = values.text(passed)
+            found.extend([text] if text is not None else [])
+    return found
+
+
+def _declare_template(
+    catalog: SchemaCatalog, call: ast.Call, values: _Values, relative: str, *, local: bool
+) -> _DeclaredTable:
+    """record a template table (``TableSchema(name=name, ...)`` inside a function taking ``name``): its keys and
+    indexes hold for every table built from it, so the module's generic reads are judged against them, and a
+    default name (``name: str = SCOPE_EPOCHS_TABLE``) is a table of its own.
+
+    :param catalog: the catalog
+    :ptype catalog: SchemaCatalog
+    :param call: the ``TableSchema(...)`` call
+    :ptype call: ast.Call
+    :param values: the module's known values
+    :ptype values: _Values
+    :param relative: the module's repo-relative path
+    :ptype relative: str
+    :param local: whether the judged repo holds it
+    :ptype local: bool
+    :return: the module's template, merged
+    :rtype: _DeclaredTable
+    """
+    origin = f"{relative}:{call.lineno}"
+    template = catalog.templates.setdefault(relative, _DeclaredTable(f"{{}}@{relative}"))
+    key = values.texts(_keyword(call, "primary_key"))
+    if key:
+        lowered = tuple(column.lower() for column in key)
+        if lowered not in template.primary_keys:
+            template.primary_keys.append(lowered)
+    for element in values.elements(_keyword(call, "indexes")):
+        if isinstance(element, ast.Call):
+            index = _index_from_call(element, values, "", f"{relative}:{element.lineno}", local=local)
+            if index is not None and not index.pattern:
+                template.indexes.setdefault(index.name, index)
+    template.origins.append(origin)
+    return template
+
+
+def _class_tenancy(catalog: SchemaCatalog, tree: ast.Module, values: _Values, relative: str) -> None:
+    """record each collection's declared tenant column (``tenancy = tenant_column("source_customer_id")``) on the
+    table the class names (``table_name = ...``, or ``schema = TableSchema(name=...)``).
+
+    :param catalog: the catalog
+    :ptype catalog: SchemaCatalog
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param values: the module's known values
+    :ptype values: _Values
+    :param relative: its repo-relative path
+    :ptype relative: str
+    :return: nothing
+    :rtype: None
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        assigned = {
+            statement.targets[0].id: statement.value
+            for statement in node.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        }
+        tenancy = assigned.get("tenancy")
+        if not (
+            isinstance(tenancy, ast.Call) and (dotted(tenancy.func) or "").endswith("tenant_column") and tenancy.args
+        ):
+            continue
+        column = values.text(tenancy.args[0])
+        schema = assigned.get("schema")
+        if isinstance(schema, ast.Name):
+            schema = values.names.get(schema.id)
+        name = values.text(assigned.get("table_name")) or (
+            values.text(_keyword(schema, "name")) if isinstance(schema, ast.Call) else None
+        )
+        table = bare_table(name) if name is not None else None
+        if table is not None and column is not None:
+            catalog.add_tenant(table, column, f"{relative}:{node.lineno}")
+
+
+def _info(call: ast.Call, values: _Values, key: str) -> str:
+    """a note a SQLAlchemy ``Index`` carries in its ``info`` (``info={"purpose": ...}``): SQLAlchemy takes no other
+    keyword, so that is where the purpose, plan test and reason of an index declared through it go.
+
+    :param call: the ``Index(...)`` call
+    :ptype call: ast.Call
+    :param values: the module's known values
+    :ptype values: _Values
+    :param key: ``purpose``, ``plan_test`` or ``reason``
+    :ptype key: str
+    :return: the note, empty when it has none
+    :rtype: str
+    """
+    info = _keyword(call, "info")
+    if isinstance(info, ast.Dict):
+        for name, value in zip(info.keys, info.values, strict=True):
+            if isinstance(name, ast.Constant) and name.value == key:
+                return values.text(value) or ""
+    return ""
+
+
 def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *, local: bool) -> _DeclaredIndex | None:
     """the index an ``Index(...)`` / ``IndexDef(...)`` call declares.
 
@@ -607,6 +982,8 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
     if name_node is None or (isinstance(name_node, ast.Attribute) and name_node.attr == "name"):
         return None
     written = values.text(name_node)
+    # a name built at run time (``f"{self.name}_by_state"``) is a pattern of the names it makes
+    written = None if written is not None and "{" in written else written
     columns_node = _keyword(call, "columns")
     if columns_node is not None:
         columns = values.texts(columns_node) or ()
@@ -623,12 +1000,15 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
         written.lower() if written is not None else ast.unparse(name_node),
         tuple(column.lower() for column in columns),
         tuple(column.lower() for column in (values.texts(_keyword(call, "include")) or ())),
-        values.text(_keyword(call, "purpose")) or "",
-        values.text(_keyword(call, "plan_test")) or "",
-        values.text(_keyword(call, "reason")) or "",
+        values.text(_keyword(call, "purpose")) or _info(call, values, "purpose"),
+        values.text(_keyword(call, "plan_test")) or _info(call, values, "plan_test"),
+        values.text(_keyword(call, "reason")) or _info(call, values, "reason"),
         origin,
         local,
         "" if written is not None else _name_pattern(name_node),
+        unique=getattr(_keyword(call, "unique"), "value", False) is True,
+        partial=_keyword(call, "where") is not None or _keyword(call, "postgresql_where") is not None,
+        where=values.text(_keyword(call, "where")) or "",
     )
 
 
@@ -648,8 +1028,21 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
     """
     values = _Values(tree)
     claimed: set[int] = set()
+    #: each call's enclosing function's parameters: a declaration named by one is a factory, not a declaration
+    params_of: dict[int, set[str]] = {}
+    enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = {arg.arg for arg in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]}
+            for inner in ast.walk(function):
+                if isinstance(inner, ast.Call):
+                    params_of.setdefault(id(inner), set()).update(names)
+                    enclosing[id(inner)] = function
     calls: list[ast.Call] = []
     strings: list[ast.Constant] = []
+    #: DDL written as an f-string, its placeholders resolved to the module's constants (``{TURN_DEDUP_ROWS_TABLE}``)
+    formatted: list[tuple[ast.JoinedStr, str]] = []
+    pieces: set[int] = set()
     docstrings: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -658,11 +1051,27 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
             docstrings.add(id(node.value))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _DDL_HINT.search(node.value):
             strings.append(node)
+        elif isinstance(node, ast.JoinedStr):
+            pieces.update(id(part) for part in node.values)
+            written = values.text(node) or ""
+            if _DDL_HINT.search(written):
+                formatted.append((node, written))
     for call in calls:
         final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
         origin = f"{relative}:{call.lineno}"
         if final in values.table_schema_aliases:
-            table_text = values.text(_keyword(call, "name"))
+            name_node = _keyword(call, "name")
+            if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
+                # a template: its keys and indexes are every table built from it (C6)
+                template = _declare_template(catalog, call, values, relative, local=local)
+                builder = enclosing.get(id(call))
+                for concrete in _template_names(tree, builder, name_node.id, values) if builder is not None else []:
+                    built = bare_table(concrete)
+                    for template_key in template.primary_keys if built is not None else []:
+                        catalog.add_key(built or "", template_key, origin)
+                claimed.update(id(element) for element in values.elements(_keyword(call, "indexes")))
+                continue
+            table_text = values.text(name_node)
             table = bare_table(table_text) if table_text is not None else None
             key = values.texts(_keyword(call, "primary_key"))
             if table is not None and key:
@@ -673,6 +1082,20 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                     claimed.add(id(element))
                     if index is not None:
                         _add_site(catalog, index)
+            for element in values.elements(_keyword(call, "columns")):
+                if (
+                    table is not None
+                    and isinstance(element, ast.Call)
+                    and element.args
+                    and getattr(_keyword(element, "partition"), "value", False) is True
+                ):
+                    partition = values.text(element.args[0])
+                    if partition is not None:
+                        catalog.add_tenant(table, partition, origin)
+            for element in values.elements(_keyword(call, "unique_constraints")):
+                columns = _unique_columns(element, values, named_first=True)
+                if table is not None and columns:
+                    catalog.add_unique(table, columns, origin)
         elif final == "Table" and call.args and values.text(call.args[0]) is not None:
             table = bare_table(values.text(call.args[0]) or "")
             if table is None:
@@ -687,6 +1110,17 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
             if key:
                 catalog.add_key(table, key, origin)
             for element in call.args[1:]:
+                columns = _unique_columns(element, values, named_first=False)
+                if columns:
+                    catalog.add_unique(table, columns, origin)
+                elif (
+                    isinstance(element, ast.Call)
+                    and element.args
+                    and any(k.arg == "unique" and getattr(k.value, "value", False) is True for k in element.keywords)
+                    and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Column"
+                ):
+                    catalog.add_unique(table, (values.text(element.args[0]) or "?",), origin)
+            for element in call.args[1:]:
                 if (
                     isinstance(element, ast.Call)
                     and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Index"
@@ -695,19 +1129,80 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                     claimed.add(id(element))
                     if index is not None:
                         _add_site(catalog, index)
+    # a SQLAlchemy Table bound to a module name: an Index on ``that.c.column`` belongs to it
+    tables_by_name = {
+        name: bare_table(values.text(value.args[0]) or "") or ""
+        for name, value in values.names.items()
+        if isinstance(value, ast.Call)
+        and (getattr(value.func, "attr", None) or getattr(value.func, "id", None)) == "Table"
+        and value.args
+        and values.text(value.args[0]) is not None
+    }
+    _class_tenancy(catalog, tree, values, relative)
     for call in calls:
         final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
+        name_node = (call.args[0] if call.args else _keyword(call, "name")) if final in values.index_aliases else None
+        if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
+            # a factory (``Index(name, ...)`` building whatever its caller names): its call sites declare (C3)
+            continue
         if final in values.index_aliases and id(call) not in claimed and (call.args or _keyword(call, "name")):
-            index = _index_from_call(call, values, "", f"{relative}:{call.lineno}", local=local)
+            owner = (dotted(call.args[1]) or "").split(".") if len(call.args) > 1 else []
+            table = tables_by_name.get(owner[0], "") if len(owner) == 3 and owner[1] == "c" else ""
+            index = _index_from_call(call, values, table, f"{relative}:{call.lineno}", local=local)
             if index is not None:
                 _add_site(catalog, index)
     # a docstring's example DDL declares nothing
     for node in strings:
-        if id(node) not in docstrings:
+        if id(node) not in docstrings and id(node) not in pieces:
             _apply_ddl(catalog, str(node.value), f"{relative}:{node.lineno}", local=local)
+    for joined, written in formatted:
+        _apply_ddl(catalog, written, f"{relative}:{joined.lineno}", local=local)
+    # DDL written as a ``.format(...)`` template: its placeholders filled from the module's constants (C4)
+    for call in calls:
+        layout = (
+            values.text(call.func.value)
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "format"
+            else None
+        )
+        if layout is not None and _DDL_HINT.search(layout):
+            positional = [values.text(argument) or "{}" for argument in call.args]
+            named = {keyword.arg: values.text(keyword.value) or "{}" for keyword in call.keywords if keyword.arg}
+            try:
+                filled = layout.format(*positional, **named)
+            except IndexError, KeyError, ValueError:
+                filled = ""
+            if filled:
+                _apply_ddl(catalog, filled, f"{relative}:{call.lineno}", local=local)
+
+
+def _unique_columns(node: ast.expr, values: _Values, *, named_first: bool) -> tuple[str, ...]:
+    """the columns a unique-constraint call declares: 3tears' ``UniqueConstraint(name, *columns)`` in a
+    ``TableSchema``'s ``unique_constraints``, SQLAlchemy's ``UniqueConstraint(*columns, name=...)`` in a ``Table``.
+
+    :param node: an expression
+    :ptype node: ast.expr
+    :param values: the module's known values
+    :ptype values: _Values
+    :param named_first: whether the call names the constraint first (3tears' factory)
+    :ptype named_first: bool
+    :return: the columns, empty when it is no such call or a column is unknown
+    :rtype: tuple[str, ...]
+    """
+    if not isinstance(node, ast.Call):
+        return ()
+    final = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+    if not (final or "").endswith(("UniqueConstraint", "UniqueConstraintDef")):
+        return ()
+    named = _keyword(node, "columns")
+    if named is not None:
+        return values.texts(named) or ()
+    texts = [values.text(argument) for argument in node.args[1 if named_first else 0 :]]
+    return tuple(text for text in texts if text is not None) if texts and None not in texts else ()
 
 
 def _add_site(catalog: SchemaCatalog, index: _DeclaredIndex) -> None:
+    if not index.local and index.table:
+        catalog.dependency_indexes.add((index.table, index.name))
     catalog.sites.append(index)
     if index.table and not index.pattern:
         catalog.add_index(index)
@@ -763,8 +1258,14 @@ def _apply_yaml(catalog: SchemaCatalog, path: Path, relative: str, *, local: boo
                                 str(index.get("reason") or ""),
                                 f"{relative}:{line_of(index['name'])}",
                                 local,
+                                unique=index.get("unique") is True,
+                                partial=bool(index.get("where")),
                             )
                             _add_site(catalog, declared)
+                    for constraint in node.get("unique_constraints") or ():
+                        if isinstance(constraint, dict):
+                            columns = tuple(str(c) for c in constraint.get("columns") or ())
+                            catalog.add_unique(table, columns, f"{relative}:{line_of(name)}")
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
@@ -917,8 +1418,32 @@ def _test_defect(repo_root: Path, test: str, *, names: tuple[str, ...], calls: s
         for test in tests
         for node in ast.walk(test)
     ):
-        return f"{module}::{name} never calls {calls}: the plan, not the test's word, shows the index is used"
+        return f"{module}::{name} never calls {calls}: the database, not the test's word, shows the index does its work"
     return None
+
+
+def _names_a_match(repo_root: Path, test: str, pattern: str) -> bool:
+    """whether a plan test's body names a concrete index a pattern-named declaration makes
+    (``f"{self.name}_by_state"`` -> ``latest_results_by_state``).
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param test: ``<test file>::<test function>``
+    :ptype test: str
+    :param pattern: the regular expression of the names the declaration makes
+    :ptype pattern: str
+    :return: whether it does
+    :rtype: bool
+    """
+    module, _, name = test.partition("::")
+    tree = ast.parse((repo_root / module).read_text(encoding="utf-8"))
+    body = "\n".join(
+        ast.unparse(statement)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        for statement in node.body
+    )
+    return re.search(rf"\b{pattern}\b", body) is not None
 
 
 def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str]) -> list[str]:
@@ -935,39 +1460,89 @@ def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str
     :rtype: list[str]
     """
     findings: list[str] = []
-    for site in sorted((s for s in catalog.sites if s.local), key=lambda s: (s.origin, s.name)):
-        where = f"{site.origin} index {site.name}" + (f" on {site.table}" if site.table else "")
+    # an index a dependency declares too (3tears' own, rendered into the repo's table list) is the dependency's; one
+    # (table, index) declared twice (a TableSchema and its migration) is one index, with the notes either carries
+    owned: dict[tuple[str, str] | int, _DeclaredIndex] = {}
+    for site in catalog.sites:
+        if site.local and (site.table, site.name) not in catalog.dependency_indexes:
+            owned.setdefault((site.table, site.name) if site.table and not site.pattern else id(site), site)
+    for site in sorted(owned.values(), key=lambda s: (s.origin, s.name)):
         table = catalog.tables.get(site.table) if site.table else None
-        crowded = table is not None and len(table.indexes) > MAX_PLAIN_INDEXES
-        if not site.purpose:
+        merged = table.indexes.get(site.name) if table is not None else None
+        purpose = site.purpose or (merged.purpose if merged is not None else "")
+        plan_test = site.plan_test or (merged.plan_test if merged is not None else "")
+        reason = site.reason or (merged.reason if merged is not None else "")
+        findings.extend(_index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason)))
+    return findings
+
+
+def _index_site_findings(
+    catalog: SchemaCatalog,
+    repo_root: Path,
+    definitions: set[str],
+    site: _DeclaredIndex,
+    notes: tuple[str, str, str],
+) -> list[str]:
+    """what is wrong with one declared index.
+
+    :param catalog: the catalog, after the walk
+    :ptype catalog: SchemaCatalog
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param definitions: ``<path>::<qualified name>`` of every function, class and SQL constant the walk found
+    :ptype definitions: set[str]
+    :param site: the declaration
+    :ptype site: _DeclaredIndex
+    :param notes: its purpose, plan test and reason, from any declaration of it
+    :ptype notes: tuple[str, str, str]
+    :return: findings
+    :rtype: list[str]
+    """
+    purpose, plan_test, reason = notes
+    findings: list[str] = []
+    where = f"{site.origin} index {site.name}" + (f" on {site.table}" if site.table else "")
+    table = catalog.tables.get(site.table) if site.table else None
+    crowded = table is not None and len(table.indexes) > MAX_PLAIN_INDEXES
+    if not purpose:
+        findings.append(
+            f"{where}: index-no-purpose -- names no purpose: give purpose='<path>::<function>' (the keyed read that "
+            "uses it) and plan_test='<test file>::<test>'; an index no read can name is a candidate for removal"
+        )
+    constraint = purpose.strip() == CONSTRAINT_PURPOSE
+    if constraint and not site.unique:
+        findings.append(
+            f"{where}: index-constraint-not-unique -- only a unique index may serve a constraint and no read; give "
+            "the read that uses it"
+        )
+    for entry in () if constraint else purposes(purpose):
+        if "::" not in entry or entry not in definitions:
             findings.append(
-                f"{where}: index-no-purpose -- names no purpose: give purpose='<path>::<function>' (the keyed read that "
-                "uses it) and plan_test='<test file>::<test>'; an index no read can name is a candidate for removal"
-            )
-        elif "::" not in site.purpose or site.purpose not in definitions:
-            findings.append(
-                f"{where}: index-purpose-unknown -- purpose {site.purpose!r} names no function the walk found; give "
+                f"{where}: index-purpose-unknown -- purpose {entry!r} names no function the walk found; give "
                 "<path>::<qualified function>"
             )
-        elif site.table and (site.table, site.name) not in catalog.used and not site.pattern:
+        elif site.table and not site.pattern and (site.table, site.name, entry) not in catalog.used:
             findings.append(
-                f"{where}: index-purpose-unused -- {site.purpose} holds no read of {site.table} keyed by its leading "
-                f"column {site.columns[0] if site.columns else '?'}: the purpose names the read that uses it"
+                f"{where}: index-purpose-unused -- {entry} holds no read of {site.table} keyed by its leading "
+                f"column {site.columns[0] if site.columns else '?'}: each purpose names a read that uses it"
             )
-        if site.purpose and not site.plan_test:
-            findings.append(f"{where}: index-no-plan-test -- names no plan_test proving its read uses it")
-        elif site.plan_test:
-            defect = _test_defect(repo_root, site.plan_test, names=(site.name,), calls="plan_uses_index")
-            if defect is not None:
-                findings.append(f"{where}: index-plan-test -- the plan test {defect}")
-        if site.include and len(site.reason) < _MIN_REASON:
-            findings.append(
-                f"{where}: index-wide-no-reason -- carries INCLUDE {list(site.include)} with no written reason "
-                f"({_MIN_REASON}+ characters): a wide index is how a whole scan hides behind one"
-            )
-        if crowded and len(site.reason) < _MIN_REASON and table is not None:
-            findings.append(
-                f"{where}: index-crowded-no-reason -- {site.table} carries {len(table.indexes)} indexes, more than "
-                f"{MAX_PLAIN_INDEXES}, and this one gives no written reason ({_MIN_REASON}+ characters)"
-            )
+    if purpose and not plan_test:
+        findings.append(f"{where}: index-no-plan-test -- names no plan_test proving its read uses it")
+    elif plan_test:
+        # a constraint's test proves the database refuses a duplicate; a read's, that its plan uses the index
+        calls = "raises" if constraint else "plan_uses_index"
+        defect = _test_defect(repo_root, plan_test, names=() if site.pattern else (site.name,), calls=calls)
+        if defect is None and site.pattern and not _names_a_match(repo_root, plan_test, site.pattern):
+            defect = f"{plan_test} never names an index {site.name} makes: it cannot prove one is used"
+        if defect is not None:
+            findings.append(f"{where}: index-plan-test -- the plan test {defect}")
+    if site.include and len(reason) < _MIN_REASON:
+        findings.append(
+            f"{where}: index-wide-no-reason -- carries INCLUDE {list(site.include)} with no written reason "
+            f"({_MIN_REASON}+ characters): a wide index is how a whole scan hides behind one"
+        )
+    if crowded and len(reason) < _MIN_REASON and table is not None:
+        findings.append(
+            f"{where}: index-crowded-no-reason -- {site.table} carries {len(table.indexes)} indexes, more than "
+            f"{MAX_PLAIN_INDEXES}, and this one gives no written reason ({_MIN_REASON}+ characters)"
+        )
     return findings

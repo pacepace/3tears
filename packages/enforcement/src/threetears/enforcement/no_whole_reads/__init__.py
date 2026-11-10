@@ -46,7 +46,7 @@ that names the function and proves its entry needs the operator; the reason is 3
 **The one way out for a cold start or schema change: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
 in the repo's ``_no_whole_reads_exemptions.txt``, one line each::
 
-    <path> :: <qualified function> :: <hits> :: <cold-start|schema-change> :: <proving test> :: <speed test> :: <reason>
+    <path> :: <qualified function> :: <hits> :: <cold-start|schema-change|source-gap> :: <proving test> :: <speed test> :: <reason>
 
 - ``<hits>`` pins the function's hit count exactly: a new whole read added inside an exempt function fails, and so
   does a line whose hits went;
@@ -58,7 +58,9 @@ in the repo's ``_no_whole_reads_exemptions.txt``, one line each::
   (:func:`threetears.core.testing.calibrate.budget_problem`), never a figure in seconds. "It only runs once" is no
   reason for a cold start to be slow. The gate checks the file defines that test, that it names the function and
   that it calls ``budget_problem``;
-- ``<reason>`` says which cold start or schema change, in 30 characters or more.
+- ``<reason>`` says which cold start or schema change, in 30 characters or more; a ``source-gap`` (a whole read kept
+  only because an upstream source keeps no change record) opens with its gap id from the source-gaps list and the
+  condition it fires on (``G7: ...``), and the gate prints every one it accepts.
 
 A line is never "it's small", "it's an admin path", "it's being fixed" or "pre-existing": those are violations,
 fixed, not listed. There is no allowlist of violations; the gate is red until each is fixed.
@@ -71,14 +73,18 @@ one, fails the test.
 from __future__ import annotations
 
 import ast
+import re
+import sys
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Final
 
 import threetears
 
 from threetears.enforcement.common import dotted
-from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema, index_findings
+from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
@@ -96,8 +102,12 @@ __all__ = [
 #: the ledger's file name, beside the repo's gate test
 _EXEMPTIONS_NAME: Final[str] = "_no_whole_reads_exemptions.txt"
 
-#: the only reasons a function may read whole
-_EXEMPTION_KINDS: Final[frozenset[str]] = frozenset({"cold-start", "schema-change"})
+#: the only reasons a function may read whole: a true cold start, a schema change, and a gap an upstream source's
+#: missing change record leaves (``source-gap``, its reason naming the gap id from the source-gaps list)
+_EXEMPTION_KINDS: Final[frozenset[str]] = frozenset({"cold-start", "schema-change", "source-gap"})
+
+#: a source gap's reason opens with its id from the source-gaps list, then the condition it fires on: ``G7: ...``
+_SOURCE_GAP: Final = re.compile(r"^G\d+:\s*\S.{20,}")
 
 _SEPARATOR: Final[str] = " :: "
 _MIN_REASON: Final[int] = 30
@@ -129,6 +139,15 @@ class NoWholeReadsConfig:
     :ivar minimum_files_scanned: the walk must reach at least this many modules
     :ivar schema_roots: more trees to read table declarations from (migrations kept outside the source trees)
     :ivar table_lists: YAML table lists to read; None finds every ``tables.yaml`` / ``agent.yaml`` in the repo
+    :ivar local_relations: each local copy's relation the repo reads (``snapshot.relation(NAME)``, judged as
+        ``copy.<name>``) onto its key columns: the only keys of the ``copy.`` namespace, so a copy never loosens the
+        L3 table that shares its name, nor an L3 declaration a copy; one key, or several (a read covering a leading
+        prefix of any is keyed); ``"*"`` declares the default key of every copy relation, and of one named at run time
+        (``snapshot.relation(name)``)
+    :ivar foreign_relations: each relation the repo reads that another service owns and declares there (the hub
+        broker's synthesized ``knowledge_readiness``), onto the key that owner answers it by; one key or several
+    :ivar extra_exec_calls: the repo's own calls that run their first argument as SQL (reports' ``Snapshot.ask``,
+        the pod's ``work.arrow``): a bare ``SELECT ... FROM t`` handed to one is a whole read where it is run
     :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
         consumer reads) key reads too; its indexes are never the repo's to give a purpose
     """
@@ -145,6 +164,9 @@ class NoWholeReadsConfig:
     schema_roots: tuple[Path, ...] = ()
     table_lists: tuple[Path, ...] | None = None
     dependency_schema: bool = True
+    extra_exec_calls: frozenset[str] = field(default_factory=frozenset)
+    local_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+    foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -202,6 +224,11 @@ def _parse(path: Path) -> tuple[list[_Exemption], list[str]]:
             defects.append(f"{where}: hits {count!r} must be a positive integer")
         elif len(reason) < _MIN_REASON:
             defects.append(f"{where}: the reason must name the cold start or schema change ({_MIN_REASON}+ characters)")
+        elif kind == "source-gap" and _SOURCE_GAP.match(reason) is None:
+            defects.append(
+                f"{where}: a source gap's reason names its gap id from the source-gaps list and the condition it "
+                "fires on: 'G7: <when it reads whole>'"
+            )
         elif (module, function) in seen:
             defects.append(f"{where}: {module} :: {function} is listed twice")
         else:
@@ -275,13 +302,25 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     :return: the catalog
     :rtype: SchemaCatalog
     """
-    return collect_schema(
+    catalog = collect_schema(
         config.repo_root,
         (*config.src_roots, *config.schema_roots),
         dependency_roots=_dependency_roots(config.repo_root) if config.dependency_schema else (),
         excluded_prefixes=config.excluded_prefixes,
         table_lists=config.table_lists,
     )
+    for prefix, relations in ((COPY_PREFIX, config.local_relations), ("", config.foreign_relations)):
+        for written, declared in relations.items():
+            # ``local_relations["*"]``: the default key of every copy relation the repo declares no key for
+            name = "{}" if written == "*" and prefix else written
+            keys: list[tuple[str, ...]] = (
+                [tuple(str(column) for column in declared)]
+                if all(isinstance(column, str) for column in declared)
+                else [tuple(str(column) for column in key) for key in declared if not isinstance(key, str)]
+            )
+            for key in keys:
+                catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
+    return catalog
 
 
 def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan]:
@@ -301,6 +340,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         transient=config.transient_relations,
         verify_prefixes=config.verify_prefixes,
         schema=_schema_of(config),
+        exec_calls=config.extra_exec_calls,
     )
     return scan.hits, scan
 
@@ -333,13 +373,49 @@ def _operator_mark_findings(config: NoWholeReadsConfig, scan: WholeReadScan) -> 
     findings: list[str] = list(scan.operator_callers)
     for mark in scan.operators:
         where = f"{mark.path}:{mark.line} {mark.function} @{mark.mark}"
-        if len(mark.reason) < _MIN_REASON:
-            findings.append(f"{where}: the reason must say which operator command this is ({_MIN_REASON}+ characters)")
-        line = _Exemption(mark.line, mark.path, mark.function, 1, mark.mark, mark.proof, mark.reason)
+        if mark.mark == "source_change_read" and not (mark.stamps or mark.ids or mark.unit == "table"):
+            findings.append(f"{where}: name the source's stamps, its ids, or unit='table'")
+        elif mark.mark != "source_change_read" and len(mark.reason) < _MIN_REASON:
+            what = "the risk the backstop covers" if mark.mark == "security_backstop" else "which operator command"
+            findings.append(f"{where}: the reason must say {what} ({_MIN_REASON}+ characters)")
+        line = _Exemption(mark.line, mark.path, mark.function, 1, mark.mark, mark.proof, mark.reason, mark.speed)
         defect = _proving_test_defect(config.repo_root, line)
         if defect is not None:
             findings.append(f"{where}: the proof {defect}")
+        if mark.mark == "security_backstop":
+            speed = _proving_test_defect(config.repo_root, line, test=mark.speed, calls="budget_problem")
+            if speed is not None:
+                findings.append(f"{where}: the speed test {speed}")
     return findings
+
+
+class _WholeReadAccepted(UserWarning):
+    """a whole pass the gate accepted by its mark: a security backstop, or a source change read. Each is printed
+    and warned, so every one is seen on every run, never only listed."""
+
+
+def _announce(scan: WholeReadScan) -> list[str]:
+    """print and warn each security backstop and source change read the gate accepts: rare, and always visible.
+
+    :param scan: the walk
+    :ptype scan: WholeReadScan
+    :return: the lines printed
+    :rtype: list[str]
+    """
+    lines = [
+        f"no_whole_reads accepts @{mark.mark} {mark.path}:{mark.line} {mark.function}: "
+        + (
+            mark.reason
+            if mark.mark == "security_backstop"
+            else ", ".join((*mark.stamps, *mark.ids, mark.unit)).strip(", ")
+        )
+        for mark in scan.operators
+        if mark.mark in {"security_backstop", "source_change_read"}
+    ]
+    for line in lines:
+        sys.stderr.write(f"{line}\n")
+        warnings.warn(line, _WholeReadAccepted, stacklevel=2)
+    return lines
 
 
 def _marked(hit: WholeReadHit, marks: list[OperatorMark]) -> bool:
@@ -395,6 +471,12 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         if speed is not None:
             findings.append(f"{where}: the speed test {speed}")
     findings.extend(_operator_mark_findings(config, scan))
+    _announce(scan)
+    for exemption in exemptions:
+        if exemption.kind == "source-gap":
+            line = f"no_whole_reads accepts source-gap {exemption.path} :: {exemption.function}: {exemption.reason}"
+            sys.stderr.write(f"{line}\n")
+            warnings.warn(line, _WholeReadAccepted, stacklevel=2)
     findings.extend(index_findings(scan.schema, config.repo_root, scan.definitions | scan.constants))
     for hit in hits:
         if _marked(hit, scan.operators):

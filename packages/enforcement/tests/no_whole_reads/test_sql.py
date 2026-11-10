@@ -12,6 +12,11 @@ from threetears.enforcement.no_whole_reads.sql import Reader, is_sql, judge_sql
 
 #: the function the purposed index below names
 _DIGEST = "src/hub/schema_digest.py::SchemaDigest.refresh_active"
+#: the functions the namespaces' purposed indexes name
+_TAGGED = "src/hub/namespaces.py::tagged"
+_PLATFORM = "src/hub/namespaces.py::platform_rows"
+_LOWER = "src/hub/namespaces.py::by_lower_kind"
+_BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
 
 #: the tables these statements read, each with the key its declaration gives it
 _DDL = f"""
@@ -28,6 +33,24 @@ CREATE TABLE dataset_sources (dataset_id UUID, source_kind TEXT, source_id UUID,
 CREATE TABLE roots (id UUID PRIMARY KEY);
 CREATE TABLE stamps (k TEXT PRIMARY KEY, v TEXT, kind TEXT);
 CREATE TABLE role_assignments (assignment_id UUID PRIMARY KEY);
+CREATE TABLE api_keys (customer_id UUID, id UUID, key_hash TEXT UNIQUE, PRIMARY KEY (customer_id, id));
+CREATE TABLE grants (customer_id UUID, id UUID, name TEXT, state TEXT, PRIMARY KEY (customer_id, id),
+    CONSTRAINT grants_name_uq UNIQUE (customer_id, name));
+CREATE UNIQUE INDEX grants_live ON grants (state) WHERE state = 'live';
+ALTER TABLE gateway_providers ADD CONSTRAINT gateway_providers_name_uq UNIQUE (provider_name);
+CREATE TABLE namespaces (row_scope TEXT, namespace_id UUID, kind TEXT, tags JSONB, customer_id UUID,
+    PRIMARY KEY (row_scope, namespace_id));
+-- purpose: {_TAGGED}
+CREATE INDEX namespaces_by_tags ON namespaces USING gin (tags);
+-- purpose: {_PLATFORM}
+CREATE INDEX namespaces_by_customer ON namespaces (customer_id);
+CREATE TABLE singles (customer_id UUID PRIMARY KEY, n INT);
+CREATE UNIQUE INDEX namespaces_segment ON namespaces ((replace(name, '.', '-')));
+-- purpose: {_LOWER}
+CREATE INDEX namespaces_lower_kind ON namespaces ((lower(kind)));
+CREATE TABLE providers (id UUID PRIMARY KEY, name TEXT);
+-- purpose: {_BY_NAME}
+CREATE UNIQUE INDEX providers_by_name ON providers (name);
 """
 
 
@@ -83,6 +106,13 @@ def _kinds(sql: str, schema: SchemaCatalog, *names: str) -> list[tuple[str, str]
         # a table declared nowhere has no known key
         ("SELECT a FROM nowhere WHERE k = $1", [("unknown-schema", "nowhere")]),
         ("SELECT a FROM {} WHERE scope = $1", [("unknown-schema", "{}")]),
+        # a view reads nothing when created, but is declared with the keys a read of it uses
+        ("CREATE VIEW v AS SELECT * FROM t", [("undeclared-view", "v")]),
+        # a predicate assembled at run time that the walk cannot see is never a pass
+        ("SELECT * FROM memories {} AND embedding IS NOT NULL", [("unknown-predicate", "memories")]),
+        ("DELETE FROM role_assignments{} RETURNING assignment_id", [("unknown-predicate", "role_assignments")]),
+        ("SELECT count(*) FROM t WHERE {}", [("unknown-predicate", "t")]),
+        ("UPDATE stamps SET v = $1 WHERE {}", [("unknown-predicate", "stamps")]),
     ],
 )
 def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, str]], schema: SchemaCatalog) -> None:
@@ -97,6 +127,9 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         "SELECT writing FROM t WHERE k = $1 FOR UPDATE NOWAIT",
         "SELECT a FROM t ORDER BY k LIMIT 1",
         "SELECT 1 FROM t LIMIT 1",
+        # a bounded probe reads at most its bound count of rows, of any relation
+        "SELECT a FROM nowhere LIMIT 1",
+        "SELECT * FROM t LIMIT $1",
         "SELECT a FROM results WHERE state = $1 AND winner IS NOT NULL",
         "SELECT a FROM results WHERE state = $1 AND geo = ANY($2::text[])",
         "SELECT a FROM t WHERE k = $1 OR k = $2",
@@ -108,12 +141,15 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         "UPDATE stamps SET v = $1 WHERE k = $2",
         "DELETE FROM t WHERE k = ANY($1)",
         "INSERT INTO t (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = excluded.a",
-        "CREATE VIEW v AS SELECT * FROM t",
         "SELECT -1 AS ask, state, count(*) AS n FROM {} WHERE 1 = 0 GROUP BY state",
         "SELECT * FROM (SELECT a, k FROM t) AS d WHERE d.k = $1",
         "SELECT m.a FROM memories m WHERE m.id = $1 AND NOT EXISTS (SELECT 1 FROM memories g WHERE g.id = m.id)",
-        "SELECT * FROM memories {} AND embedding IS NOT NULL",
-        "DELETE FROM role_assignments{} RETURNING assignment_id",
+        # what the walk can see keys it, whatever the interpolation adds; generic code names its key predicate
+        # a shape probe reads no row
+        "SELECT * FROM t LIMIT 0",
+        "SELECT a, flag FROM t WHERE flag = $1 LIMIT 0",
+        "SELECT a FROM t WHERE k = $1 AND {}",
+        "SELECT a FROM {} WHERE {pk}",
         "SELECT * FROM pg_class",
         "SELECT a, max(b) FROM t WHERE k = $1 GROUP BY a",
     ],
@@ -153,7 +189,7 @@ def test_a_purposed_index_keys_only_the_read_it_names(schema: SchemaCatalog) -> 
     assert _kinds(sql, schema, "src/hub/other.py::elsewhere") == [("non-key-where", "datasources")]
     assert schema.used == set()
     assert _kinds(sql, schema, _DIGEST) == []
-    assert schema.used == {("datasources", "datasources_by_kind")}
+    assert schema.used == {("datasources", "datasources_by_kind", _DIGEST)}
 
 
 def test_without_a_schema_every_predicate_on_a_table_is_unknown() -> None:
@@ -217,3 +253,146 @@ def test_a_join_to_a_bound_cte_without_column_equality_is_still_whole(schema: Sc
         "  FROM dataset_sources s CROSS JOIN reachable r\n",
     )
     assert ("whole-aggregate", "dataset_sources") in _kinds(sql, schema)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM api_keys WHERE key_hash = $1",
+        "SELECT * FROM grants WHERE customer_id = $1 AND name = $2",
+        "SELECT id FROM gateway_providers WHERE provider_name = $1",
+        "SELECT * FROM api_keys WHERE customer_id = $1 AND id = $2",
+    ],
+)
+def test_a_declared_unique_is_a_key(sql: str, schema: SchemaCatalog) -> None:
+    """Flips if a read by a column declared UNIQUE (inline, a table constraint, ALTER TABLE ... ADD UNIQUE) is
+    called whole."""
+    assert _kinds(sql, schema) == []
+
+
+@pytest.mark.parametrize(
+    ("sql", "table"),
+    [
+        # the primary key leads with the tenant: by id alone, YugabyteDB reads every tablet
+        ("SELECT * FROM api_keys WHERE id = $1", "api_keys"),
+        # a unique key leading with the tenant, read without it
+        ("SELECT * FROM grants WHERE name = $1", "grants"),
+        # a partial unique index holds only for the rows its WHERE names: no key
+        ("SELECT * FROM grants WHERE state = $1", "grants"),
+    ],
+)
+def test_a_read_missing_the_leading_tenant_or_by_a_partial_unique_is_whole(
+    sql: str, table: str, schema: SchemaCatalog
+) -> None:
+    """Flips if a read by id on a tenant-leading key, by a unique key without its tenant, or by a partial unique
+    index passes."""
+    assert _kinds(sql, schema) == [("non-key-where", table)]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # the tenant alone is every row of the tenant
+        "SELECT namespace_id FROM namespaces WHERE row_scope = $1",
+        # every value of a low-cardinality column is every row
+        "SELECT namespace_id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
+        "SELECT * FROM namespaces WHERE kind = ANY(ARRAY['agent', 'tool'])",
+    ],
+)
+def test_a_tenant_only_prefix_or_every_value_of_a_column_is_whole(sql: str, schema: SchemaCatalog) -> None:
+    """Flips if a key prefix covering only the tenant, or an IN listing fixed categories, passes as keyed."""
+    assert _kinds(sql, schema) == [("non-key-where", "namespaces")]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT namespace_id FROM namespaces WHERE row_scope = $1 AND namespace_id = $2",
+        "SELECT namespace_id FROM namespaces WHERE row_scope = $1 AND namespace_id > $2 ORDER BY namespace_id LIMIT 100",
+        "SELECT namespace_id FROM namespaces WHERE row_scope = $1 ORDER BY namespace_id LIMIT 100",
+        # a key that is only the tenant column, bound whole, is one row
+        "SELECT n FROM singles WHERE customer_id = $1",
+        # unnested bound arrays covering the key, joined or as a subquery
+        "SELECT n.* FROM namespaces n JOIN unnest($1::text[], $2::uuid[]) AS k(s, i) "
+        "ON n.row_scope = k.s AND n.namespace_id = k.i",
+        "SELECT * FROM namespaces WHERE (row_scope, namespace_id) IN (SELECT * FROM unnest($1::text[], $2::uuid[]))",
+    ],
+)
+def test_past_the_tenant_a_keyset_page_or_unnested_keys_are_keyed(sql: str, schema: SchemaCatalog) -> None:
+    """Flips if a key prefix reaching past the tenant, a keyset page within a tenant, a whole key that is the
+    tenant, or a join to unnested bound keys is called whole."""
+    assert _kinds(sql, schema) == []
+
+
+@pytest.mark.parametrize(
+    ("sql", "purpose"),
+    [
+        ("SELECT * FROM namespaces WHERE tags @> $1", _TAGGED),
+        ("SELECT * FROM namespaces WHERE customer_id IS NULL", _PLATFORM),
+    ],
+)
+def test_containment_and_is_null_key_only_through_their_purposed_index(
+    sql: str, purpose: str, schema: SchemaCatalog
+) -> None:
+    """Flips if ``@>`` or ``IS NULL`` keys a read outside the function its index's purpose names, or fails to key
+    the one it names."""
+    assert _kinds(sql, schema, purpose) == []
+    elsewhere = _kinds(sql, schema, "src/hub/other.py::elsewhere")
+    # IS NULL binds no value, so outside its index it is a WHERE with nothing bound
+    assert elsewhere == [("unbound-where" if "IS NULL" in sql else "non-key-where", "namespaces")]
+
+
+@pytest.mark.parametrize("sql", ["SELECT * FROM t WHERE k @> $1", "SELECT * FROM t WHERE k IS NULL"])
+def test_containment_and_is_null_are_never_a_key(sql: str, schema: SchemaCatalog) -> None:
+    """Flips if ``@>`` or ``IS NULL`` on a key column counts as binding the key (a)."""
+    assert _kinds(sql, schema)[0][1] == "t"
+
+
+def test_an_expression_index_keys_a_read_of_the_same_expression(schema: SchemaCatalog) -> None:
+    """Flips if a read bound on the expression a unique expression index holds (a), or one a purposed expression
+    index holds in the function it names (b), is called whole, or if another expression of the column passes."""
+    assert _kinds("SELECT * FROM namespaces WHERE replace(name, '.', '-') = ANY($1)", schema) == []
+    assert _kinds("SELECT * FROM namespaces WHERE lower(kind) = $1", schema, _LOWER) == []
+    assert _kinds("SELECT * FROM namespaces WHERE lower(kind) = $1", schema) == [("non-key-where", "namespaces")]
+    assert _kinds("SELECT * FROM namespaces WHERE upper(name) = $1", schema) == [("non-key-where", "namespaces")]
+
+
+def test_a_unique_index_keying_a_read_is_used_only_by_the_read_its_purpose_names(schema: SchemaCatalog) -> None:
+    """Flips if a read through a unique index is not recorded as its use when the index's purpose names the reader,
+    or is recorded when it does not (the key still keys both reads)."""
+    sql = "SELECT * FROM providers WHERE name = $1"
+    assert _kinds(sql, schema, "src/hub/other.py::elsewhere") == []
+    assert schema.used == set()
+    assert _kinds(sql, schema, _BY_NAME) == []
+    assert schema.used == {("providers", "providers_by_name", _BY_NAME)}
+
+
+_SUPERSEDED = (
+    "SELECT id, (SELECT g.a FROM memories g WHERE g.id = memories.superseded_by) AS s FROM memories WHERE id = $1"
+)
+
+
+def test_an_aliased_relation_answers_only_to_its_alias(schema: SchemaCatalog) -> None:
+    """Flips if, in a subquery over the same table aliased, the outer table's name binds the inner alias (so the
+    correlated key is lost), or if a qualifier naming nothing at a level keys it."""
+    assert _kinds(_SUPERSEDED, schema) == []
+    unkeyed = _SUPERSEDED.replace("g.id = memories.superseded_by", "g.a = memories.a")
+    # the outer row's non-key column binds no value of the inner read's key
+    assert _kinds(unkeyed, schema) == [("unbound-where", "memories")]
+
+
+@pytest.mark.parametrize(
+    ("sql", "keyed"),
+    [
+        ("SELECT r.* FROM results r JOIN unnest($1::text[]) AS k(s) ON r.state = k.s", True),
+        (
+            "SELECT r.* FROM results r JOIN unnest($1::text[], $2::text[]) AS k(s, g) ON r.state = k.s AND r.geo = k.g",
+            True,
+        ),
+        ("SELECT r.* FROM results r JOIN unnest($1::text[]) AS k(g) ON r.geo = k.g", False),
+    ],
+)
+def test_an_unnest_join_keys_a_leading_prefix_of_the_key(sql: str, keyed: bool, schema: SchemaCatalog) -> None:
+    """Flips if a join to unnested bound keys covering a leading prefix of the key is called whole, or one binding
+    only a later key column passes."""
+    assert (_kinds(sql, schema) == []) is keyed, _kinds(sql, schema)

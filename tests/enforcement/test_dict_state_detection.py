@@ -93,6 +93,33 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
+        class_name="CopyCheckpoints",
+        attr_name="_priors",
+        rationale=(
+            "each table's checkpoint entry this replica's copy matched at its last load or write, by table: names of "
+            "objects the pointer bucket holds; a restart loads the newest checkpoint and takes them from it again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
+        class_name="CopyCheckpoints",
+        attr_name="_keys",
+        rationale=(
+            "the keys of each no-scope table changed since the last checkpoint: what the next write patches its part "
+            "by; they come from the epoch change log, and a restart loads the newest checkpoint and walks it again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
+        class_name="CopyCheckpoints",
+        attr_name="_missing",
+        rationale=(
+            "each table the last load left out and why (cold start, schema change): read off the pointer's manifest "
+            "at the load, which a restart reads again"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/scope_epochs.py",
         class_name="ScopeEpochs",
         attr_name="_rows",
@@ -123,6 +150,15 @@ _ALLOWLIST = (
         attr_name="_staged_keys",
         rationale=(
             "the keys each staged change was read for, kept to put back as pending when a pass fails; the keys come from the epoch change log, which a restart walks again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged_touched",
+        rationale=(
+            "the keys each staged change of a no-scope table replaces, handed to the checkpoint at the apply; they "
+            "come from the epoch change log and L3's rows of it, which a restart walks again"
         ),
     ),
     DictStateAllowlistEntry(
