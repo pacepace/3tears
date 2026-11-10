@@ -16,6 +16,15 @@ of one type pages by (`keyset_page(visible=...)`); it admits exactly the rows `c
 for the type (an integration test per scope arm). Without it the statement is unchanged byte for byte (the RLS GUC's
 set).
 
+**Added:** `VisibleCustomers` / `visible_customers(pool, user_id=, namespace_type=)`: that set read once, by the
+caller's memberships, as a value a listing binds (`bound`: the customers, None for a platform-wide grant; `sees_none`;
+`fragment(column, platform_rows=)`: the `= ANY` fragment `keyset_page(visible=...)` takes). `visible_rows(conn, table,
+columns=, user_id=, namespace_type=, customer_column=, order=, user_column=, where=, page=VISIBLE_LIST_PAGE)`: a whole
+visible listing read by key a page a statement, on those customers; platform rows (no customer) seen by every caller,
+and with `user_column` another user's rows by none (`three_scope_visibility_clause`'s rule; without it,
+`customer_scope_visibility_clause`'s). The rule's one definition, beside the per-row clauses, for the listings that page
+from the caller's grants.
+
 ### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
 
 **Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed
