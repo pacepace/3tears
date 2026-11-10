@@ -1957,10 +1957,13 @@ def _loss_keys(qualified: bool) -> Callable[[ReportInput, tuple[str, ...]], list
 
 
 def _printed_stratum(report_input: ReportInput, stratum: Stratum) -> str:
-    """A stratum's printed name among the input's strata (:func:`~threetears.evals.analysis.report.words.
-    stratum_names`), so two that would print alike each print as their id."""
-    declared = {held.id: held.name for held in report_input.strata}
-    return stratum_names([held.id for held in report_input.strata], declared).get(stratum.id) or stratum_name(
+    """A stratum's printed name among its own aspect's strata (:func:`~threetears.evals.analysis.report.words.
+    stratum_names`), so two of them that would print alike each print as their id. A stratum is read by its id on its
+    aspect, and named by its own declared name; another aspect's stratum of the same id is another stratum."""
+    held = [other for other in report_input.strata if other.aspect == stratum.aspect]
+    declared = {other.id: other.name for other in held}
+    declared[stratum.id] = stratum.name
+    return stratum_names([other.id for other in held], declared).get(stratum.id) or stratum_name(
         stratum.id, stratum.name
     )
 
