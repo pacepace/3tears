@@ -39,6 +39,7 @@ The walk can miss SQL assembled at run time from pieces it cannot see; it never 
 from __future__ import annotations
 
 import ast
+import itertools
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -102,6 +103,16 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
 #: what a reviewed visibility clause (``caller_visible_customer_clause(...)``) reads as where it is placed: a bound
 #: predicate on no key, a per-row filter
 _KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
+
+#: a relation a declared transient producer returned (``Stages._stage(stage)``, ``work.put(rows)``): a change set
+#: being applied, never a data table
+TRANSIENT_PRODUCED: Final[str] = "__transient_produced__"
+
+#: the most combinations of resolved parameter values a keyed helper call is judged under; past it, unresolved
+_MAX_PARAMETER_COMBINATIONS: Final[int] = 16
+
+#: whether an expression is a declared transient producer's return; None when the repo declares none
+Produced = Callable[[ast.expr], bool] | None
 
 #: the keyset pagers whose pages are written out to record the purposed index they read through
 _CREDITED_PAGERS: Final[frozenset[str]] = frozenset({"keyset_pages", "read_keyset_pages", "keyset_arrow_pages"})
@@ -418,7 +429,7 @@ def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -
     return text
 
 
-def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
+def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced = None) -> str:
     """what an f-string placeholder reads as: a constant's text (``{_MARK_TABLE}``, an imported one, or one handed
     to a call: ``{quote(TABLE)}``), ``copy.<name>`` for a local copy's relation (``{snapshot.relation(GEOS)}``),
     ``{pk}`` when a name in it says it is the key (``{pk}``, ``{self._key_column}``, ``{", ".join(pk_cols)}``), else
@@ -428,9 +439,14 @@ def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
     :ptype value: ast.expr
     :param constants: the module's names bound to strings
     :ptype constants: dict[str, str]
+    :param produced: whether an expression is a declared transient producer's return (read as
+        :data:`TRANSIENT_PRODUCED`)
+    :ptype produced: Produced
     :return: the text
     :rtype: str
     """
+    if produced is not None and produced(value):
+        return TRANSIENT_PRODUCED
     known = _constant_text(value, constants)
     if known is not None:
         return known
@@ -453,39 +469,44 @@ def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
     return PK_TOKEN if any(_KEY_NAME.search(found) for found in names) else "{}"
 
 
-def _string_text(node: ast.expr, env: dict[str, str]) -> str | None:
+def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None) -> str | None:
     """the statically known text of a string expression.
 
     :param node: the expression
     :ptype node: ast.expr
     :param env: names bound to strings in scope
     :ptype env: dict[str, str]
+    :param produced: whether an expression is a declared transient producer's return (read as
+        :data:`TRANSIENT_PRODUCED`, so a name bound to one is too)
+    :ptype produced: Produced
     :return: the text, each unknown interpolation as ``{}``; None when it is not a string expression
     :rtype: str | None
     """
     text: str | None = None
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+    if produced is not None and isinstance(node, (ast.Call, ast.Attribute)) and produced(node):
+        text = TRANSIENT_PRODUCED
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
         text = node.value
     elif isinstance(node, ast.JoinedStr):
         text = "".join(
             str(part.value)
             if isinstance(part, ast.Constant)
-            else _placeholder(part.value, env)
+            else _placeholder(part.value, env, produced)
             if isinstance(part, ast.FormattedValue)
             else "{}"
             for part in node.values
         )
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _string_text(node.left, env)
-        right = _string_text(node.right, env)
+        left = _string_text(node.left, env, produced)
+        right = _string_text(node.right, env, produced)
         if left is not None or right is not None:
             text = (left if left is not None else "{}") + (right if right is not None else "{}")
     elif isinstance(node, ast.Name):
         text = env.get(node.id)
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"format", "strip"}:
-        text = _string_text(node.func.value, env)
+        text = _string_text(node.func.value, env, produced)
     elif isinstance(node, ast.Call) and node.args and _final(node) in {"dedent", "SQL", "text"}:
-        text = _string_text(node.args[0], env)
+        text = _string_text(node.args[0], env, produced)
     return text
 
 
@@ -564,6 +585,8 @@ class _ModuleWalk(ast.NodeVisitor):
         imported: dict[str, str] | None = None,
         exec_calls: frozenset[str] = frozenset(),
         cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None = None,
+        producers: frozenset[str] = frozenset(),
+        parameter_values: dict[tuple[str, str], list[str | None]] | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -593,10 +616,17 @@ class _ModuleWalk(ast.NodeVisitor):
         :param cte_arguments: ``(function, parameter)`` onto each call site's argument: ``(site, whether it is a string
             literal its calling function defines as a CTE)`` (:func:`_cte_arguments`)
         :ptype cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None
+        :param producers: the repo's functions whose returned relation is a change set (``Stages._stage``,
+            ``_Work.put``): ``Class.method``, or a module function's name
+        :ptype producers: frozenset[str]
+        :param parameter_values: ``(function, parameter)`` onto the string each call site passes it, None where the
+            walk cannot read one (:func:`_parameter_values`)
+        :ptype parameter_values: dict[tuple[str, str], list[str | None]] | None
         :return: nothing
         :rtype: None
         """
         self.path = path
+        self._parameter_values = parameter_values or {}
         self.source = source
         self.hits: list[WholeReadHit] = []
         self.calls: list[_CallSite] = []
@@ -613,6 +643,13 @@ class _ModuleWalk(ast.NodeVisitor):
         self._always_whole = always_whole
         self._narrowing = narrowing
         self._transient = transient
+        #: each declared producer as ``(class, method)``, the class empty for a module function
+        self._producers: tuple[tuple[str, str], ...] = tuple(
+            (owner.rsplit(".", 1)[-1], method)
+            for owner, _, method in (producer.rpartition(".") for producer in sorted(producers))
+        )
+        #: per class, the ``self`` attributes every assignment of which is a producer's return
+        self._produced_attributes: dict[int, frozenset[str]] = {}
         self._verify = verify
         self._exec_calls = _EXEC_CALLS | exec_calls
         self._cte_arguments = cte_arguments or {}
@@ -771,7 +808,7 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 target, value = node.target, node.value
             if isinstance(target, ast.Name) and value is not None:
-                text = _string_text(value, env)
+                text = _string_text(value, env, self._produced_by)
                 if text is not None and stores.get(target.id, 0) == 1:
                     env[target.id] = text
                 else:
@@ -836,11 +873,13 @@ class _ModuleWalk(ast.NodeVisitor):
         self._mark_operator(node)
         if _is_stub(node):
             self.stubs.add(f"{self.path}::{self._function}")
+        # the function is on the stack before its bindings are read: a name bound to a producer's return is known by
+        # its receiver's class, which the function's parameters and assignments say
+        self._function_nodes.append(node)
         env = dict(self._envs[-1])
         self._bind(node.body, env)
         self._envs.append(env)
         self._ctes.append(_function_ctes(node.body))
-        self._function_nodes.append(node)
         owner = self._classes[-1] if self._classes and self._function.startswith(f"{self._classes[-1]}.") else ""
         self._classes.append(owner)
         self.generic_visit(node)
@@ -1014,7 +1053,7 @@ class _ModuleWalk(ast.NodeVisitor):
         cte_params = self._cte_parameters(function) if function is not None else set()
         if cte_params:
             env = {**env, **{name: f"__cte_{name}" for name in cte_params}}
-        text = _string_text(node, env) if self._maximal_string(node) else None
+        text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
         for finding in judge_sql(text, self._reader(node)) if text is not None and is_sql(text) else []:
             if self._transient_table(finding.table):
                 continue
@@ -1050,7 +1089,7 @@ class _ModuleWalk(ast.NodeVisitor):
             None,
         )
         top = self._stack[0] if self._stack else ""
-        text = _string_text(node, self._envs[-1]) or ""
+        text = _string_text(node, self._envs[-1], self._produced_by) or ""
         table_match = re.search(r"\bFROM\s+([\w.\"]+)", text, re.IGNORECASE)
         if order is None or table_match is None:
             return False
@@ -1199,7 +1238,11 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: bool
         """
         bare = table.strip('"').removeprefix(COPY_PREFIX)
-        return bare in self._registered or (self._transient is not None and self._transient.search(bare) is not None)
+        return (
+            bare == TRANSIENT_PRODUCED
+            or bare in self._registered
+            or (self._transient is not None and self._transient.search(bare) is not None)
+        )
 
     def _runs(self, call: ast.Call, argument: ast.expr) -> bool:
         """whether ``call`` runs ``argument`` as SQL, as written.
@@ -1360,13 +1403,66 @@ class _ModuleWalk(ast.NodeVisitor):
         if _final(node) not in KEYED_HELPER_CALLS:
             return
         statement: HelperStatement
-        for statement in helper_statements(self._resolved_call(node)):
-            if statement.sql is UNSEEN or statement.sql is None:
-                self._hit(node, f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
+        resolved = self._resolved_call(node)
+        hits: dict[str, str] = {}
+        for call in self._parameter_calls(resolved):
+            for statement in helper_statements(call):
+                if statement.sql is UNSEEN or statement.sql is None:
+                    hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
+                    continue
+                for finding in judge_sql(statement.sql, self._reader(node)):
+                    if finding.kind not in {HEAD, KEYED_COUNT} and not self._transient_table(finding.table):
+                        hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
+        for symbol, statement_text in hits.items():
+            self._hit(node, symbol, statement_text)
+
+    def _parameter_calls(self, call: ast.Call) -> list[ast.Call]:
+        """the call once per combination of the strings its function's parameters are passed: an argument that is a
+        parameter of the calling function, never rebound in it, which every call site in the repo fills with a
+        literal or a module constant (``_held(conn, GEOS, key)``), reads as each of those strings in turn; the call
+        itself when there is none, or one caller passes something the walk cannot read.
+
+        :param call: the helper call, its known strings already literals
+        :ptype call: ast.Call
+        :return: the calls to judge
+        :rtype: list[ast.Call]
+        """
+        function = self._function_node
+        if function is None or not self._parameter_values:
+            return [call]
+        parameters = {
+            argument.arg for argument in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+        }
+        rebound = {
+            node.id
+            for node in _own_nodes(function.body)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        choices: dict[str, list[str]] = {}
+        for value in [*call.args, *(keyword.value for keyword in call.keywords)]:
+            if not isinstance(value, ast.Name) or value.id not in parameters or value.id in rebound:
                 continue
-            for finding in judge_sql(statement.sql, self._reader(node)):
-                if finding.kind not in {HEAD, KEYED_COUNT} and not self._transient_table(finding.table):
-                    self._hit(node, f"{finding.kind} {finding.table}", statement.sql)
+            passed = self._parameter_values.get((function.name, value.id), [])
+            if passed and all(text is not None for text in passed):
+                choices[value.id] = sorted({text for text in passed if text is not None})
+        combinations = list(itertools.product(*choices.values()))
+        if not choices or len(combinations) > _MAX_PARAMETER_COMBINATIONS:
+            return [call]
+
+        def bound(value: ast.expr, given: dict[str, str]) -> ast.expr:
+            return ast.Constant(given[value.id]) if isinstance(value, ast.Name) and value.id in given else value
+
+        calls = []
+        for combination in combinations:
+            given = dict(zip(choices, combination, strict=True))
+            calls.append(
+                ast.Call(
+                    func=call.func,
+                    args=[bound(argument, given) for argument in call.args],
+                    keywords=[ast.keyword(arg=k.arg, value=bound(k.value, given)) for k in call.keywords],
+                )
+            )
+        return calls
 
     def _judge_call(self, node: ast.Call, name: str) -> None:
         """every call-shaped check over one call.
@@ -1462,7 +1558,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        head = _string_text(node.args[1], self._envs[-1]) if len(node.args) > 1 else None
+        head = _string_text(node.args[1], self._envs[-1], self._produced_by) if len(node.args) > 1 else None
         key_node = node.args[2] if len(node.args) > 2 else _keyword_value(node, "key")
         key = [
             e.value for e in getattr(key_node, "elts", []) if isinstance(e, ast.Constant) and isinstance(e.value, str)
@@ -1540,20 +1636,30 @@ class _ModuleWalk(ast.NodeVisitor):
             )
         )
 
-    def _receiver_class(self, node: ast.Call) -> str:
+    def _receiver_class(
+        self,
+        node: ast.Call,
+        function: ast.FunctionDef | ast.AsyncFunctionDef | None = None,
+        owner: ast.ClassDef | None = None,
+    ) -> str:
         """the class a method call's receiver is known to be: a name annotated with a class or assigned an instance of
         one in the calling function (its parameters included), or a ``self`` attribute annotated or assigned so in the
-        calling class; empty when nothing says.
+        calling class (from a parameter annotated with it, too); empty when nothing says.
 
         :param node: the call
         :ptype node: ast.Call
+        :param function: the calling function; None for the one the walk is in
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef | None
+        :param owner: the calling class; None for the one the walk is in
+        :ptype owner: ast.ClassDef | None
         :return: the class's name, its final segment; empty when unknown
         :rtype: str
         """
         receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        function = function if function is not None else self._function_node
+        owner = owner if owner is not None else (self._class_nodes[-1] if self._class_nodes else None)
         known = ""
-        if isinstance(receiver, ast.Name) and self._function_nodes:
-            function = self._function_nodes[-1]
+        if isinstance(receiver, ast.Name) and function is not None:
             arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
             for argument in arguments:
                 if argument.arg == receiver.id and argument.annotation is not None:
@@ -1566,11 +1672,11 @@ class _ModuleWalk(ast.NodeVisitor):
             isinstance(receiver, ast.Attribute)
             and isinstance(receiver.value, ast.Name)
             and receiver.value.id == "self"
-            and self._class_nodes
+            and owner is not None
         ):
             attribute = receiver.attr
             known = _assigned_class(
-                self._class_nodes[-1].body,
+                owner.body,
                 lambda target: (
                     (
                         isinstance(target, ast.Attribute)
@@ -1582,6 +1688,99 @@ class _ModuleWalk(ast.NodeVisitor):
                 ),
             )
         return known
+
+    def _produced_by(self, node: ast.expr) -> bool:
+        """whether an expression is a declared transient producer's return, where the walk is.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: whether the relation it names is a change set
+        :rtype: bool
+        """
+        owner = self._class_nodes[-1] if self._class_nodes else None
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and owner is not None
+        ):
+            return node.attr in self._attributes_produced(owner)
+        return self._produces(node, self._function_node, owner)
+
+    def _produces(
+        self, node: ast.expr, function: ast.FunctionDef | ast.AsyncFunctionDef | None, owner: ast.ClassDef | None
+    ) -> bool:
+        """whether an expression is a call of a declared transient producer: a module function by its name, or a
+        method called on ``self`` or ``cls`` in its class, on the class itself, or on a receiver known to be the class.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :param function: the calling function
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef | None
+        :param owner: the calling class
+        :ptype owner: ast.ClassDef | None
+        :return: whether it is a producer's call
+        :rtype: bool
+        """
+        if not self._producers or not isinstance(node, ast.Call):
+            return False
+        name = _final(node)
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        for producer_class, method in self._producers:
+            if method != name:
+                continue
+            if not producer_class:
+                if isinstance(node.func, ast.Name):
+                    return True
+                continue
+            if isinstance(receiver, ast.Name) and (
+                receiver.id == producer_class
+                or (receiver.id in ("self", "cls") and owner is not None and owner.name == producer_class)
+            ):
+                return True
+            if receiver is not None and self._receiver_class(node, function, owner) == producer_class:
+                return True
+        return False
+
+    def _attributes_produced(self, owner: ast.ClassDef) -> frozenset[str]:
+        """the ``self`` attributes of a class every assignment of which (in any of its methods) is a declared
+        transient producer's return: ``self.new = work.put(rows)``.
+
+        :param owner: the class
+        :ptype owner: ast.ClassDef
+        :return: the attributes' names
+        :rtype: frozenset[str]
+        """
+        cached = self._produced_attributes.get(id(owner))
+        if cached is not None:
+            return cached
+        produced: set[str] = set()
+        other: set[str] = set()
+        for method in owner.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(method):
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else [node.target]
+                    if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                    else []
+                )
+                value = getattr(node, "value", None)
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        made = (
+                            isinstance(node, ast.Assign) and value is not None and self._produces(value, method, owner)
+                        )
+                        (produced if made else other).add(target.attr)
+        found = frozenset(produced - other)
+        self._produced_attributes[id(owner)] = found
+        return found
 
 
 def _annotated_class(annotation: ast.expr) -> str:
@@ -1618,6 +1817,21 @@ def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -
     known = ""
     for statement in body:
         for node in ast.walk(statement):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # ``self.work = work`` where the method's parameter is annotated ``work: _Work``
+                annotated = {
+                    argument.arg: _annotated_class(argument.annotation)
+                    for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                    if argument.annotation is not None
+                }
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Assign)
+                        and isinstance(inner.value, ast.Name)
+                        and annotated.get(inner.value.id)
+                        and any(matches(target) for target in inner.targets)
+                    ):
+                        known = annotated[inner.value.id]
             if isinstance(node, ast.AnnAssign) and matches(node.target):
                 known = _annotated_class(node.annotation) or known
             elif (
@@ -1626,7 +1840,7 @@ def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -
                 and any(matches(target) for target in node.targets)
             ):
                 name = (dotted(node.value.func) or "").rsplit(".", 1)[-1]
-                known = name if name[:1].isupper() else known
+                known = name if name.lstrip("_")[:1].isupper() else known
     return known
 
 
@@ -2112,6 +2326,65 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
     return found
 
 
+def _parameter_values(
+    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]]
+) -> dict[tuple[str, str], list[str | None]]:
+    """for every function the repo defines once by its name, the string each call site passes each of its parameters:
+    a literal, or a module constant of the calling module (its own, or one it imports from the repo); a default the
+    call leaves in place reads the same way; None for anything else.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
+    :ptype strings: dict[str, dict[str, str]]
+    :return: ``(function, parameter)`` onto each site's string, or None
+    :rtype: dict[tuple[str, str], list[str | None]]
+    """
+    definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    for _, tree in modules:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definitions.setdefault(node.name, []).append(node)
+    found: dict[tuple[str, str], list[str | None]] = {}
+    for relative, tree in modules:
+        known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            defined = definitions.get(_final(call) or "", [])
+            if len(defined) != 1:
+                # a name defined twice could be either: no site of it says what its parameters hold
+                continue
+            function = defined[0]
+            positional = [*function.args.posonlyargs, *function.args.args]
+            if positional[:1] and positional[0].arg in ("self", "cls") and isinstance(call.func, ast.Attribute):
+                positional = positional[1:]
+            defaults = dict(
+                zip(
+                    [argument.arg for argument in positional][len(positional) - len(function.args.defaults) :],
+                    function.args.defaults,
+                    strict=True,
+                )
+            )
+            defaults.update(
+                {
+                    argument.arg: default
+                    for argument, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True)
+                    if default is not None
+                }
+            )
+            starred = any(isinstance(argument, ast.Starred) for argument in call.args) or any(
+                keyword.arg is None for keyword in call.keywords
+            )
+            passed: dict[str, ast.expr] = dict(zip([a.arg for a in positional], call.args, strict=False))
+            passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
+            for argument in [*positional, *function.args.kwonlyargs]:
+                value = passed.get(argument.arg, defaults.get(argument.arg))
+                text = None if starred or value is None else _constant_text(value, known)
+                found.setdefault((function.name, argument.arg), []).append(text)
+    return found
+
+
 def _formatted_ctes(body: list[ast.stmt]) -> frozenset[str]:
     """the CTE names a function's f-strings define (``f"WITH runs AS ({...})"``).
 
@@ -2211,6 +2484,7 @@ def scan_whole_reads(
     verify_prefixes: tuple[str, ...] = (),
     schema: SchemaCatalog | None = None,
     exec_calls: frozenset[str] = frozenset(),
+    producers: frozenset[str] = frozenset(),
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -2240,6 +2514,9 @@ def scan_whole_reads(
     :ptype schema: SchemaCatalog | None
     :param exec_calls: the repo's own calls that run their first argument as SQL (``Snapshot.ask``), beside 3tears'
     :ptype exec_calls: frozenset[str]
+    :param producers: the repo's functions whose returned relation is a change set (``Class.method`` or a module
+        function's name)
+    :ptype producers: frozenset[str]
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -2254,6 +2531,7 @@ def scan_whole_reads(
     modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
     strings = {relative: _module_strings(parse_python_path(path)) for relative, path in modules}
     cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
+    parameter_values = _parameter_values([(relative, parse_python_path(path)) for relative, path in modules], strings)
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
         used.update(excluded)
@@ -2273,6 +2551,8 @@ def scan_whole_reads(
             imported=_imported_strings(tree, strings),
             exec_calls=exec_calls,
             cte_arguments=cte_arguments,
+            producers=producers,
+            parameter_values=parameter_values,
         )
         walk.visit(tree)
         stubs.update(walk.stubs)

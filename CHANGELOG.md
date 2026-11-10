@@ -57,6 +57,11 @@ function that reads whole. In the code a repo names as load code, even one key's
 verification scan. There is no allowlist of violations: the one way out is `_no_whole_reads_exemptions.txt`, a
 true cold start or schema change with the test proving it is reached only then. 3tears runs it
 (`tests/enforcement/test_no_whole_reads.py`), red until the paths it names are fixed.
+A repo names the functions whose returned relation is a change set being applied
+(`NoWholeReadsConfig.transient_producers`, `Class.method` or a function: reports' `Stages._stage`, `_Work.put`), so
+a statement over one reads no data table. A keyed helper called with a parameter every call site fills with a literal
+or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. An entry-only
+operator mark counts a method call as its caller only on a receiver known to be the marked class.
 
 **Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
 test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,
