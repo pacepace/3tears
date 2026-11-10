@@ -96,14 +96,14 @@ MARKS_TABLE: Final = "threetears_change_note_marks"
 
 #: the keeper's marks table, ``{schema}`` its schema (quoted): written out whole, so it declares its key where it is read
 _MARKS_TABLE_DDL: Final = (
-    "CREATE TABLE IF NOT EXISTS {schema}.threetears_change_note_marks ("
+    'CREATE TABLE IF NOT EXISTS {schema}."threetears_change_note_marks" ('
     "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
     "at TIMESTAMPTZ NOT NULL)"
 )
 
 #: the ring's one-row table, ``{schema}`` its schema (quoted): written out whole, so it declares its key where it is read
 _RING_TABLE_DDL: Final = (
-    "CREATE TABLE IF NOT EXISTS {schema}.threetears_change_note_ring ("
+    'CREATE TABLE IF NOT EXISTS {schema}."threetears_change_note_ring" ('
     "id SMALLINT PRIMARY KEY CHECK (id = 1), "
     "current_ring SMALLINT NOT NULL, "
     "switch_no BIGINT NOT NULL, "

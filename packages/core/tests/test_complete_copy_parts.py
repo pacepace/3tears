@@ -104,7 +104,7 @@ class TestStoredKeys:
     def test_keys_come_back_as_stored_and_match_the_values_serialized(self, backend: Any) -> None:
         at = datetime(2026, 11, 4, 3, 57, 11, tzinfo=UTC)
         backend.upsert_many("results", [{"race": "VA", "at": at, "votes": 5}], ("race", "at"))
-        stored = [tuple(row.values()) for row in backend.execute_arrow("SELECT race, at FROM results").to_pylist()]
+        stored = [tuple(row.values()) for row in backend.execute_arrow('SELECT race, "at" FROM results').to_pylist()]
         assert stored == [("VA", backend.serialize_value(at, "VARCHAR_DATETIME"))]
         # in the spelling a change record names the key in (key_text), so an eviction by that text finds the row
         assert key_fingerprint(stored) == key_fingerprint([("VA", key_text(at))])

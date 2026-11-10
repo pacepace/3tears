@@ -206,7 +206,9 @@ def _fetch_arrow_pieces(result: Any) -> Any:
     :return: the rows
     :rtype: pyarrow.Table
     """
-    reader = result.fetch_record_batch(_ARROW_PIECE_ROWS)
+    # ``to_arrow_reader`` replaced ``fetch_record_batch`` (deprecated in 1.4); older releases have only the latter
+    read = getattr(result, "to_arrow_reader", None) or result.fetch_record_batch
+    reader = read(_ARROW_PIECE_ROWS)
     return pa.Table.from_batches(list(reader), schema=reader.schema)
 
 

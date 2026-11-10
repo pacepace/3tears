@@ -27,7 +27,7 @@ WRITE_MARKS_TABLE: Final[str] = "collection_write_marks"
 
 #: the queue's table, ``{schema}`` its schema (quoted): written out whole, so it declares the queue's key where it is read
 _MARKS_TABLE_DDL: Final[str] = (
-    "CREATE TABLE IF NOT EXISTS {schema}.collection_write_marks ("
+    'CREATE TABLE IF NOT EXISTS {schema}."collection_write_marks" ('
     "id BIGSERIAL PRIMARY KEY, "
     "table_name TEXT NOT NULL, "
     "date_created TIMESTAMPTZ NOT NULL DEFAULT now())"

@@ -613,8 +613,8 @@ class TestTheSweep:
         sql, params = store.calls[0]
         assert "DELETE FROM coordination_counters" in sql
         assert "expires_at IS NOT NULL AND expires_at < $1" in sql
-        assert "LIMIT 250" in sql
-        assert params == (cutoff,)
+        assert "LIMIT $2" in sql
+        assert params == (cutoff, 250)
 
     @pytest.mark.asyncio
     async def test_without_l3_it_does_nothing(self) -> None:
