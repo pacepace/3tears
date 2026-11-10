@@ -32,7 +32,7 @@ pytest.importorskip("pyarrow")
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, noted_keys_page  # noqa: E402
-from threetears.core.collections.copy_follower import NEVER_HOLDS, CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.ddl.change_notes import note_trigger_sql, trigger_function_sql  # noqa: E402
@@ -181,7 +181,6 @@ async def _warm_follower(db: _Db, log: _Log, version: list[int]) -> tuple[CopyFo
         settled=settled,
         generation=log.current,
         changes=log,
-        stamp_table=NEVER_HOLDS,
     )
     follower.register()
     await follower.warm()

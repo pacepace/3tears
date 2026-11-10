@@ -178,6 +178,14 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_current_marks",
+        rationale=(
+            "each table's epoch mark the copy holds every key of, what a checkpoint of the copy records; set from the checkpoint at load and from each change applied, and a restart takes it from the checkpoint or walks the log again"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="MappedTables",
         attr_name="_by_inode",

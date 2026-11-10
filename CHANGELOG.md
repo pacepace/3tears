@@ -92,6 +92,11 @@ function that reads whole. In the code a repo names as load code, even one key's
 verification scan. There is no allowlist of violations: the one way out is `_no_whole_reads_exemptions.txt`, a
 true cold start or schema change with the test proving it is reached only then. 3tears runs it
 (`tests/enforcement/test_no_whole_reads.py`), red until the paths it names are fixed.
+A repo names the functions whose returned relation is a change set being applied
+(`NoWholeReadsConfig.transient_producers`, `Class.method` or a function: reports' `Stages._stage`, `_Work.put`), so
+a statement over one reads no data table. A keyed helper called with a parameter every call site fills with a literal
+or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. An entry-only
+operator mark counts a method call as its caller only on a receiver known to be the marked class.
 
 **Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
 test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,
@@ -194,7 +199,8 @@ operator's reset.
   in progress holds keeps the mark it was last current at, so a start from that checkpoint hears those keys again.
 - `CopyFollower(stamp_table=)` names the table the writer's stamp is kept in (derived from `settled` when that is a
   `ScopeEpochs.settled`; `ScopeEpochs.table_name`), whose row messages ask a pass: another replica's commit of a held
-  write wakes the follower. `NEVER_HOLDS` is for a writer that never holds a scope; construction refuses neither.
+  write wakes the follower. A follower none of whose tables has a scope hears none; one with a scoped table and
+  no stamp table named or derivable is refused at construction.
 - `ScopeEpochs.settled()` reads only what changed after its first read: one statement for the writer's row, every
   pending scope and every scope past the last version it read, merged into a cached snapshot; it reads whole again
   only when the record cannot be trusted (`scope_epochs_whole_reads_total{table,why}`).

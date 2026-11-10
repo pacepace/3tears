@@ -418,6 +418,58 @@ def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path)
     )
 
 
+_MARKED_METHOD = """
+    from threetears.core.operator import operator_command
+
+    class RereadStateTool:
+        @operator_command("an operator's explicit one-off reread of every state row", proof="tests/test_ops.py::test_reread")
+        async def execute(self, conn):
+            return await conn.fetch("SELECT * FROM state")
+"""
+
+
+def test_an_entry_only_mark_counts_a_method_call_only_on_a_receiver_known_to_be_its_class(tmp_path: Path) -> None:
+    """Flips if a call of a marked method's name on a receiver of unknown type (``self._db.execute``, a DuckDB
+    connection) is reported as an unmarked caller of it, or if a receiver typed or assigned as the marked class is
+    not."""
+    _ops(tmp_path, "def test_reread():\n    assert RereadStateTool.execute\n")
+    unrelated = """
+        class Pod:
+            def __init__(self, db):
+                self._db = db
+
+            async def step(self, key):
+                return await self._db.execute("SELECT 1 FROM state WHERE k = $1", key)
+
+            async def other(self, conn, key):
+                return await conn.execute("SELECT 1 FROM state WHERE k = $1", key)
+        """
+    typed = """
+        from tool import RereadStateTool
+
+        async def annotated(tool: RereadStateTool, conn):
+            return await tool.execute(conn)
+
+        async def assigned(conn):
+            tool = RereadStateTool()
+            return await tool.execute(conn)
+
+        class Holder:
+            def __init__(self):
+                self._tool = RereadStateTool()
+
+            async def run(self, conn):
+                return await self._tool.execute(conn)
+        """
+    findings = no_whole_reads_findings(
+        _config(tmp_path, {"tool.py": _MARKED_METHOD, "pod.py": unrelated, "typed.py": typed})
+    )
+    callers = [finding for finding in findings if "marked @operator_command" in finding]
+    assert not [finding for finding in callers if "pod.py" in finding], callers
+    for function in ("in annotated:", "in assigned:", "in Holder.run:"):
+        assert any("typed.py" in finding and function in finding for finding in callers), (function, callers)
+
+
 def test_a_ledger_line_without_its_speed_test_field_is_malformed(tmp_path: Path) -> None:
     """Flips if a line of the old six fields, a cold start with no speed test, is still read as an exemption."""
     _proof(tmp_path)
@@ -1741,3 +1793,104 @@ def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_an
     assert not any(function == "newest" for function, _ in found), found
     findings = no_whole_reads_findings(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
     assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_PRODUCED = """
+    class Stages:
+        def __init__(self, db):
+            self._db = db
+
+        @staticmethod
+        def _stage(stage):
+            return f'"__s_{stage}"'
+
+        def rows(self, stage):
+            return self._db.execute(f"SELECT * FROM {self._stage(stage)}")
+
+
+    class _Work:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def put(self, rows):
+            return "w"
+
+
+    class Other:
+        def put(self, rows):
+            return "o"
+
+
+    def settle(conn, rows):
+        work = _Work(conn)
+        named = work.put(rows)
+        return conn.execute(f"SELECT * FROM {named}")
+
+
+    def widen(work: _Work, conn, rows):
+        return conn.execute(f"SELECT * FROM {work.put(rows)}")
+
+
+    class Pass:
+        def __init__(self, work: _Work):
+            self.work = work
+            self.new = work.put(None)
+
+        def read(self, conn):
+            return conn.execute(f"SELECT * FROM {self.new} AS n JOIN {self.work.put(None)} AS k ON n.a = k.a")
+
+
+    def unrelated(other: Other, conn):
+        return conn.execute(f"SELECT * FROM {other.put(1)}")
+"""
+
+
+def test_a_relation_a_declared_transient_producer_returns_is_a_change_set(tmp_path: Path) -> None:
+    """Flips if a relation named by a declared transient producer's return (``Stages._stage``, ``_Work.put``) -- the
+    call in the placeholder, a name bound to it, or a ``self`` attribute assigned it -- is judged as a data table, if
+    an undeclared producer's (``Other.put``, the same method name on another class) is not, or if undeclared the same
+    reads are not judged at all."""
+    modules = {"pkg/produced.py": _PRODUCED}
+    readers = {"Stages.rows", "settle", "widen", "Pass.read"}
+    bare = _symbols(_config(tmp_path, modules))
+    assert readers | {"unrelated"} <= {function for function, _ in bare}, bare
+    found = _symbols(_config(tmp_path, modules, transient_producers=frozenset({"Stages._stage", "_Work.put"})))
+    assert not readers & {function for function, _ in found}, found
+    assert "unrelated" in {function for function, _ in found}, found
+
+
+_TABLE_PARAMETER = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import GEOS
+
+
+    async def _held(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def _by_state(conn, table, state):
+        return await holds_any(conn, table, by={"state": state})
+
+
+    async def _loose(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def callers(conn, named):
+        await _held(conn, GEOS, "g1")
+        await _held(conn, table="geos", geo="g2")
+        await _by_state(conn, GEOS, "s")
+        await _loose(conn, GEOS, "g3")
+        await _loose(conn, named, "g4")
+"""
+
+
+def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_declared_table(tmp_path: Path) -> None:
+    """Flips if a keyed helper called with a table parameter stays unknown when every caller of its function passes a
+    literal or a module constant (``_held``: keyed; ``_by_state``: judged against that table, so non-key), or
+    resolves when one caller passes a value the walk cannot read (``_loose``)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/probe.py": _TABLE_PARAMETER}))
+    assert not any(function == "_held" for function, _ in found), found
+    assert ("_by_state", 'non-key-where "geos"') in found, found
+    assert ("_loose", "unknown-predicate holds_any(table)") in found, found
