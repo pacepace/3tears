@@ -104,3 +104,89 @@ class TestGuard:
         await guard.execute(update, 1)
         assert conn.ran == ["TRUNCATE results", update]
         assert [problem.split(" ", 1)[0] for problem in guard.problems] == ["TRUNCATE", "sequential"]
+
+
+class _Analysing(_Conn):
+    """a connection that also answers ``EXPLAIN (ANALYZE ...)`` with a given analysed plan, inside a transaction it
+    rolls back, and says which database it is."""
+
+    def __init__(
+        self,
+        plans: Mapping[str, Mapping[str, Any]],
+        analysed: Mapping[str, Mapping[str, Any]],
+        sizes: Mapping[str, int],
+    ) -> None:
+        super().__init__(plans, sizes)
+        self._analysed = analysed
+        self.analysed: list[str] = []
+        self.rolled_back = 0
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        if sql == "SELECT version()":
+            return "PostgreSQL 16.4"
+        if sql.startswith("EXPLAIN (ANALYZE, FORMAT JSON) "):
+            statement = sql.removeprefix("EXPLAIN (ANALYZE, FORMAT JSON) ")
+            self.analysed.append(statement)
+            return json.dumps([{"Plan": self._analysed[statement], "Execution Time": 0.1}])
+        return await super().fetchval(sql, *args)
+
+    def transaction(self) -> Any:
+        conn = self
+
+        class _Transaction:
+            async def start(self) -> None:
+                return None
+
+            async def rollback(self) -> None:
+                conn.rolled_back += 1
+
+        return _Transaction()
+
+
+def _limit(child: Mapping[str, Any], **actual: object) -> dict[str, Any]:
+    return {"Node Type": "Limit", "Plans": [child], **actual}
+
+
+class TestAWalkALimitStops:
+    _PAGE = "SELECT * FROM shares ORDER BY share_id LIMIT 51"
+
+    async def test_an_index_walk_its_limit_stopped_is_a_page(self) -> None:
+        """Flips if a keyset listing's first page (an index walked in order, no index condition, stopped by its
+        Limit after the rows it answered) fails as a whole read, or is judged without its actual rows read, or the
+        analysis is not rolled back, or the statement runs other than once."""
+        walk = _scan("Index Scan", "shares", **{"Index Name": "shares_pkey"})
+        conn = _Analysing(
+            {self._PAGE: _limit(walk)},
+            {self._PAGE: _limit({**walk, "Actual Rows": 51, "Actual Loops": 1}, **{"Actual Rows": 51})},
+            {"shares": 5000},
+        )
+        guard = WholeScanGuard(conn, threshold_rows=1000)
+        await guard.fetch(self._PAGE)
+        assert guard.problems == []
+        assert conn.analysed == [self._PAGE]
+        assert conn.rolled_back == 1
+        assert conn.ran == [self._PAGE]
+
+    async def test_an_index_walk_its_filter_drove_past_its_limit_stays_whole(self) -> None:
+        """Flips if an index walk under a Limit whose filter made it read far past the rows answered (the page's rows
+        rare in the index's order) passes as a page."""
+        filtered = "SELECT * FROM shares WHERE kind = $1 ORDER BY share_id LIMIT 51"
+        walk = _scan("Index Scan", "shares", Filter="(kind = $1)", **{"Index Name": "shares_pkey"})
+        analysed = {**walk, "Actual Rows": 51, "Actual Loops": 1, "Rows Removed by Filter": 4200}
+        conn = _Analysing(
+            {filtered: _limit(walk)}, {filtered: _limit(analysed, **{"Actual Rows": 51})}, {"shares": 5000}
+        )
+        guard = WholeScanGuard(conn, threshold_rows=1000)
+        await guard.fetch(filtered, "rare")
+        assert [problem.split(" of ")[0] for problem in guard.problems] == ["index scan with no index condition"]
+
+    async def test_a_write_s_walk_under_a_limit_is_never_run_to_judge_it(self) -> None:
+        """Flips if a write whose index walk lies under a Limit is EXPLAIN ANALYZE-d (it would run twice) or passes
+        unjudged."""
+        trim = "DELETE FROM shares WHERE share_id IN (SELECT share_id FROM shares ORDER BY share_id LIMIT 10)"
+        walk = _scan("Index Only Scan", "shares", **{"Index Name": "shares_pkey"})
+        conn = _Analysing({trim: {"Node Type": "ModifyTable", "Plans": [_limit(walk)]}}, {}, {"shares": 5000})
+        guard = WholeScanGuard(conn, threshold_rows=1000)
+        await guard.execute(trim)
+        assert conn.analysed == []
+        assert [problem.split(" of ")[0] for problem in guard.problems] == ["index only scan with no index condition"]

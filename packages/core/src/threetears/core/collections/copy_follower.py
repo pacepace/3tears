@@ -59,9 +59,9 @@ from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     INT_TYPE,
     NUMERIC_TYPE,
-    UUID_TYPE,
     Column,
     TableSchema,
+    sql_cast,
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
@@ -84,8 +84,6 @@ __all__ = [
     "WHOLE_READ_WHYS",
     "CopyFollower",
     "HubCapabilityMissingError",
-    "NEVER_HOLDS",
-    "NeverHolds",
     "FollowedTable",
     "FollowerBackend",
     "FollowerPhase",
@@ -136,16 +134,6 @@ def _warms() -> Any:
 
 #: how many applied changes' stamps are kept for readers whose snapshot is older than the newest
 _STAMPS_KEPT: Final = 256
-
-#: the SQL type a key's text is cast to before it is compared with its column, by the column's type tag
-_KEY_CASTS: Final[Mapping[str, str]] = {
-    UUID_TYPE: "uuid",
-    INT_TYPE: "bigint",
-    BIGINT_TYPE: "bigint",
-    BOOL_TYPE: "boolean",
-    NUMERIC_TYPE: "numeric",
-    DATETIMETZ_TYPE: "timestamptz",
-}
 
 
 class HubCapabilityMissingError(RuntimeError):
@@ -368,7 +356,7 @@ class FollowedTable:
         :rtype: str
         """
         kind = next(c.column_type for c in self.columns if c.name == column)
-        return _KEY_CASTS.get(kind, "text")
+        return sql_cast(kind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,42 +386,29 @@ class _KeyedRead:
         return cls(casts=tuple(table.key_cast(column) for column in table.key), types=rail_arrow_types(table.columns))
 
 
-class NeverHolds(StrEnum):
-    """a writer that never holds a scope while it writes (``CopyFollower(stamp_table=NEVER_HOLDS)``): its stamp is a
-    seqlock that only says settled or not, so no key heard waits on another replica's commit."""
-
-    NEVER_HOLDS = "never_holds"
-
-
-#: ``CopyFollower(stamp_table=NEVER_HOLDS)``: the writer never holds a scope, so no stamp table is heard
-NEVER_HOLDS: Final = NeverHolds.NEVER_HOLDS
-
-
 def _stamp_table_of(
-    stamp_table: str | NeverHolds | None,
+    stamp_table: str | None,
     settled: Callable[[], Awaitable[Any]],
     tables: Sequence[FollowedTable],
 ) -> str | None:
-    """the table the writer's stamp is kept in, whose row messages wake the follower; None for a writer that never
-    holds a scope. Derived from ``settled`` when it is a ``ScopeEpochs.settled``, else the caller names it.
+    """the table the writer's stamp is kept in, whose row messages wake the follower: the one named, else derived from
+    ``settled`` when it is a ``ScopeEpochs.settled``; None for a follower none of whose tables has a scope, whose keys
+    no write can hold.
 
-    :raises ValueError: when it is neither given nor derivable, or ``NEVER_HOLDS`` is given for a scoped table
+    :raises ValueError: when a table has a scope and the stamp table is neither named nor derivable
     """
-    if stamp_table is NEVER_HOLDS:
-        scoped = sorted(table.name for table in tables if table.scope is not None)
-        if scoped:
-            raise ValueError(
-                f"{scoped} have a scope a write may hold: name the writer's stamp table (stamp_table=), not NEVER_HOLDS"
-            )
-        return None
     if stamp_table is not None:
-        return str(stamp_table)
+        return stamp_table
     epochs = getattr(settled, "__self__", None)
     if isinstance(epochs, ScopeEpochs):
         return epochs.table_name
+    scoped = sorted(table.name for table in tables if table.scope is not None)
+    if not scoped:
+        return None
     raise ValueError(
-        "name the table the writer's stamp is kept in (stamp_table=, ScopeEpochs' own), or NEVER_HOLDS for a writer "
-        "that never holds a scope: without it a follower holding a write's keys never hears another replica commit it"
+        f"{scoped} have a scope a write may hold: pass stamp_table=, the table the writer's stamp is kept in "
+        "(ScopeEpochs' own, ScopeEpochs.table_name), or settled=ScopeEpochs.settled to derive it; without it a "
+        "follower holding a write's keys never hears another replica commit it"
     )
 
 
@@ -582,9 +557,9 @@ class CopyFollower:
     :param stamp_table: the table the writer's stamp is kept in (``ScopeEpochs``' own), whose row messages the
         registry hears from every replica: each one asks a pass, so keys a write held are applied once another
         replica's commit moves its scopes, with nothing else heard. None derives it from ``settled`` when that is a
-        ``ScopeEpochs.settled``; :data:`NEVER_HOLDS` for a writer that never holds a scope (no table has one)
-    :ptype stamp_table: str | NeverHolds | None
-    :raises ValueError: when ``stamp_table`` is neither given nor derivable, or is ``NEVER_HOLDS`` beside a scoped table
+        ``ScopeEpochs.settled``, and hears none when no table has a scope (no write can hold its keys)
+    :ptype stamp_table: str | None
+    :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable
     """
 
     def __init__(
@@ -599,7 +574,7 @@ class CopyFollower:
         changes: EpochChangeReader | None,
         page_size: int = DEFAULT_PAGE_SIZE,
         checkpoints: CopyCheckpoints | None = None,
-        stamp_table: str | NeverHolds | None = None,
+        stamp_table: str | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -1517,7 +1492,7 @@ class CopyFollower:
                     where={c: _typed(table.kind(c), v) for c, v in zip(columns[:-1], lead, strict=True)} or None,
                     where_any={
                         last: (
-                            f"{_KEY_CASTS.get(table.kind(last), 'text')}[]",
+                            f"{sql_cast(table.kind(last))}[]",
                             [_typed(table.kind(last), v) for v in batch],
                         )
                     },
@@ -1584,6 +1559,8 @@ class CopyFollower:
             table.read_order,
             types=types,
             page_size=self._page_size,
+            # declared, so hashed on YugabyteDB: no declaration names a range-sharded lead
+            lead_array=f"{sql_cast(table.kind(table.read_order[0]))}[]",
         )
         scopes: set[str | None] = set()
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)

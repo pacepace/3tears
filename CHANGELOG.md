@@ -8,6 +8,21 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
+
+**Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed
+column, so every page of a whole-table read past its cursor scanned and sorted the whole table (a 200,000-row table:
+200,000 rows scanned a page; a cold start of a 1,000,000-row copy read the table a thousand times, about 5.5 minutes).
+`keyset_pages`, `keyset_arrow_pages` and `read_keyset_pages` take `lead_array` (the lead's SQL array type), named by a
+reader whose declaration leaves the lead hashed; on YugabyteDB such a read walks the lead: its values from
+`SELECT DISTINCT` (answered from the bucket heads), then each value's rows with the rest of the key past the cursor (a
+seek inside the bucket), small values grouped `= ANY` a page at a time. Rows come in key order; `after=` resumes
+inside a value. Postgres, an older hub, and a read whose filter pins the lead keep the cursor's form.
+`CopyFollower`'s cold start, `SqlL3Backend.scan` of a whole table and a schema-backed collection's L3 pages name it;
+`read_l3_rows`, `l3_row_pages` and `read_l3_arrow` pass it through. **Added:** `threetears.core.backends.dialect
+.l3_on_yugabyte` (a pool by `version()`; the rail's proxy by its broker's `hub_capabilities`, `dialect:yugabyte`), and
+`schema_backed.sql_cast` / `TableSchema.hashed_lead_array`.
+
 ### core: `ScopedSnapshot` and `SharedSnapshot` are removed
 
 **Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,
@@ -57,6 +72,22 @@ function that reads whole. In the code a repo names as load code, even one key's
 verification scan. There is no allowlist of violations: the one way out is `_no_whole_reads_exemptions.txt`, a
 true cold start or schema change with the test proving it is reached only then. 3tears runs it
 (`tests/enforcement/test_no_whole_reads.py`), red until the paths it names are fixed.
+A repo names the functions whose returned relation is a change set being applied
+(`NoWholeReadsConfig.transient_producers`, `Class.method` or a function: reports' `Stages._stage`, `_Work.put`), so
+a statement over one reads no data table. A keyed helper called with a parameter every call site fills with a literal
+or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. So is one bound
+by a loop over a module tuple (`for name in NAMES`; `table.name` for `for table in TABLES` when the tuple holds
+declared objects with a constant `name`; a tuple splicing another, `*FEEDS`; a loop over `() if behind else
+TABLES`; a lookup in a dict built over one, `BY_NAME[name]`), and a parameter its callers hand on from their own
+parameters, followed up to six calls (a caller spreading `**kwargs` leaves only the parameters it does not name
+unknown; a protocol's stub is no second definition; a call on an imported module, `keyed.holds_any`, is never the
+repo's method of that name, and a call on an object's attribute, `self._store.holds_any`, is the repo's method, judged
+in its body). A `by` keyed by a constant (`{STATE_COLUMN: state}`) reads as that column. An entry-only operator mark counts a method call as its caller only on a receiver known to be the
+marked class. A view column that renames a plain column (`p.race AS office_key`) passes the key through; a computed
+one does not. A relation in a schema of its own (`report.<view>`) is judged by the copy relation declared for it
+before an L3 table sharing its bare name. A repo names the functions that build a view under a name they are handed
+(`NoWholeReadsConfig.view_producers`, onto the key every such view declares), and their `CREATE VIEW {}` is judged by
+those keys.
 
 **Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
 test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,
@@ -159,7 +190,8 @@ operator's reset.
   in progress holds keeps the mark it was last current at, so a start from that checkpoint hears those keys again.
 - `CopyFollower(stamp_table=)` names the table the writer's stamp is kept in (derived from `settled` when that is a
   `ScopeEpochs.settled`; `ScopeEpochs.table_name`), whose row messages ask a pass: another replica's commit of a held
-  write wakes the follower. `NEVER_HOLDS` is for a writer that never holds a scope; construction refuses neither.
+  write wakes the follower. A follower none of whose tables has a scope hears none; one with a scoped table and
+  no stamp table named or derivable is refused at construction.
 - `ScopeEpochs.settled()` reads only what changed after its first read: one statement for the writer's row, every
   pending scope and every scope past the last version it read, merged into a cached snapshot; it reads whole again
   only when the record cannot be trusted (`scope_epochs_whole_reads_total{table,why}`).

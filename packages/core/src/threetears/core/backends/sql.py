@@ -1646,12 +1646,14 @@ class SqlL3Backend:
         schema = self._schemas.get(table)
         cap = self.rows_per_statement
         if schema is not None and cap is not None and cap > 1:
+            order = schema.keyset_order(filters or {})
             read = await read_keyset_pages(
                 self,
                 f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
-                list(schema.keyset_order(filters or {})),
+                list(order),
                 where=dict(filters or {}),
                 page_size=cap - 1,
+                lead_array=schema.hashed_lead_array(order),
             )
             return read.rows
         if not filters:

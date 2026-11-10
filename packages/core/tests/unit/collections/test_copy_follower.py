@@ -42,7 +42,6 @@ from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoi
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
-    NEVER_HOLDS,
     WHOLE_READ_WHYS,
     CopyFollower,
     FollowedTable,
@@ -127,6 +126,9 @@ class _L3:
         result = cursor.execute(sql, list(params))
         names = [d[0] for d in result.description]
         rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        if sql.startswith("SELECT version()"):
+            # which database it is (threetears.core.backends.dialect), asked beside a whole read: no read of the table
+            return rows
         self.statements += 1
         self.rows_read += len(rows)
         return rows
@@ -203,7 +205,6 @@ def _world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], C
         generation=log.current,
         changes=log,
         page_size=50,
-        stamp_table=NEVER_HOLDS,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -695,7 +696,6 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         generation=log.current,
         changes=log,
         page_size=50,
-        stamp_table=NEVER_HOLDS,
     )
     follower.register()
     l3.put(_rows("VA", 40))
@@ -1112,38 +1112,42 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
         await registry.stop_invalidation_listener()
 
 
+def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFollower:
+    """a follower of ``tables`` over a fresh copy, its writer's stamp read by ``settled``."""
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    log = _Log()
+    return CopyFollower(registry, tables, backend, _L3(), settled=settled, generation=log.current, changes=log, **stamp)
+
+
 def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construction_raises() -> None:
     """Flips if a follower of a table a write may hold can be built hearing no stamp table: it would hold that write's
     keys until some other key arrives (reports' live replica tests, 2026-11-10). A ``ScopeEpochs.settled`` names its
-    own table; any other ``settled`` must name it, and NEVER_HOLDS is refused beside a scoped table."""
-    l3, log, lock = _L3(), _Log(), _Scopes()
+    own table; any other ``settled`` must name it, and the error says what to pass."""
     scoped = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
-    plain = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
-
-    def build(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFollower:
-        backend = DuckDBBackend()
-        backend.initialize(_metadata())
-        registry = CollectionRegistry()
-        registry.follow_generation(_TABLE)
-        return CopyFollower(
-            registry, tables, backend, l3, settled=settled, generation=log.current, changes=log, **stamp
-        )
-
     with pytest.raises(ValueError, match="stamp_table="):
-        build(scoped, lock.settled)
-    with pytest.raises(ValueError, match="not NEVER_HOLDS"):
-        build(scoped, lock.settled, stamp_table=NEVER_HOLDS)
-    with pytest.raises(ValueError, match="stamp_table="):
-        build(plain, _Seqlock().settled)
+        _stamped(scoped, _Scopes().settled)
+    _stamped(scoped, _Scopes().settled, stamp_table="scope_epochs").register()
     epochs = ScopeEpochs(SimpleNamespace(table_name="enr_scope_epochs"))  # type: ignore[arg-type]
     backend = DuckDBBackend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
-    derived = CopyFollower(registry, scoped, backend, l3, settled=epochs.settled, generation=log.current, changes=log)
+    log = _Log()
+    derived = CopyFollower(
+        registry, scoped, backend, _L3(), settled=epochs.settled, generation=log.current, changes=log
+    )
     derived.register()
     assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
-    build(plain, _Seqlock().settled, stamp_table=NEVER_HOLDS).register()
+
+
+def test_a_follower_none_of_whose_tables_has_a_scope_builds_hearing_no_stamp_table() -> None:
+    """Flips if a follower none of whose tables has a scope must name a stamp table: no write can hold its keys, so it
+    has none to hear."""
+    plain = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    _stamped(plain, _Seqlock().settled).register()
 
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
