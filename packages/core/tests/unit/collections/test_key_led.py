@@ -351,9 +351,10 @@ async def test_keys_sharing_no_value_go_max_rows_a_statement_led_by_the_key() ->
     async with CallerTransaction(conn):
         assert await collection.delete_rows(keys, conn=conn, max_rows=2) == 5
 
+    # each key looked up by the whole key: on YugabyteDB one batched request on the primary key (the hint)
     assert [sql for sql, _ in conn.executed] == [
-        "DELETE FROM layer WHERE feature_id = ANY($1::text[]) "
-        "AND (feature_id, source_version) IN (SELECT * FROM unnest($1::text[], $2::bigint[]))"
+        "DELETE /*+ YbBatchedNL(named doomed) */ FROM layer AS doomed "
+        "WHERE (feature_id, source_version) IN (SELECT * FROM unnest($1::text[], $2::bigint[]) AS named)"
     ] * 3
     assert [params for _, params in conn.executed] == [
         (["f0000", "f0001"], [0, 1]),
