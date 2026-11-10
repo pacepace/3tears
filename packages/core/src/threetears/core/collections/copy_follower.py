@@ -182,6 +182,19 @@ async def require_generation_by_trigger(l3: Any) -> None:
         raise HubCapabilityMissingError(GENERATION_BY_TRIGGER)
 
 
+def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
+    """each row's key, its values as text in key order (as a change record names a key).
+
+    :param rows: rows holding the key columns
+    :ptype rows: pyarrow.Table
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :return: the keys
+    :rtype: list[tuple[str, ...]]
+    """
+    return [tuple(str(v) for v in values) for values in zip(*(rows.column(c).to_pylist() for c in key), strict=True)]
+
+
 def _key_prefix(table: FollowedTable, partition: Mapping[str, str]) -> bool:
     """whether a partition names the leading columns of the table's key: the one shape an index reads exactly (a key
     range), never the table.
@@ -581,6 +594,9 @@ class CopyFollower:
         #: what is staged beside the copy and not yet applied, by table, and the keys each stage was read for
         self._staged: dict[str, StagedChange] = {}
         self._staged_keys: dict[str, set[tuple[str, ...]]] = {}
+        #: the keys each stage of a table with no scope replaces (keyed and partition changes alike): what a
+        #: checkpoint patches the table's one part by
+        self._staged_touched: dict[str, set[tuple[str, ...]]] = {}
         #: the tables staged whole, and why: put back to be read again only when their stage is forgotten
         self._staged_whole: dict[str, str] = {}
         #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one)
@@ -898,10 +914,17 @@ class CopyFollower:
                 else frozenset(scope for scope in self._staged_scopes.get(name, ()) if scope is not None)
                 for name in self._staged
             }
+            # a table with no scope: the keys it replaced, which a checkpoint patches its one part by
+            touched_keys = {
+                name: frozenset(self._staged_touched.get(name, set()))
+                for name, scopes in touched.items()
+                if scopes is not None and self._tables[name].scope is None
+            }
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
             self._staged = {}
             self._staged_keys = {}
+            self._staged_touched = {}
             self._staged_whole = {}
             self._staged_scopes = {}
             self._partitions_staged = {}
@@ -915,22 +938,29 @@ class CopyFollower:
             )
             for listener in tuple(self._listeners):
                 listener(label)
-            self._checkpoint_when_due(rows, touched)
+            self._checkpoint_when_due(rows, touched, touched_keys)
             return True
 
-    def _checkpoint_when_due(self, rows: int, touched: Mapping[str, frozenset[str] | None]) -> None:
+    def _checkpoint_when_due(
+        self,
+        rows: int,
+        touched: Mapping[str, frozenset[str] | None],
+        keys: Mapping[str, frozenset[tuple[str, ...]]],
+    ) -> None:
         """count a change's rows toward the next checkpoint, and write one beside the follower when it is due.
 
         :param rows: the rows the change applied
         :ptype rows: int
         :param touched: each table the change applied and the scopes it touched; None for a table read whole
         :ptype touched: Mapping[str, frozenset[str] | None]
+        :param keys: each table with no scope the change applied (not whole), and the keys it replaced
+        :ptype keys: Mapping[str, frozenset[tuple[str, ...]]]
         :return: nothing
         :rtype: None
         """
         if self._checkpoints is None:
             return
-        self._checkpoints.applied(rows, touched)
+        self._checkpoints.applied(rows, touched, keys)
         if not self._checkpoints.due() or (self._checkpointing is not None and not self._checkpointing.done()):
             return
         self._checkpointing = asyncio.create_task(self._write_checkpoint())
@@ -1086,6 +1116,7 @@ class CopyFollower:
             self._staged.pop(name, None)
             self._staged_scopes.pop(name, None)
             self._pending[name] |= self._staged_keys.pop(name, set())
+            self._staged_touched.pop(name, None)
             self._partitions[name].extend(self._partitions_staged.pop(name, []))
             why = self._staged_whole.pop(name, None)
             if why is not None:
@@ -1182,6 +1213,8 @@ class CopyFollower:
                     table=name, key=table.key, keys=keys_stage, rows=rows_stage, whole=was is not None and was.whole
                 )
                 self._staged_keys.setdefault(name, set()).update(staged)
+                if table.scope is None:
+                    self._staged_touched.setdefault(name, set()).update(staged)
                 self._staged_scopes.setdefault(name, set()).update(scopes)
             del pending[name]
             self._reading = None
@@ -1200,27 +1233,63 @@ class CopyFollower:
             return [None] * rows.num_rows
         return [table.scope_of(value) for value in rows.column(table.scope[0]).to_pylist()]
 
-    def _copy_rows(self, table: FollowedTable, where: str, params: Sequence[Any]) -> Any:
-        """the copy's own key and scope columns of some rows: a local read, never L3.
+    @staticmethod
+    def _copy_columns(table: FollowedTable) -> str:
+        """the copy's own key and scope columns of a table, selected over ``t``.
 
         :param table: the table
         :ptype table: FollowedTable
-        :param where: the filter, over ``t``, with ``$n`` placeholders
-        :ptype where: str
-        :param params: its values
-        :ptype params: Sequence[Any]
-        :return: the rows
-        :rtype: pyarrow.Table
+        :return: the select list
+        :rtype: str
         """
         columns = list(table.key) + (
             [table.scope[0]] if table.scope is not None and table.scope[0] not in table.key else []
         )
-        selected = ", ".join(f"t.{quote_identifier(c)}" for c in columns)
+        return ", ".join(f"t.{quote_identifier(c)}" for c in columns)
+
+    def _copy_rows_of_keys(self, table: FollowedTable, columns: Sequence[str], values: Sequence[Sequence[str]]) -> Any:
+        """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read joined on
+        a leading part of the key (the whole key, or a load's prefix), never L3.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param columns: the key columns named, a leading part of the key in key order
+        :ptype columns: Sequence[str]
+        :param values: each named column's values, as text, one list a column and one entry a key
+        :ptype values: Sequence[Sequence[str]]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        selected = self._copy_columns(table)
+        unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(columns)))
+        joined = " AND ".join(
+            f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(columns)
+        )
         with self._backend.read_snapshot() as cursor:
             return cursor.execute(
-                f"SELECT {selected} FROM {quote_identifier(table.name)} AS t {where}",  # noqa: S608 - trusted identifiers
-                list(params),
+                f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {unnested}) AS k ON {joined}",  # noqa: S608 - trusted identifiers
+                [list(column) for column in values],
             ).fetch_arrow_table()
+
+    def _copy_rows_of_prefixes(
+        self, table: FollowedTable, columns: Sequence[str], lead: Sequence[str], last: Sequence[str]
+    ) -> Any:
+        """the copy's own key and scope columns of some key prefixes' rows (one prefix shape: its leading columns'
+        values, and the last column's values), read by that prefix of the key (:meth:`_copy_rows_of_keys`).
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param columns: the prefix's key columns, in key order
+        :ptype columns: Sequence[str]
+        :param lead: the values of all but the last, as text
+        :ptype lead: Sequence[str]
+        :param last: the last column's values, as text
+        :ptype last: Sequence[str]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        distinct = sorted(set(last))
+        return self._copy_rows_of_keys(table, columns, [*([value] * len(distinct) for value in lead), distinct])
 
     async def _copy_scopes(
         self, table: FollowedTable, keys: Sequence[tuple[str, ...]]
@@ -1235,11 +1304,7 @@ class CopyFollower:
         :rtype: dict[tuple[str, ...], set[str]]
         """
         columns = [[key[i] for key in keys] for i in range(len(table.key))]
-        joined = " AND ".join(
-            f"t.{quote_identifier(c)} = CAST(k.k{i} AS {table.key_cast(c)})" for i, c in enumerate(table.key)
-        )
-        unnested = ", ".join(f"unnest(${i + 1}::VARCHAR[]) AS k{i}" for i in range(len(table.key)))
-        mine = await asyncio.to_thread(self._copy_rows, table, f"JOIN (SELECT {unnested}) AS k ON {joined}", columns)
+        mine = await asyncio.to_thread(self._copy_rows_of_keys, table, table.key, columns)
         of: dict[tuple[str, ...], set[str]] = {}
         if mine.num_rows:
             copy_keys = zip(*(mine.column(c).to_pylist() for c in table.key), strict=True)
@@ -1345,20 +1410,14 @@ class CopyFollower:
             types = rail_arrow_types(table.columns)
             selected = ", ".join(quote_identifier(column) for column in types)
             scopes: set[str | None] = set()
+            #: a table with no scope: the keys its partitions replace, for the checkpoint's patch
+            replaced: set[tuple[str, ...]] = set()
             clashed = False
             #: prefixes the copy holds a row of a held scope in: they wait for the write, the rest are read now
             waiting: list[dict[str, str]] = []
             for columns, lead, batch in _prefix_batches(table.key, parts):
                 last = columns[-1]
-                cast = _KEY_CASTS.get(table.kind(last), "VARCHAR")
-                eq = [
-                    f"t.{quote_identifier(c)} = CAST(${i + 1} AS {_KEY_CASTS.get(table.kind(c), 'VARCHAR')})"
-                    for i, c in enumerate(columns[:-1])
-                ]
-                within = f"t.{quote_identifier(last)} IN (SELECT unnest(CAST(CAST(${len(lead) + 1} AS VARCHAR[]) AS {cast}[])))"
-                mine = await asyncio.to_thread(
-                    self._copy_rows, table, "WHERE " + " AND ".join([*eq, within]), [*lead, list(batch)]
-                )
+                mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
                 of = self._scopes_of_rows(table, mine) if mine.num_rows else []
                 if held and set(of) & held:
                     values = [str(v) for v in mine.column(last).to_pylist()]
@@ -1376,6 +1435,8 @@ class CopyFollower:
                     if not batch:
                         continue
                 scopes.update(of)
+                if mine.num_rows and table.scope is None:
+                    replaced.update(_text_keys(mine, table.key))
                 if mine.num_rows:
                     await asyncio.to_thread(
                         self._backend.stage_keys,
@@ -1407,6 +1468,8 @@ class CopyFollower:
                         clashed = True
                         break
                     scopes.update(of)
+                    if table.scope is None:
+                        replaced.update(_text_keys(page, table.key))
                     await asyncio.to_thread(
                         self._backend.stage_keys,
                         keys_stage,
@@ -1427,6 +1490,8 @@ class CopyFollower:
                 continue
             self._partitions[name].extend(waiting)
             self._staged_scopes.setdefault(name, set()).update(scopes)
+            if replaced:
+                self._staged_touched.setdefault(name, set()).update(replaced)
             self._partitions_staged.setdefault(name, []).extend(dict(p) for p in parts if dict(p) not in waiting)
             was = self._staged.get(name)
             self._staged[name] = StagedChange(
