@@ -289,7 +289,7 @@ def judged_heading(name: str) -> str:
     return f"{measure_name(name)} (judged)"
 
 
-def judged_label(heading: str) -> str:
+def _judged_label(heading: str) -> str:
     """A judged dimension's heading as a table prints it in a row or a header: the heading :func:`judged_heading`
     writes (a score's scale or a ruler's words after it where the table adds them), starting with a capital, as every
     measure's label does where it is a label rather than words in a sentence
@@ -312,7 +312,7 @@ _JUDGED_HEADING = re.compile(r".+ \(judged(?:, [^()]+)?\)")
 
 def table_label(text: str) -> str:
     """A table cell's words as a page prints them (the one rule every serializer's table applies, at render time): a
-    judged dimension's heading as :func:`judged_label` writes it, so it reads as the measure rows around it do; any
+    judged dimension's heading starting with a capital (:func:`_judged_label`), so it reads as the measure rows around it do; any
     other words as written. The cell keeps the heading as its value, which a program reads and looks a row up by.
 
     :param text: The cell's words.
@@ -320,7 +320,7 @@ def table_label(text: str) -> str:
     :return: The words printed.
     :rtype: str
     """
-    return judged_label(text) if _JUDGED_HEADING.fullmatch(text) else text
+    return _judged_label(text) if _JUDGED_HEADING.fullmatch(text) else text
 
 
 def stratum_name(stratum: str, declared: str | None = None) -> str:
@@ -730,7 +730,6 @@ __all__ = [
     "positions",
     "PASS_RATE",
     "judged_heading",
-    "judged_label",
     "table_label",
     "stratum_name",
     "one_figure_each",

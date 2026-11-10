@@ -22,7 +22,7 @@ from threetears.evals.analysis import build_code_only_report
 from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.report.model import Report, TableBlock
 from threetears.evals.analysis.report.parts.charting import measure_words
-from threetears.evals.analysis.report.words import judged_heading, judged_label
+from threetears.evals.analysis.report.words import judged_heading, table_label
 from threetears.evals.analysis.report_input_build import report_input
 
 from packages.evals.tests.analyst_support import shape_bundle
@@ -74,10 +74,10 @@ def test_a_judged_row_reads_its_measure_s_display_name(campaign: str, table: str
         assert named[:1].isupper(), printed
         # The value keeps the heading every surface heads the reading by, so a lookup by it finds the row.
         assert _MARK.sub("", value) in names, (value, names)
-        assert printed == judged_label(value), (printed, value)
+        assert printed == table_label(value), (printed, value)
 
 
-def test_a_judged_label_is_its_heading_starting_with_a_capital() -> None:
+def test_a_table_prints_a_judged_heading_starting_with_a_capital() -> None:
     assert judged_heading("reply.stays_polite") == "reply stays polite (judged)"
-    assert judged_label(judged_heading("reply.stays_polite")) == "Reply stays polite (judged)"
-    assert judged_label("outcome (judged, 1–5)") == "Outcome (judged, 1–5)"
+    assert table_label(judged_heading("reply.stays_polite")) == "Reply stays polite (judged)"
+    assert table_label("outcome (judged, 1–5)") == "Outcome (judged, 1–5)"

@@ -41,9 +41,9 @@ from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
     judged_heading,
-    judged_label,
     reader_arm_labels,
     reading_verb,
+    table_label,
 )
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.report.parts.words import reading_words
@@ -453,9 +453,9 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
     for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
-        assert judged_label(named) == named[:1].upper() + named[1:]
+        assert table_label(named) == named[:1].upper() + named[1:]
         assert (
-            f"| {judged_label(named)} |" in surfaces["aspect.md"]
+            f"| {table_label(named)} |" in surfaces["aspect.md"]
             and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
         )
         assert dimension not in surfaces["print"]
