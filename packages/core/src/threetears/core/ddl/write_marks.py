@@ -16,12 +16,22 @@ __all__ = [
     "WRITE_MARKS_TABLE",
     "WRITE_MARK_TRIGGER",
     "write_mark_trigger_sql",
+    "delete_marks_sql",
+    "marks_page_sql",
     "write_marks_ddl",
     "write_marks_index_sql",
 ]
 
 #: the queue of committed writes not yet reconciled
 WRITE_MARKS_TABLE: Final[str] = "collection_write_marks"
+
+#: the queue's table, ``{schema}`` its schema (quoted): written out whole, so it declares the queue's key where it is read
+_MARKS_TABLE_DDL: Final[str] = (
+    "CREATE TABLE IF NOT EXISTS {schema}.collection_write_marks ("
+    "id BIGSERIAL PRIMARY KEY, "
+    "table_name TEXT NOT NULL, "
+    "date_created TIMESTAMPTZ NOT NULL DEFAULT now())"
+)
 
 #: the trigger function every switched-on table's trigger calls
 MARK_FUNCTION: Final[str] = "threetears_mark_collection_write"
@@ -47,12 +57,8 @@ def write_marks_ddl(schema: str) -> tuple[str, ...]:
     :return: the statements, in order; run them one at a time (YugabyteDB runs no DDL in a transaction)
     :rtype: tuple[str, ...]
     """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
     return (
-        f"CREATE TABLE IF NOT EXISTS {marks} ("
-        "id BIGSERIAL PRIMARY KEY, "
-        "table_name TEXT NOT NULL, "
-        "date_created TIMESTAMPTZ NOT NULL DEFAULT now())",
+        _MARKS_TABLE_DDL.format(schema=quote_identifier(schema)),
         _mark_function_sql(schema),
         write_marks_index_sql(schema),
     )
@@ -73,6 +79,33 @@ def write_marks_index_sql(schema: str) -> str:
     """
     marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
     return f"CREATE INDEX IF NOT EXISTS {quote_identifier(WRITE_MARKS_TABLE + '_table')} ON {marks} (table_name, id)"
+
+
+def marks_page_sql(schema: str) -> str:
+    """the statement that reads one page of the queue, in id order, after the id ``$2``: ``$1`` marks at most.
+
+    A keyset page by the queue's key: each page starts where the last ended, so a drain reads every mark once,
+    in the order the writes committed them, and never the marks it already passed.
+
+    :param schema: the schema that holds the queue
+    :ptype schema: str
+    :return: the ``SELECT``, answering ``id``, ``table_name`` and ``date_created``
+    :rtype: str
+    """
+    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+    return f"SELECT id, table_name, date_created FROM {marks} WHERE id > $2 ORDER BY id LIMIT $1"  # noqa: S608
+
+
+def delete_marks_sql(schema: str) -> str:
+    """the statement that deletes the marks whose ids are ``$1`` (a ``bigint[]``).
+
+    :param schema: the schema that holds the queue
+    :ptype schema: str
+    :return: the ``DELETE``
+    :rtype: str
+    """
+    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+    return f"DELETE FROM {marks} WHERE id = ANY($1::bigint[])"  # noqa: S608
 
 
 def _mark_function_sql(schema: str) -> str:
