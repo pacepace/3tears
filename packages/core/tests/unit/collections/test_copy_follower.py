@@ -38,7 +38,7 @@ import threetears.core as core  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
-from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
+from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     WHOLE_READ_WHYS,
@@ -445,7 +445,14 @@ class _Pointers:
 
 
 def _replica(
-    l3: _L3, log: _Log, lock: _Seqlock, store: _Store, pointers: _Pointers, owner: str, part_rows: int = 40
+    l3: _L3,
+    log: _Log,
+    lock: _Seqlock | _Scopes,
+    store: _Store,
+    pointers: _Pointers,
+    owner: str,
+    part_rows: int = 40,
+    **stamps: Any,
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
     backend = DuckDBBackend()
     backend.initialize(_metadata())
@@ -459,6 +466,7 @@ def _replica(
         retire=store.retire,
         owner=owner,
         part_rows=part_rows,
+        **stamps,
     )
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -978,6 +986,59 @@ async def test_a_new_replica_is_ready_during_a_long_write_for_every_scope_it_can
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert l3.rows_read == 5  # IL alone, as a key range: never the table again
+
+
+def _encode_scoped(stamp: Any) -> Any:
+    """a scoped stamp as JSON-able data (a checkpoint keeps it): a partial stamp, or a settled record."""
+    if isinstance(stamp, PartialStamp):
+        return {"epochs": dict(stamp.epochs), "held": sorted(stamp.held), "version": stamp.version}
+    return {"epochs": dict(stamp.epochs), "version": stamp.version}
+
+
+def _decode_scoped(data: Any) -> Any:
+    if "held" in data:
+        return PartialStamp(epochs=data["epochs"], held=frozenset(data["held"]), version=data["version"])
+    return SimpleNamespace(version=data["version"], epochs=data["epochs"], pending=frozenset())
+
+
+async def test_a_checkpoint_written_beside_a_held_write_keeps_the_mark_before_its_keys_so_a_start_from_it_hears_them() -> (
+    None
+):
+    """Flips if a checkpoint records a table at the registry's mark while keys of a scope a write holds are still
+    pending: a replica started from it adopts that mark, never hears those keys, and serves the held scope's old rows
+    after the write commits (reports' live replica tests, 2026-11-10: the second replica's copy never held the load's
+    candidates)."""
+    lock = _Scopes()
+    l3, log, store, pointers = _L3(), _Log(), _Store(), _Pointers()
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    codec = {"encode_stamp": _encode_scoped, "decode_stamp": _decode_scoped}
+    _, writer, _ = _replica(l3, log, lock, store, pointers, "a", **codec)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert "votes-ckpt" in pointers.entries
+    # a long write holds IL: its rows land part way, their keys heard and left pending
+    lock.held = frozenset({"state:IL"})
+    l3.put([("IL", i, 50) for i in range(5)])
+    log.commit([("IL", i) for i in range(5)])
+    # VA commits beside it, enough rows that a checkpoint is due at its apply
+    l3.put([("VA", i, 70) for i in range(5)])
+    log.commit([("VA", i) for i in range(5)])
+    lock.commit("state:VA")
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert writer.status().pending == {_TABLE: 5}
+    written = Checkpoint.decode(pointers.entries["votes-ckpt"][0])
+    assert written.seq == 2, "a checkpoint is written beside the held write"
+    assert _decode_scoped(written.stamp).held == frozenset({"state:IL"})
+    # the write commits, and a replica starts from the checkpoint written beside it
+    lock.commit("state:IL")
+    lock.held = None
+    second, follower, _ = _replica(l3, log, lock, store, pointers, "b", **codec)
+    assert await follower.start()
+    assert await follower.catch_up()
+    assert _copy(second) == l3.held(), "the replica started from the checkpoint lost the held write's keys"
 
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:

@@ -596,6 +596,10 @@ class CopyFollower:
         self._stamps: dict[int, tuple[Any, Mapping[str, str | None]]] = {}
         #: each table's mark when the keys being staged were taken: what the next change applied holds
         self._staging_marks: dict[str, str | None] = {}
+        #: each table's mark the copy holds every key of, at or below it: what a checkpoint of the copy records. A table
+        #: whose keys a write in progress holds (left pending) keeps the mark it was last current at, so a start from
+        #: that checkpoint walks the log from there and hears those keys again
+        self._current_marks: dict[str, str | None] = {}
         self._checkpoints = checkpoints
         if checkpoints is not None:
             # every other table the checkpoint holds is derived by the follower's owner: loaded with these, never warmed
@@ -766,6 +770,7 @@ class CopyFollower:
         await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
         # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
         self._stamps[self._mark] = (staged.stamp, dict(staged.marks))
+        self._current_marks = dict(staged.marks)
         for name, mark in staged.marks.items():
             self._registry.generation_marks.adopt_generation(name, mark)
         self._status.stamp = staged.stamp
@@ -896,7 +901,12 @@ class CopyFollower:
             mark = self._mark
             # a failed apply keeps every stage: the next pass tries only the apply again, never a read
             rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
-            self._stamps[mark] = (label, dict(self._staging_marks))
+            # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
+            # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
+            for name in self._tables:
+                if not self._pending[name] and name not in self._whole and not self._partitions[name]:
+                    self._current_marks[name] = self._staging_marks.get(name)
+            self._stamps[mark] = (label, dict(self._current_marks))
             # what this apply touched, for the checkpoint's incremental parts: a table read whole is every scope
             touched: dict[str, frozenset[str] | None] = {
                 name: None
