@@ -228,9 +228,19 @@ class TestReadKeyed:
         _plans_ok(recorder, seeded)
 
 
+def _node_types(node: Any) -> set[str]:
+    """every node type of a plan (``EXPLAIN (FORMAT JSON)``'s root)."""
+    found = {str(node.get("Node Type"))}
+    for child in node.get("Plans", ()):
+        found |= _node_types(child)
+    return found
+
+
 class TestKeysetPage:
     async def test_a_page_reads_about_its_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a page reads the prefix whole (a sort of every row) or is over 2x the bare page read.
+        """Flips if a page reads the prefix whole (a sort of every row), PostgreSQL pages past the cursor other than
+        by the key's index range in order (the row comparison; the expansion planned a bitmap scan and a sort, 2.3 ms
+        against 0.28 ms for 1,001 rows), YugabyteDB by a row comparison, or a page is over 2x the bare page read.
 
         The bare is the best hand-written statement doing the same work on the same table: the same page past the
         same last row, seeking the key's index by the row-value comparison ``(geo, id) > ($2, $3)`` with natively
@@ -255,6 +265,17 @@ class TestKeysetPage:
         )
         assert [(r["geo"], r["id"]) for r in page.rows] == [(r["geo"], r["id"]) for r in expected]
         _plans_ok(recorder, seeded)
+        (plan,) = recorder.plans
+        if seeded.yugabyte:
+            # a hashed bucket is sought by the leading bound; a row comparison there reads it from its start
+            assert '(t."geo", t."id") >' not in plan.sql, plan.sql
+        else:
+            # PostgreSQL seeks the key's index by the row comparison: an index range in the page's order, never a
+            # bitmap scan of every row past the lead and a sort of them
+            assert '(t."geo", t."id") > (' in plan.sql, plan.sql
+            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            nodes = _node_types(plan.plan)
+            assert not nodes & {"Sort", "Bitmap Heap Scan", "Bitmap Index Scan", "Incremental Sort"}, nodes
         last = first.rows[-1]
         baseline = await _bare(
             seeded.conn,

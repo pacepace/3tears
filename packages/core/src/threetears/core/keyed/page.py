@@ -18,10 +18,13 @@ caller string reaches an ``ORDER BY``. Each sort column says its SQL type, so th
 (``$n::text::timestamptz``), and whether it is nullable, so a page past a ``NULL`` lands in the right partition
 (``ASC NULLS LAST``, ``DESC NULLS FIRST``, PostgreSQL's own defaults, stated).
 
-**How a page steps past its cursor.** The lexicographic expansion over the sort columns, each in its own direction
-(``c1 > $1 OR (c1 = $1 AND c2 > $2)``), led by a range on the first column when it is not nullable (``c1 >= $1``),
-so PostgreSQL and YugabyteDB seek the index by the lead and filter the rest in storage
-(:mod:`threetears.core.keyset`).
+**How a page steps past its cursor.** A sort of one direction with no nullable column, on PostgreSQL (or an
+in-process DuckDB or SQLite): the row comparison ``(c1, c2) > ($1, $2)``, which PostgreSQL seeks its index by.
+Otherwise the lexicographic expansion over the sort columns, each in its own direction (``c1 > $1 OR (c1 = $1 AND
+c2 > $2)``), led by a range on the first column when it is not nullable (``c1 >= $1``): YugabyteDB seeks a hashed
+bucket by the lead and filters the rest in storage (:mod:`threetears.core.keyset`), where a row comparison would read
+the bucket from its start; PostgreSQL plans the expansion as a bitmap scan and a sort. Which database it is comes
+with no round trip (:func:`~threetears.core.backends.dialect.known_on_yugabyte`).
 
 **The cursor is opaque**: base64 of the last row's sort values as text, each with a null flag. A cursor that does not
 decode, or names another sort, is refused (:class:`~threetears.core.pagination.CursorError`), never read as "start".
@@ -39,7 +42,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
 
-from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed._filters import Derived, Fragment, Lock, by_conditions, quoted_table, relation, renumbered
 from threetears.core.pagination import CursorError
@@ -239,7 +242,8 @@ async def keyset_page(
     """
     _check(table, columns, order, limit)
     past = None if cursor is None else _decode(order, cursor)
-    sql, params = _statement(table, columns, by, order, limit + 1, past, False, visible, where, lock)
+    by_row = past is not None and await _steps_by_row(conn, order)
+    sql, params = _statement(table, columns, by, order, limit + 1, past, by_row, visible, where, lock)
     answered = [dict(row) for row in await conn.fetch(sql, *params)]
     more = len(answered) > limit
     if more:
@@ -247,8 +251,15 @@ async def keyset_page(
     return KeyPage(rows=answered, next_cursor=_encode(order, answered[-1]) if more else None)
 
 
-def _in_process(conn: Any) -> bool:
-    return isinstance(conn, ThreadedDuckDB | ThreadedSQLite)
+async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
+    """whether a page past a place in ``order`` steps by the row comparison: a sort :func:`_seeks_by_row`, on a
+    database other than YugabyteDB (an in-process DuckDB or SQLite is never it; an asyncpg connection says so with
+    no round trip, :func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
+    if not _seeks_by_row(order):
+        return False
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite):
+        return True
+    return not await known_on_yugabyte(conn)
 
 
 def _check(table: str | Derived, columns: Sequence[str], order: Sequence[Sort], limit: int) -> None:
@@ -312,9 +323,8 @@ async def keyset_rows(
     one page through the sort's index, never the prefix's rows in one statement past the transport's cap. Each asks
     ``page + 1`` rows and keeps every one: a full answer says more follow, and the next statement starts past its
     last row, its sort values bound straight from that row (no cursor text between them). A listing of one page is
-    one statement. Past the first page the drain asks the database once whether it is YugabyteDB
-    (:func:`~threetears.core.backends.dialect.l3_on_yugabyte`): PostgreSQL steps by the row comparison, YugabyteDB by
-    the leading bound and the expansion (:func:`_past`).
+    one statement. Past a place, PostgreSQL steps by the row comparison, YugabyteDB by the leading bound and the
+    expansion (:func:`_past`), as :func:`keyset_page` does.
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype conn: Any
@@ -347,7 +357,6 @@ async def keyset_rows(
         if len(answered) <= page:
             return rows
         if by_row is None:
-            # an in-process DuckDB or SQLite is never YugabyteDB: no question asked of it
-            by_row = _seeks_by_row(order) and (_in_process(conn) or not await l3_on_yugabyte(conn))
+            by_row = await _steps_by_row(conn, order)
         last = rows[-1]
         past = [None if last[sort.column] is None else _as_text(last[sort.column]) for sort in order]
