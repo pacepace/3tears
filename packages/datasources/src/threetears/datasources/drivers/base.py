@@ -75,6 +75,7 @@ except ImportError:  # NOSILENT: the tracing extra is optional; the drivers reco
 
 from threetears.core.sql_fragments import FilterValue, quote_identifier
 
+from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, start_budget
 from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
 
 __all__ = [
@@ -938,6 +939,53 @@ class Driver(ABC):
         check_max_rows(max_rows)
         rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
         return rows[:max_rows]
+
+    async def fetch_within(
+        self,
+        sql: str,
+        *params: Any,
+        max_bytes: int,
+        encode: Callable[[list[dict[str, Any]]], bytes],
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedRows:
+        """run a SELECT and keep the rows whose encodings, as one JSON array, fit ``max_bytes``.
+
+        For a caller whose reply is capped by its bytes rather than its rows. The rows are encoded a page at a time
+        with ``encode`` (the caller's own encoder: its reply splices :meth:`BoundedRows.json_array`, never a
+        second encode of the rows); the first row that does not fit ends the read
+        (:class:`~threetears.datasources.bounded_rows.RowBudget`). A driver that reads in pages (a
+        server-side cursor) overrides this so the rows past the cut are never read, ``page_rows`` at a time,
+        with the encoder off the event loop; this default reads through :meth:`fetch_at_most` (``max_rows`` + 1)
+        or, with no row bound, :meth:`fetch`, and cuts what it keeps: it bounds what is kept, not what is read.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_bytes: the most bytes the kept rows' JSON array may take, at least 2; the first row is kept
+            whatever its size
+        :ptype max_bytes: int
+        :param encode: rows to their JSON array, as the caller's reply will carry them
+        :ptype encode: Callable[[list[dict[str, Any]]], bytes]
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a paging driver reads at a time, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, their encodings, and whether the result had more
+        :rtype: BoundedRows
+        :raises ValueError: if ``max_bytes`` is below 2, or ``max_rows`` or ``page_rows`` below 1
+        """
+        budget = start_budget(max_bytes=max_bytes, encode=encode, max_rows=max_rows, page_rows=page_rows)
+        if max_rows is None:
+            rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+        else:
+            rows = await self.fetch_at_most(sql, *params, max_rows=max_rows + 1, timeout_seconds=timeout_seconds)
+        budget.take(rows)
+        return budget.result()
 
     @abstractmethod
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:

@@ -14,9 +14,23 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+import asyncpg
+from asyncpg.pool import PoolConnectionProxy
+
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["AnyOf", "Derived", "Fragment", "Lock", "by_conditions", "quoted_table", "relation", "renumbered"]
+__all__ = [
+    "AnyOf",
+    "Derived",
+    "Fragment",
+    "Lock",
+    "batched_join_hint",
+    "binds_native_arrays",
+    "by_conditions",
+    "quoted_table",
+    "relation",
+    "renumbered",
+]
 
 #: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
@@ -77,6 +91,42 @@ def relation(table: str | Derived, alias: str) -> str:
     if isinstance(table, Derived):
         return f"({table.sql}) AS {alias}"
     return f"{quoted_table(table)} AS {alias}"
+
+
+#: the name PostgreSQL (and so pg_hint_plan) gives the relation of an ``IN (SELECT ...)`` it joins as a semi-join
+IN_SUBQUERY: Final = "ANY_subquery"
+
+
+def batched_join_hint(outer: str, inner: str) -> str:
+    """the hint every keyed join carries, as the statement's first words: YugabyteDB joins ``outer`` (the keys) to
+    ``inner`` (the table) by a batched nested loop, one storage request for up to ``yb_bnl_batch_size`` keys, where
+    its planner would otherwise pick a plain nested loop (one request a key: 600 keys, 600 requests). PostgreSQL reads
+    it as a comment; its own planner already nests a loop over the key's index.
+
+    :param outer: the alias of the keys' relation (:data:`IN_SUBQUERY` for an ``IN (SELECT ...)``)
+    :ptype outer: str
+    :param inner: the alias of the table read by the keys
+    :ptype inner: str
+    :return: the hint and a space
+    :rtype: str
+    """
+    return f"/*+ YbBatchedNL({outer} {inner}) */ "
+
+
+def binds_native_arrays(conn: Any) -> bool:
+    """whether ``conn`` binds a typed array natively (``$1::bigint[]`` from a list of ints): asyncpg's own
+    connection, pool or pooled connection, or anything saying so (``binds_native_arrays = True``: a wrapper of one).
+    The L3 rail carries its parameters as JSON, so a keyed read through it binds text arrays cast to the column's
+    type (``$1::text[]::bigint[]``); identity, not truthiness, so a mock's auto-attribute never reads as yes.
+
+    :param conn: the connection a keyed helper reads through
+    :ptype conn: Any
+    :return: whether its arrays bind natively
+    :rtype: bool
+    """
+    if isinstance(conn, asyncpg.Connection | asyncpg.Pool | PoolConnectionProxy):
+        return True
+    return getattr(conn, "binds_native_arrays", None) is True
 
 
 def quoted_table(table: str) -> str:

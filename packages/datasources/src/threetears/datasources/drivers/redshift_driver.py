@@ -169,6 +169,7 @@ from threetears.core.sql_fragments import FilterValue
 from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
+from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, RowBudget, start_budget
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.statement_rows import LAST_QUERY_INSERTED_SQL
 from threetears.datasources.drivers.statement_rows import writes_rows
@@ -893,6 +894,19 @@ def _close_connection_sync(conn: "RedshiftConnection") -> None:
         _clear_thread_tls_errors()
 
 
+#: the server-side cursor :meth:`RedshiftDriver.fetch_within` pages through; one per checkout's transaction, which
+#: the release path's rollback closes
+_WITHIN_CURSOR = "threetears_fetch_within"
+
+
+def _leave_running() -> None:
+    """the cancel callback of one page of :meth:`RedshiftDriver.fetch_within`: nothing, the page finishes.
+
+    :return: nothing
+    :rtype: None
+    """
+
+
 def _closer(conn: "RedshiftConnection") -> Callable[[], None]:
     """:func:`_close_connection_sync` bound to ``conn``, for a bridge call or a cancel callback.
 
@@ -1071,6 +1085,9 @@ class RedshiftDriver(Driver):
         # GC'd connection drops its pid entry automatically without a
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
+        # connections a cancel reached between two statements (fetch_within's pages): their session is idle, so the
+        # cancel path leaves them to the release path's rollback and the cache instead of terminating them
+        self._idle_at_cancel: weakref.WeakSet[RedshiftConnection] = weakref.WeakSet()
         self._closed = False
         # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
         # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
@@ -1523,7 +1540,11 @@ class RedshiftDriver(Driver):
             await self._release_connection(checkout.conn)
 
     async def _cancel_checkout(self, checkout: _Checkout) -> None:
-        """abort the in-flight statement and poison the checkout.
+        """abort the in-flight statement and poison the checkout, unless the cancel found the session idle.
+
+        A cancel :meth:`fetch_within` let finish its page reaches here with the session between statements: nothing
+        runs, so nothing is terminated and the release path caches the connection. Every other cancel aborts
+        (:meth:`_abort_checkout`).
 
         the cancel path for every acquire site. terminates the
         SERVER-SIDE backend first -- closing the client socket does NOT
@@ -1536,6 +1557,21 @@ class RedshiftDriver(Driver):
         transaction: Redshift discards the block when the backend dies,
         so a cancellation mid-transaction cannot leave a half-applied
         promote behind.
+
+        :param checkout: the checkout whose statement is being cancelled
+        :ptype checkout: _Checkout
+        :return: nothing
+        :rtype: None
+        """
+        if checkout.conn in self._idle_at_cancel:
+            # between statements (fetch_within finished its page first): nothing runs to abort, and the release
+            # path's rollback closes the transaction and its cursor before the connection is cached
+            self._idle_at_cancel.discard(checkout.conn)
+        else:
+            await self._abort_checkout(checkout)
+
+    async def _abort_checkout(self, checkout: _Checkout) -> None:
+        """terminate the checkout's backend, close its socket, and poison it: a cancel that reached a running statement.
 
         :param checkout: the checkout whose statement is being cancelled
         :ptype checkout: _Checkout
@@ -1910,6 +1946,35 @@ class RedshiftDriver(Driver):
             cursor.close()
         return result
 
+    def _declare_within_sync(
+        self,
+        conn: RedshiftConnection,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> RedshiftCursor:
+        """declare :meth:`fetch_within`'s cursor over ``sql`` on ``conn`` (sync): the statement runs here.
+
+        :param conn: connection to run on
+        :ptype conn: RedshiftConnection
+        :param sql: already-translated SELECT
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: the cursor the pages are fetched on
+        :rtype: RedshiftCursor
+        """
+        cursor = conn.cursor()
+        self._apply_statement_timeout_sync(cursor, timeout_seconds)
+        declare = f"DECLARE {_WITHIN_CURSOR} CURSOR FOR {sql}"
+        if params:
+            cursor.execute(declare, params)
+        else:
+            cursor.execute(declare)
+        return cursor
+
     def _execute_sync(
         self,
         conn: RedshiftConnection,
@@ -2061,6 +2126,85 @@ class RedshiftDriver(Driver):
             timeout_overridden=timeout_seconds is not None,
         )
         return result
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_within(
+        self,
+        sql: str,
+        *params: Any,
+        max_bytes: int,
+        encode: Callable[[list[dict[str, Any]]], bytes],
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedRows:
+        """run a SELECT through a server-side cursor, ``page_rows`` at a time, until its rows pass ``max_bytes``.
+
+        ``redshift_connector`` receives a plain SELECT's whole result inside ``execute``, so the statement is
+        declared as a cursor (``DECLARE ... CURSOR FOR``, in the checkout's transaction, after its ``SET LOCAL``
+        timeout) and read with ``FETCH FORWARD``: only the pages up to the cut cross the wire. Each page is
+        read, turned into rows and encoded in the bridge's worker thread, never on the event loop.
+
+        A cancel while the statement runs (the ``DECLARE``) aborts it as every other read does: the backend is
+        terminated and the connection evicted. A cancel while a page is read lets that page finish (it is
+        bounded), so the session stands between statements: the release path's rollback closes the cursor, the
+        connection goes back to the cache, and the cancellation is raised then.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_bytes: the most bytes the kept rows' JSON array may take, at least 2
+        :ptype max_bytes: int
+        :param encode: rows to their JSON array, as the caller's reply will carry them
+        :ptype encode: Callable[[list[dict[str, Any]]], bytes]
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a page reads, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, their encodings, and whether the result had more
+        :rtype: BoundedRows
+        :raises asyncio.CancelledError: after the connection is back in the cache (a cancel while a page was
+            read) or evicted (a cancel while the statement ran)
+        :raises ValueError: if a bound is out of range, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        budget = start_budget(max_bytes=max_bytes, encode=encode, max_rows=max_rows, page_rows=page_rows)
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql.rstrip().rstrip(";"), "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> None:
+            cursor = await self._bridge.to_thread_with_cancel(
+                functools.partial(self._declare_within_sync, conn, translated, params, timeout_seconds),
+                cancel_cb=_closer(conn),
+            )
+            going = True
+            while going:
+                page = asyncio.ensure_future(
+                    self._bridge.to_thread_with_cancel(
+                        functools.partial(_page_within_sync, cursor, budget, budget.wanted(page_rows)),
+                        cancel_cb=_leave_running,
+                    )
+                )
+                try:
+                    going = await asyncio.shield(page)
+                except asyncio.CancelledError:
+                    # a page is bounded: let it finish, so the session is between statements and is cached,
+                    # not terminated, by the cancel path (_cancel_checkout) the cancellation goes on to
+                    await page
+                    cursor.close()
+                    self._idle_at_cancel.add(conn)
+                    raise
+            cursor.close()
+
+        await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        return budget.result()
 
     @traced
     @observed(driver_type="redshift")
@@ -2852,3 +2996,21 @@ class RedshiftDriver(Driver):
 # alone which driver module is loaded. DEBUG so production logging
 # configurations stay quiet by default.
 log.debug("threetears.datasources.drivers.redshift_driver module loaded")
+
+
+def _page_within_sync(cursor: "RedshiftCursor", budget: RowBudget, wanted: int) -> bool:
+    """fetch one page of :meth:`RedshiftDriver.fetch_within`'s cursor into its budget (sync, in the bridge).
+
+    :param cursor: the cursor the statement was declared on
+    :ptype cursor: RedshiftCursor
+    :param budget: the read's budget
+    :ptype budget: RowBudget
+    :param wanted: the rows to fetch
+    :ptype wanted: int
+    :return: whether a further page may be read (every row kept, and the page was full)
+    :rtype: bool
+    """
+    cursor.execute(f"FETCH FORWARD {wanted} FROM {_WITHIN_CURSOR}")
+    rows = cursor.fetchall()
+    cols = [c[0] for c in cursor.description]
+    return budget.take(dict(zip(cols, row)) for row in rows) and len(rows) == wanted

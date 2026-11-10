@@ -1810,15 +1810,15 @@ _TABLE_PARAMETER = """
 
 
     async def _held(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def _by_state(conn, table, state):
-        return await holds_any(conn, table, by={"state": state})
+        return await holds_any(conn, table, order=("state",), by={"state": state})
 
 
     async def _loose(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def callers(conn, named):
@@ -1921,6 +1921,91 @@ def test_a_view_named_at_run_time_is_judged_by_the_keys_its_producer_declares(tm
     assert any(function == "_stray_view_sql" and "undeclared-view" in symbol for function, symbol in found), found
 
 
+_FORMAT_VIEWS = """
+    def _around_view_sql(view, columns):
+        before, after = _around(columns, "l.state")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}l.state{after} FROM main.{view} AS l"
+
+    def _around_two_sql(view, columns):
+        before, middle, after = _around(columns, "state", "county")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}state{middle}county{after} FROM main.{view}"
+
+    def _around_short_sql(view, columns):
+        before, after = _around(columns, "state")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}state{after} FROM main.{view}"
+
+    def _union_view_sql(view, held, columns):
+        before, after = _around(columns, "t.state")
+        union = " UNION ALL ".join(f"SELECT {before}t.state{after} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _union_dropped_sql(view, held, columns):
+        union = " UNION ALL ".join(f"SELECT upper(t.state) AS state FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _branch_view_sql(view, held, raced, columns):
+        if raced:
+            first, second, rest = _around(columns, "t.state", "t.race")
+            select = f"{first}t.state{second}t.race AS race{rest}"
+        else:
+            first, rest = _around(columns, "t.state")
+            select = f"{first}t.state{rest}"
+        union = " UNION ALL ".join(f"SELECT {select} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _branch_dropped_sql(view, held, raced, columns):
+        if raced:
+            select = "t.state, t.race AS race"
+        else:
+            select = "upper(t.state) AS state"
+        union = " UNION ALL ".join(f"SELECT {select} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _keyless_view_sql(view, table):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT * EXCLUDE (state) FROM main.{table}"
+
+    def _keyed_exclude_sql(view, table):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT * EXCLUDE (state) FROM main.{table}"
+"""
+
+
+def test_a_view_written_around_its_key_and_a_keyless_producers_view_are_judged_by_their_declarations(
+    tmp_path: Path,
+) -> None:
+    """Flips if a view whose select list is interpolations around its key written literally (``{before}l.state{after}``,
+    a body joined from one statement per table, a select list each branch of an if/else binds) is not read as passing
+    that key (any one of a producer's keys), if a key column no literal text names or a branch dropping the key stops
+    being a finding, or if a producer declared keyless loses to the default copy key its run-time name matches
+    (``SELECT * EXCLUDE (state)``) while a keyed producer's view excluding its key stays a finding."""
+    producers = {
+        "_around_view_sql": ("state",),
+        "_around_two_sql": ("state", "county"),
+        "_around_short_sql": ("state", "county"),
+        "_union_view_sql": ("state",),
+        "_union_dropped_sql": ("state",),
+        "_branch_view_sql": (("state", "race"), ("state",)),
+        "_branch_dropped_sql": (("state",),),
+        "_keyless_view_sql": (),
+        "_keyed_exclude_sql": ("state",),
+    }
+    found = _symbols(
+        _config(tmp_path, {"views.py": _FORMAT_VIEWS}, view_producers=producers, local_relations={"*": ("state",)})
+    )
+    passing = {"_around_view_sql", "_around_two_sql", "_union_view_sql", "_branch_view_sql", "_keyless_view_sql"}
+    assert not any(function in passing for function, _ in found), found
+    assert any(function == "_around_short_sql" and symbol.endswith(".county") for function, symbol in found), found
+    assert any(function == "_union_dropped_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+    assert any(function == "_keyed_exclude_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+    # a name each branch of an if/else binds is judged as each branch writes it: the branch dropping the key fails
+    assert any(function == "_branch_dropped_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+
+
 _DECLARED_TABLES = """
     from dataclasses import dataclass
 
@@ -1952,10 +2037,10 @@ _LOOPED = """
 
     class Store:
         async def holds_state(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
         async def holds_run(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
 
     class Pull:
@@ -1971,7 +2056,7 @@ _LOOPED = """
 
         async def by_name(self, state):
             for name in NAMES:
-                await holds_any(self._conn, name, by={"state": state})
+                await holds_any(self._conn, name, order=("state",), by={"state": state})
 
         async def with_runs(self, state):
             for table in WITH_RUNS:
@@ -2025,7 +2110,7 @@ _SPLICED = """
 
     class Store:
         async def holds_state(self, table, state):
-            return await holds_any(self._conn, table, by={"state": state})
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
 
 
     class Pull:
@@ -2060,7 +2145,7 @@ _SAME_NAMED = """
 
     class Store:
         async def holds_any(self, table, state):
-            return await keyed.holds_any(self._conn, table, by={STATE: state})
+            return await keyed.holds_any(self._conn, table, order=(STATE,), by={STATE: state})
 
 
     class Pull:

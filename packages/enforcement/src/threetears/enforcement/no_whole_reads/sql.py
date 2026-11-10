@@ -1442,7 +1442,9 @@ def _passed_through(body: str) -> set[str] | None:
     """the columns a view's body passes through unchanged: each select-list item that is a plain column, under its
     own name or another (``x``, ``t.x``, ``x AS x``, ``p.race AS office_key``: a read binding ``office_key`` on the
     view binds ``p.race`` beneath it); never one it computes (a ``CASE``, ``||``, a function); None when it passes
-    every column (``*``).
+    every column (``*``). An interpolation in the select list is columns the walk cannot see, a list of them
+    (``SELECT {before}l.join_state_code{after}``: the columns before the key and after it, each list joined by commas
+    with its own), so the literal text between interpolations is read as items of its own.
 
     :param body: the view's ``SELECT``, cleaned
     :ptype body: str
@@ -1455,7 +1457,7 @@ def _passed_through(body: str) -> set[str] | None:
     if start is None or opening is None:
         return set()
     passed: set[str] = set()
-    for item in _split(body[start.end() : opening.start()], re.compile(",")):
+    for item in _split(body[start.end() : opening.start()].replace("{}", ","), re.compile(",")):
         bare = re.sub(r"^DISTINCT\s+", "", item.strip(), flags=re.IGNORECASE)
         if bare == "*" or bare.endswith(".*"):
             return None
@@ -1477,7 +1479,10 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     :param reader: the judgement's context
     :ptype reader: Reader
     :return: ``undeclared-view`` for a view declared nowhere, ``view-key-not-passed`` for a key column its body does
-        not pass through
+        not pass through. A declared producer's keys win over a declaration its run-time name happens to match (a
+        name ``{}`` is every copy relation's default key): its views are the ones it declares, a keyless one too; a
+        view a producer builds passes when it passes any one of the producer's keys (each of its tables keyed its own
+        way), a declared view every one of its own
     :rtype: list[_SqlFinding]
     """
     match = _VIEW_NAME.match(text)
@@ -1486,7 +1491,11 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     name = match.group(1)
     if reader.transient(name.strip('"')):
         return []
-    declared = reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
+    declared = (
+        None
+        if reader.view_keys
+        else reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
+    )
     keys = (
         [*declared.primary_keys, *declared.unique_keys]
         if declared is not None
@@ -1495,5 +1504,12 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     if declared is None and not reader.view_keys:
         return [_SqlFinding("undeclared-view", name)]
     passed = _passed_through(text[match.end() :])
-    missing = sorted(column for key in keys for column in key if passed is not None and column not in passed)
+    if passed is None:
+        return []
+    if declared is None:
+        # a producer's views are of tables keyed each its own way: a view passing any one key it declares is keyed
+        short = [sorted(column for column in key if column not in passed) for key in keys]
+        missing = [] if any(not columns for columns in short) else min(short, key=len)
+    else:
+        missing = sorted(column for key in keys for column in key if column not in passed)
     return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []
