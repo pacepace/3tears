@@ -396,10 +396,12 @@ class TestDispatchErrorPaths:
         listener = MagicMock()
         listener.subscribe = AsyncMock()
         listener.catch_up = AsyncMock(return_value=0)
+        listener.last_seen = MagicMock(return_value=0)
         epoch_client = MagicMock()
         epoch_client.current = AsyncMock(return_value=0)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
+            grant_reader=AsyncMock(return_value=None),
             epoch_client=epoch_client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,
@@ -423,10 +425,12 @@ class TestDispatchErrorPaths:
         listener = MagicMock()
         listener.subscribe = AsyncMock()
         listener.catch_up = AsyncMock(return_value=0)
+        listener.last_seen = MagicMock(return_value=0)
         epoch_client = MagicMock()
         epoch_client.current = AsyncMock(return_value=0)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
+            grant_reader=AsyncMock(return_value=None),
             epoch_client=epoch_client,
             epoch_listener=listener,
             catchup_interval_seconds=3600.0,

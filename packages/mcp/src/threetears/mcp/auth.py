@@ -360,16 +360,24 @@ class Authorizer(Protocol):
 
 
 GrantLoader = Callable[[], Awaitable[list[dict[str, Any]]]]
-"""signature for the function that loads all grants from L3.
+"""signature for the function that reads every grant from L3: the cold-start fill.
 
-returns a list of dict rows shaped like ``mcp_tool_grants`` table
-columns (``principal_type``, ``principal_id``, ``permission``).
-:class:`LocalGrantAuthorizer` calls this on cold start and on every
-:meth:`mcp.rbac` epoch bump to rebuild its in-memory cache.
+returns a list of dict rows shaped like ``mcp_tool_grants`` table columns (``grant_id``,
+``principal_id``, ``permission``; others are ignored). :class:`LocalGrantAuthorizer` calls it only
+to fill its empty cache at :meth:`~LocalGrantAuthorizer.start`, and after an operator reset of the
+rbac epoch (the counter was replaced, so no bump says what changed). a bump never reaches it.
 
-abstracted as a function (not a direct collection reference) so
-tests can substitute a fake without spinning up Postgres + the full
-:class:`McpToolGrantCollection` plumbing.
+abstracted as a function (not a direct collection reference) so tests can substitute a fake
+without spinning up Postgres + the full :class:`McpToolGrantCollection` plumbing.
+"""
+
+
+GrantReader = Callable[[UUID], Awaitable[dict[str, Any] | None]]
+"""signature for the function that reads ONE grant from L3 by its key.
+
+returns the grant's row (shaped as a :data:`GrantLoader` row), or ``None`` when no grant has that
+key -- it was revoked. :class:`LocalGrantAuthorizer` calls it for the grant each rbac bump names
+(:meth:`McpToolGrantCollection.read_grant`).
 """
 
 
@@ -395,56 +403,98 @@ def _rbac_epoch_subject() -> Subject:
     return Subjects.mcp_rbac_epoch()
 
 
+def _grant_named_by(payload: dict[str, Any] | None) -> UUID | None:
+    """the grant a bump's payload names, or ``None`` when it names none it can be read by.
+
+    the hub's grant endpoints bump with ``{"grant_id": "<uuid>", "action": "create" | "delete"}``.
+
+    :param payload: the bump's payload
+    :ptype payload: dict[str, Any] | None
+    :return: the grant's key, or ``None``
+    :rtype: UUID | None
+    """
+    raw = None if payload is None else payload.get("grant_id")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:  # NOSILENT: a key that is no uuid names no grant; the caller counts the epoch unheard
+        return None
+
+
+def _held_by(row: dict[str, Any]) -> tuple[UUID, tuple[UUID, str]]:
+    """one grant row as the cache holds it: its key, and the ``(principal_id, permission)`` it gives.
+
+    :param row: a ``mcp_tool_grants`` row
+    :ptype row: dict[str, Any]
+    :return: ``(grant_id, (principal_id, permission))``
+    :rtype: tuple[UUID, tuple[UUID, str]]
+    :raises KeyError: when the row lacks one of the three columns
+    :raises ValueError: when a key is not a uuid
+    """
+    grant_id = row["grant_id"]
+    principal_id = row["principal_id"]
+    if not isinstance(grant_id, UUID):
+        grant_id = UUID(str(grant_id))
+    if not isinstance(principal_id, UUID):
+        principal_id = UUID(str(principal_id))
+    return grant_id, (principal_id, str(row["permission"]))
+
+
 class GrantCacheUnavailableError(RuntimeError):
     """the grant cache is not known to match ``mcp_tool_grants``, so no grant in it is trusted.
 
-    raised by :meth:`LocalGrantAuthorizer.allows` for a non-admin identity while a reload is
-    owed: the last load failed, so a grant revoked since the previous good load may still be
-    in the cache. answering ``False`` instead would read as "you lack this permission", which
-    is not what happened; answering from the cache would keep a revoked grant allowed. the MCP
-    server turns it into an ``AUTHZ_ERROR`` result and logs it.
+    raised by :meth:`LocalGrantAuthorizer.allows` for a non-admin identity while the cache may
+    hold a grant revoked since: a load or a keyed read failed and is owed, or rbac epochs went
+    unheard and the grants they changed are unknown. answering ``False`` instead would read as
+    "you lack this permission", which is not what happened; answering from the cache would keep a
+    revoked grant allowed. the MCP server turns it into an ``AUTHZ_ERROR`` result and logs it.
     """
 
 
 class LocalGrantAuthorizer:
     """framework default :class:`Authorizer` backed by ``mcp_tool_grants``.
 
-    holds an in-memory grant cache keyed by ``(principal_id, permission)``.
-    cold-start loads via the supplied :class:`GrantLoader`. cross-pod
-    coherence: subscribes to :func:`Subjects.mcp_rbac_epoch` via
-    task-02's :class:`EpochListener`; on bump reloads the cache from L3.
+    holds an in-memory grant cache: each grant by its key, and how many grants give each
+    ``(principal_id, permission)``. :meth:`start` fills it once from the supplied
+    :class:`GrantLoader` -- the cold start. cross-pod coherence: subscribes to
+    :func:`Subjects.mcp_rbac_epoch` via :class:`EpochListener`; each bump names the grant it
+    changed, and the authorizer reads that one grant by key (:class:`GrantReader`) and inserts,
+    updates or removes it. nothing but the cold start and an operator reset (the epoch counter
+    was REPLACED) reads every grant.
 
-    admin auto-grant: when an :class:`Identity` arrives with
-    ``is_admin=True``, every permission check returns True without
-    consulting the cache. the auto-grant is logged at INFO at
-    :meth:`start`-time so it's auditable; nothing is written to
-    ``mcp_tool_grants``.
+    **an epoch whose grant is unknown is not reloaded around.** a bump that names no grant, an
+    epoch skipped between two bumps, or a bump the catch-up tick finds the broadcast never
+    delivered: the rbac epoch is a NATS KV counter that keeps no record of what each bump
+    changed, so the grant it changed cannot be read by key. the cache may then hold a revoked
+    grant, so non-admin checks are refused (:class:`GrantCacheUnavailableError`) until an
+    operator reset or a restart fills the cache again; the gap is logged at ERROR.
 
-    :param grant_loader: function that returns the current grant
-        rows from L3
+    admin auto-grant: when an :class:`Identity` arrives with ``is_admin=True``, every
+    permission check returns True without consulting the cache. the auto-grant is logged at
+    INFO at :meth:`start`-time so it's auditable; nothing is written to ``mcp_tool_grants``.
+
+    :param grant_loader: reads every grant row from L3; called only for the cold start and an
+        operator reset
     :ptype grant_loader: GrantLoader
-    :param epoch_client: task-02 :class:`EpochClient`; used by the
-        listener for cold-start prime via ``current(subject)``.
-        Optional: when ``None``, the cache is loaded once at
-        :meth:`start` and never reloaded -- correct for single-process
-        modes (stdio MCP servers, tests) where there is no other
-        writer to broadcast against.
+    :param grant_reader: reads one grant row from L3 by key; required with an epoch listener
+    :ptype grant_reader: GrantReader | None
+    :param epoch_client: :class:`EpochClient`; read for the epoch a fill reflects. Optional:
+        when ``None``, the cache is filled once at :meth:`start` and never changed -- correct for
+        single-process modes (stdio MCP servers, tests) where there is no other writer to
+        broadcast against.
     :ptype epoch_client: EpochClient | None
-    :param epoch_listener: task-02 :class:`EpochListener`; subscribes
-        to the rbac epoch. Optional: when ``None`` (or when
-        ``epoch_client`` is None), :meth:`start` skips the broadcast
-        subscription and the periodic catch-up loop. Same single-
-        process rationale as ``epoch_client``.
+    :param epoch_listener: :class:`EpochListener`; subscribes to the rbac epoch. Optional: when
+        ``None`` (or when ``epoch_client`` is None), :meth:`start` skips the broadcast
+        subscription and the periodic catch-up loop. Same single-process rationale as
+        ``epoch_client``.
     :ptype epoch_listener: EpochListener | None
-    :param admin_principal_ids: optional set of principal UUIDs to
-        log explicitly at start-time as auto-granted. logging the
-        specific principal_id (not just "admins get everything")
-        keeps the audit trail concrete for the v1 single-identity
-        stdio mode
+    :param admin_principal_ids: optional set of principal UUIDs to log explicitly at
+        start-time as auto-granted. logging the specific principal_id (not just "admins get
+        everything") keeps the audit trail concrete for the v1 single-identity stdio mode
     :ptype admin_principal_ids: set[UUID] | None
-    :param catchup_interval_seconds: how often the periodic catch-up
-        tick polls :meth:`EpochListener.catch_up` to recover from
-        missed broadcasts. default 60 matches task-02 Chunk B's
+    :param catchup_interval_seconds: how often the periodic catch-up tick compares the counter
+        with what the listener heard, and retries owed reads. default 60 matches the
         capabilities-epoch tick
     :ptype catchup_interval_seconds: float
     """
@@ -453,6 +503,7 @@ class LocalGrantAuthorizer:
         self,
         *,
         grant_loader: GrantLoader,
+        grant_reader: GrantReader | None = None,
         epoch_client: EpochClient | None = None,
         epoch_listener: EpochListener | None = None,
         admin_principal_ids: set[UUID] | None = None,
@@ -460,26 +511,29 @@ class LocalGrantAuthorizer:
     ) -> None:
         """capture deps; no I/O until :meth:`start`.
 
-        ``epoch_client`` and ``epoch_listener`` are jointly optional --
-        single-process modes (stdio MCP servers, tests) pass neither;
-        multi-pod modes pass both. Passing exactly one is a usage
-        error and raised here.
+        ``epoch_client`` and ``epoch_listener`` are jointly optional -- single-process modes
+        (stdio MCP servers, tests) pass neither; multi-pod modes pass both, and a
+        ``grant_reader`` to apply each bump with.
 
-        :param grant_loader: L3 grant loader
+        :param grant_loader: L3 read of every grant, for the cold start and an operator reset
         :ptype grant_loader: GrantLoader
-        :param epoch_client: task-02 epoch client; optional
+        :param grant_reader: L3 read of one grant by key, for each bump; required with an
+            epoch listener
+        :ptype grant_reader: GrantReader | None
+        :param epoch_client: epoch client; optional
         :ptype epoch_client: EpochClient | None
-        :param epoch_listener: task-02 epoch listener; optional
+        :param epoch_listener: epoch listener; optional
         :ptype epoch_listener: EpochListener | None
         :param admin_principal_ids: principals to log as auto-granted
         :ptype admin_principal_ids: set[UUID] | None
-        :param catchup_interval_seconds: periodic catch-up interval
-            (only consulted when ``epoch_listener`` is provided)
+        :param catchup_interval_seconds: periodic catch-up interval (only consulted when
+            ``epoch_listener`` is provided)
         :ptype catchup_interval_seconds: float
         :return: nothing
         :rtype: None
-        :raises ValueError: when exactly one of epoch_client /
-            epoch_listener is provided (must be both or neither)
+        :raises ValueError: when exactly one of epoch_client / epoch_listener is provided (must
+            be both or neither), when an epoch listener comes without a grant reader, or when
+            the catch-up interval is not positive
         :raises ImportError: when the ``grants`` extra is not installed
         """
         _require_grants_extra()
@@ -487,78 +541,97 @@ class LocalGrantAuthorizer:
             raise ValueError(
                 "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
             )
+        if epoch_listener is not None and grant_reader is None:
+            raise ValueError(
+                "an rbac bump is applied by reading the grant it names: pass grant_reader "
+                "(McpToolGrantCollection.read_grant) with the epoch listener",
+            )
         if epoch_listener is not None and not (0 < catchup_interval_seconds < float("inf")):
             # refused HERE, not when the loop is built: by then start() has already primed the cache
             # and subscribed, and a failure there would leave a registration behind with no loop.
             raise ValueError(f"catchup_interval_seconds must be positive, got {catchup_interval_seconds}")
         self._grant_loader = grant_loader
+        self._grant_reader = grant_reader
         self._epoch_client = epoch_client
         self._epoch_listener = epoch_listener
         self._admin_principal_ids = admin_principal_ids or set()
         self._catchup_interval_seconds = catchup_interval_seconds
-        # cache key shape: (principal_id, permission) -> True. presence
-        # is the grant; we don't store False entries because absence
-        # means "no grant" by default-deny semantics.
-        self._cache: set[tuple[UUID, str]] = set()
-        # set when a load fails, cleared when one lands. while set, `allows` refuses every
-        # non-admin check: the bump that triggered the failed load is already counted as seen,
-        # so the cache may hold grants revoked since the last good load.
-        self._reload_owed = False
-        # reloads overlap (a bump's, a reset's, the catch-up tick's), so each is numbered when it
-        # STARTS. a success clears the owed flag only when it started after the newest failure,
-        # and installs its cache only when nothing newer has landed: otherwise a slow load that
-        # began before a revocation could finish last and wipe out the failure that followed it.
-        self._reload_started = 0
-        self._applied_generation = 0
-        self._failed_generation = 0
+        # each grant by its key -> the (principal_id, permission) it gives, and how many grants
+        # give each pair: two grants for two tools can give one permission, and revoking one of
+        # them must not take the permission away. presence is the grant; absence is default-deny.
+        self._grants: dict[UUID, tuple[UUID, str]] = {}
+        self._held: dict[tuple[UUID, str], int] = {}
+        # reads (a fill's, a key's) overlap, so each is numbered when it STARTS. a read lands only
+        # when nothing that started later has already landed for what it read, and clears what is
+        # owed only when it started after the failure that owed it: otherwise a slow read that
+        # began before a revocation could finish last and put the revoked grant back.
+        self._reads_started = 0
+        # the newest fill landed, and the newest whose failure is still owed; while a fill is
+        # owed every non-admin check is refused, since the bump before it may have been a
+        # revocation.
+        self._filled_generation = 0
+        self._fill_failed_generation = 0
+        self._fill_owed = False
+        # per grant: the newest keyed read landed, and a failed one still owed
+        self._key_landed: dict[UUID, int] = {}
+        self._keys_owed: dict[UUID, int] = {}
+        # the newest rbac epoch the cache holds the change of, with every epoch before it
+        self._epoch = 0
+        # set to the reads started so far when an epoch's grant goes unknown; a fill that
+        # starts after it clears it. ``None`` while every epoch's grant is known.
+        self._unheard_at: int | None = None
+        # a counter value the catch-up tick saw ahead of what the listener heard, given one
+        # interval for its broadcast to arrive before the tick advances the listener past it
+        self._awaiting_broadcast: int | None = None
         self._started = False
         self._catchup_task: PeriodicTask | None = None
 
     async def start(self) -> None:
-        """prime cache, subscribe to rbac epoch, spawn catch-up tick.
+        """subscribe to the rbac epoch, fill the cache once, spawn the catch-up tick.
 
-        idempotent: subsequent calls log a warning and short-circuit.
-        the catch-up tick is the safety net for the documented
-        prime/subscribe race in :meth:`EpochListener.subscribe`
-        (and for any broadcast outright dropped on the wire). v1
-        spec EPOCH-09 requires recovery within bounded time; the
-        tick provides it.
+        idempotent: subsequent calls log a warning and short-circuit. the counter is read and
+        the subscription made BEFORE the fill, so a bump landing during the fill is heard and
+        applied by key (or is already in the fill, which read the counter before its rows), and
+        none falls between the fill and the subscription. the catch-up tick is the safety net
+        for a broadcast lost anyway, and retries an owed read.
 
         :return: nothing
         :rtype: None
+        :raises RuntimeError: in single-process mode, when the fill fails: nothing would retry it
         """
         if self._started:
             log.warning("LocalGrantAuthorizer.start called twice; ignoring")
             return
-        # read the rbac epoch BEFORE loading the cache so last-seen is primed to
-        # the epoch the loaded grants reflect, never ahead of them. priming AFTER
-        # the load (the listener's default current()-at-subscribe) lets a bump
-        # landing in the load->subscribe window pin last-seen PAST the loaded
-        # cache -- the catch-up tick then sees current == last_seen and the
-        # grant cache serves permanently-stale authorization decisions. reading
-        # first keeps last-seen <= the cache's epoch, so any bump at/after the
-        # load is recovered (broadcast or catch-up); worst case one redundant
-        # reload.
-        primed_epoch: int | None = None
-        if self._epoch_client is not None:
-            primed_epoch = await self._epoch_client.current(_rbac_epoch_subject())
-        await self._reload_cache()
         epoch_mode = self._epoch_listener is not None
-        if self._reload_owed and not epoch_mode:
-            # single-process mode has no bump and no catch-up tick, so nothing would ever retry
-            # the load: started, this authorizer would refuse every non-admin call for its life.
-            raise RuntimeError("MCP grant cache could not be loaded at start, and nothing would retry it")
         if epoch_mode:
             assert self._epoch_listener is not None  # narrowed by epoch_mode
-            # sender-posture: trigger-only -- a bump reloads the grant cache from L3
+            assert self._epoch_client is not None  # constructed together
+            primed_epoch = await self._epoch_client.current(_rbac_epoch_subject())
+            self._epoch = primed_epoch
+            # sender-posture: trigger-only -- a bump names the grant it changed, read here by key
             await self._epoch_listener.subscribe(
                 _rbac_epoch_subject(),
                 self._on_rbac_bump,
                 primed_epoch=primed_epoch,
                 on_reset=self._on_rbac_reset,
             )
+        try:
+            await self._fill()
+        except Exception as exc:
+            # the grant loader is the caller's and has no error contract of its own; whatever it
+            # raised, the fill is already marked owed (in _fill) and every non-admin check refused.
+            # single-process mode has no tick to retry it, so this authorizer must not start.
+            if not epoch_mode:
+                raise RuntimeError("MCP grant cache could not be loaded at start, and nothing would retry it") from exc
+            contain(
+                exc,
+                log=log,
+                what="MCP grant cache could not be filled at start; refusing non-admin checks "
+                "until the catch-up tick's retry lands",
+                level="error",
+            )
         log_extras: dict[str, Any] = {
-            "grant_count": len(self._cache),
+            "grant_count": len(self._grants),
             "epoch_mode": "multi-pod" if epoch_mode else "single-process",
         }
         if epoch_mode:
@@ -605,6 +678,7 @@ class LocalGrantAuthorizer:
         :rtype: None
         """
         self._started = False
+        self._awaiting_broadcast = None
         if self._catchup_task is None:
             return
         # the handle is released BEFORE the await. clearing it afterwards means
@@ -626,43 +700,46 @@ class LocalGrantAuthorizer:
         log.info("MCP authorizer catch-up loop stopped")
 
     async def _catchup_once(self) -> None:
-        """one safety-net pass: pull the current epoch, reload if stale.
+        """one safety-net pass: retry owed reads, then find a broadcast the listener never heard.
 
-        the listener's subscribe path covers the happy case; this pass
-        covers (a) the documented prime/subscribe race window, (b) a
-        broadcast outright dropped on the wire (subscriber blip,
-        JetStream redelivery edge), and (c) a counter REPLACED by a
-        broker restart, which every KV operation survives silently.
-        cheap when nothing has changed -- one counter read. the rbac
-        epoch is an ephemeral subject, so that read is NATS KV, not the
-        durable row the tile family keeps. cadence, failure isolation
-        and shutdown are ``PeriodicTask``'s.
+        an owed fill (the cold start's or a reset's, which failed) is retried whole; an owed
+        grant is retried by its key. then the counter is compared with what the listener heard.
+        one ahead of it is given ONE interval for its broadcast to arrive -- advancing the
+        listener at once would make it drop that broadcast, payload and all, when it lands a
+        moment later. still unheard a whole interval on, the broadcast was lost (subscriber
+        blip, dropped message) and the framework's pass advances the listener: the epoch's
+        grant is unknown, which :meth:`_on_rbac_bump` records. the framework's pass is also
+        what finds a REPLACED counter, which every KV operation survives silently. cheap when
+        nothing has changed -- one counter read. cadence, failure isolation and shutdown are
+        ``PeriodicTask``'s; a retry that fails again raises out of the pass, so each is logged.
 
         :return: nothing
         :rtype: None
         """
-        # only ever started under epoch_mode, so the listener is non-None here.
+        # only ever started under epoch_mode, so both are non-None here.
         assert self._epoch_listener is not None
-
-        if self._reload_owed:
-            # the bump that asked for the failed load is already counted as seen, so the epoch
-            # pass below would find nothing stale; only this retry withdraws a revoked grant.
-            await self._reload_cache()
-            if self._reload_owed:
-                raise GrantCacheUnavailableError(
-                    "MCP grant cache reload is still failing; non-admin checks stay refused until it lands",
-                )
+        assert self._epoch_client is not None
+        if self._fill_owed:
+            await self._fill()
+        for grant_id in tuple(self._keys_owed):
+            await self._apply_grant(grant_id)
+        subject = _rbac_epoch_subject()
+        current = await self._epoch_client.current(subject)
+        heard = self._epoch_listener.last_seen(subject)
+        if current > heard and (self._awaiting_broadcast is None or heard >= self._awaiting_broadcast):
+            self._awaiting_broadcast = current
+            return
+        self._awaiting_broadcast = None
         # the pass itself is the framework's: which subjects to poll, and whether one failing
         # subject abandons the rest, are not decisions this consumer should hold its own opinion about.
-        await catchup_tick(self._epoch_listener, [(_rbac_epoch_subject(), self._on_rbac_bump)])
+        await catchup_tick(self._epoch_listener, [(subject, self._on_rbac_bump)])
 
     async def allows(self, identity: Identity, permission: str) -> bool:
         """return True iff ``identity`` holds ``permission``.
 
         admin short-circuit fires before the cache lookup. otherwise
-        consults the in-memory cache populated from
-        ``mcp_tool_grants``. group/role-scoped grants are matched
-        against the pre-resolved ``groups`` / ``roles`` on the
+        consults the in-memory cache of ``mcp_tool_grants``. group/role-scoped
+        grants are matched against the pre-resolved ``groups`` / ``roles`` on the
         :class:`Identity` (the :class:`IdentityProvider` is responsible
         for resolving them).
 
@@ -672,122 +749,209 @@ class LocalGrantAuthorizer:
         :ptype permission: str
         :return: True when the grant exists; False otherwise
         :rtype: bool
-        :raises GrantCacheUnavailableError: the last grant load failed, so the cache cannot
-            be trusted to reflect revocations (admins are unaffected)
+        :raises GrantCacheUnavailableError: the cache may hold a revoked grant -- a fill or a
+            keyed read failed, or an epoch's grant is unknown (admins are unaffected)
         """
         if identity.is_admin:
             return True
-        if self._reload_owed:
+        why = self._why_not_current()
+        if why is not None:
             raise GrantCacheUnavailableError(
-                f"MCP grant cache is not current (the last load failed); refusing {permission!r} "
+                f"MCP grant cache is not current ({why}); refusing {permission!r} "
                 "rather than answering from grants that may have been revoked",
             )
-        if (identity.principal_id, permission) in self._cache:
+        if (identity.principal_id, permission) in self._held:
             return True
         for group_id in identity.groups:
-            if (group_id, permission) in self._cache:
+            if (group_id, permission) in self._held:
                 return True
         for role_id in identity.roles:
-            if (role_id, permission) in self._cache:
+            if (role_id, permission) in self._held:
                 return True
         return False
 
-    async def _reload_cache(self) -> None:
-        """rebuild the in-memory grant cache from L3.
+    def _why_not_current(self) -> str | None:
+        """why the cache may hold a revoked grant, or ``None`` when it holds every change heard.
 
-        called on cold start, on every ``mcp.rbac`` epoch bump, and by
-        the catch-up tick while a reload is owed. a failure -- the
-        loader raising, or a row that will not decode -- marks a reload
-        owed, and :meth:`allows` refuses non-admin checks until one
-        lands. serving the prior cache instead kept revoked grants
-        allowed, and the bump that asked for this load is already
-        counted as seen, so nothing else would have asked again.
+        :return: the reason, or ``None``
+        :rtype: str | None
+        """
+        if self._fill_owed:
+            return "the last load of the grants failed"
+        if self._keys_owed:
+            return f"the read of {len(self._keys_owed)} changed grant(s) failed"
+        if self._unheard_at is not None:
+            return "rbac epochs went unheard and the grants they changed are unknown"
+        return None
 
-        overlapping reloads are ordered by when they STARTED (see
-        ``_reload_started`` in ``__init__``): a failure is owed only if no
-        reload that started later has landed, and a success clears what is
-        owed only if it started after the newest failure.
+    def _put(self, grant_id: UUID, held: tuple[UUID, str] | None) -> None:
+        """set one grant in the cache: ``held`` is what it gives, ``None`` that it is gone.
 
+        :param grant_id: the grant
+        :ptype grant_id: UUID
+        :param held: ``(principal_id, permission)``, or ``None`` for a revoked grant
+        :ptype held: tuple[UUID, str] | None
         :return: nothing
         :rtype: None
         """
-        self._reload_started += 1
-        generation = self._reload_started
+        before = self._grants.pop(grant_id, None)
+        if before is not None:
+            remaining = self._held[before] - 1
+            if remaining:
+                self._held[before] = remaining
+            else:
+                del self._held[before]
+        if held is not None:
+            self._grants[grant_id] = held
+            self._held[held] = self._held.get(held, 0) + 1
+
+    async def _apply_grant(self, grant_id: UUID) -> None:
+        """read one grant by key and put it in the cache: inserted, updated, or removed when gone.
+
+        a read that fails is owed -- :meth:`allows` refuses non-admin checks until a read of
+        that grant lands (the catch-up tick retries it) -- unless a read that started later
+        already landed. a read that lands after one that started later is dropped: it read
+        older rows.
+
+        :param grant_id: the grant a bump named
+        :ptype grant_id: UUID
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the grant reader raised, after the read is marked owed
+        """
+        assert self._grant_reader is not None  # required with the listener that calls this
+        self._reads_started += 1
+        generation = self._reads_started
+        landed = False
         try:
-            rows = await self._grant_loader()
-            new_cache: set[tuple[UUID, str]] = set()
-            for row in rows:
-                principal_id = row["principal_id"]
-                permission = row["permission"]
-                if not isinstance(principal_id, UUID):
-                    principal_id = UUID(str(principal_id))
-                new_cache.add((principal_id, permission))
-        except Exception as exc:
-            superseded = generation < self._applied_generation
-            if not superseded:
-                self._failed_generation = max(self._failed_generation, generation)
-                self._reload_owed = True
-            contain(
-                exc,
-                log=log,
-                what=(
-                    "MCP grant cache reload failed; a reload that started later has already landed, so nothing is owed"
-                    if superseded
-                    else "MCP grant cache reload failed; refusing non-admin permission checks "
-                    "until a reload lands (retried on the next catch-up tick)"
-                ),
-                extra={"prior_grant_count": len(self._cache), "reload_generation": generation},
-                level="error",
-            )
+            row = await self._grant_reader(grant_id)
+            held = None if row is None else _held_by(row)[1]
+            landed = True
+        finally:
+            # no except: the reader is the caller's, so its error has no type this module can
+            # name. the read is owed whatever it raised, and the error goes on to the caller's
+            # boundary (the subscription's dispatcher, the catch-up tick), which logs it.
+            if not landed and generation > max(self._key_landed.get(grant_id, 0), self._filled_generation):
+                self._keys_owed[grant_id] = max(self._keys_owed.get(grant_id, 0), generation)
+        if generation < max(self._key_landed.get(grant_id, 0), self._filled_generation):
             return
-        if generation < self._applied_generation:
-            # a reload that started later already landed; this one read older rows.
-            return
-        self._cache = new_cache
-        self._applied_generation = generation
-        if generation > self._failed_generation:
-            self._reload_owed = False
+        self._key_landed[grant_id] = generation
+        self._put(grant_id, held)
+        if generation > self._keys_owed.get(grant_id, 0):
+            self._keys_owed.pop(grant_id, None)
         log.info(
-            "MCP grant cache reloaded",
-            extra={"extra_data": {"grant_count": len(self._cache)}},
+            "MCP grant applied by key",
+            extra={"extra_data": {"grant_id": str(grant_id), "present": held is not None}},
+        )
+
+    async def _fill(self) -> None:
+        """read every grant into the cache: the cold start, or the fill after an operator reset.
+
+        the counter is read first, so the fill holds every epoch up to it. a fill that fails is
+        owed and refuses non-admin checks until one lands. a grant whose keyed read started
+        after this fill and landed keeps what that read found: it read newer rows.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the loader or the counter read raised, after the fill is
+            marked owed
+        """
+        self._reads_started += 1
+        generation = self._reads_started
+        landed = False
+        try:
+            if self._epoch_client is not None:
+                # read BEFORE the rows: every change at or below it is in them, so a bump at or
+                # below it needs no read of its own
+                self._epoch = max(self._epoch, await self._epoch_client.current(_rbac_epoch_subject()))
+            rows = await self._grant_loader()
+            filled = dict(_held_by(row) for row in rows)
+            landed = True
+        finally:
+            # no except: see _apply_grant. a fill that a later one already superseded owes nothing
+            if not landed and generation > self._filled_generation:
+                self._fill_failed_generation = max(self._fill_failed_generation, generation)
+                self._fill_owed = True
+        if generation < self._filled_generation:
+            return
+        for grant_id, landed_at in self._key_landed.items():
+            if landed_at > generation:
+                newer = self._grants.get(grant_id)
+                if newer is None:
+                    filled.pop(grant_id, None)
+                else:
+                    filled[grant_id] = newer
+        self._grants = {}
+        self._held = {}
+        for grant_id, held in filled.items():
+            self._put(grant_id, held)
+        self._key_landed = {key: at for key, at in self._key_landed.items() if at > generation}
+        self._keys_owed = {key: at for key, at in self._keys_owed.items() if at > generation}
+        self._filled_generation = generation
+        if generation > self._fill_failed_generation:
+            self._fill_owed = False
+        if self._unheard_at is not None and generation > self._unheard_at:
+            self._unheard_at = None
+        log.info(
+            "MCP grant cache filled",
+            extra={"extra_data": {"grant_count": len(self._grants), "epoch": self._epoch}},
         )
 
     async def _on_rbac_reset(self) -> None:
-        """epoch-listener callback: the epoch counter was REPLACED, so reload.
+        """epoch-listener callback: the epoch counter was REPLACED, so fill the cache again.
 
-        Distinct from :meth:`_on_rbac_bump` because it carries no epoch, and
-        deliberately so: a reset means every number this pod compared against
-        belongs to a counter that no longer exists. The only value available is
-        below everything already acted on, which is exactly what epoch dedupe
-        discards -- so a reset dressed as a bump would be swallowed and the
-        grant cache would stay stale.
-
-        Without this the detection is inert on the one path that matters. The
-        listener would clear its last-seen and this pod would keep serving
-        authorization decisions from a cache nothing had told it to refresh.
+        the operator reset, and with the cold start the only time every grant is read: the new
+        counter numbers nothing this pod heard, so no bump can say what changed while the old
+        one went away. Distinct from :meth:`_on_rbac_bump` because it carries no epoch, and
+        deliberately so: every number this pod compared against belongs to a counter that no
+        longer exists, and a reset dressed as a bump would be swallowed by epoch dedupe.
 
         :return: nothing
         :rtype: None
         """
         log.warning(
-            "MCP rbac epoch counter was replaced; reloading grant cache",
-            extra={"extra_data": {"grant_count": len(self._cache)}},
+            "MCP rbac epoch counter was replaced; filling the grant cache again",
+            extra={"extra_data": {"grant_count": len(self._grants)}},
         )
-        await self._reload_cache()
+        self._epoch = 0
+        self._awaiting_broadcast = None
+        await self._fill()
 
     async def _on_rbac_bump(self, epoch: int, payload: dict[str, Any] | None) -> None:
-        """epoch-listener callback: reload cache on rbac bump.
+        """epoch-listener callback: apply the grant the bump names, by key.
+
+        an epoch at or below the one the cache holds is already in it (a fill read the counter
+        past it before reading its rows). an epoch whose grant is unknown -- one skipped since
+        the last, or this one when its payload names no grant -- is recorded and logged at
+        ERROR, and non-admin checks are refused until a fill: nothing durable says which grant
+        it changed, so it cannot be read by key, and no whole reload stands in for it.
 
         :param epoch: new epoch returned by the bump
         :ptype epoch: int
-        :param payload: opaque hint from the publisher; framework
-            does not inspect
+        :param payload: the publisher's ``{"grant_id": ..., "action": ...}``; ``None`` from a
+            catch-up pass
         :ptype payload: dict[str, Any] | None
         :return: nothing
         :rtype: None
         """
-        log.info(
-            "MCP rbac epoch bump received; reloading grant cache",
-            extra={"extra_data": {"epoch": epoch, "payload": payload}},
-        )
-        await self._reload_cache()
+        if epoch <= self._epoch:
+            return
+        grant_id = _grant_named_by(payload)
+        first_unheard = self._epoch + 1
+        last_unheard = epoch if grant_id is None else epoch - 1
+        self._epoch = epoch
+        if last_unheard >= first_unheard:
+            self._unheard_at = self._reads_started
+            log.error(
+                "MCP rbac epochs went unheard; the grants they changed are unknown, so non-admin "
+                "checks are refused until an operator reset or a restart fills the grant cache",
+                extra={
+                    "extra_data": {
+                        "first_unheard_epoch": first_unheard,
+                        "last_unheard_epoch": last_unheard,
+                        "payload": payload,
+                    },
+                },
+            )
+        if grant_id is not None:
+            await self._apply_grant(grant_id)
