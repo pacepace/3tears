@@ -229,6 +229,7 @@ async def _read(warehouse: _PagingWarehouse, **kwargs: Any) -> list[dict[str, An
         relation="evd_delivery.published_files",
         key=_KEY,
         **kwargs,
+        prove=True,
     )
 
 
@@ -581,6 +582,7 @@ class TestArgumentsThatCannotDescribeACompleteRead:
                 columns=_COLUMNS,
                 relation="t",
                 key=(),
+                prove=True,
             )
 
     @pytest.mark.asyncio
@@ -866,6 +868,7 @@ class TestARowTheKeyCannotReachIsNotLost:
                 relation="published_files",
                 key=_KEY,
                 page_size=page_size,
+                prove=True,
             )
         except IncompleteReadError:
             return
@@ -898,6 +901,7 @@ class TestARowTheKeyCannotReachIsNotLost:
                 relation="published_files",
                 key=_KEY,
                 page_size=1,
+                prove=True,
             )
 
     @pytest.mark.asyncio
@@ -922,6 +926,7 @@ class TestARowTheKeyCannotReachIsNotLost:
                 relation="published_files",
                 key=_KEY,
                 page_size=1,
+                prove=True,
             )
 
     @pytest.mark.asyncio
@@ -952,6 +957,7 @@ class TestARowTheKeyCannotReachIsNotLost:
                 relation="published_files",
                 key=_KEY,
                 page_size=1,
+                prove=True,
             )
 
         assert warehouse.fingerprints == 2, "one read: its count, and the reading that shows nothing moved"
@@ -973,6 +979,7 @@ class TestARowTheKeyCannotReachIsNotLost:
             relation="published_files",
             key=_KEY,
             page_size=2,
+            prove=True,
         )
 
         assert len(rows) == len(dataset)

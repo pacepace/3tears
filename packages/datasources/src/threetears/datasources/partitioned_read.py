@@ -136,8 +136,12 @@ async def read_parts(
     parts: Sequence[Mapping[str, str]],
     concurrency: int = DEFAULT_PART_CONCURRENCY,
     page_size: int | None = None,
+    prove: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """read each part of a relation whole (:func:`~threetears.datasources.query_client.read_all`), several at once.
+
+    Each part is read by keyset pages with no fingerprint; ``prove=True`` asks ``read_all``'s old proof
+    (each part counted and fingerprinted before and after its pages) for each part.
 
     :param client: the connected query client
     :ptype client: DatasourceQueryClient
@@ -155,6 +159,8 @@ async def read_parts(
     :ptype concurrency: int
     :param page_size: rows per page; ``read_all``'s default when None
     :ptype page_size: int | None
+    :param prove: fingerprint each part before and after its read (``read_all``'s ``prove``); off by default
+    :ptype prove: bool
     :return: each part's rows, in the order of ``parts``
     :rtype: list[list[dict[str, Any]]]
     :raises ValueError: when ``concurrency`` is below one, or the arguments cannot describe a read
@@ -165,7 +171,7 @@ async def read_parts(
 
     def one(part: Mapping[str, str]) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
         return lambda: read_all(
-            client, datasource_name, columns=columns, relation=relation, key=key, where=part, **paging
+            client, datasource_name, columns=columns, relation=relation, key=key, where=part, prove=prove, **paging
         )
 
     results = await _bounded([one(part) for part in parts], concurrency)
@@ -232,11 +238,13 @@ async def _boundaries(
     :rtype: dict[str, list[tuple[Any, ...]]]
     """
     keys = ", ".join(key)
+    # the part column leads the read's key: every row read is one of the named parts'
+    part_key = partition_by
     placeholders = ", ".join(f"${index + 1}" for index in range(len(parts)))
     sql = (
-        f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
-        f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
-        f"FROM {relation} WHERE {partition_by} IN ({placeholders})) AS paged "
+        f"SELECT part__, {keys} FROM (SELECT {part_key} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
+        f"ROW_NUMBER() OVER (PARTITION BY {part_key} ORDER BY {keys}) AS row__ "
+        f"FROM {relation} WHERE {part_key} IN ({placeholders})) AS paged "
         f"WHERE MOD(row__ - 1, {int(page_size)}) = 0 ORDER BY part__, {keys}"
     )
     result = await client.query(datasource_name, sql, params=list(parts))
@@ -326,6 +334,8 @@ async def read_partitions(
     concurrency: int = DEFAULT_PART_CONCURRENCY,
     page_size: int = _PARTITION_PAGE_ROWS,
     batch_rows: int = _BATCH_ROWS,
+    counts: Mapping[str, int] | None = None,
+    prove: bool = False,
 ) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
     """every part of a relation (or the ``parts`` asked for) over the read rail, pages read side by side, one part at a time.
 
@@ -335,7 +345,15 @@ async def read_partitions(
     ``page_size``-th row), and then every page is read at once, at most ``concurrency`` at a time:
     the round trips run side by side instead of one after another.
 
-    **Proven before a part is handed back.** Every part is fingerprinted in ONE grouped ask before
+    **Named parts are read by key, with no fingerprint.** Given ``parts``, each part's page starts are
+    asked in one statement and its pages read; nothing is fingerprinted. Given ``counts`` too (each
+    part's rows as the source's change record or the caller's own count reported them), a part is
+    handed back only if its pages hold exactly its count, and raised otherwise; without them, a page
+    holding more rows than it should is still refused. A read that crosses a write is picked up by
+    the next load, which the source's change record names.
+
+    **With ``prove=True``, or no ``parts`` (the parts are then found by the grouped fingerprint), the
+    old proof runs.** Every part is fingerprinted in ONE grouped ask before
     the read; once a batch's pages are read, its parts are fingerprinted again in one ask, and a part
     is handed back only if its fingerprint did not move and its pages hold exactly its count. A page
     holding more rows than it should (rows written mid-read, or a key that is not unique) is refused
@@ -370,6 +388,12 @@ async def read_partitions(
     :ptype page_size: int
     :param batch_rows: the most rows one batch of parts holds
     :ptype batch_rows: int
+    :param counts: each named part's rows as counted by the caller, checked against its pages; a part
+        it leaves out is not checked
+    :ptype counts: Mapping[str, int] | None
+    :param prove: fingerprint every part before and after its batch's read (the old proof); off by
+        default, and always on when ``parts`` is None
+    :ptype prove: bool
     :return: each part's value and rows, in sorted order
     :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
     :raises IncompleteReadError: when a part moved during each of its batch's reads, or its pages do not
@@ -377,6 +401,22 @@ async def read_partitions(
     :raises DatasourceQueryError: when the hub refuses a statement (an older hub refuses the grouped
         fingerprint as ``MALFORMED_REQUEST``)
     """
+    if parts is not None and not prove:
+        async for part, rows in _read_named_partitions(
+            client,
+            datasource_name,
+            columns=columns,
+            relation=relation,
+            key=key,
+            partition_by=partition_by,
+            parts=parts,
+            concurrency=concurrency,
+            page_size=page_size,
+            batch_rows=batch_rows,
+            counts=counts or {},
+        ):
+            yield part, rows
+        return
     where_in = None if parts is None else {partition_by: list(parts)}
     before = await client.relation_fingerprint_groups(
         datasource_name, relation=relation, key=columns, group_by=partition_by, where_in=where_in
@@ -520,6 +560,106 @@ async def read_partitions(
                 "relation": relation,
                 "parts": len(counts),
                 "rows": sum(counts.values()),
+                "batches": len(batches),
+                "concurrency": concurrency,
+            }
+        },
+    )
+
+
+async def _read_named_partitions(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str],
+    relation: str,
+    key: Sequence[str],
+    partition_by: str,
+    parts: Sequence[str],
+    concurrency: int,
+    page_size: int,
+    batch_rows: int,
+    counts: Mapping[str, int],
+) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
+    """:func:`read_partitions` over named parts, by key, with no fingerprint.
+
+    A part with a count is batched by it; a part without one is a batch of its own, so a batch's rows
+    stay bounded by what is known of them. Each batch's page starts come in one statement, its pages are
+    read side by side, and each part is checked against its count when it has one.
+
+    :return: each part's value and rows: the counted parts in sorted order, then the others in sorted order
+    :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
+    :raises IncompleteReadError: when a counted part's pages do not hold exactly its count, or a page holds
+        more rows than it should
+    """
+    counted = {part: counts[part] for part in parts if part in counts}
+    batches = _batches(counted, batch_rows=batch_rows, page_size=page_size) + [
+        [part] for part in sorted(set(parts) - set(counted))
+    ]
+    total = 0
+    for members in batches:
+        starts = await _boundaries(
+            client,
+            datasource_name,
+            relation=relation,
+            key=key,
+            partition_by=partition_by,
+            parts=members,
+            page_size=page_size,
+        )
+        calls: list[Callable[[], Awaitable[list[dict[str, Any]]]]] = []
+        spans: dict[str, tuple[int, int]] = {}
+        for part in members:
+            pages = await _read_pages(
+                client,
+                datasource_name,
+                columns=columns,
+                relation=relation,
+                key=key,
+                partition_by=partition_by,
+                part=part,
+                starts=starts[part],
+                page_size=page_size,
+            )
+            spans[part] = (len(calls), len(calls) + len(pages))
+            calls += pages
+        try:
+            pages_read = await _bounded(calls, concurrency)
+        except DatasourceQueryError as exc:
+            # a page too large for one reply: this batch's parts are read part by part instead,
+            # with read_all halving its pages until they fit
+            if exc.error_code != RESULT_TOO_LARGE:
+                raise
+            pages_read = []
+            for part in members:
+                rows = await read_all(
+                    client,
+                    datasource_name,
+                    columns=columns,
+                    relation=relation,
+                    key=key,
+                    where={partition_by: part},
+                    page_size=page_size,
+                )
+                spans[part] = (len(pages_read), len(pages_read) + 1)
+                pages_read.append(rows)
+        for part in members:
+            start, end = spans[part]
+            rows = [row for page in pages_read[start:end] for row in page]
+            if part in counted and len(rows) != counted[part]:
+                raise IncompleteReadError(
+                    f"{datasource_name}: {relation} {partition_by}={part} counted {counted[part]} rows and the read "
+                    f"returned {len(rows)}"
+                )
+            total += len(rows)
+            yield part, rows
+    log.info(
+        "read named partitions by key",
+        extra={
+            "extra_data": {
+                "relation": relation,
+                "parts": len(parts),
+                "rows": total,
                 "batches": len(batches),
                 "concurrency": concurrency,
             }
