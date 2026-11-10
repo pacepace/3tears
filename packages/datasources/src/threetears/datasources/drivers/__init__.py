@@ -7,6 +7,8 @@ public surface (DS-09-09):
   construct a concrete driver instance
 - :class:`TableRow` / :class:`ColumnRow` -- pinned row shapes returned
   by ``list_tables`` / ``list_columns``
+- :class:`BoundedRows` -- what :meth:`Driver.fetch_within` keeps of a read
+  cut by its encoded bytes
 - :class:`DriverConnectError` / :class:`DriverAuthError` /
   :class:`DriverMissingCredentialError` /
   :class:`DriverCredentialPausedError` -- the connection-failure types
@@ -34,6 +36,7 @@ drivers are stubs that load no backend library. a runtime audit
 from __future__ import annotations
 
 from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.bounded_rows import BoundedRows
 from threetears.datasources.drivers.connect_guard import (
     DEFAULT_PAUSE_SECONDS,
     ConnectGuard,
@@ -51,6 +54,7 @@ from threetears.datasources.drivers.factory import create_driver
 
 __all__ = [
     "DEFAULT_PAUSE_SECONDS",
+    "BoundedRows",
     "ColumnRow",
     "ConnectGuard",
     "CredentialRefusalGuards",
