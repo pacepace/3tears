@@ -142,7 +142,7 @@ class _Log:
     async def current(self, table: str) -> str:
         return f"inc:{self.count}"
 
-    def commit(self, keys: Sequence[tuple[str, int]] | None, *, keep: bool = True) -> str:
+    def commit(self, keys: Sequence[tuple[Any, Any]] | None, *, keep: bool = True) -> str:
         self.count += 1
         token = f"inc:{self.count}"
         if keep:
@@ -1026,7 +1026,7 @@ async def test_a_checkpoint_written_beside_a_held_write_keeps_the_mark_before_it
     l3, log, store, pointers = _L3(), _Log(), _Store(), _Pointers()
     l3.put(_rows("VA", 5) + _rows("IL", 5))
     log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
-    codec = {"encode_stamp": _encode_scoped, "decode_stamp": _decode_scoped}
+    codec: dict[str, Any] = {"encode_stamp": _encode_scoped, "decode_stamp": _decode_scoped}
     _, writer, _ = _replica(l3, log, lock, store, pointers, "a", **codec)
     assert not await writer.start()
     assert await writer.catch_up()
@@ -1176,13 +1176,13 @@ async def test_an_apply_that_fails_keeps_its_stages_and_the_next_pass_reads_noth
     real = backend.apply_staged
     calls = {"n": 0}
 
-    def failing(*args: Any, **kwargs: Any) -> int:
+    def failing(*args: Any, **kwargs: Any) -> Any:
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("the copy's apply failed")
         return real(*args, **kwargs)
 
-    backend.apply_staged = failing  # type: ignore[method-assign]
+    backend.apply_staged = failing
     with pytest.raises(OSError):
         await follower.catch_up()
     assert backend.staged_stages()
@@ -1643,7 +1643,7 @@ async def test_a_checkpoint_stage_is_reached_only_at_a_start() -> None:
         stages.append(1)
         return await real()
 
-    checkpoints.stage = stage  # type: ignore[method-assign]
+    checkpoints.stage = stage
     assert await follower.start()
     assert stages == [1]
     for version in range(1, 40):

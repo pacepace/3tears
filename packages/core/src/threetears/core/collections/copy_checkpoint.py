@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -85,8 +86,13 @@ _DEFAULT_RATIO: Final = 0.5
 #: the most rows one part of a checkpoint holds: what a writer or a loader holds of it at a time
 _DEFAULT_PART_ROWS: Final = 250_000
 
-#: how long a writer's claim and lock last unrenewed; renewed at every part
+#: how long a writer's claim and lock last unrenewed
 _CLAIM_TTL: Final = timedelta(minutes=2)
+
+#: how often a write renews its claim and lock: a quarter of their life, so a stalled part still leaves three
+#: quarters before either lapses (each renewal is two round trips to L2 a key; at every part a cold start's fifty
+#: scopes cost two hundred)
+_RENEW_EVERY_SECONDS: Final = _CLAIM_TTL.total_seconds() / 4
 
 #: the manifest's format; a pointer of another is not read
 _FORMAT: Final = 2
@@ -155,6 +161,24 @@ def _encode_part(table: Any) -> bytes:
     with ipc.new_stream(sink, table.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
         writer.write_table(table)
     return bytes(sink.getvalue().to_pybytes())
+
+
+def _next_part(batches: Iterator[tuple[str | None, Any]]) -> tuple[str | None, int, bytes] | None:
+    """the next (scope, batch) with rows, encoded as a part: its scope, its rows and its bytes; None when none is left.
+
+    :param batches: each scope and its rows
+    :ptype batches: Iterator[tuple[str | None, pyarrow.RecordBatch | pyarrow.Table]]
+    :return: the part, or None
+    :rtype: tuple[str | None, int, bytes] | None
+    """
+    for scope, batch in batches:
+        if batch.num_rows:
+            return (
+                scope,
+                batch.num_rows,
+                _encode_part(batch if isinstance(batch, pa.Table) else pa.Table.from_batches([batch])),
+            )
+    return None
 
 
 def _decode_part(data: bytes) -> Any:
@@ -1016,31 +1040,30 @@ class CopyCheckpoints:
         written: list[str],
         keys: tuple[str, str],
     ) -> list[tuple[str, str | None, int]]:
-        """store each (scope, batch) as one part of that scope, renewing the lock and claim at each.
+        """store each (scope, batch) as one part of that scope, renewing the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
 
         :return: the parts
         :rtype: list[tuple[str, str | None, int]]
         """
         parts: list[tuple[str, str | None, int]] = []
         counts: dict[str | None, int] = {}
+        renewed = time.monotonic()
         while True:
-            item = await asyncio.to_thread(next, batches, None)
+            # the next part read and encoded in one hop off the loop
+            item = await asyncio.to_thread(_next_part, batches)
             if item is None:
                 break
-            scope, batch = item
-            if batch.num_rows == 0:
-                continue
-            data = await asyncio.to_thread(
-                _encode_part, batch if isinstance(batch, pa.Table) else pa.Table.from_batches([batch])
-            )
+            scope, rows, data = item
             n = counts.get(scope, 0)
             counts[scope] = n + 1
             name = f"{self.base}/{seq}/{self._owner}/{table}/{_scope_segment(scope)}/{n}"
             await self._store.put(name, data)
             written.append(name)
-            parts.append((name, scope, batch.num_rows))
-            for key in keys:
-                await self._renew(key)
+            parts.append((name, scope, rows))
+            if time.monotonic() - renewed >= _RENEW_EVERY_SECONDS:
+                for key in keys:
+                    await self._renew(key)
+                renewed = time.monotonic()
         return parts
 
     async def _renew(self, key: str) -> None:
