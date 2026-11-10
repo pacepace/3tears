@@ -593,10 +593,15 @@ const kBetterWords=b=>{if(b==null)return null;if(b==="right")return ["worse","be
 const kBetterH=(words,x0,x1)=>!words?0:(words[0].length+words[1].length+4)*6.4+12<=x1-x0?16:32;
 function kBetter(s,words,x0,x1,y){if(!words)return;const two=kBetterH(words,x0,x1)>16;
   S("text",{x:x0,y:two?y-16:y,"text-anchor":"start",class:"tick",text:"← "+words[0]},s);S("text",{x:x1,y,"text-anchor":"end",class:"tick",text:words[1]+" →"},s);}
-// a row's end note wrapped at its spaces to room px, two lines at most: the figure with its unit, then the words
-function kWrapNote(t,room){const lines=[];let cur="";for(const wd of String(t).split(" ")){const nx=cur?cur+" "+wd:wd;
+// a note's unbreakable runs: its " · " parts where it has them, each but the last keeping its " ·", so a count stays
+// with its denominator ("96 of 456") and the note breaks at the dot or not at all; else its words
+function kNoteWords(t){const s=String(t);if(!s.includes(" · "))return s.split(" ");const p=s.split(" · ");
+  return p.map((x,i)=>i<p.length-1?x+" ·":x);}
+// a row's end note wrapped between its runs (kNoteWords) to room px, two lines at most: the figure with its unit, then
+// the words
+function kWrapNote(t,room){const lines=[],wds=kNoteWords(t);let cur="";for(const wd of wds){const nx=cur?cur+" "+wd:wd;
   if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
-  if(lines.length>2){const wds=String(t).split(" ");let at=2,best=Infinity;
+  if(lines.length>2){let at=2,best=Infinity;
     // two lines at most, split where the longer is shortest, the figure with its unit kept on the first
     for(let i=2;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
     return [wds.slice(0,at).join(" "),wds.slice(at).join(" ")];}return lines;}

@@ -381,12 +381,23 @@ def _text(x: float, y: float, text: str, css: str = "tick", anchor: str = "start
     return _el("text", {"x": x, "y": y, "text-anchor": anchor, "class": css, "style": style}, _escape(text))
 
 
+def _note_words(text: str) -> list[str]:
+    """A note's unbreakable runs (``kNoteWords``): its `` · ``-separated parts where it has them, each but the last
+    keeping its `` ·``, so a count stays with its denominator (``96 of 456``) and the note breaks at the dot or not at
+    all; else its words."""
+    if " · " not in text:
+        return text.split(" ")
+    parts = text.split(" · ")
+    return [f"{part} ·" for part in parts[:-1]] + parts[-1:]
+
+
 def _wrapped(text: str, room: float) -> list[str]:
-    """``text`` broken at its spaces into lines each at most ``room`` px wide, as the kit's forest wraps a note; a word
-    wider than ``room`` is its own line, never cut."""
+    """``text`` broken between its unbreakable runs (``_note_words``) into lines each at most ``room`` px wide, as the
+    kit's forest wraps a note; a run wider than ``room`` is its own line, never cut."""
     lines: list[str] = []
     current = ""
-    for word in text.split(" "):
+    words = _note_words(text)
+    for word in words:
         joined = f"{current} {word}" if current else word
         if current and len(joined) * 6.4 > room:
             lines.append(current)
@@ -397,7 +408,6 @@ def _wrapped(text: str, room: float) -> list[str]:
     if len(lines) > 2:
         # Two lines at most, so a row's label never reaches the next row, split where the longer is shortest so the
         # margin sized on them stays narrow; the figure with its unit is kept on the first (``kWrapNote``).
-        words = text.split(" ")
         at = min(
             range(2, len(words)),
             key=lambda i: max(len(" ".join(words[:i])), len(" ".join(words[i:]))),

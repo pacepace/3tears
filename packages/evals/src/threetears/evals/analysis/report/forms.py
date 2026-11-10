@@ -853,20 +853,12 @@ class PageForms:
         :return: The interval.
         :rtype: _PrintedInterval
         """
-        drawn_low, drawn_high = low * ruler.factor, high * ruler.factor
-        unit = delta_unit(ruler.unit)
-        places = self._set_places(places, measure, kind)
-        if form is not None and is_money(ruler.unit):
-            texts = _money_ends(form.spell_ends(drawn_low, drawn_high), drawn_low, drawn_high, change=True)
-        elif places is not None and places.change is not None:
-            if (span := places.span()) is not None:
-                drawn_low, drawn_high = max(drawn_low, -span), min(drawn_high, span)
-            texts = _ends_at(drawn_low, drawn_high, places.change, unit, change=True)
-        elif ruler.unit == PERCENT:
-            texts = _ends_at(max(drawn_low, -100.0), min(drawn_high, 100.0), POINT_PLACES, POINTS, change=True)
+        held = self._set_places(places, measure, kind)
+        if held is not None and held.change is not None:
+            texts = _change_ends(ruler, low, high, form=form, places=held.change, span=held.span())
         else:
-            texts = _ends_in(drawn_low, drawn_high, unit, change=True)
-        return self._ruled_interval(measure, kind, low, high, texts, unit)
+            texts = _change_ends(ruler, low, high, form=form, places=None, span=None)
+        return self._ruled_interval(measure, kind, low, high, texts, delta_unit(ruler.unit))
 
     def ruled_level_cell(
         self,
@@ -929,8 +921,9 @@ class PageForms:
         fact), at the set's places for changes where ``places`` gives them (``-6.0 pts`` beside ``+3.6 pts``, never
         ``-6 pts``), a rate's at a point's one decimal otherwise. Handed the interval on it, the cell carries it, with
         the declared margin, on the same ruler, read against zero: what a page draws beside the figure as the row's
-        glyph. Handed the form the reading's changes read in (:meth:`change_money`), money's change is written in it,
-        at the places its value and its interval's ends need.
+        glyph, its ends as the row's interval column prints them (:meth:`ruled_change_interval`). Handed the form the
+        reading's changes read in (:meth:`change_money`), money's change is written in it, at the places its value and
+        its interval's ends need.
 
         A cell a table's column rule spells (a rate's, money) is recorded there, as it prints; any other is recorded
         here.
@@ -957,7 +950,8 @@ class PageForms:
         if delta is None:
             return TableCell(value=None)
         unit = delta_unit(ruler.unit)
-        if places is None and (held := self._set_places(None, measure, kind)) is not None:
+        held = self._set_places(None, measure, kind)
+        if places is None and held is not None:
             places = held.change
         if places is None and ruler.unit == PERCENT:
             places = POINT_PLACES
@@ -980,10 +974,22 @@ class PageForms:
         else:
             digits = policy_figure(drawn, places, bounds=_ZERO_BOUND if ruler.unit == PERCENT else (), signed=True)
             text = unit_spaced(digits, unit)
-        if ends is None:
+        if interval is None:
             return self._ruled_cell(measure, kind, "change", delta, drawn, unit, text)
-        decimals = None if form is not None else (POINT_PLACES if set_places is None and unit == POINTS else set_places)
-        low_text, high_text = _glyph_ends(ends[0], ends[1], unit=unit, places=decimals, money=money, change=True)
+        # The glyph's ends are the row's interval column's, each decided by its rule (:meth:`ruled_change_interval`),
+        # so the title and the cell beside it print one interval one way (``-15 to -0.03``, never ``-15.09``).
+        span = held.span() if held is not None else None
+        low_text, high_text, _ = _change_ends(
+            ruler,
+            interval[0],
+            interval[1],
+            form=form,
+            places=set_places,
+            span=100.0 if span is None and ruler.unit == PERCENT else span,
+        )
+        if not is_money(unit):
+            written = _on_the_figure(unit)
+            low_text, high_text = _digits_of(low_text, written), _digits_of(high_text, written)
         return self._ruled_cell(
             measure,
             kind,
@@ -992,8 +998,8 @@ class PageForms:
             drawn,
             unit,
             text,
-            low=ends[0],
-            high=ends[1],
+            low=interval[0] * ruler.factor,
+            high=interval[1] * ruler.factor,
             low_text=low_text,
             high_text=high_text,
             margin=abs(margin) * ruler.factor if margin is not None else None,
@@ -4575,6 +4581,32 @@ def _ruled_level_text(ruler: MeasureRuler, scaled: float, places: ContrastPlaces
     if ruler.unit == PERCENT or is_money(ruler.unit):
         return with_unit(scaled, ruler.unit)
     return number_in(scaled, ruler.unit)
+
+
+def _change_ends(
+    ruler: MeasureRuler,
+    low: float,
+    high: float,
+    *,
+    form: MoneyForm | None,
+    places: int | None,
+    span: float | None,
+) -> tuple[str, str, str]:
+    """An interval on a change on its ruler (:meth:`PageForms.ruled_change_interval`): its two ends' texts and its
+    whole text, money's in the form its changes read in, any other unit's at ``places``, each end kept off zero on its
+    own and never past ``span`` either side of zero, a rate's in points at a point's one decimal where no places are
+    given, else each end by its unit's precision."""
+    drawn_low, drawn_high = low * ruler.factor, high * ruler.factor
+    unit = delta_unit(ruler.unit)
+    if form is not None and is_money(ruler.unit):
+        return _money_ends(form.spell_ends(drawn_low, drawn_high), drawn_low, drawn_high, change=True)
+    if places is not None:
+        if span is not None:
+            drawn_low, drawn_high = max(drawn_low, -span), min(drawn_high, span)
+        return _ends_at(drawn_low, drawn_high, places, unit, change=True)
+    if ruler.unit == PERCENT:
+        return _ends_at(max(drawn_low, -100.0), min(drawn_high, 100.0), POINT_PLACES, POINTS, change=True)
+    return _ends_in(drawn_low, drawn_high, unit, change=True)
 
 
 def _ends_at(
