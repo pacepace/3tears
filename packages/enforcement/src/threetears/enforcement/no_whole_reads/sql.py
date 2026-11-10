@@ -1042,6 +1042,10 @@ def _key_hit(
             if serves and table is not None:
                 reader.schema.use(table, name, reader.names)
         return True
+    # every purposed index serving the read is credited, never only the first declared: a read two indexes can serve
+    # (an owner's memories by the owner triple, or by the user and a date range) is the planner's to route, and each
+    # index's own plan test shows the planner using it for this reader
+    serving = False
     for name, columns in purposed:
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
@@ -1056,7 +1060,9 @@ def _key_hit(
         if _covers(columns, eq | contained, tenants) or ranged_next:
             if table is not None:
                 reader.schema.use(table, name, reader.names)
-            return True
+            serving = True
+    if serving:
+        return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
         for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:
