@@ -118,7 +118,9 @@ survivor on every axis that matters:
   interval past the floor) caps a candidate shown better at 0, not shown no worse, since a broken floor is not held;
   an unclear one caps nothing. An ``improved`` contrast on a judged dimension whose judge the input states
   uncalibrated (its tier and calibration undetermined or insufficient, the reading ``judge_uncalibrated`` makes) is
-  set aside: it does not raise the level, and the candidate's other improvements count as usual. An arm is at least
+  set aside: it does not raise the level, and the candidate's other improvements count as usual. Only those two
+  states set aside an improvement: hosts often make a judge ad hoc, without the hours of human rating calibration
+  takes, and a judge measured and found short (``separation``, ``incidental``) still counts. An arm is at least
   as good as another at the same level or above. In a choice, an arm is at least as good as another unless a pair
   reading on an asked aspect shows the other ahead of it. With no asked reading, pair or floor, the aspect ties.
 
@@ -127,8 +129,8 @@ survivor on every axis that matters:
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
    when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
    no margin is declared), and no contrast on an asked aspect separated it (``improved``, ``regressed`` or
-   ``equivalent``, as its family's correction reads it: corrected only where that names a method). A candidate with neither an asked reading nor a contrast on an asked
-   aspect forces nothing.
+   ``equivalent``, as its family's correction reads it: corrected only where that names a method). A
+   candidate with neither an asked reading nor a contrast on an asked aspect forces nothing.
 2. *Decide* when exactly one survivor dominates; the plan recommends that one.
 3. *Decide* when two or more survive, none dominates alone, and the campaign declared a rule that ranks the axes (a
    contrast family's merit priority): the rule picks, among the survivors.
@@ -669,7 +671,10 @@ def _better(report_input: ReportInput, arm: str) -> _Better:
 
 def shown_better(report_input: ReportInput, arm: str) -> bool:
     """Whether a candidate is shown better: a confirmatory ``better`` reading, or an ``improved`` contrast on an asked
-    aspect, save one on a judged dimension whose judge the input states uncalibrated, which is set aside.
+    aspect, save one on a judged dimension whose judge the input states uncalibrated (tier and calibration undetermined
+    or insufficient), which is set aside. Only those two states set aside an improvement: hosts often make a judge ad
+    hoc, without the hours of human rating calibration takes, and a judge measured and found short (``separation``,
+    ``incidental``) still counts.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -1048,8 +1053,8 @@ def decision_at(
 
 
 #: How an arm stands on the asked aspects, as this module's Dominance reads it. In a change: ``shown_better`` (level 2,
-#: no asked floor broken), ``control`` or ``shown_no_worse`` (level 1), ``not_shown_no_worse`` (level 0). In a choice, by the asked pair
-#: readings: ``behind`` when one shows another arm ahead of it, else ``not_behind``.
+#: no asked floor broken), ``control`` or ``shown_no_worse`` (level 1), ``not_shown_no_worse`` (level 0). In a choice,
+#: by the asked pair readings: ``behind`` when one shows another arm ahead of it, else ``not_behind``.
 StandingWord = Literal["shown_better", "control", "shown_no_worse", "not_shown_no_worse", "behind", "not_behind"]
 
 

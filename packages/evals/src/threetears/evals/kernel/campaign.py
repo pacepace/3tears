@@ -157,8 +157,9 @@ class EvalCampaign(DurableDocumentModel):
     most one arm is the control, and it comes first. A campaign that names no candidate arm reads
     each other variant among its runs as one (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
 
-    **Floors only warn** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on one aspect,
-    and a broken one is the first thing the page says. **The call** is what a person decided over the readings
+    **Floors warn and never block** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on
+    one aspect, a broken one is the first thing the page says, and a broken one on an asked aspect caps the
+    candidate's standing in code's dominance read. **The call** is what a person decided over the readings
     (:class:`~threetears.evals.kernel.declaration.CampaignCall`), None until one is recorded.
 
     **Exploratory is derived, never stored**: a campaign none of whose aspects declares a design is exploratory, and

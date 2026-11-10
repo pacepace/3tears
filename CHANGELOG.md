@@ -15,7 +15,9 @@ score. Now a floor read `broken` on an asked aspect caps the candidate at `not_s
 the floor; an `unclear` floor caps nothing, and a floor still removes no option. An `improved` contrast on a judged
 dimension whose judge the input states uncalibrated (tier and calibration undetermined or insufficient, the reading
 `judge_uncalibrated` makes) is set aside: it raises nothing, `why` names it, and `AskedStanding.set_aside` (new) lists
-it; the candidate's other improvements count as before. A floor-margin sweep reads the cap at each margin. The
+it; the candidate's other improvements count as before. Only those two states set an improvement aside:
+hosts often make a judge ad hoc, without the hours of human rating calibration takes, and a judge measured and found
+short (`separation`, `incidental`) still counts. A floor-margin sweep reads the cap at each margin. The
 editor's `adoption` fact names a recommended candidate a broken floor caps, and an improvement set aside.
 
 **Hosts:** a stored call can read differently on regeneration: a capped candidate that costs more than the control is

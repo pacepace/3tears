@@ -34,9 +34,10 @@ a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point 
 (the candidate passes every trial the control fails), and `broken` only on a drop far past its margin; otherwise it
 reads `unclear`, saying how far the interval reaches, and its `To show the floors hold` row says how many cases
 would settle it. Discodon's G2 re-ask at 7 cases should expect `unclear` on its rate floor unless the candidate
-collapses. A floor only warns, so an unclear one blocks nothing; it is the reader who is left without the warning's
-answer. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval would
-settle sooner, but at the margin it read `held` up to 14% of the time against the 2.5% it states.
+collapses. A floor never blocks, and only a broken one caps a standing, so an unclear one changes nothing; it is
+the reader who is left without the warning's answer. Fix, on the host's side: more cases, or a wider margin the
+decision can live with. The t interval would settle sooner, but at the margin it read `held` up to 14% of the time
+against the 2.5% it states.
 
 ### A guardrail is held only on a declared range (accepted limit)
 
