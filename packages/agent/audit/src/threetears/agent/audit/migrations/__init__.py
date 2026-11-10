@@ -37,4 +37,4 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     return pkg
 
 
-__all__ = ["PACKAGE_NAME", "create_audit_events", "range_shard_audit_time_index", "register"]
+__all__ = ["PACKAGE_NAME", "create_audit_events", "register"]
