@@ -2,7 +2,8 @@
 
 A pod's L1 changes by key (an upsert, a scope's replacement, a follower's staged change); nothing it runs empties a
 table and fills it again. A test, though, often wants a table to hold exactly some rows, whatever it held before.
-:func:`fill_table` does that in one transaction, so a row that fails to insert leaves the table as it was.
+:func:`fill_table` does that through the backend's front door: the rows go in first (one write, so a row that fails
+to insert leaves the table as it was), then every key it held and was not given goes.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ __all__ = ["fill_table"]
 def fill_table(
     backend: DuckDBBackend, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
 ) -> int:
-    """make ``table`` hold exactly ``rows``, in one transaction; rows repeating a key keep the last.
+    """make ``table`` hold exactly ``rows``; rows repeating a key keep the last.
 
     :param backend: the backend
     :ptype backend: DuckDBBackend
@@ -33,20 +34,17 @@ def fill_table(
     :rtype: int
     :raises ValueError: when the table is not one the backend created
     """
-    # the backend's own lock, connection and insert: one transaction, as no public write of it empties a table
-    if table not in backend._schema_info:  # noqa: SLF001
+    types = backend.column_types(table)
+    if not types:
         raise ValueError(f"unknown table {table!r}: fill_table fills tables the backend created")
-    connection = backend._db  # noqa: SLF001
-    with backend._db_lock:  # noqa: SLF001
-        committed = False
-        connection.execute("BEGIN TRANSACTION")
-        try:
-            connection.execute(f"DELETE FROM {quote_identifier(table)}")  # noqa: S608 - a test's own table
-            backend._insert_rows(connection, table, rows, primary_key)  # noqa: SLF001
-            connection.execute("COMMIT")
-            committed = True
-        finally:
-            if not committed:
-                connection.execute("ROLLBACK")
-    backend.request_checkpoint()
+    key = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
+    if rows:
+        backend.upsert_many(table, rows, key)
+    given = {tuple(backend.serialize_value(row[column], types[column]) for column in key) for row in rows}
+    columns = ", ".join(quote_identifier(column) for column in key)
+    quoted = quote_identifier(table)
+    held = backend.execute_query(f"SELECT {columns} FROM {quoted}")  # noqa: S608 - a test's own table
+    matching = " AND ".join(f"{quote_identifier(column)} = ?" for column in key)
+    for stored in {tuple(row[column] for column in key) for row in held} - given:
+        backend.execute_query(f"DELETE FROM {quoted} WHERE {matching}", stored)  # noqa: S608 - a test's own table
     return len(rows)

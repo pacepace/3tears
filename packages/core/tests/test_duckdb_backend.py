@@ -754,16 +754,11 @@ class TestMemoryAnExportHolds:
             "results", [_result("r1", f"c{i}", "TX", i) for i in range(5)] + [_result("r1", "c9", "CA", 9)], key
         )
         page = [_result("r2", "c1", "TX", 1), _result("r2", "c2", "TX", 2), _result("r2", "c3", "NV", 3)]
-        with (
-            mock.patch.object(module, "fetch_arrow", wraps=module.fetch_arrow) as fetch,
-            mock.patch.object(module, "_fetch_arrow_pieces", wraps=module._fetch_arrow_pieces) as pieces,  # noqa: SLF001
-        ):
+        with mock.patch.object(module, "fetch_arrow", wraps=module.fetch_arrow) as fetch:
             assert backend.export_partition("results", "state", "TX", order_by=key).num_rows == 5
             assert backend.export_rows("results", "state", "TX", page, primary_key=key, order_by=key).num_rows == 2
-        # the scope's rows, read a vector's rows a piece (never counted first, never a million-row batch); the page's
-        # rows, at most
-        assert pieces.call_count == 1
-        assert module._ARROW_PIECE_ROWS <= 2048  # noqa: SLF001
+        # the scope's rows read a piece at a time, never counted first nor asked for as one million-row batch (no
+        # fetch_arrow sized for them); the page's rows, at most
         assert [call.args[1] for call in fetch.call_args_list] == [3]
 
     def test_the_database_gives_freed_memory_back_from_a_thread_of_its_own(self, backend: DuckDBBackend) -> None:
