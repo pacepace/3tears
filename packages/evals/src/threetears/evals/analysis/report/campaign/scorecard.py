@@ -2012,7 +2012,7 @@ def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellV
         return _counted(reading.passed, reading.trials, reading.cases)
     if reading.value is None:
         return None
-    figure = forms.level(reading.measure, reading.value, alone=True)
+    figure = forms.level(reading.measure, reading.value)
     return figure.text if rate else figure.held
 
 

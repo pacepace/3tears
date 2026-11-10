@@ -159,14 +159,10 @@ threetears/evals/analysis/report/charts.py | _formatted | with_unit() | 1
 threetears/evals/analysis/report/charts.py | _heat_detail | format_number() | 1
 threetears/evals/analysis/report/charts.py | _kept | _formatted() | 1
 threetears/evals/analysis/report/charts.py | _money_by_column | _respelled() | 1
-threetears/evals/analysis/report/charts.py | _percents_by_column | percent_places() | 1
-threetears/evals/analysis/report/charts.py | _percents_by_column | respell_percents() | 1
 threetears/evals/analysis/report/charts.py | _reference_spelled | _formatted() | 1
 threetears/evals/analysis/report/charts.py | _respelled | group_thousands() | 1
 threetears/evals/analysis/report/charts.py | _restates | signed_with_unit() | 1
 threetears/evals/analysis/report/charts.py | _restates | with_unit() | 1
-threetears/evals/analysis/report/charts.py | percent_places | round_half_even() | 1
-threetears/evals/analysis/report/charts.py | respell_percents | round_half_even() | 1
 threetears/evals/analysis/report/cost_unit.py | MoneyRuler.for_changes | for_changes() | 1
 threetears/evals/analysis/report/cost_unit.py | MoneyRuler.spell | spell() | 1
 threetears/evals/analysis/report/cost_unit.py | MoneyRuler.spell_ends | spell_ends() | 1

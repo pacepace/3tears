@@ -26,6 +26,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 import functools
 import json
 import re
@@ -40,12 +41,12 @@ from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
-from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
+from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render, values_table
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
+from threetears.evals.analysis.report.charts import KIT_CHARTS, GateMatrixChart
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve, figure_unit
 from threetears.evals.analysis.report.parts.charting import figure_stat, money_words
@@ -139,14 +140,8 @@ def test_the_sweep_meets_refusals_as_well_as_blocks() -> None:
 
 
 def _values(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A page's block as its values table: a chart's own, each value its decided text; a table's cells as its Markdown
-    prints them, each number at one precision among the cells that read alike, as block_render reads them."""
-    if isinstance(block, ChartBlock):
-        return block.values_table()
-    cells = [[row[c.key] for c in block.columns] for row in block.rows]
-    return [c.header for c in block.columns], even_precision(
-        [[cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells]
-    )
+    """A page's block as its values table, as block_render reads it: every cell its decided text, never respelled."""
+    return values_table(block)
 
 
 def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
@@ -690,23 +685,31 @@ def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
     assert seen, "the control: some fixture draws a scatter"
 
 
-def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
-    rows = [["A", "94% · $1 per 1,000 calls", "-7.6 to +1.1"], ["B", "96.4% · $1.655 per 1,000 calls", "-3 to +0.25"]]
-    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-07). A
-    # column's percentages read whole where whole percents keep them apart (coordinator ruling, C-15).
-    assert even_precision(rows) == [
-        ["A", "94% · $1 per 1,000 calls", "-7.6 to +1.10"],
-        ["B", "96% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
-    ]
-    assert even_precision([["62.9%"], ["63.2%"], ["60%"]]) == [["62.9%"], ["63.2%"], ["60.0%"]], "63 twice: one decimal"
-    assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
-    # A column holding an amount under a cent keeps its dollars, every digit kept: the per-1,000 mark is retired (Q4).
-    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]]
-    assert even_precision([["0.000616"], ["1"]]) == [["0.000616"], ["1"]], "past three decimals, nothing is padded"
+def _matrix_costs(costs: Sequence[float], fmt: str, unit: str | None = None) -> list[str]:
+    """Each cost as a gate matrix's values table prints it, one cell per row, spelled from the matrix's format."""
+    matrix = GateMatrixChart.model_validate(
+        {
+            "columns": [{"label": "A"}],
+            "rows": [
+                {"label": str(at), "cells": [{"status": "neutral", "label": "", "cost": cost}]}
+                for at, cost in enumerate(costs)
+            ],
+            "cost_fmt": fmt,
+            "cost_unit": unit,
+        }
+    )
+    return [row[1] for row in matrix.values_table()[1]]
 
 
-#: Values across magnitudes, as a latency or cost column holds them: each reaches even_precision as format_number
-#: spells it, rounded to its own significant figures (whole from WHOLE_FROM up).
+def test_a_matrixs_costs_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
+    assert _matrix_costs([94.0, 96.4], "num") == ["94.0", "96.4"]
+    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-07).
+    assert _matrix_costs([0.000616, 1], "usd") == ["$0.000616", "$1"]
+    assert _matrix_costs([0.000616, 1], "num") == ["0.000616", "1"], "past three decimals, nothing is padded"
+
+
+#: Values across magnitudes, as a latency or cost column holds them: each reaches the matrix's padding as
+#: format_number spells it, rounded to its own significant figures (whole from WHOLE_FROM up).
 _MIXED_MAGNITUDES = (1239.7, 980.53, 12.3549, 1.23456, 0.5, 94.0)
 
 
@@ -725,9 +728,8 @@ def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to
     most = max(
         _significant(text) for text, value in zip(spelled, _MIXED_MAGNITUDES, strict=True) if value != int(value)
     )
-    for prefix, suffix in (("$", ""), ("", " ms"), ("", "%")):
-        rows = [[f"{prefix}{text}{suffix}"] for text in spelled]
-        padded = [row[0] for row in even_precision(rows)]
+    for fmt, prefix, suffix in (("usd", "$", ""), ("num", "", " ms")):
+        padded = _matrix_costs(_MIXED_MAGNITUDES, fmt, suffix.strip() or None)
         for value, before, after in zip(_MIXED_MAGNITUDES, spelled, padded, strict=True):
             number = after.removeprefix(prefix).removesuffix(suffix).replace(",", "")
             assert float(number) == pytest.approx(float(before)), (before, after)
@@ -738,13 +740,8 @@ def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to
                 assert _significant(number) <= max(most, _significant(before)), (
                     f"{before} padded past its figures: {after}"
                 )
-    assert (
-        "$1,240" in even_precision([["$1240"], ["$1.655"]])[0][0]
-        and "." not in even_precision([["$1240"], ["$1.655"]])[0][0]
-    )
-    assert even_precision([["12.35"], ["1.235"]]) == [["12.35"], ["1.235"]], (
-        "12.35 holds every figure it was rounded to"
-    )
+    assert _matrix_costs([1240, 1.655], "usd")[0] == "$1,240"
+    assert _matrix_costs([12.35, 1.235], "num") == ["12.35", "1.235"], "12.35 holds every figure it was rounded to"
 
 
 def test_a_tables_paired_figures_read_at_one_precision() -> None:

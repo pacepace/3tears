@@ -40,7 +40,6 @@ from threetears.evals.analysis.report.forms import (
     policy_percent,
     policy_places,
     policy_rate,
-    policy_zero,
 )
 from threetears.evals.kernel.numbers import ABSENT, set_places
 
@@ -228,10 +227,7 @@ class TestRuleFourFixedForms:
     def test_a_declared_value_is_never_rounded_nor_written_in_an_exponent(self, value, text):
         assert policy_declared(value) == text
 
-    def test_an_exact_zero_reads_whole_with_its_unit(self):
-        assert policy_zero("notices") == "0 notices"
-        assert policy_zero("%") == "0%"
-        assert policy_zero() == "0"
+    def test_an_exact_zero_reads_whole(self):
         assert policy_figure(0.0, 2, signed=True, bounds=(0.0,)) == "0"
 
     def test_a_rate_always_carries_its_percent(self):
@@ -373,8 +369,6 @@ class TestMeasureFormPolicyFields:
             change_unit="pts",
             factor=100.0,
             change_factor=100.0,
-            level_decimals=1,
-            change_decimals=1,
         )
         assert form.places is None
         assert form.half_width is None

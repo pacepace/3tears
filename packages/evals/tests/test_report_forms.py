@@ -252,18 +252,6 @@ def test_money_reads_at_the_scale_its_column_draws_it(name: str) -> None:
         pytest.skip(f"{name} prints no money by arm")
 
 
-def test_a_level_alone_reads_at_its_measure_s_one_precision_as_every_surface_does() -> None:
-    """A level printed by itself (a chart's note, a key no table prints) reads as its table prints it: a measure reads
-    at one precision on the whole page (number policy, rule 1). Kairo's failed-reply notices read ``0.002 notices``,
-    alone or in a column, never the lone rule's ``0.0022 notices``."""
-    held = _written_inputs()[KAIRO]
-    forms = PageForms.of(held)
-    notices = held.measures["failed_reply_notices"].per_arm["September"].mean
-    assert notices is not None
-    alone = forms.level("failed_reply_notices", float(notices), alone=True).text
-    assert alone == forms.level("failed_reply_notices", float(notices)).text == "0.002 notices"
-
-
 # --- the code page ------------------------------------------------------------------------------------------------
 
 
@@ -626,8 +614,6 @@ def _a_rate(places: int) -> PageForms:
         change_unit="pts",
         factor=100.0,
         change_factor=100.0,
-        level_decimals=places,
-        change_decimals=places,
         span=100.0,
         places=places,
         half_width=9.0,
@@ -700,8 +686,6 @@ def test_a_level_drawn_in_percent_reads_half_to_even_in_a_cell_and_in_words_alik
         change_unit="pts",
         factor=100.0,
         change_factor=1.0,
-        level_decimals=1,
-        change_decimals=1,
         span=100.0,
         places=1,
         half_width=1.5,
@@ -787,7 +771,7 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
     ]
     readings = shape.readings.model_copy(update={"measures": [*shape.readings.measures, *made]})
     form = PageForms.of_campaign(readings, shape.reports).measure("made_up")
-    assert (form.reads_as, form.level_decimals) == ("measured", decimals)
+    assert (form.reads_as, form.places) == ("measured", decimals)
 
 
 #: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, as bare figures

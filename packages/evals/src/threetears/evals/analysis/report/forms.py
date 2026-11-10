@@ -347,8 +347,6 @@ class MeasureForm:
     :ivar change_unit: The unit written beside a change (``pts`` for a rate's).
     :ivar factor: What a level as given is multiplied by to be printed (100 for a share read in percent).
     :ivar change_factor: What a change as given is multiplied by to be printed.
-    :ivar level_decimals: The decimals every level reads at; None where the lone figure rule spells each level.
-    :ivar change_decimals: The decimals every change reads at; None where the lone figure rule spells each change.
     :ivar money: The form money levels are written in; None for no money.
     :ivar change_money: The form money changes are written in; None for no money.
     :ivar span: How far a change can reach either way, as printed (100 points, a rubric's width); None for unbounded.
@@ -360,8 +358,8 @@ class MeasureForm:
         by its measure's figures alone (:func:`~threetears.evals.analysis.report.figure_keys.is_rubric_score` with
         no kind), where one that names ``measure`` is never read as a score; the same as ``span`` for any other kind.
     :ivar places: The decimals every figure of the measure reads at under the number policy, its levels, changes and
-        interval ends alike, read from its uncertainty (:func:`policy_places`); None on a page whose forms still
-        spell them by ``level_decimals`` and ``change_decimals``.
+        interval ends alike, read from its uncertainty (:func:`policy_places`); None for money, which reads by its own
+        form.
     :ivar half_width: The narrowest 95% half-width among the measure's headline intervals (each arm's level, each
         comparison), as printed, which ``places`` is read from; None for a measure with no interval.
     """
@@ -373,8 +371,6 @@ class MeasureForm:
     change_unit: str
     factor: float
     change_factor: float
-    level_decimals: int | None
-    change_decimals: int | None
     money: MoneyForm | None = None
     change_money: MoneyForm | None = None
     span: float | None = None
@@ -1146,7 +1142,7 @@ class PageForms:
         viewed._issued = self._issued
         return viewed
 
-    def level(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
+    def level(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
         """A level of a measure (an arm's mean, a slice's), in its measure's form.
 
         :param key: The measure's key.
@@ -1155,9 +1151,6 @@ class PageForms:
         :ptype value: float | None
         :param kind: The measure's kind.
         :ptype kind: _MeasureKind
-        :param alone: Whether the level is printed by itself (a chart's note, a key no table prints). It moves no digit:
-            every page reads every level of a measure at its set's one precision, alone or in a table.
-        :ptype alone: bool
         :return: The level.
         :rtype: Printed
         """
@@ -1191,7 +1184,7 @@ class PageForms:
             return self._issue(form.key, form.kind, "level", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
         return self._code_issue(form, "level", value, value)
 
-    def change(self, key: str, value: float | None, *, kind: _MeasureKind = "measure", alone: bool = False) -> Printed:
+    def change(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
         """A change of a measure (an arm less the control), signed, in its measure's form.
 
         :param key: The measure's key.
@@ -1200,9 +1193,6 @@ class PageForms:
         :ptype value: float | None
         :param kind: The measure's kind.
         :ptype kind: _MeasureKind
-        :param alone: Whether the change is printed by itself; a written page reads every change of a measure at its
-            one precision, whatever prints it.
-        :ptype alone: bool
         :return: The change.
         :rtype: Printed
         """
@@ -3576,8 +3566,6 @@ def _written_form(
         change_unit=changes.unit,
         factor=levels.factor,
         change_factor=changes.factor,
-        level_decimals=None,
-        change_decimals=None,
         money=levels.money,
         change_money=changes.money,
         span=_change_span(report_input, key, kind, changes),
@@ -3823,8 +3811,6 @@ def _rate_form(key: str, kind: str, widths: Sequence[float], *, change_factor: f
         change_unit=POINTS,
         factor=100.0,
         change_factor=change_factor,
-        level_decimals=places,
-        change_decimals=places,
         span=100.0,
         places=places,
         half_width=100.0 * min(widths) if widths else None,
@@ -3856,8 +3842,6 @@ def _scorecard_form(
             change_unit=MONEY,
             factor=ruler.scale,
             change_factor=ruler.scale,
-            level_decimals=None,
-            change_decimals=None,
             money=ruler.form,
             ruler=ruler,
         )
@@ -3875,8 +3859,6 @@ def _scorecard_form(
         change_unit="",
         factor=1.0,
         change_factor=1.0,
-        level_decimals=places,
-        change_decimals=places,
         places=places,
         half_width=min(widths) if widths else None,
     )
@@ -4361,17 +4343,6 @@ def policy_declared(value: float | None, unit: str = "") -> str:
     number = float(value)
     digits = str(int(number)) if number.is_integer() else format(decimal.Decimal(repr(number)), "f")
     return _joined(digits, unit)
-
-
-def policy_zero(unit: str = "") -> str:
-    """An exact zero, whole and with its unit (``0 notices``, ``0%``): none happened, which no decimals sharpen.
-
-    :param unit: The unit; empty for none.
-    :ptype unit: str
-    :return: Its text.
-    :rtype: str
-    """
-    return _joined("0", unit)
 
 
 # === End of the number policy's primitives ============================================================================
