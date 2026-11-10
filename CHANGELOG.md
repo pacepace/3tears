@@ -92,6 +92,10 @@ A production re-shoot of the number forms above found tables that read one measu
   intervals (adjusted for 10 comparisons)`), where it read the per-interval `99.5%`.
 - A table glyph's title carries its change's sign, as its cell does (`+0.2, interval -1.2 to +1.6`; it read `0.2`).
 - A mean's spread reads at the mean's precision: `$3.33 ± $0.09`, where it read `$0.088`.
+- The quick console reads a 0-to-1 grader in percent, as the page does (`Fields found: 38% (12 trials)`; it read
+  `mean 0.375`), and rung 5's readings table reads a host's share as a rate.
+- A change chart's values table names the unit its changes are in whatever it draws (strata, contrasts, readings):
+  `-23 pts`, never `-23`.
 
 **Changed:**
 - **An interval writes its unit once.** Beside its figure, on the figure alone: a tooltip reads `85% (80 to 89)` and
@@ -106,9 +110,14 @@ A production re-shoot of the number forms above found tables that read one measu
 
 **Hosts:** a chart's `lo_text` and `hi_text` carry no unit but money's `$` (kit/API.md), so the shipped `kit.js`
 joins a tooltip as `85% (80 to 89)`; a host that prints the ends alone adds the unit after the high end. A pinned
-aspect page or quick line that read a cost per reply reads it per 1,000 replies. A written page renders its stored
-snapshot's report input: one frozen before the `share` unit above (2026-11-09) still reads a host's fraction bare
-until its report is generated again. Nothing stored changes.
+aspect page or quick line that read a cost per reply reads it per 1,000 replies. The report input now states a
+`share` unit for every unit-less fraction on 0 to 1 and every unit-less boolean, including a measure that reaches it
+through code's readings alone (a measurement's). A written page renders the report input its snapshot froze, so a
+stored report whose input predates this change prints such a measure as a bare fraction (`0.3`) until the host
+generates the report again; that covers every input frozen over the readings path, whenever it was frozen, not only
+those before 2026-11-09. Generating it again moves the frozen input's digest, so its snapshot id changes, and a
+scheduled mint of its writer case is refused as moved evidence until the host retires the case and mints it again.
+Nothing else stored changes.
 
 ### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
 
