@@ -33,14 +33,7 @@ from threetears.langgraph.anonymize import (
     unclassified_metadata_keys,
 )
 
-__all__ = [
-    "ANONYMIZE_WORKERS",
-    "BlobOutcome",
-    "StoredBlob",
-    "anonymize_blobs",
-    "anonymize_in_workers",
-    "close_anonymize_workers",
-]
+__all__ = ["BlobOutcome", "StoredBlob", "anonymize_in_workers"]
 
 #: the worker processes, side by side. An erasure is rare and never latency-bound; two halve a large thread's
 #: wall time without holding more than two interpreters' memory (about 105 MB each) once the first erasure has run.

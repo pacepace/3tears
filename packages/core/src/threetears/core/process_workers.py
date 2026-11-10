@@ -35,7 +35,7 @@ from typing import Any
 
 from threetears.observe import get_logger
 
-__all__ = ["ProcessWorkers", "require_plain"]
+__all__ = ["ProcessWorkers"]
 
 log = get_logger(__name__)
 

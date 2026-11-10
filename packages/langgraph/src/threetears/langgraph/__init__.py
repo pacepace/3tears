@@ -32,7 +32,6 @@ from threetears.langgraph.anonymize import (
     metadata_key_classification,
     unclassified_metadata_keys,
 )
-from threetears.langgraph.anonymize_workers import close_anonymize_workers
 from threetears.langgraph.caching import (
     ChatModelCapabilities,
     annotate_system_prompt,
@@ -233,7 +232,6 @@ __all__ = [
     "WorkflowStepCompletedEvent",
     "annotate_system_prompt",
     "anonymize_checkpoint_value",
-    "close_anonymize_workers",
     "declare_identifying_metadata_keys",
     "declare_kept_metadata_keys",
     "metadata_key_classification",

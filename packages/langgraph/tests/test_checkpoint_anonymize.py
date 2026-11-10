@@ -44,14 +44,13 @@ from threetears.langgraph import (
     MetadataKeyClassification,
     ThreeTierCheckpointSaver,
     anonymize_checkpoint_value,
-    close_anonymize_workers,
     declare_identifying_metadata_keys,
     declare_kept_metadata_keys,
     merge_metadata,
     metadata_key_classification,
     unclassified_metadata_keys,
 )
-from threetears.langgraph.anonymize_workers import ANONYMIZE_WORKERS, anonymize_blobs
+from threetears.langgraph.anonymize_workers import ANONYMIZE_WORKERS, anonymize_blobs, close_anonymize_workers
 from threetears.langgraph.serde import UUIDSafeSerializer
 
 _UNSCOPED = CheckpointScope.unscoped(reason="tests drive a single-tenant saver")
