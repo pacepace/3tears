@@ -85,6 +85,28 @@ package's text for every value, and a host-authored chart without them draws as 
 `fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
 yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
 
+<!-- TODO(C5b): when the policy flip merges, retitle this entry (C1 to C5), fold the paragraph below into the Hosts
+line above, drop what it supersedes there (the report's own charts carrying no text, `cost_text` left unset), and
+check every quoted figure against the regenerated goldens. -->
+**Hosts, at the policy flip:** every page's figures move once, to the number policy
+(`packages/evals/docs/design.md`, The number policy), which replaces the number forms the entry "a chart says what it
+compares" lists below. Each measure reads at one precision across its campaign, the written page, the code page and every
+aspect page alike, at the digits its narrowest 95% interval supports: a pass rate over a few hundred cases reads whole
+(`85%` and `-8 pts (-13 to -2)`, where a chart read `85.3%` and `-7.6 pts`), a rate or a change in points never past
+one decimal unless an end would otherwise round onto zero, 0% or 100%. An interval reads `low to high` on every surface,
+the code page's `[a, b]` and the kit's tooltips included (a forest's read `[lo, hi]`, a line's `lo–hi`). A chart's
+head and a column's header state what a family's intervals hold at together (`95% intervals, adjusted for 16
+comparisons`, where they read `99.7% (95% across 16 comparisons)`); the per-interval level is in Method and the
+glossary alone. A p-value reads `< 0.001`, else to three decimals below 0.1 and two at or above; an effect size or a
+correlation to two decimals; a declared margin as declared (`-15 pts`); a rate of zero `0%`. A criterion's gap and
+`weakest.margin` read signed, as changes. In chart JSON, every package chart's `fmt` names its digits, a gate
+matrix's and a lattice's cells carry `cost_text`, the report's own charts (outcome bars, cost and quality) carry text
+fields, and rung 5's preference strip carries its shares' text; a host drawing the package's chart JSON with an older
+`kit.js` still prints the package's text for each value, but joins a tooltip's interval the old way. Rung 5's reading
+table states a rate as a percent with its counts (`14% (1 of 7)`, where it read `0.14`). A host pinning a rendered
+page, its text, a served chart's JSON or rung 5's CLI updates its match once. Nothing stored changes, and no host code
+needs to.
+
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
 **Added:**

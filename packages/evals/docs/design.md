@@ -166,8 +166,8 @@ interval beside it, and the only picture besides the outcome bar is each interva
 
 ### Presentation rulings
 
-The owner settled how a report page draws and prints its figures (owner rulings, 2026-11-08). Where a page does not
-yet hold one, the issue named below says why.
+The owner settled how a report page draws (owner rulings, 2026-11-08). How it prints its figures is
+[the number policy](#the-number-policy). Where a page does not yet hold a ruling, the issue named below says why.
 
 - **No arm is drawn in a status colour.** Arms take hues apart from green, amber and red, and "passed" is drawn in ink,
   so a status colour on a page means a status and nothing else.
@@ -177,21 +177,83 @@ yet hold one, the issue named below says why.
   its arm table states it until the report input carries the paired baseline (#1125).
 - **Changes per place draw as dots.** A change per stratum, task, lever or configuration is a dot with its interval;
   a bar is kept for a magnitude drawn from zero.
-- **A judged score reads at two decimals and a count at two significant figures.** A score on the rubric prints as
-  `4.86` with its scale named (`(1–5)`); a count per trial, a time or any other measured figure at two significant
-  figures of its set's least figure but zero.
-- **A set reads at one precision.** An interval's two ends, a column, an axis and a chart's labels share their
-  decimals (`-29.0 to +57.6`, `0.0 pts` beside `-5.0 pts`), wherever the set prints: a figure reads the same on the
-  scorecard, in the Full results and in the key the prose cites. A lone figure keeps the number rule, where a whole
-  value drops its decimal.
 
 Left for later, each with its issue: refusing a change chart of one row
 ([#1124](https://github.com/pacepace/3tears/issues/1124)); the paired baseline on written pages' change charts
 ([#1125](https://github.com/pacepace/3tears/issues/1125)); configuration lines only for a factor declared ordered
-([#1126](https://github.com/pacepace/3tears/issues/1126)); one form for a family-corrected level in prose
-([#1127](https://github.com/pacepace/3tears/issues/1127)); one interval level per screen on a written first screen
+([#1126](https://github.com/pacepace/3tears/issues/1126)); one interval level per screen on a written first screen
 ([#1128](https://github.com/pacepace/3tears/issues/1128)); and "no variation" in a written page's Full results
 ([#1129](https://github.com/pacepace/3tears/issues/1129)).
+
+### The number policy
+
+Every figure a campaign prints has its form decided once, by the measure it states, and every surface prints that
+text (owner rulings, 2026-11-08 and 2026-11-09). One value of one measure reads the same in a table, a chart, a
+tooltip, the prose and the CLI, on the written page, the code page and every aspect page, so a reader can check any
+figure against any other.
+
+1. **A measure reads at one precision across the campaign.** Its levels, changes, interval ends, chart heads and
+   notes, tooltips, glyph titles, scale lines and the prose keys that cite it share one count of decimals. The set is
+   the measure, not the surface, the column or the role. Two measures on one page can differ, because each reads to
+   its own uncertainty: a pass rate at `85%` beside a check near the ceiling at `99.7%`.
+2. **The digits come from the measure's uncertainty.** Take the narrowest 95% half-width among the measure's headline
+   intervals (each arm's level and each comparison), and print to its first significant digit, or to its second when
+   that digit is a 1 or a 2.
+   - A rate, or a change in points, never goes past one decimal, except next to a boundary: an end that would round
+     onto zero, 0% or 100% takes just enough digits to stay off it. `99.7%` never reads `100%`, and an interval whose
+     end excludes zero never reads as touching it (`-15.1 to -0.03 pts`).
+   - A measure with no interval anywhere reads at two significant figures of its least non-zero figure.
+   - Money keeps its own form, one count of significant figures
+     ([cost and budgets](cost-and-budgets.md#how-a-results-cost-is-counted)), chosen once per measure.
+3. **An interval reads `low to high`.** Its ends read at its figure's precision; a change's ends carry their signs, a
+   level's do not. The unit is written once (`-13 to -2 pts`), and not at all under a header that names it. An
+   interval whose ends would print alike takes one more decimal, in that interval alone. The kit and the static page
+   join an interval the same way.
+4. **A heading states the joint guarantee.** A chart's head and a column's header read `95% intervals, adjusted for 16
+   comparisons`, or `95% intervals` where nothing is adjusted. The per-interval level a correction implies (99.69%)
+   is printed only in Method and the glossary, as stored, so reading text never rounds a level. An interval at
+   another level, one no family adjustment explains, states its own.
+5. **Figures that are not measurements keep fixed forms.**
+   - A count is whole and grouped: `765 of 897`.
+   - A declared value prints as declared: a margin, a floor or a setting reads `-15 pts`, never `-15.0 pts`.
+   - A p-value follows APA: `< 0.001`, three decimals below 0.1, two at or above (`0.50`, `1.00`).
+   - An effect size or a correlation takes two decimals: `0.08`.
+   - An exact zero reads whole with its unit (`0 notices`), and a rate always carries its `%`: `0%`, never a bare `0`.
+6. **Every figure is printed from its decided text.** `analysis/report/forms.py` decides; HTML, Markdown, the static
+   SVG, `kit.js`, the prose keys and the CLI print what it decided and never format a float. Rounding is
+   half-to-even, through one function.
+
+The scope of a set is decided in one place, so a later ruling that each page decides its own forms changes that place
+alone.
+<!-- TODO(C5b): name the one set-scope seam (the function or method in forms.py) once it is built. -->
+
+The digits follow the Particle Data Group's rule (quote an uncertainty to one or two significant figures and round
+the value to the same place), simplified to "two when the first is 1 or 2" so that two measures of similar
+uncertainty don't split across a threshold on one page. Cole ("Too many digits", 2015) gives the same advice for
+effect sizes and measures of spread, and the APA manual (§6.36) the p-value form; gtsummary is the tooling precedent
+for deciding a whole table's forms once.
+
+The policy accepts two costs:
+
+- A level and its change are rounded independently, so at whole points `21% · 23% · +3 pts` can miss by one in the
+  last digit. Forcing the arithmetic to close would print past the noise; journals round the same way.
+- A judged score at a handful of cases reads one decimal (`4.4`, not `4.43`), because a hundredth is noise there.
+
+What the policy changed, on Kairo's written page and the scaled campaign's code page:
+
+<!-- TODO(C5b): check every "Reads" cell against the regenerated goldens; these are the plan's projections. -->
+
+| Figure | Reads | Read before |
+|---|---|---|
+| A candidate's change in pass rate | `-8 pts (-13 to -2)` | `-7.6 pts (-12.9 to -1.8)` beside a table at `85%` |
+| A check near the ceiling | `99.7%`, `-1.0 pts (-3.6 to +1.6)` | the same: its interval is ±0.6 points |
+| Failed-reply notices | `0.002 notices`, `-0.002 (-0.007 to +0.002)` | four decimals, set by one stratum's figure |
+| The margin | `-15 pts`, in the chart and the prose | `-15.0 pts` in the chart, `-15` in the prose |
+| Adjusted p | `< 0.001`, `0.50`, `1.00` | `< 0.000001`, `0.4996`, `1` |
+| A chart's interval level | `95% intervals, adjusted for 16 comparisons` | `99.7% intervals (95% across 16 comparisons)`, and `99.69%` in the prose |
+| A p95 time's change | `+0.03 s (-0.13 to +0.19)` | `+0.028 s [-0.131, 0.187] s` |
+| Hedges' g, pairing r | `0.08`, `0.12` | `0.08475`, `0.1228` |
+| A lost-call rate of zero | `0%` | `0` |
 
 ### The engine itself
 
@@ -627,7 +689,7 @@ Most of what follows is established practice; what the engine adds is narrower
 | [van der Bles et al.](https://doi.org/10.1098/rsos.181870) (2019) | Keep direct uncertainty (the range) apart from indirect uncertainty (the quality of the evidence). | Adopted | Intervals and [evidence tiers](concepts.md#evidence-tier) render as separate axes. |
 | [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. A report's confidence is one of three closed forms, conditional on its open caveats, so no field can carry a probability a model made up; nothing calibrates one. |
 | [Frans et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC10623599/) (2023) | Quantile dot plots were read more accurately than error bars, with no clear effect on decision quality. | Not adopted | An interval is drawn as a small glyph in the table row that states its figure, so rows compare at a glance, with every value also written as text. Quantile dot plots are not built. |
-| [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Intervals are computed over cases, never repeats; each column's header states its level (`Interval (99%)`), and intervals are clipped to the measure's scale. |
+| [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Intervals are computed over cases, never repeats; each heading states what a family's intervals hold at together (`95% intervals, adjusted for 5 comparisons`), and intervals are clipped to the measure's scale. |
 | [GRADE](https://book.gradepro.org/guideline/overview-of-the-grade-approach) | Rate certainty high, moderate, low or very low, downgrading for bias, imprecision and inconsistency. | Adapted | Evidence tiers are GRADE-like, but they grade the judge (`calibrated`, `separation`, `incidental`, `undetermined`), and code assigns them. |
 | [Uncertainty Toolkit for Analysts in Government](https://analystsuncertaintytoolkit.github.io/UncertaintyWeb/) (UK) | Give ranges over point estimates, anchor verbal probability to numbers, give each caveat its reason, and quantify nothing rather than imply false precision. | Adopted | Every reading carries its interval or says why it has none, tier words sit beside numbers, and a caveat attaches to the finding it qualifies. |
 | [Vega-Lite](https://vega.github.io/vega-lite/) | A declarative grammar in which a chart is data. | Rejected | A report draws two marks, the outcome bar and the interval glyph a table row draws beside its figure, as inline SVG of its own with every value written as text. A scriptless page cannot run vega-embed, and a pinned rasteriser wheel for two marks cost more than the marks; a host that wants its own pictures reads `campaign.json` and each aspect's bundle beside the page. |
