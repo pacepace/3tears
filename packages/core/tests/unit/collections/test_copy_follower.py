@@ -38,9 +38,11 @@ import threetears.core as core  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
-from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
+from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
+from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
+    NEVER_HOLDS,
     WHOLE_READ_WHYS,
     CopyFollower,
     FollowedTable,
@@ -56,6 +58,7 @@ from threetears.nats import Subject  # noqa: E402
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
+from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -200,6 +203,7 @@ def _world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], C
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table=NEVER_HOLDS,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -445,7 +449,14 @@ class _Pointers:
 
 
 def _replica(
-    l3: _L3, log: _Log, lock: _Seqlock, store: _Store, pointers: _Pointers, owner: str, part_rows: int = 40
+    l3: _L3,
+    log: _Log,
+    lock: _Seqlock | _Scopes,
+    store: _Store,
+    pointers: _Pointers,
+    owner: str,
+    part_rows: int = 40,
+    **stamps: Any,
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
     backend = DuckDBBackend()
     backend.initialize(_metadata())
@@ -459,6 +470,7 @@ def _replica(
         retire=store.retire,
         owner=owner,
         part_rows=part_rows,
+        **stamps,
     )
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -472,6 +484,7 @@ def _replica(
         changes=log,
         page_size=50,
         checkpoints=checkpoints,
+        stamp_table="scope_epochs",
     )
     return backend, follower, checkpoints
 
@@ -674,7 +687,15 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         l3_kinds=(("state", STRING_TYPE), ("geo_id", BIGINT_TYPE), ("votes", BIGINT_TYPE), ("ver", BIGINT_TYPE)),
     )
     follower = CopyFollower(
-        registry, [table], backend, l3, settled=lock.settled, generation=log.current, changes=log, page_size=50
+        registry,
+        [table],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+        stamp_table=NEVER_HOLDS,
     )
     follower.register()
     l3.put(_rows("VA", 40))
@@ -917,6 +938,7 @@ def _scoped_world(
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     return l3, log, backend, follower
@@ -978,6 +1000,150 @@ async def test_a_new_replica_is_ready_during_a_long_write_for_every_scope_it_can
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert l3.rows_read == 5  # IL alone, as a key range: never the table again
+
+
+def _encode_scoped(stamp: Any) -> Any:
+    """a scoped stamp as JSON-able data (a checkpoint keeps it): a partial stamp, or a settled record."""
+    if isinstance(stamp, PartialStamp):
+        return {"epochs": dict(stamp.epochs), "held": sorted(stamp.held), "version": stamp.version}
+    return {"epochs": dict(stamp.epochs), "version": stamp.version}
+
+
+def _decode_scoped(data: Any) -> Any:
+    if "held" in data:
+        return PartialStamp(epochs=data["epochs"], held=frozenset(data["held"]), version=data["version"])
+    return SimpleNamespace(version=data["version"], epochs=data["epochs"], pending=frozenset())
+
+
+async def test_a_checkpoint_written_beside_a_held_write_keeps_the_mark_before_its_keys_so_a_start_from_it_hears_them() -> (
+    None
+):
+    """Flips if a checkpoint records a table at the registry's mark while keys of a scope a write holds are still
+    pending: a replica started from it adopts that mark, never hears those keys, and serves the held scope's old rows
+    after the write commits (reports' live replica tests, 2026-11-10: the second replica's copy never held the load's
+    candidates)."""
+    lock = _Scopes()
+    l3, log, store, pointers = _L3(), _Log(), _Store(), _Pointers()
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    codec = {"encode_stamp": _encode_scoped, "decode_stamp": _decode_scoped}
+    _, writer, _ = _replica(l3, log, lock, store, pointers, "a", **codec)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert "votes-ckpt" in pointers.entries
+    # a long write holds IL: its rows land part way, their keys heard and left pending
+    lock.held = frozenset({"state:IL"})
+    l3.put([("IL", i, 50) for i in range(5)])
+    log.commit([("IL", i) for i in range(5)])
+    # VA commits beside it, enough rows that a checkpoint is due at its apply
+    l3.put([("VA", i, 70) for i in range(5)])
+    log.commit([("VA", i) for i in range(5)])
+    lock.commit("state:VA")
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert writer.status().pending == {_TABLE: 5}
+    written = Checkpoint.decode(pointers.entries["votes-ckpt"][0])
+    assert written.seq == 2, "a checkpoint is written beside the held write"
+    assert _decode_scoped(written.stamp).held == frozenset({"state:IL"})
+    # the write commits, and a replica starts from the checkpoint written beside it
+    lock.commit("state:IL")
+    lock.held = None
+    second, follower, _ = _replica(l3, log, lock, store, pointers, "b", **codec)
+    assert await follower.start()
+    assert await follower.catch_up()
+    assert _copy(second) == l3.held(), "the replica started from the checkpoint lost the held write's keys"
+
+
+async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the_stamps_own_row_messages() -> None:
+    """Flips if a follower holding keys a write held waits for another key, a catch-up or a poke once the write
+    commits on another replica: the commit moves only the writer's epochs (every key was heard before it), so nothing
+    else wakes it, and it serves the held scope's old rows (reports' live replica tests, 2026-11-10). The epochs
+    table's own row messages, heard from every replica, ask the pass."""
+    lock = _Scopes()
+    l3, log = _L3(), _Log()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+        stamp_table="scope_epochs",
+    )
+    follower.register()
+    bus = FakeNatsClient()
+    writer = CollectionRegistry()
+    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    running = asyncio.create_task(follower.run())
+    try:
+        l3.put(_rows("IL", 5))
+        log.commit([("IL", i) for i in range(5)])
+        await follower.warm()
+        assert await follower.catch_up()
+        # a long write on another replica holds IL: its rows land, their keys heard and left pending
+        lock.held = frozenset({"state:IL"})
+        l3.put([("IL", i, 50) for i in range(5)])
+        log.commit([("IL", i) for i in range(5)])
+        follower.poke()
+        for _ in range(100):
+            if follower.status().pending == {_TABLE: 5}:
+                break
+            await asyncio.sleep(0.01)
+        assert follower.status().pending == {_TABLE: 5}
+        # it commits: the epochs move, and the writer's registry says so for the epochs' rows alone
+        lock.commit("state:IL")
+        lock.held = None
+        await writer.publish_invalidation(bus, "scope_epochs", ["state:IL"])  # type: ignore[arg-type]
+        for _ in range(200):
+            if _copy(backend) == l3.held():
+                break
+            await asyncio.sleep(0.01)
+        assert _copy(backend) == l3.held(), "the commit on another replica never woke the follower"
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await registry.stop_invalidation_listener()
+
+
+def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construction_raises() -> None:
+    """Flips if a follower of a table a write may hold can be built hearing no stamp table: it would hold that write's
+    keys until some other key arrives (reports' live replica tests, 2026-11-10). A ``ScopeEpochs.settled`` names its
+    own table; any other ``settled`` must name it, and NEVER_HOLDS is refused beside a scoped table."""
+    l3, log, lock = _L3(), _Log(), _Scopes()
+    scoped = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
+    plain = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+
+    def build(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFollower:
+        backend = DuckDBBackend()
+        backend.initialize(_metadata())
+        registry = CollectionRegistry()
+        registry.follow_generation(_TABLE)
+        return CopyFollower(
+            registry, tables, backend, l3, settled=settled, generation=log.current, changes=log, **stamp
+        )
+
+    with pytest.raises(ValueError, match="stamp_table="):
+        build(scoped, lock.settled)
+    with pytest.raises(ValueError, match="not NEVER_HOLDS"):
+        build(scoped, lock.settled, stamp_table=NEVER_HOLDS)
+    with pytest.raises(ValueError, match="stamp_table="):
+        build(plain, _Seqlock().settled)
+    epochs = ScopeEpochs(SimpleNamespace(table_name="enr_scope_epochs"))  # type: ignore[arg-type]
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    derived = CopyFollower(registry, scoped, backend, l3, settled=epochs.settled, generation=log.current, changes=log)
+    derived.register()
+    assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
+    build(plain, _Seqlock().settled, stamp_table=NEVER_HOLDS).register()
 
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
@@ -1148,6 +1314,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     return l3, log, backend, follower
@@ -1263,6 +1430,7 @@ def _derived_replica(
         changes=log,
         page_size=50,
         checkpoints=checkpoints,
+        stamp_table="scope_epochs",
     )
     return backend, follower
 
@@ -1332,6 +1500,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
