@@ -116,8 +116,32 @@ def _seeded(case: _SeedCase) -> list[Seeded]:
     ]
 
 
+#: what a mapping value is marked with once hashable, so it never equals a list of the same pairs
+_MAPPING: Final[str] = "<mapping>"
+
+
+def _hashable(value: Any) -> Any:
+    """a column's value as a hashable one, the same for equal values: a list (an array column, a decoded jsonb array)
+    as a tuple, a mapping (a decoded jsonb object, a struct) as its items in key order, nested ones alike; anything
+    else as it is.
+
+    :param value: the value
+    :ptype value: Any
+    :return: its hashable form
+    :rtype: Any
+    """
+    if isinstance(value, Mapping):
+        return (_MAPPING, tuple((f"{key}", _hashable(value[key])) for key in sorted(value, key=str)))
+    if isinstance(value, list | tuple):
+        return tuple(_hashable(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_hashable(item) for item in value)
+    return value
+
+
 def _normal(row: Mapping[str, Any], columns: Sequence[str] | None) -> tuple[tuple[str, Any], ...]:
-    """a row as a comparable value: its columns (or the ones named) in name order.
+    """a row as a comparable value: its columns (or the ones named) in name order, each value hashable
+    (:func:`_hashable`), so rows holding arrays or jsonb are counted as any other.
 
     :param row: the row
     :ptype row: Mapping[str, Any]
@@ -127,7 +151,7 @@ def _normal(row: Mapping[str, Any], columns: Sequence[str] | None) -> tuple[tupl
     :rtype: tuple[tuple[str, Any], ...]
     """
     names = sorted(row) if columns is None else sorted(columns)
-    return tuple((name, row[name]) for name in names)
+    return tuple((name, _hashable(row[name])) for name in names)
 
 
 def _differ(
