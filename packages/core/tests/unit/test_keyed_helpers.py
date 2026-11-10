@@ -266,11 +266,16 @@ class TestCounts:
         reader = _Recording(db)
         assert await count_at_most(reader, "t", by={"a": "k1"}, at_most=3) == BoundedCount(count=3, more=True)
         assert await count_at_most(reader, "t", by={"a": "k1"}, at_most=10) == BoundedCount(count=10, more=False)
-        assert "LIMIT 4" in reader.statements[0][0]
+        assert reader.statements[0][0].endswith("LIMIT $2) AS held") and reader.statements[0][1][-1] == 4
 
-    async def test_count_at_most_refuses_a_count_of_the_table(self, db: duckdb.DuckDBPyConnection) -> None:
-        with pytest.raises(ValueError, match="names the rows"):
-            await count_at_most(ThreadedDuckDB(db), "t", by={}, at_most=3)
+    async def test_count_at_most_of_a_table_s_first_rows_reads_no_further_than_its_bound(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a count naming no key reads the table whole (no LIMIT under the count)."""
+        reader = _Recording(db)
+        assert await count_at_most(reader, "t", at_most=30) == BoundedCount(count=30, more=True)
+        sql, params = reader.statements[0]
+        assert sql.endswith("LIMIT $1) AS held") and params == (31,)
 
     async def test_probes_read_one_row(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a probe reads more than one row to answer whether any is held."""
@@ -328,7 +333,7 @@ class TestDeleteBefore:
         """Flips if the sweep deletes everything in one statement, or stops before the rows past its bound are gone."""
         reader = _Recording(db)
         collection = _Collection(reader)
-        swept = await delete_before(collection, "t", key=["a", "b"], column="b", before=30, page=7)
+        swept = await delete_before("t", collection=collection, key=["a", "b"], column="b", before=30, page=7)
         assert (swept.deleted, swept.statements) == (30, 5)
         assert sorted(collection.settled) == sorted((f"k{i % 10}", i) for i in range(30)) and collection.writes == 5
         assert _plain(db, "SELECT count(*) FROM t WHERE b < 30") == [(0,)]
@@ -370,6 +375,20 @@ class TestWholeReads:
         with pytest.raises(ValueError, match="not among"):
             WholeReads("keyed_test_bad_total", subject="t", whys={"a": "b"}, expected={"c"})
 
+    async def test_a_table_no_collection_serves_is_swept_on_its_pool(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a store's own table (no collection, no cache) cannot be swept, or is swept on no connection."""
+        reader = _Recording(db)
+        swept = await delete_before("t", collection=None, conn=reader, key=["a", "b"], column="b", before=30, page=7)
+        assert (swept.deleted, swept.statements) == (30, 5)
+        assert _plain(db, "SELECT count(*) FROM t WHERE b < 30") == [(0,)]
+
+    async def test_a_sweep_with_neither_collection_nor_connection_is_refused(self) -> None:
+        """Flips if a sweep with collection=None and no conn runs on nothing (or on a guessed pool)."""
+        with pytest.raises(TypeError, match="names its collection"):
+            await delete_before("t", collection=None, key=["a"], column="b", before=30, page=7)
+        with pytest.raises(TypeError, match="names its collection"):
+            await update_before("t", collection=None, key=["a"], column="b", before=30, set_to={"b": 0}, page=7)
+
 
 class TestUpdateBefore:
     async def test_a_reap_updates_page_by_page_and_moves_its_rows_out(self, db: duckdb.DuckDBPyConnection) -> None:
@@ -378,8 +397,8 @@ class TestUpdateBefore:
         reader = _Recording(db)
         collection = _Collection(reader)
         reaped = await update_before(
-            collection,
             "t",
+            collection=collection,
             key=["a", "b"],
             column="b",
             before=30,
@@ -396,7 +415,13 @@ class TestUpdateBefore:
         """Flips if a reap that would read the same page forever is sent."""
         with pytest.raises(ValueError, match="move its rows out"):
             await update_before(
-                _Collection(ThreadedDuckDB(db)), "t", key=["a", "b"], column="b", before=30, set_to={"v": 0}, page=7
+                "t",
+                collection=_Collection(ThreadedDuckDB(db)),
+                key=["a", "b"],
+                column="b",
+                before=30,
+                set_to={"v": 0},
+                page=7,
             )
 
 
@@ -444,7 +469,7 @@ class TestWithoutArrays:
             if cursor is None:
                 break
         assert seen == list(range(3, 100, 10))
-        swept = await delete_before(_Collection(conn), "t", key=["a", "b"], column="b", before=20, page=6)
+        swept = await delete_before("t", collection=_Collection(conn), key=["a", "b"], column="b", before=20, page=6)
         assert (swept.deleted, swept.statements) == (20, 4)
         assert await count_at_most(conn, "t", at_most=50) == BoundedCount(count=50, more=True)
         assert await delete_oldest(conn, "t", count=30) == 30

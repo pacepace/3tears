@@ -80,7 +80,6 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a follower says
 
 __all__ = [
     "GATED_WHOLE_READ_WHYS",
-    "WHOLE_READS",
     "WHOLE_READ_WHYS",
     "CopyFollower",
     "HubCapabilityMissingError",
@@ -97,7 +96,7 @@ log = get_logger(__name__)
 #: why a follower reads a table whole from L3, counted by table and why (``copy_follower_whole_reads_total``). Only
 #: ``cold_start`` (a first start with no checkpoint) and ``reset`` (an operator's reset of that table) are expected;
 #: every other is a change some writer did not record by key or key prefix
-WHOLE_READS: Final = WholeReads(
+_WHOLE_READS: Final = WholeReads(
     "copy_follower_whole_reads_total",
     subject="tables a copy follower read whole from L3",
     whys={
@@ -110,12 +109,12 @@ WHOLE_READS: Final = WholeReads(
     expected={"cold_start", "reset"},
 )
 
-# TODO(3tears 0.96.0 contract step, dated 2026-11-10): the two names below are WHOLE_READS.whys and .gated, kept one
+# TODO(3tears 0.96.0 contract step, dated 2026-11-10): the two names below are _WHOLE_READS.whys and .gated, kept one
 # release for their importers (reports' replay and prove scripts)
-WHOLE_READ_WHYS: Final[Mapping[str, str]] = WHOLE_READS.whys
+WHOLE_READ_WHYS: Final[Mapping[str, str]] = _WHOLE_READS.whys
 
 #: the whys a replay or a soak requires to stay at zero: every whole read but a true cold start and an operator's reset
-GATED_WHOLE_READ_WHYS: Final = WHOLE_READS.gated
+GATED_WHOLE_READ_WHYS: Final = _WHOLE_READS.gated
 
 #: behind reasons the change notes have already failed to answer this pass: asking them again would only wait again
 _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "notes_whole"})
@@ -1503,7 +1502,7 @@ class CopyFollower:
         :return: the scopes of the rows staged
         :rtype: set[str | None]
         """
-        WHOLE_READS.count(why, table=table.name)
+        _WHOLE_READS.count(why, table=table.name)
         if why != "cold_start":
             _warms().labels(why=why).inc()
         types = rail_arrow_types(table.columns)

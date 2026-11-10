@@ -393,20 +393,20 @@ def _read_past_marks(call: ast.Call) -> list[str]:
 
 
 def _delete_before(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
+    table, _ = _relation(_argument(call, "table", 0), "table")
     key = _texts(_argument(call, "key", None), "key")
     column = _text(_argument(call, "column", None), "column")
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     conditions = [*pinned, f"{_quoted(column)} < ${place}"]
     named = ", ".join(_quoted(part) for part in key)
     return [
-        f"DELETE FROM {_quoted(table)} WHERE ({named}) IN (SELECT {named} FROM {_quoted(table)}"
+        f"DELETE FROM {table} WHERE ({named}) IN (SELECT {named} FROM {table}"
         f"{_where(conditions)} ORDER BY {_quoted(column)} LIMIT {_LIMIT})"
     ]
 
 
 def _update_before(call: ast.Call) -> list[str]:
-    table = _text(_argument(call, "table", 1), "table")
+    table, _ = _relation(_argument(call, "table", 0), "table")
     key = _texts(_argument(call, "key", None), "key")
     column = _text(_argument(call, "column", None), "column")
     assigned = _by(_argument(call, "set_to", None), "set_to")
@@ -417,7 +417,7 @@ def _update_before(call: ast.Call) -> list[str]:
     conditions = [*pinned, f"{_quoted(column)} < ${place}"]
     named = ", ".join(_quoted(part) for part in key)
     return [
-        f"UPDATE {_quoted(table)} SET {sets} WHERE ({named}) IN (SELECT {named} FROM {_quoted(table)}"
+        f"UPDATE {table} SET {sets} WHERE ({named}) IN (SELECT {named} FROM {table}"
         f"{_where(conditions)} ORDER BY {_quoted(column)} LIMIT {_LIMIT})"
     ]
 

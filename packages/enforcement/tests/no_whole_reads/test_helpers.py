@@ -83,16 +83,14 @@ def test_a_helper_naming_a_key_is_keyed(code: str, schema: SchemaCatalog) -> Non
 
 def test_a_sweep_of_a_key_prefix_is_keyed_anywhere(schema: SchemaCatalog) -> None:
     """Flips if a sweep binding a key prefix (purpose leads leases' key) is refused outside a purposed index."""
-    code = (
-        'delete_before(c, "leases", key=["purpose", "key"], column="expires_at", before=t, page=5, by={"purpose": p})'
-    )
+    code = 'delete_before("leases", collection=c, key=["purpose", "key"], column="expires_at", before=t, page=5, by={"purpose": p})'
     assert _judged(code, schema, "src/app.py::elsewhere") == [[]]
 
 
 def test_a_tenant_sweep_is_keyed_only_through_the_index_naming_its_caller(schema: SchemaCatalog) -> None:
     """Flips if a sweep bound only by its tenant passes without its purposed index, or fails with it."""
     code = (
-        'delete_before(c, "tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, page=5, '
+        'delete_before("tenant_leases", collection=c, key=["customer_id", "key"], column="expires_at", before=t, page=5, '
         'by={"customer_id": p})'
     )
     assert _judged(code, schema, _SWEEP) == [[]]
@@ -131,9 +129,8 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort(column)], limit=5)', "order"),
         ('keyset_page(c, "results", columns=cols, by={}, order=[Sort("geo")], limit=5, visible=[clause])', "visible"),
         ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s})', "column"),
-        ('count_at_most(c, "results", at_most=3)', "by"),
         ('holds_any(c, "results", by={**pinned})', "by"),
-        ('delete_before(c, "leases", key=key, column="expires_at", before=t, page=5)', "key"),
+        ('delete_before("leases", collection=c, key=key, column="expires_at", before=t, page=5)', "key"),
         ('read_past_marks(c, "rel", columns=cols, marks=marks)', "marks"),
     ],
 )
@@ -172,18 +169,18 @@ def test_where_a_pager_starts_does_not_narrow_it(code: str, narrowed: bool) -> N
 def test_a_reap_is_judged_as_the_paged_update_it_sends(schema: SchemaCatalog) -> None:
     """Flips if a paged update passes on a column no key or purposed index leads, or fails on a key prefix."""
     keyed = (
-        'update_before(c, "leases", key=["purpose", "key"], column="expires_at", before=t, set_to={"purpose": x}, '
+        'update_before("leases", collection=c, key=["purpose", "key"], column="expires_at", before=t, set_to={"purpose": x}, '
         'page=5, by={"purpose": p})'
     )
     assert _judged(keyed, schema) == [[]]
     unkeyed = (
-        'update_before(c, "tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, '
+        'update_before("tenant_leases", collection=c, key=["customer_id", "key"], column="expires_at", before=t, '
         'set_to={"customer_id": x}, page=5, by={"customer_id": p})'
     )
     assert _judged(unkeyed, schema, "src/app.py::elsewhere") != [[]]
-    assert [s.unseen for s in helper_statements(_call('update_before(c, "leases", key=k, column="e", set_to=s)'))] == [
-        "key"
-    ]
+    assert [
+        s.unseen for s in helper_statements(_call('update_before("leases", collection=c, key=k, column="e", set_to=s)'))
+    ] == ["key"]
 
 
 @pytest.mark.parametrize(

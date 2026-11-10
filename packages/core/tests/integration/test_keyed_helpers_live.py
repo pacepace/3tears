@@ -252,7 +252,12 @@ class TestDeleteBefore:
             baseline = time.perf_counter() - began
         began = time.perf_counter()
         swept = await delete_before(
-            _Settling(seeded.conn), _TABLE, key=["state", "geo", "id"], column="stamp", before=before, page=500
+            _TABLE,
+            collection=_Settling(seeded.conn),
+            key=["state", "geo", "id"],
+            column="stamp",
+            before=before,
+            page=500,
         )
         took = time.perf_counter() - began
         assert swept.deleted == 3000

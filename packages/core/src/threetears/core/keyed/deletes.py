@@ -17,12 +17,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from threetears.core.keyed._filters import by_conditions, quoted_table
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
+
+if TYPE_CHECKING:
+    # the annotation only: the collections package imports these helpers
+    from threetears.core.collections.base import BaseCollection
 
 __all__ = ["SweptRows", "delete_before", "delete_oldest", "update_before"]
 
@@ -42,9 +46,9 @@ class SweptRows:
 
 
 async def delete_before(
-    collection: Any,
     table: str,
     *,
+    collection: BaseCollection[Any] | None,
     key: Sequence[str],
     column: str,
     before: Any,
@@ -59,10 +63,11 @@ async def delete_before(
     :meth:`~threetears.core.collections.base.BaseCollection.bypassing_write`, its deleted keys named by ``RETURNING``,
     so every cache of the rows it deleted is settled (evicted and broadcast, or enrolled in the caller's transaction).
 
-    :param collection: the collection serving ``table``
-    :ptype collection: BaseCollection
     :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
     :ptype table: str
+    :param collection: the collection serving ``table``, whose caches the deleted rows are settled in; None, said so,
+        for a table no collection or cache serves (a store's own table on its pool), read on ``conn``
+    :ptype collection: BaseCollection | None
     :param key: its primary key's columns, TRUSTED identifiers: the rows a page deletes are named by them
     :ptype key: Sequence[str]
     :param column: the column compared with ``before`` (``expires_at``), led by ``by`` in its index
@@ -75,11 +80,13 @@ async def delete_before(
     :ptype by: Mapping[str, Any] | None
     :param most_pages: the most statements this call sends; every page until a short one when None
     :ptype most_pages: int | None
-    :param conn: the caller's transaction (a ``CallerTransaction``'s connection); the collection's pool when None
+    :param conn: the caller's transaction (a ``CallerTransaction``'s connection), or the pool of a table no collection
+        serves; the collection's pool when None
     :ptype conn: Any
     :return: the rows deleted and the statements sent
     :rtype: SweptRows
     :raises ValueError: when ``key`` is empty or ``page`` / ``most_pages`` is under one
+    :raises TypeError: when neither a collection nor a connection is given
     """
     if not key:
         raise ValueError(f"a sweep of {table} names its key")
@@ -104,7 +111,9 @@ class _Paged:
     assignments: Sequence[str] = ()
 
 
-async def _paged(collection: Any, conn: Any, write: _Paged, params: Sequence[Any], most_pages: int | None) -> SweptRows:
+async def _paged(
+    collection: BaseCollection[Any] | None, conn: Any, write: _Paged, params: Sequence[Any], most_pages: int | None
+) -> SweptRows:
     """run a paged write until a page touches fewer rows than it asked for, each page inside the collection's
     ``bypassing_write`` so the keys it returned are settled in every cache."""
     named = ", ".join(quote_identifier(part) for part in write.key)
@@ -117,12 +126,21 @@ async def _paged(collection: Any, conn: Any, write: _Paged, params: Sequence[Any
         sql = f"UPDATE {table} SET {', '.join(write.assignments)} WHERE {rows_of}"
     else:
         sql = f"DELETE FROM {table} WHERE {rows_of}"
-    reader = conn if conn is not None else collection.required_l3_pool
+    if conn is not None:
+        reader = conn
+    elif collection is not None:
+        reader = collection.required_l3_pool
+    else:
+        raise TypeError(f"a paged write of {write.table} names its collection, or (with collection=None) its conn")
     touched = statements = 0
     while most_pages is None or statements < most_pages:
-        async with collection.bypassing_write(conn=conn) as settled:
+        if collection is None:
+            # a table no collection or cache serves: nothing to settle
             rows = await reader.fetch(sql, *params)
-            settled.touches(*(_entity_id(row, write.key) for row in rows))
+        else:
+            async with collection.bypassing_write(conn=conn) as settled:
+                rows = await reader.fetch(sql, *params)
+                settled.touches(*(_entity_id(row, write.key) for row in rows))
         statements += 1
         touched += len(rows)
         if len(rows) < write.page:
@@ -136,9 +154,9 @@ def _entity_id(row: Mapping[str, Any], key: Sequence[str]) -> Any:
 
 
 async def update_before(
-    collection: Any,
     table: str,
     *,
+    collection: BaseCollection[Any] | None,
     key: Sequence[str],
     column: str,
     before: Any,
@@ -156,8 +174,9 @@ async def update_before(
     or ``column`` itself), or the next page would read them again: that is refused.
 
     :param collection: the collection serving ``table``: each page runs in its ``bypassing_write``, the keys it
-        updated named by ``RETURNING``, so every cache of them is settled
-    :ptype collection: BaseCollection
+        updated named by ``RETURNING``, so every cache of them is settled; None, said so, for a table no collection or
+        cache serves, read on ``conn``
+    :ptype collection: BaseCollection | None
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param key: its primary key's columns, TRUSTED identifiers
@@ -174,12 +193,14 @@ async def update_before(
     :ptype by: Mapping[str, Any] | None
     :param most_pages: the most statements this call sends; every page until a short one when None
     :ptype most_pages: int | None
-    :param conn: the caller's transaction (a ``CallerTransaction``'s connection); the collection's pool when None
+    :param conn: the caller's transaction (a ``CallerTransaction``'s connection), or the pool of a table no collection
+        serves; the collection's pool when None
     :ptype conn: Any
     :return: the rows updated and the statements sent
     :rtype: SweptRows
     :raises ValueError: when ``key`` or ``set_to`` is empty, a bound is under one, or the update leaves its rows in
         the pages it reads
+    :raises TypeError: when neither a collection nor a connection is given
     """
     pinned = dict(by or {})
     if not key or not set_to:
