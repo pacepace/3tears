@@ -14,6 +14,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from threetears.core.backends.protocol import RowcountUnreadableError
 from threetears.core.keyed import (
     AnyOf,
     Derived,
@@ -108,6 +109,19 @@ class TestUpdateKeyed:
         with pytest.raises(ValueError, match="names the key"):
             await delete_keyed(ThreadedDuckDB(db), "t", by={}, where=[Fragment('"v" > 0')])
         assert _plain(db, "SELECT count(*) FROM t") == [(100,)]
+
+    async def test_a_status_with_no_count_is_refused_not_read_as_no_rows(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a broker reply with no row_count (the bare verb) reads as 0: a fenced save that landed would say
+        it lost its race. Every hand-written write read its status through parse_rowcount; the helpers keep that."""
+
+        class _NoCount(_Recording):
+            async def execute(self, query: str, *params: Any) -> str:
+                return (await super().execute(query, *params)).split()[0]
+
+        with pytest.raises(RowcountUnreadableError):
+            await update_keyed(_NoCount(db), "t", values={"v": -1}, by={"a": "k0", "b": 0})
+        with pytest.raises(RowcountUnreadableError):
+            await delete_keyed(_NoCount(db), "t", by={"a": "k0", "b": 10})
 
 
 class TestDeleteKeyed:

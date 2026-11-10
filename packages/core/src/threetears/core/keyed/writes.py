@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -161,7 +162,9 @@ async def _run(conn: Any, sql: str, params: Sequence[Any], returning: Sequence[s
         rows = [dict(row) for row in await conn.fetch(sql, *params)]
         return KeyedWrite(count=len(rows), rows=rows)
     status = await conn.execute(sql, *params)
-    return KeyedWrite(count=rows_affected(str(status or "")), rows=[])
+    # the framework's reading of a status tag, as every hand-written write read it: a counting verb whose count
+    # does not parse (a broker reply with no row_count) is refused, never read as "no rows"
+    return KeyedWrite(count=parse_rowcount(status), rows=[])
 
 
 def _chunks(keys: KeyBatch | None, batch: int) -> list[list[tuple[Any, ...]]] | list[None]:
