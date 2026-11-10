@@ -97,6 +97,31 @@ _ACCESS_MACHINERY_TENANCY: Final = no_tenant(
     "read cross-customer by id by every pod's access evaluator, so every follower reads every customer's changes"
 )
 
+#: a platform group by name: ``uq_groups_platform_name`` (name) WHERE customer_id IS NULL
+GROUP_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM groups WHERE name = $1 AND customer_id IS NULL"
+
+#: a customer's group by name: ``uq_groups_customer_name`` (customer_id, name) WHERE customer_id IS NOT NULL
+GROUP_BY_CUSTOMER_NAME_SQL: Final[str] = "SELECT * FROM groups WHERE customer_id = $1 AND name = $2"
+
+#: every assignment held by any of a set of groups, both row scopes: ``idx_role_assignments_group_scope``
+#: (group_id, scope_type). The evaluator's grant load and a group delete's cascade both read through it.
+ASSIGNMENTS_OF_GROUPS_SQL: Final[str] = (
+    "SELECT row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id, scope_namespace_type,"
+    " scope_customer_id, scope_namespace_name FROM role_assignments WHERE group_id = ANY($1::uuid[])"
+)
+
+#: every membership naming one of a set of members of one type: ``idx_group_members_reverse`` (member_type, member_id)
+MEMBERS_NAMING_SQL: Final[str] = (
+    "SELECT group_id, member_type, member_id, customer_id FROM group_members"
+    " WHERE member_type = $1 AND member_id = ANY($2::uuid[])"
+)
+
+#: the namespace named so: ``idx_namespaces_name`` (name)
+NAMESPACE_BY_NAME_SQL: Final[str] = "SELECT * FROM namespaces WHERE name = $1"
+
+#: a platform role by name: ``uq_roles_platform_name`` (name) WHERE customer_id IS NULL
+ROLE_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM roles WHERE name = $1 AND customer_id IS NULL"
+
 __all__ = [
     "GroupCascade",
     "GroupCollection",
@@ -378,9 +403,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 "SELECT member_type, member_id, id FROM group_members WHERE group_id = $1", group_id
             )
             # cache-bypass: the same cascade's assignments, by group across both partitions
-            assignments = await self.l3_pool.fetch(
-                "SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1", group_id
-            )
+            assignments = [
+                {"row_scope": row["row_scope"], "assignment_id": row["assignment_id"]}
+                for row in await self.l3_pool.fetch(ASSIGNMENTS_OF_GROUPS_SQL, [group_id])
+            ]
         return GroupCascade(
             group_id=group_id,
             members=tuple(dict(row) for row in members),
@@ -449,8 +475,9 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
+            # both row scopes and the id: the whole primary key, two point reads
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM groups WHERE group_id = $1",
+                "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = $1",
                 group_id,
             )
             if row is not None:
@@ -486,14 +513,11 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                """
-                SELECT * FROM groups
-                 WHERE name = $1
-                   AND customer_id IS NOT DISTINCT FROM $2
-                """,
-                name,
-                customer_id,
+            # each scope's own unique index: a platform name, or a customer's name
+            row = (
+                await self.l3_pool.fetchrow(GROUP_BY_PLATFORM_NAME_SQL, name)
+                if customer_id is None
+                else await self.l3_pool.fetchrow(GROUP_BY_CUSTOMER_NAME_SQL, customer_id, name)
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -563,8 +587,9 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None and len(group_ids) > 0:
+            # both row scopes and the ids: whole primary keys
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM groups WHERE group_id = ANY($1::uuid[])",
+                "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = ANY($1::uuid[])",
                 list(group_ids),
             )
             for row in rows:
@@ -707,6 +732,31 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         """
         return GroupMemberEntity
 
+    async def _load_naming(self, member_type: str, member_ids: Sequence[UUID]) -> list[GroupMembership]:
+        """every membership naming one of ``member_ids`` as a ``member_type`` member, through
+        ``idx_group_members_reverse`` (member_type, member_id): the one read behind the four loaders.
+
+        :param member_type: ``user``, ``agent`` or ``group``
+        :ptype member_type: str
+        :param member_ids: the members
+        :ptype member_ids: Sequence[UUID]
+        :return: their memberships; empty without an L3 pool or members
+        :rtype: list[GroupMembership]
+        """
+        result: list[GroupMembership] = []
+        if self.l3_pool is not None and len(member_ids) > 0:
+            rows = await self.l3_pool.fetch(MEMBERS_NAMING_SQL, member_type, list(member_ids))
+            result = [
+                GroupMembership(
+                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
+                    member_type=MemberType(row["member_type"]),
+                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
+                    customer_id=_coerce_uuid(row["customer_id"]),
+                )
+                for row in rows
+            ]
+        return result
+
     async def load_for_user(
         self,
         user_id: UUID,
@@ -728,27 +778,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             member
         :rtype: list[GroupMembership]
         """
-        result: list[GroupMembership] = []
-        if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT group_id, member_type, member_id, customer_id
-                  FROM group_members
-                 WHERE member_type = 'user'
-                   AND member_id = $1
-                """,
-                user_id,
-            )
-            result = [
-                GroupMembership(
-                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
-                    member_type=MemberType(row["member_type"]),
-                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
-                    customer_id=_coerce_uuid(row["customer_id"]),
-                )
-                for row in rows
-            ]
-        return result
+        return await self._load_naming("user", [user_id])
 
     async def load_for_agent(
         self,
@@ -765,27 +795,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             member
         :rtype: list[GroupMembership]
         """
-        result: list[GroupMembership] = []
-        if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT group_id, member_type, member_id, customer_id
-                  FROM group_members
-                 WHERE member_type = 'agent'
-                   AND member_id = $1
-                """,
-                agent_id,
-            )
-            result = [
-                GroupMembership(
-                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
-                    member_type=MemberType(row["member_type"]),
-                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
-                    customer_id=_coerce_uuid(row["customer_id"]),
-                )
-                for row in rows
-            ]
-        return result
+        return await self._load_naming("agent", [agent_id])
 
     async def load_for_group(
         self,
@@ -803,27 +813,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             member
         :rtype: list[GroupMembership]
         """
-        result: list[GroupMembership] = []
-        if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT group_id, member_type, member_id, customer_id
-                  FROM group_members
-                 WHERE member_type = 'group'
-                   AND member_id = $1
-                """,
-                group_id,
-            )
-            result = [
-                GroupMembership(
-                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
-                    member_type=MemberType(row["member_type"]),
-                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
-                    customer_id=_coerce_uuid(row["customer_id"]),
-                )
-                for row in rows
-            ]
-        return result
+        return await self._load_naming("group", [group_id])
 
     async def load_for_groups(
         self,
@@ -840,27 +830,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         :return: memberships naming any of ``group_ids`` as a group member
         :rtype: list[GroupMembership]
         """
-        result: list[GroupMembership] = []
-        if self.l3_pool is not None and len(group_ids) > 0:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT group_id, member_type, member_id, customer_id
-                  FROM group_members
-                 WHERE member_type = 'group'
-                   AND member_id = ANY($1::uuid[])
-                """,
-                list(group_ids),
-            )
-            result = [
-                GroupMembership(
-                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
-                    member_type=MemberType(row["member_type"]),
-                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
-                    customer_id=_coerce_uuid(row["customer_id"]),
-                )
-                for row in rows
-            ]
-        return result
+        return await self._load_naming("group", list(group_ids))
 
     async def membership_would_cycle(
         self,
@@ -1057,28 +1027,25 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         """
         return RoleEntity
 
-    async def list_all(self) -> list[RoleEntity]:
-        """list every role row ordered by ``date_created`` ascending.
+    async def find_platform_by_name(self, name: str) -> RoleEntity | None:
+        """the platform-owned role named ``name`` (every built-in is one), through ``uq_roles_platform_name``.
 
-        rows are promoted into L1/L2 caches so subsequent ``get(id)``
-        calls hit L1.
+        A built-in role is found by its name, never by listing the catalog and matching. The row is promoted into
+        L1/L2 caches.
 
-        :return: list of role entities ordered by ``date_created``
-            ascending
-        :rtype: list[RoleEntity]
+        :param name: the role's name
+        :ptype name: str
+        :return: the role, or ``None`` when no platform role has that name
+        :rtype: RoleEntity | None
         """
         read_ticket = self.scan_ticket()  # before the first await
-        result: list[RoleEntity] = []
+        result: RoleEntity | None = None
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                "SELECT * FROM roles ORDER BY date_created ASC",
-            )
-            for row in rows:
+            row = await self.l3_pool.fetchrow(ROLE_BY_PLATFORM_NAME_SQL, name)
+            if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
+                result = self.entity_class(data, is_new=False, collection=self)
         return result
 
     async def list_builtin(self) -> list[RoleEntity]:
@@ -1149,49 +1116,6 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
                 )
                 for row in rows
             ]
-        return result
-
-    async def list_visible_to_customer(
-        self,
-        customer_id: UUID | None,
-    ) -> list[RoleEntity]:
-        """list the roles a caller in ``customer_id`` may see.
-
-        that is every platform-owned role (``customer_id IS NULL`` --
-        the built-ins plus anything a platform admin authored) plus the
-        roles ``customer_id`` itself authored. a role authored by
-        ANOTHER customer is absent from the result, so a customer cannot
-        enumerate a neighbour's role names through the role menu.
-
-        passing ``customer_id=None`` narrows to platform-owned rows
-        only; a platform admin wanting every row across every customer
-        uses :meth:`list_all`.
-
-        :param customer_id: caller's owning customer UUID, or ``None``
-            to see only the platform-owned roles
-        :ptype customer_id: UUID | None
-        :return: list of role entities ordered by ``date_created``
-            ascending
-        :rtype: list[RoleEntity]
-        """
-        read_ticket = self.scan_ticket()  # before the first await
-        result: list[RoleEntity] = []
-        if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT * FROM roles
-                 WHERE customer_id IS NULL
-                    OR customer_id = $1
-                 ORDER BY date_created ASC
-                """,
-                customer_id,
-            )
-            for row in rows:
-                data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, read_since=read_ticket)
-                result.append(
-                    self.entity_class(data, is_new=False, collection=self),
-                )
         return result
 
 
@@ -1354,8 +1278,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: RoleAssignmentEntity | None = None
         if self.l3_pool is not None:
+            # both row scopes and the id: the whole primary key, two point reads
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM role_assignments WHERE assignment_id = $1",
+                "SELECT * FROM role_assignments WHERE row_scope IN ('platform', 'customer') AND assignment_id = $1",
                 assignment_id,
             )
             if row is not None:
@@ -1396,17 +1321,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # scope_customer_id) and 'customer' grants; the unified
             # evaluator's hot path needs every assignment regardless
             # of scope.
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT assignment_id, role_id, group_id, scope_type,
-                       scope_namespace_id, scope_namespace_type,
-                       scope_customer_id, scope_namespace_name
-                  FROM role_assignments
-                 WHERE row_scope IN ('platform', 'customer')
-                   AND group_id = ANY($1::uuid[])
-                """,
-                list(group_ids),
-            )
+            rows = await self.l3_pool.fetch(ASSIGNMENTS_OF_GROUPS_SQL, list(group_ids))
             result = [
                 RoleAssignment(
                     id=_coerce_uuid(row["assignment_id"]),  # type: ignore[arg-type]
@@ -1574,7 +1489,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 winner_row = await self.l3_pool.fetchrow(
                     """
                     SELECT row_scope, assignment_id FROM role_assignments
-                     WHERE group_id = $1
+                     WHERE row_scope = $6
+                       AND group_id = $1
                        AND role_id = $2
                        AND scope_type = $3
                        AND scope_namespace_id IS NOT DISTINCT FROM $4
@@ -1587,6 +1503,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     scope_type,
                     scope_id,
                     managed_by,
+                    row_scope,
                 )
                 if winner_row is None:
                     raise RuntimeError(
@@ -2060,7 +1977,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         )
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
-                "SELECT row_scope, customer_id FROM namespaces WHERE namespace_id = $1",
+                "SELECT row_scope, customer_id FROM namespaces"
+                " WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
                 namespace_id,
             )
             if row is not None:
@@ -2166,8 +2084,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
+            # both row scopes and the id: the whole primary key, two point reads
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM namespaces WHERE namespace_id = $1",
+                "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
                 namespace_id,
             )
             if row is not None:
@@ -2192,7 +2111,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: dict[UUID, NamespaceEntity] = {}
         if self.l3_pool is not None and len(namespace_ids) > 0:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM namespaces WHERE namespace_id = ANY($1::uuid[])",
+                "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer')"
+                " AND namespace_id = ANY($1::uuid[])",
                 list(namespace_ids),
             )
             for row in rows:
@@ -2332,10 +2252,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         if result is None and self.l3_pool is not None:
             read_ticket = self.scan_ticket()  # before the first await
             token = None if cache is None else cache.begin_read(("namespaces",))
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM namespaces WHERE name = $1",
-                name,
-            )
+            row = await self.l3_pool.fetchrow(NAMESPACE_BY_NAME_SQL, name)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
