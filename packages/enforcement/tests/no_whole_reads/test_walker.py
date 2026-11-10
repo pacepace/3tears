@@ -1583,10 +1583,10 @@ _CONSTANT_TABLE = """
     )
 
     async def prune(conn, cutoff):
-        return await delete_before(conn, LINKS, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+        return await delete_before(LINKS, collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff, page=1000)
 
     async def prune_any(conn, table, cutoff):
-        return await delete_before(conn, table, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+        return await delete_before(table, collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff, page=1000)
 """
 
 
