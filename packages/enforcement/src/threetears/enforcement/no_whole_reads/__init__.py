@@ -534,7 +534,12 @@ def use_the_helper_findings(config: NoWholeReadsConfig) -> list[str]:
     :rtype: list[str]
     """
     _, scan = _hits(config)
-    return statement_findings(scan.statements, ledger_dir=config.ledger_dir, helper_modules=config.helper_modules)
+    return statement_findings(
+        scan.statements,
+        ledger_dir=config.ledger_dir,
+        helper_modules=config.helper_modules,
+        producers=_producers(config),
+    )
 
 
 def use_the_helper_counts(config: NoWholeReadsConfig) -> dict[str, int]:
@@ -547,4 +552,15 @@ def use_the_helper_counts(config: NoWholeReadsConfig) -> dict[str, int]:
     :rtype: dict[str, int]
     """
     _, scan = _hits(config)
-    return statement_counts(scan.statements, config.helper_modules)
+    return statement_counts(scan.statements, config.helper_modules, _producers(config))
+
+
+def _producers(config: NoWholeReadsConfig) -> frozenset[str]:
+    """the repo's declared view and transient producers: the functions whose run-time relation names are local.
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    return frozenset(config.view_producers) | config.transient_producers

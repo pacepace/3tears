@@ -226,3 +226,28 @@ def test_a_statements_data_relations_leave_out_ctes_catalogs_and_functions() -> 
         "JOIN unnest($2::text[]) AS w(k) ON w.k = u.k JOIN pg_class c ON c.oid = 1 JOIN (SELECT 1) s ON true"
     )
     assert data_relations(sql) == ["t", "u"]
+
+
+_LOCAL = """
+    def copy_rows(db, name, state):
+        return db.execute(f"SELECT * FROM main.{name} WHERE state = ?", [state])
+
+
+    def _view_sql(view):
+        return f"SELECT * FROM {view} WHERE state = 'TX'"
+
+
+    def loose(db, table, state):
+        return db.execute(f"SELECT * FROM {table} WHERE state = ?", [state])
+"""
+
+
+def test_a_local_copys_relation_and_the_l1_storage_layer_are_not_counted(tmp_path: Path) -> None:
+    """Flips if a ``main.{}`` the repo's copy declarations key, a run-time name in a declared view producer, or a
+    statement in 3tears' L1 storage layer (``threetears/core/cache/``) is counted, or if a run-time name the rule
+    cannot resolve stops being."""
+    modules = {"pkg/tables.py": _TABLES, "pkg/local.py": _LOCAL, "threetears/core/cache/duck.py": _HELPER_MODULE}
+    config = _config(tmp_path, modules, local_relations={"*": ("state",)}, view_producers={"_view_sql": ("state",)})
+    assert _named(use_the_helper_findings(config)) == {"loose": "point {}"}
+    undeclared = _config(tmp_path, modules)
+    assert set(_named(use_the_helper_findings(undeclared))) == {"copy_rows", "_view_sql", "loose"}

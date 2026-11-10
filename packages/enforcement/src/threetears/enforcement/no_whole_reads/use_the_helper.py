@@ -55,6 +55,9 @@ _HELPER_MODULES: Final[tuple[str, ...]] = (
     "threetears/epoch/row_follower.py",
     "threetears/core/data/migrations/",
     "threetears/core/ddl/",
+    # the L1 storage layer itself: its backends write the local tables every cache reads through (no_whole_reads still
+    # judges each statement in them)
+    "threetears/core/cache/",
 )
 
 _SEPARATOR: Final[str] = " :: "
@@ -108,16 +111,44 @@ def _sanctioned(path: str, extra: tuple[str, ...]) -> bool:
     return any(fragment in f"/{path}" for fragment in _HELPER_MODULES) or any(path.startswith(p) for p in extra)
 
 
-def _data_table(statement: WrittenStatement) -> tuple[str, bool] | None:
+#: the schema a local DuckDB copy holds its tables in
+_LOCAL_SCHEMA: Final[str] = "main."
+
+
+def _local(name: str, statement: WrittenStatement, producers: frozenset[str]) -> bool:
+    """whether a relation is a local copy's, not L3 or shared data: ``copy.<name>``; a ``main.<name>`` the repo's
+    copy declarations key (``local_relations``, ``"*"`` for one named at run time); a run-time name written in a
+    declared view or transient producer (the copy relation it builds or the change set it names).
+
+    :param name: the relation as written
+    :ptype name: str
+    :param statement: the statement naming it
+    :ptype statement: WrittenStatement
+    :param producers: the repo's declared view and transient producers
+    :ptype producers: frozenset[str]
+    :return: whether it is local
+    :rtype: bool
+    """
+    local = name.startswith(COPY_PREFIX)
+    if not local and name.startswith(_LOCAL_SCHEMA):
+        local = statement.reader.schema.table(f"{COPY_PREFIX}{name.removeprefix(_LOCAL_SCHEMA)}") is not None
+    if not local and "{" in name:
+        local = statement.function in producers
+    return local
+
+
+def _data_table(statement: WrittenStatement, producers: frozenset[str] = frozenset()) -> tuple[str, bool] | None:
     """the first data table a statement names, and whether it is declared; None when it names none.
 
     :param statement: the statement
     :ptype statement: WrittenStatement
+    :param producers: the repo's declared view and transient producers (:func:`_local`)
+    :ptype producers: frozenset[str]
     :return: ``(table, declared)``, or None
     :rtype: tuple[str, bool] | None
     """
     for name in data_relations(statement.text, statement.reader):
-        if name.startswith(COPY_PREFIX):
+        if _local(name, statement, producers):
             continue
         if statement.reader.schema.table(name) is not None:
             return name, True
@@ -126,13 +157,17 @@ def _data_table(statement: WrittenStatement) -> tuple[str, bool] | None:
     return None
 
 
-def _helper_hits(statements: list[WrittenStatement], helper_modules: tuple[str, ...] = ()) -> list[_Hit]:
+def _helper_hits(
+    statements: list[WrittenStatement], helper_modules: tuple[str, ...] = (), producers: frozenset[str] = frozenset()
+) -> list[_Hit]:
     """every statement written as text against a data table outside the helper modules.
 
     :param statements: the statements a walk found
     :ptype statements: list[WrittenStatement]
     :param helper_modules: the repo's own reviewed helper module prefixes
     :ptype helper_modules: tuple[str, ...]
+    :param producers: the repo's declared view and transient producers, whose run-time names are local relations
+    :ptype producers: frozenset[str]
     :return: the hits, in walk order
     :rtype: list[_Hit]
     """
@@ -141,7 +176,7 @@ def _helper_hits(statements: list[WrittenStatement], helper_modules: tuple[str, 
         if _sanctioned(statement.path, helper_modules):
             continue
         shape = statement_shape(statement.text)
-        table = _data_table(statement) if shape is not None else None
+        table = _data_table(statement, producers) if shape is not None else None
         if shape is not None and table is not None:
             hits.append(_Hit(statement, shape, table[0], table[1]))
     return hits
@@ -199,7 +234,11 @@ def _finding(hit: _Hit) -> str:
 
 
 def statement_findings(
-    statements: list[WrittenStatement], *, ledger_dir: Path, helper_modules: tuple[str, ...] = ()
+    statements: list[WrittenStatement],
+    *,
+    ledger_dir: Path,
+    helper_modules: tuple[str, ...] = (),
+    producers: frozenset[str] = frozenset(),
 ) -> list[str]:
     """every statement written as text against a data table outside the helpers, and every ledger defect.
 
@@ -209,11 +248,13 @@ def statement_findings(
     :ptype ledger_dir: Path
     :param helper_modules: the repo's own reviewed helper module prefixes
     :ptype helper_modules: tuple[str, ...]
+    :param producers: the repo's declared view and transient producers, whose run-time names are local
+    :ptype producers: frozenset[str]
     :return: the findings: hits outside the ledger, a ledger line whose count differs from the function's
         statements, a line naming a function with none, and malformed lines
     :rtype: list[str]
     """
-    hits = _helper_hits(statements, helper_modules)
+    hits = _helper_hits(statements, helper_modules, producers)
     lines, findings = _parse(ledger_dir / _LEDGER)
     by_function: Counter[tuple[str, str]] = Counter((hit.statement.path, hit.statement.function) for hit in hits)
     ledgered = {(line.path, line.function): line for line in lines}
@@ -230,7 +271,9 @@ def statement_findings(
     return findings
 
 
-def statement_counts(statements: list[WrittenStatement], helper_modules: tuple[str, ...] = ()) -> dict[str, int]:
+def statement_counts(
+    statements: list[WrittenStatement], helper_modules: tuple[str, ...] = (), producers: frozenset[str] = frozenset()
+) -> dict[str, int]:
     """the backlog by shape: how many statements of each shape are written outside the helpers, ledgered or not,
     and how many of them name a table only at run time (``named-at-run-time``).
 
@@ -238,10 +281,12 @@ def statement_counts(statements: list[WrittenStatement], helper_modules: tuple[s
     :ptype statements: list[WrittenStatement]
     :param helper_modules: the repo's own reviewed helper module prefixes
     :ptype helper_modules: tuple[str, ...]
+    :param producers: the repo's declared view and transient producers, whose run-time names are local
+    :ptype producers: frozenset[str]
     :return: shape onto count, plus ``named-at-run-time`` and ``total``
     :rtype: dict[str, int]
     """
-    hits = _helper_hits(statements, helper_modules)
+    hits = _helper_hits(statements, helper_modules, producers)
     counts: dict[str, int] = {shape: 0 for shape in ("point", "list", "count", "join", "write")}
     for hit in hits:
         counts[hit.shape] += 1
