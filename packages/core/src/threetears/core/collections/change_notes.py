@@ -1943,12 +1943,12 @@ def _noted_keys_sql(owner: str, slot: int) -> str:
     :ptype slot: int
     :return: the statement: ``$1`` table, ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or
         one microsecond before the bracket: both ends of the range are index conditions), ``$4`` until, ``$5`` the
-        most notes (NULL for all)
+        most notes (NULL for all), ``$6`` whether every tenant's notes are read (``$2`` then unused)
     :rtype: str
     """
     return (  # each interpolated piece is a fixed name this module builds
         f"SELECT noted_at, keys, columns, key_text IS NULL AS whole FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
-        "WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND tenant IS NOT DISTINCT FROM $2 "
+        "WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND ($6 OR tenant IS NOT DISTINCT FROM $2) "
         "ORDER BY noted_at LIMIT $5"
     )
 
@@ -1985,6 +1985,7 @@ async def noted_keys_page(
     cursor: NotedKeysCursor | None,
     limit: int,
     max_bytes: int,
+    every_tenant: bool = False,
 ) -> NotedKeysPage | str:
     """a page of the keys ``table``'s notes of ``tenant_token`` name in a commit's notes bracket, or why they cannot be read.
 
@@ -2015,6 +2016,9 @@ async def noted_keys_page(
     :ptype limit: int
     :param max_bytes: the most bytes of keys a page holds
     :ptype max_bytes: int
+    :param every_tenant: read every tenant's notes of the table, ``tenant_token`` unused: for an operator's check of a
+        table whose rows carry their tenant in their key (a backup's live check), never a tenant's own reader
+    :ptype every_tenant: bool
     :return: the page; or ``"notes_unavailable"`` (no ring) or ``"not_covered"`` (the ring no longer holds every
         note of the bracket, or moved past the cursor's table between pages)
     :rtype: NotedKeysPage | str
@@ -2028,7 +2032,9 @@ async def noted_keys_page(
     async with held as one, one.transaction(readonly=True):
         # the planner prices the bracket's notes too few to read in index order: it is told to (_INDEX_ORDER)
         await one.execute(_INDEX_ORDER)
-        return await _noted_keys_page(one, owner, table, tenant_token, since, until, cursor, limit, max_bytes)
+        return await _noted_keys_page(
+            one, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
+        )
 
 
 async def _noted_keys_page(
@@ -2041,6 +2047,7 @@ async def _noted_keys_page(
     cursor: NotedKeysCursor | None,
     limit: int,
     max_bytes: int,
+    every: bool,
 ) -> NotedKeysPage | str:
     try:
         rings = await conn.fetch(
@@ -2077,7 +2084,7 @@ async def _noted_keys_page(
         start = at.after if slot == at.slot else None
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
         after = start if start is not None else since - _CLOCK_GRAIN
-        found = await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, after, until, left + 1)
+        found = await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, after, until, left + 1, every)
         if not found:
             continue
         full = len(found) > left
@@ -2089,7 +2096,9 @@ async def _noted_keys_page(
             # one instant's notes fill the page: read that instant whole, so continuing past it skips none
             instant = taken[-1]["noted_at"]
             taken = list(
-                await conn.fetch(_noted_keys_sql(owner, slot), table, tenant, instant - _CLOCK_GRAIN, instant, None)
+                await conn.fetch(
+                    _noted_keys_sql(owner, slot), table, tenant, instant - _CLOCK_GRAIN, instant, None, every
+                )
             )
         elif full:
             # end at a whole instant: the last instant's notes go to the next page
