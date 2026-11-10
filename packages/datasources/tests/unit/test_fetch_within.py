@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -71,6 +70,25 @@ def test_the_budget_encodes_a_page_once_and_only_the_crossing_page_row_by_row() 
     assert encoded == [10, 10, 10, 1, 1, 1, 1, 1, 1]
     assert budget.take(rows[30:40]) is False
     assert len(encoded) == 9, "nothing past the cut is encoded"
+
+
+def test_after_the_first_page_a_page_is_sized_from_the_bytes_left() -> None:
+    """the first page is the small one; the next fits whole with half a page to spare; the last reads one row past
+    the expected cut, so only it is measured a row at a time."""
+    rows = [{"n": index, "pad": "x" * 20} for index in range(10_000)]
+    budget = RowBudget(_array_size(rows[:4_000]), _encode, None)
+    assert budget.wanted(100) == 100
+    assert budget.take(rows[:100]) is True
+    second = budget.wanted(100)
+    assert 3_800 <= second <= 3_900, second
+    assert budget.take(rows[100 : 100 + second]) is True
+    third = budget.wanted(100)
+    assert third <= 101, third
+    assert budget.take(rows[100 + second : 100 + second + third]) is False
+    assert len(budget.result().rows) == 4_000
+    capped = RowBudget(10_000_000, _encode, 150)
+    capped.take(rows[:100])
+    assert capped.wanted(100) == 51, "the row bound still caps a sized page"
 
 
 def test_a_result_that_fits_is_whole_and_not_truncated() -> None:
@@ -138,6 +156,7 @@ class _SessionDouble:
 
     :ivar statements: every statement executed, in order
     :ivar fetches: how many ``FETCH FORWARD`` pages were served
+    :ivar served: how many rows those pages carried over the wire
     :ivar block_on: a statement prefix whose execution waits on ``release`` (to cancel a read inside it)
     """
 
@@ -147,6 +166,7 @@ class _SessionDouble:
         self._pending: list[tuple[Any, ...]] = []
         self.statements: list[str] = []
         self.fetches = 0
+        self.served = 0
         self.closed = False
         self.rollbacks = 0
         self.block_on: str | None = None
@@ -179,6 +199,7 @@ class _SessionDouble:
             wanted = int(sql.split()[2])
             page = self._rows[self._offset : self._offset + wanted]
             self._offset += len(page)
+            self.served += len(page)
             self._pending = [tuple(row.values()) for row in page]
 
     def fetchall(self) -> list[tuple[Any, ...]]:
@@ -243,20 +264,23 @@ def _password(monkeypatch: pytest.MonkeyPatch) -> None:
 _ROWS = [{"n": index, "name": f"precinct-{index:05d}"} for index in range(10_000)]
 
 
-async def test_redshift_reads_no_page_past_the_cut() -> None:
-    """the wire bound: pages read <= ceil(kept / page_rows) + 1, so the rows past the cut never cross."""
+@pytest.mark.parametrize("kept", [250, 4_000])
+async def test_redshift_reads_no_page_past_the_cut(kept: int) -> None:
+    """the wire bound: at most two FETCHes past the first, whatever the cap, and of the rows past the cut only the
+    one that tells the cut crosses the wire."""
     session = _SessionDouble(_ROWS)
     connection = _ConnectionDouble(session)
-    cap = _array_size(_ROWS[:250])
+    cap = _array_size(_ROWS[:kept])
     with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect", return_value=connection):
         driver = RedshiftDriver(_redshift_config())
         within = await driver.fetch_within(
             "SELECT n, name FROM precincts;", max_bytes=cap, encode=_encode, page_rows=100, timeout_seconds=30
         )
         await driver.close()
-    assert within.rows == _ROWS[:250]
+    assert within.rows == _ROWS[:kept]
     assert within.truncated is True
-    assert session.fetches <= math.ceil(len(within.rows) / 100) + 1
+    assert session.fetches <= 3, session.fetches
+    assert session.served == kept + 1, "only the row that tells the cut crossed the wire past it"
     declared = [sql for sql in session.statements if sql.startswith("DECLARE")]
     assert declared == ["DECLARE threetears_fetch_within CURSOR FOR SELECT n, name FROM precincts"]
     # the statement deadline is set in the cursor's transaction, just before the statement runs
@@ -272,7 +296,8 @@ async def test_redshift_reads_a_result_that_fits_whole_and_says_it_was_not_cut()
         within = await driver.fetch_within("SELECT n, name FROM t", max_bytes=10_000_000, encode=_encode, page_rows=50)
         await driver.close()
     assert (within.rows, within.truncated) == (_ROWS[:120], False)
-    assert session.fetches == 3
+    # the first page, then a page sized from the bytes left, which holds the rest: a short page ends the read
+    assert session.fetches == 2
 
 
 async def test_redshift_honours_the_row_bound() -> None:
