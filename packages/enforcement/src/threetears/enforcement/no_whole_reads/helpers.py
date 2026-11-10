@@ -44,6 +44,7 @@ from typing import Final
 
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
+    "KEYED_FRAGMENT_METHODS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
     "UNSEEN",
@@ -59,7 +60,9 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_keyed",
         "read_keyed_arrow",
         "read_joined",
+        "any_rows",
         "keyset_page",
+        "keyset_rows",
         "counts_by",
         "count_at_most",
         "holds_any",
@@ -67,6 +70,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_past_marks",
         "delete_before",
         "delete_oldest",
+        "delete_keyed",
         "counts_by_relations",
         "update_before",
     }
@@ -80,6 +84,10 @@ KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
         "three_scope_visibility_clause",
     }
 )
+
+#: methods building a reviewed visibility fragment for a keyed read's ``visible=``
+#: (``threetears.agent.acl.VisibleCustomers.fragment``): the caller's customers bound as a set, a keyed predicate
+KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
 
 #: keywords that say where a pager starts, not which rows it reads
 START_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
@@ -210,13 +218,20 @@ def _key_batch_columns(node: ast.expr | None) -> list[str]:
 
 
 def _sort_columns(node: ast.expr | None) -> list[str]:
+    """each sort's term as the page's statement orders by it: the column, quoted, or the sort's expression."""
     if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
         raise _Unseen("order")
     columns = []
     for element in node.elts:
         if not (isinstance(element, ast.Call) and _name(element) == "Sort"):
             raise _Unseen("order")
-        columns.append(_text(_argument(element, "column", 0), "order"))
+        expression = _argument(element, "expression", None)
+        if expression is None:
+            columns.append(_quoted(_text(_argument(element, "column", 0), "order")))
+        else:
+            # a sort by an expression of the paged row's columns (``lower(t."name")``), as an expression index reads it
+            written = re.sub(r'\bt\.(?="|\w)', "", _text(expression, "order"))
+            columns.append(re.sub(r'"(\w+)"', r"\1", written))
     return columns
 
 
@@ -244,7 +259,8 @@ def _read_keyed(call: ast.Call) -> list[str]:
 
 
 def _visible(call: ast.Call) -> list[str]:
-    """each ``exists_keyed`` probe a listing's ``visible=`` names, as the keyed read it is; reviewed builders pass."""
+    """each ``exists_keyed`` probe a listing's ``visible=`` names, as the keyed read it is; reviewed builders (and a
+    ``VisibleCustomers.fragment(...)``, the caller's customers as a bound set) pass."""
     node = _argument(call, "visible", None)
     if node is None:
         return []
@@ -257,6 +273,12 @@ def _visible(call: ast.Call) -> list[str]:
         )
         if isinstance(built, ast.Call) and _name(built) in KEYED_FRAGMENT_BUILDERS:
             continue
+        if (
+            isinstance(built, ast.Call)
+            and isinstance(built.func, ast.Attribute)
+            and built.func.attr in KEYED_FRAGMENT_METHODS
+        ):
+            continue
         if not (isinstance(built, ast.Call) and _name(built) == "exists_keyed"):
             raise _Unseen("visible")
         probed = _text(_argument(built, "table", 0), "visible")
@@ -266,6 +288,25 @@ def _visible(call: ast.Call) -> list[str]:
         conditions, _ = _conditions([(column, "eq") for column, _ in on] + _by(_argument(built, "by", None), "visible"))
         probes.append(f"SELECT 1 FROM {_quoted(probed)}{_where(conditions)}")
     return probes
+
+
+def _visible_columns(call: ast.Call) -> list[str]:
+    """the columns a listing's ``visible=`` binds to the caller's customers (``customers.fragment('t."customer_id"')``,
+    a :class:`threetears.agent.acl.VisibleCustomers` fragment): each a set the page is narrowed to, as its statement
+    reads it (``"customer_id" = ANY($n)``)."""
+    node = _argument(call, "visible", None)
+    if not isinstance(node, ast.Tuple | ast.List):
+        return []
+    columns = []
+    for element in node.elts:
+        if (
+            isinstance(element, ast.Call)
+            and isinstance(element.func, ast.Attribute)
+            and element.func.attr in KEYED_FRAGMENT_METHODS
+        ):
+            written = _text(_argument(element, "column", 0), "visible")
+            columns.append(written.split(".")[-1].strip('"'))
+    return columns
 
 
 def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
@@ -290,10 +331,12 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
 def _keyset_page(call: ast.Call) -> list[str]:
     table, own = _relation(_argument(call, "table", 1), "table")
     order = _sort_columns(_argument(call, "order", None))
-    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    pinned, place = _conditions(
+        _by(_argument(call, "by", None)) + [(column, "any") for column in _visible_columns(call)]
+    )
     filtered, place = _filters(call, place)
-    page = [*pinned, *filtered, f"{_quoted(order[0])} > ${place}"]
-    ordered = ", ".join(_quoted(column) for column in order)
+    page = [*pinned, *filtered, f"{order[0]} > ${place}"]
+    ordered = ", ".join(order)
     return [f"SELECT * FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call), *own]
 
 
@@ -366,6 +409,38 @@ def _probe(call: ast.Call) -> list[str]:
     return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} ORDER BY {order} LIMIT {limit}", *own]
 
 
+def _any_rows(call: ast.Call) -> list[str]:
+    """a bounded look (``any_rows``): its rows up to its ``limit``, which it must name; ``by`` and ``where`` judged."""
+    if _argument(call, "limit", None) is None:
+        raise _Unseen("limit")
+    relation, own = _relation(_argument(call, "table", 1), "table")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    filtered, place = _filters(call, place)
+    return [f"SELECT * FROM {relation} AS t{_where([*pinned, *filtered])} LIMIT ${place}", *own]
+
+
+def _delete_keyed(call: ast.Call) -> list[str]:
+    """a delete by key: judged only where it deletes by a prefix (``prefix={"signal": p}``), as the code-point range
+    it sends (``"signal" >= $n AND "signal" < $m``, judged as a page of that range); a delete by ``by``/``keys``
+    sends nothing here to judge."""
+    node = _argument(call, "prefix", None)
+    if node is None:
+        return []
+    started = _by(node, "prefix")
+    if not started:
+        raise _Unseen("prefix")
+    table_node = _argument(call, "table", 1)
+    if not isinstance(table_node, ast.Constant):
+        # a table its caller names (a fence's, ``clear_signals(conn, table)``): no declared index to judge it by here
+        return []
+    table, _ = _relation(table_node, "table")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    # the prefix's rows are a range read in the column's order: keyed exactly when an index ranges that column for
+    # the reader (a C-ordered, ASC one), as a page of the range is
+    column = _quoted(started[0][0])
+    return [f"SELECT 1 FROM {table}{_where([*pinned, f'{column} > ${place}'])} ORDER BY {column} LIMIT {_LIMIT}"]
+
+
 def _delete_oldest(call: ast.Call) -> list[str]:
     table, _ = _relation(_argument(call, "table", 1), "table")
     key_node = _argument(call, "key", None)
@@ -428,7 +503,9 @@ _SYNTHESIZERS: Final = {
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
     "read_joined": _read_joined,
+    "any_rows": _any_rows,
     "keyset_page": _keyset_page,
+    "keyset_rows": _keyset_page,
     "counts_by": _counts_by,
     "count_at_most": _probe,
     "holds_any": _probe,
@@ -436,6 +513,7 @@ _SYNTHESIZERS: Final = {
     "read_past_marks": _read_past_marks,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
+    "delete_keyed": _delete_keyed,
     "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
 }

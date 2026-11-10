@@ -43,8 +43,18 @@ from datetime import date, datetime, time
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
-from threetears.core.keyed._filters import Derived, Fragment, Lock, by_conditions, quoted_table, relation, renumbered
+from threetears.core.keyed._filters import (
+    AnyOf,
+    Derived,
+    Fragment,
+    Lock,
+    by_conditions,
+    quoted_table,
+    relation,
+    renumbered,
+)
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
@@ -64,12 +74,23 @@ class Sort:
     :ptype descending: bool
     :param nullable: whether it can be ``NULL``
     :ptype nullable: bool
+    :param expression: a TRUSTED SQL expression of the paged row's columns written as ``t."col"`` (``lower(t."name")``)
+        the sort is by, read under the name ``column``: the page selects it ``AS column`` and its cursor carries its
+        value; an index on the same expression answers the page (``CREATE INDEX ... (lower(name), id)``). None sorts
+        by the column itself
+    :ptype expression: str | None
     """
 
     column: str
     cast: str | None = "text"
     descending: bool = False
     nullable: bool = False
+    expression: str | None = None
+
+    @property
+    def sorted_by(self) -> str:
+        """what the statement orders and compares by: the expression, or the column of the paged row (``t.``)."""
+        return self.expression if self.expression is not None else f"t.{quote_identifier(self.column)}"
 
 
 @dataclass(frozen=True)
@@ -118,7 +139,12 @@ def _seeks_by_row(order: Sequence[Sort]) -> bool:
 
 
 def _past(
-    order: Sequence[Sort], values: Sequence[str | None], first: int, *, by_row: bool = False
+    order: Sequence[Sort],
+    values: Sequence[str | None],
+    first: int,
+    *,
+    by_row: bool = False,
+    lead: Sequence[tuple[str, str]] = (),
 ) -> tuple[str, list[Any]]:
     """the condition naming the rows after the cursor, and its parameters numbered from ``first``.
 
@@ -140,7 +166,7 @@ def _past(
                 marks.append(f"{place}::{'text' if sort.cast == 'text' else f'text::{sort.cast}'}")
 
     def after(sort: Sort, mark: str | None) -> str:
-        column = f"t.{quote_identifier(sort.column)}"
+        column = sort.sorted_by
         if mark is None:
             # nulls last ascending: nothing follows within the column; nulls first descending: every value follows
             return f"{column} IS NOT NULL" if sort.descending else "FALSE"
@@ -148,18 +174,22 @@ def _past(
         return f"({beyond} OR {column} IS NULL)" if sort.nullable and not sort.descending else beyond
 
     def same(sort: Sort, mark: str | None) -> str:
-        column = f"t.{quote_identifier(sort.column)}"
+        column = sort.sorted_by
         return f"{column} IS NULL" if mark is None else f"{column} = {mark}"
 
     if by_row and _seeks_by_row(order) and all(mark is not None for mark in marks):
-        columns = ", ".join(f"t.{quote_identifier(sort.column)}" for sort in order)
-        return f"({columns}) {'<' if order[0].descending else '>'} ({', '.join(str(mark) for mark in marks)})", params
+        # the columns ``by`` pins lead the comparison (``lead``: each column and its own placeholder), so it is one
+        # range of the index they lead, never a range of an index of the sort's columns alone, filtered
+        ascending = not order[0].descending
+        columns = ", ".join([column for column, _ in lead if ascending] + [sort.sorted_by for sort in order])
+        bound = ", ".join([place for _, place in lead if ascending] + [str(mark) for mark in marks])
+        return f"({columns}) {'>' if ascending else '<'} ({bound})", params
     expanded = after(order[-1], marks[-1])
     for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
         expanded = f"{after(sort, mark)} OR ({same(sort, mark)} AND ({expanded}))"
     lead, lead_mark = order[0], marks[0]
     if lead_mark is not None and not lead.nullable:
-        bound = f"t.{quote_identifier(lead.column)} {'<=' if lead.descending else '>='} {lead_mark}"
+        bound = f"{lead.sorted_by} {'<=' if lead.descending else '>='} {lead_mark}"
         return f"{bound} AND ({expanded})", params
     return f"({expanded})", params
 
@@ -169,7 +199,7 @@ def _order_by(order: Sequence[Sort]) -> str:
     for sort in order:
         direction = "DESC" if sort.descending else "ASC"
         nulls = (" NULLS FIRST" if sort.descending else " NULLS LAST") if sort.nullable else ""
-        parts.append(f"t.{quote_identifier(sort.column)} {direction}{nulls}")
+        parts.append(f"{sort.sorted_by} {direction}{nulls}")
     return ", ".join(parts)
 
 
@@ -216,7 +246,8 @@ async def keyset_page(
     :ptype conn: Any
     :param table: the table (``schema.table``), or a derived relation
     :ptype table: str | Derived
-    :param columns: the columns read, TRUSTED identifiers; each sort column among them
+    :param columns: the columns read, TRUSTED identifiers; each sort column among them (a sort expression's name
+        not: it is selected under it)
     :ptype columns: Sequence[str]
     :param by: the bound prefix (a tenant, a parent), each a value or an ``AnyOf``; empty pages across every row
         in the sort's index
@@ -237,7 +268,8 @@ async def keyset_page(
     :ptype lock: Lock | None
     :return: the page
     :rtype: KeyPage
-    :raises ValueError: when the sort is empty, a sort column is not read, or ``limit`` is under one
+    :raises ValueError: when the sort is empty, a sort column is not read, a sort expression's name is a column read,
+        or ``limit`` is under one
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
     _check(table, columns, order, limit)
@@ -257,7 +289,7 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
     no round trip, :func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
     if not _seeks_by_row(order):
         return False
-    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite):
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
         return True
     return not await known_on_yugabyte(conn)
 
@@ -267,9 +299,29 @@ def _check(table: str | Derived, columns: Sequence[str], order: Sequence[Sort], 
         raise ValueError(f"a page of {table} names its sort")
     if limit < 1:
         raise ValueError(f"a page keeps at least one row, got {limit}")
-    missing = [sort.column for sort in order if sort.column not in columns]
+    missing = [sort.column for sort in order if sort.expression is None and sort.column not in columns]
     if missing:
         raise ValueError(f"a page of {table} reads its sort columns, missing {missing}")
+    shadowed = [sort.column for sort in order if sort.expression is not None and sort.column in columns]
+    if shadowed:
+        # the cursor would carry the column's value, not the expression's the page compares
+        raise ValueError(f"a sort expression is read under a name of its own, not a column read: {shadowed}")
+
+
+def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[tuple[str, str]]:
+    """each column ``by`` pins to one value (not a set, not NULL, not a sort column), as the page names it, and the
+    placeholder :func:`~threetears.core.keyed._filters.by_conditions` binds it at."""
+    pinned: list[tuple[str, str]] = []
+    place = 1
+    sorted_columns = {sort.column for sort in order}
+    for column, value in by.items():
+        if isinstance(value, AnyOf):
+            place += len(list(value.values)) if value.as_list else 1
+        elif value is not None:
+            if column not in sorted_columns:
+                pinned.append((f"t.{quote_identifier(column)}", f"${place}"))
+            place += 1
+    return pinned
 
 
 def _statement(
@@ -287,19 +339,30 @@ def _statement(
     """one page's statement: ``rows`` rows past ``past`` (the last row's sort values as text; the first page when
     None), and its parameters."""
     conditions, params = by_conditions(by, alias="t")
+    lead = _pinned(by, order)
     for fragment in where:
         conditions.append(renumbered(fragment, len(params)))
         params += list(fragment.params)
     if past is not None:
-        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
+        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row, lead=lead)
         conditions.append(condition)
         params += past_params
     for fragment in visible:
         conditions.append(renumbered(fragment, len(params)))
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {_order_by(order)} LIMIT {rows}"
+    selected = ", ".join(
+        [f"t.{quote_identifier(column)}" for column in columns]
+        + [
+            f"{sort.expression} AS {quote_identifier(sort.column)}"
+            for sort in order
+            if sort.expression is not None and sort.column not in columns
+        ]
+    )
+    # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of the
+    # index they lead
+    ordered = ", ".join([f"{column} ASC" for column, _ in lead] + [_order_by(order)])
+    sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {ordered} LIMIT {rows}"
     if lock is not None:
         sql += lock.of("t")
     return sql, params
@@ -330,7 +393,8 @@ async def keyset_rows(
     :ptype conn: Any
     :param table: the table (``schema.table``), or a derived relation
     :ptype table: str | Derived
-    :param columns: the columns read, TRUSTED identifiers; each sort column among them
+    :param columns: the columns read, TRUSTED identifiers; each sort column among them (a sort expression's name
+        not: it is selected under it)
     :ptype columns: Sequence[str]
     :param by: the bound prefix, as :func:`keyset_page` takes it
     :ptype by: Mapping[str, Any]

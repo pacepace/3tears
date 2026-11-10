@@ -395,6 +395,8 @@ async def apply_stage(
     key: Sequence[str],
     columns: Sequence[str],
     mode: StageMode | str = StageMode.REPLACE,
+    by: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
 ) -> StageWrite:
     """write ``stage``'s rows into ``target`` by the stage's ``key``, never reading ``target`` but by that key.
 
@@ -403,7 +405,11 @@ async def apply_stage(
     - ``upsert``: ``INSERT ... SELECT ... FROM stage ON CONFLICT (key) DO UPDATE SET c = excluded.c`` (the key a
       unique constraint of ``target``);
     - ``difference``: as ``replace``, but only the stage rows whose values differ (``IS DISTINCT FROM``) from the
-      row of their key, or whose key is new.
+      row of their key, or whose key is new. With a scope (``by``, ``where``: one state, one partition), the
+      table's rows in that scope whose key the stage does not hold are deleted too (``DELETE FROM target WHERE
+      <scope> AND NOT EXISTS (SELECT 1 FROM stage s WHERE s.k = target.k)``), so the scope holds exactly the
+      stage's rows, and rows the stage holds as they are stay untouched. With no scope no absent key is deleted:
+      the stage names the rows it writes, never the table's others.
 
     One spelling for PostgreSQL, YugabyteDB, DuckDB (:class:`~threetears.core.keyed.ThreadedDuckDB`) and SQLite
     (:class:`~threetears.core.keyed.ThreadedSQLite`); run it in the caller's transaction so a reader sees the stage
@@ -421,13 +427,23 @@ async def apply_stage(
     :ptype columns: Sequence[str]
     :param mode: ``replace``, ``upsert`` or ``difference``
     :ptype mode: StageMode | str
+    :param by: ``difference`` only: the scope the stage replaces whole, its columns pinned (each a value or an
+        ``AnyOf``); its rows of keys the stage does not hold are deleted
+    :ptype by: Mapping[str, Any] | None
+    :param where: ``difference`` only: filters of that scope beside ``by``, each a fragment from ``$1`` on the
+        target's columns, unqualified (``"state" = $1``)
+    :ptype where: Sequence[Fragment]
     :return: the rows deleted and written
     :rtype: StageWrite
-    :raises ValueError: when the key is empty or not among the columns, or the mode is unknown
+    :raises ValueError: when the key is empty or not among the columns, the mode is unknown, or a scope is given to
+        a mode other than ``difference``
     """
     chosen = StageMode(mode)
     if not key or any(column not in columns for column in key):
         raise ValueError(f"a stage applied to {target} names its key among the columns written, got {list(key)}")
+    scoped = bool(by) or bool(where)
+    if scoped and chosen is not StageMode.DIFFERENCE:
+        raise ValueError(f"a stage's scope (by=, where=) deletes the absent keys of a difference; {chosen} has none")
     table = quoted_table(target)
     staged = quoted_table(stage)
     cols = ", ".join(quote_identifier(column) for column in columns)
@@ -456,6 +472,18 @@ async def apply_stage(
         if column not in key
     )
     changed = f"{on_key} AND ({differs})" if differs else "1 = 0"
+    removed = 0
+    if scoped:
+        conditions, params = by_conditions(by or {})
+        for fragment in where:
+            conditions.append(renumbered(fragment, len(params)))
+            params += list(fragment.params)
+        absent_key = await conn.execute(
+            f"DELETE FROM {table} WHERE {' AND '.join(conditions)} "
+            f"AND NOT EXISTS (SELECT 1 FROM {staged} AS s WHERE {on_key})",
+            *params,
+        )
+        removed = rows_affected(str(absent_key or ""))
     deleted = await conn.execute(f"DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM {staged} AS s WHERE {changed})")
     absent = " AND ".join(f"{table}.{quote_identifier(column)} = s.{quote_identifier(column)}" for column in key)
     selected = ", ".join(f"s.{quote_identifier(column)}" for column in columns)
@@ -463,4 +491,4 @@ async def apply_stage(
         f"INSERT INTO {table} ({cols}) SELECT {selected} FROM {staged} AS s "
         f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {absent})"
     )
-    return StageWrite(deleted=rows_affected(str(deleted or "")), written=rows_affected(str(written or "")))
+    return StageWrite(deleted=removed + rows_affected(str(deleted or "")), written=rows_affected(str(written or "")))

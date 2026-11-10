@@ -55,7 +55,19 @@ from threetears.core.keyed._filters import (
 )
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
+__all__ = [
+    "ANY_ROWS_CAP",
+    "DEFAULT_KEY_BATCH",
+    "KeyBatch",
+    "KeyTooWide",
+    "any_rows",
+    "read_joined",
+    "read_keyed",
+    "read_keyed_arrow",
+]
+
+#: the most rows one :func:`any_rows` look takes
+ANY_ROWS_CAP: Final = 1000
 
 #: keys a statement names when the caller does not say: well under a statement's parameter and reply bounds
 DEFAULT_KEY_BATCH: Final = 1000
@@ -473,3 +485,49 @@ async def read_joined(
         else:
             held.append(row)
     return joined
+
+
+async def any_rows(
+    conn: Any,
+    table: str | Derived,
+    columns: Sequence[str],
+    *,
+    limit: int,
+    by: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
+) -> list[dict[str, Any]]:
+    """at most ``limit`` rows of ``table`` that ``by`` and ``where`` name, in no order: a bounded look.
+
+    ``SELECT <columns> FROM <table> AS t WHERE <by> AND <where> LIMIT <limit>``, no ``ORDER BY``: the database
+    stops at the bound wherever its scan stands, so the look costs about ``limit`` rows. For an operator command that
+    needs any rows, not given ones (take any 500 to empty a table a statement at a time, any one run to name): which
+    rows come is the database's choice and may differ call to call.
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param table: the table (``schema.table``), or a derived relation
+    :ptype table: str | Derived
+    :param columns: the columns read, TRUSTED identifiers
+    :ptype columns: Sequence[str]
+    :param limit: the most rows read, 1 to :data:`ANY_ROWS_CAP`
+    :ptype limit: int
+    :param by: columns pinned (each a value, None or an ``AnyOf``)
+    :ptype by: Mapping[str, Any] | None
+    :param where: filters beside ``by``, each a fragment from ``$1`` written as ``t."col"``
+    :ptype where: Sequence[Fragment]
+    :return: the rows, in no order
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: when ``limit`` is under one or over :data:`ANY_ROWS_CAP`, or no column is read
+    """
+    if not 1 <= limit <= ANY_ROWS_CAP:
+        raise ValueError(f"a bounded look takes 1 to {ANY_ROWS_CAP} rows, got {limit}")
+    if not columns:
+        raise ValueError(f"a bounded look of {table} reads at least one column")
+    conditions, params = by_conditions(by or {}, alias="t")
+    for fragment in where:
+        conditions.append(renumbered(fragment, len(params)))
+        params += list(fragment.params)
+    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
+    rows = await conn.fetch(f"SELECT {selected} FROM {relation(table, 't')}{clause} LIMIT {limit}", *params)
+    return [dict(row) for row in rows]

@@ -30,6 +30,7 @@ from threetears.core.keyed import (
     counts_by,
     counts_by_relations,
     delete_keyed,
+    keyset_page,
     keyset_rows,
     read_keyed,
     update_from,
@@ -185,10 +186,43 @@ class TestKeysetRows:
             assert asked[1].startswith("SELECT version()")
             pages = asked[2:]
             assert len(pages) == -(-len(plain) // 8) - 1
-            assert all(('(t."a", t."b") > (' in sql) is by_row for sql in pages), pages[0]
+            # the pinned column leads the comparison and the order: one range of the index it leads
+            assert all(('(t."s", t."a", t."b") > ($1, ' in sql) is by_row for sql in pages), pages[0]
+            assert all('ORDER BY t."s" ASC, t."a" ASC, t."b" ASC' in sql for sql in pages), pages[0]
         single = _Recording(db)
         rows = await keyset_rows(single, "t", columns=["a", "b"], by={"a": "k1"}, order=order, page=50)
         assert len(rows) == 10 and len(single.statements) == 1
+
+
+class TestSortExpression:
+    async def test_a_page_sorted_by_an_expression_pages_by_its_value(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a sort expression is not what the pages order and step by (rows lost or doubled across cursor
+        pages and drains), is not read under its own name, or may shadow a column read (its cursor would carry the
+        column's value, not the expression's)."""
+        order = [Sort("a_key", expression='upper(t."a")'), Sort("b", cast="bigint")]
+        plain = _plain(db, "SELECT upper(a), b FROM t WHERE s = 'on' ORDER BY upper(a), b")
+        paged: list[tuple[Any, ...]] = []
+        cursor = None
+        while True:
+            page = await keyset_page(
+                ThreadedDuckDB(db), "t", columns=["b"], by={"s": "on"}, order=order, limit=7, cursor=cursor
+            )
+            paged += [(row["a_key"], row["b"]) for row in page.rows]
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
+        assert paged == plain
+        drained = await keyset_rows(ThreadedDuckDB(db), "t", columns=["b"], by={"s": "on"}, order=order, page=7)
+        assert [(row["a_key"], row["b"]) for row in drained] == plain
+        with pytest.raises(ValueError, match="name of its own"):
+            await keyset_page(
+                ThreadedDuckDB(db),
+                "t",
+                columns=["a", "b"],
+                by={},
+                order=[Sort("a", expression='upper(t."a")')],
+                limit=3,
+            )
 
 
 class TestReadKeyedWhere:
@@ -358,6 +392,52 @@ class TestApplyStage:
             await apply_stage(ThreadedDuckDB(db), "t", "t", key=["z"], columns=["a"])
 
 
+class TestApplyStageDifferenceScope:
+    async def test_a_scoped_difference_leaves_the_scope_holding_exactly_the_stage(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a held row of the scope whose key the stage lacks stays, a row outside the scope is touched, a
+        row the stage holds as it is is rewritten, or the counts are not the rows deleted and written."""
+        db.execute("CREATE TABLE stg AS SELECT * FROM t WHERE a = 'k1' AND b < 50")
+        db.execute("UPDATE stg SET v = v + 1000 WHERE b = 21")
+        db.execute("INSERT INTO stg VALUES ('k1', 101, 1, 'on')")
+        before_other = _plain(db, "SELECT * FROM t WHERE a <> 'k1' ORDER BY a, b")
+        applied = await apply_stage(
+            ThreadedDuckDB(db),
+            "t",
+            "stg",
+            key=["a", "b"],
+            columns=["a", "b", "v", "s"],
+            mode="difference",
+            by={"a": "k1"},
+        )
+        # absent from the stage: 51..91 (5 rows); changed: 21; new: 101
+        assert (applied.deleted, applied.written) == (6, 2)
+        assert _plain(db, "SELECT * FROM t WHERE a = 'k1' ORDER BY b") == _plain(db, "SELECT * FROM stg ORDER BY b")
+        assert _plain(db, "SELECT * FROM t WHERE a <> 'k1' ORDER BY a, b") == before_other
+
+    async def test_a_scope_with_where_and_without_a_difference(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a where= scope is ignored, or a scope is taken by a mode that deletes no absent key."""
+        db.execute("CREATE TABLE stg AS SELECT * FROM t WHERE a = 'k2' AND b < 30")
+        applied = await apply_stage(
+            ThreadedDuckDB(db),
+            "t",
+            "stg",
+            key=["a", "b"],
+            columns=["a", "b", "v", "s"],
+            mode="difference",
+            where=[Fragment('"a" = $1', ("k2",))],
+        )
+        # k2 holds b = 2, 12, ..., 92; the stage 2, 12, 22 as they are: the other 7 go, nothing is written
+        assert (applied.deleted, applied.written) == (7, 0)
+        assert _plain(db, "SELECT count(*) FROM t") == [(93,)]
+        for mode in (StageMode.REPLACE, StageMode.UPSERT):
+            with pytest.raises(ValueError, match="scope"):
+                await apply_stage(
+                    ThreadedDuckDB(db), "t", "stg", key=["a", "b"], columns=["a", "b"], mode=mode, by={"a": "k2"}
+                )
+
+
 class TestCountsEveryValue:
     async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a value is lost or double-counted across pages, a value outside the prefix is counted, or the
@@ -411,3 +491,102 @@ class TestCountsPacked:
             ThreadedDuckDB(db), {"t": "t"}, column="a", where=[Fragment('"v" > $1', (89,))], packed_rows=3, groups=10
         )
         assert counted == {"t": {f"k{i}": 1 for i in range(10)}}
+
+
+class TestCountsPackedNullsAndName:
+    async def test_a_null_group_survives_the_packing_and_the_text_takes_the_caller_s_name(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a NULL group is lost from a packed answer (a NULL in a ``||`` nulls the whole text), or the
+        packed text is not named as the caller asks."""
+        where = [Fragment('"v" > $1', (50,))]
+        unpacked = await counts_by_relations(ThreadedDuckDB(db), {"t": "t"}, column="s", where=where)
+        reader = _Recording(db)
+        packed = await counts_by_relations(
+            reader, {"t": "t"}, column="s", where=where, packed_rows=1, groups=2, packed_as="run_rows"
+        )
+        assert packed == unpacked and None in packed["t"]
+        assert 'AS "run_rows"' in reader.statements[0][0] and "AS packed" not in reader.statements[0][0]
+
+
+def _changes(db: duckdb.DuckDBPyConnection) -> None:
+    """two report tables: ``up`` a text stamp (a warehouse's), ``called`` a timestamp, ``src`` the data time."""
+    for name, upload_floor in (("ra", 0), ("rb", 30)):
+        db.execute(
+            f"CREATE TABLE {name} AS SELECT 'S' || (i % 3) AS state, CASE WHEN i % 7 = 0 THEN NULL ELSE 'g' || (i % 4) "
+            "END AS geo, CAST(TIMESTAMP '2026-11-03 00:00:00' + to_minutes(i) AS VARCHAR) AS up, "
+            "CASE WHEN i % 5 = 0 THEN TIMESTAMP '2026-11-04 00:00:00' + to_minutes(i) END AS called, "
+            f"CAST(TIMESTAMP '2026-11-02 00:00:00' + to_minutes(i) AS VARCHAR) AS src FROM range({upload_floor}, 60) r(i)"
+        )
+
+
+_MARKS: dict[str, dict[str, str | None]] = {
+    "ra": {"up": "2026-11-03 00:40:00", "called": None},
+    "rb": {"up": "2026-11-03 00:50:00", "called": "2026-11-04 00:45:00"},
+}
+
+
+def _hand_written(db: duckdb.DuckDBPyConnection) -> set[tuple[Any, ...]]:
+    """the change statement as reports wrote it by hand: rows past either mark, grouped by state and geography."""
+    parts: list[str] = []
+    params: list[Any] = []
+    for index, (name, marks) in enumerate(_MARKS.items()):
+        params += [marks["up"] or "0001-01-01 00:00:00", marks["called"] or "0001-01-01 00:00:00"]
+        up, called = len(params) - 1, len(params)
+        parts.append(
+            f"SELECT {index} AS t, state, CAST(geo AS VARCHAR) AS grp, count(*) AS n, CAST(max(src) AS VARCHAR) AS src, "
+            f"max(CASE WHEN CAST(up AS TIMESTAMP) > CAST(${up} AS TIMESTAMP) THEN 1 ELSE 0 END) AS fresh FROM {name} "
+            f"WHERE CAST(up AS TIMESTAMP) > CAST(${up} AS TIMESTAMP) OR CAST(called AS TIMESTAMP) > CAST(${called} AS "
+            "TIMESTAMP) GROUP BY state, geo"
+        )
+    rows = db.execute(" UNION ALL ".join(parts), params).fetchall()
+    return {(list(_MARKS)[t], state, grp, n, src, bool(fresh)) for t, state, grp, n, src, fresh in rows}
+
+
+class TestCountsSinceMarks:
+    async def test_every_relation_s_groups_past_its_marks_come_in_one_statement(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if the groups past each relation's marks (either stamp, a missing mark the floor, a text stamp read
+        as a timestamp) differ from the hand-written change statement, packed or not, a NULL group or the fresh
+        flag is lost, or either takes more than one statement."""
+        _changes(db)
+        expected = _hand_written(db)
+        assert any(grp is None for _, _, grp, *_ in expected) and any(row[-1] for row in expected)
+        for packed_rows in (None, 3):
+            reader = _Recording(db)
+            answer = await counts_by_relations(
+                reader,
+                {"ra": "ra", "rb": "rb"},
+                column="state",
+                since=_MARKS,
+                group={"ra": "geo", "rb": "geo"},
+                max_of=["src"],
+                fresh="up",
+                packed_rows=packed_rows,
+                groups=40,
+                packed_as="run_rows",
+            )
+            got = {
+                (label, found.value, found.group, found.rows, found.newest["src"], found.fresh)
+                for label, groups in answer.items()
+                for found in groups
+            }
+            assert got == expected, packed_rows
+            assert len(reader.statements) == 1
+
+    async def test_a_count_past_marks_is_refused_what_it_cannot_answer(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a relation with no marks, a fresh stamp no relation marks, values= beside since=, or group= with
+        no since= is sent rather than refused."""
+        _changes(db)
+        conn = ThreadedDuckDB(db)
+        with pytest.raises(ValueError, match="none for"):
+            await counts_by_relations(conn, {"ra": "ra"}, column="state", since={"ra": {}})
+        with pytest.raises(ValueError, match="fresh="):
+            await counts_by_relations(conn, {"ra": "ra"}, column="state", since={"ra": {"up": None}}, fresh="called")
+        with pytest.raises(ValueError, match="values="):
+            await counts_by_relations(
+                conn, {"ra": "ra"}, column="state", since={"ra": {"up": None}}, values=AnyOf(["S1"], "text")
+            )
+        with pytest.raises(ValueError, match="need since="):
+            await counts_by_relations(conn, {"ra": "ra"}, column="state", values=AnyOf(["S1"], "text"), max_of=["src"])
