@@ -156,6 +156,8 @@ from threetears.evals.analysis.report.blocks import (
     TableColumn,
     Verdict,
 )
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, report_rulers
 from threetears.evals.analysis.report.forms import EVEN_SHARE, PageForms, PreferenceShares
 from threetears.evals.analysis.report.charts import (
     ChartReference,
@@ -692,6 +694,19 @@ class WriterResult:
                     read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged", passes))
         head = ["| reading | " + " | ".join(self.arms) + " |", "|---|" + "---|" * len(self.arms)]
         forms = PageForms.off_page()
+        # A measure the campaign's aspect page states a contrast of reads as that page prints its arms' levels (one form
+        # per measure, number rule 1): Must-fix findings open reads 0.4 here as on the page, never 0.43.
+        bundles = [fold.report.bundle for fold in self.page.aspects]
+        aspects = PageForms.of_aspects(bundles, self.page.readings)
+        on_page: dict[str, tuple[PageForms, MeasureRuler, ContrastPlaces]] = {}
+        for bundle in bundles:
+            rulers = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog)
+            for family in bundle.multiple_comparisons.families:
+                for comparison in family.comparisons:
+                    places = aspects[bundle.aspect].contrast_places(comparison.name, comparison.reading)
+                    if comparison.reading == "measure" and places is not None:
+                        ruler = rulers.of(comparison.name, comparison.reading)
+                        on_page.setdefault(comparison.name, (aspects[bundle.aspect], ruler, places))
         body = []
         for label, row in rows.items():
             key, kind, rate = read[label]
@@ -700,6 +715,12 @@ class WriterResult:
             elif kind == "judged":
                 # A judged score at the precision its cases support: a tenth below about 30 cases, where a hundredth is noise.
                 said = {arm: printed.text for arm, printed in forms.score_readings(row, measure=key, kind=kind).items()}
+            elif kind == "measure" and key in on_page:
+                page, ruler, places = on_page[key]
+                said = {
+                    arm: page.ruled_level(ruler, mean, places, measure=key, kind=kind).text
+                    for arm, (mean, _) in row.items()
+                }
             else:
                 said = {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
             body.append(f"| {label} | " + " | ".join(said.get(arm, "-") for arm in self.arms) + " |")

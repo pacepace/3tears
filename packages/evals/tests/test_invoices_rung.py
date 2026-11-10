@@ -137,7 +137,7 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     assert "decided only against a control" not in printed
     assert "the guardrail the other arms are decided against" in printed
     # Named as the page names the guardrail, never by its key.
-    assert "No invented total score: 98.9%, 88 of 89 trials; guardrail undecided against v1" in printed
+    assert "No invented total score: 99%, 88 of 89 trials; guardrail undecided against v1" in printed
     assert {row["arm"] for row in result.contrasts("total")} == {"v2"}
     # Every reading is read again per kind of invoice.
     assert {stratum for row in result.strata("v2") for stratum in row["strata"]} == {

@@ -148,7 +148,7 @@ def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_n
     # The print names each arm's measures as the page does: the classifier's match is the Accuracy the page leads on.
     printed = str(rung.result)
     assert "  Accuracy: 100%, 90 of 90 trials" in printed and "  currency:" not in printed
-    assert "  No invented total score: 98.9%, 89 of 90 trials" in printed and "  no_invented_total:" not in printed
+    assert "  No invented total score: 99%, 89 of 90 trials" in printed and "  no_invented_total:" not in printed
 
 
 #: A page's verdict line, its markup the group.

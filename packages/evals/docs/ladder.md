@@ -78,8 +78,8 @@ What it printed:
 ```text
 emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more.
 90 result(s): 90 scored
-  Urgent score: 83.3%, 75 of 90 trials
-  Escalates score: 98.9%, 89 of 90 trials
+  Urgent score: 83%, 75 of 90 trials
+  Escalates score: 99%, 89 of 90 trials
   Accuracy: 90%, 81 of 90 trials
   per label:
     account: precision 100% (17 of 17 trials over 7 cases, 57 to 100%), recall 81% (17 of 21 trials over 7 cases, ...
@@ -261,7 +261,7 @@ exits 4:
 ```text
 invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
-  Number score: 83.3%, 75 of 90 trials
+  Number score: 83%, 75 of 90 trials
   ...
 v2: 90 result(s): 89 scored, 1 failed by the candidate
   Number score: 100%, 89 of 89 trials

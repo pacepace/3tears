@@ -89,6 +89,7 @@ from threetears.evals.analysis.summary import CaseResult, DimensionSummary, Eval
 from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
+from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.build import (
     aspect_verdict,
@@ -549,7 +550,8 @@ class Result:
             descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
             if measure.state == "measured" and figures is not None:
                 rate = measure.name == MATCH_MEASURE or reads_as_rate("measure", measure.name, descriptor=descriptor)
-                said = _measured_text(forms, measure.name, said, figures.mean, figures.n, rate=rate)
+                level = self._page_rate(measure.name, figures.mean) if rate else None
+                said = _measured_text(forms, measure.name, said, figures.mean, figures.n, rate=rate, level=level)
             # Each measure under the name the page gives it, never its key.
             texts.append(f"{self._printed_name(measure.name)}{said}")
         if (omitted := summary.uncarried_text) is not None:
@@ -598,7 +600,9 @@ class Result:
         descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
         rate = not measured["unit"] and (name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor))
         mean = float(measured["mean"]) if rate else 0.0
-        return f"{self._printed_name(name)}{_measured_text(forms, name, measured['said'], mean, int(measured['n']), rate=rate)}"
+        level = self._page_rate(name, mean) if rate else None
+        said = _measured_text(forms, name, measured["said"], mean, int(measured["n"]), rate=rate, level=level)
+        return f"{self._printed_name(name)}{said}"
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
@@ -611,6 +615,24 @@ class Result:
     def _verdict(self) -> VerdictLine:
         """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""
         return aspect_verdict(self.report.bundle, measure_order=self.grader_readings, forms=self._aspect_forms())
+
+    def _page_rate(self, measure: str, rate: float | None) -> str | None:
+        """A measure's rate as :attr:`page` prints an arm's level of it (one form per measure, number rule 1): at the
+        places the code page's scorecard reads it at where that states it (one arm's campaign), else the places the
+        aspect's page reads its contrasts' levels at (a comparison's); None where neither states it, or for no rate.
+        """
+        if rate is None:
+            return None
+        code = PageForms.of_campaign(self.page.readings, {fold.aspect: fold.report for fold in self.page.aspects})
+        if any((form.key, form.kind) == (measure, "measure") for form in code.measures):
+            return code.level(measure, rate).text
+        aspect = self._aspect_forms()
+        places = aspect.contrast_places(measure, "measure")
+        if places is None:
+            return None
+        bundle = self.report.bundle
+        ruler = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog).of(measure, "measure")
+        return aspect.ruled_level(ruler, rate, places, measure=measure, kind="measure").text
 
     def _aspect_forms(self) -> PageForms:
         """The aspect page's forms, over the campaign's set of each measure, as the campaign's page reads them: so the
@@ -988,10 +1010,20 @@ def _aspect_forms(page: CampaignReport, bundle: AnalysisContextBundle) -> PageFo
     return PageForms.of_aspects([fold.report.bundle for fold in page.aspects], page.readings)[bundle.aspect]
 
 
-def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None, n: int, *, rate: bool) -> str:
+def _measured_text(
+    forms: PageForms,
+    measure: str,
+    said: str,
+    mean: float | None,
+    n: int,
+    *,
+    rate: bool,
+    level: str | None = None,
+) -> str:
     """A measure's figures as the quiet print says them, after its name: a rate in percent with its count of trials
-    (``: 83.3%, 75 of 90 trials``), as the page states a rate; any other measure's mean with its trials named
-    (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what follows it (a
+    (``: 83%, 75 of 90 trials``), the level as the campaign's page prints it (``level``, one form per measure, number
+    rule 1) where the page states it, else as a lone rate; any other measure's mean with its trials
+    named (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what follows it (a
     guardrail's standing), is kept."""
     read = _MEASURE_LINE.fullmatch(said)
     if read is None or mean is None:
@@ -999,7 +1031,8 @@ def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None
     rest, tail = read["rest"].removeprefix(", "), read["tail"]
     if rate:
         counted = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
-        level = forms.in_unit(100 * mean, PERCENT, role="level", measure=measure).text
+        if level is None:
+            level = forms.in_unit(100 * mean, PERCENT, role="level", measure=measure).text
         return f": {level}, {counted}{f' ({rest})' if rest else ''}{tail}"
     left = f", {rest}" if rest else ""
     return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
