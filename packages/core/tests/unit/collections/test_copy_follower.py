@@ -34,7 +34,7 @@ from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
-from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
@@ -1216,3 +1216,95 @@ async def test_notes_naming_a_whole_write_leave_the_table_behind_never_read_whol
     assert follower.status().behind == {_TABLE: "notes_whole"}
     assert _copy(backend) == before
     assert l3.rows_read == 0
+
+
+# --- a table the follower's owner derives, held in its checkpoint ---------------------------------------------------
+
+_DERIVED = "totals"
+_DERIVED_TABLE = FollowedTable(
+    name=_DERIVED,
+    key=("state",),
+    columns=(Column(name="state", column_type=STRING_TYPE), Column(name="total", column_type=BIGINT_TYPE)),
+)
+
+
+def _derived_replica(
+    l3: _L3, log: _Log, lock: _Seqlock, store: _Store, pointers: _Pointers, owner: str, *, holds_derived: bool = True
+) -> tuple[DuckDBBackend, CopyFollower]:
+    """a replica whose copy holds a table its owner derives (a settle's), which its checkpoint holds too."""
+    metadata = _metadata()
+    Table(_DERIVED, metadata, SaColumn("state", String(8), primary_key=True), SaColumn("total", BigInteger))
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    checkpoints = CopyCheckpoints(
+        name="votes",
+        tables=[*followed, *([_DERIVED_TABLE] if holds_derived else [])],
+        backend=backend,
+        store=store,
+        pointers=pointers,
+        retire=store.retire,
+        owner=owner,
+        part_rows=40,
+    )
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)  # the derived table is never followed: its owner derives it
+    follower = CopyFollower(
+        registry,
+        followed,
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+        checkpoints=checkpoints,
+    )
+    return backend, follower
+
+
+def _derive(backend: DuckDBBackend, total: int) -> None:
+    """the owner's settle: the derived table's rows, applied to the copy."""
+    stage = "__stage__totals__rows"
+    backend.stage_rows(stage, _DERIVED, pa.table({"state": ["VA"], "total": pa.array([total], pa.int64())}), ("state",))
+    backend.apply_staged([StagedChange(table=_DERIVED, key=("state",), rows=stage, whole=True)])
+
+
+def _totals(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
+    with backend.read_snapshot() as cursor:
+        return sorted(cursor.execute(f"SELECT state, total FROM {_DERIVED}").fetchall())
+
+
+async def test_a_derived_table_in_the_checkpoint_loads_with_the_followed_ones() -> None:
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 60))
+    log.commit([("VA", i) for i in range(60)])
+    first, writer = _derived_replica(l3, log, lock, store, pointers, "a")
+    assert not await writer.start()
+    _derive(first, 60)
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    second, follower = _derived_replica(l3, log, lock, store, pointers, "b")
+    l3.rows_read = 0
+    assert await follower.start()  # wholly from the checkpoint: the owner need not derive again
+    assert await follower.catch_up()
+    assert _copy(second) == l3.held() and l3.rows_read == 0
+    assert _totals(second) == [("VA", 60)]
+
+
+async def test_a_derived_table_the_checkpoint_cannot_give_is_left_to_its_owner_never_warmed() -> None:
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 60))
+    log.commit([("VA", i) for i in range(60)])
+    # an older writer's checkpoint holds no derived table
+    _, writer = _derived_replica(l3, log, lock, store, pointers, "a", holds_derived=False)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    second, follower = _derived_replica(l3, log, lock, store, pointers, "b")
+    l3.rows_read = 0
+    # the followed table loads; the derived one is the owner's to derive again, so the start is not whole
+    assert not await follower.start()
+    assert await follower.catch_up()
+    assert _copy(second) == l3.held() and l3.rows_read == 0
+    assert _totals(second) == []

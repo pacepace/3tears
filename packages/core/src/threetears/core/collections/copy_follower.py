@@ -591,6 +591,9 @@ class CopyFollower:
         #: each table's mark when the keys being staged were taken: what the next change applied holds
         self._staging_marks: dict[str, str | None] = {}
         self._checkpoints = checkpoints
+        if checkpoints is not None:
+            # every other table the checkpoint holds is derived by the follower's owner: loaded with these, never warmed
+            checkpoints.follow(self._tables)
         #: stages of forgotten tables, dropped before the next is staged; the table a pass reads now
         self._dropping: set[str] = set()
         self._reading: str | None = None
@@ -736,7 +739,12 @@ class CopyFollower:
         holds at its schema is read whole, alone (why ``cold_start`` or ``schema_change``); with no checkpoint at
         all, every table is (:meth:`warm`).
 
-        :return: whether any table started from a checkpoint
+        A table the checkpoint holds that this follower does not follow (one its owner derives from the followed
+        ones) is never warmed here: when the checkpoint cannot give it, its owner derives it again (``settle_all``),
+        which a start not wholly from a checkpoint asks for.
+
+        :return: whether the start was wholly from a checkpoint (every table it holds loaded); False asks the owner to
+            derive its derived tables again
         :rtype: bool
         """
         self.register()
@@ -747,6 +755,7 @@ class CopyFollower:
         if not staged.loaded:
             await self._warm_tables({name: staged.missing.get(name, "cold_start") for name in self._tables})
             return False
+        followed_missing = {name: why for name, why in staged.missing.items() if name in self._tables}
         self._mark += 1
         await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
         # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
@@ -754,14 +763,15 @@ class CopyFollower:
         for name, mark in staged.marks.items():
             self._registry.generation_marks.adopt_generation(name, mark)
         self._status.stamp = staged.stamp
-        if staged.missing:
-            await self._warm_tables(dict(staged.missing))
+        if followed_missing:
+            await self._warm_tables(followed_missing)
         self._say(
             FollowerPhase.FOLLOWING,
-            f"loaded a checkpoint of {staged.rows} rows ({len(staged.missing)} tables read whole); catching up",
+            f"loaded a checkpoint of {staged.rows} rows ({len(followed_missing)} tables read whole, "
+            f"{len(staged.missing) - len(followed_missing)} derived tables to derive again); catching up",
         )
         self._poked.set()
-        return True
+        return not staged.missing
 
     async def _warm_tables(self, whys: Mapping[str, str]) -> None:
         """take these tables' marks at the head and read each whole at the next apply, counted by why.
