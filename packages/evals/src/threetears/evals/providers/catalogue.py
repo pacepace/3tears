@@ -48,6 +48,7 @@ from typing import Final
 
 import httpx
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.negotiation import LearnedSettings
 from threetears.evals.schema.logs import get_logger
 
@@ -443,7 +444,7 @@ class Catalogue:
             await asyncio.wait_for(asyncio.shield(self._in_flight), bound)
         except TimeoutError:
             raise TimeoutError(
-                f"another task's fetch of the price catalogue at {self.url} had not finished in {bound:g} seconds"
+                f"another task's fetch of the price catalogue at {self.url} had not finished in {spell_declared(bound)} seconds"
             ) from None
 
     async def _load_once(self, timeout: float) -> None:

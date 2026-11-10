@@ -14,6 +14,8 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol
 
+from threetears.evals.kernel.numbers import round_half_even
+
 
 class EvalJobTimeout(Exception):
     """A job outlived the wall-clock budget its timeout context was enforcing.
@@ -36,7 +38,9 @@ class EvalJobTimeout(Exception):
 
     def __init__(self, budget_s: float, elapsed_s: float, attribution: str | None = None) -> None:
         """Record the breached budget, the time spent under it, and the host's attribution."""
-        super().__init__(f"job exceeded its {budget_s:.0f}s budget after {elapsed_s:.0f}s")
+        super().__init__(
+            f"job exceeded its {round_half_even(budget_s, 0)}s budget after {round_half_even(elapsed_s, 0)}s"
+        )
         self.budget_s = budget_s
         self.elapsed_s = elapsed_s
         self.attribution = attribution
@@ -50,8 +54,8 @@ class EvalJobTimeout(Exception):
         """
         named = f"; the host named {self.attribution!r} as running when it fired" if self.attribution else ""
         return (
-            f"wall-clock budget reached — the run's {self.budget_s:.0f}s time budget ran out after "
-            f"{self.elapsed_s:.0f}s{named}; the cells it delivered are kept and its completeness record counts them"
+            f"wall-clock budget reached — the run's {round_half_even(self.budget_s, 0)}s time budget ran out after "
+            f"{round_half_even(self.elapsed_s, 0)}s{named}; the cells it delivered are kept and its completeness record counts them"
         )
 
 
@@ -135,7 +139,7 @@ def timed_out_detail(timed_out: EvalJobTimeout) -> str:
     """
     named = f"; the host named {timed_out.attribution!r} as running when it fired" if timed_out.attribution else ""
     return (
-        f"timed out: its {timed_out.budget_s:.0f}s wall-clock budget ran out after {timed_out.elapsed_s:.0f}s"
+        f"timed out: its {round_half_even(timed_out.budget_s, 0)}s wall-clock budget ran out after {round_half_even(timed_out.elapsed_s, 0)}s"
         f"{named}; what it recorded before then is kept"
     )
 

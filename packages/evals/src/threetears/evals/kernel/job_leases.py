@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import ValidationError
 
+from threetears.evals.kernel.numbers import round_half_even, spell_declared
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
@@ -1161,7 +1162,7 @@ class JobLeases:
                 # a lost race.
                 failed: Exception = (
                     TimeoutError(
-                        f"the renewal's store call had not returned in the {self._lease_s:g}s of the lease it was renewing"
+                        f"the renewal's store call had not returned in the {spell_declared(self._lease_s)}s of the lease it was renewing"
                     )
                     if hung
                     else error
@@ -1177,7 +1178,7 @@ class JobLeases:
                     log=log,
                     what=(
                         f"eval.job_lease renewal failed {held.kind.name}={record_id} scope={held.scope_id} "
-                        f"— retried in {self.renew_every_s:g}s"
+                        f"— retried in {spell_declared(self.renew_every_s)}s"
                     ),
                     level="error",
                 )
@@ -1212,7 +1213,7 @@ class JobLeases:
         keeping it, and the stuck call is logged."""
         now = time.monotonic()
         stuck = TimeoutError(
-            f"the renewal's store call has not returned in {now - held.stuck_since:.1f}s; no second renewal is sent "
+            f"the renewal's store call has not returned in {round_half_even(now - held.stuck_since, 1)}s; no second renewal is sent "
             "while it is stuck, and its lease-pool thread was abandoned with the pool it ran on"
         )
         if now - held.renewed_at >= self._lease_s:
@@ -1286,7 +1287,7 @@ class JobLeases:
             why,
         )
         entry = (
-            f"job lease: its holder, process {self._holder_id}, could not renew it for {self._lease_s:g}s, its "
+            f"job lease: its holder, process {self._holder_id}, could not renew it for {spell_declared(self._lease_s)}s, its "
             f"whole lease, and stopped the job — {why}"
         )
         try:

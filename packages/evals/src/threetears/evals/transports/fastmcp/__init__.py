@@ -95,6 +95,7 @@ except ModuleNotFoundError as missing:
     ) from missing
 from pydantic import ConfigDict, Field
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
@@ -163,7 +164,9 @@ class CallTimedOut(Exception):
         :param timeout_s: The timeout, in seconds.
         :ptype timeout_s: float
         """
-        super().__init__(f"the call outlived its {timeout_s:g}s call timeout and was stopped; {_TIMED_OUT_REMEDY}")
+        super().__init__(
+            f"the call outlived its {spell_declared(timeout_s)}s call timeout and was stopped; {_TIMED_OUT_REMEDY}"
+        )
         self.timeout_s = timeout_s
 
 
@@ -744,7 +747,7 @@ class CatalogueTool(Tool):
         except CallTimedOut as stopped:
             return ToolResult(
                 content=(
-                    f"the call outlived this server's {stopped.timeout_s:g}s call timeout and was stopped. No "
+                    f"the call outlived this server's {spell_declared(stopped.timeout_s)}s call timeout and was stopped. No "
                     "action's call waits on a model — work that does runs as a job — so this is a fault of the "
                     f"server's store or of the action, not something to wait out: report it. But {_TIMED_OUT_REMEDY}"
                 ),

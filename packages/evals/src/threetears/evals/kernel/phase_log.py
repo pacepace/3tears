@@ -48,6 +48,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Literal
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.logs import get_logger
 
 __all__ = ["charged", "phase_logged", "served_by", "took_in"]
@@ -101,7 +102,7 @@ class _CallLine:
                 f"runs_in={_blank(self.runs_in)}",
                 f"results_in={_blank(self.results_in)}",
                 *(f"{phase}_ms={_ms(phases.get(phase))}" for phase in _PHASES),
-                f"elapsed_ms={elapsed_ms:.1f}",
+                f"elapsed_ms={round_half_even(elapsed_ms, 1)}",
                 f"path={'+'.join(sorted(self.paths))}",
                 f"store_calls={_blank(self.store_calls)}",
             ]
@@ -140,7 +141,7 @@ def _blank(value: int | None) -> str:
 
 
 def _ms(value: float | None) -> str:
-    return "" if value is None else f"{value:.1f}"
+    return "" if value is None else f"{round_half_even(value, 1)}"
 
 
 @contextmanager

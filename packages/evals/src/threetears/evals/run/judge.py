@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.models import (
     MODEL_DEFAULT_TEMPERATURE,
     PASS_FAIL_SCORES,
@@ -549,7 +550,7 @@ async def run_judge_llm(
             label,
             case_id,
             attempts_made,
-            "unpriced" if total_cost is None else f"${total_cost:.6f}",
+            "unpriced" if total_cost is None else f"${round_half_even(total_cost, 6)}",
         )
 
     # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
@@ -613,7 +614,7 @@ async def run_judge_llm(
         # Logged whenever the provider reported anything about the attempt's spend — a call with
         # unreported counts and a known cost still spent, and a truthiness test would drop it.
         if attempt_input is not None or attempt_output is not None or attempt_cost is not None:
-            cost_str = f" cost=${attempt_cost:.6f}" if attempt_cost is not None else ""
+            cost_str = f" cost=${round_half_even(attempt_cost, 6)}" if attempt_cost is not None else ""
             log.info(
                 "eval_judge: model=%s input=%s output=%s%s judge=%s case=%s attempt=%d/%d",
                 getattr(result, "model", "unknown") or "unknown",

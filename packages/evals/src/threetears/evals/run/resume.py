@@ -53,6 +53,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
@@ -454,7 +455,8 @@ class RunResumption:
         template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
         holding. The host's disclosure and the engine's build are never compared, so a moved one refuses nothing,
         and the run keeps the ones its launch stated: a holding records neither. The run reads admitted on estimated
-        rates (``cap_checked_on_estimates``) when either its launch or this take-up was.
+        rates (``cap_checked_on_estimates``) when either its launch or this take-up was, and records none when the take-up
+        drops the cap.
 
         :param fresh: The run the launch assembled and stamped.
         :ptype fresh: EvalRun
@@ -536,8 +538,12 @@ class RunResumption:
                 # A run stored before runs froze their template's measured content passed only with its template
                 # unedited since it began, so what the template measures now is what it measured: frozen from here.
                 "template_digest": stored.template_digest or fresh.template_digest,
-                # Admitted on estimated rates in any holding is admitted on an estimate: the flag stays set once set.
-                "cap_checked_on_estimates": True
+                # Admitted on estimated rates in any holding is admitted on an estimate: the flag stays set once set. A
+                # take-up that drops the cap leaves nothing to read against an estimate, and the field is not recorded
+                # for a run with no cap.
+                "cap_checked_on_estimates": None
+                if fresh.max_cost_usd is None
+                else True
                 if stored.cap_checked_on_estimates or fresh.cap_checked_on_estimates
                 else stored.cap_checked_on_estimates,
             }
@@ -686,9 +692,9 @@ def _why_not_taken_up(
         reasons.append(
             ValidationFailedError(
                 f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
-                f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against "
-                f"a cap of ${cap:.4f}",
-                remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+                f"${round_half_even(spent, 4)} — at least that, since a cell in flight when it stopped may have spent more — against "
+                f"a cap of ${round_half_even(cap, 4)}",
+                remedy=f"call job_resume with max_cost_usd above ${round_half_even(spent, 4)}",
             )
         )
     if run.template_id is None:

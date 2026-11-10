@@ -47,7 +47,7 @@ from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, round_half_even, spell_declared
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -2320,15 +2320,15 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
     if ceiling is not None and cell_timeout_s > ceiling:
         declared = settings.max_cell_timeout_s is not None
         raise ValidationFailedError(
-            f"cell_timeout_s={cell_timeout_s:g} is above the {'host' if declared else 'kind'}'s ceiling of "
-            f"{ceiling:g}s"
+            f"cell_timeout_s={spell_declared(cell_timeout_s)} is above the {'host' if declared else 'kind'}'s ceiling of "
+            f"{spell_declared(ceiling)}s"
             + (
                 f" ({settings.name_of('max_cell_timeout_s')})"
                 if declared
                 else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
                 "the kind's own deadline"
             ),
-            remedy=f"pass a cell_timeout_s at or below {ceiling:g}",
+            remedy=f"pass a cell_timeout_s at or below {spell_declared(ceiling)}",
         )
 
 
@@ -3005,41 +3005,41 @@ def _largest_call_over_cap(
         # A floor: the real call carries its transcript on top, so the cap it needs is MORE than this, by an amount
         # nobody can know before the run — the remedy says so rather than name a cap that would admit the arm.
         refusal = (
-            f"{what} cannot make {ceiling.call} under its ${cap:.2f} cap: even the smallest such call this arm could "
+            f"{what} cannot make {ceiling.call} under its ${round_half_even(cap, 2)} cap: even the smallest such call this arm could "
             f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
-            f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+            f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
             "past it. A cap is read between cells and refuses no call inside one, so the run would make the call "
             f"and stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
         )
         if needed <= host_ceiling:
             raise_it = (
-                f"name max_cost_usd above ${needed:.2f} — a floor, not the cap the arm needs: the real call adds its "
+                f"name max_cost_usd above ${round_half_even(needed, 2)} — a floor, not the cap the arm needs: the real call adds its "
                 "transcript and evidence to that smallest one, so leave room for them and for the rest of the run"
             )
         else:
             raise_it = (
-                f"even the smallest such call needs a cap above ${needed:.2f}, beyond the host's ${host_ceiling:.2f} "
+                f"even the smallest such call needs a cap above ${round_half_even(needed, 2)}, beyond the host's ${round_half_even(host_ceiling, 2)} "
                 f"ceiling, which a launch cannot raise — only the host's operator can, through "
                 f"{request.settings.name_of('max_cost_usd')}"
             )
         return refusal, f"{raise_it}; or lower the call's floor: {ceiling.lowered_by}"
     refusal = (
-        f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
-        f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+        f"{what} cannot make its largest call under its ${round_half_even(cap, 2)} cap: {ceiling.call} is reserved at up to "
+        f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
         "past it. A cap is read between cells and refuses no call inside one, so the run would make the call and "
         f"stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
     )
     room = (
-        f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the arm's "
+        f" (${round_half_even(_cents_up(ceiling.usd + price.predicted_usd), 2)} also leaves room for the arm's "
         f"{format_number(price.predicted_usd, prefix='$')} cap figure around it)"
         if price.predicted_usd is not None
         else ""
     )
     if needed <= host_ceiling:
-        raise_it = f"name max_cost_usd of at least ${needed:.2f}, the cap one such call needs to be admitted{room}"
+        raise_it = f"name max_cost_usd of at least ${round_half_even(needed, 2)}, the cap one such call needs to be admitted{room}"
     else:
         raise_it = (
-            f"one such call needs a cap of at least ${needed:.2f}, above the host's ${host_ceiling:.2f} ceiling, "
+            f"one such call needs a cap of at least ${round_half_even(needed, 2)}, above the host's ${round_half_even(host_ceiling, 2)} ceiling, "
             f"which a launch cannot raise — only the host's operator can, through "
             f"{request.settings.name_of('max_cost_usd')}"
         )
@@ -3106,17 +3106,17 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         )
         return verdict(
             "refused",
-            f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
+            f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${round_half_even(cap, 2)} cap is "
             f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it.{unplanned} "
             f"{refused}",
-            f"launch it naming max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower "
+            f"launch it naming max_cost_usd (at most ${round_half_even(request.settings.max_cost_usd, 2)}; a launch may only lower "
             "the host's ceiling) — the most you will risk on a run nobody can price; what it costs then prices the "
             "next launch",
         )
     if price.predicted_usd > cap:
         ceiling = request.settings.max_cost_usd
         raise_it = (
-            f"a larger max_cost_usd, up to the host's ${ceiling:.2f} ceiling, raises the cap"
+            f"a larger max_cost_usd, up to the host's ${round_half_even(ceiling, 2)} ceiling, raises the cap"
             if cap < ceiling
             else f"the cap is the host's ceiling, which a launch cannot raise — only the host's operator can, through "
             f"{request.settings.name_of('max_cost_usd')}"

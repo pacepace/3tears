@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError as PydanticValidationError
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.schema.models import (
@@ -590,7 +591,7 @@ async def _repeat(
         len(report.skipped),
         len(report.unwritten),
         report.calls_made,
-        "unpriced" if report.cost_usd is None else f"${report.cost_usd:.6f}",
+        "unpriced" if report.cost_usd is None else f"${round_half_even(report.cost_usd, 6)}",
     )
     return report
 

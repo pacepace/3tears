@@ -43,6 +43,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from pydantic import Field, field_validator
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel
@@ -704,7 +705,7 @@ async def _ask(
         report.scores_paired,
         report.scores_unanswered,
         report.calls_made,
-        "unpriced" if report.cost_usd is None else f"${report.cost_usd:.6f}",
+        "unpriced" if report.cost_usd is None else f"${round_half_even(report.cost_usd, 6)}",
     )
     return report
 

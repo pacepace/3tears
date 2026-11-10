@@ -326,3 +326,11 @@ class TestTheWidenedModulesRenderByTheRule:
         )
         assert f"total_ms by {format_number(overrun)}ms, " in partition.withheld
         assert format_number(overrun) == "1234468"
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [(30.0, "30"), (0.25, "0.25"), (1e-07, "1e-07"), (1234567.0, "1.23457e+06"), (-2.5, "-2.5"), (-0.0, "-0")],
+)
+def test_a_declared_value_reads_as_its_declarer_wrote_it(value: float, text: str) -> None:
+    assert numbers.spell_declared(value) == text
