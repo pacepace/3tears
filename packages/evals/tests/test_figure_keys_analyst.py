@@ -474,6 +474,19 @@ class TestStrata:
             mean = stratum.per_arm["a"]["m"].mean
             assert _value(f"aspects.{stratum.aspect}.strata.short.a.m.mean", report_input) == mean
 
+    def test_ids_that_would_print_alike_on_different_aspects_each_print_as_their_name(self) -> None:
+        """``edge_case`` on one aspect and ``edge__case`` on the other would print alike, ``edge case``, but no aspect
+        holds both: each is named among its own aspect's strata, so each prints as its name, never its id."""
+        figures = {"base": {"m": {"mean": 0.8}}, "a": {"m": {"mean": 0.7}}}
+        report_input = _two_aspects(
+            strata=[
+                {"id": "edge_case", "n_cases": 10, "aspect": "one", "per_arm": figures},
+                {"id": "edge__case", "n_cases": 10, "aspect": "two", "per_arm": figures},
+            ]
+        )
+        assert _value("aspects.one.strata.edge_case.name", report_input) == "edge case"
+        assert _value("aspects.two.strata.edge__case.name", report_input) == "edge case"
+
     def test_a_qualified_loss_share_reads_the_aspects_own_strata(self) -> None:
         report_input = _two_aspects()
         for stratum in report_input.strata:
