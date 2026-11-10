@@ -329,10 +329,10 @@ def test_an_interval_key_reads_both_ends_at_one_precision_and_a_lone_change_keep
     assert format_figure(Figure(path="x", kind="number", value=-0.15, scale="share", change=True), forms=off) == "-15"
     # A plain interval no table sets reads at two significant figures of its width, never padded to its finer end.
     plain = Figure(path="x", kind="interval", value=(2.839, 3.0), scale="plain")
-    assert format_figure(plain, forms=off) == "2.84–3.00"
+    assert format_figure(plain, forms=off) == "2.84 to 3.00"
     assert (
         format_figure(Figure(path="x", kind="interval", value=(0.0009342, 0.2041), scale="plain"), forms=off)
-        == "0.0009–0.2041"
+        == "0.0009 to 0.2041"
     )
 
 
@@ -653,7 +653,7 @@ def test_only_the_statistics_a_table_prints_take_its_precision() -> None:
     assert said(f"{contrast}.n_cases") == "299"
     assert said(f"{contrast}.level") == "99.69%"
     spread = "spread.qwen3.8-flash.__outcome__.overall"
-    assert said(f"{spread}.mean") == "4.48" and said(f"{spread}.interval") == "4.43–4.54"
+    assert said(f"{spread}.mean") == "4.48" and said(f"{spread}.interval") == "4.43 to 4.54"
     assert [said(f"{spread}.{stat}") for stat in ("se", "per_case", "repeats", "n")] == [
         "0.02848",
         "0.4924",

@@ -105,8 +105,8 @@ def test_a_measure_s_interval_and_a_bar_s_read_their_ends_at_the_measure_s_level
     both ends whole too."""
     assert _cell(_table(s2, "arms_by_measure"), "measure:total_ms", arm="beta") == "701 ms"
     # The unit written once, after the high end (number policy, rule 3).
-    assert _said("measure.total_ms.beta.ci", s2) == "673–729 ms"
-    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673–729 ms"
+    assert _said("measure.total_ms.beta.ci", s2) == "673 to 729 ms"
+    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673 to 729 ms"
 
 
 def test_a_judged_key_reads_its_score_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
@@ -141,7 +141,7 @@ def test_a_task_key_reads_its_mean_as_the_tasks_table() -> None:
 def test_a_pooled_interval_on_a_score_off_the_rubric_reads_by_the_number_rule_as_its_table_does() -> None:
     """A judged score on 0–100 has no set (it is no 1–5 rubric score), so the tasks table prints it by the number rule
     (``94``), and its pooled interval's ends read by that rule too."""
-    assert _said("pooled.overall.atlas-l.interval", _held("prototype/r1")) == "92.1–93.5"
+    assert _said("pooled.overall.atlas-l.interval", _held("prototype/r1")) == "92.1 to 93.5"
 
 
 def test_a_derived_interval_on_a_rate_reads_its_ends_as_the_cells_table_reads_a_rate() -> None:
@@ -154,8 +154,8 @@ def test_a_derived_interval_on_a_rate_reads_its_ends_as_the_cells_table_reads_a_
 
 def test_a_pooled_interval_on_a_score_reads_its_ends_at_a_score_s_two_decimals(kairo: ReportInput) -> None:
     """Kairo's strata with a narrow half-width (0.08) on the outcome score: the pooled interval's ends read at a
-    score's two decimals, as the strata table prints each stratum's (``4.66–4.69``), never at two significant figures
-    of the interval's width (``4.656–4.687``)."""
+    score's two decimals, as the strata table prints each stratum's (``4.66 to 4.69``), never at two significant figures
+    of the interval's width (``4.656 to 4.687``)."""
     strata = [
         stratum.model_copy(
             update={
@@ -175,13 +175,13 @@ def test_a_pooled_interval_on_a_score_reads_its_ends_at_a_score_s_two_decimals(k
     figure = resolve("pooled.__outcome__.September.interval", held)
     assert isinstance(figure.value, tuple)
     low, high = (forms.level("__outcome__", end, kind="judged").text for end in figure.value)
-    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "4.66–4.69"
+    assert format_figure(figure, forms=forms) == f"{low} to {high}" == "4.66 to 4.69"
 
 
 def test_a_pooled_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_set() -> None:
     """r1's overall quality held as a measure (its figures the judged dimension's): its tasks' means set the measure's
-    levels whole, as the tasks table prints them (``94``), and the pooled interval's ends read whole too (``92–93``),
-    never at two significant figures of its width (``92.1–93.5``)."""
+    levels whole, as the tasks table prints them (``94``), and the pooled interval's ends read whole too (``92 to 93``),
+    never at two significant figures of its width (``92.1 to 93.5``)."""
     r1 = _held("prototype/r1")
     overall = r1.judged["overall"]
     measure = Measure(label=overall.label, unit="", per_arm=overall.per_arm, by_aspect=overall.by_aspect)
@@ -198,13 +198,13 @@ def test_a_pooled_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_s
     figure = resolve("pooled.overall.atlas-l.interval", held)
     assert isinstance(figure.value, tuple)
     low, high = (forms.level("overall", end).text for end in figure.value)
-    assert format_figure(figure, forms=forms) == f"{low}–{high}" == "92–93"
+    assert format_figure(figure, forms=forms) == f"{low} to {high}" == "92 to 93"
 
 
 def test_a_derived_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_set() -> None:
     """r3's accuracies in a measured unit (``ms``) in place of a percent: the interval derived from the cells reads its
     ends at the overall measure's levels' set, whole as the arms-by-measure table prints each arm's (``90 ms``), never
-    at two significant figures of its width (``89.49 ms–90.11 ms``)."""
+    at two significant figures of its width (``89.49 ms to 90.11 ms``)."""
     r3 = _held("prototype4/r3-without-its-configs")
     measured = {
         key: measure.model_copy(update={"unit": "ms", "grade": None})
@@ -224,7 +224,7 @@ def test_a_derived_interval_on_a_measure_reads_its_ends_at_the_measure_s_levels_
     assert isinstance(figure.value, tuple)
     low, high = (forms.level("balanced_accuracy", end).text for end in figure.value)
     # Each end as the table prints a level, the unit written once, after the high end (number policy, rule 3).
-    assert format_figure(figure, forms=forms) == f"{low.removesuffix(' ms')}–{high}" == "89–90 ms"
+    assert format_figure(figure, forms=forms) == f"{low.removesuffix(' ms')} to {high}" == "89 to 90 ms"
 
 
 def test_a_criterion_s_figure_and_its_interval_s_ends_read_at_its_measure_s_levels_set(

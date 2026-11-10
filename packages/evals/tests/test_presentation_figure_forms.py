@@ -292,7 +292,7 @@ def test_the_quick_print_states_rates_in_percent_with_their_trials_and_intervals
     """P43: no four-decimal means, no ``0.4377-1`` intervals, cases and trials named."""
     printed = str(rungs["rung0"].result)
     assert "  Accuracy: 90%, 81 of 90 trials" in printed
-    assert "precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])" in printed
+    assert "precision 100% (15 of 15 trials over 5 cases, 44 to 100%)" in printed
     assert "top misses (5 of 28 failed trials):" in printed
     assert not re.search(r"(?<!\$)\b0\.\d{4}\b|CI \d|\d-1\b", printed), printed
 
