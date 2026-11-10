@@ -17,6 +17,7 @@ _TAGGED = "src/hub/namespaces.py::tagged"
 _PLATFORM = "src/hub/namespaces.py::platform_rows"
 _LOWER = "src/hub/namespaces.py::by_lower_kind"
 _BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
+_PAGED = "src/hub/grants.py::page_by_state"
 
 #: the tables these statements read, each with the key its declaration gives it
 _DDL = f"""
@@ -37,6 +38,8 @@ CREATE TABLE api_keys (customer_id UUID, id UUID, key_hash TEXT UNIQUE, PRIMARY 
 CREATE TABLE grants (customer_id UUID, id UUID, name TEXT, state TEXT, PRIMARY KEY (customer_id, id),
     CONSTRAINT grants_name_uq UNIQUE (customer_id, name));
 CREATE UNIQUE INDEX grants_live ON grants (state) WHERE state = 'live';
+-- purpose: {_PAGED}
+CREATE INDEX grants_by_state ON grants (customer_id, state);
 ALTER TABLE gateway_providers ADD CONSTRAINT gateway_providers_name_uq UNIQUE (provider_name);
 CREATE TABLE namespaces (row_scope TEXT, namespace_id UUID, kind TEXT, tags JSONB, customer_id UUID,
     PRIMARY KEY (row_scope, namespace_id));
@@ -398,3 +401,14 @@ def test_an_unnest_join_keys_a_leading_prefix_of_the_key(sql: str, keyed: bool, 
     """Flips if a join to unnested bound keys covering a leading prefix of the key is called whole, or one binding
     only a later key column passes."""
     assert (_kinds(sql, schema) == []) is keyed, _kinds(sql, schema)
+
+
+@pytest.mark.parametrize(
+    ("order", "keyed"),
+    [("state", True), ("name", False)],
+)
+def test_a_page_through_an_index_orders_by_its_next_column(order: str, keyed: bool, schema: SchemaCatalog) -> None:
+    """Flips if a page ranging on an index's next column is called whole when it orders by that column, or passes
+    when it orders by another (sorting the tenant's every row)."""
+    sql = f"SELECT * FROM grants WHERE customer_id = $1 AND state > $2 ORDER BY {order} LIMIT 5"
+    assert (_kinds(sql, schema, _PAGED) == []) is keyed, _kinds(sql, schema, _PAGED)
