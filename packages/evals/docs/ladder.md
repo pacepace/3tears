@@ -537,8 +537,8 @@ Further down it reads the two code measures that moved most:
 | Reports | 14: 2 arms x 7 held-out cases, once each |
 | Writer turns | about 12.4 a report |
 | Writer | $6.90, about $0.49 a report |
-| Judge | $0.66, 112 calls: 98 scores and the pass's 14 |
-| Total | $7.56, under the $39 `max_cost_usd` |
+| Judge | $0.64, 112 calls: 98 scores and the pass's 14 |
+| Total | $7.54, under the $39 `max_cost_usd` |
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records it again, what
 it may spend, and what to do when a recording run is cut short.

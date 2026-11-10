@@ -95,7 +95,7 @@ replaces the number forms the entry "a chart says what it compares" lists below.
   it read `-15.0 pts`); an exact zero whole, with its unit (`0 notices`).
 - **Rung 5** reads a rate in its readings table as a percent with its counts (`43% (3 of 7)`, it read `0.43`) and a
   judged score to a tenth at seven cases (`4.7`, where it read two decimals). Its judge is recorded again over the new pages
-  (112 calls, $0.66); the writer's turns replay unchanged.
+  (112 calls, $0.64); the writer's turns replay unchanged.
 
 **Added:**
 - The figure-key filter `signed`. A criterion's `gap` and `weakest.margin` print their bare magnitude by default, at
