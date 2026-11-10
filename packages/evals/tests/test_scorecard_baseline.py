@@ -189,7 +189,8 @@ def test_the_line_under_the_matrix_names_the_tick_as_the_control_and_says_which_
     control = page.readings.control_label
     assert f"change from {control} (the tick)" in line, line
     assert "right is better" in line, line
-    assert re.search(r"Drawn from -?[\d.]+ to -?[\d.]+ pts\.", line), line
+    # A scale of changes, its ends signed (number rule 3).
+    assert re.search(r"Drawn from [+-]?[\d.]+ to [+-]?[\d.]+ pts\.", line), line
 
 
 # --- L2 and L3: a change is signed, in points, beside its level, and the levels close on it -----------------------

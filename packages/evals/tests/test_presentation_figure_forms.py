@@ -382,8 +382,8 @@ def test_a_margin_s_ticks_sit_strictly_inside_the_glyph_s_track() -> None:
     assert all(start < tick < end for tick in ticks), (start, ticks, end)
     (zero,) = [float(x) for x in re.findall(r'class="viz-zero" x1="([\d.]+)"', drawn)]
     assert ticks[0] < zero < ticks[1]
-    # The margin's ends read at a point's one decimal, as the chart's margin line and the glyph's title read it.
-    assert '<p class="axis">Each column drawn from -15.0 to 15.0 pts</p>' in drawn
+    # The scale's ends, the margin's among them, read at the column's tenth, signed as a change's ends are.
+    assert '<p class="axis">Each column drawn from -15.0 to +15.0 pts</p>' in drawn
 
 
 def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> None:
@@ -469,7 +469,7 @@ def test_a_scale_of_levels_never_runs_below_zero_where_its_measure_cannot() -> N
     assert whisker is not None and float(whisker.group(1)) >= start, "the whisker stops at the track's floor"
     change = _quality_scorecard(("change", "Change (pts)", TableCell(value=0.0, low=0.0, high=0.0, zero_line=True)))
     (line,) = _AXIS.findall(grid_html(change))
-    assert html.unescape(line) == "Each column drawn from -1.0 to 1.0 pts", line
+    assert html.unescape(line) == "Each column drawn from -1.0 to +1.0 pts", line
     signed = _quality_scorecard(("fields", "Stripped fields per delivery", TableCell(value=4.5, low=-4.9, high=13.9)))
     (line,) = _AXIS.findall(grid_html(signed))
     assert html.unescape(line) == "Each column drawn from -4.9 to 13.9", line
@@ -776,7 +776,7 @@ def test_a_scorecard_glyph_s_title_and_scale_read_in_the_cells_form() -> None:
     drawn = grid_html(block)
     # The margin is declared, so it reads as declared (number rule 4), never at the cells' tenth.
     assert "<title>16.7 pts, interval -7.8 to +35.4 pts, margin ±5 pts</title>" in drawn
-    assert '<p class="axis">Each column drawn from -7.8 to 35.4 pts</p>' in drawn
+    assert '<p class="axis">Each column drawn from -7.8 to +35.4 pts</p>' in drawn
     assert drawn.count('class="viz-margin"') == 2
 
 

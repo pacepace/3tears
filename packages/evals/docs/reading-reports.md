@@ -398,7 +398,7 @@ each alike on every bar, and the key names each (`failed: check`, `failed: judge
 solid and then textured, so no loss reads as a failure. An **interval glyph** is drawn in the table row that states
 the figure (Tufte's table-graphic): the interval as a whisker, the point as a dot, a zero line for a change, and a
 declared margin as a quiet band. Every cell of a column in one unit shares one scale, written once under the table,
-its two ends at one precision (`Each column drawn from -12.8 to 10.0 pts`), so the rows compare at a glance. A
+its two ends at one precision (`Each column drawn from -12.8 to +10.0 pts`; whole points, `-13 to +10 pts`, on a column that reads whole), so the rows compare at a glance. A
 change's matrix opens that line with what its marks draw (`Each mark is a candidate's change from production (the
 tick) with its interval, read at 95% to 98.33%; right is better. Drawn from -88.0 to 68.5 pts.`). A scale of levels
 runs below zero only where an interval on a measure not declared non-negative does. There are no standalone interval

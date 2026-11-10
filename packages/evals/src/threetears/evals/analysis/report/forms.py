@@ -1947,13 +1947,14 @@ class PageForms:
         if scale.unit and (unit == PERCENT or is_money(unit)):
             text = f"{_scale_spell(scale, unit, low)} to {_scale_spell(scale, unit, high)}"
         elif (places := _scale_places(scale, unit)) is not None and unit != PERCENT:
-            # The ends of a set, at its one precision (`-12.8 to 10.0 pts`, never `10 pts` beside `-12.8`).
-            if unit == POINTS:
-                # A scale in points, its margin's ends among them, reads at a point's one decimal, as the chart's
-                # margin line and the glyph's title do (``-15.0 to 15.0 pts``).
-                places = max(POINT_PLACES, places)
+            # The ends of a set, at its cells' one precision, the measure's (`-13 to +10 pts` on a whole-point column,
+            # `-12.8 to +10.0 pts` where the cells read a tenth), never `10 pts` beside `-12.8`. A scale in points is
+            # one of changes, so its ends carry their signs (number rule 3).
             at = ends_places(low, high, places)
-            text = f"{spell_at(low, at)} to {spell_at(high, at)}" + (f" {unit}" if unit else "")
+            signed = unit == POINTS
+            text = f"{spell_at(low, at, signed=signed)} to {spell_at(high, at, signed=signed)}" + (
+                f" {unit}" if unit else ""
+            )
         elif unit in (PERCENT, POINTS):
             ends = f"{number_in(low, unit)} to {number_in(high, unit)}"
             text = (

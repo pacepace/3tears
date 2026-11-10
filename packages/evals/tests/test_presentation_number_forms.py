@@ -357,7 +357,30 @@ def test_a_glyph_s_title_and_its_scale_line_read_a_whole_end_at_the_column_s_pre
     drawn = html.unescape(grid_html(block))
     # The interval in its one form, a change's ends signed.
     assert "<title>-5.0 pts, interval -12.8 to +10.0 pts</title>" in drawn, drawn
-    assert '<p class="axis">Each column drawn from -12.8 to 10.0 pts</p>' in drawn
+    # The scale's ends are figures of the column, so they read at its precision, a change's ends signed.
+    assert '<p class="axis">Each column drawn from -12.8 to +10.0 pts</p>' in drawn
+
+
+def test_a_scale_line_on_a_whole_point_column_reads_whole() -> None:
+    """A scale line kept a point's tenth on a column that reads whole points (``-12.8 to 10.0 pts`` beside ``-5
+    pts``): its ends are figures of the column's measure, so they read at its places, signed as changes are."""
+    block = TableBlock(
+        section="scorecard",
+        name="scorecard",
+        title="By aspect",
+        shared_scale=True,
+        columns=[{"key": "aspect", "header": "Aspect"}, {"key": "arm:v2", "header": "v2 (pts)"}],  # type: ignore[list-item]
+        order="aspect by aspect",
+        rows=[
+            {
+                "aspect": TableCell(value="classify"),
+                "arm:v2": TableCell(value=-5.0, low=-12.8, high=10.0, zero_line=True, decimals=0),
+            }
+        ],
+        total_rows=1,
+    )
+    drawn = html.unescape(grid_html(block))
+    assert '<p class="axis">Each column drawn from -13 to +10 pts</p>' in drawn, drawn
 
 
 def test_a_change_of_zero_reads_at_its_column_s_precision_and_carries_no_sign() -> None:
