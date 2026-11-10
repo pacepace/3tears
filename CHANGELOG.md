@@ -8,6 +8,14 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### agent-acl: the visible-customer set of one namespace type
+
+**Added:** `caller_visible_customers_query(scope_namespace_type=...)`, keyword-only: its `type_customer` arm adds a
+grant's customer only when the grant is on that namespace type (binds the caller, then the type), the set a listing
+of one type pages by (`keyset_page(visible=...)`); it admits exactly the rows `caller_visible_customer_clause` admits
+for the type (an integration test per scope arm). Without it the statement is unchanged byte for byte (the RLS GUC's
+set).
+
 ### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
 
 **Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed
