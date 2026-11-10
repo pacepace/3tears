@@ -48,7 +48,6 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
     cost_basis,
@@ -349,15 +348,24 @@ def test_the_options_table_cost_column_reads_in_one_form(name: str) -> None:
 
 
 def test_a_values_tables_column_reads_in_one_form_and_keeps_every_digit() -> None:
-    """A column holding an amount under a cent keeps dollars, never moved per 1,000 with the retired mark (Q4), each
-    amount's digits kept and its thousands grouped; a bound is left as it is."""
-    rows = [["A", "$0.008", "+$0.616"], ["B", "$0.11", "+$0.4924"], ["C", "$1239", "< $0.000001"]]
-    spelled = even_precision(rows)
+    """A gate matrix's costs under a cent keep dollars, never moved per 1,000 with the retired mark (Q4), each
+    amount's digits kept and its thousands grouped; a cost too small to state reads as a bound."""
+    costs = [0.008, 0.11, 1239, 1e-9]
+    matrix = GateMatrixChart.model_validate(
+        {
+            "columns": [{"label": "A"}],
+            "rows": [
+                {"label": str(at), "cells": [{"status": "neutral", "label": "", "cost": cost}]}
+                for at, cost in enumerate(costs)
+            ],
+            "cost_fmt": "usd",
+        }
+    )
+    spelled = [row[1] for row in matrix.values_table()[1]]
     # Money is never padded: each amount keeps its own figures (owner ruling 2026-11-07), never $0.110 beside $0.008.
-    assert [row[1] for row in spelled] == ["$0.008", "$0.11", "$1,239"]
-    assert [row[2] for row in spelled] == ["+$0.616", "+$0.4924", "< $0.000001"]
-    for row in spelled:
-        assert _amount(row[1]) == pytest.approx(_amount(rows[spelled.index(row)][1]))
+    assert spelled == ["$0.008", "$0.11", "$1,239", "< $0.000001"]
+    for cost, text in zip(costs[:3], spelled[:3], strict=True):
+        assert _amount(text) == pytest.approx(cost)
 
 
 def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:

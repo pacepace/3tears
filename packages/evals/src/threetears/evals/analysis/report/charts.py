@@ -31,7 +31,7 @@ from __future__ import annotations
 import functools
 import math
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
@@ -44,7 +44,6 @@ from threetears.evals.kernel.numbers import (
     ends_places,
     format_number,
     group_thousands,
-    round_half_even,
     spell_at,
 )
 from threetears.evals.analysis.quantities import (
@@ -172,7 +171,8 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
         text = spell_at(value, int(match[3]), signed=bool(match[1]))
         return f"{text}{unit}" if unit == PERCENT else f"{text} {unit}"
     if (not unit and read_at == POINTS) or unit == POINTS:
-        # A change in points reads at a point's one decimal, a whole one too (``-3.0``, never ``-3`` beside ``-7.6``).
+        # A change in points that names no digits (a host's chart, or a figure of no measure) reads at a point's
+        # tenth; a package chart names its measure's digits in its format, read above.
         text = spell_at(value, POINT_PLACES if places is None else places, signed=bool(match[1]))
         return text if not unit else f"{text} {unit}"
     if not unit and read_at:
@@ -434,67 +434,12 @@ _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 _CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(/1000)?(?![\d])")
 
 
-#: A percentage a cell states: its sign, its number and the percent sign; never inside a word or a longer number.
-_CELL_PERCENT = re.compile(r"(?<![\w.])([+\-−]?)(\d+(?:\.\d+)?)%")
-
-
-def percent_places(texts: Iterable[str]) -> int | None:
-    """The decimals one column's percentages read at: none, so whole percents (``60%``); one where whole percents
-    would print two of its values alike, an interval's two ends among them (``62.9%`` beside ``63.2%``), or where a
-    value printed at a half (``90.5%``) cannot decide its whole percent. None for a
-    column that states no percentage, or one written to two decimals or more (a confidence level, ``99.69%``), which
-    keeps its digits (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07).
-
-    :param texts: The column's cells, as they print.
-    :ptype texts: Iterable[str]
-    :return: 0 or 1; None for a column to leave as it is.
-    :rtype: int | None
-    """
-    found = [match for text in texts for match in _CELL_PERCENT.finditer(text)]
-    if not found or any(len(match[2].partition(".")[2]) > 1 for match in found):
-        return None
-    if any(match[2].endswith(".5") for match in found):
-        # A percentage printed to one decimal at a half (90.5%) cannot say which whole percent it rounds to (its value
-        # may be 90.48%), so the column keeps its decimal rather than print a rounding the digits cannot decide.
-        return 1
-    stated = {float(match[2]) for match in found}
-    return 0 if len({round_half_even(value, 0) for value in stated}) == len(stated) else 1
-
-
-def respell_percents(text: str, places: int) -> str:
-    """Every percentage a cell's text states at ``places`` decimals, rounded half to even (an exact zero ``0%``, which
-    states no precision); its other words as written.
-
-    :param text: The cell's text.
-    :ptype text: str
-    :param places: The column's decimals (:func:`percent_places`).
-    :ptype places: int
-    :return: The text.
-    :rtype: str
-    """
-    return _CELL_PERCENT.sub(
-        lambda match: match[1] + ("0" if float(match[2]) == 0 else round_half_even(float(match[2]), places)) + "%", text
-    )
-
-
-def _percents_by_column(table: list[list[str]]) -> list[list[str]]:
-    """A table's text with each column's percentages at its one precision (:func:`percent_places`); changed in place."""
-    for column in range(max((len(row) for row in table), default=0)):
-        places = percent_places(row[column] for row in table if column < len(row))
-        if places is None:
-            continue
-        for row in table:
-            if column < len(row):
-                row[column] = respell_percents(row[column], places)
-    return table
-
-
-def even_precision(rows: Sequence[Sequence[str]], *, percents: bool = True) -> list[list[str]]:
+def _even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
-    same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
-    number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. A percentage reads at its column's one precision (:func:`percent_places`: whole, or one decimal where whole
-    percents would print two values alike), never padded past it. Money is never padded, since each amount reads to its own two significant figures
+    same but for their numbers (``94 ms · 3 calls``, ``96.4 ms · 4 calls``), wherever they sit in the table, have each
+    number in the same place padded with zeros to the most decimals that place holds among them (``94.0 ms``), up to
+    three. A percentage is never padded, since it reads at its measure's decided precision. Money is never padded, since
+    each amount reads to its own two significant figures
     (:func:`~threetears.evals.kernel.numbers.money_form`): its whole dollars are only grouped by thousands (``$1,239``,
     :func:`_money_by_column`), as the figure keys write money.
 
@@ -508,14 +453,10 @@ def even_precision(rows: Sequence[Sequence[str]], *, percents: bool = True) -> l
 
     :param rows: The table's rows of cells.
     :ptype rows: Sequence[Sequence[str]]
-    :param percents: Whether each column's percentages are set to its one precision first; a table of what an
-        analysis computes prints each as its key reads it, and keeps them.
-    :ptype percents: bool
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
     table = _money_by_column([list(row) for row in rows])
-    table = _percents_by_column(table) if percents else table
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):
@@ -573,8 +514,7 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
             or found.string[found.end() : found.end() + 1] == "%"
         ):
             # Money is never padded: each amount reads to its own two significant figures (money_form, owner ruling
-            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110. A percentage reads at its column's one precision
-            # (percent_places), set before padding.
+            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110. A percentage keeps its measure's decided precision.
             return found.group(0)
         if wanted > _MOST_PADDED:
             return found.group(0)
@@ -594,7 +534,8 @@ def _ends(spec: str, low: float, high: float, read_at: str = "") -> tuple[str, s
     if match is not None and (
         _FORMAT_UNITS.get(match[2]) == POINTS or (not _FORMAT_UNITS.get(match[2]) and read_at == POINTS)
     ):
-        # Both ends at one precision: a point's one decimal, more where an end that is not zero would read as one.
+        # Both ends at one precision, a point's tenth for a figure no measure's forms spelled (a host's chart: a package
+        # chart's ends carry their text), more where an end that is not zero would read as one.
         at = ends_places(low, high, POINT_PLACES)
         said = (_formatted(spec, low, read_at, places=at), _formatted(spec, high, read_at, places=at))
         return _unit_once(spec, said)
@@ -1572,14 +1513,14 @@ def _cost_texts(fmt: str | None, unit: str | None, cells: Sequence[GateCell | La
 
 def _costs_alike(fmt: str | None, unit: str | None, costs: Sequence[float | None]) -> Iterator[str]:
     """Each cell's cost as a matrix's table prints it, in cell order, every cost at one precision
-    (:func:`even_precision` over the costs alone): a cell's other words (its reasons, its pick) make it read unlike its
+    (:func:`_even_precision` over the costs alone): a cell's other words (its reasons, its pick) make it read unlike its
     neighbours, so padding the whole cells would leave ``$41.0`` beside ``$17``. Empty for a cell with no cost, or
     every cell where the block names no cost format."""
     spelled = [
         _formatted(fmt, cost) + (f" {unit}" if unit else "") if cost is not None and fmt is not None else ""
         for cost in costs
     ]
-    alike = iter(even_precision([[cost] for cost in spelled if cost]))
+    alike = iter(_even_precision([[cost] for cost in spelled if cost]))
     return iter([next(alike)[0] if cost else "" for cost in spelled])
 
 
@@ -2023,5 +1964,4 @@ __all__ = [
     "ScatterPanel",
     "ScatterPath",
     "ScatterPoint",
-    "even_precision",
 ]

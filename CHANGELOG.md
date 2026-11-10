@@ -109,7 +109,7 @@ replaces the number forms the entry "a chart says what it compares" lists below.
   it read `-15.0 pts`); an exact zero whole, with its unit (`0 notices`).
 - **Rung 5** reads a rate in its readings table as a percent with its counts (`43% (3 of 7)`, it read `0.43`) and a
   judged score to a tenth at seven cases (`4.7`, where it read two decimals). Its judge is recorded again over the new pages
-  (112 calls, $0.66); the writer's turns replay unchanged.
+  (112 calls, $0.64); the writer's turns replay unchanged.
 
 **Added:**
 - The figure-key filter `signed`. A criterion's `gap` and `weakest.margin` print their bare magnitude by default, at
@@ -129,8 +129,13 @@ this entry. A host that re-renders the package's chart JSON with the shipped `ki
 joins; with an older copy it prints each value's text but joins a tooltip's interval the old way, so take the new
 kit. A host's own chart, without text fields, draws its values as before and its tooltips in the new join, each end
 in its `fmt` (`80% to 89%`). A host that read a settle row's `level` or `weakest.interval` words from `value` reads
-them from `reads`. The new fields are additive. Nothing stored changes: a stored report renders in the new forms, one
-citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin` with no `+`, as before.
+them from `reads`. The new fields are additive. One input changes: a host measure on 0 to 1 that declares no unit
+and no grade enters the report input with the new unit `share` (it held none), so every page reads it as a rate
+(`78%`, never `0.78`). That moves the input's digest for such a campaign: its snapshot id changes, and a scheduled
+mint of its writer case is refused as moved evidence until the host retires the case and mints it again. A host
+writing its own report input declares a fraction with `unit: "share"`. Nothing else stored changes: a stored report
+renders in the new forms, one citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin`
+with no `+`, as before.
 
 ### evals: one module decides every figure's form (number forms C1 to C3)
 

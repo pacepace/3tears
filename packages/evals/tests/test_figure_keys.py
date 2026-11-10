@@ -202,7 +202,7 @@ class TestTheKairoPlanResolves:
         # The weakest margin is read on the corrected interval, whose bound sits at -12.85. The page prints every
         # figure at its measure's decimals (the number policy), so the pass rate and its margin read whole, as the
         # keys do.
-        for figure in ("27–28%", "by 3 to 11 points", "2 points inside", "85%", "92%", "$1.89", "55%", "76%"):
+        for figure in ("27 to 28%", "by 3 to 11 points", "2 points inside", "85%", "92%", "$1.89", "55%", "76%"):
             assert figure in text, figure
         assert "about 50%" in text
         assert _figure("cost.uplift_range", "pct") in text

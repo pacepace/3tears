@@ -189,8 +189,16 @@ def test_the_line_under_the_matrix_names_the_tick_as_the_control_and_says_which_
     control = page.readings.control_label
     assert f"change from {control} (the tick)" in line, line
     assert "right is better" in line, line
-    # A scale of changes, its ends signed (number rule 3).
-    assert re.search(r"Drawn from [+-]?[\d.]+ to [+-]?[\d.]+ pts\.", line), line
+    # What the marks' intervals guarantee, the joint guarantee where they are corrected (owner ruling, level in
+    # headings), the unit once: never a corrected interval's own level ("read at 95% to 98.33%"), which is Method's.
+    assert re.search(
+        r"with its (?:95% interval(?: \(adjusted for \d+ comparisons\)|, adjusted across that candidate(?:'|&#x27;)s aspects)?"
+        r"|interval); right is better\.",
+        line,
+    ), line
+    assert "read at" not in line, line
+    # A scale of changes, each end signed but an exact zero (number rule 3).
+    assert re.search(r"Drawn from (?:[+-]\d[\d.]*|0) to (?:[+-]\d[\d.]*|0) pts\.", line), line
 
 
 # --- L2 and L3: a change is signed, in points, beside its level, and the levels close on it -----------------------

@@ -140,10 +140,21 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert 'effort="medium"' in writer and "max_cost_usd=39.0" in writer
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
-    # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again,
-    # naming the commit whose pages the judge read, which is the one a replay of its keys must stand on.
-    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
-    assert "2026-11-08, over the number-forms pass's pages, as committed at `1459b84e4`" in readme
+    # The recording's date and the head it was made at; and when the judge's calls were recorded again, naming the
+    # commit whose pages the judge read, which is the one a replay of its keys must stand on.
+    assert "2026-11-03" in readme and "`28efc1fd1`" in readme
+    assert "2026-11-10, over the C5b pages after the interval-join fix (`b23852e2c`)" in readme
+    # What it cost: the judge's dollars are what judge.jsonl recorded, and the total is the writer's and the judge's.
+    judged = sum(
+        json.loads(line)["result"]["cost_usd"]
+        for line in (RUNG / "recordings" / "judge.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+    (writer_usd,) = re.findall(r"\| Writer \| .*: \$(\d+\.\d\d) \|", readme)
+    (judge_usd,) = re.findall(r"\| Judge \| .*, \$(\d+\.\d\d) \|", readme)
+    (total_usd,) = re.findall(r"\| Total \| \$(\d+\.\d\d) \|", readme)
+    assert judge_usd == f"{judged:.2f}"
+    assert total_usd == f"{float(writer_usd) + float(judge_usd):.2f}"
     assert "`b9164e5ec`" not in readme, "the merge under the recording, whose pages the judge never read"
     assert "Not recorded" not in readme
 

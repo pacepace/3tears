@@ -88,6 +88,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
+from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, reason_words
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
@@ -665,22 +666,30 @@ _MEASURE = PASS_RATE.lower()
 
 def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: PageForms) -> str:
     """What each glyph of a change's matrix draws, which the line under it opens with: whose change, from which
-    control (the tick), the level its interval was read at (every interval drawn's, :func:`_shown_interval`), and
-    which way is better (a pass rate's gain is to the right)."""
-    levels = sorted(
-        {
-            _told_apart(forms, level)
-            for row in readings.readings
-            for interval, level in [_shown_interval(row)]
-            if interval is not None and level is not None
-        }
-    )
+    control (the tick), what its interval guarantees (every interval drawn's, :func:`_shown_interval`), and which way
+    is better (a pass rate's gain is to the right). An interval corrected across an arm's aspects states the joint
+    guarantee its arm's readings hold at together (owner ruling, level in headings), never its own level, which the
+    Methods paragraph states (:func:`_level_lines`)."""
+    levels = {
+        _told_apart(forms, level)
+        for row in readings.readings
+        for interval, level in [_shown_interval(row)]
+        if interval is not None and level is not None
+    }
+    corrected = any(level > _told_apart(forms, INTERVAL_LEVEL) for level in levels)
+    gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
+    drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
+    sizes = {max(gains[arm], drops[arm]) for arm in {row.arm for row in readings.readings}}
+    guarantee = joint_guarantee(readings.alpha, max(sizes, default=0), corrected=corrected)
     if not levels:
         interval_said = "its interval"
-    elif len(levels) == 1:
-        interval_said = f"its {_level_text(forms, levels[0])} interval"
+    elif guarantee is None:
+        interval_said = f"its {_level_text(forms, min(levels))} interval"
+    elif len(sizes) == 1:
+        joint = FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(forms, guarantee[0])} interval", size=guarantee[1])
+        interval_said = f"its {joint}"
     else:
-        interval_said = f"its interval, read at {_level_text(forms, levels[0])} to {_level_text(forms, levels[-1])}"
+        interval_said = f"its {_level_text(forms, guarantee[0])} interval, adjusted across that candidate's aspects"
     whose = f"{candidates[0]}'s" if len(candidates) == 1 else "a candidate's"
     return (
         f"Each mark is {whose} change from {readings.control_label} (the tick) with {interval_said}; right is better."
@@ -1492,10 +1501,10 @@ def pair_blocks(
         )
     )
     notes = [CHOICE_NOTE]
-    if len(levels) > 1:
+    if (guarantee := joint_guarantee(readings.alpha, len(levels))) is not None:
         # The package's own words state what the pairs' intervals guarantee together (owner ruling, level in
         # headings): each pair's own step-down level is the Method's, never this line's.
-        joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, 1.0 - readings.alpha), size=len(levels))
+        joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
         notes.append(f"The intervals hold together at {joint}.")
     elif levels:
         notes.append(f"Each interval is read at {_level_text(forms, levels[0])}.")
@@ -2012,7 +2021,7 @@ def _measured(reading: MeasureReading, forms: PageForms, *, rate: bool) -> CellV
         return _counted(reading.passed, reading.trials, reading.cases)
     if reading.value is None:
         return None
-    figure = forms.level(reading.measure, reading.value, alone=True)
+    figure = forms.level(reading.measure, reading.value)
     return figure.text if rate else figure.held
 
 

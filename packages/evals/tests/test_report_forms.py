@@ -252,18 +252,6 @@ def test_money_reads_at_the_scale_its_column_draws_it(name: str) -> None:
         pytest.skip(f"{name} prints no money by arm")
 
 
-def test_a_level_alone_reads_at_its_measure_s_one_precision_as_every_surface_does() -> None:
-    """A level printed by itself (a chart's note, a key no table prints) reads as its table prints it: a measure reads
-    at one precision on the whole page (number policy, rule 1). Kairo's failed-reply notices read ``0.002 notices``,
-    alone or in a column, never the lone rule's ``0.0022 notices``."""
-    held = _written_inputs()[KAIRO]
-    forms = PageForms.of(held)
-    notices = held.measures["failed_reply_notices"].per_arm["September"].mean
-    assert notices is not None
-    alone = forms.level("failed_reply_notices", float(notices), alone=True).text
-    assert alone == forms.level("failed_reply_notices", float(notices)).text == "0.002 notices"
-
-
 # --- the code page ------------------------------------------------------------------------------------------------
 
 
@@ -341,7 +329,7 @@ def test_a_measurement_s_scorecard_reads_as_its_forms() -> None:
     assert kinds == {"rate", "money"}
 
 
-# The number policy on the code and aspect pages, row by row against the plan's before and after (section 2.5).
+# The number policy on the code and aspect pages, row by row against design.md's "What the policy changed" table.
 
 
 @functools.cache
@@ -351,7 +339,7 @@ def _scaled_markdown() -> str:
 
 def test_the_p95_time_reads_at_the_places_its_interval_sets_with_each_interval_in_one_form() -> None:
     """A 2.4 s p95 with a ±0.07 s interval reads to the hundredth, its level, its change and both intervals alike, each
-    interval ``low to high``, the unit on the figure it follows (``2.42 s (2.35 to 2.49)``, section 2.5): never
+    interval ``low to high``, the unit on the figure it follows (``2.42 s (2.35 to 2.49)``): never
     ``2.4 [2.4, 2.5] s`` beside ``+0.028 s [-0.131, 0.187] s``."""
     assert (
         "| 95th-percentile extraction time | candidate-a | 2.39 s | 2.42 s (2.35 to 2.49) | +0.03 s | -0.13 to +0.19 s |"
@@ -586,7 +574,7 @@ def test_a_pooled_figure_never_sets_a_measure_s_digits() -> None:
 def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
     """One form per measure across the campaign: Kairo's written page reads the pass rate at the places its aspect's
     page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points: whole
-    points (§2.5), never the tenth the code page's pooled change (±2.86 points) would set."""
+    points (as design.md's table reads it), never the tenth the code page's pooled change (±2.86 points) would set."""
     held = report_input(kairo_bundle())
     assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 0
     assert _kairo_pass_rate_places(kairo_bundle().readings) == 0
@@ -626,8 +614,6 @@ def _a_rate(places: int) -> PageForms:
         change_unit="pts",
         factor=100.0,
         change_factor=100.0,
-        level_decimals=places,
-        change_decimals=places,
         span=100.0,
         places=places,
         half_width=9.0,
@@ -700,8 +686,6 @@ def test_a_level_drawn_in_percent_reads_half_to_even_in_a_cell_and_in_words_alik
         change_unit="pts",
         factor=100.0,
         change_factor=1.0,
-        level_decimals=1,
-        change_decimals=1,
         span=100.0,
         places=1,
         half_width=1.5,
@@ -787,7 +771,7 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
     ]
     readings = shape.readings.model_copy(update={"measures": [*shape.readings.measures, *made]})
     form = PageForms.of_campaign(readings, shape.reports).measure("made_up")
-    assert (form.reads_as, form.level_decimals) == ("measured", decimals)
+    assert (form.reads_as, form.places) == ("measured", decimals)
 
 
 #: The fixed-form figures a code page prints only under a head naming its unit, ``(%)`` or ``(pts)``, as bare figures

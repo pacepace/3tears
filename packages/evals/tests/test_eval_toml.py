@@ -111,7 +111,7 @@ def test_the_command_line_runs_the_file_from_another_directory_and_fills_braces_
     assert "Accuracy: 100%, 9 of 9 trials" in printed
     assert "Urgent score: 100%, 9 of 9 trials" in printed
     # The recorded model never sets needs_human, so the two emails that need a person miss on it.
-    assert "Needs human score: 33.3%, 3 of 9 trials" in printed
+    assert "Needs human score: 33%, 3 of 9 trials" in printed
     assert Path(".evals/reports/triage/report.html").is_file()
 
 

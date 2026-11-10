@@ -1065,7 +1065,7 @@ const pts=v=>at(v,P_PASS,true);
 (function(){const cc=cost(ctl.id).mean*1000;const ups=cands.map(a=>cost(a.id).mean*1000/cc-1);
   const lo=Math.round(Math.min(...ups)*100),hi=Math.round(Math.max(...ups)*100);
   const sep=cands.filter(a=>R[a.id].within_interval[1]<0);const worst=cands.slice().sort((a,b)=>R[a.id].change-R[b.id].change)[0];
-  document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+"–"+hi}% more per reply and stay in character less often.`;
+  document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+" to "+hi}% more per reply and stay in character less often.`;
   document.getElementById("lede").innerHTML=`${worst.name} has a lower pass rate, by ${at(-R[worst.id].within_interval[1],P_PASS)} to ${at(-R[worst.id].within_interval[0],P_PASS)} points, and neither candidate beats ${ctl.name} on anything this campaign measured. A candidate priced at or below ${ctl.name} whose pass rate stays within the margin would change the answer.`;
   // The decision's confidence: one clause per open caveat (the plan's words), then code's checked line for each late
   // criterion the call holds across: a reading flips at its worst drop (-lo), and every flip point lies under the margin

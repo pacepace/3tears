@@ -63,6 +63,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import ABSENT, MoneyForm
 from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns
@@ -503,12 +504,18 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
             aspect,
             measure_order=declared.design.measure_order if declared.design is not None else [],
             arm_labels=readings.arm_labels(),
+            # The aspect's page's forms, over its campaign's set of each measure, as the page itself reads them.
+            forms=PageForms.of_aspects(campaign.aspects, readings)[aspect.aspect],
         ).text
     return AnalysisLead(caveats=caveats, verdict=verdict)
 
 
 def aspect_verdict(
-    bundle: AnalysisContextBundle, *, measure_order: Sequence[str] = (), arm_labels: Mapping[str, str] | None = None
+    bundle: AnalysisContextBundle,
+    *,
+    measure_order: Sequence[str] = (),
+    arm_labels: Mapping[str, str] | None = None,
+    forms: PageForms | None = None,
 ) -> VerdictLine:
     """The verdict line an aspect's own page opens with, each arm by its variant's name, read without laying the page
     out: what a stored analysis of one aspect is listed by, and what the quick print's first line and the exit line
@@ -522,11 +529,16 @@ def aspect_verdict(
         (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`, as a listing reads them); None names each
         arm by its variant.
     :ptype arm_labels: Mapping[str, str] | None
+    :param forms: The aspect page's forms, over its campaign's set of each measure
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so the line reads every figure as the
+        page does; None for an aspect that is its own campaign (its bundle's forms alone).
+    :ptype forms: PageForms | None
     :return: The verdict line.
     :rtype: VerdictLine
     """
-    # The line's verdicts and the figures they rest on are the aspect page's, decided once in the bundle's forms.
-    forms = PageForms.of_bundle(bundle)
+    # The line's verdicts and the figures they rest on are the aspect page's, decided once in the page's forms.
+    if forms is None:
+        forms = PageForms.of_bundle(bundle)
     return verdict_line(
         bundle,
         _namer(_arm_names(bundle, labels=arm_labels)),
@@ -1871,11 +1883,12 @@ def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str =
     ``noun`` follows the level, as a column's head names what it holds (``95% interval (adjusted for 11
     comparisons)``)."""
     after = f" {noun}" if noun else ""
-    if family.family_size < 2 or family.interval_level is None:
+    guarantee = joint_guarantee(family.alpha, family.family_size, corrected=family.interval_level is not None)
+    if guarantee is None:
         level = family.interval_level if family.interval_level is not None else INTERVAL_LEVEL
         return f"{_level_text(level, forms)}{after}"
-    joint = f"{_level_text(1.0 - family.alpha, forms)}{after}"
-    return FAMILY_LEVEL_TEMPLATE.format(joint=joint, size=family.family_size)
+    joint, size = guarantee
+    return FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(joint, forms)}{after}", size=size)
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -2243,7 +2256,7 @@ def _comparison_blocks(
     return blocks
 
 
-def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
+def contrast_rows(bundle: AnalysisContextBundle, *, forms: PageForms | None = None) -> list[dict[str, CellValue]]:
     """Every contrast the bundle tested against the control, one row each, in :func:`contrast_verdicts`' order.
 
     The page shows only the contrasts that can resolve; a program reads them all here. A contrast with a side under
@@ -2254,6 +2267,10 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
 
     :param bundle: The campaign's evidence.
     :ptype bundle: AnalysisContextBundle
+    :param forms: The aspect page's forms, over its campaign's set of each measure
+        (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so every row reads as the page does;
+        None for an aspect that is its own campaign (its bundle's forms alone).
+    :ptype forms: PageForms | None
     :return: One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
@@ -2262,8 +2279,9 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
     :rtype: list[dict[str, CellValue]]
     """
     surface = bundle_decision_surface(bundle)
-    # A program's rows are read off any page, so they take the bundle's own forms, built once for every row.
-    forms = PageForms.of_bundle(bundle)
+    # A program's rows read as the aspect's page does, its forms built once for every row.
+    if forms is None:
+        forms = PageForms.of_bundle(bundle)
     verdicts = iter(contrast_verdicts(bundle, surface, forms=forms))
     rulers = report_rulers(surface, bundle.measure_catalog)
     rows: list[dict[str, CellValue]] = []

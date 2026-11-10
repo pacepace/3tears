@@ -110,8 +110,8 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     )
     # An end that would round onto 100% keeps the digit that holds it off (the owner's boundary rule).
     assert "recall 92% (11 of 12 trials over 4 cases, 33 to 99.6%)" in printed
-    assert "Urgent score: 83.3%, 75 of 90 trials" in printed
-    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
+    assert "Urgent score: 83%, 75 of 90 trials" in printed
+    assert "Escalates score: 99%, 89 of 90 trials" in printed
     assert "top misses (5 of 20 failed trials):" in printed
     assert "total spend: $0.0019, the results' cost" in printed
     assert "stored in .evals/evals.sqlite, scope 'emails'" in printed
@@ -160,7 +160,7 @@ def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misse
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "Needs human score: 81.1%, 73 of 90 trials" in printed
+    assert "Needs human score: 81%, 73 of 90 trials" in printed
     assert "total spend: $0.0020, the results' cost" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "triage" / "report.html").is_file()
 
@@ -211,7 +211,7 @@ def test_the_program_runs_from_another_directory_through_the_module_entry(
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
+    assert "Escalates score: 99%, 89 of 90 trials" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "emails" / "report.html").is_file()
     assert not (triage_dir / ".evals").exists()
 

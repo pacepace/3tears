@@ -1081,7 +1081,7 @@ const mainPool=[O.prod,O.f64,O.hyb1,O.hyb0,O.hyb2];
   document.getElementById("lede").innerHTML=`A hybrid that hands conversations back to Production after turn five keeps ${Math.round(h.save/a.save*100)}% of the savings for ${Math.round(h.loss/a.loss*100)}% of the loss. Which option is right depends on what a point of personality is worth, and the eval didn't set that.`;
   document.getElementById("d-trade").innerHTML=`${A.f64.tag} costs ${Math.round((1-A.f64.cost/P.cost)*100)}% less (${usdK(a.save)}/month) and is ${(P.p95-A.f64.p95).toFixed(1)} s faster at p95. In-character rate drops ${at(a.loss,P_ASP.persona)} points (interval ${at(-A.f64.delta.persona.hi,P_ASP.persona)} to ${at(-A.f64.delta.persona.lo,P_ASP.persona)}). Every other aspect holds.`;
   const f=flips([O.prod,O.f64,O.hyb1]);
-  document.getElementById("d-flip").innerHTML=f.map(s=>`${s.to==null?`Above ${usd0(s.from)}`:s.from===0?`Below ${usd0(s.to)}`:`${usd0(s.from)}–${usd0(s.to)}`} per point: <strong>${s.o.short}</strong>`).join(".<br>")+".";
+  document.getElementById("d-flip").innerHTML=f.map(s=>`${s.to==null?`Above ${usd0(s.from)}`:s.from===0?`Below ${usd0(s.to)}`:`${usd0(s.from)} to ${usd0(s.to)}`} per point: <strong>${s.o.short}</strong>`).join(".<br>")+".";
   document.getElementById("d-lean").innerHTML=`<strong>Pilot the hybrid with a handoff after turn five.</strong> It wins for any price between ${usd0(f[1].from)} and ${usd0(f[1].to)} a point, and the pilot tests its one untested assumption. A full switch only makes sense if a point is worth under ${usd0(f[0].to)} a month.`;})();
 
 // ---- options table + summary bars
@@ -1143,7 +1143,7 @@ function explore(){price=+ep.value;document.getElementById("o-p").textContent=us
   const pool=[O.prod,O.f64,O["hyb"+hk]].concat(eg.checked?[O.f16,O.cor]:[]);const ranked=pool.map(o=>({o,net:o.save-price*o.loss})).sort((a,b)=>b.net-a.net);const win=ranked[0].o;
   const f=flips(pool);
   document.getElementById("e-note").innerHTML=`At ${usd0(price)} per point, <strong>${win.short}</strong> has the highest net value: ${usd0(ranked[0].net)} a month after pricing the points it loses.${win.hybrid?" This option is modeled, so it needs the pilot before it can be trusted.":""}`;
-  document.getElementById("e-flips").innerHTML=f.map(s=>`<span class="${s.o===win?"on":""}">${s.to==null?`${usd0(s.from)}+`:`${usd0(s.from)}–${usd0(s.to)}`}: ${s.o.short}</span>`).join("");
+  document.getElementById("e-flips").innerHTML=f.map(s=>`<span class="${s.o===win?"on":""}">${s.to==null?`${usd0(s.from)}+`:`${usd0(s.from)} to ${usd0(s.to)}`}: ${s.o.short}</span>`).join("");
   document.getElementById("e-rank").innerHTML=`<thead><tr><th>Option</th><th class="r">Saves / month</th><th class="r">Points lost</th><th class="r">Cost of those points</th><th class="r">Net value / month</th></tr></thead><tbody>`+
     ranked.map((r,i)=>`<tr class="${i===0?"hl":""}"><td>${i===0?"<strong>":""}${r.o.short}${i===0?"</strong>":""}${r.o.guard?"":" "+pill("bad","Guardrail")}</td><td class="r">${usd0(r.o.save)}</td><td class="r">${at(r.o.loss,P_ASP.persona)}</td><td class="r">${usd0(price*r.o.loss)}</td><td class="r" style="color:${r.net<0?"var(--bad)":"var(--ink)"}">${usd0(r.net)}</td></tr>`).join("")+"</tbody>";
   drawMap();}

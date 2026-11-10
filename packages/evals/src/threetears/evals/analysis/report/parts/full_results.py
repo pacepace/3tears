@@ -192,8 +192,7 @@ def _stated(
     others: bool = False,
 ) -> TableCell:
     """One figure on a measure or judged dimension as a cell: its mean (else the statistic a criterion on it reads,
-    named beside it) in the measure's form, a statistic other than the mean by itself (:meth:`PageForms.level`'s
-    ``alone``); a dash where the input holds none, which says the arm recorded none where ``others`` (another arm in
+    named beside it) in the measure's form, the mean's and any other statistic's alike; a dash where the input holds none, which says the arm recorded none where ``others`` (another arm in
     the same place holds the figure) and the arm holds no entry at all: the control that made no delivery reads ``—
     (not recorded)`` beside a candidate's ``0 items``, two facts a bare dash and a zero would print as one."""
     read = stat_value(report_input, key, stat) if stat is not None else None
@@ -206,7 +205,7 @@ def _stated(
         # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
         cell = TableCell(value=value * form.factor, unit=MONEY, flag=flag)
     else:
-        cell = TableCell(value=forms.level(key, value, kind=kind, alone=statistic != "mean").text, flag=flag)
+        cell = TableCell(value=forms.level(key, value, kind=kind).text, flag=flag)
     # A figure of the measure, which the column rules record the cell under.
     return forms.of_measure(cell, measure=key, kind=form.kind)
 

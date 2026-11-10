@@ -1492,7 +1492,7 @@ class TestAWrapperIsAPrimitive:
             "a = page.level(key, v).text\n"
             "b = page.change(key, v, kind=kind).digits\n"
             "c = page.interval(key, lo, hi, change=True).text\n"
-            "d = page.measure(key).level_decimals\n"
+            "d = page.measure(key).places\n"
         )
         assert _python_sites(source) == []
 
