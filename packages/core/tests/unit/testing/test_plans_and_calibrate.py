@@ -35,6 +35,18 @@ class TestRowsScanned:
         """Flips if a sort or a bitmap's index half is counted as a second read of the same rows."""
         assert rows_scanned({"Node Type": "Bitmap Index Scan", "Index Name": "i", "Actual Rows": 500}) == 0
 
+    def test_a_write_node_counts_nothing_beside_the_scan_under_it(self) -> None:
+        """Flips if a write's ModifyTable node (it names the relation it writes, and a RETURNING write answers its
+        rows) is counted as a second read of the rows its scan found: DELETE ... RETURNING of 30 rows read 30."""
+        plan = {
+            "Node Type": "ModifyTable",
+            "Operation": "Delete",
+            "Relation Name": "results",
+            "Actual Rows": 30,
+            "Plans": [_scan("Index Scan", 30)],
+        }
+        assert rows_scanned(plan) == 30
+
 
 class TestLoopedScans:
     def test_a_large_sequential_scan_inside_a_loop_is_named_and_a_small_one_is_not(self) -> None:
