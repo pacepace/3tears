@@ -1174,7 +1174,7 @@ class GateScatterChart(_GateScatterFields, _Drawable):
 
 
 class DotIntervalRow(_KitModel):
-    """One rate against a floor, or one change about zero: a mark at the value and a faint interval."""
+    """One rate against a floor, or one change about zero: a mark at the value and its interval, in its colour."""
 
     label: str = Field(description="The row's label; wrapped to two lines where it is too long for one.")
     value: float = Field(description="The value.")
@@ -1263,7 +1263,7 @@ class DotIntervalPanel(_DotIntervalFields, _PanelText):
 
 
 class DotIntervalChart(_DotIntervalFields, _Drawable):
-    """``dot_interval``: one rate per candidate against a floor, each a mark with a faint interval."""
+    """``dot_interval``: one rate per candidate against a floor, each a mark with its interval."""
 
     panels: list[DotIntervalPanel] | None = Field(default=None, description="Small multiples.")
     panel_min_rem: float | None = Field(default=None, description="The narrowest panel before a column drops.")

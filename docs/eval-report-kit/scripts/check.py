@@ -3,22 +3,22 @@
 Usage: python3 scripts/check.py <page.html> [--out DIR]
 Needs: pip install playwright && playwright install chromium
 
-Checks (GENERATOR.md §8, items 1-3): console and page errors; horizontal overflow
-(scrollWidth > viewport); elements that extend past the right edge outside a scrolling table;
-SVG text boxes that overlap each other inside one chart; a table wider than its frame whose first
-column does not stay in view (sticky); a pinned (sticky) column drawn narrower than its floor (its
-min-width), or a word in it broken across lines (it wraps at spaces and after a hyphen or a slash; only
-a cell classed unbroken, an id-like token, may break anywhere); a pinned cell painted over the page's
-sticky nav. A table that fits its frame by crushing its key column does not fit. A table wider than its
-frame with no visible cue: its frame's right edge must fade while more of it lies past the edge, and not
-once it is scrolled to its end. A first screen read at more than one measure: the masthead, the callouts
-under it, the headline, the lede and the confidence share one maximum width. Text under 4.5:1 against the
-ground it is drawn on, and an axis under 3:1 (WCAG 1.4.3 and 1.4.11), computed from the colours as drawn in
-each theme: a chart's text against the mark under it where one is, else the nearest painted background. A
-font size off the page's five-step scale (12, 14, 16, 20 and 28 px). A table drawn in a box or under a
-filled header row, or with no rule under its header: a table is ruled with hairlines, never boxed or
-tinted. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440 and a 1024 px
-window). Writes a full-page PNG per run. Exit code 1 when any check fails.
+Checks (GENERATOR.md §8, items 1-3): console and page errors; horizontal overflow (scrollWidth > viewport);
+elements that extend past the right edge outside a scrolling table; SVG text boxes that overlap each other inside
+one chart; a chart's label crossed by a drawn axis, zero line or reference line; a table wider than its frame
+whose first column does not stay in view (sticky); a pinned (sticky) column drawn narrower than its floor (its
+min-width), or a word in it broken across lines (it wraps at spaces and after a hyphen or a slash; only a cell
+classed unbroken, an id-like token, may break anywhere); a pinned cell painted over the page's sticky nav. A table
+that fits its frame by crushing its key column does not fit. A table wider than its frame with no visible cue: its
+frame's right edge must fade while more of it lies past the edge, and not once it is scrolled to its end. A first
+screen read at more than one measure: the masthead, the callouts under it, the headline, the lede and the
+confidence share one maximum width. Text under 4.5:1 against the ground it is drawn on, and an axis or a chart's
+mark (an interval's line) under 3:1 (WCAG 1.4.3 and 1.4.11), computed from the colours as drawn in each theme: a
+chart's text against the mark under it where one is, else the nearest painted background. A font size off the
+page's five-step scale (12, 14, 16, 20 and 28 px). A table drawn in a box or under a filled header row, or with no
+rule under its header: a table is ruled with hairlines, never boxed or tinted. An interval in a table's cell ("0
+to 43%") broken across lines. 1104 px and 688 px are the frames a host gives the page (Discodon's iframe at a 1440
+and a 1024 px window). Writes a full-page PNG per run. Exit code 1 when any check fails.
 """
 
 import asyncio, pathlib, sys
@@ -38,6 +38,21 @@ PROBE = r"""async () => {
       const a = boxes[i].r, b = boxes[j].r, pad = -1;
       if (a.left < b.right - pad && a.right > b.left + pad && a.top < b.bottom - pad && a.bottom > b.top + pad)
         overlaps.push(`chart ${si}: "${boxes[i].t.slice(0,24)}" × "${boxes[j].t.slice(0,24)}"`);
+    }
+  });
+  // a chart's label sits clear of every axis, zero line and reference line drawn across the chart (a kit's chart: one
+  // a page's own code draws, with no data-kind, is the page's)
+  const crossed = [];
+  document.querySelectorAll('.chart[data-kind] svg, .chart-drawn svg').forEach((svg, si) => {
+    const boxes = [...svg.querySelectorAll('text')].map(t => ({t: t.textContent, r: t.getBoundingClientRect()})).filter(b => b.r.width > 0 && b.t.trim());
+    for (const line of svg.querySelectorAll('line.axis, line.floor')) {
+      const r = line.getBoundingClientRect(), pad = 1;
+      if (!r.width && !r.height) continue;
+      for (const b of boxes) {
+        const a = b.r;
+        if (r.left < a.right - pad && r.right > a.left + pad && r.top < a.bottom - pad && r.bottom > a.top + pad)
+          crossed.push(`chart ${si}: a ${line.getAttribute('class')} line crosses "${b.t.slice(0,32)}"`);
+      }
     }
   });
   const unpinned = [];
@@ -177,14 +192,35 @@ PROBE = r"""async () => {
     const r = ratio(shown, g);
     if (r < 4.5) faint.push(`${said(e)} ${r.toFixed(2)}:1`);
   }
+  // a kit chart's mark drawn as a line (an interval) reads at 3:1 against its ground, as an axis does; a hairline grid
+  // and a whisker under 2 px are rules, not marks, and a legend's swatch is drawn as the mark it keys
+  for (const m of document.querySelectorAll('.chart[data-kind] svg:not(.legend svg) line, .chart-drawn svg:not(.legend svg) line')) {
+    // a line's own box has no height or no width, so its drawing is drawn where its chart is
+    if (!drawn(m.ownerSVGElement) || m.matches('.grid, .axis, .floor')) continue;
+    const s = getComputedStyle(m), ink = rgba(s.stroke);
+    if (!ink || parseFloat(s.strokeWidth) < 2) continue;
+    const g = ground(m.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(m)], g), g);
+    if (r < 3) faint.push(`a mark ${r.toFixed(2)}:1`);
+  }
   for (const a of document.querySelectorAll('svg .axis')) {
-    if (!drawn(a)) continue;
+    if (!drawn(a.ownerSVGElement)) continue;
     const s = getComputedStyle(a), ink = rgba(s.stroke);
     if (!ink) continue;
     const g = ground(a.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(a)], g), g);
     if (r < 3) faint.push(`an axis ${r.toFixed(2)}:1`);
   }
   window.scrollTo(0, 0);
+  // an interval in a cell ("0 to 43%", "$25 to $34") holds its ends and the word between them on one line: the
+  // package's page sets them in a span (.iv), a unit word after it free to take the next line
+  const wrapped = [];
+  for (const cell of document.querySelectorAll('.tbl td')) {
+    const held = cell.querySelector('.iv') || cell, text = (held.textContent || '').trim();
+    const end = '[+\\-\u2212]?\\$?\\d[\\d.,]*[%\u00d7k]?';
+    if (text.length > 32 || !new RegExp(`^${end} to ${end}( [a-z%]+)?$`).test(text) || !drawn(cell)) continue;
+    const range = document.createRange(); range.selectNodeContents(held);
+    const tops = new Set([...range.getClientRects()].filter(r => r.width).map(r => Math.round(r.top)));
+    if (tops.size > 1) wrapped.push(`"${text}" breaks across ${tops.size} lines`);
+  }
   // a table is ruled, never boxed: no border on its frame, no fill behind its header row, a rule under it
   const tables = [];
   for (const f of document.querySelectorAll('.tbl')) {
@@ -199,6 +235,7 @@ PROBE = r"""async () => {
     if (last && !(parseFloat(getComputedStyle(last).borderBottomWidth) >= 1)) tables.push(`${name} has no rule under its header`);
   }
   return {scrollWidth: document.documentElement.scrollWidth, past: out.slice(0, 8), overlaps: overlaps.slice(0, 12),
+          crossed: crossed.slice(0, 8), wrapped: wrapped.slice(0, 8),
           unpinned: unpinned.slice(0, 8), crushed: crushed.slice(0, 8), under: under.slice(0, 8),
           uncued: uncued.slice(0, 8), measures: widths.size > 1 ? measures : [],
           contrast: faint.slice(0, 8), sizes: sizes.slice(0, 8), tables: tables.slice(0, 8)};
@@ -225,6 +262,8 @@ async def run(page_path, out_dir):
                     or res["scrollWidth"] > width
                     or res["past"]
                     or res["overlaps"]
+                    or res["crossed"]
+                    or res["wrapped"]
                     or res["unpinned"]
                     or res["crushed"]
                     or res["under"]
@@ -241,6 +280,8 @@ async def run(page_path, out_dir):
                 for k in (
                     "past",
                     "overlaps",
+                    "crossed",
+                    "wrapped",
                     "unpinned",
                     "crushed",
                     "under",

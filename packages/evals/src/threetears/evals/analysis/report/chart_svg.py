@@ -415,6 +415,72 @@ def _line(x1: float, y1: float, x2: float, y2: float, css: str | None = None, st
     return _el("line", {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "class": css, "style": style})
 
 
+#: A label's box as a vertical line keeps clear of it: ``(left, top, right, bottom)`` in the chart's px.
+_Clear = tuple[float, float, float, float]
+
+#: The air a vertical line leaves either side of a label it stops short of, and above and below it.
+_CLEAR_PAD = 3.0
+
+
+def _text_box(x: float, baseline: float, text: str, anchor: str = "start", strong: bool = False) -> _Clear:
+    """A 12 px label's box, from its anchor and baseline: as wide as the face a host's frame falls back to draws it
+    (:data:`_FALLBACK_MARGIN` over :func:`_text_width`'s estimate), from a cap's height above the baseline to a
+    descender's under it."""
+    width = _text_width(text, 12, strong) * _FALLBACK_MARGIN
+    left = x - width if anchor == "end" else x - width / 2 if anchor == "middle" else x
+    return (left, baseline - 10, left + width, baseline + 3)
+
+
+def _label_box(label: _RefLabel, y: float, up: bool) -> _Clear:
+    """A reference label's box, drawn at ``y`` as :func:`_ref_text` draws it (stacked up to ``y``, else down from it)."""
+    top = y - (len(label.lines) - 1) * 13 if up else y
+    width = label.width * _FALLBACK_MARGIN
+    left = label.x - width if label.anchor == "end" else label.x
+    return (left, top - 10, left + width, top + 3 + (len(label.lines) - 1) * 13)
+
+
+def _vline(
+    x: float, y1: float, y2: float, clear: Sequence[_Clear], css: str | None = None, style: str | None = None
+) -> list[str]:
+    """A vertical line from ``y1`` down to ``y2`` at ``x`` (an axis, the zero line, a reference line, a grid line),
+    stopping short of every label in ``clear`` it would cross and going on past it (``kVLine``): a chart's head, a
+    reference label and a group's heading sit clear of every drawn line at any width, so no line strikes a word through.
+    """
+    cuts = sorted(
+        (top - _CLEAR_PAD / 2, bottom + _CLEAR_PAD / 2)
+        for left, top, right, bottom in clear
+        if left - _CLEAR_PAD <= x <= right + _CLEAR_PAD and top < y2 and bottom > y1
+    )
+    drawn: list[str] = []
+    at = y1
+    for top, bottom in cuts:
+        if top - at >= 1:
+            drawn.append(_line(x, at, x, top, css, style))
+        at = max(at, bottom)
+    if y2 - at >= 1:
+        drawn.append(_line(x, at, x, y2, css, style))
+    return drawn
+
+
+def _hline(x1: float, x2: float, y: float, clear: Sequence[_Clear], css: str | None = None) -> list[str]:
+    """A horizontal line from ``x1`` to ``x2`` at ``y`` (a scatter's reference line), stopping short of every label
+    in ``clear`` it would cross and going on past it (``kHLine``), as :func:`_vline` does."""
+    cuts = sorted(
+        (left - _CLEAR_PAD, right + _CLEAR_PAD)
+        for left, top, right, bottom in clear
+        if top - _CLEAR_PAD / 2 <= y <= bottom + _CLEAR_PAD / 2 and left < x2 and right > x1
+    )
+    drawn: list[str] = []
+    at = x1
+    for left, right in cuts:
+        if left - at >= 1:
+            drawn.append(_line(at, y, left, y, css))
+        at = max(at, right)
+    if x2 - at >= 1:
+        drawn.append(_line(at, y, x2, y, css))
+    return drawn
+
+
 def _titled(tip: Sequence[str], inner: str, hit: tuple[float, float, float, float] | None = None) -> str:
     """A mark with the lines its tooltip would show as its ``<title>``, over ``hit`` too where given (the row's
     whole band), so a hover anywhere on the row reads it."""
@@ -687,7 +753,13 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
     grouped = any(r.group is not None for r in rows)
     gaps = sum(1 for i in range(1, len(rows)) if rows[i].group != rows[i - 1].group)
-    h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0)
+    heads = _group_heads(rows, w, every=True)
+    h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0) + _heads_height(heads)
+    # Every label a vertical line would cross: the chart's head, the reference's label and each group's heading.
+    clear = _head_clear(w, mt, d.level, label)
+    clear += _group_clear(heads, len(rows), mt, row_h)
+    # Each bar's note, past its bar's end, which the reference line drawn after the rows keeps clear of.
+    notes_clear: list[_Clear] = []
     out: list[str] = []
     tick_w = max(len(tf(v)) for v in (d0, d1, (d0 + d1) / 2)) * 6.4 + 14
     if d.ticks:
@@ -697,21 +769,22 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     else:
         shown = _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), tf, x)
     for v in shown:
-        out.append(_line(x(v), mt, x(v), h - mb, "grid"))
+        out += _vline(x(v), mt, h - mb, clear, "grid")
         out.append(_text(x(v), h - 6 - better_h, tf(v), anchor="middle"))
     z = x(_clamp(origin, d0, d1))
-    out.append(_line(z, mt - 2, z, h - mb, "axis"))
+    out += _vline(z, mt - 2, h - mb, clear, "axis")
     if origin_label:
         out.append(_text(z + 4, mt - 8, origin_label))
     if zero_label is not None:
-        out += _zero_label(z, mt - 2, zero_label)
+        out += _zero_label(z, mt - 2, zero_label, clear=clear)
     out += _better(words, ml, w - mr, h - 6)
     y0: float = mt + (14 if grouped else 0)
     for i, r in enumerate(rows):
-        if grouped and (i == 0 or r.group != rows[i - 1].group):
+        if i in heads:
             if i:
                 y0 += 14
-            out.append(_text(0, y0 - 4, r.group or "", "lbl-strong"))
+            y0 += (len(heads[i]) - 1) * 13
+            out.append(_group_head(heads[i], y0))
         cy = y0 + row_h / 2
         y0 += row_h
         strong = bool(r.strong) or (d.emphasis is not None and r.id == d.emphasis)
@@ -733,7 +806,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
                 _text(ml - 18, cy + 3.5, r.tag, "tag", "middle", f"fill:var({on_tag});font-size:12px;font-weight:600")
             )
         if dots:
-            # A dot at the value and its faint interval; an open mark where the row has no interval, never a solid one.
+            # A dot at the value and its interval; an open mark where the row has no interval, never a solid one.
             fade = ";opacity:.45" if r.muted else ""
             marks += _dot_row(x, d0, d1, r, value, cy, color, "circle", r.lo is None, w - mr + 8, mr - 10, strong, fade)
             spread = (
@@ -818,8 +891,11 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
             _el("tspan", {"x": note_x, "dy": 12 if j else 0}, _escape(line)) for j, line in enumerate(notes)
         )
         anchor = "start" if right or flip else "end"
-        attrs = {"x": note_x, "y": cy + 4 - 6 * (len(notes) - 1), "text-anchor": anchor}
+        first = cy + 4 - 6 * (len(notes) - 1)
+        attrs = {"x": note_x, "y": first, "text-anchor": anchor}
         marks.append(_el("text", {**attrs, "class": "lbl-strong" if strong else "tick"}, spans))
+        boxes = [_text_box(note_x, first + 12 * j, line, anchor, strong) for j, line in enumerate(notes)]
+        notes_clear.append((min(b[0] for b in boxes), boxes[0][1], max(b[2] for b in boxes), boxes[-1][3]))
         if r.lo is None:
             spread = ""
         elif open_above:
@@ -830,12 +906,96 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
         out.append(_titled(_tip_or(r.tip, r.label, said + spread), "".join(marks), (0, cy - row_h / 2, w, row_h)))
     if line_ref is not None:
         rx = x(line_ref.value)
-        out.append(_line(rx, mt - 6, rx, h - mb, "floor"))
+        out += _vline(rx, mt - 6, h - mb, [*clear, *notes_clear], "floor")
         if label is not None:
             out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     if d.level:
         out.append(_text(w, mt - 8, _level_head(d.level), anchor="end"))
     return "".join(out), h
+
+
+def _level_x(w: float, mr: float, level: str | None) -> float:
+    """Where a chart's head (its interval level) ends (``kLevelX``): over the plot's right end, else, where the head is
+    wider than everything left of that, as far right as it must go to start inside the chart, never past its edge."""
+    if not level:
+        return w - mr
+    return min(w, max(w - mr, _text_width(_level_head(level), 12) * _FALLBACK_MARGIN))
+
+
+def _head_clear(level_x: float, mt: float, level: str | None, label: _RefLabel | None) -> list[_Clear]:
+    """The labels in a chart's head row a vertical line keeps clear of (``kHeadClear``): the interval level, ending at
+    ``level_x``, and the reference's label, each on the row above the plot (``mt``)."""
+    clear: list[_Clear] = []
+    if level:
+        clear.append(_text_box(level_x, mt - 8, _level_head(level), "end"))
+    if label is not None:
+        clear.append(_label_box(label, mt - 8 - label.raised * _RAISED, True))
+    return clear
+
+
+def _group_heads(rows: Sequence[Any], w: float, *, every: bool) -> dict[int, list[str]]:
+    """Each group's heading, by the row it opens, wrapped at its spaces to the chart's width (``kGroupHeads``), so a
+    heading wider than a phone's chart takes a second line rather than running off its edge; a word wider than the
+    chart is a line of its own, never cut. A heading opens each row whose group differs from the row before: where
+    ``every``, any such row once some row is grouped (a bar chart's rule, an ungrouped row's heading empty); else only a
+    row that names a group (a forest's)."""
+    grouped = any(r.group is not None for r in rows) if every else any(r.group for r in rows)
+    heads: dict[int, list[str]] = {}
+    for i, r in enumerate(rows):
+        if (r.group or every) and grouped and (i == 0 or r.group != rows[i - 1].group):
+            heads[i] = _wrapped_px(r.group or "", w)
+    return heads
+
+
+def _wrapped_px(text: str, room: float) -> list[str]:
+    """``text`` broken at its spaces into lines of a bold 12 px label each at most ``room`` px wide, in the face a
+    host's frame falls back to; a word wider than ``room`` is its own line, never cut."""
+    lines: list[str] = []
+    current = ""
+    for word in text.split(" "):
+        joined = f"{current} {word}" if current else word
+        if current and _text_width(joined, 12, strong=True) * _FALLBACK_MARGIN > room:
+            lines.append(current)
+            current = word
+        else:
+            current = joined
+    lines.append(current)
+    return lines
+
+
+def _heads_height(heads: dict[int, list[str]]) -> float:
+    """What the groups' headings add to a chart past their one line each: 13 px for each line after a heading's first."""
+    return sum((len(lines) - 1) * 13 for lines in heads.values())
+
+
+def _group_head(lines: Sequence[str], y0: float) -> str:
+    """A group's heading at the chart's left edge, its last line's baseline 4 px over the group's first row (``y0``)
+    and each line before it 13 px higher."""
+    if len(lines) == 1:
+        return _text(0, y0 - 4, lines[0], "lbl-strong")
+    top = y0 - 4 - (len(lines) - 1) * 13
+    spans = "".join(_el("tspan", {"x": 0, "dy": 13 if i else 0}, _escape(line)) for i, line in enumerate(lines))
+    return _el("text", {"x": 0, "y": top, "text-anchor": "start", "class": "lbl-strong"}, spans)
+
+
+def _group_clear(heads: dict[int, list[str]], count: int, mt: float, row_h: float) -> list[_Clear]:
+    """Each group's heading a vertical line keeps clear of (``kGroupClear``), where the rows lay their headings out:
+    the first a row's height of 14 px above the first row, each next one 14 px into the gap before its group, a
+    heading's lines after its first pushing its rows down 13 px each."""
+    clear: list[_Clear] = []
+    if not heads:
+        return clear
+    y0 = mt + 14
+    for i in range(count):
+        if i in heads:
+            lines = heads[i]
+            if i:
+                y0 += 14
+            y0 += (len(lines) - 1) * 13
+            width = max(_text_width(line, 12, strong=True) for line in lines) * _FALLBACK_MARGIN
+            clear.append((0.0, y0 - 4 - (len(lines) - 1) * 13 - 10, width, y0 - 1))
+        y0 += row_h
+    return clear
 
 
 def _zero_place(z: float, text: str, w: float) -> _RefLabel:
@@ -850,10 +1010,12 @@ def _zero_place(z: float, text: str, w: float) -> _RefLabel:
     return _RefLabel(max(0.0, min(z - width / 2, w - width)), "start", [text], width, over=True)
 
 
-def _zero_label(z: float, bottom: float, label: _RefLabel, style: str | None = None) -> list[str]:
+def _zero_label(
+    z: float, bottom: float, label: _RefLabel, style: str | None = None, clear: Sequence[_Clear] = ()
+) -> list[str]:
     """A change chart's zero line carried up to its label's lines (from under the label where it sits over the line),
-    and the label (``kZeroDraw``)."""
-    return [_line(z, 16 if label.over else 4, z, bottom, "axis", style), _ref_text(label, 12, False)]
+    stopping short of every label in ``clear`` it would cross, and the label (``kZeroDraw``)."""
+    return [*_vline(z, 16 if label.over else 4, bottom, clear, "axis", style), _ref_text(label, 12, False)]
 
 
 #: The words "right" and "left" print under a change chart's axis: the left end's, then the right's.
@@ -981,11 +1143,13 @@ def _dot_row(
     strong: bool,
     extra: str = "",
 ) -> list[str]:
-    """A dot row (``kDotRow``): its faint interval, its mark at ``value`` in ``shape`` (hollow where asked, ``extra``
+    """A dot row (``kDotRow``): its interval, in its colour at full strength, its mark at ``value`` in ``shape`` (hollow where asked, ``extra``
     style after), and its note at ``note_x``, wrapped to ``room`` px."""
     marks: list[str] = []
     if r.lo is not None and r.hi is not None:
-        style = f"stroke:var({color});stroke-width:3;stroke-linecap:round;opacity:.35"
+        # Its arm's colour at full strength, so the interval reads at the 3:1 a graphical mark takes in either theme
+        # (WCAG 1.4.11; at .35 it read 1.6:1 in light and 1.5:1 in dark), drawn thinner than the mark it carries.
+        style = f"stroke:var({color});stroke-width:2;stroke-linecap:round"
         marks.append(_line(x(_clamp(r.lo, d0, d1)), cy, x(_clamp(r.hi, d0, d1)), cy, style=style))
     marks.append(_mark(shape, x(_clamp(value, d0, d1)), cy, 5, color, hollow, extra))
     if r.note is not None:
@@ -1063,7 +1227,8 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     better_h = _better_height(words, ml, w - mr)
     mb += better_h
     ref = d.reference
-    level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
+    head_x = _level_x(w, mr, d.level)
+    level_room = head_x - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(max(d0, ref.value)), ref.label, 0, level_room, w) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
@@ -1071,7 +1236,11 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     lines_of = _row_lines(rows, math.floor((ml - 14) / 6.6))
     row_h = _row_h(rows, lines_of, d.row_height or 30)
     grouped = any(r.group for r in rows)
-    h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0)
+    heads = _group_heads(rows, w, every=False)
+    h = mt + mb + row_h * len(rows) + gaps * 14 + (14 if grouped else 0) + _heads_height(heads)
+    # Every label a vertical line would cross: the chart's head, the margin's label and each group's heading.
+    clear = _head_clear(head_x, mt, d.level, label)
+    clear += _group_clear(heads, len(rows), mt, row_h)
     out: list[str] = []
     if ref is not None:
         mx = x(max(d0, ref.value))
@@ -1087,25 +1256,26 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
                 },
             )
         )
-        out.append(_line(mx, mt - 4, mx, h - mb, "floor"))
+        out += _vline(mx, mt - 4, h - mb, clear, "floor")
         if label is not None:
             out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     tick_w = max(len(f(d0)), len(f(d1))) * 6.4 + 16
     for v in _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), f, x):
-        out.append(_line(x(v), mt, x(v), h - mb, "grid"))
+        out += _vline(x(v), mt, h - mb, clear, "grid")
         out.append(_text(x(v), h - 6 - better_h, f(v), anchor="middle"))
-    out.append(_line(x(0), mt - 4, x(0), h - mb, "axis", "stroke-width:1.5"))
+    out += _vline(x(0), mt - 4, h - mb, clear, "axis", "stroke-width:1.5")
     if d.level:
-        out.append(_text(w - mr, mt - 8, _level_head(d.level), anchor="end"))
+        out.append(_text(head_x, mt - 8, _level_head(d.level), anchor="end"))
     if zero_label is not None:
-        out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5")
+        out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5", clear)
     out += _better(words, ml, w - mr, h - 6)
     y0 = mt + (14 if grouped else 0)
     for i, r in enumerate(rows):
-        if r.group and (i == 0 or r.group != rows[i - 1].group):
+        if i in heads:
             if i:
                 y0 += 14
-            out.append(_text(0, y0 - 4, r.group, "lbl-strong"))
+            y0 += (len(heads[i]) - 1) * 13
+            out.append(_group_head(heads[i], y0))
         cy = y0 + row_h / 2
         y0 += row_h
         strong = bool(r.strong) or (d.emphasis is not None and r.id == d.emphasis)
@@ -1358,9 +1528,13 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
         out.append(_text((ml + w - mr) / 2, h - 6, d.x_title, anchor="middle"))
     if d.y_title:
         out.append(_text(0, mt - 20, d.y_title))
+    # Each reference line is drawn where it stands in the drawing's order, once the points' labels are placed, so it
+    # stops short of any label placed across it (a crossing the placement allows over colliding with a label).
+    x_line = y_line = -1
     if d.x_reference is not None:
         rx = x(d.x_reference.value)
-        out.append(_line(rx, mt, rx, h - mb, "floor"))
+        x_line = len(out)
+        out.append("")
         obstacles.append((rx - 2, mt, rx + 2, h - mb, 1.0))
         if d.x_reference.label:
             label = _ref_label(rx, d.x_reference.label, ml, w - mr)
@@ -1368,7 +1542,8 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             obstacles.append(_ref_box(label, mt + 12))
     if d.reference is not None:
         ry = y(d.reference.value)
-        out.append(_line(ml, ry, w - mr, ry, "floor"))
+        y_line = len(out)
+        out.append("")
         obstacles.append((ml, ry - 2, w - mr, ry + 2, 1.0))
         if d.reference.label:
             label = _ref_label(w - mr + 4, d.reference.label, ml, w - mr)
@@ -1458,8 +1633,14 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             strong = d.emphasis is not None and point.id == d.emphasis
             labels.append(_Label(px, py, text, strong, point.size or 5.5))
     labels.sort(key=lambda one: (0 if one.strong else 1, one.px))
+    placed_clear: list[_Clear] = []
     for placed in _place_labels(labels, (ml, 0, w, h - mb), obstacles, [at(p.x, p.y) for p in points]):
         out.append(_text(placed.x, placed.y, placed.text, "lbl-strong" if placed.strong else "lbl", placed.anchor))
+        placed_clear.append(_text_box(placed.x, placed.y, placed.text, placed.anchor, placed.strong))
+    if d.x_reference is not None:
+        out[x_line] = "".join(_vline(x(d.x_reference.value), mt, h - mb, placed_clear, "floor"))
+    if d.reference is not None:
+        out[y_line] = "".join(_hline(ml, w - mr, y(d.reference.value), placed_clear, "floor"))
     return "".join(out), h
 
 
@@ -1480,7 +1661,8 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         mr = _note_margin(rows, w)
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
-    level_room = w - mr - _text_width(_level_head(d.level), 12) - 8 if d.level else w
+    head_x = _level_x(w, mr, d.level)
+    level_room = head_x - _text_width(_level_head(d.level), 12) - 8 if d.level else w
     label = _ref_label(x(ref.value), ref.label, 0, level_room, w) if ref is not None and ref.label else None
     if label is not None:
         mt += (len(label.lines) - 1) * 13 + label.raised * _RAISED
@@ -1491,17 +1673,19 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     better_h = _better_height(words, ml, w - mr)
     mb += better_h
     h = mt + mb + row_h * len(rows)
+    # Every label a vertical line would cross: the chart's head and the reference's label.
+    clear = _head_clear(head_x, mt, d.level, label)
     out: list[str] = []
     tf = _tick_format(_need(d.fmt, "fmt"))
     tick_w = max(len(tf(d0)), len(tf(d1))) * 6.4 + 16
     shown = _thin_ticks(d.ticks, x, tf) if d.ticks else _fit_ticks(d0, d1, math.floor((w - ml - mr) / tick_w), tf, x)
     labelled = _tick_labels(_need(d.fmt, "fmt"), shown)
     for v in shown:
-        out.append(_line(x(v), mt, x(v), h - mb, "grid"))
+        out += _vline(x(v), mt, h - mb, clear, "grid")
         out.append(_text(x(v), h - 6 - better_h, labelled(v), anchor="middle"))
     if zero_label is not None:
-        out.append(_line(x(0), mt - 4, x(0), h - mb, "axis", "stroke-width:1.5"))
-        out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5")
+        out += _vline(x(0), mt - 4, h - mb, clear, "axis", "stroke-width:1.5")
+        out += _zero_label(x(0), mt - 4, zero_label, "stroke-width:1.5", clear)
     for i, r in enumerate(rows):
         cy, color = mt + row_h * i + row_h / 2, _tok(r.color, "--s1")
         strong = bool(r.strong) or (d.emphasis is not None and r.id == d.emphasis)
@@ -1518,11 +1702,11 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
         )
     if ref is not None:
         rx = x(ref.value)
-        out.append(_line(rx, mt - 4, rx, h - mb, "floor"))
+        out += _vline(rx, mt - 4, h - mb, clear, "floor")
         if label is not None:
             out.append(_ref_text(label, mt - 8 - label.raised * _RAISED, True))
     if d.level:
-        out.append(_text(w - mr, mt - 8, _level_head(d.level), anchor="end"))
+        out.append(_text(head_x, mt - 8, _level_head(d.level), anchor="end"))
     out += _better(words, ml, w - mr, h - 6)
     return "".join(out), h
 
