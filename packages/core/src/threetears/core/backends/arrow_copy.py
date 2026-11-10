@@ -30,6 +30,7 @@ import hashlib
 import json
 import operator
 import struct
+import time
 from collections.abc import Sequence
 from typing import Any, Final
 
@@ -110,17 +111,102 @@ def rows_digest(ipc: Any) -> str:
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
 
 
-def _json_text(values: Sequence[Any]) -> Any:
+#: the longest the build holds the interpreter lock before it lets the caller's event loop run: measured, a 12 MB copy's
+#: build held the caller's loop 31 ms behind on a thread that never blocked (a waiting thread is not handed the lock
+#: while the holder keeps releasing and taking it back in pyarrow's calls)
+_HOLD_SECONDS: Final = 0.001
+
+#: how long the build blocks when it lets the loop run: long enough for a waiting thread to be scheduled and take the lock
+_TURN_SECONDS: Final = 0.0002
+
+#: the values converted in Python between two of the build's turns
+_SLICE_VALUES: Final = 4096
+
+
+class _Turns:
+    """the build's turns with the caller's event loop: past :data:`_HOLD_SECONDS` of holding the interpreter lock, the
+    build blocks for :data:`_TURN_SECONDS`, so a thread waiting for the lock (the loop) takes it."""
+
+    __slots__ = ("_since",)
+
+    def __init__(self) -> None:
+        self._since = time.monotonic()
+
+    def take(self) -> None:
+        """let a waiting thread run, when the build has held the lock its share.
+
+        :return: nothing
+        :rtype: None
+        """
+        if time.monotonic() - self._since >= _HOLD_SECONDS:
+            time.sleep(_TURN_SECONDS)
+            self._since = time.monotonic()
+
+
+def _converted(convert: Any, values: Sequence[Any], turns: _Turns) -> list[Any]:
+    """``convert`` of each value, a slice at a time with the build's turns between.
+
+    :param convert: the conversion
+    :ptype convert: Callable[[Any], Any]
+    :param values: the values
+    :ptype values: Sequence[Any]
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the converted values
+    :rtype: list[Any]
+    """
+    converted: list[Any] = []
+    for start in range(0, len(values), _SLICE_VALUES):
+        converted.extend(map(convert, values[start : start + _SLICE_VALUES]))
+        turns.take()
+    return converted
+
+
+def _json_value(value: Any) -> str | None:
+    """one value's JSON text, as the JSON request encodes it; ``None`` as null.
+
+    :param value: the value, already as the rail carries it
+    :ptype value: Any
+    :return: the text
+    :rtype: str | None
+    """
+    return None if value is None else json.dumps(value, default=json_default)
+
+
+def _json_text(values: Sequence[Any], turns: _Turns) -> Any:
     """a column as each value's JSON text, as the JSON request encodes it; ``None`` as null.
 
     :param values: the values, already as the rail carries them
     :ptype values: Sequence[Any]
+    :param turns: the build's turns
+    :ptype turns: _Turns
     :return: the column
     :rtype: pyarrow.Array
     """
-    return pa.array(
-        [None if value is None else json.dumps(value, default=json_default) for value in values], pa.string()
-    )
+    return _sliced_array(_converted(_json_value, values, turns), pa.string(), turns)
+
+
+def _sliced_array(values: Sequence[Any], arrow_type: Any, turns: _Turns) -> Any:
+    """``values`` as one Arrow array of ``arrow_type``, converted a slice at a time with the build's turns between: one
+    call over a whole column of text held the caller's loop for its length.
+
+    :param values: the values
+    :ptype values: Sequence[Any]
+    :param arrow_type: the type
+    :ptype arrow_type: pyarrow.DataType
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the array
+    :rtype: pyarrow.Array
+    :raises OverflowError: for an integer the type cannot hold
+    :raises UnicodeEncodeError: for a string UTF-8 cannot hold
+    :raises pyarrow.ArrowException: for a value the type cannot hold
+    """
+    slices = []
+    for start in range(0, len(values), _SLICE_VALUES):
+        slices.append(pa.array(values[start : start + _SLICE_VALUES], arrow_type))
+        turns.take()
+    return pa.concat_arrays(slices) if slices else pa.array([], arrow_type)
 
 
 #: the Arrow type a column of one kind of value is sent as
@@ -129,34 +215,39 @@ _ARROW_KINDS: Final[dict[type, Any]] = (
 )
 
 
-def _arrow_column(values: Sequence[Any]) -> tuple[Any, bool]:
+def _arrow_column(values: Sequence[Any], turns: _Turns) -> tuple[Any, bool]:
     """one column of a copy's rows as an Arrow array, and whether it is sent as JSON text.
 
     :param values: the column's values, as the caller gave them
     :ptype values: Sequence[Any]
+    :param turns: the build's turns
+    :ptype turns: _Turns
     :return: the array, and whether its values are their JSON text
     :rtype: tuple[pyarrow.Array, bool]
     """
     kinds = set(map(type, values)) - {_NONE}
     if not kinds <= _ARROW_KINDS.keys() or len(kinds) > 1:
         # converted as the JSON request converts them; a UUID, datetime, Decimal or bytes column is then text
-        values = [transport_param(value) for value in values]
+        values = _converted(transport_param, values, turns)
         kinds = set(map(type, values)) - {_NONE}
     kind = next(iter(kinds)) if len(kinds) == 1 else str if not kinds else None
     array: Any = None
     if kind in _ARROW_KINDS:
         try:
-            array = pa.array(values, _ARROW_KINDS[kind])
+            array = _sliced_array(values, _ARROW_KINDS[kind], turns)
         except OverflowError, UnicodeEncodeError, pa.ArrowException:
             # NOSILENT: an integer past 64 bits, a string UTF-8 cannot hold: sent as its JSON text instead
             array = None
-    return (array, False) if array is not None else (_json_text(values), True)
+    return (array, False) if array is not None else (_json_text(values, turns), True)
 
 
 def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) -> ArrowCopyRows:
     """a copy's rows as an Arrow IPC stream, one column per copied column, named as they are.
 
-    Blocking, and CPU for as long as the rows are many: run it on a thread, as the JSON request is encoded.
+    Blocking, and CPU for as long as the rows are many: run it on a thread, as the JSON request is encoded. The rows
+    are the caller's Python objects, so reading them holds the interpreter lock wherever it runs (handing them to a
+    process would hold it as long, to pickle them); the build takes turns with the caller's event loop instead
+    (:class:`_Turns`), holding the lock at most a few milliseconds at a time.
 
     :param columns: the columns each row supplies, in order
     :ptype columns: Sequence[str]
@@ -169,17 +260,21 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     """
     if not _PYARROW:
         raise ImportError("a copy's rows as Arrow need pyarrow: install 3tears[snapshot]")
+    turns = _Turns()
     width = len(columns)
-    for record in records:
-        if len(record) != width:
-            raise ValueError(f"a row has {len(record)} values for {width} columns")
+    for start in range(0, len(records), _SLICE_VALUES):
+        if any(len(record) != width for record in records[start : start + _SLICE_VALUES]):
+            raise ValueError(f"a row has other than {width} values, one for each column")
+        turns.take()
     arrays = []
     json_columns = []
     for position in range(width):
         # one column at a time, never the whole transposition in one call: each call holds the interpreter lock
         # for its length, and the caller's event loop runs between them
         values = list(map(operator.itemgetter(position), records))
-        array, as_json = _arrow_column(values)
+        turns.take()
+        array, as_json = _arrow_column(values, turns)
+        turns.take()
         arrays.append(array)
         if as_json:
             json_columns.append(position)
@@ -187,7 +282,9 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     sink = pa.BufferOutputStream()
     with pa_ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
+    turns.take()
     ipc = sink.getvalue().to_pybytes()
+    turns.take()
     return ArrowCopyRows(ipc, rows_digest(ipc), json_columns)
 
 
