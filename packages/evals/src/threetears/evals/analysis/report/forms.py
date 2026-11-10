@@ -446,8 +446,9 @@ class PageForms:
         if _counts_passes(report_input):
             kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
         stated, set_figures = _written_stated(report_input, kinds)
-        # The campaign's one table (:func:`_measure_sets`) over what the input holds of it: every compared interval the
-        # campaign's code page and aspect pages state is an arm's level or a comparison's change the input carries too.
+        # The campaign's one table (:func:`_measure_sets`) over what the input mirrors of it: each interval the code
+        # page and the aspect pages state of an arm's level, a comparison's change or a guardrail check, its provenance
+        # decided as theirs is (:data:`_PROVENANCE`). test_report_forms holds the pages to one form per measure.
         sets = _measure_sets(stated)
         measures = {(key, kind): _written_form(report_input, key, kind, sets, set_figures) for key, kind in kinds}
         return cls("written", measures, report_input)
@@ -505,8 +506,10 @@ class PageForms:
     @classmethod
     def of_bundle(cls, bundle: AnalysisContextBundle) -> PageForms:
         """An aspect's own page's forms, built alone (code's page over the aspect's bundle, which holds no report
-        input): the aspect is its campaign, so its set of each reading is its own (:meth:`of_aspects` for a campaign's
-        aspects together).
+        input), for an aspect that is its own campaign: its set of each reading is its own. An aspect of a campaign
+        reads its campaign's sets (:meth:`of_aspects`, the aspects and the code page's readings together), and every
+        surface that states its figures (its page, the listing's verdict, the quick line, a program's rows) takes those
+        forms, so none prints the aspect at its own precision beside the campaign's page.
 
         :param bundle: The aspect's evidence.
         :ptype bundle: AnalysisContextBundle
@@ -3189,7 +3192,7 @@ def _scale_places(cell: TableCell, unit: str) -> int | None:
 
 def _scale_interval(cell: TableCell, unit: str, low: float, high: float) -> str:
     """An interval on a glyph scale in the one form every page prints an interval in, ``low to high``: ``88.1 to
-    100%``, ``-7.8 to +35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
+    100%``, ``-7.8 to 35.4 pts`` (a change's ends signed), both ends at the cells' one precision (``-6.9 to +11.0
     pts``, never ``11``), the unit once after the high end; money's ``$`` on each end."""
 
     def signed(text: str, value: float) -> str:
@@ -3435,10 +3438,13 @@ def _change_quantity(
 def _written_stated(
     report_input: ReportInput, kinds: Iterable[tuple[str, _MeasureKind]]
 ) -> tuple[list[_Width], dict[MeasureSet, list[float]]]:
-    """A written page's own half-widths, each compared (:data:`_Provenance`), and its sets' figures
-    (:func:`campaign_set`): the half-width of each headline interval of a measure, as stored (each arm's level, on the page and on each aspect; each comparison's
-    change, the pass rate's readings and pairs among them, held in points, so restated as shares), and each set's
-    figures as printed, which a set with no interval reads its decimals from.
+    """A written page's own half-widths and its sets' figures (:func:`campaign_set`): the half-width of each interval
+    the input mirrors of what the campaign's pages state, as stored, named by what it is an interval on so that
+    :data:`_PROVENANCE` decides its provenance as it does on the code and aspect pages (each arm's level on a measure,
+    on the page and on each aspect; a judged score's level, which every page states as its mean and spread; each
+    comparison's change, the pass rate's readings and pairs among them, held in points, so restated as shares, through
+    :func:`_reading_widths` as the code page reads them; each guardrail check's change), and each set's figures as
+    printed, which a set with no interval reads its decimals from.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -3447,7 +3453,7 @@ def _written_stated(
     :return: The half-widths, stated on the written page, and each set's figures.
     :rtype: tuple[list[_Width], dict[MeasureSet, list[float]]]
     """
-    found: list[tuple[tuple[str, str], float | None]] = []
+    found: list[_Gathered] = []
     figures: dict[MeasureSet, list[float]] = {}
     for key, kind in kinds:
         stated: str | None = None if kind == "measure" else kind
@@ -3459,12 +3465,21 @@ def _written_stated(
         set_key = _set_key(key, _measure_kind(_set_kind(report_input, key, kind)))
         held_figures = figures.setdefault(campaign_set("written", *set_key), [])
         held = [c for c in report_input.contrasts if (c.measure, _measure_kind(c.kind)) == (key, kind)]
-        found += [(set_key, _half_width(c.interval)) for c in held]
+        found += [(set_key, _half_width(c.interval), "change") for c in held]
         held_figures += [float(c.delta) * changes.factor for c in held if c.delta is not None]
         if kind == "trial":
             for aspect in report_input.aspects:
-                found += [(set_key, _reading_width(reading)) for reading in aspect.readings]
-                found += [(set_key, _half_width(pair.interval, 100.0)) for pair in aspect.pairs]
+                found += [
+                    (set_key, width, "change")
+                    for reading in aspect.readings
+                    for width in _reading_widths(
+                        reading.within_interval,
+                        reading.gain_interval,
+                        None,
+                        _precision_half_width(reading),
+                    )
+                ]
+                found += [(set_key, _half_width(pair.interval, 100.0), "change") for pair in aspect.pairs]
                 held_figures += [
                     100.0 * row.passed / row.usable
                     for row in aspect_board(report_input, aspect.id).values()
@@ -3474,7 +3489,8 @@ def _written_stated(
         table = report_input.judged.get(key) if kind == "judged" else report_input.measures.get(key)
         if table is not None:
             stats = [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())]
-            found += [(set_key, _stat_width(stat)) for stat in stats]
+            evidence: _Evidence = "judged_level" if kind == "judged" else "level"
+            found += [(set_key, _stat_width(stat), evidence) for stat in stats]
         # A level is any statistic the input holds of an arm (its mean, a p50 or a p95 where it states no mean), so a
         # measure with no interval reads at two figures of the least of them (rule 2), never at none.
         held_figures += [
@@ -3483,7 +3499,15 @@ def _written_stated(
             for level in (stat.mean, stat.p50, stat.p95)
             if level is not None
         ]
-    return _stated("written", [(key, width, "compared") for key, width in found]), figures
+    found += [
+        (
+            _set_key(str(check["name"]), str(check["reading"])),
+            _half_width(_stored_interval(check.get("interval"))),
+            "change",
+        )
+        for check in report_input.guardrails
+    ]
+    return _stated("written", found), figures
 
 
 def _set_kind(report_input: ReportInput, key: str, kind: _MeasureKind) -> _MeasureKind:
@@ -3499,11 +3523,21 @@ def _stat_width(stat: Stat) -> float | None:
     return float(stat.half_width) if stat.half_width is not None else _half_width(stat.ci)
 
 
-def _reading_width(reading: Reading) -> float | None:
-    """A reading's half-width as a share (it is held in points): the one its precision states, else its interval's."""
-    if reading.precision is not None and reading.precision.half_width is not None:
-        return float(reading.precision.half_width) / 100.0
-    return _half_width(reading.within_interval, 100.0)
+def _precision_half_width(reading: Reading) -> float | None:
+    """The half-width a reading's precision states, in points; None where it states none."""
+    if reading.precision is None or reading.precision.half_width is None:
+        return None
+    return float(reading.precision.half_width)
+
+
+def _stored_interval(value: object) -> tuple[float, float] | None:
+    """An interval as the report input stores a guardrail check's (a list of its two ends); None for none."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    low, high = value
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return None
+    return float(low), float(high)
 
 
 def _change_span(report_input: ReportInput, measure: str, kind: str | None, drawn: Quantity) -> float | None:
@@ -3683,15 +3717,31 @@ def _aspect_page(label: str) -> str:
     return f"aspect {label}"
 
 
-#: Where a half-width comes from, as it is gathered: ``compared``, an interval on a figure a reader compares (an arm's
-#: level, a comparison's change); ``pooled``, one on a figure pooled over the arms' or the comparisons' own (the code
-#: page's campaign-wide pass rate and its change); ``derived``, one no page prints, the engine draws from a level's
-#: standard error (an aspect page states a judged score's level as its mean and its spread). Only a ``compared`` one
-#: sets a measure's digits (owner ruling, set digits): the rest print at the form it sets (:func:`_measure_sets`).
+#: Where a half-width comes from: ``compared``, an interval on a figure a reader compares (an arm's level, a
+#: comparison's change); ``pooled``, one on a figure pooled over the arms' or the comparisons' own (the code page's
+#: campaign-wide pass rate and its change); ``derived``, one no page prints, the engine draws from a level's standard
+#: error (every page states a judged score's level as its mean and its spread). Only a ``compared`` one sets a
+#: measure's digits (owner ruling, set digits): the rest print at the form it sets (:func:`_measure_sets`).
 _Provenance = Literal["compared", "pooled", "derived"]
 
-#: One half-width as it is gathered: its reading's key, its width as stored, and where it comes from.
-_Gathered = tuple[tuple[str, str], float | None, _Provenance]
+#: What a gathered half-width is an interval on, as every page's gatherer names it: an arm's ``level`` on a measure; a
+#: comparison's ``change`` (a contrast, a reading's or a pair's interval on the pass rate, a guardrail's check); a
+#: judged score's level (``judged_level``); or a figure ``pooled`` over the arms or the comparisons.
+_Evidence = Literal["level", "change", "judged_level", "pooled"]
+
+#: The one place a half-width's provenance is decided (:data:`_Provenance`), by what it is an interval on: the written
+#: page's gatherer (:func:`_written_stated`), the code page's (:func:`_readings_stated`) and every aspect page's
+#: (:func:`_bundle_stated`) name the evidence, and this decides alike for all three, so one figure counts the same on
+#: every page of the campaign.
+_PROVENANCE: dict[_Evidence, _Provenance] = {
+    "level": "compared",
+    "change": "compared",
+    "judged_level": "derived",
+    "pooled": "pooled",
+}
+
+#: One half-width as it is gathered: its reading's key, its width as stored, and what it is an interval on.
+_Gathered = tuple[tuple[str, str], float | None, _Evidence]
 
 
 @dataclass(frozen=True)
@@ -3707,28 +3757,49 @@ class _Width:
 
 
 def _stated(page: str, widths: Iterable[_Gathered]) -> list[_Width]:
-    """Half-widths one page states, by their reading's key; an absent one, and one that is no number, left out."""
+    """Half-widths one page states, by their reading's key, each with its provenance (:data:`_PROVENANCE`); an absent
+    one, and one that is no number, left out."""
     return [
-        _Width(page, name, reading, float(width), provenance)
-        for (name, reading), width, provenance in widths
+        _Width(page, name, reading, float(width), _PROVENANCE[evidence])
+        for (name, reading), width, evidence in widths
         if width is not None and math.isfinite(width) and width > 0
     ]
 
 
+def _reading_widths(
+    within: tuple[float, float] | None,
+    gain: tuple[float, float] | None,
+    drop: tuple[float, float] | None,
+    precision: float | None,
+) -> list[float | None]:
+    """A pass-rate reading's half-widths as shares (it is held in points), on the code page and on the written page
+    alike: its nominal interval's (the half-width its precision states, ``precision``, where it holds none), its
+    gain's and its drop's."""
+    nominal = _half_width(within, 100.0)
+    if nominal is None and precision is not None:
+        nominal = float(precision) / 100.0
+    return [nominal, _half_width(gain, 100.0), _half_width(drop, 100.0)]
+
+
 def _readings_stated(readings: CampaignReadings) -> list[_Width]:
-    """The half-widths a campaign's code page states, as stored, by reading: each change's and each pair's interval
-    on the pass rate (held in points, so restated as shares) and each arm's interval on a measure, all compared; and
-    each arm's interval pooled across the aspects, its level's and its change's."""
+    """The half-widths a campaign's code page states, as stored, by reading and what each is an interval on
+    (:data:`_PROVENANCE` decides each one's provenance): each reading's and each pair's interval on the pass rate's
+    change (held in points, so restated as shares, :func:`_reading_widths`), each arm's interval on a measure's level,
+    and each arm's interval pooled across the aspects, its level's and its change's."""
     found: list[_Gathered] = []
     for row in readings.readings:
         found += [
-            (_PASS_RATE, _half_width(interval, 100.0), "compared")
-            for interval in (row.gain_interval, row.drop_interval, row.within_interval)
+            (_PASS_RATE, width, "change")
+            for width in _reading_widths(
+                row.within_interval,
+                row.gain_interval,
+                row.drop_interval,
+                row.precision.half_width if row.precision is not None else None,
+            )
         ]
-    found += [(_PASS_RATE, _half_width(pair.interval, 100.0), "compared") for pair in readings.pairs]
+    found += [(_PASS_RATE, _half_width(pair.interval, 100.0), "change") for pair in readings.pairs]
     found += [
-        (_set_key(reading.measure, "measure"), _half_width(reading.interval), "compared")
-        for reading in readings.measures
+        (_set_key(reading.measure, "measure"), _half_width(reading.interval), "level") for reading in readings.measures
     ]
     if readings.aggregate is not None:
         for arm in readings.aggregate.arms:
@@ -3739,13 +3810,13 @@ def _readings_stated(readings: CampaignReadings) -> list[_Width]:
 
 
 def _bundle_stated(bundle: AnalysisContextBundle) -> list[_Width]:
-    """The half-widths an aspect's page states, as stored, by reading: each contrast's interval on its change, each
-    guardrail's and each arm's own interval on a measure's level as its cell holds it, all compared; and a judged
-    score's level's, derived from its cell's mean and spread inside the dimension's scale, which the page states as
-    the mean and its spread, never as an interval."""
+    """The half-widths an aspect's page states, as stored, by reading and what each is an interval on
+    (:data:`_PROVENANCE` decides each one's provenance): each contrast's and each guardrail check's interval on its
+    change, each arm's own interval on a measure's level as its cell holds it, and a judged score's level's, drawn
+    from its cell's mean and spread inside the dimension's scale, which the page states as the mean and its spread."""
     surface = bundle_decision_surface(bundle)
     found: list[_Gathered] = [
-        (_set_key(comparison.name, comparison.reading), _half_width(comparison.interval), "compared")
+        (_set_key(comparison.name, comparison.reading), _half_width(comparison.interval), "change")
         for family in bundle.multiple_comparisons.families
         for comparison in family.comparisons
     ]
@@ -3753,17 +3824,17 @@ def _bundle_stated(bundle: AnalysisContextBundle) -> list[_Width]:
         for summary in cell.measures.measures:
             if summary.ci_low is not None and summary.ci_high is not None:
                 found.append(
-                    (_set_key(summary.name, "measure"), _half_width((summary.ci_low, summary.ci_high)), "compared")
+                    (_set_key(summary.name, "measure"), _half_width((summary.ci_low, summary.ci_high)), "level")
                 )
         for judged in cell.judged:
             facts = surface.dimensions.get(judged.dimension)
             if judged.mean is None or judged.sem is None or facts is None:
                 continue
             interval = mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
-            found.append(((judged.dimension, "judged"), _half_width(interval), "derived"))
+            found.append(((judged.dimension, "judged"), _half_width(interval), "judged_level"))
     if bundle.guardrails is not None:
         found += [
-            (_set_key(check.name, check.reading), _half_width(check.interval), "compared")
+            (_set_key(check.name, check.reading), _half_width(check.interval), "change")
             for check in bundle.guardrails.checks
         ]
     return _stated(_aspect_page(bundle.aspect), found)

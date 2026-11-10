@@ -51,7 +51,6 @@ from threetears.evals.analysis import (
     CampaignReport,
     Report,
     TableBlock,
-    build_code_only_report,
     campaign_report,
     campaign_report_markdown,
     create_campaign,
@@ -81,6 +80,7 @@ from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -90,7 +90,12 @@ from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.build import aspect_verdict, contrast_rows, report_cell_labels
+from threetears.evals.analysis.report.build import (
+    aspect_verdict,
+    build_code_only_report_in_forms,
+    contrast_rows,
+    report_cell_labels,
+)
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading
@@ -605,7 +610,12 @@ class Result:
 
     def _verdict(self) -> VerdictLine:
         """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""
-        return aspect_verdict(self.report.bundle, measure_order=self.grader_readings)
+        return aspect_verdict(self.report.bundle, measure_order=self.grader_readings, forms=self._aspect_forms())
+
+    def _aspect_forms(self) -> PageForms:
+        """The aspect page's forms, over the campaign's set of each measure, as the campaign's page reads them: so the
+        verdict line, the contrasts' rows and :attr:`report` print every figure as :attr:`page` does."""
+        return _aspect_forms(self.page, self.report.bundle)
 
     def _printed_name(self, measure: str) -> str:
         """A measure as the page names it (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`):
@@ -675,7 +685,7 @@ class Result:
             code branches on); empty when the report tested nothing.
         :rtype: list[dict[str, Any]]
         """
-        rows = contrast_rows(self.report.bundle)
+        rows = contrast_rows(self.report.bundle, forms=self._aspect_forms())
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
@@ -970,6 +980,12 @@ _FULL_MEASURE = re.compile(
 
 #: A run summary's spend line for one role: ``candidate spend: $0.00175 over 40 call(s)``.
 _ROLE_SPEND = re.compile(r"^(?P<role>[\w-]+) spend: [<>]? ?\$[\d.,]+(?P<rest> over .*)$")
+
+
+def _aspect_forms(page: CampaignReport, bundle: AnalysisContextBundle) -> PageForms:
+    """An aspect's page's forms over its campaign's set of each measure, as the campaign's page lays the aspect out
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`, its aspects and the code page's readings)."""
+    return PageForms.of_aspects([fold.report.bundle for fold in page.aspects], page.readings)[bundle.aspect]
 
 
 def _measured_text(forms: PageForms, measure: str, said: str, mean: float | None, n: int, *, rate: bool) -> str:
@@ -1370,12 +1386,14 @@ def declare(
     # Its arms tagged as the campaign's page tags them, in the order the eval gives them (the control first, as the
     # campaign and its report document list them), so an arm is one letter and one colour on all three pages.
     control_key = next((arm.variant_key for arm in campaign.arms if arm.role == "control"), None)
-    report = build_code_only_report(
+    report = build_code_only_report_in_forms(
         bundle,
         assembled_at=fold.report.source.generated_at,
         campaign_name=campaign.name,
         arm_tags=campaign_arm_tags([bundle], control_key, arms=list(arm_variants.values())),
         measure_order=list(dict.fromkeys(measure_order)),
+        # In the campaign page's forms, so the report reads every figure as the page's fold of it does.
+        forms=_aspect_forms(page, bundle),
     )
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
