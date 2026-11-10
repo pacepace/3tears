@@ -97,6 +97,7 @@ async def read_keyset_pages(
     page_size: int,
     quote: Callable[[str], str] = quote_identifier,
     mark: Callable[[str, int], str] | None = None,
+    after: Sequence[Any] | None = None,
 ) -> KeysetRead:
     """every row ``select_from`` names (within ``where``), in ``key`` order, ``page_size`` rows a statement.
 
@@ -127,6 +128,8 @@ async def read_keyset_pages(
         needs (a schema's ``render_param``, so a jsonb key binds ``$n::jsonb``); a plain ``$n``
         when None
     :ptype mark: Callable[[str, int], str] | None
+    :param after: the key the read starts past; the first row when None
+    :ptype after: Sequence[Any] | None
     :return: the rows and the statement count
     :rtype: KeysetRead
     :raises ValueError: when ``page_size`` is under one
@@ -134,7 +137,7 @@ async def read_keyset_pages(
     rows: list[dict[str, Any]] = []
     statements = 0
     async for page in keyset_pages(
-        l3, select_from, key, where=where, where_any=where_any, page_size=page_size, quote=quote, mark=mark
+        l3, select_from, key, where=where, where_any=where_any, page_size=page_size, quote=quote, mark=mark, after=after
     ):
         statements += 1
         rows.extend(page)
@@ -151,6 +154,7 @@ async def keyset_pages(
     page_size: int,
     quote: Callable[[str], str] = quote_identifier,
     mark: Callable[[str, int], str] | None = None,
+    after: Sequence[Any] | None = None,
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """the rows ``select_from`` names (within ``where``), in ``key`` order, one page a statement as each is read.
 
@@ -174,6 +178,9 @@ async def keyset_pages(
     :ptype quote: Callable[[str], str]
     :param mark: the cursor's placeholder for a key column and its number; a plain ``$n`` when None
     :ptype mark: Callable[[str, int], str] | None
+    :param after: the key the read starts past (a drain's saved place: the last key a previous read took); the
+        first row when None
+    :ptype after: Sequence[Any] | None
     :return: the pages, as they are read
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one
@@ -184,7 +191,7 @@ async def keyset_pages(
     # looked up on the class: a mock's instance answers any name it is asked
     paged = callable(getattr(type(l3), "fetch_page", None))
     rows = page_size
-    cursor: Sequence[Any] | None = None
+    cursor: Sequence[Any] | None = None if after is None else tuple(after)
     more = True
     while more:
         if not paged:
@@ -215,6 +222,7 @@ async def keyset_arrow_pages(
     page_size: int,
     quote: Callable[[str], str] = quote_identifier,
     mark: Callable[[str, int], str] | None = None,
+    after: Sequence[Any] | None = None,
 ) -> AsyncGenerator[Any, None]:
     """:func:`keyset_pages`, each page one Arrow table: the same statements, in the same order, its rows never
     Python objects.
@@ -243,6 +251,9 @@ async def keyset_arrow_pages(
     :ptype quote: Callable[[str], str]
     :param mark: the cursor's placeholder for a key column and its number; a plain ``$n`` when None
     :ptype mark: Callable[[str, int], str] | None
+    :param after: the key the read starts past (a drain's saved place: the last key a previous read took); the
+        first row when None
+    :ptype after: Sequence[Any] | None
     :return: the pages, as they are read, each a ``pyarrow.Table``
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
@@ -252,7 +263,7 @@ async def keyset_arrow_pages(
     )
     paged = callable(getattr(type(l3), "fetch_arrow_page", None))
     rows = page_size
-    cursor: Sequence[Any] | None = None
+    cursor: Sequence[Any] | None = None if after is None else tuple(after)
     more = True
     while more:
         if not paged:

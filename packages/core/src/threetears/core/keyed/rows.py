@@ -1,0 +1,235 @@
+"""keyed reads: the rows a batch of keys (or key prefixes) names, a bounded batch a statement.
+
+The one spelling of the keyed batch read, built on :func:`~threetears.core.sql_fragments.unnest_key_join` (the join a
+copy follower and a checkpoint name their keys by too). The keys are bound as one text array a key column and joined to the
+table, each cast back to its column's type::
+
+    SELECT <columns> FROM <table> AS t
+      JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]) AS k1) AS k
+        ON t."a" = CAST(k.k0 AS text) AND t."b" = CAST(k.k1 AS bigint)
+     WHERE t."tenant" = $3
+
+With the key columns a leading part of the table's primary key (or of an index declared for the caller's read),
+PostgreSQL, YugabyteDB and DuckDB each answer it by the key: a lookup whose cost is the keys', whatever the table
+holds. ``by`` pins columns ahead of the batch (a tenant, a scope) or adds a set filter
+(:class:`~threetears.core.keyed.AnyOf`).
+
+A batch of ``batch`` keys a statement keeps a statement's parameters and its answer bounded. A transport that cuts
+an answer without saying so (the L3 rail, :data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) is named by
+``row_cap``: an answer that reaches it is read again in halves, and one key that alone reaches it is refused
+(:class:`KeyTooWide`): such a key is a prefix with many rows, read a page at a time
+(:func:`threetears.core.keyed.keyset_page` or :func:`threetears.core.keyset.keyset_pages`).
+
+IO only: each statement is awaited on the caller's connection; no row is touched in Python beyond the answer's own
+dicts (:func:`read_keyed`) or the Arrow table (:func:`read_keyed_arrow`, parsed off the interpreter lock by
+:func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow`).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final
+
+from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.keyed._filters import by_conditions
+from threetears.core.sql_fragments import quote_identifier, unnest_key_join
+
+__all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_keyed", "read_keyed_arrow"]
+
+#: keys a statement names when the caller does not say: well under a statement's parameter and reply bounds
+DEFAULT_KEY_BATCH: Final = 1000
+
+
+class KeyTooWide(ValueError):
+    """one key alone holds as many rows as the transport answers a statement: it is a prefix to page through."""
+
+
+@dataclass(frozen=True)
+class KeyBatch:
+    """the keys a read names: a leading part of a key, one tuple a key.
+
+    :param columns: the key columns, TRUSTED identifiers, in key order
+    :ptype columns: tuple[str, ...]
+    :param values: one tuple a key, a value a column; each key is read once however often named
+    :ptype values: Sequence[Sequence[Any]]
+    :param casts: each column's SQL type its text is cast back to; ``text`` for every column when empty
+    :ptype casts: tuple[str, ...]
+    :param null_safe: a ``None`` in a key matches the rows holding none in that column (``IS NOT DISTINCT FROM``):
+        a scope column's NULL bucket
+    :ptype null_safe: bool
+    """
+
+    columns: tuple[str, ...]
+    values: Sequence[Sequence[Any]]
+    casts: tuple[str, ...] = field(default=())
+    null_safe: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.columns:
+            raise ValueError("a key batch names at least one key column")
+        if self.casts and len(self.casts) != len(self.columns):
+            raise ValueError(f"a key batch casts each of its {len(self.columns)} columns, got {len(self.casts)}")
+        for key in self.values:
+            if len(key) != len(self.columns):
+                raise ValueError(f"a key of {self.columns} has {len(self.columns)} values, got {tuple(key)!r}")
+
+    def cast(self, index: int) -> str:
+        """the SQL type column ``index``'s text is cast back to.
+
+        :param index: the column's place in :attr:`columns`
+        :ptype index: int
+        :return: the type
+        :rtype: str
+        """
+        return self.casts[index] if self.casts else "text"
+
+
+def _text(value: Any) -> str | None:
+    """a key value as the text its array binds: its ISO form for a date or time, ``str`` otherwise."""
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return str(isoformat()) if callable(isoformat) else str(value)
+
+
+@dataclass(frozen=True)
+class _Statement:
+    """the statement one keyed read sends a batch: its text and the parameters ahead of the key arrays."""
+
+    sql: str
+    pinned: tuple[Any, ...]
+    columns: int
+
+    def params(self, keys: Sequence[tuple[Any, ...]]) -> tuple[Any, ...]:
+        arrays = tuple([_text(key[index]) for key in keys] for index in range(self.columns))
+        return (*arrays, *self.pinned)
+
+
+def _statement(table: str, columns: Sequence[str], keys: KeyBatch, by: Mapping[str, Any]) -> _Statement:
+    if not columns:
+        raise ValueError(f"a keyed read of {table} names the columns it reads")
+    selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
+    casts = [keys.cast(index) for index in range(len(keys.columns))]
+    unnested, joined = unnest_key_join(keys.columns, casts, alias="t", null_safe=keys.null_safe)
+    conditions, pinned = by_conditions(by, first=len(keys.columns) + 1, alias="t")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT {selected} FROM {quote_identifier(table)} AS t JOIN (SELECT {unnested}) AS k ON {joined}{where}"
+    return _Statement(sql=sql, pinned=tuple(pinned), columns=len(keys.columns))
+
+
+def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
+    if batch < 1:
+        raise ValueError(f"a keyed read names at least one key a statement, got {batch}")
+    unique = list(dict.fromkeys(tuple(key) for key in keys.values))
+    return [unique[start : start + batch] for start in range(0, len(unique), batch)]
+
+
+async def _read_split(
+    fetch: Callable[[Sequence[tuple[Any, ...]]], Awaitable[Any]],
+    size: Callable[[Any], int],
+    keys: Sequence[tuple[Any, ...]],
+    row_cap: int | None,
+    table: str,
+) -> list[Any]:
+    """one batch's answers: the batch read whole, or in halves while an answer reaches ``row_cap``."""
+    answered = await fetch(keys)
+    if row_cap is None or size(answered) < row_cap:
+        return [answered]
+    if len(keys) == 1:
+        raise KeyTooWide(
+            f"{table}: the key {keys[0]!r} alone reaches the transport's {row_cap} rows a statement; page it "
+            "(threetears.core.keyed.keyset_page)"
+        )
+    half = len(keys) // 2
+    return [
+        *await _read_split(fetch, size, keys[:half], row_cap, table),
+        *await _read_split(fetch, size, keys[half:], row_cap, table),
+    ]
+
+
+async def read_keyed(
+    conn: Any,
+    table: str,
+    *,
+    keys: KeyBatch,
+    columns: Sequence[str],
+    by: Mapping[str, Any] | None = None,
+    batch: int = DEFAULT_KEY_BATCH,
+    row_cap: int | None = None,
+) -> list[dict[str, Any]]:
+    """the rows of ``table`` the keys name (within ``by``), ``batch`` keys a statement.
+
+    :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``: an L3 backend, the rail's proxy, a
+        connection, or a DuckDB connection behind :func:`threetears.core.keyed.threaded_duckdb`
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param keys: the keys, a leading part of the table's key (or of an index declared for the caller's read)
+    :ptype keys: KeyBatch
+    :param columns: the columns to read, TRUSTED identifiers
+    :ptype columns: Sequence[str]
+    :param by: columns pinned beside the keys (a tenant), each a value or an :class:`~threetears.core.keyed.AnyOf`
+    :ptype by: Mapping[str, Any] | None
+    :param batch: the most keys a statement names
+    :ptype batch: int
+    :param row_cap: the most rows the transport answers a statement without saying it cut; None when it never cuts
+    :ptype row_cap: int | None
+    :return: the rows, in no promised order
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
+    :raises KeyTooWide: when one key alone reaches ``row_cap``
+    """
+    statement = _statement(table, columns, keys, by or {})
+
+    async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
+        return list(await conn.fetch(statement.sql, *statement.params(chunk)))
+
+    rows: list[dict[str, Any]] = []
+    for chunk in _batches(keys, batch):
+        for answered in await _read_split(fetch, len, chunk, row_cap, table):
+            rows.extend(dict(row) for row in answered)
+    return rows
+
+
+async def read_keyed_arrow(
+    conn: Any,
+    table: str,
+    *,
+    keys: KeyBatch,
+    types: Mapping[str, Any],
+    by: Mapping[str, Any] | None = None,
+    batch: int = DEFAULT_KEY_BATCH,
+    row_cap: int | None = None,
+) -> list[Any]:
+    """:func:`read_keyed`, each statement's answer one Arrow table: the same statements, the rows never Python
+    objects (the rail's proxy parses its reply off the interpreter lock).
+
+    :param conn: the rail's proxy (``fetch_arrow``), or anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param keys: the keys
+    :ptype keys: KeyBatch
+    :param types: column name -> its Arrow type, every column read, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param by: columns pinned beside the keys
+    :ptype by: Mapping[str, Any] | None
+    :param batch: the most keys a statement names
+    :ptype batch: int
+    :param row_cap: the most rows the transport answers a statement without saying it cut
+    :ptype row_cap: int | None
+    :return: one ``pyarrow.Table`` a statement, in the order read
+    :rtype: list[pyarrow.Table]
+    :raises ValueError: as :func:`read_keyed`
+    :raises KeyTooWide: when one key alone reaches ``row_cap``
+    """
+    statement = _statement(table, list(types), keys, by or {})
+
+    async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
+        return await l3_fetch_arrow(conn, statement.sql, *statement.params(chunk), types=types)
+
+    tables: list[Any] = []
+    for chunk in _batches(keys, batch):
+        tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table)
+    return tables
