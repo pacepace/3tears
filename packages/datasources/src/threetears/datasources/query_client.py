@@ -76,6 +76,7 @@ from threetears.core.security.door_request import (
 )
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
+from threetears.datasources.bounded_rows import json_with_rows
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
@@ -721,9 +722,13 @@ class DatasourceQueryResponse(BaseModel):
     :ptype rows: list[dict[str, Any]]
     :param row_count: how many rows ``rows`` carries
     :ptype row_count: int
-    :param truncated: whether the hub cut the result at its row cap, so
-        ``rows`` is a prefix of what the query produced
+    :param truncated: whether the hub cut the result (at its row cap, or at
+        ``max_reply_bytes``), so ``rows`` is a prefix of what the query produced
     :ptype truncated: bool
+    :param max_reply_bytes: the bytes the hub cut this reply's rows at; ``None``
+        while it cuts at its row cap (and from a hub that predates the byte cap),
+        so a caller reading by rows sees no change
+    :ptype max_reply_bytes: int | None
     :param error_code: the machine-readable refusal code, ``None`` on success
     :ptype error_code: str | None
     :param error_message: the human-readable refusal, never parsed
@@ -737,6 +742,7 @@ class DatasourceQueryResponse(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+    max_reply_bytes: int | None = None
     error_code: str | None = None
     error_message: str | None = None
     correlation_id: UUID | None = None
@@ -753,6 +759,20 @@ class DatasourceQueryResponse(BaseModel):
     export_deleted: int | None = None
     #: set only in answer to an ``export_list`` request: one page of the caller's recorded exports
     export_list: DatasourceExportListResult | None = None
+
+    def json_with_rows(self, rows_json: bytes) -> bytes:
+        """this reply's JSON with ``rows_json`` as its ``rows``, spliced in, never re-encoded.
+
+        For a hub that encoded the rows once while it read them (``Driver.fetch_within``'s
+        :meth:`~threetears.datasources.bounded_rows.BoundedRows.json_array`); see
+        :func:`~threetears.datasources.bounded_rows.json_with_rows`.
+
+        :param rows_json: the rows as one JSON array
+        :ptype rows_json: bytes
+        :return: the reply's JSON
+        :rtype: bytes
+        """
+        return json_with_rows(self, rows_json)
 
 
 class DatasourceQueryResult(BaseModel):
