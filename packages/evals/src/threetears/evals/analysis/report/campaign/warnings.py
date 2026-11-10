@@ -14,7 +14,6 @@ from collections.abc import Mapping, Sequence
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.forms import PageForms
@@ -176,7 +175,7 @@ def _undecided_bound(
     )
 
 
-def floor_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
+def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: PageForms) -> list[ReportBlock]:
     """One line per candidate breaking a floor, naming the aspects it breaks one on: ``Adopting v2 overrides the
     10-point floor it breaks on billing.`` Which rate broke it, and the interval it broke on, are the aspect's floors
     table's.
@@ -185,15 +184,18 @@ def floor_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[Re
     :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms, which state each margin.
+    :ptype forms: PageForms
     :return: The lines.
     :rtype: list[ReportBlock]
     """
     return [
-        DisclosureBlock(section="warnings", source="floor", text=text) for *_, text in _floor_lines(readings, names)
+        DisclosureBlock(section="warnings", source="floor", text=text)
+        for *_, text in _floor_lines(readings, names, forms)
     ]
 
 
-def campaign_warnings(readings: CampaignReadings, names: AspectNames) -> list[str]:
+def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: PageForms) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
     candidate breaking a floor — never the guardrail lines after.
 
@@ -204,10 +206,15 @@ def campaign_warnings(readings: CampaignReadings, names: AspectNames) -> list[st
     :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The forms of the surface the lines are printed on, which state each margin: the page's, or an
+        off-page surface's (:meth:`~threetears.evals.analysis.report.forms.PageForms.off_page`) for a listing.
+    :ptype forms: PageForms
     :return: The lines, in the page's order; none where no bar is missed and no floor broken.
     :rtype: list[str]
     """
-    return [text for *_, text in _bar_lines(readings, names)] + [text for *_, text in _floor_lines(readings, names)]
+    return [text for *_, text in _bar_lines(readings, names)] + [
+        text for *_, text in _floor_lines(readings, names, forms)
+    ]
 
 
 def _bar_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str, list[BarStatus], str]]:
@@ -243,7 +250,7 @@ _FLOOR_LINE = {
 }
 
 
-def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
+def floor_line(arm: str, margins: Sequence[float | None], where: str, *, forms: PageForms) -> str:
     """The line a page warns of the floors one candidate breaks in, on a campaign's page and an aspect's own alike:
     ``Adopting v2 overrides the 10-point floor it breaks on billing.``, the floors' margin said where they share one
     (a cost floor has none). Which rate broke it, and the interval it broke on, are the floors table's.
@@ -254,6 +261,8 @@ def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
     :ptype margins: Sequence[float | None]
     :param where: Where the floors are broken, as :func:`where` says it.
     :ptype where: str
+    :param forms: The page's forms, which state the margin as declared.
+    :ptype forms: PageForms
     :return: The line.
     :rtype: str
     """
@@ -261,18 +270,20 @@ def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
     margin = next(iter(shared)) if len(shared) == 1 else None
     form = "one" if len(margins) == 1 else "other"
     return _FLOOR_LINE[(form, margin is not None)].format(
-        arm=arm, margin=format_number(margin) if margin is not None else "", where=where
+        arm=arm, margin=forms.declared(margin).text if margin is not None else "", where=where
     )
 
 
-def _floor_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str, list[FloorStatus], str]]:
+def _floor_lines(
+    readings: CampaignReadings, names: AspectNames, forms: PageForms
+) -> list[tuple[str, list[FloorStatus], str]]:
     """Each candidate breaking a floor, with the floors it breaks and its line: the floors' margin where they share
     one, as a cost floor has none."""
     total = len(readings.aspects)
     lines = []
     for arm, statuses in _by_arm(readings.broken_floors()).items():
         on = where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
-        lines.append((arm, statuses, floor_line(arm, [status.margin for status in statuses], on)))
+        lines.append((arm, statuses, floor_line(arm, [status.margin for status in statuses], on, forms=forms)))
     return lines
 
 

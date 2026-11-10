@@ -26,6 +26,7 @@ from threetears.evals.analysis.campaigns import set_campaign_control, update_cam
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.provenance import provenance_blocks
 from threetears.evals.analysis.report.campaign_page import timing_caveats
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.kernel.errors import ConflictError
 from packages.evals.tests.fixtures.toyhost.campaign import (
@@ -363,7 +364,7 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
     # Its criteria table dates the margin; the test setup table beside it (cost as routed, always) never says it.
     tables = {
         block.name: block
-        for block in provenance_blocks([page], {}, names=AspectNames.of([page]))
+        for block in provenance_blocks([page], {}, names=AspectNames.of([page]), forms=PageForms.off_page())
         if isinstance(block, TableBlock)
     }
     assert sorted(tables) == ["criteria_set", "test_setup"]

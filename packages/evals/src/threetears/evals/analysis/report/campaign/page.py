@@ -237,7 +237,7 @@ def build_campaign_report_in_aspect_forms(
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
-        *floor_warnings(readings, names=names),
+        *floor_warnings(readings, names=names, forms=forms),
         *guardrail_warnings(campaign, readings, reports, names=names, forms=forms),
         *caveat_blocks(bundles, section="warnings", names=names),
     ]
@@ -252,10 +252,10 @@ def build_campaign_report_in_aspect_forms(
     blocks += aggregate_blocks(campaign, readings, reports, forms=forms)
     blocks += depth_blocks(campaign, readings, reports, names=names, forms=forms)
     blocks += bar_blocks(readings, reports, names=names, forms=forms)
-    blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
+    blocks += call_blocks(campaign, readings, call, names=names, reports=reports, forms=forms)
     # Design & provenance: the design and when each criterion was set, then what depth says once. What each check's
     # name stands for is the glossary's (``CampaignReport.glossary``).
-    blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
+    blocks += provenance_blocks(bundles, readings.arm_labels(), names=names, forms=forms)
     blocks += depth_provenance_blocks(readings)
     folds = [
         CampaignAspectFold(

@@ -73,7 +73,7 @@ def test_each_arm_breaking_a_floor_has_its_own_line_and_floors_of_two_margins_ar
     moved = v2.model_copy(update={"aspect": "tone", "floor": "tone/rate_drop/x", "margin": 15.0})
     both = readings.model_copy(update={"floors": [*readings.floors, moved]})
     names = AspectNames.of(fold.report.bundle for fold in page.aspects)
-    assert campaign_warnings(both, names)[0] == (
+    assert campaign_warnings(both, names, forms=PageForms.off_page())[0] == (
         "Adopting v2 overrides the floors it breaks on 2 of 3 aspects (billing and tone)."
     )
 
@@ -83,7 +83,8 @@ def test_an_arm_missing_several_bars_has_one_line_counting_them(name: str, line:
     page = SHAPES[name]().page()
     assert _warned(page.blocks, "bar") == [line]
     # The listing line says what the page says, word for word.
-    assert campaign_warnings(page.readings, AspectNames.of(fold.report.bundle for fold in page.aspects)) == [line]
+    names = AspectNames.of(fold.report.bundle for fold in page.aspects)
+    assert campaign_warnings(page.readings, names, forms=PageForms.off_page()) == [line]
 
 
 def test_a_measurement_s_missed_bar_says_it_falls_short_never_that_adopting_it_overrides_it() -> None:

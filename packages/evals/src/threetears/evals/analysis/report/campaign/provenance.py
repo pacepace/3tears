@@ -38,6 +38,7 @@ from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.campaign.warnings import listed, where
 from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     DisclosureSource,
@@ -50,7 +51,6 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.style import ArmName, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.numbers import spell_stored_counts
 
 __all__ = [
     "aspect_provenance_blocks",
@@ -295,7 +295,11 @@ def priced_aspects(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
 
 
 def setup_disclosure(
-    kind: Literal["latency", "settings", "cost"], bundle: AnalysisContextBundle, arm: Callable[[str], str]
+    kind: Literal["latency", "settings", "cost"],
+    bundle: AnalysisContextBundle,
+    arm: Callable[[str], str],
+    *,
+    forms: PageForms,
 ) -> DisclosureBlock | None:
     """An aspect's own methods line stating a disclosure in full: the bundle's sentence, verbatim, and for latency the
     arms it holds for where it does not hold for every arm; for cost, where any arm was priced, that each cost figure
@@ -307,10 +311,12 @@ def setup_disclosure(
     :ptype bundle: AnalysisContextBundle
     :param arm: An arm's name on the page, by its variant key.
     :ptype arm: Callable[[str], str]
+    :param forms: The page's forms, which print the counts a stored sentence holds.
+    :ptype forms: PageForms
     :return: The line, folded in the methods' disclosures, or None.
     :rtype: DisclosureBlock | None
     """
-    text = _setup_detail(kind, bundle, arm)
+    text = _setup_detail(kind, bundle, arm, forms)
     if text is None:
         return None
     return DisclosureBlock(
@@ -372,12 +378,14 @@ def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
     return said
 
 
-def _setup_detail(kind: _SetupKind, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
+def _setup_detail(
+    kind: _SetupKind, bundle: AnalysisContextBundle, arm: Callable[[str], str], forms: PageForms
+) -> str | None:
     """A disclosure's detail as every surface states it: the bundle's own sentence, verbatim (the request settings'
     names the role and what was sent against what was asked), and for latency the arms it holds for, where it does
     not hold for every arm; each judge's state and next step; the cost's routing, where any arm was priced."""
     if kind == "settings":
-        return _settings_in_words(spell_stored_counts((bundle.request_settings_disclosure or "").strip())) or None
+        return _settings_in_words(forms.stored_counts((bundle.request_settings_disclosure or "").strip())) or None
     if kind == "judge":
         return " ".join(_calibration_sentences(bundle)) or None
     if kind == "cost":
@@ -423,7 +431,7 @@ def _settings_in_words(sentence: str) -> str:
 
 
 def provenance_blocks(
-    bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str], *, names: AspectNames
+    bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str], *, names: AspectNames, forms: PageForms
 ) -> list[ReportBlock]:
     """A campaign's Design & provenance section: each criterion set after its readings were visible, with when and on
     which aspects, then each report-wide disclosure in full with the aspects it holds on (results with no ordered
@@ -435,6 +443,8 @@ def provenance_blocks(
     :ptype labels: Mapping[str, str]
     :param names: What the page calls each aspect, and where each one's fold is, which a cell of one aspect links.
     :ptype names: AspectNames
+    :param forms: The page's forms, which state each floor's margin and the counts a stored sentence holds.
+    :ptype forms: PageForms
     :return: The tables, each only where it has a row.
     :rtype: list[ReportBlock]
     """
@@ -444,14 +454,14 @@ def provenance_blocks(
         ref = names.folds.get(held[0]) if len(held) == 1 else None
         return TableCell(value=_aspects_cell([names(label) for label in held], len(bundles)), ref=ref)
 
-    blocks = _criteria_table(bundles, section="provenance", cell=aspects)
+    blocks = _criteria_table(bundles, section="provenance", cell=aspects, forms=forms)
     setup: dict[tuple[str, str | int], list[str]] = {}
     if untimed := [bundle for bundle in bundles if bundle.reading_scope.untimed_results]:
         count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
         setup[("results with no ordered time", count)] = [bundle.aspect for bundle in untimed]
     for kind, what in _SETUP_NAMES:
         for bundle in bundles:
-            if (detail := _setup_detail(kind, bundle, _namer(named_arms(bundle, labels)))) is not None:
+            if (detail := _setup_detail(kind, bundle, _namer(named_arms(bundle, labels)), forms)) is not None:
                 setup.setdefault((what, detail), []).append(bundle.aspect)
     if setup:
         # A disclosure's name is its row's label, so it starts with a capital as every row label does.
@@ -491,12 +501,14 @@ def _namer(named: Mapping[str, ArmName]) -> Callable[[str], str]:
     return lambda key: named[key].label if key in named else short_digest(key)
 
 
-def aspect_provenance_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
+def aspect_provenance_blocks(bundle: AnalysisContextBundle, *, forms: PageForms) -> list[ReportBlock]:
     """An aspect's own page's statement of each criterion set after its readings were visible, and when, in its
     methods: the detail its first screen's one line on them points at.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
+    :param forms: The page's forms, which state each floor's margin.
+    :ptype forms: PageForms
     :return: The table, or nothing where every criterion came before its readings.
     :rtype: list[ReportBlock]
     """
@@ -505,18 +517,23 @@ def aspect_provenance_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]
         [bundle],
         section="methods",
         cell=lambda held: TableCell(value=_aspects_cell([names(label) for label in held], 1)),
+        forms=forms,
     )
 
 
 def _criteria_table(
-    bundles: Sequence[AnalysisContextBundle], *, section: ReportSection, cell: Callable[[Sequence[str]], TableCell]
+    bundles: Sequence[AnalysisContextBundle],
+    *,
+    section: ReportSection,
+    cell: Callable[[Sequence[str]], TableCell],
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """Each criterion set late, one row per criterion and time with the aspects whose results existed then, the
     aspects by label for ``cell`` to name and link."""
     groups: dict[tuple[CriterionKind, str, str | None], list[str]] = {}
     for bundle in bundles:
         for late in bundle.reading_scope.late_criteria:
-            key = (late.criterion, _criterion_words(bundle, late), late.page_date())
+            key = (late.criterion, _criterion_words(bundle, late, forms), late.page_date())
             groups.setdefault(key, []).append(bundle.aspect)
     if not groups:
         return []
@@ -585,9 +602,9 @@ def _aspects_cell(names: Sequence[str], total: int) -> str:
     return "every aspect" if total > 1 and len(names) == total else listed(names)
 
 
-def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
+def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion, forms: PageForms) -> str:
     """Which criterion of its kind ``late`` is, as a row names it: a bar by its measure, a guardrail by its dimension,
-    a floor by what it says."""
+    a floor by what it says, in the page's forms."""
     if late.criterion == "bar" and late.name is not None:
         return measure_name_of(bundle, late.name)
     if late.criterion == "guardrail" and late.name is not None:
@@ -595,7 +612,7 @@ def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
     if late.criterion == "floor" and bundle.declared is not None:
         floor = next((floor for floor in bundle.declared.floors if floor.key == late.name), None)
         if floor is not None:
-            return floor_statement(floor.clause, candidate="the arm", check_names=bundle.named_checks())
+            return forms.said(floor_statement(floor.clause, candidate="the arm", check_names=bundle.named_checks()))
     return late.name or ""
 
 
