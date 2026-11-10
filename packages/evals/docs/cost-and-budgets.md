@@ -403,9 +403,9 @@ asked for, and its summary says which model answered is unconfirmed
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
 refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
 spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Money reads
-one way per set: a column, an axis or a family of figures is spelled by one rule throughout, and where any amount in
-it is too small for cents the whole set reads per 1,000 replies, which the heading says (`Cost per 1,000 replies`,
-`Production cost, per 1,000 replies`). Each money measure takes one form on every page of a campaign
+one way per set: a column, an axis or a family of figures is spelled by one rule throughout. A cost per reply reads
+per 1,000 replies wherever one ruler applies, on every table and page of a campaign, and per 1,000,000 where an
+amount is under a cent there; the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`). Each money measure takes one form on every page of a campaign
 ([the number policy](design.md#the-number-policy)). The rule is one count of significant figures, not one count of decimals (owner
 ruling Q3, 2026-11-07, which replaces the 2026-10-27 reading of one decimal count per set), so `$0.0080` sits beside
 `$0.11`, never `$0.1100`: below $1 an amount prints to two significant figures (`$0.020`), from $1 to under $10 in

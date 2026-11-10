@@ -17,9 +17,14 @@ import copy
 import html
 import re
 
+from packages.evals.tests.campaign_bundle_support import arms_of, campaign_bundle
 from packages.evals.tests.campaign_page_support import kind_page_of
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
-from threetears.evals.analysis import AnalysisContextBundle, campaign_report_markdown
+from threetears.evals import Eval
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaign_report_markdown
+from threetears.evals.analysis.campaign_readings import MeasureReading
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart
 from threetears.evals.analysis.report.doc_page.build import build
@@ -29,8 +34,10 @@ from threetears.evals.analysis.report.figures import reply_cost_ruler
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.quick import measure
 
 #: The host measure the variants add: a share of research deliveries, as a host declares one.
 _FRACTION = "research_failed_rate"
@@ -214,3 +221,127 @@ def test_a_cost_per_reply_reads_on_the_ruler_the_campaign_s_tables_state_it_on()
     ruler = reply_cost_ruler([0.02, 0.03])
     assert ruler.scaled("Production cost") == "Production cost, per 1,000 replies"
     assert PageForms.off_page().ruled_level(ruler, 0.02).text == "$20"
+
+
+def _kairo_chart(block: str, query: dict[str, object]) -> list[str]:
+    """The values table of one chart drawn on Kairo's written page from ``query``, as Markdown rows."""
+    doc = copy.deepcopy(converted_doc(_KAIRO))
+    evidence = doc["claims"][3]["evidence"][1]
+    evidence["block"] = block
+    evidence["query"].update(query)
+    evidence["caption"] = "The chart drawn here."
+    held = ReportInput.model_validate(snapshot_of(_KAIRO).report_input)
+    lines = doc_page_markdown(build(ReportDoc.model_validate(doc), held, strict=True)).splitlines()
+    at = lines.index("The chart drawn here.")
+    head = max(index for index in range(at) if lines[index].startswith("| ") and lines[index + 1].startswith("|---"))
+    return [line for line in lines[head + 2 : at] if line.startswith("| ")]
+
+
+def test_a_change_chart_over_contrasts_names_its_unit_in_its_values_table() -> None:
+    """Diverging bars over the contrasts, a change in points under a ``+num`` format: the values table writes ``pts``
+    on each change and once after its interval, never ``-8 | -13 to -2``."""
+    rows = _kairo_chart(
+        "diverging_bars",
+        {"source": "contrasts", "aspect": "character adherence (v2)", "measures": ["passed"], "arms": [], "strata": []},
+    )
+    assert rows and all(" pts | " in row for row in rows), rows
+    assert any("| -8 pts | -13 to -2 pts |" in row for row in rows), rows
+
+
+def test_a_change_chart_over_strata_names_its_unit_in_its_values_table() -> None:
+    """Diverging bars over strata: each stratum's change reads ``-23 pts``, never a bare ``-23``."""
+    rows = _kairo_chart(
+        "diverging_bars",
+        {
+            "source": "strata",
+            "aspect": "",
+            "measures": ["persona.holds_character"],
+            "arms": ["qwen3.8-flash"],
+            "strata": ["off_lane", "machinery"],
+        },
+    )
+    assert rows[0].startswith("| off lane | -23 pts |"), rows
+
+
+def _readings_only(**described: MetricDescriptor) -> ReportInput:
+    """The toy measurement's report input, with each measure ``described`` read by code alone: a reading on the
+    campaign's one arm that no cell's summary carries, its descriptor in the aspect's catalog."""
+    profile = toyhost_profile()
+    campaign, storage = toyhost_campaign(profile=profile)
+    aspect = assemble_context_bundle(campaign, storage=storage, profile=profile)
+    arm = arms_of([aspect])[0]
+    bundle = campaign_bundle(aspect, arms=[arm])
+    (one,) = bundle.aspects
+    read = [
+        MeasureReading(
+            aspect=bundle.labels[0],
+            arm=arm.variant_key,
+            arm_label=arm.label or arm.variant_key,
+            measure=name,
+            name=name,
+            value=0.3,
+            interval=(0.0, 0.7),
+            cases=12,
+        )
+        for name in described
+    ]
+    return report_input(
+        bundle.model_copy(
+            update={
+                "aspects": [one.model_copy(update={"measure_catalog": {**one.measure_catalog, **described}})],
+                "readings": bundle.readings.model_copy(update={"measures": [*bundle.readings.measures, *read]}),
+            }
+        )
+    )
+
+
+def _described(name: str, data_type: str, value_range: tuple[float, float] | None) -> MetricDescriptor:
+    return MetricDescriptor(
+        name=name,
+        reader_name=name,
+        data_type=data_type,  # type: ignore[arg-type]
+        family="research_conclusion",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        population="all_observed",
+        unit=None,
+        description="A share the host declares with no unit.",
+        value_range=value_range,
+    )
+
+
+def test_a_measure_read_by_code_alone_takes_its_unit_from_its_descriptor() -> None:
+    """A measurement's code readings carry figures no cell does: such a measure's unit is its descriptor's, so a
+    fraction on 0 to 1 enters the report input as a share and every written table reads it in percent."""
+    held = _readings_only(research_failed_rate=_described("research_failed_rate", "numeric", (0.0, 1.0)))
+    assert held.measures["research_failed_rate"].unit == "share"
+
+
+def test_a_boolean_with_no_unit_is_a_share() -> None:
+    """A boolean that declares no unit and no better end (no check) is a share of what held: the report input
+    states it so, as the aspect page reads it."""
+    held = _readings_only(went_offstage=_described("went_offstage", "boolean", None))
+    assert held.measures["went_offstage"].unit == "share"
+
+
+@measure(
+    reader_name="Fields found", higher_is_better=True, merit_axis="quality", value_range=(0.0, 1.0), population="scored"
+)
+def fields_found(case: dict[str, str], answer: str) -> float:
+    """The share of a case's four fields its answer found: none, a quarter, a half or three quarters."""
+    return (int(case["text"].split()[-1]) % 4) / 4
+
+
+async def _answer(case: dict[str, str]) -> str:
+    return "found"
+
+
+async def test_a_fraction_grader_reads_in_percent_on_the_page_and_in_the_console() -> None:
+    """A quick eval's 0-to-1 grader is a share: its console line reads it in percent with its trials named, as its
+    page's tables read it, never ``mean 0.375``."""
+    cases = [{"text": f"case {index}"} for index in range(12)]
+    result = await Eval(cases, {"solo": _answer}, [fields_found], k=1).run(store=":memory:", scope="share")
+    console = [line.strip() for line in result.render().splitlines() if line.strip().startswith("Fields found")]
+    assert console == ["Fields found: 38% (12 trials)"], console
+    page = [line for line in campaign_report_markdown(result.page).splitlines() if "| Fields found |" in line]
+    assert page and all("| 38% |" in line or "| 38% (" in line for line in page), page

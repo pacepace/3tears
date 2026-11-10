@@ -249,7 +249,9 @@ class Drawn:
 KindResolver = Callable[[ChartContext], Drawn]
 
 
-def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> ChartBlock:
+def chart_block(
+    context: ChartContext, data: KitChart, *, read_at: str = "", table_unit: str | None = None
+) -> ChartBlock:
     """The chart's block: its kind, its title and the kit's data, every value it draws carrying the text the page's
     forms decide (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`), on the planned page's fixed
     section.
@@ -262,6 +264,9 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
         analysis computes (two arms' difference, a lever's effect) reads them at its quantity's unit, so a point
         prints to one decimal as its key and note do, never at the float's four figures; empty for the format's.
     :ptype read_at: str
+    :param table_unit: The unit its values table writes on a figure and after an interval standing alone in its
+        column, where its format names none (``pts`` beside a ``+num`` change, number rule 3); None for ``read_at``.
+    :ptype table_unit: str | None
     :return: The block.
     :rtype: ChartBlock
     """
@@ -273,7 +278,8 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
     (measure,) = context.query.measures if len(context.query.measures) == 1 else ("",)
     reading = figure_kind(context, measure) if measure else None
     drawn = context.forms.chart_texts(data, read_at=read_at, measure=measure, kind=reading)
-    return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=drawn, unit=read_at)
+    unit = read_at if table_unit is None else table_unit
+    return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=drawn, unit=unit)
 
 
 def money_drawn(
@@ -283,6 +289,7 @@ def money_drawn(
     *,
     money: Iterable[tuple[str, Quantity]],
     read_at: str = "",
+    table_unit: str | None = None,
 ) -> Drawn:
     """A chart that draws money, as a resolver returns it: its block (:func:`chart_block`) and code's lines under it,
     then a line for each money figure saying what its dollars are per where its figures do not say it themselves
@@ -298,12 +305,14 @@ def money_drawn(
     :ptype money: Iterable[tuple[str, Quantity]]
     :param read_at: As :func:`chart_block` reads it.
     :ptype read_at: str
+    :param table_unit: As :func:`chart_block` reads it.
+    :ptype table_unit: str | None
     :return: The drawn chart.
     :rtype: Drawn
     """
     lines = tuple(notes)
     per = tuple(line for line in money_notes(context.report_input, money) if line not in lines)
-    return Drawn(chart_block(context, data, read_at=read_at), (*lines, *per))
+    return Drawn(chart_block(context, data, read_at=read_at, table_unit=table_unit), (*lines, *per))
 
 
 def floor_rate(floor: FloorRead) -> str:

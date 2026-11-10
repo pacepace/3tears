@@ -571,6 +571,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
     first = strips[0].drawn
     # What an analysis computes is spelled at its quantity's precision in the values table (chart_block's read_at).
     read_at = first.unit if source in _COMPUTED and not several else ""
+    # Its values table names the unit its figures are in where they share one (``-23 pts``), whatever their source.
+    table_unit = None if several else first.unit
     if len(strips) == 1:
         (strip,) = strips
         data = DotIntervalChart(
@@ -583,7 +585,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             better=strip.better,
             emphasis=context.emphasis,
         )
-        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
+        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at, table_unit=table_unit)
     panels = []
     for strip in strips:
         look = context.look.arm(strip.arm) if strip.arm in context.look.arms else None
@@ -608,7 +610,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
         emphasis=context.emphasis,
         panels=panels,
     )
-    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
+    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at, table_unit=table_unit)
 
 
 def _strip_money(strips: Sequence[_Strip]) -> list[tuple[str, Quantity]]:

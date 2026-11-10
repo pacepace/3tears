@@ -172,6 +172,7 @@ from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, pro
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.metrics import reads_as_share
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
@@ -685,7 +686,8 @@ class WriterResult:
                         descriptor.reader_name if descriptor is not None and descriptor.reader_name else measure.name
                     )
                     rows.setdefault(label, {})[arm] = (measure.mean, measure.n)
-                    rate = descriptor is not None and (descriptor.data_type == "boolean" or descriptor.pass_fail)
+                    # A share reads in percent as every page reads it (number rule 4), a pass/fail measure too.
+                    rate = descriptor is not None and (reads_as_share(descriptor) or descriptor.pass_fail)
                     read.setdefault(label, (measure.name, "measure", rate))
             for dimension in summary.judged:
                 if dimension.mean is not None:
