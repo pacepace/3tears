@@ -619,6 +619,21 @@ async def test_the_action_pages_the_closure_and_its_pages_join_to_the_export() -
     assert pages[0].model_copy(update={"documents": joined, "page": None}) == whole
 
 
+async def test_the_mint_hint_names_every_flag_the_mint_requires() -> None:
+    toy = off_loop(Toy)
+    (evals, _admin) = eval_catalogue().mount_all(standard_tools("evals"))
+
+    outcome = await evals.call(
+        {"action": "campaign_export", "campaign_id": toy.campaign_id, "built_by": BUILT_BY},
+        host=toy.host,
+        caller=CALLER,
+    )
+
+    assert not outcome.is_error, outcome.text
+    for required in ("--documents", "--profile", "--host", "--campaign", "--name <case>", "--out <file>.json.gz"):
+        assert required in outcome.text, required
+
+
 async def test_the_action_reads_the_callers_scope_and_refuses_a_campaign_it_does_not_hold() -> None:
     toy = off_loop(Toy)
     (evals, _admin) = eval_catalogue().mount_all(standard_tools("evals"))

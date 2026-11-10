@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, computed_field, field_validator, model_validator
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
@@ -1457,9 +1458,9 @@ def _refuse_unreadable_guardrail_margins(design: AspectDesign, template: EvalTem
         low, high = SCALES[dim.scale].value_range
         if entry.margin >= high - low:
             raise DesignRefused(
-                f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {low:g} to {high:g}, is as "
+                f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {spell_declared(low)} to {spell_declared(high)}, is as "
                 "wide as its scale, so every arm would hold whatever it did",
-                remedy=f"declare a margin narrower than {high - low:g}",
+                remedy=f"declare a margin narrower than {spell_declared(high - low)}",
             )
 
 

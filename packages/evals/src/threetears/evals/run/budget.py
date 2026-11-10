@@ -36,6 +36,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.run import ceilings
 from threetears.evals.schema.logs import get_logger
 
@@ -114,13 +115,13 @@ class BudgetStoppedError(Exception):
             if breach.unpriced_results:
                 reason = (
                     f"{breach.unpriced_results} result(s) spent what could not be priced, beside "
-                    f"${breach.accumulated_usd:.4f} of priced spend, so a ${breach.max_cost_usd:.4f} cap cannot be "
+                    f"${round_half_even(breach.accumulated_usd, 4)} of priced spend, so a ${round_half_even(breach.max_cost_usd, 4)} cap cannot be "
                     "enforced"
                 )
             else:
                 reason = (
-                    f"eval run cost cap exceeded — ${breach.accumulated_usd:.4f} spent against a "
-                    f"${breach.max_cost_usd:.4f} cap"
+                    f"eval run cost cap exceeded — ${round_half_even(breach.accumulated_usd, 4)} spent against a "
+                    f"${round_half_even(breach.max_cost_usd, 4)} cap"
                 )
         super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully")
 
@@ -147,7 +148,7 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
                 if stop.unpriced_results
                 else ""
             )
-            figures = f"{unpriced}${stop.landed_at_stop:.4f} of ${stop.ceiling:.4f} at the stop"
+            figures = f"{unpriced}${round_half_even(stop.landed_at_stop, 4)} of ${round_half_even(stop.ceiling, 4)} at the stop"
             segments.append(f"its cost cap: {figures}")
         else:
             segments.append(f"its metered-call ceiling: {stop.landed_at_stop} of {stop.ceiling} at the stop")
@@ -202,7 +203,7 @@ class AccountExhaustedError(Exception):
         unpriced = f", and {unpriced_results} result(s) whose spend could not be priced" if unpriced_results else ""
         super().__init__(
             f"eval run stopped: the provider account refused a candidate call after {completed}/{total} results "
-            f"(${accumulated_usd:.4f} spent{unpriced}) — {detail}"
+            f"(${round_half_even(accumulated_usd, 4)} spent{unpriced}) — {detail}"
         )
 
 
@@ -402,7 +403,7 @@ class EvalRunCostCap:
             log.warning(
                 "Eval run %s: a delivered result's spend could not be priced — %s",
                 self._run_id,
-                f"a ${self._max_cost_usd:.2f} cap cannot be enforced on it, so the run stops before its next cell"
+                f"a ${round_half_even(self._max_cost_usd, 2)} cap cannot be enforced on it, so the run stops before its next cell"
                 if self._enabled
                 else "the run is uncapped, so it carries on and counts it",
             )

@@ -338,21 +338,38 @@ def _taken_up(stored: EvalRun, fresh: EvalRun, template: EvalTemplate) -> EvalRu
     return reopened
 
 
-@pytest.mark.parametrize(("launched", "taken_up"), [(False, True), (True, False), (None, True), (True, None)])
-def test_a_take_up_reads_admitted_on_estimates_when_either_holding_was(
-    launched: bool | None, taken_up: bool | None
-) -> None:
+def _under_a_cap(launched: bool | None, taken_up: bool | None, *, kept: float | None = 5.0) -> EvalRun:
+    """The run a take-up reopens when the stored run was launched under a cap and the take-up names ``kept``."""
     stored = make_eval_run(
         cap_checked_on_estimates=launched,
+        max_cost_usd=5.0,
         variant_levers={},
         identity_version=1,
         created_at="2026-06-01T00:00:00+00:00",
     )
     template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    fresh = stored.model_copy(update={"cap_checked_on_estimates": taken_up, "max_cost_usd": kept})
+    return _taken_up(stored, fresh, template)
 
-    reopened = _taken_up(stored, stored.model_copy(update={"cap_checked_on_estimates": taken_up}), template)
 
-    assert reopened.cap_checked_on_estimates is True
+@pytest.mark.parametrize(("launched", "taken_up"), [(False, True), (True, False), (None, True), (True, None)])
+def test_a_take_up_reads_admitted_on_estimates_when_either_holding_was(
+    launched: bool | None, taken_up: bool | None
+) -> None:
+    assert _under_a_cap(launched, taken_up).cap_checked_on_estimates is True
+
+
+@pytest.mark.parametrize("flag", [False, None])
+def test_a_take_up_where_neither_holding_was_admitted_on_estimates_leaves_the_flag_as_stored(flag: bool | None) -> None:
+    assert _under_a_cap(flag, flag).cap_checked_on_estimates is flag
+
+
+@pytest.mark.parametrize("launched", [True, False, None])
+def test_a_take_up_that_drops_the_cap_records_no_estimate_flag_beside_no_cap(launched: bool | None) -> None:
+    reopened = _under_a_cap(launched, True, kept=None)
+
+    assert reopened.max_cost_usd is None
+    assert reopened.cap_checked_on_estimates is None
 
 
 def test_a_take_up_across_an_engine_build_still_refuses_a_moved_judge_or_apparatus_naming_only_them() -> None:

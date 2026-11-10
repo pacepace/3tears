@@ -603,6 +603,20 @@ def round_half_even(value: float, places: int) -> str:
     return text.removeprefix("-") if float(text) == 0 else text
 
 
+def spell_declared(value: float) -> str:
+    """A value as its declarer wrote it: the shortest general form, so ``30.0`` reads ``30`` and ``0.25`` reads
+    ``0.25``. It exists for the engine messages that echo a declared setting (a timeout, a lease, a scale bound) back
+    to the host that declared it, which should recognise its own spelling; a measured figure goes through
+    :func:`format_number` or a set's places instead.
+
+    :param value: The declared value, finite.
+    :ptype value: float
+    :return: Its text, as ``%g`` writes it (six significant figures, an exponent for the very large or small).
+    :rtype: str
+    """
+    return f"{value:g}"
+
+
 #: The least p-value written as its digits (APA): one under it reads as the bound ``< 0.001``.
 P_WRITTEN_FROM = 0.001
 

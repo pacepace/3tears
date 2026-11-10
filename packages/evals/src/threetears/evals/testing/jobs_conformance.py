@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
@@ -199,7 +200,7 @@ class CompletionGuard:
         except TimeoutError:
             self.awaited_by_call.append(where)
             raise JobAwaitedByItsCall(
-                f"{where}, made by a job, waited {self.call_return_timeout_s:g}s for the call that started the job "
+                f"{where}, made by a job, waited {spell_declared(self.call_return_timeout_s)}s for the call that started the job "
                 "to return, and it had not: the call waits on its own job's model work"
             ) from None
 
@@ -361,7 +362,9 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
                 try:
                     await _settled(host, job.job_id, caller.scope_id, timeout_s)
                 except TimeoutError:
-                    raise _fail(action, rule, f"its job {job.job_id} did not end within {timeout_s:g}s") from None
+                    raise _fail(
+                        action, rule, f"its job {job.job_id} did not end within {spell_declared(timeout_s)}s"
+                    ) from None
             if guard.outside:
                 raise _fail(action, rule, f"a request was made outside its job: {', '.join(guard.outside)}")
             if guard.inside == 0:

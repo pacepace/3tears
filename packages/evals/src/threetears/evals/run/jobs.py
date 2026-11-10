@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
@@ -912,7 +913,9 @@ class EvalJobManager:
             log.error(
                 "Task %s timed out after %.0fs (attribution=%s)", job_id, timed_out.elapsed_s, timed_out.attribution
             )
-            await self._end_task_record(job_id, f"its task ran out of its {timed_out.elapsed_s:.0f}s budget")
+            await self._end_task_record(
+                job_id, f"its task ran out of its {round_half_even(timed_out.elapsed_s, 0)}s budget"
+            )
         # prawduct:ok-broad-except — top-level task boundary: the work records its own ending; one it did not is written lost
         except Exception as broke:
             # NOSILENT: its record is written lost below, its cause this error, unless its work ended it first.
