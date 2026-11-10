@@ -67,7 +67,6 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.decision import (
     FloorOutcome,
     FloorState,
@@ -81,6 +80,7 @@ from threetears.evals.analysis.report.decision import (
     project_rate,
     read_floor,
 )
+from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
@@ -765,7 +765,7 @@ class _Row:
     per_case_usd: float | None
     rigs: list[str]
     levels: dict[float, RateReading]
-    drops: dict[float, tuple[FloorOutcome, str]]
+    drops: dict[float, tuple[FloorOutcome, Said]]
     depths: Mapping[str, Depth | None]
 
     def at(self, confidence: float) -> RateReading:
@@ -818,13 +818,14 @@ class _Row:
             return False
         return rate.interval[1] < 0 and rate.drop_bounds()[0] > 0
 
-    def drop_verdict(self, confidence: float) -> tuple[FloorOutcome, str]:
+    def drop_verdict(self, confidence: float) -> tuple[FloorOutcome, Said]:
         """The drop against the margin at ``confidence``, and the reason: the floor's own reading
         (:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate alone, at that level.
         ``broken`` is the drop shown past the margin, ``held`` the drop shown within it, ``unclear`` neither; with no
-        margin, ``unclear`` with no reason."""
+        margin, ``unclear`` with no reason. The reason's figures are held as numbers
+        (:class:`~threetears.evals.analysis.report.said.Said`)."""
         if self.margin is None:
-            return "unclear", ""
+            return "unclear", Said()
         if confidence not in self.drops:
             rate = self.at(confidence)
             readings = replace(self.base, rates=(rate,), confidence=confidence)
@@ -1001,69 +1002,82 @@ def _no_interval(first: str, second: str, rigs: Sequence[str]) -> str:
     return "no interval could be read: a side has fewer than two cases with a usable trial"
 
 
-def _percent(level: float) -> str:
-    """A level as a percent, to the precision that tells two levels apart: ``95%``, ``98.33%``."""
-    return format_number(round(100 * level, 2)) + "%"
+def _level(level: float) -> SaidFigure:
+    """An interval's level, held as a share, which a reason states in percent (``95%``, ``98.33%``)."""
+    return SaidFigure(level, "level")
 
 
 def _reason(
-    row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: str, within_reason: str
-) -> str:
+    row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: Said, within_reason: Said
+) -> Said:
     """Why a row reads as it does, in one sentence naming the arms: for ``worse`` the drop family's reason at the
     row's level, for ``within_margin`` the floor's reason at the nominal level, and for an unclear row with a margin
-    whose interval reaches both sides, the floor's reason for what keeps the drop from being shown within it."""
+    whose interval reaches both sides, the floor's reason for what keeps the drop from being shown within it. Its
+    figures are held as numbers; the readings freeze it as text (:meth:`~threetears.evals.analysis.report.said.Said.
+    stored`)."""
     arm, control = row.arm.label, row.control_label
     if reading == "better":
-        return f"{arm}'s gain over {control} is shown: its whole interval is above zero"
+        return Said.of(f"{arm}'s gain over {control} is shown: its whole interval is above zero")
     if reading == "worse":
-        return drop_reason or f"{arm}'s drop below {control} is shown: its whole interval is below zero"
+        return drop_reason or Said.of(f"{arm}'s drop below {control} is shown: its whole interval is below zero")
     if reading == "within_margin":
         nominal, corrected = row.at(INTERVAL_LEVEL), row.at(gain_level)
         if corrected.interval is not None and corrected.interval[0] > 0:
             # Its gain clears zero at the level its family read it at: only the lost trials keep it from better.
-            return f"{within_reason}; its gain clears zero, but the lost trials could still take it back"
+            return within_reason + "; its gain clears zero, but the lost trials could still take it back"
         if nominal.interval is not None and nominal.interval[0] > 0:
-            return (
-                f"{within_reason}; its gain clears zero at {_percent(INTERVAL_LEVEL)}, not at the "
-                f"{_percent(gain_level)} its gains are read at, corrected across {arm}'s aspects"
+            return Said.of(
+                within_reason,
+                "; its gain clears zero at ",
+                _level(INTERVAL_LEVEL),
+                ", not at the ",
+                _level(gain_level),
+                f" its gains are read at, corrected across {arm}'s aspects",
             )
         return within_reason
     fewest = row.fewest()
     rate = row.at(gain_level)
     if rate.interval is None:
-        return _no_interval(arm, control, row.rigs)
+        return Said.of(_no_interval(arm, control, row.rigs))
     if fewest is None:
-        return "the usable cases were not counted on both arms"
+        return Said.of("the usable cases were not counted on both arms")
     if fewest < _CASE_FLOOR:
-        return f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases"
+        return Said.of(f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases")
     if rate.interval[0] > 0:
-        return f"{arm}'s gain clears zero, but the lost trials could still take it back"
+        return Said.of(f"{arm}'s gain clears zero, but the lost trials could still take it back")
     if row.against_zero:
         # A superiority question: each direction against zero, at the level its family read it at.
         at_nominal = row.at(INTERVAL_LEVEL).interval or rate.interval
         if _high(row.at(drop_level)) < 0:
-            return f"{arm}'s drop clears zero, but the lost trials could still take it back"
+            return Said.of(f"{arm}'s drop clears zero, but the lost trials could still take it back")
         for side, cleared, level in (("drop", at_nominal[1] < 0, drop_level), ("gain", at_nominal[0] > 0, gain_level)):
             if cleared:
-                return (
-                    f"{arm}'s {side} clears zero at {_percent(INTERVAL_LEVEL)}, not at the {_percent(level)} its "
-                    f"{side}s are read at, corrected across {arm}'s aspects"
+                return Said.of(
+                    f"{arm}'s {side} clears zero at ",
+                    _level(INTERVAL_LEVEL),
+                    ", not at the ",
+                    _level(level),
+                    f" its {side}s are read at, corrected across {arm}'s aspects",
                 )
         # Frozen with an analysis's readings (its frame), so its words stay as stored: a page states it as a reason, in
         # the glossary's words (report.words.reason_words).
-        return f"its interval reaches zero, so {arm} and {control} are not separated"
+        return Said.of(f"its interval reaches zero, so {arm} and {control} are not separated")
     if row.margin is None:
         if rate.interval[1] < 0:
-            return f"{arm}'s drop is shown on its interval, but no margin was declared, so it is never shown worse"
-        return "its interval reaches zero, and no margin was declared to show a drop against"
-    points = format_number(row.margin)
+            return Said.of(
+                f"{arm}'s drop is shown on its interval, but no margin was declared, so it is never shown worse"
+            )
+        return Said.of("its interval reaches zero, and no margin was declared to show a drop against")
+    points = SaidFigure(row.margin, "margin")
     if _high(row.at(drop_level)) < -row.margin / 100:
-        return f"{arm}'s drop is past the margin on its interval, but the lost trials could still bring it within"
+        return Said.of(
+            f"{arm}'s drop is past the margin on its interval, but the lost trials could still bring it within"
+        )
     if _high(row.at(drop_level)) < 0:
-        return f"{arm}'s drop is shown, but not past the {points}-point margin on its whole interval"
+        return Said.of(f"{arm}'s drop is shown, but not past the ", points, "-point margin on its whole interval")
     if within_reason:
-        return f"its interval reaches zero, and {within_reason}"
-    return f"its interval reaches zero and does not lie past the {points}-point margin"
+        return "its interval reaches zero, and " + within_reason
+    return Said.of("its interval reaches zero and does not lie past the ", points, "-point margin")
 
 
 def campaign_readings(
@@ -1183,7 +1197,7 @@ def campaign_readings(
         gain, drop = gains.get(index), drops.get(index)
         gained, dropped = gain is not None and gain.shown, drop is not None and drop.shown
         # The nominal level's reading is the floor's own: held is the drop shown within the margin, uncorrected.
-        within, within_reason = row.drop_verdict(INTERVAL_LEVEL) if drop_kept(row) else ("unclear", "")
+        within, within_reason = row.drop_verdict(INTERVAL_LEVEL) if drop_kept(row) else ("unclear", Said())
         # A gain and a drop past the margin on one estimate's two intervals would contradict each other; should the
         # two ever both be shown, neither is claimed.
         reading: ShownReading
@@ -1195,7 +1209,7 @@ def campaign_readings(
             reading = "unclear"
         gain_level = gain.level if gain is not None else None
         drop_level = drop.level if drop is not None else None
-        drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else ""
+        drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else Said()
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
         within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
@@ -1237,7 +1251,7 @@ def campaign_readings(
                     drop_level or INTERVAL_LEVEL,
                     drop_reason,
                     within_reason,
-                ),
+                ).stored(),
                 confirmatory=row.confirmatory,
                 control_depth=row.depths.get(row.control_key),
                 arm_depth=row.depths.get(row.arm.variant_key),

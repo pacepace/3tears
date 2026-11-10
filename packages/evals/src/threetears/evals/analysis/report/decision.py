@@ -58,7 +58,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     FloorContrast,
 )
-from threetears.evals.kernel.numbers import MoneyForm, format_number
+from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_CASE_CAP,
@@ -70,6 +70,7 @@ from threetears.evals.analysis.stats import (
     cases_to_clear,
     difference_interval,
 )
+from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
@@ -256,16 +257,19 @@ class FloorReadings:
 @dataclass(frozen=True)
 class RateVerdict:
     """One rate a rate floor reads, read on its own: ``broken`` where it is shown past the floor, ``held`` where it is
-    shown within it, ``unclear`` otherwise, with the reason in plain words about this rate alone."""
+    shown within it, ``unclear`` otherwise, with the reason in plain words about this rate alone, its figures held as
+    numbers for the page to spell (:class:`~threetears.evals.analysis.report.said.Said`)."""
 
     rate: RateReading
     outcome: FloorOutcome
-    reason: str
+    reason: Said
 
 
 @dataclass(frozen=True)
 class FloorVerdict:
-    """One floor read on one candidate, with the reason in plain words and the floor as a sentence naming the arm.
+    """One floor read on one candidate, with the reason in plain words and the floor as a sentence naming the arm, each
+    with its figures held as numbers for the page to spell (:class:`~threetears.evals.analysis.report.said.Said`): a
+    floor is read before any page's forms exist.
 
     ``rate`` is the rate that decided a rate floor: the first broken, else the unclear one nearest a regression, else
     the one whose drop the interval allows most; None for a cost floor. ``rates`` is each rate it read, with its own
@@ -274,8 +278,8 @@ class FloorVerdict:
 
     floor: Floor
     outcome: FloorOutcome
-    reason: str
-    statement: str
+    reason: Said
+    statement: Said
     rate: RateReading | None = None
     rates: tuple[RateVerdict, ...] = ()
     readings: FloorReadings | None = None
@@ -310,8 +314,8 @@ def floor_statement(
     candidate: str,
     readings: FloorReadings | None = None,
     check_names: Mapping[str, str] | None = None,
-) -> str:
-    """One floor as the page says it, naming the arm: ``no pass rate drops by more than 2 points``,
+) -> Said:
+    """One floor as the page says it, naming the arm, its margin held as declared for the page's forms to spell: ``no pass rate drops by more than 2 points``,
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
     :param clause: The floor's clause.
@@ -325,12 +329,12 @@ def floor_statement(
         floor on a check said without ``readings``; None reads the names ``readings`` carries.
     :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
-    :rtype: str
+    :rtype: Said
     """
     if isinstance(clause, CostLower):
-        return f"{candidate} costs less per reply"
+        return Said.of(f"{candidate} costs less per reply")
     which = "pass" if clause.reading is None else reading_words(clause.reading, readings, check_names)
-    return f"no {which} rate drops by more than {format_number(clause.max_points)} points"
+    return Said.of(f"no {which} rate drops by more than ", _margin(clause.max_points), " points")
 
 
 def read_floor(floor: Floor, readings: FloorReadings, *, control: str, candidate: str) -> FloorVerdict:
@@ -397,42 +401,66 @@ def evaluate_floor(
         status=verdict.outcome,
         reading=verdict.rate.reading() if verdict.rate is not None else None,
         interval=verdict.interval(),
-        reason=verdict.reason,
+        reason=verdict.reason.stored(),
     )
 
 
-def _points(value: float) -> str:
-    """A change in points as the page states one: to one decimal, a whole number whole."""
-    return format_number(round(value, 1))
+def _margin(points: float) -> SaidFigure:
+    """A margin in points, as declared."""
+    return SaidFigure(points, "margin")
 
 
-def _counts(rate: RateReading, control: str, candidate: str) -> str:
+def _points(rate: RateReading, value: float, bound: Literal["lower", "upper"], margin: float) -> SaidFigure:
+    """How far ``rate``'s drop reaches, in points, unsigned, of the measure the rate is compared on, as the bound the
+    sentence states it as (``at least`` a lower one, ``at most`` and ``as much as`` an upper one), against the margin
+    the sentence compares it with, which its printed figure keeps on its side of."""
+    return SaidFigure(value, "points", _measure_of(rate), bound=bound, margin=margin)
+
+
+def _measure_of(rate: RateReading) -> str | None:
+    """The measure a rate's figures are compared on (a label's ``match`` as ``accuracy``); None for the trials' own."""
+    return None if rate.measure is None else _compared_as(rate.measure)
+
+
+def _count(count: int) -> SaidFigure:
+    """A count of passes, trials or cases, which the page states as it states any count."""
+    return SaidFigure(count, "count")
+
+
+def _of(passed: int, n: int) -> Said:
+    """Passed of measured: ``14 of 60``."""
+    return Said.of(_count(passed), " of ", _count(n))
+
+
+def _counts(rate: RateReading, control: str, candidate: str) -> Said:
     """A rate's counts in words: ``v2 passed 14 of 60 to v1's 29``. The control's total is said only where it
     differs."""
-    theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
+    theirs = _of(rate.candidate_passed, rate.candidate_n)
     ours = (
-        str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
+        Said.of(_count(rate.control_passed))
+        if rate.control_n == rate.candidate_n
+        else _of(rate.control_passed, rate.control_n)
     )
-    passed = f"passed {theirs}" if rate.name == "the pass rate" else f"passed {rate.name} on {theirs}"
-    return f"{candidate} {passed} to {control}'s {ours}"
+    passed = Said.of("passed ", theirs) if rate.name == "the pass rate" else Said.of(f"passed {rate.name} on ", theirs)
+    return Said.of(f"{candidate} ", passed, f" to {control}'s ", ours)
 
 
-def _both(rate: RateReading, control: str, candidate: str) -> str:
+def _both(rate: RateReading, control: str, candidate: str) -> Said:
     """What two arms that cannot be told apart each passed: ``both 0 of 18``, or each arm's where their totals
     differ."""
     if rate.control_n == rate.candidate_n:
-        return f"both {rate.control_passed} of {rate.control_n}"
-    return (
-        f"{candidate} {rate.candidate_passed} of {rate.candidate_n}, {control} {rate.control_passed} of "
-        f"{rate.control_n}"
+        return Said.of("both ", _of(rate.control_passed, rate.control_n))
+    return Said.of(
+        f"{candidate} ",
+        _of(rate.candidate_passed, rate.candidate_n),
+        f", {control} ",
+        _of(rate.control_passed, rate.control_n),
     )
 
 
-def _change(drop: float) -> str:
-    """A drop in points as a change: ``a drop of 92.7``, ``a gain of 35.5``, ``no change``."""
-    if round(drop, 1) == 0:
-        return "no change"
-    return f"a drop of {_points(drop)}" if drop > 0 else f"a gain of {_points(-drop)}"
+def _change(rate: RateReading, drop: float) -> SaidFigure:
+    """A drop in points as a change: ``a drop of 92.7``, ``a gain of 35.5``, ``no change`` as its page spells it."""
+    return SaidFigure(drop, "change", _measure_of(rate))
 
 
 def _rate_verdict(
@@ -446,7 +474,7 @@ def _rate_verdict(
     ``fewest`` is the fewer usable cases of the two arms; ``named`` names the rate in the reason, as every rate past
     the floor's first is.
     """
-    points = format_number(margin)
+    points = _margin(margin)
     drop = f"{candidate}'s drop on {rate.name}" if named else f"{candidate}'s drop"
     least, most = rate.drop_bounds()
     near, worst = rate.least_drop(), rate.worst_drop()
@@ -455,39 +483,54 @@ def _rate_verdict(
         return RateVerdict(
             rate,
             "broken",
-            f"{_counts(rate, control, candidate)}, a drop that exceeds the margin of {points} points on its whole "
-            f"interval (at least {_points(min(near, least))})",
+            Said.of(
+                _counts(rate, control, candidate),
+                ", a drop that exceeds the margin of ",
+                points,
+                " points on its whole interval (at least ",
+                _points(rate, min(near, least), "lower", margin),
+                ")",
+            ),
         )
     if floored and worst is not None and worst <= margin and most <= margin:
-        at_most = f" (it is at most {_points(worst)})" if worst > 0 else ""
-        return RateVerdict(rate, "held", f"{drop} is shown to stay within {points} points{at_most}")
-    floor = (
-        f"{fewest} cases are too few for the interval that would show it, which is estimated only from {_FLOOR} "
-        "independent cases"
+        at_most = Said.of(" (it is at most ", _points(rate, worst, "upper", margin), ")") if worst > 0 else Said()
+        return RateVerdict(rate, "held", Said.of(f"{drop} is shown to stay within ", points, " points", at_most))
+    floor = Said.of(
+        _count(fewest),
+        f" cases are too few for the interval that would show it, which is estimated only from {_FLOOR} "
+        "independent cases",
     )
-    past = f"{drop} is past {points} points on the point estimate alone"
-    unshown = f"{drop} is not shown to stay within {points} points"
+    past = Said.of(f"{drop} is past ", points, " points on the point estimate alone")
+    unshown = Said.of(f"{drop} is not shown to stay within ", points, " points")
     if rate.degenerate():
-        return RateVerdict(rate, "unclear", f"{rate.name} cannot separate the arms ({_both(rate, control, candidate)})")
+        return RateVerdict(
+            rate, "unclear", Said.of(f"{rate.name} cannot separate the arms (", _both(rate, control, candidate), ")")
+        )
     if not floored:
-        return RateVerdict(rate, "unclear", f"{past if rate.point_drop() > margin else unshown} ({floor})")
+        return RateVerdict(rate, "unclear", Said.of(past if rate.point_drop() > margin else unshown, " (", floor, ")"))
     missing = f"no interval was computed on {rate.name}"
     if rate.point_drop() > margin:
         if near is None or worst is None:
-            return RateVerdict(rate, "unclear", f"{past} ({missing})")
+            return RateVerdict(rate, "unclear", past + f" ({missing})")
         if near > margin:
-            return RateVerdict(rate, "unclear", f"{past} (the lost trials could still bring it within)")
-        return RateVerdict(rate, "unclear", f"{past}, not on its interval (from {_change(near)} to {_change(worst)})")
+            return RateVerdict(rate, "unclear", past + " (the lost trials could still bring it within)")
+        return RateVerdict(
+            rate,
+            "unclear",
+            Said.of(past, ", not on its interval (from ", _change(rate, near), " to ", _change(rate, worst), ")"),
+        )
     if worst is None:
-        return RateVerdict(rate, "unclear", f"{unshown} ({missing})")
+        return RateVerdict(rate, "unclear", unshown + f" ({missing})")
     if worst > margin:
-        return RateVerdict(rate, "unclear", f"{unshown} (it could be as much as {_points(worst)})")
-    return RateVerdict(rate, "unclear", f"{unshown} (the lost trials could still take it past)")
+        return RateVerdict(
+            rate, "unclear", Said.of(unshown, " (it could be as much as ", _points(rate, worst, "upper", margin), ")")
+        )
+    return RateVerdict(rate, "unclear", unshown + " (the lost trials could still take it past)")
 
 
 def _rate_floor(
     clause: RateDrop, readings: FloorReadings, control: str, candidate: str
-) -> tuple[FloorOutcome, str, RateReading | None, tuple[RateVerdict, ...]]:
+) -> tuple[FloorOutcome, Said, RateReading | None, tuple[RateVerdict, ...]]:
     """A rate floor: broken where a rate it reads is broken, held where every one is held, otherwise unclear.
 
     The floor's reason and deciding rate are the first broken; else the first left unclear whose point estimate is past
@@ -498,10 +541,10 @@ def _rate_floor(
     rates = readings.read_by(clause)
     if not rates:
         if clause.reading is None:
-            return "unclear", "no pass rate was measured on both arms", None, ()
-        return "unclear", f"{reading_words(clause.reading, readings)} was not measured on both arms", None, ()
+            return "unclear", Said.of("no pass rate was measured on both arms"), None, ()
+        return "unclear", Said.of(f"{reading_words(clause.reading, readings)} was not measured on both arms"), None, ()
     if (fewest := readings.fewest_cases()) is None:
-        reason = "the usable cases were not counted on both arms"
+        reason = Said.of("the usable cases were not counted on both arms")
         return "unclear", reason, None, tuple(RateVerdict(rate, "unclear", reason) for rate in rates)
     verdicts = tuple(
         _rate_verdict(rate, fewest, margin, control, candidate, named=rate is not rates[0]) for rate in rates
@@ -513,39 +556,42 @@ def _rate_floor(
         return "unclear", lead.reason, lead.rate, verdicts
     widest = max(rates, key=lambda rate: rate.worst_drop() or 0.0)
     most = widest.worst_drop() or 0.0
-    at_most = f" (it is at most {_points(most)})" if most > 0 else ""
+    at_most = Said.of(" (it is at most ", _points(widest, most, "upper", margin), ")") if most > 0 else Said()
     return (
         "held",
-        f"{candidate}'s drop is shown to stay within {format_number(margin)} points{at_most}",
+        Said.of(f"{candidate}'s drop is shown to stay within ", _margin(margin), " points", at_most),
         widest,
         verdicts,
     )
 
 
-def _cost_floor(readings: FloorReadings, control: str, candidate: str) -> tuple[FloorOutcome, str]:
+def _cost_floor(readings: FloorReadings, control: str, candidate: str) -> tuple[FloorOutcome, Said]:
     """A cost floor, read on its own interval as a rate floor is: broken where the interval on the cost difference lies
     wholly above zero, held where it lies wholly below, each over enough cases; otherwise unclear, saying why."""
     if readings.control_cost is None or readings.candidate_cost is None:
-        return "unclear", "cost per reply was not measured on both arms"
+        return "unclear", Said.of("cost per reply was not measured on both arms")
     if not readings.cost_compared:
-        return "unclear", "cost per reply was not compared: no case carries it on both arms"
+        return "unclear", Said.of("cost per reply was not compared: no case carries it on both arms")
     fewest = readings.fewest_cases()
     if fewest is None:
-        return "unclear", "the usable cases were not counted on both arms"
+        return "unclear", Said.of("the usable cases were not counted on both arms")
     if fewest < _FLOOR:
         return (
             "unclear",
-            f"{fewest} cases are too few for the interval that would show the cost either way, which is estimated only "
-            f"from {_FLOOR} independent cases",
+            Said.of(
+                _count(fewest),
+                " cases are too few for the interval that would show the cost either way, which is estimated only "
+                f"from {_FLOOR} independent cases",
+            ),
         )
     interval = readings.cost_interval
     if interval is None:
-        return "unclear", "every case cost alike on both arms, so no interval on the cost difference exists"
+        return "unclear", Said.of("every case cost alike on both arms, so no interval on the cost difference exists")
     if interval[0] > 0:
-        return "broken", f"{candidate} costs more per reply than {control} on the whole interval"
+        return "broken", Said.of(f"{candidate} costs more per reply than {control} on the whole interval")
     if interval[1] < 0:
-        return "held", f"{candidate} costs less per reply than {control}"
-    return "unclear", "the cost difference did not separate"
+        return "held", Said.of(f"{candidate} costs less per reply than {control}")
+    return "unclear", Said.of("the cost difference did not separate")
 
 
 def _floor_contrast(

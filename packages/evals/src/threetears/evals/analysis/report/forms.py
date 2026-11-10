@@ -104,6 +104,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
+from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.report_input import (
     Contrast,
     ContrastFamily,
@@ -1632,6 +1633,62 @@ class PageForms:
         """
         text = spell_dollars(amount)
         return self._issue("", "", "money_total", amount, text, _digits_of(text, MONEY), MONEY)
+
+    # --- a floor's sentences, read before any page's forms exist ----------------------------------------------------
+
+    def said(self, said: Said) -> str:
+        """A sentence a floor or a campaign's row was read with (a floor's statement, a rate's or a floor's reason), as
+        this page says it, each figure it holds in its form: a margin as declared (:meth:`declared`), a level as
+        :meth:`confidence_share` states one, a count as :meth:`count` states one (``1,200``), and how far a rate's
+        drop reaches, in points, unsigned, at the places this page reads that rate's changes at, kept off zero: its own
+        form of the rate (a code page's pass rate), else the rate's set on an aspect page. A rate the page states no
+        change of reads to a decimal, a whole number whole, as the campaign's readings freeze it
+        (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words state as a bound never reads
+        past itself: a lower bound (``at least``) rounds down at those places, an upper one (``at most``) up, and where
+        that would cross the margin the sentence compares it with, or zero, it takes a decimal more until it does not
+        (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point figure is recorded under its
+        rate's measure as a change.
+
+        :param said: The sentence, as read.
+        :ptype said: Said
+        :return: The sentence.
+        :rtype: str
+        """
+        return said.words(self._said_figure)
+
+    def _said_figure(self, figure: SaidFigure) -> str:
+        """One figure of a floor's sentence (:meth:`said`); a change reaches here as its size, in points."""
+        if figure.role == "margin":
+            return self.declared(figure.value).text
+        if figure.role == "level":
+            return self.confidence_share(figure.value).text
+        if figure.role == "count":
+            return self.count(int(figure.value)).text
+        key, kinds = (
+            (TRIAL_PASS_NAME, ("trial",)) if figure.measure is None else (figure.measure, ("measure", "judged"))
+        )
+        found = next(((kind, places) for kind in kinds if (places := self._said_places(key, kind)) is not None), None)
+        if found is None:
+            held, places = _said_held(figure, POINT_PLACES)
+            # A figure at the rule's own decimal reads as the campaign's readings froze it, a whole number whole.
+            kind, text = kinds[0], format_number(held) if places == POINT_PLACES else spell_at(held, places)
+        else:
+            held, places = _said_held(figure, policy_bounded_places(figure.value, found[1], bounds=_ZERO_BOUND))
+            kind, text = found[0], spell_at(held, places)
+        self._issued.append(_Issued(key, kind, "change", figure.value, text))
+        return text
+
+    def _said_places(self, key: str, kind: str) -> int | None:
+        """The places a rate's changes read at on this page, read in points: its own form of the rate where it reads
+        as one, else its set on an aspect page; None where the page states no change of it."""
+        form = self._measures.get((key, kind))
+        if form is not None and form.reads_as == "rate":
+            if self.page == "code":
+                return _code_places(form)
+            if form.places is not None:
+                return form.places
+        held = self._contrast_places.get((key, kind))
+        return held.change if held is not None else None
 
     # --- an off-page surface's figures -------------------------------------------------------------------------------
     #
@@ -4071,6 +4128,43 @@ def _code_change(form: MeasureForm, value: float) -> str:
         value * form.change_factor, _code_places(form), bounds=_code_bounds(form, change=True), signed=True
     )
     return _joined(digits, form.change_unit)
+
+
+def _said_held(figure: SaidFigure, places: int) -> tuple[float, int]:
+    """A floor's figure as printed and the places it prints at: ``places``, or as many more as keep a bound on its
+    side of zero and of the margin its sentence compares it with (owner's boundary rule), at most the policy's cap."""
+    held = _said_bound(figure, places)
+    while places < _POLICY_MOST_PLACES and _said_crosses(figure, held):
+        places += 1
+        held = _said_bound(figure, places)
+    return held, places
+
+
+def _said_crosses(figure: SaidFigure, held: float) -> bool:
+    """Whether a bound printed as ``held`` lands on the far side of zero or its margin from the value it bounds: a
+    value past a line printed on it or short of it, one within a line printed past it, or one on a line printed off
+    it."""
+    if figure.bound is None:
+        return False
+    # Each is compared at the policy's cap, so a value on its margin but for float residue (``0.30 - 0.20`` in points)
+    # reads as on it.
+    value = round(figure.value, _POLICY_MOST_PLACES)
+    lines = (0.0,) if figure.margin is None else (0.0, round(figure.margin, _POLICY_MOST_PLACES))
+    return any(
+        (value > line and held <= line) or (value < line and held > line) or (value == line and held != line)
+        for line in lines
+    )
+
+
+def _said_bound(figure: SaidFigure, places: int) -> float:
+    """A floor's figure at ``places``: rounded to the nearest, or, where its sentence states it as a bound, toward
+    what the bound claims (down for a lower bound, up for an upper one), so it never reads past itself. A figure at
+    the places already (``24.0``) stays as it is, float residue aside."""
+    if figure.bound is None:
+        return round(figure.value, places)
+    factor = 10.0**places
+    scaled = round(figure.value * factor, 9)
+    return (math.floor(scaled) if figure.bound == "lower" else math.ceil(scaled)) / factor
 
 
 def _code_interval(form: MeasureForm, low: float, high: float, *, change: bool) -> tuple[str, str, str]:

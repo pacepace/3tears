@@ -296,7 +296,7 @@ async def test_a_one_aspect_floor_and_each_candidate_s_reading_on_the_same_rate_
             if row.reading == "within_margin":
                 # The row is the floor's reading of the pass rate; the floor itself holds only once every rate its
                 # clause reads holds, so it may stay unclear on a check's rate beside the row.
-                assert pass_rate.outcome == "held" and row.reason == pass_rate.reason
+                assert pass_rate.outcome == "held" and row.reason == pass_rate.reason.stored()
                 assert status.status in ("held", "unclear")
                 assert row.within_interval is not None and pass_rate.rate.interval is not None
                 assert row.within_interval == pytest.approx(tuple(100 * end for end in pass_rate.rate.interval))

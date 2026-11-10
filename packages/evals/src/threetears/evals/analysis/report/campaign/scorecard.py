@@ -1227,7 +1227,7 @@ def _sizings(
                 arm=row.arm_label,
                 shows=f"the {forms.declared(clause.max_points).text}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding),
-                why=reason_words(verdict.reason if deciding is None else deciding.reason) or "",
+                why=reason_words(forms.said(verdict.reason if deciding is None else deciding.reason)) or "",
                 projection=projection,
                 floor=True,
             )

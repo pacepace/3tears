@@ -502,7 +502,10 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
     labels = reader_arm_labels(campaign, input_arm_tags(campaign))
     readings = campaign.readings.relabelled(labels)
     names = AspectNames.of(campaign.aspects, campaign=campaign.name or None)
-    caveats = [*campaign_warnings(readings, names), *timing_caveats(campaign.aspects, names)]
+    caveats = [
+        *campaign_warnings(readings, names, forms=PageForms.off_page()),
+        *timing_caveats(campaign.aspects, names),
+    ]
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
@@ -786,7 +789,7 @@ def _page(
                 else None
             ),
         ),
-        *_floor_warning_blocks(bundle, arm, printed),
+        *_floor_warning_blocks(bundle, arm, printed, forms),
         *caveat_blocks(
             [bundle], section="header", names=AspectNames.of([bundle], campaign=source.campaign_name or None)
         ),
@@ -809,7 +812,7 @@ def _page(
             left_disclosures=notes,
         ),
         # When each criterion set after its readings was set: the detail the first screen's one line points at.
-        *aspect_provenance_blocks(bundle),
+        *aspect_provenance_blocks(bundle, forms=forms),
     ]
     # In reading order, each section's blocks in the order laid out (a code-only page's unasked readings are said
     # with what was not tested, though they are laid out with the questions).
@@ -960,7 +963,9 @@ def _heading_blocks(
     return [*basis, arms]
 
 
-def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str) -> list[ReportBlock]:
+def _floor_warning_blocks(
+    bundle: AnalysisContextBundle, arm: Callable[[str], str], aspect: str, forms: PageForms
+) -> list[ReportBlock]:
     """One line per candidate breaking a floor, under the verdict, in the words a campaign's page warns in
     (:func:`~threetears.evals.analysis.report.campaign.warnings.floor_line`): what it means for the candidate, never the
     rate or the interval, which the Floors section reads clause by clause. A floor held or unclear says nothing here."""
@@ -969,7 +974,7 @@ def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], st
         broken = [verdict.floor for verdict in read if verdict.outcome == "broken"]
         if broken:
             margins = [floor.clause.max_points if isinstance(floor.clause, RateDrop) else None for floor in broken]
-            text = floor_line(arm(key), margins, aspect)
+            text = floor_line(arm(key), margins, aspect, forms=forms)
             blocks.append(DisclosureBlock(section="header", source="floor", text=text))
     return blocks
 
@@ -1382,28 +1387,28 @@ def _decision_blocks(
                         f"cost {_per_reply(bundle)}",
                         _dollars(readings.control_cost if readings else None, cost, forms),
                         _dollars(readings.candidate_cost if readings else None, cost, forms),
-                        f"{verdict.outcome}: {verdict.reason}",
+                        f"{verdict.outcome}: {forms.said(verdict.reason)}",
                     )
                 ]
             else:
                 # A reading past the margin on its point estimate alone says so: the glossary defines the term.
-                pointed = pointed or any("point estimate" in rate.reason for rate in verdict.rates)
+                pointed = pointed or any(rate.reason.mentions("point estimate") for rate in verdict.rates)
                 # Each rate its own status, so a row's status is about the reading on that row and no other.
                 shown = [
                     (
                         PASS_RATE if rate.rate.measure is None else rate.rate.name,
                         f"{rate.rate.control_passed} of {rate.rate.control_n}",
                         f"{rate.rate.candidate_passed} of {rate.rate.candidate_n}",
-                        f"{rate.outcome}: {rate.reason}",
+                        f"{rate.outcome}: {forms.said(rate.reason)}",
                     )
                     for rate in verdict.rates
                 ]
             for index, (reading, ours, theirs, outcome) in enumerate(
-                shown or [("—", None, None, f"{verdict.outcome}: {verdict.reason}")]
+                shown or [("—", None, None, f"{verdict.outcome}: {forms.said(verdict.reason)}")]
             ):
                 rows.append(
                     {
-                        "floor": verdict.statement if index == 0 else None,
+                        "floor": forms.said(verdict.statement) if index == 0 else None,
                         "arm": arm(key),
                         "reading": reading,
                         "control": ours,
@@ -1484,7 +1489,7 @@ def _projection_blocks(
     ).form
     rows: list[dict[str, CellValue]] = [
         {
-            "floor": verdict.statement,
+            "floor": forms.said(verdict.statement),
             "arm": name,
             "none": None
             if isinstance(verdict.floor.clause, CostLower)
@@ -3790,7 +3795,7 @@ def _method_blocks(
                 term="judged score" if index == 0 else None,
             )
         )
-    if (settings := setup_disclosure("settings", bundle, arm)) is not None:
+    if (settings := setup_disclosure("settings", bundle, arm, forms=forms)) is not None:
         blocks.append(settings)
     for variant_key, cells in arm_exclusions(bundle).items():
         if truncated := sum(cell.by_cause.get("truncated", 0) for cell in cells):
@@ -3820,9 +3825,9 @@ def _method_blocks(
             )
     say("measurement", bundle.launch_disclosure)
     say("cost", _unpriced_cost_line(bundle, arm))
-    if (routed := setup_disclosure("cost", bundle, arm)) is not None:
+    if (routed := setup_disclosure("cost", bundle, arm, forms=forms)) is not None:
         blocks.append(routed)
-    if (latency := setup_disclosure("latency", bundle, arm)) is not None:
+    if (latency := setup_disclosure("latency", bundle, arm, forms=forms)) is not None:
         blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)

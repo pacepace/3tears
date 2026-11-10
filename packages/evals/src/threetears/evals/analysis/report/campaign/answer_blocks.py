@@ -16,6 +16,7 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorS
 from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.analysis.style import code
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -131,13 +132,13 @@ def unread_analysis_blocks(
     return [DisclosureBlock(section="answer", source="memo", text=text)]
 
 
-def _floor_words(floor: Floor | None, status: FloorStatus, names: AspectNames) -> str:
-    """A floor as the page says it, naming its arm and its aspect: ``no pass rate drops by more than 10 points on
-    billing``."""
+def _floor_words(floor: Floor | None, status: FloorStatus, names: AspectNames, forms: PageForms) -> str:
+    """A floor as the page says it, in its forms, naming its arm and its aspect: ``no pass rate drops by more than 10
+    points on billing``."""
     if floor is None:
         return f"a floor on {names(status.aspect)}"
     said = floor_statement(floor.clause, candidate=status.arm_label, check_names=names.check_names(status.aspect))
-    return f"{said} on {names(status.aspect)}"
+    return f"{forms.said(said)} on {names(status.aspect)}"
 
 
 def call_blocks(
@@ -147,6 +148,7 @@ def call_blocks(
     *,
     names: AspectNames,
     reports: Mapping[str, Report],
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; nothing
     while none is recorded.
@@ -167,6 +169,8 @@ def call_blocks(
     :ptype names: AspectNames
     :param reports: Each aspect's own page, by its label, whose evidence names a bar's measure.
     :ptype reports: Mapping[str, Report]
+    :param forms: The page's forms, which state each floor's margin.
+    :ptype forms: PageForms
     :return: The call's lines; none while no call is recorded.
     :rtype: list[ReportBlock]
     """
@@ -191,7 +195,7 @@ def call_blocks(
         broken = next((status for status in floors if status.floor == key and status.status == "broken"), None)
         if broken is not None:
             lines.append(
-                f"The call overrides a broken floor: {_floor_words(floor_of(campaign.floors, key), broken, names)}."
+                f"The call overrides a broken floor: {_floor_words(floor_of(campaign.floors, key), broken, names, forms)}."
             )
         else:
             lines.append(f"The call overrides the floor {code(key)} (no longer broken).")
@@ -200,7 +204,7 @@ def call_blocks(
         if status.status == "broken" and status.floor not in call.floors_overridden:
             unanswered.setdefault(status.floor, status)
     for key, status in unanswered.items():
-        said = _floor_words(floor_of(campaign.floors, key), status, names)
+        said = _floor_words(floor_of(campaign.floors, key), status, names, forms)
         lines.append(f"The call does not name the broken floor as overridden: {said}.")
     missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
