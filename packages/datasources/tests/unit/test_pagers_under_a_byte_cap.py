@@ -2,17 +2,18 @@
 
 A hub with a byte cap (``max_reply_bytes``) answers a page with the rows whose JSON fits, ``truncated`` set: the page
 comes back short of its sentinel, so the row count alone reads like the relation's end. The stand-in here runs each
-statement on DuckDB and cuts the answer as the hub's ``RowBudget`` does (the first row always, then each row while
-the JSON array fits). For each pager (``read_all``, ``read_counted``, ``read_parts``, ``read_partitions``), under caps
+statement on DuckDB and cuts the answer as the hub's broker does (the first row always, then each row while the
+rows' pydantic JSON, compact UTF-8, fits). For each pager (``read_all``, ``read_counted``, ``read_parts``, ``read_partitions``), under caps
 from a few rows to one row a reply, the rows returned are the rows an uncut hub returns.
 """
 
 from __future__ import annotations
 
-import json
+import re
 from typing import Any
 
 import duckdb
+import pydantic_core
 import pytest
 from uuid_utils.compat import uuid7
 
@@ -63,7 +64,7 @@ class _ByteCappedHub:
         kept: list[dict[str, Any]] = []
         size = 2
         for row in rows:
-            grown = size + len(json.dumps(row)) + (1 if kept else 0)
+            grown = size + len(pydantic_core.to_json(row)) + (1 if kept else 0)
             if kept and grown > self.max_bytes:
                 self.cut += 1
                 return kept, True
@@ -151,11 +152,12 @@ async def test_a_key_group_wider_than_one_reply_raises_rather_than_dropping_rows
 
 
 class _WideByteCappedHub(_ByteCappedHub):
-    """a byte-capped hub over 10,000 rows, counting the statements it answers."""
+    """a byte-capped hub over 10,000 rows, counting the statements it answers and the rows each asked (its LIMIT)."""
 
-    def __init__(self, max_bytes: int) -> None:
+    def __init__(self, max_bytes: int | None) -> None:
         super().__init__(max_bytes)
         self.statements = 0
+        self.asked: list[int] = []
         self._db.execute("DELETE FROM s.results")
         self._db.executemany(
             "INSERT INTO s.results VALUES (?, ?, ?)",
@@ -166,7 +168,60 @@ class _WideByteCappedHub(_ByteCappedHub):
         self, datasource_name: str, query: str, params: list[Any] | None = None, **kwargs: Any
     ) -> DatasourceQueryResult:
         self.statements += 1
+        limit = re.search(r"LIMIT\s+(\d+)", query)
+        self.asked.append(int(limit.group(1)) if limit else -1)
         return await super().query(datasource_name, query, params, **kwargs)
+
+
+def _a_reply_carries(hub: _WideByteCappedHub) -> int:
+    """the rows of the relation one reply of ``hub`` carries, at the width the hub measures them."""
+    rows = [{"state": _STATES[index % 3], "race": index, "note": "x" * 40} for index in range(10_000)]
+    assert hub.max_bytes is not None
+    return hub.max_bytes * len(rows) // len(pydantic_core.to_json(rows))
+
+
+async def test_pages_after_the_first_fill_the_reply_at_the_width_the_hub_measures() -> None:
+    """Flips if a page is sized at a width other than the hub's own (pydantic's compact JSON) or fills much less
+    than the reply: every page after the first asks at least 90% of what one reply carries, and none is cut."""
+    hub = _WideByteCappedHub(max_bytes=400_000)
+
+    got = await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+
+    assert len(got) == 10_000
+    carries = _a_reply_carries(hub)
+    assert all(asked >= 0.9 * carries for asked in hub.asked[1:-1]), (carries, hub.asked)
+    assert hub.cut == 0, hub.asked
+
+
+async def test_a_read_after_an_announced_cap_sizes_its_first_page_from_it() -> None:
+    """Flips if the first page of a read on a client a byte-capped hub has answered asks the fixed page size again:
+    under a cap one reply holds the whole relation in, the first read takes its first page and one sized page, and
+    the second asks what one reply carried at once and reads it whole in one statement."""
+    hub = _WideByteCappedHub(max_bytes=2_000_000)
+    await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+    assert hub.statements == 2, hub.asked
+    hub.statements = 0
+    hub.asked.clear()
+
+    got = await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+
+    assert sorted(row["race"] for row in got) == list(range(10_000))
+    assert hub.asked[0] >= 0.9 * _a_reply_carries(hub), hub.asked
+    assert hub.statements == 1, hub.asked
+
+
+async def test_a_hub_that_drops_its_byte_cap_is_read_whole_at_the_asked_size() -> None:
+    """Flips if a remembered byte-cap page size is sent to a hub that now cuts by rows (its row cap would eat the
+    sentinel) or refused: the read starts over at the asked size and returns every row."""
+    hub = _WideByteCappedHub(max_bytes=400_000)
+    await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+    hub.max_bytes = None
+    hub.asked.clear()
+
+    got = await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"])  # type: ignore[arg-type]
+
+    assert sorted(row["race"] for row in got) == list(range(10_000))
+    assert all(asked <= 1_000 for asked in hub.asked[1:]), hub.asked
 
 
 async def test_a_byte_capped_hub_is_read_in_pages_as_large_as_its_replies() -> None:
@@ -184,8 +239,13 @@ async def test_a_byte_capped_hub_is_read_in_pages_as_large_as_its_replies() -> N
 async def test_a_page_at_the_row_cap_is_taken_by_a_byte_capped_hub() -> None:
     hub = _WideByteCappedHub(max_bytes=400_000)
 
-    got = await read_all(  # type: ignore[arg-type]
-        hub, "ds", columns=_COLUMNS, relation="s.results", key=["race"], page_size=2_000
+    got = await read_all(
+        hub,  # type: ignore[arg-type]
+        "ds",
+        columns=_COLUMNS,
+        relation="s.results",
+        key=["race"],
+        page_size=2_000,
     )
 
     assert len(got) == 10_000
